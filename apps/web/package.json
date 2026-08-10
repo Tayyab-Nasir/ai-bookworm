@@ -10,6 +10,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@bookworm/api-client": "*",
+    "@bookworm/book-model": "*",
+    "@bookworm/types": "*",
+    "@tiptap/react": "^2.6.6",
+    "@tiptap/starter-kit": "^2.6.6",
     "next": "^14.2.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
