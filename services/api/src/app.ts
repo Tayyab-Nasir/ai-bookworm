@@ -7,6 +7,7 @@ import { defaultSupabaseFactory, type SupabaseFactory } from "./lib/supabase.js"
 import { workspaceRoutes } from "./routes/workspaces.js";
 import { bookRoutes } from "./routes/books.js";
 import { chapterRoutes } from "./routes/chapters.js";
+import { assetRoutes } from "./routes/assets.js";
 
 export async function buildApp(supabaseFactory: SupabaseFactory = defaultSupabaseFactory): Promise<FastifyInstance> {
   const env = loadEnv();
@@ -21,6 +22,7 @@ export async function buildApp(supabaseFactory: SupabaseFactory = defaultSupabas
     workspaceRoutes(v1);
     bookRoutes(v1);
     chapterRoutes(v1);
+    assetRoutes(v1);
   }, { prefix: "/v1" });
 
   return app;

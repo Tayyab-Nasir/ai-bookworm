@@ -171,6 +171,43 @@ paths:
                   assetId: { type: string, format: uuid }
                   storagePath: { type: string }
         "401": { $ref: "#/components/responses/Error" }
+  /v1/assets/{assetId}/confirm:
+    post:
+      tags: [v1]
+      operationId: confirmAssetUpload
+      summary: Confirm upload and store checksum
+      parameters:
+        - name: assetId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [checksumSha256, sizeBytes]
+              properties:
+                checksumSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+                sizeBytes: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Upload confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assetId, status, confirmed]
+                properties:
+                  assetId: { type: string, format: uuid }
+                  status: { type: string }
+                  confirmed: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /v1/ai/jobs:
     post:
       tags: [v1]
