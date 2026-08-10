@@ -1,0 +1,2 @@
+# redis added when the queue consumer is implemented (Step 5)
+pydantic>=2.7

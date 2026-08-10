@@ -1,0 +1,1096 @@
+AI BOOK PUBLISHING PLATFORMUpdated Product Requirements Document + Scope of WorkWeb • iOS • Android • AI Editing • Book Production • Collaboration • Community • PublishingTechnology DirectionSupabase • PostgreSQL • Redis • Qdrant • Next.js • TypeScript • Python • FlutterVersion 2.0
+1. Executive Summary
+This product is an AI-powered Author Publishing OS: a multi-tenant SaaS where authors and publishing teams can upload or create manuscripts, improve them with AI and human collaborators, manage every asset, generate creative materials, produce professional editions, validate them against retailer rules, and export or publish through supported channels.
+The architecture deliberately separates AI assistance from the canonical source of truth. PostgreSQL/Supabase stores durable business state; Redis handles transient infrastructure; Qdrant provides semantic retrieval; deterministic rendering and validation engines produce the actual publication packages.
+1.1 Vision
+Make professional book creation and publishing accessible from one workspace without sacrificing author control, accountability, quality or production rigor.
+1.2 Mission
+Turn a manuscript into a structured, editable and publishable book.
+Reduce repetitive editorial and production work with AI.
+Enable authors, editors, writers, illustrators and publishers to collaborate in one workspace.
+Create professional file, folder, version and approval accountability.
+Create network effects through author communities and referral credits.
+Build a retailer-agnostic publishing engine whose rules can evolve as external platforms change.
+2. Goals, Non-Goals & Success Criteria
+2.1 Goals
+Import supported DOCX, EPUB and TXT manuscripts while preserving originals.
+Normalize content into a canonical Book Model.
+Provide proofreading, copyediting, consistency, style and developmental assistance.
+Maintain a searchable Book Bible using Qdrant-backed semantic retrieval.
+Provide professional editing, comments, tasks, approvals and version history.
+Provide folders, assets, versions, permissions, usage tracking and audit logs.
+Generate illustrations and covers through pluggable image-generation providers.
+Generate EPUB/PDF and validate output deterministically.
+Support versioned retailer rules for KDP, Apple Books, Barnes & Noble, Lulu and future channels.
+Provide community, moderation, referrals and an immutable credit ledger.
+Provide a Flutter mobile companion for iOS and Android.
+Provide subscription billing and usage metering.
+2.2 MVP Non-Goals
+Full audiobook studio
+Full social network
+Replacement for human editors
+Automatic submission to every retailer regardless of API availability
+Every document format
+Full desktop application
+2.3 Success Metrics
+Metric
+Initial Direction
+Import success
+>98% for supported normal files
+Export success
+>99% for supported pipelines
+First book activation
+>60% of activated accounts create/import a book
+AI quality
+Track acceptance, rejection and false-positive rate by agent
+Preflight reliability
+High precision; every rule version has fixtures
+Collaboration activation
+Track % of workspaces with invited collaborators
+Referral conversion
+Track qualified referrals and reward cost
+3. Personas
+Persona
+Primary Needs
+Core Features
+Independent Author
+Write, improve, format, publish
+Editor, AI, Book Bible, publishing
+Editor
+Review and improve
+Suggestions, comments, approvals
+Writer/Ghostwriter
+Create assigned content
+Editor, tasks, versions
+Illustrator/Designer
+Create visual assets
+Asset manager, briefs, approvals
+Publisher/Agency
+Manage books and teams
+Organizations, workspaces, analytics
+Community Member
+Learn and network
+Communities, posts, referrals
+Admin
+Operate platform
+Moderation, support, billing, jobs, audit
+4. Scope of Work
+Marketing site, pricing and acquisition flows
+Authentication, onboarding, organization and workspace management
+Book projects, manuscript import and canonical Book Model
+Professional web editor with AI assistance
+AI command center, Book Bible and semantic search
+Folders, asset library, versions, permissions and auditability
+Team collaboration, comments, tasks, mentions and approvals
+Illustration and cover generation workflows
+Community, moderation and referral rewards
+Edition builder, EPUB/PDF rendering, preflight and preview
+Publishing center and channel adapters
+Billing, subscriptions, credits and usage
+Flutter iOS/Android application
+Admin/support/operations console
+Observability, security, testing and deployment
+Future scope: translation, audiobook workflows, author websites, book marketing, professional marketplace, enterprise SSO and advanced analytics.
+5. End-to-End Product Workflow
+Stage
+Workflow
+1 Acquire
+Landing page → plan → signup
+2 Onboard
+Role → workspace → preferences
+3 Create
+Title, author, genre, language, edition
+4 Import
+Upload manuscript and assets
+5 Ingest
+Parse structure, text, images and metadata
+6 Normalize
+Create canonical Book Model; preserve original
+7 Analyze
+Diagnostics, Book Bible candidates, style profile
+8 Edit
+AI suggestions + human edits + versioning
+9 Collaborate
+Invite editors/writers/illustrators; tasks/comments
+10 Create Assets
+Illustrations, cover concepts and visual assets
+11 Format
+Semantic structure → edition template
+12 Validate
+Deterministic preflight + retailer rules
+13 Render
+EPUB/PDF + visual preview
+14 Review
+Human QA + visual QA
+15 Publish
+Export or supported retailer submission
+16 Archive
+Final packages, metadata, source and audit trail
+6. Final Technical Architecture
+Clients  ├── Next.js / React Web  └── Flutter iOS + Android          |          vAPI / BFF (TypeScript)  ├── Auth + RBAC  ├── Books + Chapters  ├── Assets + Collaboration  ├── AI Gateway  ├── Community  ├── Billing  └── Publishing          |   +------+-------+   |              |Supabase        RedisPostgres        cache / queues /Auth / Storage  locks / rate limits   |Workers  ├── document ingestion  ├── AI orchestration  ├── embeddings / RAG  ├── EPUB/PDF rendering  ├── visual QA  └── publishing          |       Qdrant semantic book memory
+6.1 Architecture Rules
+Supabase/PostgreSQL is the transactional source of truth.
+Qdrant is a retrieval index, never the source of truth.
+Redis is ephemeral infrastructure; durable business state remains in PostgreSQL.
+Original uploads are immutable; derived assets are versioned.
+AI returns structured suggestions/operations and does not silently overwrite canonical content.
+Publishing rules are versioned and independent of UI code.
+Important mutations generate audit events.
+Async jobs have idempotency, retries, status and observability.
+Web and Flutter share backend contracts.
+Tenant isolation is enforced server-side and, where applicable, with Supabase RLS.
+7. Technology Stack
+Layer
+Technology
+Purpose
+Web
+Next.js + React + TypeScript
+Professional web app
+Editor
+Tiptap / ProseMirror
+Structured document editing
+Mobile
+Flutter + Dart
+iOS + Android
+Core API
+TypeScript + NestJS/Fastify
+Business APIs
+AI/Document
+Python + FastAPI
+AI and document services
+Database
+Supabase PostgreSQL
+Source of truth
+Auth
+Supabase Auth
+Identity/sessions
+Storage
+Supabase Storage initially
+Private assets
+Cache
+Redis
+Caching
+Queues
+Redis-based queue
+Async processing
+Vector DB
+Qdrant
+Semantic retrieval
+Search
+Postgres FTS initially
+Exact/filter search
+Realtime
+Supabase Realtime + WebSockets as needed
+Collaboration/events
+Billing
+Stripe
+Subscriptions
+Monitoring
+Sentry + OpenTelemetry
+Errors/tracing
+CI/CD
+GitHub Actions
+Automation
+Runtime
+Docker
+Reproducibility
+Cloud
+AWS or equivalent managed cloud
+Production infrastructure
+8. Database Schema
+Identity/Tenancy
+Table
+Core Columns
+profiles
+id, display_name, avatar_url, locale, timezone
+organizations
+id, name, slug, plan_id, owner_user_id
+organization_members
+organization_id, user_id, role, status
+workspaces
+id, organization_id, name, slug, created_by
+workspace_members
+workspace_id, user_id, role, status, invited_by
+Books
+Table
+Core Columns
+books
+id, workspace_id, title, subtitle, author_name, language, genre, status, current_version_id
+book_versions
+id, book_id, version_number, source_type, created_by, change_summary
+chapters
+id, book_id, order_index, title, status, current_document_version_id
+document_versions
+id, chapter_id, version_number, content_json, plain_text, word_count, created_by
+book_metadata
+book_id, ISBN, description, keywords, categories, edition, publication_date, contributors_json
+style_guides
+id, book_id, rules_json, tone, spelling_variant
+book_bible_items
+id, book_id, type, name, description, attributes_json, source_refs_json, confidence
+Assets
+Table
+Core Columns
+folders
+id, workspace_id, parent_folder_id, name, folder_type, created_by
+assets
+id, workspace_id, folder_id, type, name, storage_path, mime_type, size_bytes, checksum, status, created_by
+asset_versions
+id, asset_id, version_number, storage_path, checksum, created_by
+asset_links
+id, asset_id, entity_type, entity_id, usage_role
+asset_permissions
+id, asset_id, subject_type, subject_id, permission
+Collaboration
+Table
+Core Columns
+comments
+id, workspace_id, entity_type, entity_id, author_id, body, resolved_at
+comment_mentions
+comment_id, user_id
+tasks
+id, workspace_id, entity_type, entity_id, assignee_id, status, priority, due_at
+approvals
+id, workspace_id, entity_type, entity_id, requested_by, reviewer_id, status
+activity_events
+id, workspace_id, actor_id, event_type, entity_type, entity_id, payload_json
+AI/Jobs
+Table
+Core Columns
+ai_jobs
+id, workspace_id, book_id, agent_type, status, input_ref, output_ref, model, usage_json
+ai_suggestions
+id, ai_job_id, entity_type, entity_id, operation_json, rationale, confidence, status
+ai_runs
+id, workspace_id, provider, model, tokens_in, tokens_out, estimated_cost, latency_ms, status
+job_queue_records
+id, job_type, payload_json, status, attempts, idempotency_key
+Community/Referrals
+Table
+Core Columns
+communities
+id, owner_user_id, name, slug, description, visibility, rules_json
+community_members
+community_id, user_id, role, status
+community_posts
+id, community_id, author_id, title, body, status
+community_comments
+id, post_id, author_id, body
+referral_codes
+id, user_id, code, status
+referrals
+id, referrer_id, referred_user_id, code_id, status, qualified_at
+credit_ledger
+id, user_id, workspace_id, source, amount, balance_after, reference_type, reference_id
+Billing/Publishing
+Table
+Core Columns
+plans
+id, name, billing_period, price, entitlements_json
+subscriptions
+id, organization_id, provider_customer_id, provider_subscription_id, plan_id, status
+usage_events
+id, organization_id, user_id, workspace_id, meter, quantity, metadata_json
+editions
+id, book_id, type, trim_size, language, edition_metadata_json, status
+publishing_profiles
+id, workspace_id, channel, credentials_ref, status
+publishing_jobs
+id, book_id, channel, edition_id, status, request_json, response_json
+publishing_validations
+id, publishing_job_id, rule_version, severity, code, message, location_json, status
+Security/Ops
+Table
+Core Columns
+audit_logs
+id, organization_id, workspace_id, actor_id, action, entity_type, entity_id, before_json, after_json
+notifications
+id, user_id, type, payload_json, read_at
+feature_flags
+id, key, scope_type, scope_id, enabled, config_json
+support_tickets
+id, organization_id, user_id, category, status, priority, body
+8.1 DB Rules
+UUID primary keys; UTC timestamps; foreign keys and appropriate indexes.
+JSONB only for extensible metadata, not core relational fields.
+Unique constraints for slugs, referral codes, version numbers and idempotency keys where applicable.
+Transactions for credit ledger and entitlement changes.
+RLS plus application authorization for tenant-sensitive records.
+Soft-delete where recovery/legal requirements justify it.
+9. API Architecture
+Domain
+Representative Endpoints
+Auth
+POST /v1/auth/session, POST /v1/auth/invite
+Workspace
+GET/POST/PATCH /v1/workspaces
+Books
+GET/POST /v1/books; GET/PATCH /v1/books/:id
+Chapters
+GET /v1/books/:id/chapters; PATCH /v1/chapters/:id
+Editor
+GET /v1/chapters/:id/document; POST /v1/chapters/:id/operations
+AI
+POST /v1/ai/jobs; GET /v1/ai/jobs/:id; POST /v1/ai/suggestions/:id/apply
+Assets
+POST /v1/assets/upload; GET /v1/assets; POST /v1/assets/:id/versions
+Collaboration
+POST /v1/comments; POST /v1/tasks; POST /v1/approvals
+Community
+GET/POST /v1/communities; POST /v1/communities/:id/posts
+Referrals
+GET /v1/referrals; POST /v1/referrals/claim
+Billing
+GET /v1/plans; POST /v1/checkout; GET /v1/usage
+Publishing
+POST /v1/publishing/validate; POST /v1/publishing/jobs
+OpenAPI contracts and generated types.
+Version under /v1.
+Typed error codes.
+Pagination and filtering.
+Signed upload URLs.
+Idempotency keys for important mutations.
+Webhook signature verification.
+No provider secrets in clients.
+Request IDs and structured logging.
+10. AI-Agent Architecture
+Agent
+Purpose
+Output
+Ingestion
+Interpret imported structure
+Import map + warnings
+Manuscript Analyst
+Book-level diagnostics
+Diagnostic report
+Proofreader
+Grammar/spelling/punctuation
+Suggestions
+Copy Editor
+Clarity/style
+Suggestions
+Developmental Editor
+Structure/pacing/narrative
+Report
+Consistency
+Names/dates/characters/facts
+Conflicts
+Book Bible
+Extract structured knowledge
+Bible candidates
+Style
+Style-guide compliance
+Violations
+Metadata
+Title/description/keywords/categories
+Metadata candidates
+Illustration
+Brief/prompt/asset generation
+Asset job
+Cover
+Concept and production assistance
+Cover assets
+Formatting
+Semantic structure assistance
+Formatting operations
+Preflight Explainer
+Explain validator failures
+Fix guidance
+Visual QA
+Inspect rendered outputs
+QA findings
+Publishing
+Channel package assistance
+Publishing package
+User ↓AI Gateway ↓Permissions / policy ↓Context Builder ├─ Postgres canonical state ├─ Book Bible ├─ Style guide ├─ User request └─ Qdrant retrieval ↓Agent Router ↓Specialized Agent ↓JSON-schema validation ↓Suggestion / Job ↓Human approval or deterministic application ↓Audit + usage
+Provider-neutral AI gateway.
+Version prompts, models, tools and agent policies.
+Every suggestion references source node/chapter where possible.
+Never let an LLM response alone certify retailer compliance.
+Treat manuscript text as untrusted input and defend against prompt injection.
+Keep AI usage/cost telemetry.
+11. Qdrant Semantic Memory
+Collection
+Purpose
+Payload
+book_chunks
+Semantic manuscript retrieval
+book_id, chapter_id, node_id, text_hash
+book_bible
+Entity retrieval
+book_id, entity_type, entity_id
+style_memory
+Style examples
+book_id, style_type, source_ref
+community_knowledge
+Optional community retrieval
+community_id, post_id
+Postgres remains the source of truth. Embeddings are asynchronous and idempotent. Changed/deleted content must be re-indexed/removed.
+11.1 Redis
+Use
+Example
+Cache
+book:{id}:summary
+Rate limiting
+rl:{user}:{endpoint}
+Locks
+lock:book:{id}:render
+AI queue
+queue:ai
+Document queue
+queue:document
+Publishing queue
+queue:publishing
+Progress
+job:{id}:progress
+12. Canonical Book Model
+The Book Model is the central product abstraction. Semantic content is separated from rendering so one source can produce multiple editions.
+Book ├─ Metadata ├─ Style Guide ├─ Book Bible ├─ Chapters[] │   └─ Nodes[] │      ├─ heading │      ├─ paragraph │      ├─ quote │      ├─ list │      ├─ image │      ├─ caption │      └─ page_break ├─ Assets[] └─ Editions[]     ├─ Ebook     └─ Print
+The editor changes content through typed operations such as insert_node, update_node, move_node, replace_text, set_attribute and attach_asset. Original source files are never overwritten.
+13. Professional Folder & Asset Management
+Capability
+Requirement
+Folders
+Nested tree, breadcrumbs, workspace root
+Assets
+Manuscripts, images, illustrations, covers, references, exports
+Versions
+Immutable versions with creator/time/checksum
+Status
+Draft, In Review, Approved, Rejected, Archived
+Ownership
+Owner, creator, responsible member
+Usage
+Show where an asset is used
+Permissions
+View, comment, edit, approve, manage
+Search
+Name/type/tags/text + semantic where appropriate
+Audit
+Upload, move, rename, replace, download, approve, delete
+Recovery
+Soft delete/restore where appropriate
+/Book Project  /00_Admin  /01_Manuscript/Original  /01_Manuscript/Working  /02_Research  /03_Illustrations/Drafts  /03_Illustrations/Approved  /04_Cover/Concepts  /04_Cover/Final  /05_Design  /06_Metadata  /07_Publishing/KDP  /07_Publishing/Apple Books  /07_Publishing/Lulu  /07_Publishing/Other  /08_Archive
+14. Team Collaboration
+Role
+Default Access
+Owner
+Full control
+Admin
+Manage members/settings
+Editor
+Edit/review assigned content
+Writer
+Edit assigned content
+Illustrator
+Manage assigned creative assets
+Designer
+Design/asset permissions
+Reviewer
+Comment/review
+Viewer
+Read-only
+Email invitations
+Per-workspace/folder permissions
+Node/asset anchored comments
+Mentions and notifications
+Tasks and due dates
+Approval workflows
+Activity timeline
+Optional realtime presence
+15. Community & Referral System
+Public/private communities with owners and moderators.
+Posts, comments, reactions, reports and moderation.
+Topic tags and author profiles.
+Spam/rate controls.
+Referral codes/links.
+Qualified-referral state machine.
+Immutable credit ledger.
+Fraud/abuse checks and manual review thresholds.
+Referral Event
+Ledger Behavior
+Signup
+Pending attribution
+Qualified action
+Post reward transaction
+Paid conversion
+Optional additional reward
+Fraud/chargeback
+Compensating reversal entry
+16. Web App — Page-by-Page UI
+Page
+Purpose
+Marketing Home
+Value proposition, workflow, demo, social proof, CTA
+Pricing
+Plans, credits, storage, seats
+Auth
+Signup/login/OAuth/reset
+Onboarding
+Role, goals, workspace
+Workspace Dashboard
+Books, activity, tasks, storage
+Book Dashboard
+Health, progress, chapters, AI, publishing
+Import
+Upload, detect, preview, mapping, warnings
+Book Editor
+Chapter tree, editor, AI sidebar, comments, versions
+AI Command Center
+Run agents, review suggestions, history
+Book Bible
+Characters, places, events, timeline, facts
+Assets
+Folders, list/grid, preview, versions
+Asset Detail
+Usage, permissions, comments, history
+Illustration Studio
+Brief, references, generation, variants, approval
+Cover Studio
+Concepts, assets, metadata, export
+Team
+Members, roles, invitations
+Tasks
+List/Kanban, filters, assignments
+Approvals
+Review queue
+Comments
+Global review center
+Community
+Discovery/feed
+Community Detail
+Posts, comments, members, moderation
+Referrals
+Code, referrals, credit ledger
+Publishing Center
+Channels, editions, validation, exports
+Edition Builder
+Format, trim, metadata, settings
+Preflight
+Errors/warnings with location and remediation
+Preview
+Reader-style preview + visual QA
+Billing
+Plans, usage, invoices
+Settings
+Profile, workspace, AI, notifications, security
+Admin
+Users, jobs, support, moderation, flags
+17. Flutter iOS/Android Screens
+Screen
+Purpose
+Auth
+Login/signup/reset/OAuth
+Home
+Recent books, tasks, activity
+Books
+Book list and filters
+Book Overview
+Progress, health, quick actions
+Chapter Reader/Editor
+Focused reading and lightweight editing
+AI Assistant
+Ask/review suggestions
+Book Bible
+Search entities/facts
+Assets
+Browse/upload/preview
+Comments
+Review and mentions
+Tasks
+Assigned work
+Team
+Members and roles
+Community
+Feed/posts/comments
+Notifications
+Mentions, approvals, tasks
+Publishing
+Validation/submission status
+Settings
+Account and preferences
+Mobile MVP is review-first: reading, quick edits, comments, approvals, asset capture, notifications, community and publishing status. Advanced layout/publishing controls remain web-first.
+18. Key User Journeys
+Solo Author
+Signup → workspace → book → upload → import → AI analysis → proofread → copyedit → Book Bible → format → preflight → preview → export/publish
+Author + Editor
+Invite editor → assign chapters → comments/suggestions → author accepts → new version → approval → approved snapshot
+Author + Illustrator
+Create brief → assign illustrator → draft upload → comments → revision → approval → link asset to chapter → render
+Referral
+Create link → referred signup → qualifying action → anti-abuse check → credit ledger reward
+Publishing
+Create edition → choose channel → load rule version → preflight → fix → render → visual QA → export/submit → archive
+19. Publishing & Retailer Rules Engine
+Retailer requirements change. KDP, Apple Books, Barnes & Noble, Lulu and other channels must therefore be modeled as versioned rule sets. Exact requirements must be checked against current official retailer documentation at implementation time.
+Component
+Responsibility
+Channel Definition
+Capabilities, supported formats, metadata fields
+Rule Version
+Effective date, rule IDs, source reference
+Validator
+Deterministic checks
+Renderer
+Channel-specific package
+Metadata Mapper
+Canonical → retailer fields
+Preflight UI
+Errors/warnings/info
+Submission Adapter
+Only where official/supported workflow exists
+Validation categories include package integrity, EPUB structure, navigation/TOC, metadata, images, fonts, accessibility, links, language and channel-specific requirements.
+20. Document Rendering & QA Pipeline
+Upload ↓File safety / scanning ↓Source preservation ↓Parser ↓Intermediate representation ↓Canonical Book Model ↓Optional AI analysis ↓Human review ↓Edition renderer ├─ EPUB └─ PDF ↓Deterministic preflight ↓Visual render / QA ↓Checksum + immutable final package ↓Archive / publishing
+21. Security, Privacy & Compliance
+Server-side authorization on every sensitive endpoint.
+Supabase RLS on appropriate tenant tables.
+Private storage with short-lived signed URLs.
+Secrets manager; never commit provider credentials.
+Webhook signature verification.
+Audit logs for permission, billing, export and publishing events.
+Malware scanning and sandboxed document processing.
+Rate limits and upload quotas.
+Data export/deletion workflows.
+Backups and tested restore procedures.
+AI provider privacy/data-processing policy.
+Prompt-injection defenses for manuscript content.
+Threat
+Primary Mitigation
+Cross-tenant access
+RLS + authorization + automated isolation tests
+Malicious file
+Scanning + sandbox + file limits
+Prompt injection
+Treat manuscript as untrusted data; restricted tools
+AI leakage
+Provider policy + scoped context
+Referral abuse
+Qualification + ledger + anti-fraud
+Credential theft
+Encryption + least privilege + secrets manager
+Account takeover
+MFA option + rate limits + session controls
+Data loss
+Backups + immutable versions
+22. Billing, Credits & Usage
+Subscriptions control entitlements. Credits/usage meters control expensive operations. Financial transactions and product-credit accounting must remain distinct.
+Meter
+Examples
+AI credits
+Proofreading, copyedit, generation
+Storage
+Manuscripts/assets
+Rendering
+Large exports
+Image generation
+Illustrations/covers
+Seats
+Team members
+Publishing services
+Premium services where offered
+Credit changes are immutable ledger entries. Usage events must reference the job that consumed the resource.
+23. MVP Scope
+Auth + workspace
+Book creation/import
+DOCX/EPUB/TXT ingestion; PDF with explicit limitations
+Canonical Book Model
+Web chapter editor
+AI proofreading + copyediting
+Basic consistency + Book Bible
+Professional folders/assets
+Team invitations/comments
+EPUB export
+PDF export where reliable
+Deterministic preflight
+Preview
+Stripe billing
+Usage/credits
+Basic community + referrals
+Flutter companion app
+Admin/support console
+24. Engineering Backlog
+ID
+Ticket
+Priority
+FOUND-001
+Monorepo + repository setup
+P0
+FOUND-002
+Typed environment/config
+P0
+FOUND-003
+CI/CD pipeline
+P0
+FOUND-004
+Observability baseline
+P0
+DB-001
+Supabase project + migration framework
+P0
+DB-002
+Tenancy schema
+P0
+DB-003
+Book/content schema
+P0
+DB-004
+Asset schema
+P0
+DB-005
+Collaboration schema
+P0
+DB-006
+AI/jobs schema
+P0
+DB-007
+Community/referral schema
+P1
+DB-008
+Billing/publishing schema
+P0
+SEC-001
+RLS policies
+P0
+SEC-002
+Authorization service
+P0
+API-001
+Versioned REST/OpenAPI foundation
+P0
+API-002
+Workspace APIs
+P0
+API-003
+Book/chapter APIs
+P0
+API-004
+Asset APIs + signed uploads
+P0
+API-005
+Collaboration APIs
+P1
+API-006
+Community APIs
+P1
+API-007
+Billing/webhooks
+P0
+ING-001
+Secure upload pipeline
+P0
+ING-002
+DOCX parser
+P0
+ING-003
+EPUB importer
+P0
+ING-004
+Canonical mapper
+P0
+EDIT-001
+Web editor shell
+P0
+EDIT-002
+Document operations + versions
+P0
+EDIT-003
+Anchored comments
+P1
+AI-001
+AI gateway/provider abstraction
+P0
+AI-002
+Proofreading agent
+P0
+AI-003
+Copyediting agent
+P0
+AI-004
+Consistency agent
+P1
+AI-005
+Book Bible agent
+P1
+AI-006
+Qdrant RAG pipeline
+P1
+AI-007
+AI evaluation suite
+P0
+ASSET-001
+Folder manager
+P0
+ASSET-002
+Asset versioning
+P0
+ASSET-003
+Asset permissions
+P1
+COLLAB-001
+Invitations
+P0
+COLLAB-002
+Tasks
+P1
+COLLAB-003
+Approvals
+P1
+PUB-001
+Edition model
+P0
+PUB-002
+EPUB renderer
+P0
+PUB-003
+PDF renderer
+P0
+PUB-004
+Preflight engine
+P0
+PUB-005
+Visual QA
+P1
+PUB-006
+Initial channel adapters
+P1
+COMM-001
+Community MVP
+P1
+COMM-002
+Moderation
+P1
+REF-001
+Referral attribution
+P1
+REF-002
+Credit ledger
+P1
+MOB-001
+Flutter foundation
+P0
+MOB-002
+Mobile books/overview
+P0
+MOB-003
+Mobile review/comments
+P1
+MOB-004
+Mobile assets
+P1
+MOB-005
+Mobile community
+P1
+ADMIN-001
+Admin console
+P0
+QA-001
+Core E2E journey
+P0
+QA-002
+Security tests
+P0
+QA-003
+Load tests
+P1
+24.1 Definition of Done
+Acceptance criteria implemented.
+Types/API schemas updated.
+Unit tests and integration tests where applicable.
+E2E coverage for critical flows.
+Authorization and tenant isolation tested.
+Retries/idempotency/error handling implemented.
+Observability added.
+Migration/rollback documented.
+Documentation updated.
+No secrets committed.
+Product owner acceptance passed.
+25. Development Plan
+Phase
+Indicative Duration
+Main Deliverables
+0 Architecture/Foundation
+2–3 weeks
+Contracts, repo, Supabase, CI/CD, security baseline, design system
+1 Core Workspace
+3–5 weeks
+Auth, workspace, book, assets/folders
+2 Manuscript Engine
+4–6 weeks
+Import, Book Model, editor, versions
+3 AI MVP
+4–6 weeks
+AI gateway, proofreading, copyedit, RAG/Book Bible
+4 Publishing Engine
+4–6 weeks
+EPUB/PDF, editions, preflight, preview
+5 Collaboration/Community
+4–6 weeks
+Teams, comments, tasks, community, referrals
+6 Flutter MVP
+4–6 weeks
+Core mobile, review, assets, notifications
+7 Hardening
+3–5 weeks
+Security, performance, AI eval, QA, DR
+8 Beta/Launch
+3–4 weeks
+Pilot authors, feedback, fixes, production launch
+These are multi-person team estimates. AI coding tools can accelerate implementation, but they do not remove architecture, product, security, publishing, QA or operational work.
+26. Recommended Team
+Role
+Suggested Capacity
+Focus
+Tech Lead/Architect
+1
+Architecture, reviews, security
+Full-stack Engineers
+2–4
+Web/API/core
+AI/ML Engineers
+1–2
+Agents, RAG, evaluation
+Document/Publishing Engineer
+1
+Import, rendering, preflight
+Flutter Engineers
+1–2
+iOS/Android
+Product Designer
+1
+UX/UI/design system
+QA
+1–2
+Automation/regression/document QA
+DevOps/SRE
+0.5–1
+Infrastructure/observability
+27. Claude Code / AI Coding Agent Strategy
+Claude Code can implement a substantial portion of this product when used as an engineering agent inside a controlled repository. It should not be instructed to independently invent the entire production architecture from this document in one pass.
+27.1 Master Repository Documents
+/PRD.md/SOW.md/ARCHITECTURE.md/ENGINEERING_RULES.md/SECURITY.md/DATABASE.md/API_SPEC.md/AI_ARCHITECTURE.md/PUBLISHING_RULES.md/DESIGN_SYSTEM.md/MOBILE_SPEC.md/AI_EVALS.md/CONTRIBUTING.md
+27.2 Recommended Agent Loop
+Read master docs → select one bounded ticket → inspect current code → plan → implement → typecheck/lint/test → integration/E2E tests → security review → update docs/migrations → human review → merge → next ticket
+Claude Code should not self-decide breaking changes to the Book Model.
+Do not let an AI agent redefine credit/billing semantics without review.
+Do not let an LLM determine retailer compliance without deterministic validators.
+Security, privacy and production infrastructure changes require human review.
+Keep architecture decisions and accepted deviations documented.
+28. Testing & AI Evaluation
+Area
+Required Coverage
+Database
+Migrations, constraints, RLS, seed
+API
+Unit, integration, auth, authorization, idempotency
+Web
+Component + E2E
+Flutter
+Unit/widget/integration
+AI
+Golden cases, schema validity, grounding, regressions
+Documents
+Import/export fixtures, malformed files
+Publishing
+Rule fixtures, package validation, visual regression
+Security
+Tenant isolation, upload abuse, prompt injection
+Performance
+Concurrent AI jobs, rendering, API load
+Maintain golden manuscript excerpts with expected corrections.
+Track precision/false positives of AI suggestions.
+Run regression evaluations whenever model/prompt/tool versions change.
+Compare providers/models on quality, latency and cost.
+Use adversarial manuscript content for prompt-injection tests.
+29. Infrastructure & Deployment
+Production ├─ CDN/WAF ├─ Next.js ├─ TypeScript API ├─ Python AI/document services ├─ workers ├─ Redis ├─ Qdrant └─ SupabaseEnvironments ├─ local ├─ development ├─ staging └─ production
+Separate credentials/data by environment.
+Automated migrations.
+Worker scaling based on queue depth.
+Temporary-file lifecycle rules.
+Centralized logs/metrics/traces.
+Backups and tested restore.
+Health/readiness checks.
+Graceful worker shutdown and retry.
+30. Risks & Mitigations
+Risk
+Impact
+Mitigation
+Retailer requirements change
+High
+Versioned rules + current official docs review
+AI harms author voice
+High
+Suggestion-first UX + versions + approval
+Large manuscripts
+High
+Chunking + queues + progress
+EPUB/PDF edge cases
+High
+Deterministic fixtures + visual QA
+Tenant data leak
+Critical
+RLS + authorization + isolation tests
+Referral fraud
+Medium
+Qualification + immutable ledger
+Mobile scope creep
+Medium
+Review-first mobile MVP
+AI cost overrun
+High
+Usage metering + model routing + quotas
+Retailer API unavailable
+Medium
+Export-first + adapter abstraction
+31. Post-MVP Roadmap
+AI translation and multilingual editions
+Audiobook production
+Voice/narration workflows where legally appropriate
+Advanced print-on-demand layout
+Author websites and book landing pages
+Marketing campaign generator
+Email/newsletter tooling
+Book launch planner
+Editor/illustrator marketplace
+Publisher/agency multi-brand controls
+Enterprise SSO/SCIM
+Advanced publishing analytics
+ISBN/catalog assistance
+External API/SDK
+32. Final Product Recommendation
+The strongest product is not merely an AI formatter. It is the system of record for a book's lifecycle: manuscript → structured content → editorial review → creative assets → editions → validation → publishing → archive.
+The foundational moat should therefore be the Canonical Book Model, asset accountability, versioning, human-in-the-loop AI, semantic Book Bible, deterministic publishing engine and collaborative workspace.
+Supabase + Redis + Qdrant + Next.js + TypeScript/Python + Flutter is a coherent first production architecture. The next engineering artifact should be a Master Build Specification containing exact SQL migrations/RLS, OpenAPI schemas, JSON schemas, Qdrant payloads, Redis job contracts, AI tool schemas, prompt/version rules, UI component contracts and dependency-ordered tickets.
+Appendix A — Initial Repository Structure
+/├── apps/│   ├── web/│   └── mobile/├── services/│   ├── api/│   ├── ai/│   ├── document/│   ├── rendering/│   └── publishing/├── workers/│   ├── ai/│   ├── document/│   ├── render/│   └── publishing/├── packages/│   ├── types/│   ├── ui/│   ├── book-model/│   ├── api-client/│   └── config/├── supabase/│   ├── migrations/│   ├── functions/│   └── seed/├── tests/│   ├── unit/│   ├── integration/│   ├── e2e/│   ├── fixtures/│   └── ai-evals/└── docs/    ├── architecture/    ├── api/    ├── agents/    └── publishing/
+Appendix B — MVP Release Checklist
+Production domain/TLS and WAF configured.
+Supabase production project configured.
+RLS verified with automated isolation tests.
+Redis and Qdrant production configurations verified.
+AI provider keys stored securely.
+Upload scanning and limits enabled.
+Import fixtures passing.
+EPUB/PDF fixtures passing.
+Preflight rules tested.
+Billing/webhooks tested.
+Referral ledger tested.
+Community moderation tested.
+Flutter beta builds tested.
+Monitoring/alerting/backups enabled.
+Disaster recovery tested.
+Privacy/terms/support processes prepared.
+Beta authors completed.
+Appendix C — Product Principles
+Author owns the work.
+AI suggests; humans approve.
+Source files are preserved.
+Important changes are traceable.
+Formatting is semantic before visual.
+Publishing validation is deterministic wherever possible.
+Permissions are explicit.
+Credits are accounted for like money.
+Community growth must preserve trust.
+Mobile complements the professional web workspace.
+Retailer rules are versioned because the outside world changes.

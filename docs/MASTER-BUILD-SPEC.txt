@@ -1,0 +1,568 @@
+MASTER BUILD SPECIFICATIONAI BOOK PUBLISHING SaaS — v1.0Supabase • PostgreSQL • Redis • Qdrant • Next.js • TypeScript/Python • FlutterImplementation-level specification for engineering teams and Claude Code
+1. Purpose and Build Rules
+This document converts the PRD/SOW into implementation contracts. The goal is to prevent an AI coding agent from inventing core data models, security boundaries, AI behavior or publishing semantics.
+PostgreSQL/Supabase is the durable source of truth.
+Redis is transient: cache, queues, locks, rate limits and progress.
+Qdrant is a derived retrieval index; never the source of truth.
+Original manuscripts/assets are immutable.
+AI produces validated suggestions/jobs; it does not silently overwrite canonical content.
+Retailer compliance is deterministic and versioned; LLMs may explain findings but never certify compliance.
+All async jobs are idempotent, retryable and observable.
+Every tenant-sensitive operation is authorized server-side.
+Claude Code works one bounded ticket at a time with tests and CI gates.
+2. Repository Contract
+/├── apps/web                 # Next.js├── apps/mobile              # Flutter├── services/api             # TypeScript API/BFF├── services/ai              # Python AI gateway/agents├── services/document       # import/normalization├── services/rendering      # EPUB/PDF├── services/publishing     # channel adapters├── workers/{ai,document,render,publishing}├── packages/{book-model,api-client,types,ui,validation}├── supabase/{migrations,functions,seed}├── tests/{unit,integration,e2e,security,fixtures,ai-evals}└── docs/{architecture,api,agents,publishing}
+3. Database Schema — Executable Baseline
+Split the following into ordered Supabase migrations. Do not edit an applied migration; create a new migration.
+-- 0001_extensions.sqlcreate extension if not exists pgcrypto;create extension if not exists citext;create type public.member_role as enum('owner','admin','editor','writer','illustrator','designer','reviewer','viewer');create type public.book_status as enum('draft','in_review','approved','published','archived');create type public.asset_status as enum('draft','in_review','approved','rejected','archived');create type public.job_status as enum('queued','running','succeeded','failed','cancelled');create type public.approval_status as enum('pending','approved','rejected','cancelled');create type public.task_status as enum('todo','in_progress','blocked','done','cancelled');-- 0002_core.sqlcreate table public.profiles ( id uuid primary key references auth.users(id) on delete cascade, display_name text not null default '', avatar_url text, locale text not null default 'en-US', timezone text not null default 'UTC', created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.organizations ( id uuid primary key default gen_random_uuid(), name text not null, slug citext not null unique, owner_user_id uuid not null references auth.users(id), created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.organization_members ( organization_id uuid references public.organizations(id) on delete cascade, user_id uuid references auth.users(id) on delete cascade, role text not null check(role in ('owner','admin','member')), status text not null default 'active' check(status in ('invited','active','suspended')), invited_by uuid references auth.users(id), created_at timestamptz not null default now(), primary key(organization_id,user_id));create table public.workspaces ( id uuid primary key default gen_random_uuid(), organization_id uuid not null references public.organizations(id) on delete cascade, name text not null, slug citext not null, created_by uuid not null references auth.users(id), created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(organization_id,slug));create table public.workspace_members ( workspace_id uuid references public.workspaces(id) on delete cascade, user_id uuid references auth.users(id) on delete cascade, role public.member_role not null default 'viewer', status text not null default 'active' check(status in ('invited','active','suspended')), invited_by uuid references auth.users(id), created_at timestamptz not null default now(), primary key(workspace_id,user_id));create table public.books ( id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade, title text not null, subtitle text, author_name text not null, language text not null default 'en', genre text, status public.book_status not null default 'draft', current_version_id uuid, created_by uuid not null references auth.users(id), created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.book_versions ( id uuid primary key default gen_random_uuid(), book_id uuid not null references public.books(id) on delete cascade, version_number integer not null, source_type text not null, created_by uuid not null references auth.users(id), change_summary text, created_at timestamptz not null default now(), unique(book_id,version_number));alter table public.books add constraint books_current_version_fkforeign key(current_version_id) references public.book_versions(id);create table public.chapters ( id uuid primary key default gen_random_uuid(), book_id uuid not null references public.books(id) on delete cascade, order_index integer not null, title text not null, status text not null default 'draft', current_document_version_id uuid, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(book_id,order_index));create table public.document_versions ( id uuid primary key default gen_random_uuid(), chapter_id uuid not null references public.chapters(id) on delete cascade, version_number integer not null, content_json jsonb not null, plain_text text not null default '', word_count integer not null default 0, created_by uuid not null references auth.users(id), created_at timestamptz not null default now(), unique(chapter_id,version_number));alter table public.chapters add constraint chapters_current_document_version_fkforeign key(current_document_version_id) references public.document_versions(id);create table public.book_metadata ( book_id uuid primary key references public.books(id) on delete cascade, isbn13 text, description text, keywords jsonb not null default '[]', categories jsonb not null default '[]', edition text, publication_date date, contributors jsonb not null default '[]', created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.style_guides ( id uuid primary key default gen_random_uuid(), book_id uuid unique references public.books(id) on delete cascade, rules_json jsonb not null default '{}', tone text, spelling_variant text, created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.book_bible_items ( id uuid primary key default gen_random_uuid(), book_id uuid references public.books(id) on delete cascade, type text not null, name text not null, description text, attributes_json jsonb not null default '{}', source_refs_json jsonb not null default '[]', confidence numeric(5,4), created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+4. Database — Assets, Collaboration, AI, Community, Billing
+-- 0003_assets_collaboration.sqlcreate table public.folders ( id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade, parent_folder_id uuid references public.folders(id) on delete cascade, name text not null, folder_type text not null default 'custom', created_by uuid not null references auth.users(id), created_at timestamptz not null default now());create table public.assets ( id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade, folder_id uuid references public.folders(id) on delete set null, type text not null, name text not null, storage_path text not null, mime_type text not null, size_bytes bigint not null default 0, checksum text not null, status public.asset_status not null default 'draft', created_by uuid not null references auth.users(id), created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.asset_versions ( id uuid primary key default gen_random_uuid(), asset_id uuid not null references public.assets(id) on delete cascade, version_number integer not null, storage_path text not null, checksum text not null, created_by uuid not null references auth.users(id), created_at timestamptz not null default now(), unique(asset_id,version_number));create table public.asset_links ( id uuid primary key default gen_random_uuid(), asset_id uuid not null references public.assets(id) on delete cascade, entity_type text not null, entity_id uuid not null, usage_role text, created_at timestamptz not null default now());create table public.comments ( id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade, entity_type text not null, entity_id uuid not null, author_id uuid not null references auth.users(id), body text not null, resolved_at timestamptz, created_at timestamptz not null default now());create table public.comment_mentions ( comment_id uuid references public.comments(id) on delete cascade, user_id uuid references auth.users(id) on delete cascade, primary key(comment_id,user_id));create table public.tasks ( id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade, entity_type text, entity_id uuid, title text not null, description text, assignee_id uuid references auth.users(id), status public.task_status not null default 'todo', priority text not null default 'medium', due_at timestamptz, created_by uuid not null references auth.users(id), created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.approvals ( id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade, entity_type text not null, entity_id uuid not null, requested_by uuid not null references auth.users(id), reviewer_id uuid references auth.users(id), status public.approval_status not null default 'pending', comment text, created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.activity_events ( id bigint generated always as identity primary key, workspace_id uuid not null references public.workspaces(id) on delete cascade, actor_id uuid references auth.users(id), event_type text not null, entity_type text, entity_id uuid, payload_json jsonb not null default '{}', created_at timestamptz not null default now());-- 0004_ai.sqlcreate table public.ai_jobs ( id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade, book_id uuid references public.books(id) on delete cascade, agent_type text not null, status public.job_status not null default 'queued', input_ref jsonb not null default '{}', output_ref jsonb, model text, usage_json jsonb not null default '{}', idempotency_key text not null unique, error_code text, error_message text, created_by uuid not null references auth.users(id), created_at timestamptz not null default now(), started_at timestamptz, completed_at timestamptz);create table public.ai_suggestions ( id uuid primary key default gen_random_uuid(), ai_job_id uuid not null references public.ai_jobs(id) on delete cascade, entity_type text not null, entity_id uuid, operation_json jsonb not null, rationale text, confidence numeric(5,4), status text not null default 'pending'   check(status in ('pending','accepted','rejected','edited','expired')), created_at timestamptz not null default now(), reviewed_by uuid references auth.users(id), reviewed_at timestamptz);create table public.ai_runs ( id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade, provider text not null, model text not null, tokens_in integer not null default 0, tokens_out integer not null default 0, estimated_cost numeric(14,6) not null default 0, latency_ms integer, status text not null, created_at timestamptz not null default now());-- 0005_community.sqlcreate table public.communities ( id uuid primary key default gen_random_uuid(), owner_user_id uuid not null references auth.users(id), name text not null, slug citext not null unique, description text, visibility text not null default 'public' check(visibility in ('private','public','unlisted')), rules_json jsonb not null default '{}', created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.community_members ( community_id uuid references public.communities(id) on delete cascade, user_id uuid references auth.users(id) on delete cascade, role text not null default 'member', status text not null default 'active', created_at timestamptz not null default now(), primary key(community_id,user_id));create table public.community_posts ( id uuid primary key default gen_random_uuid(), community_id uuid not null references public.communities(id) on delete cascade, author_id uuid not null references auth.users(id), title text, body text not null, status text not null default 'published', created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.community_comments ( id uuid primary key default gen_random_uuid(), post_id uuid not null references public.community_posts(id) on delete cascade, author_id uuid not null references auth.users(id), body text not null, created_at timestamptz not null default now());create table public.referral_codes ( id uuid primary key default gen_random_uuid(), user_id uuid not null references auth.users(id) on delete cascade, code citext not null unique, status text not null default 'active', created_at timestamptz not null default now());create table public.referrals ( id uuid primary key default gen_random_uuid(), referrer_id uuid not null references auth.users(id), referred_user_id uuid references auth.users(id), code_id uuid not null references public.referral_codes(id), status text not null default 'attributed', qualified_at timestamptz, created_at timestamptz not null default now());create table public.credit_ledger ( id bigint generated always as identity primary key, user_id uuid not null references auth.users(id), workspace_id uuid references public.workspaces(id) on delete set null, source text not null, amount integer not null, balance_after integer not null, reference_type text, reference_id uuid, created_at timestamptz not null default now());-- 0006_billing_publishing.sqlcreate table public.plans ( id uuid primary key default gen_random_uuid(), name text not null, billing_period text not null, price_cents integer not null, currency text not null default 'USD', entitlements_json jsonb not null default '{}', created_at timestamptz not null default now());create table public.subscriptions ( id uuid primary key default gen_random_uuid(), organization_id uuid references public.organizations(id) on delete cascade, provider_customer_id text, provider_subscription_id text unique, plan_id uuid references public.plans(id), status text not null, current_period_end timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.usage_events ( id bigint generated always as identity primary key, organization_id uuid references public.organizations(id) on delete cascade, user_id uuid references auth.users(id), workspace_id uuid references public.workspaces(id) on delete set null, meter text not null, quantity numeric(18,6) not null, metadata_json jsonb not null default '{}', created_at timestamptz not null default now());create table public.editions ( id uuid primary key default gen_random_uuid(), book_id uuid not null references public.books(id) on delete cascade, type text not null check(type in ('ebook','print','audiobook')), trim_size text, language text, edition_metadata_json jsonb not null default '{}', status text not null default 'draft', created_at timestamptz not null default now(), updated_at timestamptz not null default now());create table public.publishing_profiles ( id uuid primary key default gen_random_uuid(), workspace_id uuid not null references public.workspaces(id) on delete cascade, channel text not null, credentials_ref text, status text not null default 'unconfigured', created_at timestamptz not null default now());create table public.publishing_jobs ( id uuid primary key default gen_random_uuid(), book_id uuid not null references public.books(id) on delete cascade, edition_id uuid references public.editions(id), channel text not null, status public.job_status not null default 'queued', request_json jsonb not null default '{}', response_json jsonb, idempotency_key text not null unique, created_at timestamptz not null default now(), started_at timestamptz, completed_at timestamptz);create table public.publishing_validations ( id uuid primary key default gen_random_uuid(), publishing_job_id uuid not null references public.publishing_jobs(id) on delete cascade, rule_version text not null, severity text not null check(severity in ('error','warning','info')), code text not null, message text not null, location_json jsonb, status text not null default 'open', created_at timestamptz not null default now());create table public.audit_logs ( id bigint generated always as identity primary key, organization_id uuid references public.organizations(id) on delete cascade, workspace_id uuid references public.workspaces(id) on delete set null, actor_id uuid references auth.users(id), action text not null, entity_type text, entity_id uuid, before_json jsonb, after_json jsonb, created_at timestamptz not null default now());
+5. Indexes, Authorization Helpers and RLS
+-- 0007_indexes.sqlcreate index idx_workspace_members_user on public.workspace_members(user_id);create index idx_books_workspace on public.books(workspace_id);create index idx_chapters_book on public.chapters(book_id,order_index);create index idx_doc_versions_chapter on public.document_versions(chapter_id,version_number desc);create index idx_assets_workspace on public.assets(workspace_id);create index idx_assets_folder on public.assets(folder_id);create index idx_ai_jobs_workspace_status on public.ai_jobs(workspace_id,status);create index idx_activity_workspace_time on public.activity_events(workspace_id,created_at desc);create index idx_usage_org_time on public.usage_events(organization_id,created_at desc);create index idx_publish_jobs_book on public.publishing_jobs(book_id,created_at desc);create or replace function public.is_workspace_member(p_workspace_id uuid)returns boolean language sql stable security definer set search_path=public as $$ select exists(select 1 from public.workspace_members where workspace_id=p_workspace_id and user_id=auth.uid() and status='active');$$;create or replace function public.workspace_role(p_workspace_id uuid)returns public.member_role language sql stable security definer set search_path=public as $$ select role from public.workspace_members where workspace_id=p_workspace_id and user_id=auth.uid() and status='active' limit 1;$$;create or replace function public.can_edit_workspace(p_workspace_id uuid)returns boolean language sql stable security definer set search_path=public as $$ select coalesce(public.workspace_role(p_workspace_id) in ('owner','admin','editor','writer','illustrator','designer'),false);$$;-- 0008_rls.sqlalter table public.profiles enable row level security;alter table public.workspaces enable row level security;alter table public.workspace_members enable row level security;alter table public.books enable row level security;alter table public.book_versions enable row level security;alter table public.chapters enable row level security;alter table public.document_versions enable row level security;alter table public.book_metadata enable row level security;alter table public.style_guides enable row level security;alter table public.book_bible_items enable row level security;alter table public.folders enable row level security;alter table public.assets enable row level security;alter table public.asset_versions enable row level security;alter table public.asset_links enable row level security;alter table public.comments enable row level security;alter table public.tasks enable row level security;alter table public.approvals enable row level security;alter table public.activity_events enable row level security;alter table public.ai_jobs enable row level security;alter table public.ai_suggestions enable row level security;alter table public.ai_runs enable row level security;alter table public.communities enable row level security;alter table public.community_members enable row level security;alter table public.community_posts enable row level security;alter table public.community_comments enable row level security;alter table public.referral_codes enable row level security;alter table public.referrals enable row level security;alter table public.credit_ledger enable row level security;alter table public.plans enable row level security;alter table public.subscriptions enable row level security;alter table public.usage_events enable row level security;alter table public.editions enable row level security;alter table public.publishing_profiles enable row level security;alter table public.publishing_jobs enable row level security;alter table public.publishing_validations enable row level security;alter table public.audit_logs enable row level security;create policy profile_self on public.profiles for allusing(id=auth.uid()) with check(id=auth.uid());create policy workspace_select on public.workspaces for selectusing(public.is_workspace_member(id));create policy workspace_update on public.workspaces for updateusing(public.workspace_role(id) in ('owner','admin'))with check(public.workspace_role(id) in ('owner','admin'));create policy members_select on public.workspace_members for selectusing(public.is_workspace_member(workspace_id));create policy books_select on public.books for selectusing(public.is_workspace_member(workspace_id));create policy books_insert on public.books for insertwith check(public.can_edit_workspace(workspace_id));create policy books_update on public.books for updateusing(public.can_edit_workspace(workspace_id))with check(public.can_edit_workspace(workspace_id));create policy chapters_select on public.chapters for selectusing(exists(select 1 from public.books bwhere b.id=book_id and public.is_workspace_member(b.workspace_id)));create policy chapters_write on public.chapters for allusing(exists(select 1 from public.books bwhere b.id=book_id and public.can_edit_workspace(b.workspace_id)))with check(exists(select 1 from public.books bwhere b.id=book_id and public.can_edit_workspace(b.workspace_id)));create policy doc_select on public.document_versions for selectusing(exists(select 1 from public.chapters c join public.books b on b.id=c.book_idwhere c.id=chapter_id and public.is_workspace_member(b.workspace_id)));create policy doc_insert on public.document_versions for insertwith check(exists(select 1 from public.chapters c join public.books b on b.id=c.book_idwhere c.id=chapter_id and public.can_edit_workspace(b.workspace_id)));create policy folders_select on public.folders for selectusing(public.is_workspace_member(workspace_id));create policy folders_write on public.folders for allusing(public.can_edit_workspace(workspace_id))with check(public.can_edit_workspace(workspace_id));create policy assets_select on public.assets for selectusing(public.is_workspace_member(workspace_id));create policy assets_write on public.assets for allusing(public.can_edit_workspace(workspace_id))with check(public.can_edit_workspace(workspace_id));create policy comments_select on public.comments for selectusing(public.is_workspace_member(workspace_id));create policy comments_insert on public.comments for insertwith check(public.is_workspace_member(workspace_id));create policy tasks_select on public.tasks for selectusing(public.is_workspace_member(workspace_id));create policy tasks_write on public.tasks for allusing(public.can_edit_workspace(workspace_id))with check(public.can_edit_workspace(workspace_id));create policy ai_job_select on public.ai_jobs for selectusing(public.is_workspace_member(workspace_id));create policy publishing_job_select on public.publishing_jobs for selectusing(exists(select 1 from public.books bwhere b.id=book_id and public.is_workspace_member(b.workspace_id)));create policy validation_select on public.publishing_validations for selectusing(exists(select 1 from public.publishing_jobs p join public.books b on b.id=p.book_idwhere p.id=publishing_job_id and public.is_workspace_member(b.workspace_id)));create policy credits_select on public.credit_ledger for selectusing(user_id=auth.uid());create policy usage_select on public.usage_events for selectusing(user_id=auth.uid());create policy referral_self on public.referral_codes for allusing(user_id=auth.uid()) with check(user_id=auth.uid());
+For production, replace broad ALL policies with explicit INSERT/UPDATE/DELETE policies as the API stabilizes. Add automated cross-tenant tests for every table and role.
+6. Storage Policy
+-- Private bucketinsert into storage.buckets(id,name,public)values('book-assets','book-assets',false)on conflict(id) do nothing;create policy asset_object_read on storage.objects for selectusing(bucket_id='book-assets' and exists( select 1 from public.assets a where a.storage_path=name and public.is_workspace_member(a.workspace_id)));-- Upload/delete are mediated by the API using signed URLs and authorization.-- Storage path:-- workspaces/{workspace_id}/assets/{asset_id}/v{version}/{safe_filename}
+7. Canonical Book Model JSON Schema
+{ "$schema":"https://json-schema.org/draft/2020-12/schema", "$id":"book-model.schema.json", "type":"object", "required":["schemaVersion","bookId","metadata","chapters","styleGuide","bookBible","assets"], "properties":{  "schemaVersion":{"type":"string","const":"1.0"},  "bookId":{"type":"string","format":"uuid"},  "metadata":{   "type":"object","required":["title","author","language"],   "properties":{    "title":{"type":"string","minLength":1},    "subtitle":{"type":"string"},"author":{"type":"string","minLength":1},    "language":{"type":"string"},"description":{"type":"string"},    "keywords":{"type":"array","items":{"type":"string"}},    "categories":{"type":"array","items":{"type":"string"}},    "isbn13":{"type":["string","null"]},"edition":{"type":["string","null"]}   },"additionalProperties":true  },  "styleGuide":{"type":"object","properties":{   "spellingVariant":{"type":"string"},"tone":{"type":"string"},   "rules":{"type":"array","items":{"type":"string"}}  }},  "bookBible":{"type":"object","required":["entities"],"properties":{   "entities":{"type":"array","items":{"type":"object",    "required":["id","type","name"],    "properties":{     "id":{"type":"string"},"type":{"type":"string"},     "name":{"type":"string"},"description":{"type":"string"},     "attributes":{"type":"object"},"sourceRefs":{"type":"array","items":{"type":"string"}},     "confidence":{"type":"number","minimum":0,"maximum":1}    },"additionalProperties":true   }}  }},  "chapters":{"type":"array","items":{"type":"object",   "required":["id","order","title","nodes"],   "properties":{    "id":{"type":"string","format":"uuid"},"order":{"type":"integer","minimum":0},    "title":{"type":"string"},    "nodes":{"type":"array","items":{"type":"object",     "required":["id","type"],     "properties":{      "id":{"type":"string"},      "type":{"type":"string","enum":["paragraph","heading","quote","list","listItem","image","caption","pageBreak","table","footnote","separator"]},      "text":{"type":"string"},"level":{"type":"integer","minimum":1,"maximum":6},      "attributes":{"type":"object"},"assetId":{"type":["string","null"]}     },"additionalProperties":true    }}   }  }},  "assets":{"type":"array","items":{"type":"object",   "required":["id","role"],"properties":{    "id":{"type":"string","format":"uuid"},"role":{"type":"string"},    "caption":{"type":"string"},"altText":{"type":"string"}   }  }} }, "additionalProperties":false}
+8. Document Operation Contract
+{ "operationId":"op_01", "type":"replace_text", "target":{"chapterId":"uuid","nodeId":"node-123"}, "payload":{"from":0,"to":42,"text":"replacement text"}, "source":"human", "sourceRef":null, "expectedVersion":12}
+Operation
+Payload
+insert_node
+parentId,index,node
+delete_node
+nodeId
+move_node
+nodeId,parentId,index
+replace_text
+nodeId,from,to,text
+set_attribute
+nodeId,key,value
+attach_asset
+nodeId,assetId,role
+detach_asset
+nodeId,assetId
+split_node
+nodeId,offset
+merge_nodes
+leftNodeId,rightNodeId
+9. OpenAPI Contract
+Use OpenAPI 3.1 as the source for generated API clients/types. The following core paths and schemas are mandatory.
+Method
+Path
+Purpose
+GET
+/v1/workspaces
+List visible workspaces
+POST
+/v1/workspaces
+Create workspace
+GET
+/v1/books
+List books
+POST
+/v1/books
+Create book
+GET
+/v1/books/{bookId}/chapters
+List chapters
+POST
+/v1/chapters/{chapterId}/operations
+Apply document operation
+POST
+/v1/assets/upload-url
+Create signed upload URL
+POST
+/v1/ai/jobs
+Create AI job
+GET
+/v1/ai/jobs/{jobId}
+Get AI job
+POST
+/v1/ai/suggestions/{id}/apply
+Apply suggestion
+POST
+/v1/publishing/validate
+Run preflight
+POST
+/v1/publishing/jobs
+Create publishing job
+GET
+/v1/usage
+Usage/credits
+POST
+/v1/billing/checkout
+Create checkout
+components: schemas:  CreateBookRequest:   type: object   required: [workspaceId,title,authorName]   properties:    workspaceId: {type: string, format: uuid}    title: {type: string, minLength: 1}    subtitle: {type: string}    authorName: {type: string, minLength: 1}    language: {type: string, default: en}    genre: {type: string}  CreateAiJobRequest:   type: object   required: [workspaceId,bookId,agentType,idempotencyKey]   properties:    workspaceId: {type: string, format: uuid}    bookId: {type: string, format: uuid}    agentType: {type: string}    input: {type: object}    idempotencyKey: {type: string}  DocumentOperation:   type: object   required: [operationId,type,target,payload,expectedVersion]   properties:    operationId: {type: string}    type: {type: string}    target: {type: object}    payload: {type: object}    source: {type: string, enum: [human,ai]}    sourceRef: {type: string}    expectedVersion: {type: integer}  ApiError:   type: object   required: [error]   properties:    error:     type: object     required: [code,message,requestId]     properties:      code: {type: string}      message: {type: string}      requestId: {type: string}      details: {type: object}
+Standard errors: 400 malformed, 401 unauthenticated, 403 unauthorized, 404 not visible/not found, 409 conflict/idempotency, 422 business validation, 429 rate limit, 500 internal, 503 dependency unavailable.
+10. Redis Contracts
+Queue
+Payload
+Rules
+jobs.ai
+jobId,workspaceId,bookId,agentType,inputRef,idempotencyKey,attempt
+At-least-once; idempotent
+jobs.document
+jobId,assetId,operation,inputPath,idempotencyKey,attempt
+Sandboxed worker
+jobs.render
+jobId,editionId,format,bookVersionId,idempotencyKey,attempt
+Deterministic output
+jobs.publishing
+jobId,editionId,channel,idempotencyKey,attempt
+External API retry rules
+jobs.embeddings
+bookId,versionId,chunkRefs,idempotencyKey
+Delete/re-index on version change
+jobs.notifications
+recipientId,type,payloadRef
+Throttled
+cache:book:{bookId}:summarycache:workspace:{workspaceId}:memberslock:render:{editionId}rate:user:{userId}:{route}progress:job:{jobId}
+Never put full manuscript text in Redis.
+Persist job state in PostgreSQL; Redis is transport.
+Use exponential backoff and a dead-letter queue.
+Use locks only around narrow critical sections.
+11. Qdrant Contracts
+Collection
+Payload filters
+Purpose
+book_chunks
+workspace_id,book_id,chapter_id,node_id,version_id
+Semantic manuscript retrieval
+book_bible
+workspace_id,book_id,bible_item_id,type
+Entity/fact retrieval
+style_memory
+workspace_id,book_id,source_ref,style_type
+Style examples
+community_posts
+community_id,post_id,author_id
+Community semantic discovery
+Point:{ "id":"stable-id", "vector":[...], "payload":{  "workspace_id":"uuid","book_id":"uuid","chapter_id":"uuid",  "node_id":"node-1","document_version_id":"uuid",  "text_hash":"sha256","language":"en","text":"retrieval text" }}
+Use cosine distance unless the selected embedding provider requires otherwise. Vector dimension is configuration, not business logic.
+Every user retrieval query must filter workspace_id and book_id. Deleted/obsolete versions must be removed from retrieval.
+12. AI Gateway and Agent Tool Schemas
+interface AgentRequest { agentType: AgentType; workspaceId: string; bookId?: string; chapterIds?: string[]; userInstruction?: string; contextPolicy: {  includeBookBible: boolean;  includeStyleGuide: boolean;  semanticTopK: number;  maxTokens: number; }; idempotencyKey: string;}interface AgentResult { jobId: string; status: "queued"|"running"|"succeeded"|"failed"; suggestions: Suggestion[]; diagnostics: Diagnostic[]; usage: {inputTokens:number; outputTokens:number; estimatedCostUsd:number};}
+Tool
+Input
+Purpose
+get_chapter
+chapterId
+Canonical structured chapter
+search_book
+query,topK,chapterIds[]
+Semantic retrieval
+get_book_bible
+types[],query
+Retrieve entities/facts
+get_style_guide
+none
+Retrieve style policy
+propose_edit
+chapterId,nodeId,operation,rationale,confidence
+Human-reviewable edit
+create_diagnostic
+severity,code,message,location
+Book quality finding
+get_asset
+assetId
+Read approved asset metadata
+Tool: propose_edit{ "name":"propose_edit", "input_schema":{  "type":"object",  "required":["chapterId","nodeId","operation","rationale"],  "properties":{   "chapterId":{"type":"string","format":"uuid"},   "nodeId":{"type":"string"},   "operation":{"type":"object"},   "rationale":{"type":"string"},   "confidence":{"type":"number","minimum":0,"maximum":1}  } }}
+12.1 Agent Rules
+Agent
+Read Context
+Allowed Output
+Proofreader
+Chapter + style
+Small suggestions
+Copy editor
+Chapter + style + retrieval
+Suggestions
+Consistency
+Book + Book Bible
+Diagnostics/suggestions
+Book Bible
+Book chunks
+Structured entity candidates
+Developmental
+Chapters + retrieval
+Report/diagnostics
+Metadata
+Book metadata + content
+Candidate metadata
+Illustration
+Brief + approved references
+Generation job
+Visual QA
+Rendered output
+Diagnostics
+Preflight explainer
+Deterministic findings
+Explanations only
+Default is read-only plus suggestion mode. Direct mutation requires an explicit deterministic operation after validation/approval.
+Manuscript content is untrusted input. Defend against prompt injection and do not expose arbitrary tools because text asks the agent to do so.
+13. Ingestion and Rendering Contracts
+Input
+Pipeline
+DOCX
+scan → parse → extract images → normalize → Book Model → import report
+EPUB
+sandbox unzip → validate → parse XHTML/CSS → normalize → Book Model
+TXT
+encoding detection → chapter heuristic/manual mapping → Book Model
+PDF
+text/OCR extraction → confidence warnings → manual QA → Book Model
+Upload→ malware/file checks→ immutable source asset→ parser→ intermediate representation→ canonical Book Model→ human/AI review→ EditionConfig→ EPUB/PDF renderer→ deterministic preflight→ visual QA→ immutable artifact
+Edition
+Core configuration
+Ebook
+flow mode, navigation, cover, metadata, image policy
+Print
+trim size, bleed, margins, typography, page numbering
+Channel
+channel, rule version, required metadata/package fields
+14. Publishing Adapter Contract
+interface PublishingAdapter { channel(): string; capabilities(): ChannelCapabilities; validate(input: ValidationInput): Promise<ValidationResult>; buildPackage(input: PackageInput): Promise<Artifact>; submit?(input: SubmissionInput): Promise<SubmissionResult>; getStatus?(jobId: string): Promise<SubmissionStatus>;}
+Channel
+Implementation strategy
+KDP
+Export + deterministic validator first; official submission integration only when supported
+Apple Books
+Package/export + supported delivery workflow
+Barnes & Noble
+Package/export + supported workflow
+Lulu
+Package/export + supported API/workflow
+Future channels
+Adapter + versioned rule registry
+Retailer rules must be verified against current official documentation at implementation/release time. Do not hard-code assumptions from this document as permanent requirements.
+15. Web UI Component Contracts
+Component
+Contract
+WorkspaceSwitcher
+workspaces,activeId; onChange
+BookTree
+chapters,activeId; onSelect,onReorder
+RichBookEditor
+document,selection,permissions; onOperation
+AiSidebar
+agents,suggestions,jobs; onRun,onApply,onReject
+CommentThread
+comments,currentUser; onReply,onResolve
+AssetBrowser
+folders,assets,permissions; onMove,onOpen,onUpload
+VersionTimeline
+versions; onCompare,onRestore
+BookBiblePanel
+entities,filters; onOpen
+PreflightPanel
+findings; onOpenLocation,onRerun
+EditionBuilder
+edition; onSave,onValidate,onRender
+PublishingCenter
+channels,jobs; onValidate,onPublish
+TeamTable
+members,roles; onInvite,onRoleChange
+CommunityFeed
+posts; onPost,onReact,onReport
+15.1 Web Page Map
+Page
+Primary responsibilities
+Dashboard
+Books, activity, tasks, usage
+Book Dashboard
+Health, chapters, AI, publishing
+Import
+Upload, parse, warnings, mapping
+Editor
+Structured editing, AI sidebar, comments, versions
+AI Command Center
+Agent runs, suggestions, diagnostics
+Book Bible
+Characters/facts/places/timeline
+Assets
+Folders, versions, permissions, usage
+Illustration/Cover Studio
+Briefs, generation, approvals
+Team/Tasks/Approvals
+Collaboration
+Community
+Discovery, communities, posts, moderation
+Referrals
+Attribution and credit ledger
+Edition Builder
+Ebook/print configuration
+Preflight/Preview
+Errors, warnings, visual output
+Publishing
+Channels, jobs, package/export
+Billing/Settings
+Plans, usage, security, preferences
+Admin
+Users, jobs, moderation, support, feature flags
+16. Flutter Contracts
+Screen
+MVP behavior
+Auth
+Supabase auth, session, reset
+Home
+Recent books, tasks, notifications
+Books
+List/filter/open
+Book Overview
+Health, progress, quick actions
+Reader/Editor
+Read, comment, lightweight edit
+AI Assistant
+Run job, review/apply/reject suggestions
+Assets
+Browse/upload/preview
+Tasks
+Assigned work and status
+Community
+Feed/posts/comments/reports
+Publishing
+Validation and job status
+Settings
+Account/preferences
+Mobile is review-first in MVP. Advanced layout, complex print controls and full desktop-grade publishing remain web-first.
+Generate Dart API models from OpenAPI; do not duplicate backend business rules in Flutter.
+17. Security Contracts
+Threat
+Required control
+Cross-tenant access
+RLS + API authorization + isolation tests
+Malicious files
+Sandbox + scanning + size/type limits
+Prompt injection
+Treat manuscript as data; restricted tools
+Credential theft
+Secrets manager + least privilege
+Referral abuse
+Qualified event + immutable ledger + anti-fraud
+Webhook forgery
+Signature validation
+Data loss
+Backups + immutable versions + restore tests
+Never log manuscript text, tokens, secrets or full signed URLs.
+Service-role workers must carry actor/workspace context and perform explicit resource checks even though RLS is bypassed.
+18. Billing, Credits and Usage
+Meter
+Examples
+AI credits
+Proofreading, copyediting, analysis
+Image credits
+Illustration/cover generation
+Rendering
+Large EPUB/PDF builds
+Storage
+Manuscript/assets
+Seats
+Team members
+Publishing
+Premium services if offered
+Credit changes are immutable ledger entries. Never update a balance without a corresponding ledger transaction.
+Referral rewards are issued by a server-side transaction after a qualifying event; duplicate events must be idempotent.
+19. Dependency-Ordered Engineering Tickets
+ID
+Ticket
+Priority
+T00
+Repo/bootstrap
+P0
+T01
+Typed environment/secrets
+P0
+T02
+Supabase core migrations
+P0
+T03
+Asset/collaboration/AI/community/billing migrations
+P0
+T04
+Indexes/RLS/isolation tests
+P0
+T05
+Storage/signed uploads/checksums
+P0
+T06
+Auth/session/API middleware
+P0
+T07
+OpenAPI source + generated clients
+P0
+T08
+Workspace/membership service
+P0
+T09
+Book/chapter/version service
+P0
+T10
+Book Model JSON Schema + operation engine
+P0
+T11
+DOCX ingestion
+P0
+T12
+EPUB ingestion
+P0
+T13
+TXT/PDF ingestion
+P1
+T14
+Web editor
+P0
+T15
+Optimistic concurrency/versioning
+P0
+T16
+AI gateway/provider abstraction
+P0
+T17
+Proofreader agent + evals
+P0
+T18
+Copy editor agent + evals
+P0
+T19
+Book Bible agent
+P1
+T20
+Qdrant/RAG
+P1
+T21
+Consistency agent
+P1
+T22
+Folder/asset UI
+P0
+T23
+Comments/tasks/approvals
+P1
+T24
+Edition model
+P0
+T25
+EPUB renderer
+P0
+T26
+PDF renderer
+P0
+T27
+Deterministic preflight
+P0
+T28
+Preview/visual QA
+P1
+T29
+Publishing adapters
+P1
+T30
+Stripe subscriptions/webhooks
+P0
+T31
+Credit ledger
+P1
+T32
+Community MVP/moderation
+P1
+T33
+Referral attribution/rewards
+P1
+T34
+Flutter foundation
+P0
+T35
+Flutter book/review
+P1
+T36
+Flutter assets/community
+P1
+T37
+Admin console
+P0
+T38
+Critical E2E
+P0
+T39
+Security hardening
+P0
+T40
+Load/performance
+P1
+T41
+Production deployment
+P0
+T42
+Beta/launch
+P0
+20. Critical Acceptance Criteria
+Ticket
+Done when
+T04
+Two unrelated users cannot read/write each other's workspace data; role matrix tests pass.
+T05
+Uploads use signed URLs, checksum is stored, original is immutable.
+T10
+Book Model validates; all document operations are typed and tested.
+T11/T12
+Fixtures import deterministically; malformed files fail safely.
+T15
+Stale expectedVersion returns 409 without data loss.
+T16
+Provider can be swapped behind gateway; malformed AI output is rejected.
+T17/T18
+Agents produce reviewable suggestions; golden evaluations are green.
+T20
+Qdrant retrieval is always filtered by workspace/book.
+T25/T26
+Same model/config/renderer version produces reproducible artifacts.
+T27
+Every rule has fixtures; LLM is not compliance authority.
+T30
+Stripe signatures verified and duplicate webhooks are idempotent.
+T31
+Credit ledger is atomic; duplicate rewards cannot occur.
+T39
+Security suite passes tenant isolation, upload and prompt-injection tests.
+21. Claude Code Prompt Contract
+You are implementing ticket TXX from /docs/build-plan.md.Before editing:1. Read PRD, SOW, MASTER_BUILD_SPEC, ARCHITECTURE, DATABASE, API_SPEC,   SECURITY and the ticket.2. Inspect existing code and preserve established patterns.3. Do not redesign the Canonical Book Model or tenant boundary.Implement only TXX.Requirements:- typed code and schema validation- migration for schema changes; never edit applied migrations- tests for all new behavior- authorization and tenant isolation- idempotency for async/financial operations- observability for jobs and external calls- no secrets- no silent AI content mutation- no invented retailer requirementsRun:format → lint → typecheck → unit → integration → relevant E2E/security.Return:files changed, tests/results, assumptions, risks, follow-up ticket.Do not start the next ticket.
+21.1 Ticket Dependency Graph
+T00 → T01 → T02 → T03 → T04 → T05 → T06 → T07                         ↓                         T08 → T09 → T10 → T11/T12                                      ↓                                      T14 → T15                                      ↓                         T16 → T17 → T18 → T19 → T20 → T21                                      ↓                         T22 → T23                         T24 → T25 → T26 → T27 → T28 → T29                         T30 → T31                         T32 → T33                         T34 → T35 → T36                         T37                         ↓              T38 → T39 → T40 → T41 → T42
+22. CI/CD Gates
+Pull Request:format → lint → typecheck → unit → integration → OpenAPI validation→ JSON Schema validation → migration dry-run → security tests → buildStaging:E2E → document fixtures → AI evals → rendering fixtures → smoke testsProduction:approved migration → deploy → health checks → smoke test → monitoring
+23. AI Evaluation Contract
+Evaluation
+Measure
+Proofreading
+Correction precision, false-positive rate, accepted suggestions
+Copy editing
+Meaning preservation + style adherence
+Consistency
+Entity/fact conflict precision
+Book Bible
+Entity extraction accuracy and source grounding
+RAG
+Retrieval relevance + correct source attribution
+Safety
+Prompt-injection containment and tool restrictions
+Cost
+Tokens, latency and estimated cost per 1k words
+Maintain a golden manuscript corpus. Every model/prompt/tool change runs the regression suite before deployment.
+24. Production Definition of Done
+All P0 tickets complete.
+Critical E2E journeys pass.
+Tenant isolation suite passes.
+Upload/import/export fixture suite passes.
+AI evaluation thresholds documented and passing.
+EPUB/PDF rendering and preflight fixtures pass.
+Billing/webhooks/credits are idempotent.
+Backups and restore have been tested.
+Monitoring, alerting and dead-letter queues are active.
+Privacy/terms/data deletion/export workflows are prepared.
+Flutter release builds are reproducible.
+Incident and support runbooks exist.
+Human approval is required for irreversible publishing, billing and security actions.
+25. Recommended Final Repository Documents
+docs/PRD.mddocs/SOW.mddocs/MASTER_BUILD_SPEC.mddocs/ARCHITECTURE.mddocs/DATABASE.mddocs/API_SPEC.yamldocs/BOOK_MODEL.schema.jsondocs/AI_TOOLS.schema.jsondocs/REDIS_CONTRACTS.mddocs/QDRANT_CONTRACTS.mddocs/SECURITY.mddocs/PUBLISHING_RULES.mddocs/AI_EVALS.mddocs/CLAUDE_CODE_WORKFLOW.mdsupabase/migrations/0001_extensions.sqlsupabase/migrations/0002_core.sqlsupabase/migrations/0003_assets_collaboration.sqlsupabase/migrations/0004_ai.sqlsupabase/migrations/0005_community.sqlsupabase/migrations/0006_billing_publishing.sqlsupabase/migrations/0007_indexes.sqlsupabase/migrations/0008_rls.sql
+This is the implementation contract to place in the repository before asking Claude Code to build. The next step should be turning these contracts into the actual repository files and then executing T00 → T42 under CI.

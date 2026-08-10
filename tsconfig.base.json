@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@bookworm/types": ["packages/types/src"],
+      "@bookworm/book-model": ["packages/book-model/src"],
+      "@bookworm/api-client": ["packages/api-client/src"],
+      "@bookworm/validation": ["packages/validation/src"],
+      "@bookworm/ui": ["packages/ui/src"]
+    }
+  }
+}
