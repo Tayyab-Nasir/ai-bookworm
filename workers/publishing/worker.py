@@ -8,7 +8,12 @@ Stub only — Redis consumer implemented in Step 10.
 
 
 def run() -> None:
-    """Consume jobs.publishing and call channel adapters. Not implemented yet."""
+    """Consume jobs.publishing and call channel adapters. Not implemented yet.
+
+    Graceful shutdown + dead-letter live in workers/ops.py:
+        from ops import run_loop
+        run_loop("jobs.publishing", process_job, fetch=redis_blpop)
+    """
     raise NotImplementedError("Publishing worker lands in Step 10")
 
 

@@ -14,6 +14,10 @@ import { teamRoutes } from "./routes/team.js";
 import { billingRoutes, stripeWebhookRoutes } from "./routes/billing.js";
 import { communityRoutes } from "./routes/community.js";
 import { referralRoutes } from "./routes/referrals.js";
+import { adminRoutes } from "./routes/admin.js";
+import { healthRoutes } from "./routes/health.js";
+import { adminPlugin } from "./plugins/admin.js";
+import { redactObject } from "./lib/redact.js";
 import type { StripeFactory } from "./lib/stripe.js";
 
 export async function buildApp(
@@ -23,12 +27,19 @@ export async function buildApp(
   const env = loadEnv();
   const app = Fastify({ logger: { level: env.LOG_LEVEL } });
 
-  app.get("/health", async () => ({ status: "ok" }));
+  // Scrub logs (MASTER-BUILD-SPEC 17): never log manuscript text, tokens,
+  // secrets, signed URLs. Applies to Fastify's own req/res log lines.
+  app.addHook("onSend", async (req) => {
+    req.log.info({ req: redactObject({ method: req.method, url: req.url, headers: req.headers }) }, "request");
+  });
+
+  healthRoutes(app, supabaseFactory);
 
   await app.register(async (v1) => {
     await v1.register(errorHandlerPlugin);
     await v1.register(makeAuthPlugin(supabaseFactory));
     await v1.register(idempotencyPlugin);
+    await v1.register(adminPlugin);
     workspaceRoutes(v1);
     bookRoutes(v1);
     chapterRoutes(v1);
@@ -39,6 +50,7 @@ export async function buildApp(
     billingRoutes(v1, opts);
     communityRoutes(v1);
     referralRoutes(v1);
+    adminRoutes(v1);
     stripeWebhookRoutes(v1); // own JSON parser keeps raw body for sig check
   }, { prefix: "/v1" });
 

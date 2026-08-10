@@ -35,8 +35,11 @@ def run() -> None:
     """Consume jobs.document from Redis (at-least-once).
 
     TODO(Step 5+): wire Redis consumer — BLPOP jobs.document, dedupe on
-    idempotencyKey, call process_job(), store result on the asset row,
-    ack/retry on attempt, dead-letter after max attempts.
+    idempotencyKey, call process_job(), store result on the asset row.
+    Graceful shutdown + dead-letter live in workers/ops.py:
+        from ops import run_loop
+        run_loop("jobs.document", process_job, fetch=redis_blpop)
+    Failed after MAX_ATTEMPTS -> dead-letter record (see ops.dead_letter).
     """
     raise NotImplementedError("Redis queue wiring TODO; use process_job() directly")
 

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { postCreditEntry } from "../lib/credits.js";
+import { requireAdmin } from "../lib/admin.js";
 
 // Reward amounts in credits. ponytail: constants, not config — move to a
 // referral_programs table when marketing needs to tune without a deploy.
@@ -34,14 +35,6 @@ function requireServiceToken(req: FastifyRequest) {
     token.length === expected.length &&
     timingSafeEqual(Buffer.from(token), Buffer.from(expected));
   if (!ok) throw new AppError(401, "invalid service token");
-}
-
-// ponytail: admin = user id in ADMIN_USER_IDS env (comma-separated). Ceiling:
-// env-only, no role table. Upgrade path: a profiles.is_admin flag or admin
-// console RBAC when the ops team outgrows an env var.
-function requireAdmin(req: FastifyRequest) {
-  const admins = (process.env.ADMIN_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  if (!admins.includes(req.userId)) throw new AppError(403, "admin required");
 }
 
 // Post the referral reward. Idempotent: the credit_ledger (source,

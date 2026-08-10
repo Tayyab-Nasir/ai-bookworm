@@ -294,6 +294,28 @@ export function createClient(opts: ClientOptions) {
     listCreditLedger: () => call<{ entries: CreditLedgerEntry[] }>("GET", "/v1/referrals/ledger"),
     qualifyReferral: (referredUserId: string, serviceToken: string) =>
       callService<{ qualified: boolean; held?: boolean; rewarded?: boolean }>("/v1/referrals/qualify", { referredUserId }, serviceToken),
+    // Step 14: admin console (403 for non-admins)
+    adminList: (tab: "users" | "jobs" | "flags" | "support" | "audit") => {
+      const paths: Record<string, string> = {
+        users: "/v1/admin/users", jobs: "/v1/admin/jobs", flags: "/v1/admin/flags",
+        support: "/v1/admin/support", audit: "/v1/admin/audit",
+      };
+      const keys: Record<string, string> = {
+        users: "users", jobs: "jobs", flags: "flags", support: "tickets", audit: "entries",
+      };
+      return call<Record<string, unknown[]>>( "GET", paths[tab]).then((d) => d[keys[tab]] ?? []);
+    },
+    adminSuspendUser: (userId: string) =>
+      call<{ userId: string; suspended: boolean }>("POST", `/v1/admin/users/${userId}/suspend`),
+    adminRetryJob: (type: "ai" | "publishing", jobId: string) =>
+      call<{ job: unknown }>("POST", `/v1/admin/jobs/${type}/${jobId}/retry`),
+    adminToggleFlag: (key: string, enabled: boolean) =>
+      request<{ flag: unknown }>("PUT", `/v1/admin/flags/${key}`, { authorization: `Bearer ${opts.token}` }, { enabled }),
+    adminUpdateTicket: (ticketId: string, status: string) =>
+      call<{ ticket: unknown }>("POST", `/v1/admin/support/${ticketId}`, { status }),
+    adminUsageSummary: (days = 30) =>
+      call<{ days: number; orgs: { organizationId: string; total: number; byMeter: Record<string, number> }[] }>(
+        "GET", `/v1/admin/usage/summary?days=${days}`),
   };
 }
 
