@@ -1,2 +1,4 @@
-// Canonical Book Model + document operations engine — implemented in Step 4.
-export {};
+export * from "./schema.js";
+export * from "./operations.js";
+export * from "./engine.js";
+export * from "./validate.js";
