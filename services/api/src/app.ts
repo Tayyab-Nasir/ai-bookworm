@@ -8,6 +8,9 @@ import { workspaceRoutes } from "./routes/workspaces.js";
 import { bookRoutes } from "./routes/books.js";
 import { chapterRoutes } from "./routes/chapters.js";
 import { assetRoutes } from "./routes/assets.js";
+import { folderRoutes } from "./routes/folders.js";
+import { collabRoutes } from "./routes/collab.js";
+import { teamRoutes } from "./routes/team.js";
 
 export async function buildApp(supabaseFactory: SupabaseFactory = defaultSupabaseFactory): Promise<FastifyInstance> {
   const env = loadEnv();
@@ -23,6 +26,9 @@ export async function buildApp(supabaseFactory: SupabaseFactory = defaultSupabas
     bookRoutes(v1);
     chapterRoutes(v1);
     assetRoutes(v1);
+    folderRoutes(v1);
+    collabRoutes(v1);
+    teamRoutes(v1);
   }, { prefix: "/v1" });
 
   return app;

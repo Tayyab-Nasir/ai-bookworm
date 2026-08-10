@@ -25,3 +25,18 @@ export async function requireWorkspaceEditor(supabase: SupabaseClient, workspace
   if (!EDIT_ROLES.has(role)) throw new AppError(403, "role cannot edit");
   return role;
 }
+
+export async function requireWorkspaceAdmin(supabase: SupabaseClient, workspaceId: string, userId: string) {
+  const role = await requireWorkspaceMember(supabase, workspaceId, userId);
+  if (role !== "owner" && role !== "admin") throw new AppError(403, "role cannot manage members");
+  return role;
+}
+
+// Reviewers may comment and approve/reject; writers et al. are already editors.
+const APPROVE_ROLES = new Set([...EDIT_ROLES, "reviewer"]);
+
+export async function requireWorkspaceApprover(supabase: SupabaseClient, workspaceId: string, userId: string) {
+  const role = await requireWorkspaceMember(supabase, workspaceId, userId);
+  if (!APPROVE_ROLES.has(role)) throw new AppError(403, "role cannot approve");
+  return role;
+}

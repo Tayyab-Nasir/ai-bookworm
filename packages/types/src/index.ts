@@ -150,6 +150,7 @@ export interface Asset extends Timestamps {
   size_bytes: number;
   checksum: string;
   status: AssetStatus;
+  deleted_at?: string | null;
   created_by: string;
 }
 
