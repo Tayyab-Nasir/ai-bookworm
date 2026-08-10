@@ -1,10 +1,8 @@
-import Fastify from "fastify";
 import { loadEnv } from "@bookworm/config";
+import { buildApp } from "./app.js";
 
 const env = loadEnv();
-const app = Fastify({ logger: { level: env.LOG_LEVEL } });
-
-app.get("/health", async () => ({ status: "ok" }));
+const app = await buildApp();
 
 app.listen({ port: env.API_PORT, host: "0.0.0.0" }).catch((err) => {
   app.log.error(err);

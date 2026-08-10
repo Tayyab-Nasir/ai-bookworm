@@ -8,6 +8,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@bookworm/types": "*"
+  },
   "devDependencies": {
     "typescript": "^5.5.4"
   }

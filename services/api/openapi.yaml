@@ -1,0 +1,409 @@
+openapi: 3.1.0
+info:
+  title: AI Bookworm API
+  version: 0.1.0
+  description: Mandatory paths/schemas per MASTER-BUILD-SPEC section 9. All endpoints versioned under /v1.
+servers:
+  - url: http://localhost:3001
+tags:
+  - name: v1
+paths:
+  /v1/workspaces:
+    get:
+      tags: [v1]
+      operationId: listWorkspaces
+      summary: List visible workspaces
+      responses:
+        "200":
+          description: Visible workspaces
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspaces]
+                properties:
+                  workspaces:
+                    type: array
+                    items:
+                      type: object
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: createWorkspace
+      summary: Create workspace (org + workspace + member rows)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateWorkspaceRequest" }
+      responses:
+        "201":
+          description: Created workspace
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/books:
+    get:
+      tags: [v1]
+      operationId: listBooks
+      summary: List books
+      parameters:
+        - name: workspaceId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Books in workspace
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [books]
+                properties:
+                  books:
+                    type: array
+                    items:
+                      type: object
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: createBook
+      summary: Create book
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateBookRequest" }
+      responses:
+        "201":
+          description: Created book
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Book" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/chapters:
+    get:
+      tags: [v1]
+      operationId: listChapters
+      summary: List chapters
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Chapters in book
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [chapters]
+                properties:
+                  chapters:
+                    type: array
+                    items:
+                      type: object
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/chapters/{chapterId}/operations:
+    post:
+      tags: [v1]
+      operationId: applyChapterOperation
+      summary: Apply document operation (optimistic concurrency via expectedVersion)
+      parameters:
+        - name: chapterId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DocumentOperation" }
+      responses:
+        "200":
+          description: New document version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version]
+                properties:
+                  version: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/assets/upload-url:
+    post:
+      tags: [v1]
+      operationId: createAssetUploadUrl
+      summary: Create signed upload URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspaceId, filename, mimeType, sizeBytes]
+              properties:
+                workspaceId: { type: string, format: uuid }
+                filename: { type: string, minLength: 1 }
+                mimeType: { type: string, minLength: 1 }
+                sizeBytes: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Signed upload URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [uploadUrl, assetId, storagePath]
+                properties:
+                  uploadUrl: { type: string }
+                  assetId: { type: string, format: uuid }
+                  storagePath: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/ai/jobs:
+    post:
+      tags: [v1]
+      operationId: createAiJob
+      summary: Create AI job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAiJobRequest" }
+      responses:
+        "201":
+          description: Created AI job
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/ai/jobs/{jobId}:
+    get:
+      tags: [v1]
+      operationId: getAiJob
+      summary: Get AI job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: AI job
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/ai/suggestions/{id}/apply:
+    post:
+      tags: [v1]
+      operationId: applyAiSuggestion
+      summary: Apply suggestion
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Suggestion applied
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/publishing/validate:
+    post:
+      tags: [v1]
+      operationId: runPreflight
+      summary: Run deterministic preflight validation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bookId]
+              properties:
+                bookId: { type: string, format: uuid }
+                editionId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Preflight report
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/publishing/jobs:
+    post:
+      tags: [v1]
+      operationId: createPublishingJob
+      summary: Create publishing job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bookId, channel, idempotencyKey]
+              properties:
+                bookId: { type: string, format: uuid }
+                editionId: { type: string, format: uuid }
+                channel: { type: string }
+                request: { type: object }
+                idempotencyKey: { type: string }
+      responses:
+        "201":
+          description: Created publishing job
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /v1/usage:
+    get:
+      tags: [v1]
+      operationId: getUsage
+      summary: Usage/credits
+      parameters:
+        - name: workspaceId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Usage summary
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/billing/checkout:
+    post:
+      tags: [v1]
+      operationId: createBillingCheckout
+      summary: Create checkout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspaceId, planId]
+              properties:
+                workspaceId: { type: string, format: uuid }
+                planId: { type: string }
+      responses:
+        "200":
+          description: Checkout session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checkoutUrl]
+                properties:
+                  checkoutUrl: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    CreateBookRequest:
+      type: object
+      required: [workspaceId, title, authorName]
+      properties:
+        workspaceId: { type: string, format: uuid }
+        title: { type: string, minLength: 1 }
+        subtitle: { type: string }
+        authorName: { type: string, minLength: 1 }
+        language: { type: string, default: en }
+        genre: { type: string }
+    CreateAiJobRequest:
+      type: object
+      required: [workspaceId, bookId, agentType, idempotencyKey]
+      properties:
+        workspaceId: { type: string, format: uuid }
+        bookId: { type: string, format: uuid }
+        agentType: { type: string }
+        input: { type: object }
+        idempotencyKey: { type: string }
+    DocumentOperation:
+      type: object
+      required: [operationId, type, target, payload, expectedVersion]
+      properties:
+        operationId: { type: string }
+        type: { type: string }
+        target: { type: object }
+        payload: { type: object }
+        source: { type: string, enum: [human, ai] }
+        sourceRef: { type: string }
+        expectedVersion: { type: integer }
+    ApiError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            requestId: { type: string }
+            details: { type: object }
+    CreateWorkspaceRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        orgName: { type: string, minLength: 1 }
+        slug: { type: string }
+    Workspace:
+      type: object
+      required: [id, organization_id, name, slug, created_by, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        organization_id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Book:
+      type: object
+      required: [id, workspace_id, title, author_name, language, status, created_by, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        title: { type: string }
+        subtitle: { type: string, nullable: true }
+        author_name: { type: string }
+        language: { type: string }
+        genre: { type: string, nullable: true }
+        status: { type: string }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+  responses:
+    Error:
+      description: Standard error envelope
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+security:
+  - bearerAuth: []

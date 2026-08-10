@@ -7,13 +7,20 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
     "@bookworm/config": "*",
-    "fastify": "^4.28.1"
+    "@bookworm/types": "*",
+    "@bookworm/validation": "*",
+    "@supabase/supabase-js": "^2.45.0",
+    "fastify": "^4.28.1",
+    "fastify-plugin": "^4.5.1",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/node": "^26.2.0",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"
   }
