@@ -1,0 +1,28 @@
+{
+  "name": "its vs it's",
+  "input": "The dog wagged it's tail whenever the children came home.",
+  "styleGuide": {"spellingVariant": "en-US", "tone": "neutral", "rules": []},
+  "expectedSuggestionCount": [1, 1],
+  "mustFind": ["it's tail"],
+  "mockResponse": {
+    "toolCalls": [
+      {
+        "name": "propose_edit",
+        "input": {
+          "chapterId": "00000000-0000-0000-0000-000000000001",
+          "nodeId": "n1",
+          "operation": {
+            "operationId": "op-1",
+            "type": "replace_text",
+            "target": {"chapterId": "00000000-0000-0000-0000-000000000001", "nodeId": "n1"},
+            "payload": {"from": 15, "to": 19, "text": "its"},
+            "expectedVersion": 1
+          },
+          "rationale": "Possessive 'its' takes no apostrophe.",
+          "confidence": 0.98
+        }
+      }
+    ],
+    "usage": {"inputTokens": 115, "outputTokens": 35}
+  }
+}

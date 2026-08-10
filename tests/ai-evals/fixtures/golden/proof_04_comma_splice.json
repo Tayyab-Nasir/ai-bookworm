@@ -1,0 +1,28 @@
+{
+  "name": "comma splice",
+  "input": "The storm passed quickly, the harbor was calm again by noon.",
+  "styleGuide": {"spellingVariant": "en-US", "tone": "neutral", "rules": []},
+  "expectedSuggestionCount": [1, 2],
+  "mustFind": ["quickly, the"],
+  "mockResponse": {
+    "toolCalls": [
+      {
+        "name": "propose_edit",
+        "input": {
+          "chapterId": "00000000-0000-0000-0000-000000000001",
+          "nodeId": "n1",
+          "operation": {
+            "operationId": "op-1",
+            "type": "replace_text",
+            "target": {"chapterId": "00000000-0000-0000-0000-000000000001", "nodeId": "n1"},
+            "payload": {"from": 23, "to": 24, "text": ". The"},
+            "expectedVersion": 1
+          },
+          "rationale": "Comma splice between independent clauses.",
+          "confidence": 0.95
+        }
+      }
+    ],
+    "usage": {"inputTokens": 112, "outputTokens": 34}
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "doubled word",
+  "input": "She walked walked down the narrow lane as the sun set.",
+  "styleGuide": {"spellingVariant": "en-US", "tone": "neutral", "rules": []},
+  "expectedSuggestionCount": [1, 2],
+  "mustFind": ["walked walked"],
+  "mockResponse": {
+    "toolCalls": [
+      {
+        "name": "propose_edit",
+        "input": {
+          "chapterId": "00000000-0000-0000-0000-000000000001",
+          "nodeId": "n1",
+          "operation": {
+            "operationId": "op-1",
+            "type": "replace_text",
+            "target": {"chapterId": "00000000-0000-0000-0000-000000000001", "nodeId": "n1"},
+            "payload": {"from": 4, "to": 18, "text": "walked"},
+            "expectedVersion": 1
+          },
+          "rationale": "Doubled word 'walked'.",
+          "confidence": 0.99
+        }
+      }
+    ],
+    "usage": {"inputTokens": 120, "outputTokens": 40}
+  }
+}

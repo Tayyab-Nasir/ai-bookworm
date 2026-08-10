@@ -1,0 +1,11 @@
+{
+  "name": "clean text (false-positive check)",
+  "input": "Mara tightened her grip on the railing and watched the ferry slide into its berth.",
+  "styleGuide": {"spellingVariant": "en-US", "tone": "neutral", "rules": []},
+  "expectedSuggestionCount": [0, 0],
+  "mustFind": [],
+  "mockResponse": {
+    "toolCalls": [],
+    "usage": {"inputTokens": 110, "outputTokens": 5}
+  }
+}

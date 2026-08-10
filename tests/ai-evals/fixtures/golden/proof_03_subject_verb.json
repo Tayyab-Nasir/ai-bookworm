@@ -1,0 +1,28 @@
+{
+  "name": "subject-verb agreement",
+  "input": "The basket of apples were sitting on the kitchen counter all morning.",
+  "styleGuide": {"spellingVariant": "en-US", "tone": "neutral", "rules": []},
+  "expectedSuggestionCount": [1, 1],
+  "mustFind": ["were sitting"],
+  "mockResponse": {
+    "toolCalls": [
+      {
+        "name": "propose_edit",
+        "input": {
+          "chapterId": "00000000-0000-0000-0000-000000000001",
+          "nodeId": "n1",
+          "operation": {
+            "operationId": "op-1",
+            "type": "replace_text",
+            "target": {"chapterId": "00000000-0000-0000-0000-000000000001", "nodeId": "n1"},
+            "payload": {"from": 21, "to": 25, "text": "was"},
+            "expectedVersion": 1
+          },
+          "rationale": "Singular subject 'basket' takes 'was'.",
+          "confidence": 0.97
+        }
+      }
+    ],
+    "usage": {"inputTokens": 118, "outputTokens": 36}
+  }
+}
