@@ -16,10 +16,14 @@ AGENTS = {}
 
 
 def _register():
+    from agents.bookbible import BookBibleAgent as _B
+    from agents.consistency import ConsistencyAgent as _C
     from agents.proofreader import ProofreaderAgent as _P
 
     AGENTS[_P.agent_type] = _P
     AGENTS[CopyEditorAgent.agent_type] = CopyEditorAgent
+    AGENTS[_B.agent_type] = _B
+    AGENTS[_C.agent_type] = _C
 
 
 _register()

@@ -29,6 +29,7 @@ class AgentInput(BaseModel):
     chapterIds: list[str] = []
     chapters: dict[str, dict] = {}  # inline chapter content (until Postgres wiring)
     styleGuide: dict = {}
+    bookBible: list[dict] = []  # approved book_bible_items (until Postgres wiring)
     userInstruction: str | None = None
 
 
@@ -71,7 +72,9 @@ def create_job(req: CreateAiJobRequest) -> dict:
     }
 
     provider = get_provider()  # mock when no API key configured
-    executor = InMemoryExecutor(chapters=req.input.chapters, style_guide=req.input.styleGuide)
+    executor = InMemoryExecutor(
+        chapters=req.input.chapters, style_guide=req.input.styleGuide, bible=req.input.bookBible
+    )
     try:
         agent = get_agent(req.agentType, provider, executor, default_model(provider.name))
         result = agent.run(

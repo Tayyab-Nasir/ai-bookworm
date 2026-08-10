@@ -167,23 +167,7 @@ class BaseAgent:
 
         for call in completion.tool_calls:
             payload = self.validate_tool_call(call)
-            if call["name"] == "propose_edit":
-                suggestions.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "chapterId": payload["chapterId"],
-                        "nodeId": payload["nodeId"],
-                        "operation": payload["operation"],
-                        "rationale": payload["rationale"],
-                        "confidence": payload.get("confidence"),
-                        "status": "pending",
-                    }
-                )
-            elif call["name"] == "create_diagnostic":
-                diagnostics.append(payload)
-            else:
-                # read tools would re-query the executor; single-turn loop ignores them
-                pass
+            self.handle_tool_payload(call["name"], payload, suggestions, diagnostics)
 
         return AgentResult(
             jobId=job_id,
@@ -192,6 +176,24 @@ class BaseAgent:
             diagnostics=diagnostics,
             usage=usage,
         )
+
+    def handle_tool_payload(self, name: str, payload: dict, suggestions: list, diagnostics: list) -> None:
+        """Route a validated tool payload into the result. Read tools are ignored
+        in the single-turn loop; subclasses may extend for agent-specific tools."""
+        if name == "propose_edit":
+            suggestions.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "chapterId": payload["chapterId"],
+                    "nodeId": payload["nodeId"],
+                    "operation": payload["operation"],
+                    "rationale": payload["rationale"],
+                    "confidence": payload.get("confidence"),
+                    "status": "pending",
+                }
+            )
+        elif name == "create_diagnostic":
+            diagnostics.append(payload)
 
     def tool_schemas(self) -> list[dict]:
         from tools import TOOL_SCHEMAS
