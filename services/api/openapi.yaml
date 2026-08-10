@@ -914,6 +914,228 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/communities:
+    get:
+      tags: [v1]
+      operationId: listCommunities
+      summary: Discover communities (public + memberships)
+      responses:
+        "200": { description: Communities, content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: createCommunity
+      summary: Create a community (slug unique; creator becomes owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, slug]
+              properties:
+                name: { type: string }
+                slug: { type: string, pattern: "^[a-z0-9-]+$" }
+                description: { type: string }
+                visibility: { type: string, enum: [private, public, unlisted], default: public }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { type: object } } } }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/communities/{id}/join:
+    post:
+      tags: [v1]
+      operationId: joinCommunity
+      summary: Join a community (public open; private needs owner add)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "201": { description: Joined }
+        "200": { description: Already a member }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/communities/{id}/posts:
+    get:
+      tags: [v1]
+      operationId: listCommunityPosts
+      summary: Feed (public readable; removed posts moderator-only)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Posts, content: { application/json: { schema: { type: object } } } }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: createCommunityPost
+      summary: Create a post (members only; 10 posts/hour/user)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                title: { type: string }
+                body: { type: string }
+      responses:
+        "201": { description: Created }
+        "403": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/posts/{postId}/comments:
+    get:
+      tags: [v1]
+      operationId: listPostComments
+      parameters:
+        - { name: postId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Comments }
+    post:
+      tags: [v1]
+      operationId: createPostComment
+      summary: Comment on a post (members only)
+      parameters:
+        - { name: postId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [body], properties: { body: { type: string } } }
+      responses:
+        "201": { description: Created }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/posts/{postId}/reactions:
+    post:
+      tags: [v1]
+      operationId: toggleReaction
+      summary: Toggle a reaction on a post (members only)
+      parameters:
+        - { name: postId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [like, love, insightful, celebrate] }
+      responses:
+        "200": { description: New reaction state }
+  /v1/reports:
+    post:
+      tags: [v1]
+      operationId: createReport
+      summary: Report a post or comment (rate limited)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entityType, entityId, reason]
+              properties:
+                entityType: { type: string, enum: [post, comment] }
+                entityId: { type: string, format: uuid }
+                reason: { type: string }
+      responses:
+        "201": { description: Created }
+        "429": { $ref: "#/components/responses/Error" }
+  /v1/moderation/queue:
+    get:
+      tags: [v1]
+      operationId: moderationQueue
+      summary: Open reports in communities the caller moderates
+      responses:
+        "200": { description: Open reports }
+  /v1/moderation/{reportId}/{action}:
+    post:
+      tags: [v1]
+      operationId: moderateReport
+      summary: Moderate a report (remove post | dismiss)
+      parameters:
+        - { name: reportId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: action, in: path, required: true, schema: { type: string, enum: [remove, dismiss] } }
+      responses:
+        "200": { description: Resolved report }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/referrals/code:
+    get:
+      tags: [v1]
+      operationId: getReferralCode
+      summary: Get (or auto-create) the caller's referral code
+      responses:
+        "200": { description: Referral code }
+  /v1/referrals:
+    get:
+      tags: [v1]
+      operationId: listReferrals
+      summary: Referrals where the caller is referrer or referred
+      responses:
+        "200": { description: Referrals }
+  /v1/referrals/ledger:
+    get:
+      tags: [v1]
+      operationId: listCreditLedger
+      summary: Caller's immutable credit ledger
+      responses:
+        "200": { description: Ledger entries }
+  /v1/referrals/claim:
+    post:
+      tags: [v1]
+      operationId: claimReferral
+      summary: Attribute the caller to a referral code at signup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [code], properties: { code: { type: string } } }
+      responses:
+        "201": { description: Attributed }
+        "200": { description: Already attributed }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { description: Self-referral / inactive code }
+  /v1/referrals/qualify:
+    post:
+      tags: [internal]
+      operationId: qualifyReferral
+      summary: Qualify a referral after a qualified action (service token). Anti-fraud may hold the reward for review. Idempotent.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [referredUserId], properties: { referredUserId: { type: string, format: uuid } } }
+      responses:
+        "200": { description: Qualified (rewarded, held, or duplicate no-op) }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/referrals/{id}/review:
+    post:
+      tags: [v1]
+      operationId: reviewReferral
+      summary: Admin review of a held referral (approve posts the reward once)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [action], properties: { action: { type: string, enum: [approve, reject] } } }
+      responses:
+        "200": { description: Reviewed }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/referrals/{id}/reverse:
+    post:
+      tags: [v1]
+      operationId: reverseReferral
+      summary: Admin reversal (fraud/chargeback) — compensating negative ledger entry
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Reversed }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     bearerAuth:

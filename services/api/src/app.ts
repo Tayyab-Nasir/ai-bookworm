@@ -12,6 +12,8 @@ import { folderRoutes } from "./routes/folders.js";
 import { collabRoutes } from "./routes/collab.js";
 import { teamRoutes } from "./routes/team.js";
 import { billingRoutes, stripeWebhookRoutes } from "./routes/billing.js";
+import { communityRoutes } from "./routes/community.js";
+import { referralRoutes } from "./routes/referrals.js";
 import type { StripeFactory } from "./lib/stripe.js";
 
 export async function buildApp(
@@ -35,6 +37,8 @@ export async function buildApp(
     collabRoutes(v1);
     teamRoutes(v1);
     billingRoutes(v1, opts);
+    communityRoutes(v1);
+    referralRoutes(v1);
     stripeWebhookRoutes(v1); // own JSON parser keeps raw body for sig check
   }, { prefix: "/v1" });
 

@@ -80,6 +80,76 @@ export interface Plan {
   entitlements_json: Record<string, unknown>;
 }
 
+// Step 12: community + referrals
+export interface Community {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  visibility: "private" | "public" | "unlisted";
+  created_at: string;
+}
+
+export interface CommunityPost {
+  id: string;
+  community_id: string;
+  author_id: string;
+  title: string | null;
+  body: string;
+  status: string;
+  created_at: string;
+}
+
+export interface CommunityComment {
+  id: string;
+  post_id: string;
+  author_id: string;
+  body: string;
+  created_at: string;
+}
+
+export interface Report {
+  id: string;
+  reporter_id: string;
+  entity_type: string;
+  entity_id: string;
+  reason: string;
+  status: "open" | "actioned" | "dismissed";
+  created_at: string;
+}
+
+export interface ReferralCode {
+  id: string;
+  user_id: string;
+  code: string;
+  status: string;
+  created_at: string;
+}
+
+export interface Referral {
+  id: string;
+  referrer_id: string;
+  referred_user_id: string | null;
+  code_id: string;
+  status: "attributed" | "qualified" | "rewarded" | "held" | "rejected" | "reversed";
+  flagged: boolean;
+  flag_reason: string | null;
+  qualified_at: string | null;
+  created_at: string;
+}
+
+export interface CreditLedgerEntry {
+  id: number;
+  user_id: string;
+  source: string;
+  amount: number;
+  balance_after: number;
+  reference_type: string | null;
+  reference_id: string | null;
+  created_at: string;
+}
+
 export function createClient(opts: ClientOptions) {
   async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown): Promise<T> {
     if (body !== undefined) {
@@ -195,6 +265,35 @@ export function createClient(opts: ClientOptions) {
     // Service-to-service only: requires x-service-token, not a user JWT.
     deductCredits: (body: { userId: string; workspaceId?: string | null; organizationId?: string | null; meter: string; amount: number; jobId: string }, serviceToken: string) =>
       callService<{ usage: unknown; entry: unknown }>("/v1/credits/deduct", body, serviceToken),
+    // Step 12: community
+    listCommunities: () => call<{ communities: Community[] }>("GET", "/v1/communities"),
+    createCommunity: (body: { name: string; slug: string; description?: string; visibility?: Community["visibility"] }) =>
+      call<Community>("POST", "/v1/communities", body),
+    joinCommunity: (communityId: string) =>
+      call<{ communityId: string; role: string }>("POST", `/v1/communities/${communityId}/join`),
+    listCommunityPosts: (communityId: string) =>
+      call<{ posts: CommunityPost[]; role: string | null }>("GET", `/v1/communities/${communityId}/posts`),
+    createCommunityPost: (communityId: string, body: { title?: string; body: string }) =>
+      call<CommunityPost>("POST", `/v1/communities/${communityId}/posts`, body),
+    listPostComments: (postId: string) =>
+      call<{ comments: CommunityComment[] }>("GET", `/v1/posts/${postId}/comments`),
+    createPostComment: (postId: string, body: { body: string }) =>
+      call<CommunityComment>("POST", `/v1/posts/${postId}/comments`, body),
+    toggleReaction: (postId: string, kind: string) =>
+      call<{ postId: string; kind: string; active: boolean }>("POST", `/v1/posts/${postId}/reactions`, { kind }),
+    createReport: (body: { entityType: "post" | "comment"; entityId: string; reason: string }) =>
+      call<Report>("POST", "/v1/reports", body),
+    moderationQueue: () => call<{ reports: Report[] }>("GET", "/v1/moderation/queue"),
+    moderateReport: (reportId: string, action: "remove" | "dismiss") =>
+      call<Report>("POST", `/v1/moderation/${reportId}/${action}`),
+    // Step 12: referrals
+    getReferralCode: () => call<ReferralCode>("GET", "/v1/referrals/code"),
+    claimReferral: (code: string) =>
+      call<{ referral: Referral; alreadyAttributed?: boolean }>("POST", "/v1/referrals/claim", { code }),
+    listReferrals: () => call<{ referrals: Referral[] }>("GET", "/v1/referrals"),
+    listCreditLedger: () => call<{ entries: CreditLedgerEntry[] }>("GET", "/v1/referrals/ledger"),
+    qualifyReferral: (referredUserId: string, serviceToken: string) =>
+      callService<{ qualified: boolean; held?: boolean; rewarded?: boolean }>("/v1/referrals/qualify", { referredUserId }, serviceToken),
   };
 }
 
