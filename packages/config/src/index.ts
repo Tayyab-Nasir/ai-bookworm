@@ -13,6 +13,8 @@ const envSchema = z.object({
   DEFAULT_AI_MODEL: z.string().default("claude-sonnet-4-6"),
   STRIPE_SECRET_KEY: z.string().optional().default(""),
   STRIPE_WEBHOOK_SECRET: z.string().optional().default(""),
+  STRIPE_PRICE_IDS_JSON: z.string().optional().default("{}"),
+  SERVICE_AUTH_TOKEN: z.string().optional().default(""),
   SENTRY_DSN: z.string().optional().default(""),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional().default(""),
   API_PORT: z.coerce.number().int().positive().default(3001),

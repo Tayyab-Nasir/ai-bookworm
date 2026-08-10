@@ -18,6 +18,8 @@ export function makeAuthPlugin(supabaseFactory: SupabaseFactory) {
   return fp(async (app: FastifyInstance) => {
     app.decorate("supabaseFactory", supabaseFactory);
     app.addHook("preHandler", async (req) => {
+      // Webhook (Stripe-signed) and service-token routes do their own auth.
+      if (req.url.startsWith("/v1/webhooks/") || (req.routeOptions.config as { serviceAuth?: boolean } | undefined)?.serviceAuth) return;
       const header = req.headers.authorization;
       if (!header?.startsWith("Bearer ")) throw new AppError(401, "missing bearer token");
       const token = header.slice(7);

@@ -71,9 +71,17 @@ export class ApiClientError extends Error {
   }
 }
 
+export interface Plan {
+  id: string;
+  name: string;
+  billing_period: string;
+  price_cents: number;
+  currency: string;
+  entitlements_json: Record<string, unknown>;
+}
+
 export function createClient(opts: ClientOptions) {
-  async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const headers: Record<string, string> = { authorization: `Bearer ${opts.token}` };
+  async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown): Promise<T> {
     if (body !== undefined) {
       headers["content-type"] = "application/json";
       if (method === "POST") headers["idempotency-key"] = opts.idempotencyKey?.() ?? crypto.randomUUID();
@@ -90,6 +98,11 @@ export function createClient(opts: ClientOptions) {
     }
     return json;
   }
+
+  const call = <T>(method: string, path: string, body?: unknown) =>
+    request<T>(method, path, { authorization: `Bearer ${opts.token}` }, body);
+  const callService = <T>(path: string, body: unknown, serviceToken: string) =>
+    request<T>("POST", path, { "x-service-token": serviceToken }, body);
 
   return {
     listWorkspaces: () => call<{ workspaces: Workspace[] }>("GET", "/v1/workspaces"),
@@ -171,10 +184,17 @@ export function createClient(opts: ClientOptions) {
       call<Record<string, unknown>>("POST", "/v1/publishing/validate", body),
     createPublishingJob: (body: { bookId: string; editionId?: string; channel: string; request?: Record<string, unknown>; idempotencyKey: string }) =>
       call<PublishingJob>("POST", "/v1/publishing/jobs", body),
-    getUsage: (workspaceId: string) =>
-      call<Record<string, unknown>>("GET", `/v1/usage?workspaceId=${encodeURIComponent(workspaceId)}`),
-    createBillingCheckout: (body: { workspaceId: string; planId: string }) =>
-      call<{ checkoutUrl: string }>("POST", "/v1/billing/checkout", body),
+    getUsage: (organizationId: string) =>
+      call<{ entitlements: unknown; usage: Record<string, number>; creditBalance: number }>(
+        "GET", `/v1/usage?organizationId=${encodeURIComponent(organizationId)}`),
+    listPlans: () => call<{ plans: Plan[] }>("GET", "/v1/plans"),
+    createBillingCheckout: (body: { organizationId: string; planId: string; successUrl: string; cancelUrl: string }) =>
+      call<{ checkoutUrl: string; sessionId: string }>("POST", "/v1/billing/checkout", body),
+    createBillingPortal: (body: { organizationId: string; returnUrl: string }) =>
+      call<{ portalUrl: string }>("POST", "/v1/billing/portal", body),
+    // Service-to-service only: requires x-service-token, not a user JWT.
+    deductCredits: (body: { userId: string; workspaceId?: string | null; organizationId?: string | null; meter: string; amount: number; jobId: string }, serviceToken: string) =>
+      callService<{ usage: unknown; entry: unknown }>("/v1/credits/deduct", body, serviceToken),
   };
 }
 

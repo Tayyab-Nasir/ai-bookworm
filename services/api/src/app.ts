@@ -11,8 +11,13 @@ import { assetRoutes } from "./routes/assets.js";
 import { folderRoutes } from "./routes/folders.js";
 import { collabRoutes } from "./routes/collab.js";
 import { teamRoutes } from "./routes/team.js";
+import { billingRoutes, stripeWebhookRoutes } from "./routes/billing.js";
+import type { StripeFactory } from "./lib/stripe.js";
 
-export async function buildApp(supabaseFactory: SupabaseFactory = defaultSupabaseFactory): Promise<FastifyInstance> {
+export async function buildApp(
+  supabaseFactory: SupabaseFactory = defaultSupabaseFactory,
+  opts: { stripeFactory?: StripeFactory } = {},
+): Promise<FastifyInstance> {
   const env = loadEnv();
   const app = Fastify({ logger: { level: env.LOG_LEVEL } });
 
@@ -29,6 +34,8 @@ export async function buildApp(supabaseFactory: SupabaseFactory = defaultSupabas
     folderRoutes(v1);
     collabRoutes(v1);
     teamRoutes(v1);
+    billingRoutes(v1, opts);
+    stripeWebhookRoutes(v1); // own JSON parser keeps raw body for sig check
   }, { prefix: "/v1" });
 
   return app;

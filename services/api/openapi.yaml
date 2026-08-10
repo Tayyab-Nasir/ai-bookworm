@@ -780,6 +780,140 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /v1/plans:
+    get:
+      tags: [v1]
+      operationId: listPlans
+      summary: List subscription plans
+      responses:
+        "200":
+          description: Plans
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [plans]
+                properties:
+                  plans: { type: array, items: { $ref: "#/components/schemas/Plan" } }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/billing/checkout:
+    post:
+      tags: [v1]
+      operationId: createBillingCheckout
+      summary: Create Stripe checkout session (org admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organizationId, planId, successUrl, cancelUrl]
+              properties:
+                organizationId: { type: string, format: uuid }
+                planId: { type: string, format: uuid }
+                successUrl: { type: string, format: uri }
+                cancelUrl: { type: string, format: uri }
+      responses:
+        "201":
+          description: Checkout session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  checkoutUrl: { type: string }
+                  sessionId: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/billing/portal:
+    post:
+      tags: [v1]
+      operationId: createBillingPortal
+      summary: Create Stripe customer portal session (org admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [organizationId, returnUrl]
+              properties:
+                organizationId: { type: string, format: uuid }
+                returnUrl: { type: string, format: uri }
+      responses:
+        "200":
+          description: Portal session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { portalUrl: { type: string } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/usage:
+    get:
+      tags: [v1]
+      operationId: getUsage
+      summary: Current-month usage, entitlements, and credit balance
+      parameters:
+        - { name: organizationId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Usage summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entitlements: { type: object }
+                  usage: { type: object, additionalProperties: { type: number } }
+                  creditBalance: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/credits/deduct:
+    post:
+      tags: [internal]
+      operationId: deductCredits
+      summary: Service-to-service credit deduction (x-service-token, not user JWT)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, meter, amount, jobId]
+              properties:
+                userId: { type: string, format: uuid }
+                workspaceId: { type: string, format: uuid, nullable: true }
+                organizationId: { type: string, format: uuid, nullable: true }
+                meter: { type: string }
+                amount: { type: integer, minimum: 1 }
+                jobId: { type: string, format: uuid }
+      responses:
+        "201": { description: Deduction posted, content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/webhooks/stripe:
+    post:
+      tags: [internal]
+      operationId: stripeWebhook
+      summary: Stripe webhook (signature-verified, idempotent by event id)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Event received (duplicate events are no-ops) }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
 components:
   securitySchemes:
     bearerAuth:
@@ -847,6 +981,16 @@ components:
         created_by: { type: string, format: uuid }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+    Plan:
+      type: object
+      required: [id, name, billing_period, price_cents, currency, entitlements_json]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        billing_period: { type: string }
+        price_cents: { type: integer }
+        currency: { type: string }
+        entitlements_json: { type: object }
     Book:
       type: object
       required: [id, workspace_id, title, author_name, language, status, created_by, created_at, updated_at]
