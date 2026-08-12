@@ -37,10 +37,10 @@ class JobRequest(BaseModel):
 
 
 def _job_path(key: str) -> Path:
-    safe = "".join(c for c in key if c.isalnum() or c in "-_")
-    if not safe:
+    # reject (not strip): stripping silently aliases distinct keys (e.g. "../../evil" -> "evil")
+    if not key or not all(c.isalnum() or c in "-_" for c in key):
         raise HTTPException(422, "idempotencyKey must be alphanumeric/-/_, non-empty")
-    return _JOBS_DIR / f"{safe}.json"
+    return _JOBS_DIR / f"{key}.json"
 
 
 @app.get("/health")

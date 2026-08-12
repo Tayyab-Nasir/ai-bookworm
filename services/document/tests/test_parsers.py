@@ -164,8 +164,12 @@ def test_pdf_low_confidence_path():
 
 def test_http_422_on_corrupt():
     from fastapi.testclient import TestClient
-    from main import app
     import base64
+    # Drop any cached `main` (collides across services in combined pytest runs)
+    # so this service's own main.py is imported fresh.
+    sys.modules.pop("main", None)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from main import app
     client = TestClient(app)
     r = client.post("/parse", json={
         "assetId": "a1", "format": "epub",

@@ -1,10 +1,28 @@
-# AI Bookworm
+# AI Bookworm — AI-Powered Book Publishing SaaS
 
-AI-assisted book publishing SaaS. Monorepo per `docs/MASTER-BUILD-SPEC.txt`; build order per `docs/PLAN.md`.
+A production-ready multi-tenant SaaS platform where authors and publishing teams can:
+- Upload or create manuscripts (DOCX, EPUB, TXT, PDF)
+- Improve them with AI (proofreading, copy editing, Book Bible, consistency)
+- Manage assets, folders, versions with approval workflows
+- Generate creative materials (covers, illustrations via AI)
+- Produce professional editions (EPUB3, PDF with print layout options)
+- Validate against retailer rules (KDP, Apple Books, B&N, Lulu)
+- Export or publish through supported channels
 
-Architecture rules: Supabase/PostgreSQL is the source of truth; Redis is transient (queues/cache/locks); Qdrant is a derived retrieval index. Originals are immutable; AI produces validated suggestions, never silent overwrites.
+## Tech Stack
 
-## Structure
+| Layer | Technology |
+|-------|------------|
+| Database | Supabase PostgreSQL |
+| Cache/Queue | Redis |
+| Vector Search | Qdrant |
+| API | TypeScript + Fastify |
+| Web | Next.js 15 + React 19 + Tiptap |
+| AI Services | Python FastAPI |
+| Mobile | Flutter (iOS/Android) |
+| Billing | Stripe |
+
+## Project Structure
 
 - `apps/web` — Next.js/React web app (editor shell lands in Step 6)
 - `apps/mobile` — Flutter mobile companion (Step 13)

@@ -14,11 +14,14 @@
     "@bookworm/config": "*",
     "@bookworm/types": "*",
     "@bookworm/validation": "*",
-    "@supabase/supabase-js": "^2.45.0",
-    "fastify": "^4.28.1",
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/formbody": "^9.0.0",
+    "@fastify/jwt": "^10.2.1",
+    "@supabase/supabase-js": "^2.112.3",
+    "fastify": "^4.29.1",
     "fastify-plugin": "^4.5.1",
-    "stripe": "^22.4.0",
-    "zod": "^3.23.8"
+    "stripe": "^22.5.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
