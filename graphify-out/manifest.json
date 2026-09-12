@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789188806.6754484,
-    "seen": 1789189416.8529632,
-    "ast_hash": "040694d60ce55fed0385eccdc8846c07",
+    "mtime": 1789189664.3123927,
+    "seen": 1789189723.1663063,
+    "ast_hash": "1e017992a29360933b7ea828be34060c",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2346,9 +2346,9 @@
     "semantic_hash": ""
   },
   "docs/PROJECT_MAP.md": {
-    "mtime": 1789188883.1136963,
-    "seen": 1789189416.8529632,
-    "ast_hash": "d856a5a15a40830fae30c5fe46f3df78",
+    "mtime": 1789189652.3854768,
+    "seen": 1789189723.1663063,
+    "ast_hash": "c40fe70c7f1002dc704dfa33a49f253a",
     "semantic_hash": ""
   },
   "docs/SNAPOTTER_EVALUATION.md": {
