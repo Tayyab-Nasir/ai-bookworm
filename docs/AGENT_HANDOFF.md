@@ -19,12 +19,48 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+The authorized live initialization is now complete on Supabase project
+`cyhqtwndadlyzpeatxws`: all 42 repository migrations are installed. The newest
+two migrations create a safe profile row for every Auth identity, harden an
+advisor-reported function search path, remove a duplicate index, and enforce
+zero text/image generation allowance without an explicit paid entitlement.
+The live function definitions were read back and confirm zero fallback. No seed
+plans, test users, payments, provider calls, publishing submissions or customer
+content were created. Remaining advisor notices are the public `citext`
+extension plus intentionally private no-policy service tables and eight
+authenticated, internally-authorized SECURITY DEFINER RPCs; review before any
+change rather than revoking them blindly.
+
+OpenAI is now the only production-default generator. Text uses the Responses
+API with `gpt-6-astra`; images default to `gpt-image-2.5-sunburst`; audiobook
+configuration targets `gpt-4o-mini-tts`. Current official model-specific text
+and image estimates replace the stale generic GPT rate. Mock remains explicit
+for tests. No OpenAI key is configured, so no live generation or spend was
+performed. Audiobook synthesis is configured but not yet implemented as a
+durable product workflow.
+
+Google OAuth code and callback regression coverage pass, and the live Auth
+profile trigger is installed. Google sign-in remains unavailable because the
+Supabase Google provider is disabled until the operator creates one Web OAuth
+client and stores its ID/secret in Supabase. Exact setup is in
+`docs/GOOGLE_OAUTH_SETUP.md`; customers use their normal Google accounts and do
+not create credentials.
+
+The full shared tree is committed and pushed to
+`codex/live-platform-checkpoint-20260912` at `5038791`. The local remote no
+longer embeds a credential. Full `npm run verify` passes: 171 API, 54 web, 42
+migrations/29 SQL suites, 156 services, 8 E2E, 30 security, load smoke and mock
+evals; the isolated production web build passes with 27 routes. This is a
+checkpoint, not market-readiness: Google/OpenAI credentials, paid plan pricing,
+native Storage/scanner/provider acceptance, observability/backups, audiobook,
+translation, mobile completion and author beta remain open.
+
 Community creation now uses caller-authenticated `create_community_with_owner`
 to save community and owner membership atomically. Migration
 `20260912120000_community_creation.sql` and its SQL test cover validation,
 anonymous/missing-JWT denial, duplicate slug and injected last-insert rollback.
-40 migrations/27 SQL suites,12 community/referral API tests and API TypeScript
-pass locally. No live migration. This is atomicity, not durable retry replay.
+42 migrations/29 SQL suites, community/referral API tests and API TypeScript
+pass locally. The migration is live. This is atomicity, not durable retry replay.
 
 Community directory and discussion UI have been upgraded. Discussion browser
 passed before final stale-moderator-state cleanup; latest TypeScript passes.
