@@ -286,6 +286,7 @@ export class ApiClientError extends Error {
 export interface Plan {
   id: string;
   name: string;
+  is_active: boolean;
   billing_period: string;
   price_cents: number;
   currency: string;

@@ -1,8 +1,12 @@
 -- supabase/seed/001_plans.sql
-insert into public.plans (name, billing_period, price_cents, currency, entitlements_json)
+-- Only the zero-generation account tier is published by default. Paid plan
+-- economics are placeholders until retail prices, provider costs, and margin
+-- limits are approved and matching Stripe Price IDs are configured.
+insert into public.plans (name, is_active, billing_period, price_cents, currency, entitlements_json)
 values
   (
     'free',
+    true,
     'monthly',
     0,
     'USD',
@@ -10,6 +14,7 @@ values
   ),
   (
     'pro',
+    false,
     'monthly',
     1900,
     'USD',
@@ -17,6 +22,7 @@ values
   ),
   (
     'team',
+    false,
     'monthly',
     4900,
     'USD',

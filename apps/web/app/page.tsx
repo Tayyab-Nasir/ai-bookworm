@@ -89,7 +89,7 @@ function Header() {
           href="/signup"
           className="glass-solid metal-shine hidden min-h-11 items-center rounded-full px-5 text-[13px] font-semibold text-black sm:inline-flex"
         >
-          <span className="relative z-10">Start for Free</span>
+          <span className="relative z-10">Create your account</span>
         </Link>
         <button
           type="button"
@@ -134,7 +134,7 @@ function Header() {
           className={`glass-solid metal-shine mt-auto flex min-h-14 w-full items-center justify-between rounded-full px-5 text-base font-semibold text-black transition-[opacity,transform] duration-700 ease-[cubic-bezier(0.32,0.72,0,1)] ${menuOpen ? "translate-y-0 opacity-100" : "translate-y-8 opacity-0"}`}
           style={{ transitionDelay: menuOpen ? "340ms" : "0ms" }}
         >
-          <span className="relative z-10">Start for Free</span>
+          <span className="relative z-10">Create your account</span>
           <span className="relative z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/10">
             <ArrowIcon diagonal />
           </span>
@@ -348,7 +348,7 @@ export default function LandingPage() {
                 href="/signup"
                 className="glass-solid metal-shine group flex min-h-14 w-full items-center justify-between rounded-full pl-6 pr-2.5 text-[15px] font-semibold text-black outline-none transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-4 focus-visible:ring-offset-black sm:w-auto sm:min-w-[190px]"
               >
-                <span className="relative z-10">Start for Free</span>
+                <span className="relative z-10">Create your account</span>
                 <span className="relative z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/[0.08] transition-transform duration-500 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:translate-x-0.5 group-hover:-translate-y-0.5">
                   <ArrowIcon diagonal />
                 </span>

@@ -106,7 +106,7 @@ function storeWithMembership(role = "owner"): Store {
     idemKeys: new Set(),
     tables: {
       organization_members: [{ organization_id: ORG, user_id: "user-1", role, status: "active" }],
-      plans: [{ id: PLAN, name: "pro", entitlements_json: { ai_credits_monthly: 100, seats: 2 } }],
+      plans: [{ id: PLAN, name: "pro", is_active: true, price_cents: 1900, entitlements_json: { ai_credits_monthly: 100, seats: 2 } }],
     },
   };
 }
@@ -184,7 +184,7 @@ test("webhook: checkout.session.completed maps to active; deleted -> canceled", 
 });
 
 // ---- checkout / plans --------------------------------------------------------
-test("checkout: org admin only; 503 without stripe; creates session with price", async () => {
+test("checkout: org admin only; creates session with a published plan price", async () => {
   // non-admin
   const memberApp = await appWith(storeWithMembership("member"));
   const r1 = await memberApp.inject({ method: "POST", url: "/v1/billing/checkout", headers: { authorization: "Bearer good", "idempotency-key": "chk-member" }, payload: { organizationId: ORG, planId: PLAN, successUrl: "https://x.test/ok", cancelUrl: "https://x.test/no" } });
@@ -204,6 +204,39 @@ test("checkout: org admin only; 503 without stripe; creates session with price",
   const unsafe = await app.inject({ method: "POST", url: "/v1/billing/checkout", headers: { authorization: "Bearer good", "idempotency-key": "chk-unsafe" }, payload: { organizationId: ORG, planId: PLAN, successUrl: "https://evil.test/ok", cancelUrl: "https://x.test/no" } });
   assert.equal(unsafe.statusCode, 422);
   assert.equal(calls.length, 1);
+  await app.close();
+});
+
+test("plans: lists only published plans; checkout rejects a draft before Stripe", async () => {
+  const store = storeWithMembership();
+  store.tables.plans.push({
+    id: "66666666-6666-6666-6666-666666666666",
+    name: "draft",
+    is_active: false,
+    price_cents: 9900,
+    entitlements_json: {},
+  });
+  const calls: unknown[] = [];
+  const fakeStripe = {
+    checkout: { sessions: { create: async (payload: unknown) => { calls.push(payload); return { id: "cs_draft", url: "https://checkout.stripe.test/cs_draft" }; } } },
+    billingPortal: { sessions: { create: async () => ({ url: "https://portal.test/p1" }) } },
+  };
+  const app = await appWith(store, fakeStripe);
+
+  const listed = await app.inject({ method: "GET", url: "/v1/plans", headers: auth });
+  assert.equal(listed.statusCode, 200);
+  assert.deepEqual(listed.json().plans.map((plan: { id: string }) => plan.id), [PLAN]);
+
+  store.tables.plans[0].is_active = false;
+  const rejected = await app.inject({
+    method: "POST",
+    url: "/v1/billing/checkout",
+    headers: { authorization: "Bearer good", "idempotency-key": "chk-draft" },
+    payload: { organizationId: ORG, planId: PLAN, successUrl: "https://x.test/ok", cancelUrl: "https://x.test/no" },
+  });
+  assert.equal(rejected.statusCode, 422);
+  assert.equal(rejected.json().error.message, "plan is not available for checkout");
+  assert.equal(calls.length, 0);
   await app.close();
 });
 

@@ -84,7 +84,7 @@ export function SiteHeader() {
           href="/signup"
           className="glass-solid metal-shine hidden min-h-11 items-center rounded-full px-5 text-[13px] font-semibold text-black sm:inline-flex"
         >
-          <span className="relative z-10">Start for Free</span>
+          <span className="relative z-10">Create your account</span>
         </Link>
         <button
           type="button"
@@ -125,7 +125,7 @@ export function SiteHeader() {
           className={`glass-solid metal-shine mt-auto flex min-h-14 w-full items-center justify-between rounded-full px-5 text-base font-semibold text-black transition-[opacity,transform] duration-700 ease-[cubic-bezier(0.32,0.72,0,1)] ${menuOpen ? "translate-y-0 opacity-100" : "translate-y-8 opacity-0"}`}
           style={{ transitionDelay: menuOpen ? "340ms" : "0ms" }}
         >
-          <span className="relative z-10">Start for Free</span>
+          <span className="relative z-10">Create your account</span>
           <span className="relative z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/10">
             <ArrowIcon diagonal />
           </span>

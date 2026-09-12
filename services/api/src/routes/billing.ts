@@ -84,7 +84,7 @@ export function billingRoutes(app: FastifyInstance, opts: { stripeFactory?: Stri
 
   app.get("/plans", async () => {
     const svc = app.supabaseFactory();
-    const { data, error } = await svc.from("plans").select("*");
+    const { data, error } = await svc.from("plans").select("*").eq("is_active", true);
     if (error) throw new AppError(500, (error as { message: string }).message);
     return { plans: data };
   });
@@ -96,6 +96,17 @@ export function billingRoutes(app: FastifyInstance, opts: { stripeFactory?: Stri
     await requireOrgAdmin(app.supabaseFactory(req.userToken), organizationId, req.userId);
     const safeSuccessUrl = requireWebReturnUrl(successUrl);
     const safeCancelUrl = requireWebReturnUrl(cancelUrl);
+    const svc = app.supabaseFactory();
+    const { data: plan, error: planError } = await svc
+      .from("plans")
+      .select("id,is_active,price_cents")
+      .eq("id", planId)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (planError) throw new AppError(500, (planError as { message: string }).message);
+    if (!plan || Number((plan as { price_cents?: number }).price_cents) <= 0) {
+      throw new AppError(422, "plan is not available for checkout", { planId });
+    }
     const price = planPriceIds()[planId];
     if (!price) throw new AppError(422, "no Stripe price configured for plan", { planId });
     const stripe = stripeFactory();
