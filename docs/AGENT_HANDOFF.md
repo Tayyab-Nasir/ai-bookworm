@@ -68,6 +68,15 @@ zero. No key, provider call, spend, or live migration was made by this work.
 Before live use: approve/apply that migration, set real plan entitlement,
 configure and supervise the worker, and perform live quality/cost acceptance.
 
+The author dashboard now uses one tenant-scoped aggregate endpoint instead of
+demo counters or one browser request per book. It shows real books, live asset
+and cover/illustration counts, open/failed jobs, ready retailer packages, recent
+allowlisted job/activity rows, ledger balance, and all four paid generation
+meters. Sales are explicitly `not_connected` with null totals until an
+authorized retailer/import source exists; package creation is never reported as
+a sale. Billing and dashboard share zero-default text, image, audio, and
+translation entitlements.
+
 Google OAuth code and callback regression coverage pass, and the live Auth
 profile trigger is installed. Google sign-in remains unavailable because the
 Supabase Google provider is disabled until the operator creates one Web OAuth
@@ -78,8 +87,8 @@ not create credentials.
 The full shared tree is committed and pushed to
 `codex/live-platform-checkpoint-20260912`; durable audiobook implementation is
 saved at `e14c556`. The local remote no
-longer embeds a credential. The current local full `npm run verify` passes: 179
-API, 55 web, 46 migrations/32 SQL suites, 156 services, 8 E2E, 30 security,
+longer embeds a credential. The current local full `npm run verify` passes: 181
+API, 58 web, 46 migrations/32 SQL suites, 156 services, 8 E2E, 30 security,
 load smoke and mock evals; the isolated production web build passes with the
 translation route. This is a
 checkpoint, not market-readiness: Google/OpenAI credentials, paid plan pricing,

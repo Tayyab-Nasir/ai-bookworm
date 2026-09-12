@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import type { DashboardOverview, DashboardRecentJob } from "@bookworm/api-client";
 import type { Book, Workspace } from "@bookworm/types";
 import { apiClient } from "./api";
 
@@ -16,15 +17,38 @@ function statusClass(status: Book["status"]) {
   return "border-white/10 bg-white/[0.05] text-[#c7c7c7]";
 }
 
+function jobStatusClass(status: DashboardRecentJob["status"]) {
+  if (status === "succeeded") return "bg-emerald-400/10 text-emerald-100";
+  if (status === "failed" || status === "cancelled") return "bg-red-400/10 text-red-100";
+  return "bg-amber-300/10 text-amber-100";
+}
+
+export function dashboardMeter(overview: DashboardOverview | null, meter: string, quota: string) {
+  const used = Number(overview?.usage.usage[meter] ?? 0);
+  const limit = Number(overview?.usage.entitlements.entitlements[quota] ?? 0);
+  return { used, limit, percent: limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0 };
+}
+
+export function activityLabel(eventType: string) {
+  return ({
+    audiobook_segment_generated: "Audiobook segment generated",
+    translation_project_adopted: "Translated draft created",
+    publishing_package_created: "Retailer package prepared",
+    image_generated: "Image generated",
+    manuscript_import_completed: "Manuscript import completed",
+    ai_suggestion_applied: "AI suggestion applied",
+  } as Record<string, string>)[eventType] ?? eventType.replaceAll("_", " ");
+}
+
 export default function AuthorDashboard() {
   const api = apiClient();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [books, setBooks] = useState<Book[]>([]);
+  const [overview, setOverview] = useState<DashboardOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [credits, setCredits] = useState<number | null>(null);
 
   const load = useCallback(async (requestedId?: string) => {
     setLoading(true);
@@ -37,18 +61,15 @@ export default function AuthorDashboard() {
       if (!selected) {
         setBooks([]);
         setWorkspace(null);
-        setCredits(null);
+        setOverview(null);
         return;
       }
 
       window.localStorage.setItem("bookworm:workspaceId", selected.id);
-      const [bookResult, usageResult] = await Promise.all([
-        api.listBooks(selected.id),
-        api.getUsage(selected.organization_id).catch(() => null),
-      ]);
+      const result = await api.getDashboardOverview(selected.id);
       setWorkspace(selected);
-      setBooks(bookResult.books);
-      setCredits(usageResult?.creditBalance ?? null);
+      setBooks(result.books);
+      setOverview(result);
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not load your library.");
@@ -75,6 +96,12 @@ export default function AuthorDashboard() {
   const activeBooks = books.filter((book) => book.status !== "archived").length;
   const inProduction = books.filter((book) => ["draft", "in_review"].includes(book.status)).length;
   const createHref = workspace?.id ? `/books/new?ws=${encodeURIComponent(workspace.id)}` : "/books/new";
+  const usageMeters = [
+    ["Writing & editing", "ai_credits", "ai_credits_monthly"],
+    ["Illustrations", "image_credits", "image_credits_monthly"],
+    ["Audiobook", "audio_credits", "audio_credits_monthly"],
+    ["Translation", "translation_credits", "translation_credits_monthly"],
+  ].map(([label, meter, quota]) => ({ label, ...dashboardMeter(overview, meter, quota) }));
 
   return (
     <main className="mx-auto max-w-7xl px-4 pb-16 pt-8 sm:px-6 lg:px-8 lg:pt-12">
@@ -124,11 +151,12 @@ export default function AuthorDashboard() {
         </div>
       )}
 
-      <section aria-label="Workspace summary" className="mt-8 grid gap-3 sm:grid-cols-3">
+      <section aria-label="Workspace summary" className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {[
-          ["Active books", loading ? "…" : String(activeBooks), "Books you can take forward"],
-          ["In production", loading ? "…" : String(inProduction), "Drafts and review-ready books"],
-          ["Available credits", credits === null ? "…" : String(credits), credits === null ? "Usage is not available yet" : "Available for AI work · manage billing"],
+          ["Active books", loading ? "…" : String(overview?.summary.activeBooks ?? activeBooks), `${overview?.summary.publishedBooks ?? 0} published`],
+          ["In production", loading ? "…" : String(overview?.summary.inProductionBooks ?? inProduction), "Drafts and review-ready books"],
+          ["Open jobs", loading ? "…" : String(overview?.summary.pendingJobs ?? 0), overview?.summary.failedJobs ? `${overview.summary.failedJobs} need attention` : "Generation and publishing pipeline"],
+          ["Library assets", loading ? "…" : String(overview?.summary.assets ?? 0), `${overview?.summary.visualAssets ?? 0} cover and illustration assets`],
         ].map(([label, value, detail]) => (
           <div key={label} className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5">
             <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#777]">{label}</p>
@@ -137,6 +165,42 @@ export default function AuthorDashboard() {
           </div>
         ))}
       </section>
+
+      {overview && <section className="mt-8 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]" aria-label="Publishing operations">
+        <div className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5 sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Monthly usage</p><h2 className="mt-2 text-2xl font-medium tracking-[-0.04em]">AI studio capacity</h2></div>
+            <Link href="/billing" className="rounded-full border border-white/15 px-4 py-2 text-xs font-semibold text-white/70 hover:border-white/30 hover:text-white">Manage billing</Link>
+          </div>
+          <div className="mt-7 grid gap-6 sm:grid-cols-2">
+            {usageMeters.map((item) => <div key={item.label}>
+              <div className="flex items-center justify-between gap-3 text-sm"><span>{item.label}</span><span className="tabular-nums text-white/45">{item.used.toLocaleString()} / {item.limit.toLocaleString()}</span></div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[0.08]"><div className="h-full rounded-full bg-white transition-[width]" style={{ width: `${item.percent}%` }} /></div>
+              {!item.limit && <p className="mt-2 text-[11px] text-amber-100/70">No paid allowance on the current plan.</p>}
+            </div>)}
+          </div>
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-white/[0.08] pt-5 text-sm"><span className="text-white/45">Current plan <strong className="ml-1 font-medium capitalize text-white/85">{overview.usage.entitlements.plan.name}</strong></span><span><strong className="font-medium">{overview.usage.creditBalance.toLocaleString()}</strong> ledger credits</span></div>
+        </div>
+
+        <div className="rounded-2xl border border-white/[0.09] bg-[linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018))] p-5 sm:p-6">
+          <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Distribution</p><div className="mt-2 flex items-end justify-between gap-4"><h2 className="text-2xl font-medium tracking-[-0.04em]">Retail desk</h2><span className="text-3xl font-medium tracking-[-0.05em]">{overview.summary.readyPackages}</span></div>
+          <p className="mt-2 text-sm text-white/45">Retailer-ready packages created</p>
+          <div className="mt-6 rounded-xl border border-amber-200/15 bg-amber-100/[0.04] p-4"><p className="text-sm font-medium text-amber-50">Sales data is not connected</p><p className="mt-2 text-xs leading-5 text-amber-100/60">{overview.sales.message}</p></div>
+          <div className="mt-5 flex flex-wrap gap-3"><Link href={books[0] ? `/books/${books[0].id}/publish` : createHref} className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-black">Open publishing</Link><span className="self-center text-xs text-white/35">Connected retailer imports come after account authorization.</span></div>
+        </div>
+      </section>}
+
+      {overview && <section className="mt-4 grid gap-4 lg:grid-cols-2" aria-label="Recent workspace state">
+        <div className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5 sm:p-6">
+          <div className="flex items-center justify-between gap-4"><div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Pipeline</p><h2 className="mt-2 text-xl font-medium">Recent jobs</h2></div><Link href="/tasks" className="text-xs text-white/50 underline underline-offset-4 hover:text-white">Open workflow</Link></div>
+          {overview.recentJobs.length ? <ul className="mt-5 divide-y divide-white/[0.08]">{overview.recentJobs.slice(0, 6).map((job) => <li key={`${job.kind}:${job.id}`} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{job.label}</p><p className="mt-1 truncate text-xs text-white/40">{job.bookTitle ?? "Workspace task"} · {new Date(job.createdAt).toLocaleDateString()}</p></div><span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider ${jobStatusClass(job.status)}`}>{job.status}</span></li>)}</ul> : <p className="mt-5 text-sm text-white/40">No generation or publishing jobs yet.</p>}
+        </div>
+
+        <div className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5 sm:p-6">
+          <div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Workspace trail</p><h2 className="mt-2 text-xl font-medium">Recent activity</h2></div>
+          {overview.activity.length ? <ol className="mt-5 divide-y divide-white/[0.08]">{overview.activity.slice(0, 6).map((event) => <li key={event.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0"><span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-white/70" /><div><p className="text-sm capitalize">{activityLabel(event.event_type)}</p><p className="mt-1 text-xs text-white/40">{new Date(event.created_at).toLocaleString()}</p></div></li>)}</ol> : <p className="mt-5 text-sm text-white/40">Activity will appear as the team edits, generates, and publishes.</p>}
+        </div>
+      </section>}
 
       <section id="books" className="mt-12 scroll-mt-24">
         <div className="mb-5 flex items-end justify-between gap-4">

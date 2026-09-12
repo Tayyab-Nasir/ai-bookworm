@@ -9,6 +9,7 @@ export interface Entitlements {
   ai_credits_monthly: number;
   image_credits_monthly: number;
   audio_credits_monthly: number;
+  translation_credits_monthly: number;
   storage_gb: number;
   rendering: boolean;
   publishing_channels: string[];
@@ -22,6 +23,7 @@ const FREE_DEFAULTS: Entitlements = {
   ai_credits_monthly: 0,
   image_credits_monthly: 0,
   audio_credits_monthly: 0,
+  translation_credits_monthly: 0,
   storage_gb: 1,
   rendering: true,
   publishing_channels: ["export"],
@@ -60,6 +62,7 @@ const METER_QUOTA: Record<string, keyof Entitlements> = {
   ai_credits: "ai_credits_monthly",
   image_credits: "image_credits_monthly",
   audio_credits: "audio_credits_monthly",
+  translation_credits: "translation_credits_monthly",
   storage_gb: "storage_gb",
   seats: "seats",
 };

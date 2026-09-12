@@ -312,10 +312,10 @@
     "semantic_hash": "2928a5ff75138d24209979be0227dbd3"
   },
   "apps/web/components/AuthorDashboard.tsx": {
-    "mtime": 1788776741.99983,
-    "seen": 1789189271.7201564,
-    "ast_hash": "21613fb3f3d3a2876866f67cc4aa67b4",
-    "semantic_hash": "21613fb3f3d3a2876866f67cc4aa67b4"
+    "mtime": 1789192380.947364,
+    "seen": 1789192438.84208,
+    "ast_hash": "5983982b1ebae6915f11ec079114cc8c",
+    "semantic_hash": ""
   },
   "apps/web/components/AuthorShell.tsx": {
     "mtime": 1788776741.99983,
@@ -324,10 +324,10 @@
     "semantic_hash": "1961d6884703bd8bfb91311024f61240"
   },
   "apps/web/components/BillingCenter.tsx": {
-    "mtime": 1789187746.6768603,
-    "seen": 1789189271.7201564,
-    "ast_hash": "1824387085724a9fd93effec6a56414a",
-    "semantic_hash": "1824387085724a9fd93effec6a56414a"
+    "mtime": 1789191629.0736668,
+    "seen": 1789192319.1308568,
+    "ast_hash": "bd264a3870f5dadc3e5f29e13ee3e0e4",
+    "semantic_hash": ""
   },
   "apps/web/components/BookEditorClient.tsx": {
     "mtime": 1789190557.8079503,
@@ -486,8 +486,8 @@
     "semantic_hash": "71423ac5400bdbc2235a9858f072440c"
   },
   "apps/web/next-env.d.ts": {
-    "mtime": 1789190820.4525232,
-    "seen": 1789190997.7031176,
+    "mtime": 1789192077.0693855,
+    "seen": 1789192319.1308568,
     "ast_hash": "a95187a97b7d355b0898b514d12c9d69",
     "semantic_hash": ""
   },
@@ -582,8 +582,8 @@
     "semantic_hash": "371f413d0233f8d4492a7be1ce5870af"
   },
   "apps/web/tsconfig.json": {
-    "mtime": 1789190820.4612737,
-    "seen": 1789190997.7031176,
+    "mtime": 1789192077.0693855,
+    "seen": 1789192319.1308568,
     "ast_hash": "6a10bc0029acbd9c242eea9adaa74680",
     "semantic_hash": "6a10bc0029acbd9c242eea9adaa74680"
   },
@@ -606,9 +606,9 @@
     "semantic_hash": "8843cb12ab93bfc002e8ab819671a3e7"
   },
   "packages/api-client/src/index.ts": {
-    "mtime": 1789190397.1530876,
-    "seen": 1789190997.7031176,
-    "ast_hash": "be66e47f43766905766c1f035998cb2e",
+    "mtime": 1789192380.947364,
+    "seen": 1789192438.84208,
+    "ast_hash": "28512edebc393940b3a53d2d8d278b27",
     "semantic_hash": ""
   },
   "packages/api-client/tsconfig.json": {
@@ -936,9 +936,9 @@
     "semantic_hash": "6b73d12a49e8ea7ccb498b9c18b9eb52"
   },
   "services/api/src/app.ts": {
-    "mtime": 1789190397.1530876,
-    "seen": 1789190997.7093635,
-    "ast_hash": "1f27e935c185dfa14040198afde7c331",
+    "mtime": 1789191709.639876,
+    "seen": 1789192319.1308568,
+    "ast_hash": "eb18a7b6a5ee2669dd96dbc5593fa4cb",
     "semantic_hash": ""
   },
   "services/api/src/assets-media.test.ts": {
@@ -1056,10 +1056,10 @@
     "semantic_hash": "fe3b96bac60b6eaeebc0be01e02ce324"
   },
   "services/api/src/lib/entitlements.ts": {
-    "mtime": 1789187218.744803,
-    "seen": 1789189271.7201564,
-    "ast_hash": "9a595af84737c75cf9d1e91d07529ff6",
-    "semantic_hash": "9a595af84737c75cf9d1e91d07529ff6"
+    "mtime": 1789191629.0736668,
+    "seen": 1789192319.1308568,
+    "ast_hash": "8fe09563e3f5c82e003bbddf74b66f87",
+    "semantic_hash": ""
   },
   "services/api/src/lib/image-book-context.ts": {
     "mtime": 1789178740.8093488,
@@ -1152,10 +1152,10 @@
     "semantic_hash": "bc38875a9208404bcde8a35581160658"
   },
   "services/api/src/paid-generation.test.ts": {
-    "mtime": 1789184706.403089,
-    "seen": 1789189271.7201564,
-    "ast_hash": "21f1dc0fe13aad64f5f213aaf68398bf",
-    "semantic_hash": "21f1dc0fe13aad64f5f213aaf68398bf"
+    "mtime": 1789192137.261858,
+    "seen": 1789192319.1308568,
+    "ast_hash": "4670c9cc22d89494b111e50bb1eeafd3",
+    "semantic_hash": ""
   },
   "services/api/src/plugins/admin.ts": {
     "mtime": 1786344918.0610714,
@@ -1224,10 +1224,10 @@
     "semantic_hash": "87f376bb56e0d26c231a47c9d448ea4e"
   },
   "services/api/src/routes/billing.ts": {
-    "mtime": 1789187753.4674366,
-    "seen": 1789189271.7201564,
-    "ast_hash": "8935fd3b34a023180e421182674032be",
-    "semantic_hash": "8935fd3b34a023180e421182674032be"
+    "mtime": 1789191629.0736668,
+    "seen": 1789192319.1308568,
+    "ast_hash": "5ac87d7cbb6bead504a12d395b601a21",
+    "semantic_hash": ""
   },
   "services/api/src/routes/book-memory.ts": {
     "mtime": 1788665191.9221659,
@@ -2262,9 +2262,9 @@
     "semantic_hash": ""
   },
   "AI_BOOKWORM_BUILD_PLAN.md": {
-    "mtime": 1788665102.1673186,
-    "seen": 1789189416.851968,
-    "ast_hash": "73e1aa554013b8744fe2316bbac35824",
+    "mtime": 1789191922.6928985,
+    "seen": 1789192319.1308568,
+    "ast_hash": "38b55d8bfc3b860f3c56442000799874",
     "semantic_hash": ""
   },
   "CLAUDE.md": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789191156.882419,
-    "seen": 1789191231.8102853,
-    "ast_hash": "cd1a544b382346fdf4dab2a364e44068",
+    "mtime": 1789192137.263861,
+    "seen": 1789192319.1308568,
+    "ast_hash": "2cc6881a9a5ae54ea04af0d0edcd35e3",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2370,9 +2370,9 @@
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
-    "mtime": 1789190864.027376,
-    "seen": 1789190997.7093635,
-    "ast_hash": "e65618bd77f38a833e4ef12f306be694",
+    "mtime": 1789192137.2628565,
+    "seen": 1789192319.1308568,
+    "ast_hash": "41a5a7d6c587c0108a11ec25ae9e6dbd",
     "semantic_hash": ""
   },
   "services/ai/prompts/book_bible_v1.md": {
@@ -2418,9 +2418,9 @@
     "semantic_hash": ""
   },
   "services/api/openapi.yaml": {
-    "mtime": 1789190909.0151849,
-    "seen": 1789190997.7093635,
-    "ast_hash": "ebe4bb3b458b4fb37e22552b8e9f472d",
+    "mtime": 1789191922.6928985,
+    "seen": 1789192319.1308568,
+    "ast_hash": "2214e2f93923c87ae3b51ffc1fe32dd6",
     "semantic_hash": ""
   },
   "services/document/requirements.txt": {
@@ -2547,6 +2547,24 @@
     "mtime": 1789190315.8225982,
     "seen": 1789190997.7093635,
     "ast_hash": "7fd43ca079c2abff2ccbac5035735b03",
+    "semantic_hash": ""
+  },
+  "apps/web/tests/dashboard.test.ts": {
+    "mtime": 1789191877.71895,
+    "seen": 1789192319.1308568,
+    "ast_hash": "9b873fcdf0df1760c0b3c2e8d09d4ae9",
+    "semantic_hash": ""
+  },
+  "services/api/src/dashboard.test.ts": {
+    "mtime": 1789192380.947364,
+    "seen": 1789192438.84208,
+    "ast_hash": "db5935a0195c2552aa029c9e2b6def52",
+    "semantic_hash": ""
+  },
+  "services/api/src/routes/dashboard.ts": {
+    "mtime": 1789192380.931346,
+    "seen": 1789192438.84208,
+    "ast_hash": "34a4cac97f49239821e56db949575645",
     "semantic_hash": ""
   }
 }

@@ -36,7 +36,7 @@ screens alone are insufficient. The full goal remains active across sessions.
 | Cover QR codes | Implement URL validation, QR creation, placement and exported-cover verification. |
 | Book metadata/descriptions/tags | Persist metadata; generate suggestions from book context with review before acceptance. |
 | KDP/Barnes & Noble/other channels | Verify official current requirements; deterministic preflight, files and submission guidance; use supported integrations only, never fake publication. |
-| User dashboard/credits/jobs/book analytics | Replace demo-only data, show real state and distinguish imported sales from connected retailer data. |
+| User dashboard/credits/jobs/book analytics | Tenant-scoped dashboard now shows real books, asset/job/package counts, paid generation meters and recent activity. It explicitly reports retailer sales as not connected rather than inventing revenue. Authorized sales imports/connectors and live acceptance remain. |
 | Production safety and deployment readiness | Tenant/role tests, migration execution, secrets, job durability, configured live integration checks and user-journey browser tests. |
 
 ## Current parallel work ownership (2026-08-31)

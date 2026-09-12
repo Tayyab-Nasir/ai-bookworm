@@ -357,6 +357,7 @@ export interface BillingEntitlements {
   ai_credits_monthly: number;
   image_credits_monthly: number;
   audio_credits_monthly: number;
+  translation_credits_monthly: number;
   storage_gb: number;
   rendering: boolean;
   publishing_channels: string[];
@@ -371,6 +372,34 @@ export interface BillingUsageSummary {
   };
   usage: Record<string, number>;
   creditBalance: number;
+}
+
+export interface DashboardRecentJob {
+  id: string;
+  kind: "ai" | "publishing";
+  label: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  bookId: string | null;
+  bookTitle: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface DashboardOverview {
+  workspace: { id: string; name: string; organizationId: string; role: string };
+  books: Book[];
+  summary: {
+    activeBooks: number; inProductionBooks: number; publishedBooks: number;
+    assets: number; visualAssets: number; pendingJobs: number;
+    failedJobs: number; readyPackages: number;
+  };
+  usage: BillingUsageSummary;
+  recentJobs: DashboardRecentJob[];
+  activity: ActivityEvent[];
+  sales: {
+    status: "not_connected"; units: null; grossRevenueCents: null;
+    currency: null; message: string;
+  };
 }
 
 // Step 12: community + referrals
@@ -470,6 +499,8 @@ export function createClient(opts: ClientOptions) {
 
   return {
     listWorkspaces: () => call<{ workspaces: Workspace[] }>("GET", "/v1/workspaces"),
+    getDashboardOverview: (workspaceId: string) =>
+      call<DashboardOverview>("GET", `/v1/dashboard?workspaceId=${encodeURIComponent(workspaceId)}`),
     createWorkspace: (body: { name: string; orgName?: string; slug?: string }) =>
       call<Workspace>("POST", "/v1/workspaces", body),
     listBooks: (workspaceId: string) =>

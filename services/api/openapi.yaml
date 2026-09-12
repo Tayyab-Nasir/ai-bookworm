@@ -1386,6 +1386,44 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/dashboard:
+    get:
+      tags: [v1]
+      operationId: getDashboardOverview
+      summary: Tenant-scoped author operations dashboard
+      description: Returns books, aggregate assets/jobs/packages, paid usage, safe recent job labels, recent activity, and explicit retailer-sales provenance. Private job inputs and fabricated sales are never returned.
+      parameters:
+        - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Current workspace dashboard
+          headers:
+            Cache-Control: { schema: { type: string }, description: Private no-store response }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace, books, summary, usage, recentJobs, activity, sales]
+                properties:
+                  workspace: { type: object }
+                  books: { type: array, items: { $ref: "#/components/schemas/Book" } }
+                  summary: { type: object }
+                  usage: { type: object }
+                  recentJobs: { type: array, items: { type: object } }
+                  activity: { type: array, items: { type: object } }
+                  sales:
+                    type: object
+                    required: [status, units, grossRevenueCents, currency, message]
+                    properties:
+                      status: { type: string, const: not_connected }
+                      units: { type: "null" }
+                      grossRevenueCents: { type: "null" }
+                      currency: { type: "null" }
+                      message: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/usage:
     get:
       tags: [v1]
