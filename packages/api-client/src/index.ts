@@ -385,6 +385,25 @@ export interface DashboardRecentJob {
   completedAt: string | null;
 }
 
+export type RetailerSource = "amazon_kdp" | "barnes_noble" | "apple_books" | "google_play" | "lulu" | "other";
+export interface RetailerSalesRowInput {
+  bookId?: string | null; soldOn: string; title: string; externalId?: string | null;
+  marketplace?: string | null; format?: string | null; units: number; reportedProceedsCents?: number | null;
+  royaltyCents: number; currency: string;
+}
+export interface RetailerSalesSummary {
+  status: "not_connected" | "imported"; imports: number; latestImportedAt: string | null; units: number | null;
+  reportedProceedsCents: number | null; royaltyCents: number | null; currency: string | null;
+  currencies: { currency: string; units: number; reportedProceedsCents: number | null; royaltyCents: number }[];
+  available: boolean;
+  message: string;
+}
+export interface RetailerSalesImport {
+  id: string; workspace_id: string; source: RetailerSource; file_name: string; row_count: number;
+  period_start: string; period_end: string; supersedes_import_id: string | null; superseded_at: string | null;
+  superseded_by: string | null; created_by: string; created_at: string;
+}
+
 export interface DashboardOverview {
   workspace: { id: string; name: string; organizationId: string; role: string };
   books: Book[];
@@ -396,10 +415,7 @@ export interface DashboardOverview {
   usage: BillingUsageSummary;
   recentJobs: DashboardRecentJob[];
   activity: ActivityEvent[];
-  sales: {
-    status: "not_connected"; units: null; grossRevenueCents: null;
-    currency: null; message: string;
-  };
+  sales: RetailerSalesSummary;
 }
 
 // Step 12: community + referrals
@@ -473,11 +489,11 @@ export interface CreditLedgerEntry {
 }
 
 export function createClient(opts: ClientOptions) {
-  async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown): Promise<T> {
+  async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown, useIdempotencyKey = true): Promise<T> {
     if (body !== undefined) {
       headers["content-type"] = "application/json";
     }
-    if (method === "POST") headers["idempotency-key"] = opts.idempotencyKey?.() ?? crypto.randomUUID();
+    if (method === "POST" && useIdempotencyKey) headers["idempotency-key"] = opts.idempotencyKey?.() ?? crypto.randomUUID();
     const res = await fetch(`${opts.baseUrl}${path}`, {
       method,
       headers,
@@ -492,8 +508,8 @@ export function createClient(opts: ClientOptions) {
     return json;
   }
 
-  const call = <T>(method: string, path: string, body?: unknown) =>
-    request<T>(method, path, opts.token ? { authorization: `Bearer ${opts.token}` } : {}, body);
+  const call = <T>(method: string, path: string, body?: unknown, useIdempotencyKey = true) =>
+    request<T>(method, path, opts.token ? { authorization: `Bearer ${opts.token}` } : {}, body, useIdempotencyKey);
   const callService = <T>(path: string, body: unknown, serviceToken: string) =>
     request<T>("POST", path, { "x-service-token": serviceToken }, body);
 
@@ -501,6 +517,10 @@ export function createClient(opts: ClientOptions) {
     listWorkspaces: () => call<{ workspaces: Workspace[] }>("GET", "/v1/workspaces"),
     getDashboardOverview: (workspaceId: string) =>
       call<DashboardOverview>("GET", `/v1/dashboard?workspaceId=${encodeURIComponent(workspaceId)}`),
+    listRetailerSalesImports: (workspaceId: string) =>
+      call<{ imports: RetailerSalesImport[]; summary: RetailerSalesSummary }>("GET", `/v1/sales/imports?workspaceId=${encodeURIComponent(workspaceId)}`),
+    importRetailerSales: (body: { workspaceId: string; source: RetailerSource; fileName: string; supersedeImportId?: string | null; rows: RetailerSalesRowInput[] }) =>
+      call<{ importId: string; rowCount: number; duplicate: boolean }>("POST", "/v1/sales/imports", body, false),
     createWorkspace: (body: { name: string; orgName?: string; slug?: string }) =>
       call<Workspace>("POST", "/v1/workspaces", body),
     listBooks: (workspaceId: string) =>

@@ -1411,17 +1411,77 @@ paths:
                   usage: { type: object }
                   recentJobs: { type: array, items: { type: object } }
                   activity: { type: array, items: { type: object } }
-                  sales:
-                    type: object
-                    required: [status, units, grossRevenueCents, currency, message]
-                    properties:
-                      status: { type: string, const: not_connected }
-                      units: { type: "null" }
-                      grossRevenueCents: { type: "null" }
-                      currency: { type: "null" }
-                      message: { type: string }
+                  sales: { $ref: "#/components/schemas/RetailerSalesSummary" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/sales/imports:
+    get:
+      tags: [v1]
+      operationId: listRetailerSalesImports
+      summary: Source-backed retailer sales imports for one workspace
+      description: Lists immutable imported report receipts and currency-safe totals. Packages and preflights never become sales data.
+      parameters:
+        - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Private import history and summary
+          headers:
+            Cache-Control: { schema: { type: string }, description: Private no-store response }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imports, summary]
+                properties:
+                  imports: { type: array, items: { $ref: "#/components/schemas/RetailerSalesImport" } }
+                  summary: { $ref: "#/components/schemas/RetailerSalesSummary" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: importRetailerSales
+      summary: Import validated normalized rows from an author-selected retailer CSV
+      description: The database derives a canonical source-report checksum and deduplicates exact reports. Source CSV bytes are not retained; each currency remains separate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspaceId, source, fileName, rows]
+              properties:
+                workspaceId: { type: string, format: uuid }
+                source: { type: string, enum: [amazon_kdp, barnes_noble, apple_books, google_play, lulu, other] }
+                fileName: { type: string, maxLength: 255 }
+                supersedeImportId: { type: string, format: uuid, nullable: true }
+                rows:
+                  type: array
+                  minItems: 1
+                  maxItems: 2000
+                  items:
+                    type: object
+                    required: [soldOn, title, units, royaltyCents, currency]
+                    properties:
+                      bookId: { type: string, format: uuid, nullable: true }
+                      soldOn: { type: string, format: date }
+                      title: { type: string, maxLength: 500 }
+                      externalId: { type: string, maxLength: 200, nullable: true }
+                      marketplace: { type: string, maxLength: 100, nullable: true }
+                      format: { type: string, maxLength: 100, nullable: true }
+                      units: { type: integer }
+                      reportedProceedsCents: { type: integer, nullable: true }
+                      royaltyCents: { type: integer }
+                      currency: { type: string, pattern: "^[A-Z]{3}$" }
+      responses:
+        "201": { description: Import receipt created, content: { application/json: { schema: { type: object } } } }
+        "200": { description: Exact report already imported, content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /v1/usage:
@@ -1886,6 +1946,45 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    RetailerSalesImport:
+      type: object
+      required: [id, workspace_id, source, file_name, row_count, period_start, period_end, supersedes_import_id, superseded_at, superseded_by, created_by, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        source: { type: string, enum: [amazon_kdp, barnes_noble, apple_books, google_play, lulu, other] }
+        file_name: { type: string }
+        row_count: { type: integer }
+        period_start: { type: string, format: date }
+        period_end: { type: string, format: date }
+        supersedes_import_id: { type: string, format: uuid, nullable: true }
+        superseded_at: { type: string, format: date-time, nullable: true }
+        superseded_by: { type: string, format: uuid, nullable: true }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+    RetailerSalesSummary:
+      type: object
+      required: [status, imports, latestImportedAt, units, reportedProceedsCents, royaltyCents, currency, currencies, available, message]
+      properties:
+        status: { type: string, enum: [not_connected, imported] }
+        imports: { type: integer, minimum: 0 }
+        latestImportedAt: { type: string, format: date-time, nullable: true }
+        units: { type: integer, nullable: true }
+        reportedProceedsCents: { type: integer, nullable: true }
+        royaltyCents: { type: integer, nullable: true }
+        currency: { type: string, nullable: true }
+        currencies:
+          type: array
+          items:
+            type: object
+            required: [currency, units, reportedProceedsCents, royaltyCents]
+            properties:
+              currency: { type: string }
+              units: { type: integer }
+              reportedProceedsCents: { type: integer, nullable: true }
+              royaltyCents: { type: integer }
+        available: { type: boolean, description: True when retailer-sales tables and RPCs are installed in this environment. }
+        message: { type: string }
     ManuscriptImportJob:
       type: object
       required: [id, book_id, source_asset_id, status, attempts, error_code, created_at, available_at, completed_at]

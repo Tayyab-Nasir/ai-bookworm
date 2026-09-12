@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import { requireWorkspaceMember } from "../lib/authorize.js";
 import { currentEntitlements, monthUsage } from "../lib/entitlements.js";
+import { loadRetailerSalesSummary } from "./sales.js";
 
 const querySchema = z.object({ workspaceId: z.string().uuid() }).strict();
 const activeJobStatuses = ["queued", "running"];
@@ -64,11 +65,12 @@ export function dashboardRoutes(app: FastifyInstance) {
     if (aggregateResults.some((result) => result.error)) throw new AppError(503, "Dashboard activity is temporarily unavailable.");
 
     const service = app.supabaseFactory();
-    const [entitlements, usageEntries, ledger] = await Promise.all([
+    const [entitlements, usageEntries, ledger, sales] = await Promise.all([
       currentEntitlements(service, workspace.organization_id),
       Promise.all(meters.map(async (meter) => [meter, await monthUsage(service, workspace.organization_id, meter)] as const)),
       service.from("credit_ledger").select("balance_after").eq("user_id", req.userId)
         .order("created_at", { ascending: false }).order("id", { ascending: false }).limit(1).maybeSingle(),
+      loadRetailerSalesSummary(user, workspace.id),
     ]);
     if (ledger.error) throw new AppError(503, "Dashboard credit balance is temporarily unavailable.");
 
@@ -106,10 +108,7 @@ export function dashboardRoutes(app: FastifyInstance) {
       },
       recentJobs,
       activity: (activity.data ?? []).map((event) => ({ ...event, payload_json: {} })),
-      sales: {
-        status: "not_connected" as const, units: null, grossRevenueCents: null, currency: null,
-        message: "No retailer sales source is connected. Package creation is not a sale, and AI Bookworm does not invent revenue.",
-      },
+      sales,
     };
   });
 }

@@ -72,10 +72,14 @@ The author dashboard now uses one tenant-scoped aggregate endpoint instead of
 demo counters or one browser request per book. It shows real books, live asset
 and cover/illustration counts, open/failed jobs, ready retailer packages, recent
 allowlisted job/activity rows, ledger balance, and all four paid generation
-meters. Sales are explicitly `not_connected` with null totals until an
-authorized retailer/import source exists; package creation is never reported as
-a sale. Billing and dashboard share zero-default text, image, audio, and
-translation entitlements.
+meters. Local source now includes member-readable, role-gated retailer CSV
+report imports with database-derived source identity, replay-safe immutable
+reconciliation, active source/period overlap protection, source-only activity,
+and currency-safe totals; package creation is never reported as a sale. The
+additive `20260912190000_retailer_sales_imports.sql` migration is not installed
+live, so that environment still truthfully reports sales as `not_connected`.
+Billing and dashboard share zero-default text, image, audio, and translation
+entitlements.
 
 Google OAuth code and callback regression coverage pass, and the live Auth
 profile trigger is installed. Google sign-in remains unavailable because the
@@ -87,10 +91,10 @@ not create credentials.
 The full shared tree is committed and pushed to
 `codex/live-platform-checkpoint-20260912`; durable audiobook implementation is
 saved at `e14c556`. The local remote no
-longer embeds a credential. The current local full `npm run verify` passes: 181
-API, 58 web, 46 migrations/32 SQL suites, 156 services, 8 E2E, 30 security,
+longer embeds a credential. The current local full `npm run verify` passes: 186
+API, 61 web, 47 migrations/33 SQL suites, 156 services, 8 E2E, 30 security,
 load smoke and mock evals; the isolated production web build passes with the
-translation route. This is a
+translation and analytics routes. This is a
 checkpoint, not market-readiness: Google/OpenAI credentials, paid plan pricing,
 native Storage/scanner/provider acceptance, observability/backups, audio mastering,
 translation, mobile completion and author beta remain open.

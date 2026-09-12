@@ -9,14 +9,14 @@ an operational process. Saved agent claims are not evidence by themselves.
 | # | Item | Status | Evidence / remaining acceptance work |
 |---|---|---|---|
 | 1 | Production domain, TLS, CDN and WAF | PENDING-INFRA | No production environment was changed. Verify the trusted certificate chain, HTTPS redirects, security headers and active WAF rules on an authorized deployment. |
-| 2 | Native Supabase project and migrations | PARTIAL | The authorized live project has the first 45 migrations. All 46 repository migrations execute in disposable PostgreSQL; the additive translation migration is reviewed but not live. Native PostgREST/Storage acceptance and drift checks remain before production. |
-| 3 | Tenant isolation and least privilege | PARTIAL | Thirty-two SQL boundary/workflow suites execute locally, and 30 Python security tests pass. The disposable PostgreSQL fixture does not prove Storage HTTP, JWT claims, GoTrue or multi-connection race behavior. |
+| 2 | Native Supabase project and migrations | PARTIAL | The authorized live project has the first 45 migrations. All 47 repository migrations execute in disposable PostgreSQL; the additive translation and retailer-sales migrations are reviewed but not live. Native PostgREST/Storage acceptance and drift checks remain before production. |
+| 3 | Tenant isolation and least privilege | PARTIAL | Thirty-three SQL boundary/workflow suites execute locally, and 30 Python security tests pass. The disposable PostgreSQL fixture does not prove Storage HTTP, JWT claims, GoTrue or multi-connection race behavior. |
 | 4 | Durable jobs and retrieval services | PARTIAL | Render, preflight, export-package, manuscript-import, editor text-AI-review, audiobook and translation jobs use fenced PostgreSQL leases and durable recovery state. Translation reserves paid credits, pins each saved chapter, keeps source text out of queue rows, stores private recovery receipts, and creates a separate review draft only after explicit author adoption. Author-facing retrieval uses tenant-safe PostgreSQL full-text search with citations. Worker supervision, production credentials, native multi-process races, live provider quality/cost and optional LightRAG/Qdrant experiments remain unverified. |
 | 5 | Provider keys and secret management | PENDING-INFRA | No live keys are required for deterministic tests and none were configured by this work. Verify server-only secret storage, rotation and egress policy in the target environment. |
 | 6 | Upload/parser safety and malware scanning | PARTIAL | A private authenticated ClamAV/clamd service, bounded streaming protocol, server-side checksum/size/type checks, fail-closed scan persistence, clean-only import/download/render gates, and Storage RLS quarantine are implemented and tested. A service-only, aggregate-only dry-run inventory identifies only old, managed, database-unreferenced private objects; it never deletes. Native Supabase Storage HTTP, deployed clamd signatures/limits, outage recovery, an EICAR staging exercise, and approved per-object cleanup acceptance remain required. |
 | 7 | DOCX, EPUB, TXT and limited PDF import fixtures | PARTIAL | Authenticated/root-confined parsers preserve supported DOCX marks/list styles and table text; EPUB nested content is imported once with semantic marks/lists. Body PNG/JPEG/GIF/WebP images pass bounded extraction, independent validation/scanning, private storage and atomic chapter/asset persistence with retry receipts. Real supplied specifications parse. Complex tables, header/footer drawings, vector images, numbering/styles and scanned-PDF OCR remain incomplete. Native Storage/Postgres acceptance and orphan reconciliation are outstanding. |
 | 8 | Deterministic EPUB/PDF/cover rendering | PARTIAL | EPUB/PDF version 1.4.0 fixtures cover inline marks, nested lists, illustrations, escaped metadata, gutters, paginated tables and RTL EPUB language/direction metadata. Edition schema 1.1.0 persists `auto`/`ltr`/`rtl`; the saved edition language is carried consistently through render, preflight, and package freshness checks. Preflight blocks RTL print and cover text when the deterministic Latin base-font renderers would be unsafe, and the Publishing Studio explains that constraint before disabling only the invalid render. Editor table insertion/edit/save/reload passes browser acceptance. Private artifacts have checksum/size verification. A licensed embedded font plus shaping pipeline, tagged PDF, merged-cell/header semantics and complete fixed-layout behavior remain incomplete. |
-| 9 | Retailer preflight and export packages | DONE | Versioned KDP, Apple Books, Barnes & Noble and Lulu rules pass local tests. Zero-error preflight + exact render fingerprints gate deterministic, private ZIP packages with durable history. Submission is manual; retailer acceptance is not guaranteed. |
+| 9 | Retailer preflight, export packages and reporting | PARTIAL | Versioned KDP, Apple Books, Barnes & Noble and Lulu rules pass local tests. Zero-error preflight + exact render fingerprints gate deterministic, private ZIP packages with durable history. Local source also has database-derived, replay-safe, currency-safe retailer CSV reporting with active same-source/period overlap protection; its additive migration is not live. Submission is manual, and retailer acceptance/report-format validation is not guaranteed. |
 | 10 | Billing, credits and Stripe webhooks | PARTIAL | Local unit tests cover signatures, idempotency, entitlements and ledgers. The author dashboard and Billing Center report text, image, audio and translation meters from one zero-default entitlement contract. An authorized Stripe test-mode round trip, product/price mapping and customer recovery still need verification. |
 | 11 | Referral ledger | DONE | Atomic code allocation, qualification/review/reversal state transitions, concurrency-safe balances, bounded history and lifetime summaries have database and API tests plus browser acceptance. |
 | 12 | Community moderation | DONE | Local tests cover membership/privacy, posting limits, reports, moderation and reactions. Current web community flows still contain legacy/demo assumptions and need product-browser acceptance. |
@@ -28,7 +28,7 @@ an operational process. Saved agent claims are not evidence by themselves.
 
 ## Current local verification snapshot
 
-Snapshot: **2026-09-12 (paid translation and author operations dashboard)** on
+Snapshot: **2026-09-12 (paid translation, author operations dashboard, and local retailer reporting)** on
 `codex/live-platform-checkpoint-20260912`. These results describe the current
 local files and tests, not production acceptance.
 
@@ -38,9 +38,9 @@ local files and tests, not production acceptance.
 | Production npm dependency audit | pass; 0 known vulnerabilities |
 | Book-model tests | 28/28 |
 | Config tests | 3/3 |
-| API tests | 181/181 |
-| Web auth/BFF/client/editor/import/publishing/dashboard tests | 58/58 |
-| Disposable database | 46 migrations + 32 SQL assertion files |
+| API tests | 186/186 |
+| Web auth/BFF/client/editor/import/publishing/dashboard/sales tests | 61/61 |
+| Disposable database | 47 migrations + 33 SQL assertion files |
 | Python AI/document/rendering/publishing/scanning services | 156/156 |
 | Fixture E2E journey | 8/8 |
 | Python security tests | 30/30 |
@@ -48,8 +48,8 @@ local files and tests, not production acceptance.
 | AI deterministic evals | six cases; must-find 5/5, zero false positives |
 | Browser acceptance | Sep 11 isolated fixture: lost scan reply, queue, failed worker status, reload, audited retry, background success and completed reload create one book/one upload (2 confirmations, 2 simulated worker attempts, 1 retry). Durable report counts/literal warnings restore without another attempt; heading focus and 390px/375px containment pass with no console errors. Native worker/services remain separate acceptance. |
 | Storage reconciliation | Local dry-run classifier accepts only old, managed, unreferenced paths; referenced, young, unknown-age and out-of-scope paths never become candidates. The command has no deletion code. Native Storage inventory is still required. |
-| Web production build | pass; includes dashboard, translation, admin, memory, publishing and account settings |
-| OpenAPI YAML syntax | pass; dashboard, durable jobs, import, admin health and receipt contracts documented |
+| Web production build | pass; includes dashboard, analytics, translation, admin, memory, publishing and account settings |
+| OpenAPI YAML syntax | pass; dashboard, sales import, durable jobs, import, admin health and receipt contracts documented |
 
 Commands used: `npm run verify`, `npm run build -w @bookworm/web`, a direct
 isolated-fixture browser inspection, and an independent YAML parse of
@@ -59,8 +59,9 @@ Fastify 5.12.3, Tiptap 3.31.3, PostCSS 8.5.28 and vulnerable transitive patches.
 ## Explicit blockers and exclusions
 
 - The application is **not production ready** and the full PRD is not complete.
-- No live migration, deployment, Stripe charge, provider generation or retailer
-  submission was performed.
+- No live migration, deployment, Stripe charge, provider generation, retailer
+  CSV import or retailer submission was performed. The retailer-sales migration
+  remains local-only pending an explicit live operation and native acceptance.
 - Retailer automation is export-first/manual; official retailer submission and
   retailer-side status integrations are unavailable. An invalid Hermes KDP
   scaffold that attempted writes through Amazon's read-only Catalog Items API

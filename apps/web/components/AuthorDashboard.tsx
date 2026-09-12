@@ -34,6 +34,7 @@ export function activityLabel(eventType: string) {
     audiobook_segment_generated: "Audiobook segment generated",
     translation_project_adopted: "Translated draft created",
     publishing_package_created: "Retailer package prepared",
+    retailer_sales_imported: "Retailer sales report imported",
     image_generated: "Image generated",
     manuscript_import_completed: "Manuscript import completed",
     ai_suggestion_applied: "AI suggestion applied",
@@ -185,8 +186,8 @@ export default function AuthorDashboard() {
         <div className="rounded-2xl border border-white/[0.09] bg-[linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018))] p-5 sm:p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Distribution</p><div className="mt-2 flex items-end justify-between gap-4"><h2 className="text-2xl font-medium tracking-[-0.04em]">Retail desk</h2><span className="text-3xl font-medium tracking-[-0.05em]">{overview.summary.readyPackages}</span></div>
           <p className="mt-2 text-sm text-white/45">Retailer-ready packages created</p>
-          <div className="mt-6 rounded-xl border border-amber-200/15 bg-amber-100/[0.04] p-4"><p className="text-sm font-medium text-amber-50">Sales data is not connected</p><p className="mt-2 text-xs leading-5 text-amber-100/60">{overview.sales.message}</p></div>
-          <div className="mt-5 flex flex-wrap gap-3"><Link href={books[0] ? `/books/${books[0].id}/publish` : createHref} className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-black">Open publishing</Link><span className="self-center text-xs text-white/35">Connected retailer imports come after account authorization.</span></div>
+          <div className={`mt-6 rounded-xl border p-4 ${overview.sales.status === "imported" ? "border-emerald-200/15 bg-emerald-100/[0.04]" : "border-amber-200/15 bg-amber-100/[0.04]"}`}><p className={`text-sm font-medium ${overview.sales.status === "imported" ? "text-emerald-50" : "text-amber-50"}`}>{overview.sales.available === false ? "Sales reporting is unavailable" : overview.sales.status === "imported" ? `${overview.sales.imports} retailer report${overview.sales.imports === 1 ? "" : "s"} imported` : "Sales data is not connected"}</p><p className={`mt-2 text-xs leading-5 ${overview.sales.status === "imported" ? "text-emerald-100/60" : "text-amber-100/60"}`}>{overview.sales.message}</p></div>
+          <div className="mt-5 flex flex-wrap gap-3"><Link href={books[0] ? `/books/${books[0].id}/publish` : createHref} className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-black">Open publishing</Link><Link href={workspace ? `/analytics?ws=${encodeURIComponent(workspace.id)}` : "/analytics"} className="self-center text-xs text-white/55 underline underline-offset-4 hover:text-white">{overview.sales.available === false ? "View sales setup" : overview.sales.status === "imported" ? "View sales ledger" : "Import retailer report"}</Link></div>
         </div>
       </section>}
 

@@ -25,6 +25,7 @@ import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
 import { audiobookRoutes } from "./routes/audiobooks.js";
 import { translationRoutes } from "./routes/translations.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { salesRoutes } from "./routes/sales.js";
 import { adminPlugin } from "./plugins/admin.js";
 import { redactObject } from "./lib/redact.js";
 import type { StripeFactory } from "./lib/stripe.js";
@@ -53,6 +54,7 @@ export async function buildApp(
     await v1.register(adminPlugin);
     workspaceRoutes(v1);
     dashboardRoutes(v1);
+    salesRoutes(v1);
     bookRoutes(v1, { assetScanner: opts.assetScanner });
     chapterRoutes(v1);
     bookMemoryRoutes(v1);

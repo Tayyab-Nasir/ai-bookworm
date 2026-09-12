@@ -13,8 +13,13 @@ const { buildApp } = await import("./app.js");
 
 type Row = Record<string, unknown>;
 
-function fakeSupabase(tables: Record<string, Row[]>) {
+function fakeSupabase(tables: Record<string, Row[]>, rpcHandler?: (name: string, args: Record<string, unknown>) => { data: unknown; error: null | { code?: string } }, tableErrors?: Record<string, { code?: string }>) {
   return {
+    rpc: async (name: string, args: Record<string, unknown>) => {
+      if (rpcHandler) return rpcHandler(name, args);
+      assert.equal(name, "retailer_sales_summary");
+      return { data: { status: "not_connected", imports: 0, latestImportedAt: null, units: null, reportedProceedsCents: null, royaltyCents: null, currency: null, currencies: [] }, error: null };
+    },
     auth: { getUser: async (token: string) => token === "good"
       ? { data: { user: { id: "11111111-1111-1111-1111-111111111111" } }, error: null }
       : { data: { user: null }, error: { message: "bad" } } },
@@ -27,7 +32,7 @@ function fakeSupabase(tables: Record<string, Row[]>) {
         if (orderColumn) rows.sort((a, b) => String(a[orderColumn!]).localeCompare(String(b[orderColumn!])) * (ascending ? 1 : -1));
         return rows.slice(0, limit);
       };
-      const result = () => { const rows = apply(); return { data: head ? null : rows, error: null, count: exactCount ? rows.length : null }; };
+      const result = () => { const rows = apply(); const error = tableErrors?.[table] ?? null; return { data: error ? null : head ? null : rows, error, count: error ? null : exactCount ? rows.length : null }; };
       const builder: Record<string, unknown> = {};
       builder.select = (_columns?: string, options?: { head?: boolean; count?: string }) => { head = options?.head === true; exactCount = options?.count === "exact"; return builder; };
       builder.eq = (column: string, value: unknown) => { filters.push((row) => row[column] === value); return builder; };
@@ -99,7 +104,7 @@ test("dashboard returns tenant-scoped operational truth without private job inpu
   assert.equal(body.usage.creditBalance, 42);
   assert.equal(body.sales.status, "not_connected");
   assert.equal(body.sales.units, null);
-  assert.equal(body.sales.grossRevenueCents, null);
+  assert.equal(body.sales.reportedProceedsCents, null);
   assert.equal(body.recentJobs.some((job: Row) => job.label === "Translation"), true);
   assert.doesNotMatch(response.body, /never-return|input_ref|request_json/);
   await app.close();
@@ -109,5 +114,58 @@ test("dashboard denies a valid user outside the workspace before aggregation", a
   const app = await buildApp(() => fakeSupabase(dashboardTables(false)));
   const response = await app.inject({ method: "GET", url: `/v1/dashboard?workspaceId=${workspaceId}`, headers: { authorization: "Bearer good" } });
   assert.equal(response.statusCode, 403);
+  await app.close();
+});
+
+test("retailer import normalizes rows and lets the database derive durable report identity", async () => {
+  const calls: { name: string; args: Record<string, unknown> }[] = [];
+  const app = await buildApp(() => fakeSupabase(dashboardTables(), (name, args) => {
+    calls.push({ name, args });
+    if (name === "import_retailer_sales") return { data: [{ import_id: "66666666-6666-6666-6666-666666666666", row_count: 1, duplicate: false }], error: null };
+    return { data: { status: "not_connected", imports: 0, latestImportedAt: null, units: null, reportedProceedsCents: null, royaltyCents: null, currency: null, currencies: [] }, error: null };
+  }));
+  const response = await app.inject({ method: "POST", url: "/v1/sales/imports", headers: { authorization: "Bearer good" }, payload: {
+    workspaceId, source: "amazon_kdp", fileName: "september.csv", rows: [{ soldOn: "2026-09-01", title: "Draft book", units: 2, royaltyCents: 697, currency: "usd" }],
+  } });
+  assert.equal(response.statusCode, 201);
+  assert.deepEqual(response.json(), { importId: "66666666-6666-6666-6666-666666666666", rowCount: 1, duplicate: false });
+  assert.equal(calls[0]?.name, "import_retailer_sales");
+  assert.equal(calls[0]?.args.p_content_sha256, undefined);
+  assert.deepEqual(calls[0]?.args.p_rows, [{ bookId: null, soldOn: "2026-09-01", title: "Draft book", externalId: null, marketplace: null, format: null, units: 2, reportedProceedsCents: null, royaltyCents: 697, currency: "USD" }]);
+  await app.close();
+});
+
+test("retailer import rejects impossible ISO calendar dates before calling the write RPC", async () => {
+  let called = false;
+  const app = await buildApp(() => fakeSupabase(dashboardTables(), () => { called = true; return { data: null, error: null }; }));
+  const response = await app.inject({ method: "POST", url: "/v1/sales/imports", headers: { authorization: "Bearer good" }, payload: {
+    workspaceId, source: "amazon_kdp", fileName: "impossible-date.csv", rows: [{ soldOn: "2026-02-30", title: "Book", units: 1, royaltyCents: 1, currency: "USD" }],
+  } });
+  assert.equal(response.statusCode, 422);
+  assert.equal(called, false);
+  await app.close();
+});
+
+test("sales history returns an explicit unavailable read model before its migration is installed", async () => {
+  const app = await buildApp(() => fakeSupabase(dashboardTables(), undefined, { retailer_sales_imports: { code: "PGRST205" } }));
+  const response = await app.inject({ method: "GET", url: `/v1/sales/imports?workspaceId=${workspaceId}`, headers: { authorization: "Bearer good" } });
+  assert.equal(response.statusCode, 200);
+  assert.match(String(response.headers["cache-control"]), /private/);
+  assert.deepEqual(response.json().imports, []);
+  assert.equal(response.json().summary.available, false);
+  assert.match(response.json().summary.message, /not installed/i);
+  await app.close();
+});
+
+test("retailer import rejects viewer roles before the write RPC", async () => {
+  const tables = dashboardTables();
+  tables.workspace_members[0].role = "viewer";
+  let called = false;
+  const app = await buildApp(() => fakeSupabase(tables, () => { called = true; return { data: null, error: null }; }));
+  const response = await app.inject({ method: "POST", url: "/v1/sales/imports", headers: { authorization: "Bearer good" }, payload: {
+    workspaceId, source: "other", fileName: "report.csv", rows: [{ soldOn: "2026-09-01", title: "Book", units: 1, royaltyCents: 1, currency: "USD" }],
+  } });
+  assert.equal(response.statusCode, 403);
+  assert.equal(called, false);
   await app.close();
 });

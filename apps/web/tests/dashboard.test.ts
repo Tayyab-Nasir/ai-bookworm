@@ -23,5 +23,6 @@ test("dashboard usage meters default to zero and never fabricate capacity", () =
 
 test("dashboard activity uses friendly labels and safe fallbacks", () => {
   assert.equal(activityLabel("publishing_package_created"), "Retailer package prepared");
+  assert.equal(activityLabel("retailer_sales_imported"), "Retailer sales report imported");
   assert.equal(activityLabel("chapter_saved"), "chapter saved");
 });
