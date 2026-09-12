@@ -28,8 +28,10 @@ They are not approved commercial offers.
 
 ## Credit accounting direction
 
-The existing `ai_credits` and `image_credits` meters are operational units, not
-provider tokens. Before paid launch, define a versioned conversion table from
+The existing `ai_credits`, `image_credits`, and `audio_credits` meters are
+operational units, not provider tokens. Audio currently reserves one credit per
+started 1,000 source characters in each narration segment. Before paid launch,
+define a versioned conversion table from
 provider usage and model price snapshots into customer credits. Reserve a
 conservative maximum before dispatch, reconcile against the provider receipt
 after success, and release unused credit. Never rely on a front-end balance
@@ -38,3 +40,9 @@ check as the spending boundary.
 Provider pricing changes over time. Store the model, price version, measured
 usage, provider cost estimate, customer debit, job ID, and idempotency key with
 each completed billable job so historical margins remain auditable.
+
+The Speech endpoint returns audio bytes without an inline token receipt. The
+worker therefore labels its cost as an estimate based on a versioned word-rate
+method; reconcile exact speech spend through OpenAI organization usage before
+margin reporting or customer invoicing. Do not present the estimate as a
+provider invoice.

@@ -237,6 +237,9 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       throw new AppError(422, "This edition has invalid settings. Save the edition before validation.");
     }
     const config = configResult.data;
+    if (config.kind === "audiobook") {
+      throw new AppError(422, "Audiobook editions use the narration workflow, not EPUB/PDF preflight.");
+    }
     if (body.channel !== "export" && !CHANNEL_FORMATS[body.channel].includes(config.kind)) {
       throw new AppError(422, `${body.channel} does not accept ${config.kind} export packages.`);
     }
@@ -357,6 +360,9 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       throw new AppError(422, "This edition has invalid settings. Save it before creating a package.");
     }
     const config = configResult.data;
+    if (config.kind === "audiobook") {
+      throw new AppError(422, "Audiobook retailer packaging is not available in this release.");
+    }
     const service = app.supabaseFactory();
     const { data: workspace, error: workspaceError } = await service.from("workspaces")
       .select("organization_id").eq("id", book.workspace_id).maybeSingle();

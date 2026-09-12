@@ -22,6 +22,7 @@ import { editionRoutes } from "./routes/editions.js";
 import { publishingRoutes } from "./routes/publishing.js";
 import { accountRoutes } from "./routes/account.js";
 import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
+import { audiobookRoutes } from "./routes/audiobooks.js";
 import { adminPlugin } from "./plugins/admin.js";
 import { redactObject } from "./lib/redact.js";
 import type { StripeFactory } from "./lib/stripe.js";
@@ -54,6 +55,7 @@ export async function buildApp(
     bookMemoryRoutes(v1);
     metadataGenerationRoutes(v1, { fetcher: opts.aiFetch });
     aiRoutes(v1, { fetcher: opts.aiFetch });
+    audiobookRoutes(v1);
     assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner });
     editionRoutes(v1, { fetcher: opts.renderFetch });
     publishingRoutes(v1, { renderFetcher: opts.renderFetch, publishingFetcher: opts.publishingFetch });

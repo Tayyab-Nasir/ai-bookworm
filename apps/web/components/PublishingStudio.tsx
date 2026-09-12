@@ -2,13 +2,13 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { EditionConfig, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel } from "@bookworm/api-client";
-import type { Asset, Book, Edition } from "@bookworm/types";
+import type { AudiobookProjectResult, AudiobookVoice, EditionConfig, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel } from "@bookworm/api-client";
+import type { Asset, Book, Chapter, Edition } from "@bookworm/types";
 import { apiClient } from "./api";
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
 const FONTS = ["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"] as const;
-type Kind = "ebook" | "print";
+type Kind = "ebook" | "print" | "audiobook";
 type Channel = PreflightResult["requestedChannel"];
 const CHANNEL_FORMATS: Record<RetailerChannel, Kind[]> = { kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"] };
 const RTL_LANGUAGES = new Set(["ar", "arc", "dv", "fa", "he", "iw", "nqo", "ps", "sd", "ug", "ur", "yi"]);
@@ -30,6 +30,7 @@ interface FormState {
   coverAssetId: string; titleOnCover: boolean; subtitleOnCover: boolean; authorOnCover: boolean;
   textColor: string; overlay: number; qrEnabled: boolean; qrUrl: string; qrLabel: string;
   qrPosition: "bottom-left" | "bottom-right"; qrSize: number;
+  voice: AudiobookVoice; narrationInstructions: string; narrationSpeed: number;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -40,6 +41,7 @@ const DEFAULT_FORM: FormState = {
   numbering: "arabic", numberPosition: "bottom-outer", startAt: 1, coverAssetId: "", titleOnCover: true,
   subtitleOnCover: true, authorOnCover: true, textColor: "#ffffff", overlay: 0.28,
   qrEnabled: false, qrUrl: "", qrLabel: "", qrPosition: "bottom-right", qrSize: 180,
+  voice: "marin", narrationInstructions: "Narrate naturally with clear chapter pacing and faithful pronunciation.", narrationSpeed: 1,
 };
 
 function object(value: unknown): Record<string, unknown> {
@@ -59,7 +61,7 @@ export function formFromEdition(edition: Edition): FormState {
   const page = object(config.page_numbering);
   return {
     ...DEFAULT_FORM,
-    kind: edition.type === "print" ? "print" : "ebook",
+    kind: edition.type === "print" || edition.type === "audiobook" ? edition.type : "ebook",
     language: edition.language ?? "en",
     textDirection: config.text_direction === "ltr" || config.text_direction === "rtl" ? config.text_direction : "auto",
     flow: config.flow === "fixed" ? "fixed" : "reflowable",
@@ -81,6 +83,9 @@ export function formFromEdition(edition: Edition): FormState {
     textColor: typeof cover.text_color === "string" ? cover.text_color : "#ffffff", overlay: number(cover.overlay_opacity, 0.28),
     qrEnabled: qr.enabled === true, qrUrl: typeof qr.url === "string" ? qr.url : "", qrLabel: typeof qr.label === "string" ? qr.label : "",
     qrPosition: qr.position === "bottom-left" ? "bottom-left" : "bottom-right", qrSize: number(qr.size_px, 180),
+    voice: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"].includes(String(config.voice)) ? config.voice as AudiobookVoice : "marin",
+    narrationInstructions: typeof config.instructions === "string" ? config.instructions : DEFAULT_FORM.narrationInstructions,
+    narrationSpeed: number(config.speed, 1),
   };
 }
 
@@ -96,6 +101,10 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
     kind: "ebook", schema_version: "1.1.0", text_direction: form.textDirection, flow: form.flow, navigation: form.navigation, cover,
     image_policy: { max_width_px: 1600, max_bytes: 5 * 1024 * 1024, embed: true, allowed_formats: ["jpeg", "png", "gif"], ...(saved.kind === "ebook" ? object(saved.image_policy) : {}) },
     ...(saved.kind === "ebook" && saved.metadata_overrides ? { metadata_overrides: Object.fromEntries(Object.entries(object(saved.metadata_overrides)).filter((entry): entry is [string, string] => typeof entry[1] === "string")) } : {}),
+  };
+  if (form.kind === "audiobook") return {
+    kind: "audiobook", schema_version: "1.0.0", voice: form.voice,
+    instructions: form.narrationInstructions.trim() || null, speed: form.narrationSpeed,
   };
   return {
     kind: "print", schema_version: "1.1.0", text_direction: form.textDirection, trim_size: form.trimSize, bleed_in: form.bleed,
@@ -117,10 +126,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [role, setRole] = useState("viewer");
   const [editions, setEditions] = useState<Edition[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [narrationChapterId, setNarrationChapterId] = useState("");
+  const [audiobookProjects, setAudiobookProjects] = useState<AudiobookProjectResult[]>([]);
+  const [aiDisclosureAccepted, setAiDisclosureAccepted] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [dirty, setDirty] = useState(false);
-  const [busy, setBusy] = useState<"load" | "save" | "render" | "preflight" | "package" | "history" | null>("load");
+  const [busy, setBusy] = useState<"load" | "save" | "render" | "preflight" | "package" | "history" | "audiobook" | null>("load");
   const [channel, setChannel] = useState<Channel>("export");
   const [rendered, setRendered] = useState<RenderedEditionResult | null>(null);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
@@ -132,7 +145,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const editable = EDIT_ROLES.has(role);
   const coverAssets = useMemo(() => assets.filter((asset) => asset.mime_type.startsWith("image/") && asset.checksum !== "pending" && !asset.deleted_at), [assets]);
   const activePublishingJobs = useMemo(() => publishingJobs.filter((job) => !activeId || job.editionId === activeId), [publishingJobs, activeId]);
-  const channelCompatible = channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind);
+  const channelCompatible = form.kind !== "audiobook" && (channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind));
   const resolvedDirection = resolveEditionTextDirection(form.language, form.textDirection);
   const rtlPrintUnsupported = form.kind === "print" && resolvedDirection === "rtl";
   const rtlCoverTextUnsupported = resolvedDirection === "rtl" && Boolean(form.coverAssetId) && (
@@ -145,10 +158,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const load = useCallback(async () => {
     setBusy("load");
     try {
-      const [identity, editionResult, packageHistory] = await Promise.all([api.getBook(bookId), api.listEditions(bookId), api.listPublishingJobs(bookId)]);
+      const [identity, editionResult, packageHistory, chapterResult] = await Promise.all([api.getBook(bookId), api.listEditions(bookId), api.listPublishingJobs(bookId), api.listChapters(bookId)]);
       const assetResult = await api.listAssets(identity.book.workspace_id);
-      setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setPublishingJobs(packageHistory.jobs);
-      if (editionResult.editions[0]) { setActiveId(editionResult.editions[0].id); setForm(formFromEdition(editionResult.editions[0])); }
+      setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setPublishingJobs(packageHistory.jobs); setChapters(chapterResult.chapters);
+      setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
+      if (editionResult.editions[0]) {
+        setActiveId(editionResult.editions[0].id); setForm(formFromEdition(editionResult.editions[0]));
+        setAudiobookProjects(editionResult.editions[0].type === "audiobook" ? (await api.listAudiobookProjects(editionResult.editions[0].id)).projects : []);
+      }
       else { setActiveId(null); setForm({ ...DEFAULT_FORM, language: identity.book.language }); }
       setDirty(false); setError(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load publishing settings."); }
@@ -169,13 +186,15 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const selectEdition = (edition: Edition) => {
     if (busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
-    setActiveId(edition.id); setForm(formFromEdition(edition)); setDirty(false); setRendered(null); setPreflight(null); setError(null);
+    setActiveId(edition.id); setForm(formFromEdition(edition)); setDirty(false); setRendered(null); setPreflight(null); setError(null); setAiDisclosureAccepted(false);
+    if (edition.type === "audiobook") void api.listAudiobookProjects(edition.id).then((result) => setAudiobookProjects(result.projects)).catch(() => setError("Could not load audiobook history."));
+    else setAudiobookProjects([]);
   };
 
   const newEdition = (kind: Kind) => {
     if (!editable || busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
-    setActiveId(null); setForm({ ...DEFAULT_FORM, kind, language: book?.language ?? "en" }); setDirty(true); setRendered(null); setPreflight(null); setError(null);
+    setActiveId(null); setForm({ ...DEFAULT_FORM, kind, language: book?.language ?? "en" }); setDirty(true); setRendered(null); setPreflight(null); setError(null); setAudiobookProjects([]); setAiDisclosureAccepted(false);
   };
 
   const save = async () => {
@@ -187,6 +206,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
         : await api.createEdition(bookId, { config: toConfig(form), language: form.language });
       setEditions((current) => [saved, ...current.filter((edition) => edition.id !== saved.id)]);
       setActiveId(saved.id); setForm(formFromEdition(saved)); setDirty(false); setNotice("Edition settings saved.");
+      if (saved.type === "audiobook") setAudiobookProjects((await api.listAudiobookProjects(saved.id)).projects);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save the edition."); }
     finally { setBusy(null); }
   };
@@ -230,12 +250,31 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     finally { setBusy(null); }
   };
 
+  const generateAudiobook = async () => {
+    if (!editable || !activeId || form.kind !== "audiobook" || dirty || busy || !narrationChapterId || !aiDisclosureAccepted) return;
+    setBusy("audiobook"); setError(null); setNotice(null);
+    try {
+      const project = await api.createAudiobookProject(activeId, { chapterId: narrationChapterId, idempotencyKey: crypto.randomUUID(), aiDisclosureAccepted: true });
+      setAudiobookProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
+      setNotice(`Narration queued in ${project.segmentCount} private segment${project.segmentCount === 1 ? "" : "s"}.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not queue audiobook narration."); }
+    finally { setBusy(null); }
+  };
+
+  const refreshAudiobooks = async () => {
+    if (!activeId || busy) return;
+    setBusy("audiobook"); setError(null);
+    try { setAudiobookProjects((await api.listAudiobookProjects(activeId)).projects); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh audiobook progress."); }
+    finally { setBusy(null); }
+  };
+
   const leave = (event: React.MouseEvent<HTMLAnchorElement>) => { if (dirty && !window.confirm("Leave and discard unsaved edition settings?")) event.preventDefault(); };
   return <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
     <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
       <div><Link href={`/books/${bookId}`} onClick={leave} className="text-sm text-white/50 hover:text-white">← Manuscript</Link>
         <h1 className="mt-2 text-3xl font-semibold tracking-tight">Layout & publishing</h1>
-        <p className="mt-2 max-w-2xl text-sm text-white/55">Create EPUB or print-ready PDF editions, compose cover typography, and run retailer-specific preflight before manual submission.</p>
+        <p className="mt-2 max-w-2xl text-sm text-white/55">Create EPUB, print-ready PDF, or AI-narrated audiobook editions, then prepare private deliverables for distribution.</p>
       </div>
       <Link href={book ? `/assets?ws=${book.workspace_id}` : "/assets"} onClick={leave} className="glass-ghost rounded-full px-4 py-2 text-sm">Manage artwork</Link>
     </div>
@@ -251,9 +290,10 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           </button>)}
           {!editions.length && busy !== "load" && <p className="py-3 text-sm text-white/45">No saved editions yet.</p>}
         </div>
-        {editable && <div className="mt-5 grid grid-cols-2 gap-2 border-t border-white/10 pt-5">
+        {editable && <div className="mt-5 grid grid-cols-3 gap-2 border-t border-white/10 pt-5">
           <button type="button" onClick={() => newEdition("ebook")} className="rounded-lg border border-white/15 px-3 py-2 text-xs">New EPUB</button>
           <button type="button" onClick={() => newEdition("print")} className="rounded-lg border border-white/15 px-3 py-2 text-xs">New print</button>
+          <button type="button" onClick={() => newEdition("audiobook")} className="rounded-lg border border-white/15 px-3 py-2 text-xs">New audio</button>
         </div>}
       </aside>
 
@@ -263,13 +303,13 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             <button type="button" onClick={() => void save()} disabled={!editable || Boolean(busy) || (!dirty && Boolean(activeId))} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "save" ? "Saving…" : "Save edition"}</button>
           </div>
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
-            <label className="text-sm text-white/65">Format<select value={form.kind} onChange={(event) => update("kind", event.target.value as Kind)} disabled={Boolean(activeId)} className={fieldClass}><option value="ebook">EPUB ebook</option><option value="print">Print PDF</option></select></label>
+            <label className="text-sm text-white/65">Format<select value={form.kind} onChange={(event) => update("kind", event.target.value as Kind)} disabled={Boolean(activeId)} className={fieldClass}><option value="ebook">EPUB ebook</option><option value="print">Print PDF</option><option value="audiobook">AI-narrated audiobook</option></select></label>
             <label className="text-sm text-white/65">Language<input value={form.language} onChange={(event) => update("language", event.target.value)} maxLength={35} className={fieldClass} /></label>
-            <label className="text-sm text-white/65">Text direction<select value={form.textDirection} onChange={(event) => update("textDirection", event.target.value as FormState["textDirection"])} className={fieldClass}><option value="auto">Auto from edition language</option><option value="ltr">Left to right</option><option value="rtl">Right to left</option></select></label>
+            {form.kind !== "audiobook" && <label className="text-sm text-white/65">Text direction<select value={form.textDirection} onChange={(event) => update("textDirection", event.target.value as FormState["textDirection"])} className={fieldClass}><option value="auto">Auto from edition language</option><option value="ltr">Left to right</option><option value="rtl">Right to left</option></select></label>}
             {form.kind === "ebook" ? <>
               <label className="text-sm text-white/65">Flow<select value={form.flow} onChange={(event) => update("flow", event.target.value as FormState["flow"])} className={fieldClass}><option value="reflowable">Reflowable</option><option value="fixed">Fixed layout</option></select></label>
               <label className="text-sm text-white/65">Navigation<select value={form.navigation} onChange={(event) => update("navigation", event.target.value as FormState["navigation"])} className={fieldClass}><option value="toc+landmarks">TOC + landmarks</option><option value="toc">TOC</option><option value="none">None</option></select></label>
-            </> : <>
+            </> : form.kind === "print" ? <>
               <label className="text-sm text-white/65">Trim size<select value={form.trimSize} onChange={(event) => update("trimSize", event.target.value as FormState["trimSize"])} className={fieldClass}>{["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].map((size) => <option key={size}>{size}</option>)}</select></label>
               <label className="text-sm text-white/65">Bleed<select value={form.bleed} onChange={(event) => update("bleed", Number(event.target.value))} className={fieldClass}><option value={0}>No bleed</option><option value={0.125}>0.125 in</option></select></label>
               <label className="text-sm text-white/65">Body font<select value={form.bodyFont} onChange={(event) => update("bodyFont", event.target.value as FormState["bodyFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font}>{font}</option>)}</select></label>
@@ -283,13 +323,17 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
               <label className="text-sm text-white/65">Page numbers<select value={form.numbering} onChange={(event) => update("numbering", event.target.value as FormState["numbering"])} className={fieldClass}><option value="arabic">Arabic</option><option value="roman">Roman</option><option value="none">None</option></select></label>
               <label className="text-sm text-white/65">Starting page number<input type="number" min={1} max={10000} step={1} value={form.startAt} onChange={(event) => update("startAt", Number(event.target.value))} className={fieldClass} /></label>
               <label className="text-sm text-white/65">Number position<select value={form.numberPosition} onChange={(event) => update("numberPosition", event.target.value as FormState["numberPosition"])} className={fieldClass}><option value="bottom-outer">Bottom outer</option><option value="bottom-center">Bottom center</option><option value="top-center">Top center</option></select></label>
+            </> : <>
+              <label className="text-sm text-white/65">Narrator voice<select value={form.voice} onChange={(event) => update("voice", event.target.value as AudiobookVoice)} className={fieldClass}>{["marin", "cedar", "coral", "ballad", "verse", "alloy", "ash", "echo", "fable", "onyx", "nova", "sage", "shimmer"].map((voice) => <option key={voice} value={voice}>{voice}</option>)}</select></label>
+              <label className="text-sm text-white/65">Narration speed ({form.narrationSpeed.toFixed(2)}×)<input type="range" min={0.25} max={4} step={0.05} value={form.narrationSpeed} onChange={(event) => update("narrationSpeed", Number(event.target.value))} className="mt-4 w-full" /></label>
+              <label className="text-sm text-white/65 sm:col-span-2">Voice direction<textarea value={form.narrationInstructions} onChange={(event) => update("narrationInstructions", event.target.value)} maxLength={2000} rows={3} className={fieldClass} placeholder="Describe pacing, tone, and pronunciation." /></label>
             </>}
           </div>
           {form.kind === "print" && <div className="mt-5 grid grid-cols-2 gap-4 border-t border-white/10 pt-5 sm:grid-cols-4">{(["top", "bottom", "inner", "outer"] as const).map((key) => <label key={key} className="text-sm capitalize text-white/65">{key} margin (in)<input type="number" min={0.25} max={2} step={0.05} value={form[key]} onChange={(event) => update(key, Number(event.target.value))} className={fieldClass} /></label>)}</div>}
           {rtlPrintUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL print PDF is not available with the current embedded fonts.</p><p className="mt-1 text-amber-100/80">Use an EPUB for this edition, or run preflight to record the requirement while a shaping-capable print font pipeline is added.</p></div>}
         </section>
 
-        <section className={cardClass} aria-labelledby="cover-settings">
+        {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="cover-settings">
           <h2 id="cover-settings" className="text-xl font-semibold">Cover composition</h2><p className="mt-1 text-sm text-white/45">Choose private artwork; title, author, overlay, and optional QR are composed during rendering.</p>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-white/65">Cover artwork<select value={form.coverAssetId} onChange={(event) => update("coverAssetId", event.target.value)} className={fieldClass}><option value="">No cover artwork</option>{coverAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
@@ -300,9 +344,18 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           <label className="mt-5 inline-flex items-center gap-2 text-sm text-white/65"><input type="checkbox" checked={form.qrEnabled} onChange={(event) => update("qrEnabled", event.target.checked)} />Add QR code</label>
           {form.qrEnabled && <div className="mt-4 grid gap-4 sm:grid-cols-2"><label className="text-sm text-white/65">HTTPS destination<input type="url" value={form.qrUrl} onChange={(event) => update("qrUrl", event.target.value)} placeholder="https://author.example/book" className={fieldClass} /></label><label className="text-sm text-white/65">QR label<input value={form.qrLabel} onChange={(event) => update("qrLabel", event.target.value)} maxLength={120} placeholder="Read more" className={fieldClass} /></label></div>}
           {rtlCoverTextUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL cover text cannot be safely composed with the current cover renderer.</p><p className="mt-1 text-amber-100/80">Turn off the selected title, subtitle, and author overlays for artwork-only cover output, or use a shaping-capable cover workflow.</p></div>}
-        </section>
+        </section>}
 
-        <section className={cardClass} aria-labelledby="export-title">
+        {form.kind === "audiobook" && <section className={cardClass} aria-labelledby="audiobook-title">
+          <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="audiobook-title" className="text-xl font-semibold">Chapter narration</h2><p className="mt-1 max-w-2xl text-sm text-white/45">Narration uses the exact saved chapter version, splits it into provider-safe segments, and stores every MP3 privately. One audio credit covers up to 1,000 source characters.</p></div><button type="button" onClick={() => void refreshAudiobooks()} disabled={!activeId || Boolean(busy)} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "audiobook" ? "Working…" : "Refresh progress"}</button></div>
+          <div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm text-white/65">Saved chapter<select value={narrationChapterId} onChange={(event) => setNarrationChapterId(event.target.value)} className={fieldClass}><option value="">Choose a chapter</option>{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.order_index + 1}. {chapter.title}</option>)}</select></label><div className="rounded-xl border border-white/10 bg-black/30 p-4 text-sm text-white/55"><p>Voice: <span className="capitalize text-white">{form.voice}</span> · {form.narrationSpeed.toFixed(2)}×</p><p className="mt-1">Model: gpt-4o-mini-tts</p></div></div>
+          <label className="mt-5 flex items-start gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.07] p-4 text-sm text-amber-50"><input type="checkbox" checked={aiDisclosureAccepted} onChange={(event) => setAiDisclosureAccepted(event.target.checked)} className="mt-1" /><span>I understand this is an AI-generated voice and will disclose that to listeners wherever required. Generation consumes paid audio credits and starts only after the server reserves enough capacity.</span></label>
+          <button type="button" onClick={() => void generateAudiobook()} disabled={!editable || !activeId || dirty || Boolean(busy) || !narrationChapterId || !aiDisclosureAccepted} className="glass-solid mt-5 rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{busy === "audiobook" ? "Queuing…" : "Generate chapter narration"}</button>
+          {dirty && <p className="mt-3 text-xs text-amber-200">Save the voice settings before generating narration.</p>}
+          <div className="mt-7 border-t border-white/10 pt-5"><h3 className="font-medium">Narration history</h3>{audiobookProjects.length ? <ul className="mt-4 space-y-4">{audiobookProjects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/30 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium">{chapters.find((chapter) => chapter.id === project.chapterId)?.title ?? "Saved chapter"}</p><p className="mt-1 text-xs text-white/40">{project.segmentCount} segments · {project.creditUnits} audio credits · {project.voice}</p></div><span className={`rounded-full px-3 py-1 text-xs ${project.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : project.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{project.status}</span></div><div className="mt-4 grid gap-3 md:grid-cols-2">{project.segments.map((segment) => <div key={segment.index} className="rounded-lg border border-white/10 p-3"><p className="text-xs text-white/45">Part {segment.index + 1} · {segment.status}</p>{segment.download ? <><audio controls preload="none" src={segment.download.url} className="mt-2 w-full" /><a href={segment.download.url} download className="mt-2 inline-block text-xs underline">Download private MP3</a></> : <p className="mt-2 text-xs text-white/35">Audio will appear after the worker completes this segment.</p>}</div>)}</div></li>)}</ul> : <p className="mt-3 text-sm text-white/45">No narration has been queued for this edition.</p>}</div>
+        </section>}
+
+        {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="export-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="export-title" className="text-xl font-semibold">Render & preflight</h2><p className="mt-1 text-sm text-white/45">Files stay private and use five-minute download links. Retailer submission is manual in this release.</p></div>
             <button type="button" onClick={() => void render()} disabled={!editable || !activeId || dirty || Boolean(busy) || renderBlocked} aria-describedby={renderBlocked ? "rtl-render-guidance" : undefined} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "render" ? "Rendering…" : `Render ${form.kind === "ebook" ? "EPUB" : "PDF"}`}</button></div>
           {dirty && <p className="mt-3 text-xs text-amber-200">Save these settings before rendering or validating.</p>}
@@ -311,9 +364,9 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           <div className="mt-6 flex flex-wrap items-end gap-3 border-t border-white/10 pt-5"><label className="min-w-52 flex-1 text-sm text-white/65">Preflight target<select value={channel} onChange={(event) => { setChannel(event.target.value as Channel); setPreflight(null); }} className={fieldClass}><option value="export">Universal export</option><option value="kdp">Amazon KDP</option><option value="apple">Apple Books</option><option value="barnesnoble">Barnes & Noble Press</option><option value="lulu">Lulu</option></select></label><button type="button" onClick={() => void validate()} disabled={!editable || !activeId || dirty || Boolean(busy) || !channelCompatible} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "preflight" ? "Checking…" : "Run preflight"}</button></div>
           {!channelCompatible && <p className="mt-3 text-sm text-amber-200">{channel === "apple" ? "Apple Books packages require an EPUB edition." : "Lulu packages require a print PDF edition."}</p>}
           {preflight && <div className="mt-5"><div className="flex flex-wrap gap-3 text-sm"><span className={`rounded-full px-3 py-1 ${preflight.errors ? "bg-red-400/15 text-red-100" : "bg-emerald-400/15 text-emerald-100"}`}>{preflight.errors} errors</span><span className="rounded-full bg-amber-300/10 px-3 py-1 text-amber-100">{preflight.warnings} warnings</span><span className="px-2 py-1 text-white/40">Rules {preflight.ruleVersion}</span></div>{preflight.findings.length ? <ul className="mt-4 space-y-2">{preflight.findings.map((finding, index) => <li key={`${finding.rule_id}:${finding.location}:${index}`} className="rounded-xl border border-white/10 p-3 text-sm"><span className="font-medium uppercase text-white/60">{finding.severity}</span> · {finding.message}<span className="mt-1 block text-xs text-white/35">{finding.rule_id}{finding.location ? ` · ${finding.location}` : ""}</span></li>)}</ul> : <p className="mt-4 text-sm text-emerald-200">No preflight findings for this target.</p>}</div>}
-        </section>
+        </section>}
 
-        <section className={cardClass} aria-labelledby="package-title">
+        {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="package-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="package-title" className="text-xl font-semibold">Retailer export packages</h2><p className="mt-1 max-w-2xl text-sm text-white/45">Create a private ZIP from the exact saved render after a zero-error retailer preflight. The package is downloaded and submitted manually; this does not publish or track retailer review status.</p></div>
             <button type="button" onClick={() => void createPackage()} disabled={!editable || !activeId || dirty || Boolean(busy) || channel === "export" || !channelCompatible || !rendered || !preflight || preflight.requestedChannel !== channel || preflight.errors > 0} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "package" ? "Packaging…" : "Create retailer package"}</button></div>
           {channel === "export" && <p className="mt-4 text-sm text-white/55">Choose a retailer above to create its versioned package. Universal exports are the rendered EPUB/PDF files shown in the render section.</p>}
@@ -325,7 +378,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium capitalize">{job.channel === "barnesnoble" ? "Barnes & Noble" : job.channel} package</p><p className="mt-1 text-xs text-white/40">{new Date(job.createdAt).toLocaleString()} · {job.ruleVersion ?? "rules pending"}</p></div><span className={`rounded-full px-3 py-1 text-xs ${job.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : job.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{job.status === "succeeded" ? "ready" : job.status}</span></div>
             {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span><a href={job.package.download.url} download className="underline">Download private ZIP</a></div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : "No downloadable package is available for this job."}</p>}
           </li>)}</ul> : <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p>}
-        </section>
+        </section>}
       </div>
     </fieldset>
   </main>;

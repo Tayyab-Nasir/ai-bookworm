@@ -85,7 +85,15 @@ const printSchema = z.object({
   cover: coverSchema,
 }).strict();
 
-export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, printSchema]);
+const audiobookSchema = z.object({
+  kind: z.literal("audiobook"),
+  schema_version: z.literal("1.0.0").default("1.0.0"),
+  voice: z.enum(["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"]).default("marin"),
+  instructions: z.string().trim().min(1).max(2_000).nullable().default(null),
+  speed: z.number().min(0.25).max(4).default(1),
+}).strict();
+
+export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, printSchema, audiobookSchema]);
 
 export function withEditionLanguage<T extends { metadata: { language: string } }>(model: T, language: unknown): T {
   const editionLanguage = typeof language === "string" ? language.trim() : "";
@@ -205,6 +213,7 @@ async function loadEdition(sb: SupabaseClient, editionId: string) {
 }
 
 async function validateCover(sb: SupabaseClient, workspaceId: string, config: z.infer<typeof editionConfigSchema>) {
+  if (config.kind === "audiobook") return;
   const assetId = config.cover.asset_id;
   if (!assetId) return;
   const { data, error } = await sb.from("assets").select("id,mime_type,checksum,status,deleted_at")
@@ -290,6 +299,9 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       throw new AppError(422, "This edition has invalid settings. Save the edition before rendering.");
     }
     const config = configResult.data;
+    if (config.kind === "audiobook") {
+      throw new AppError(422, "Use audiobook generation for narration editions.", undefined, "audiobook_render_not_supported");
+    }
     const service = app.supabaseFactory();
     const { data: workspace, error: workspaceError } = await service.from("workspaces")
       .select("organization_id").eq("id", book.workspace_id).maybeSingle();

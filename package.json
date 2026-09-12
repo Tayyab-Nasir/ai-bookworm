@@ -24,6 +24,7 @@
     "worker:publishing": "npm run worker:publishing -w @bookworm/api --",
     "worker:document": "npm run worker:document -w @bookworm/api --",
     "worker:ai": "npm run worker:ai -w @bookworm/api --",
+    "worker:audiobook": "npm run worker:audiobook -w @bookworm/api --",
     "storage:orphan-report": "npm run storage:orphan-report -w @bookworm/api --",
     "verify": "npm run typecheck && npm run test:unit && npm run test:web && npm run test:db && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
   },

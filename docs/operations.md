@@ -363,3 +363,29 @@ before production tuning.
   That API retrieves catalog data and is not a manuscript/cover submission API.
   Add direct integrations only after provider approval, documented scopes,
   sandbox fixtures and contract tests exist.
+
+## Audiobook narration
+
+- Audiobook editions pin a narrator voice, direction, speed, language, and the
+  required AI-voice disclosure. Chapter jobs always pin the current
+  `document_versions.id`; queue rows contain only character ranges and SHA-256
+  hashes, never copied manuscript text.
+- Start the durable worker with `npm run worker:audiobook`; add `-- --once` for
+  one claim. It uses `OPENAI_TTS_MODEL` (default `gpt-4o-mini-tts`) and the
+  server-only `OPENAI_API_KEY`. Each OpenAI request is at most 4,096 characters,
+  uses no automatic SDK retry, and writes an MP3 to private `book-assets`
+  storage before atomic asset/accounting completion.
+- One `audio_credit` represents up to 1,000 source characters in a segment.
+  The full chapter reservation is checked under the organization lock before
+  any job is committed. No subscription or missing audio allowance means zero
+  capacity. Failed terminal projects cancel remaining segments so reservations
+  cannot remain stranded.
+- A private completion receipt permits recovery after an uploaded result loses
+  its database response. If audio exists without a valid receipt, the worker
+  stops in an unknown state instead of paying for a duplicate provider call.
+- Speech responses do not contain exact token usage. `ai_runs.estimated_cost`
+  uses the documented model prices plus the labelled `word-rate-v1` duration
+  estimate. Reconcile actual spend from OpenAI organization usage before margin
+  reporting. Audio mastering, concatenation, loudness/QC, opening/closing
+  credits, retailer packaging, and live-provider acceptance remain separate
+  release gates; segment MP3s are not claimed to be a retail-ready audiobook.

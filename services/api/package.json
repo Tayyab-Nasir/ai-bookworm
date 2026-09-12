@@ -10,6 +10,7 @@
     "worker:publishing": "tsx ../../workers/publishing/worker.ts",
     "worker:document": "tsx ../../workers/document/worker.ts",
     "worker:ai": "tsx ../../workers/ai/worker.ts",
+    "worker:audiobook": "tsx ../../workers/audiobook/worker.ts",
     "storage:orphan-report": "tsx ../../workers/maintenance/storage-orphan-report.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts"

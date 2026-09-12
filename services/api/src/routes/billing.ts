@@ -181,7 +181,7 @@ export function billingRoutes(app: FastifyInstance, opts: { stripeFactory?: Stri
     if (!member) throw new AppError(403, "not an organization member");
     const svc = app.supabaseFactory();
     const ent = await currentEntitlements(svc, organizationId);
-    const meters = ["ai_credits", "image_credits", "storage_gb", "seats", "rendering", "publishing"];
+    const meters = ["ai_credits", "image_credits", "audio_credits", "storage_gb", "seats", "rendering", "publishing"];
     const usage: Record<string, number> = {};
     for (const m of meters) usage[m] = await monthUsage(svc, organizationId, m);
     const { data: last } = await svc

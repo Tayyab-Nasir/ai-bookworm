@@ -44,6 +44,7 @@ export async function loadPublishingInputs(sb: SupabaseClient, job: Job) {
     throw new WorkerFailure("worker_edition_changed", false);
   }
   const config = parsed.data;
+  if (config.kind === "audiobook") throw new WorkerFailure("worker_invalid_channel", false);
   const formatChannels: Record<string, readonly string[]> = {
     render: ["ebook", "print"], export: ["ebook", "print"], kdp: ["ebook", "print"],
     apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"],

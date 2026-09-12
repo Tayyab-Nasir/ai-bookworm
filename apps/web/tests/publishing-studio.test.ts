@@ -38,3 +38,13 @@ test("print typography edits retain starting page and allow deliberate changes",
   const changed = toConfig({ ...form, startAt: 5 });
   assert.equal(changed.kind === "print" && changed.page_numbering?.start_at, 5);
 });
+
+test("audiobook voice settings round-trip without print or cover fields", () => {
+  const edition = {
+    type: "audiobook",
+    language: "en",
+    edition_metadata_json: { kind: "audiobook", schema_version: "1.0.0", voice: "cedar", speed: 0.95, instructions: "Warm and precise." },
+  } as unknown as Edition;
+  const saved = toConfig(formFromEdition(edition), edition.edition_metadata_json);
+  assert.deepEqual(saved, { kind: "audiobook", schema_version: "1.0.0", voice: "cedar", speed: 0.95, instructions: "Warm and precise." });
+});

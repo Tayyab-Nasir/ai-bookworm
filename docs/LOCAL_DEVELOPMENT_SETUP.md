@@ -30,18 +30,17 @@ npm run dev -w apps/web
 
 The `.env.local` file is pre-configured with Supabase keys for project `cyhqtwndadlyzpeatxws`.
 
-### Missing Keys (Optional - Mock Mode Active)
+### Missing keys and local test behavior
 
 | Key | Purpose | Mock Fallback |
 |-----|---------|---------------|
-| OPENAI_API_KEY | AI text generation | N/A |
-| ANTHROPIC_API_KEY | AI text generation | MockProvider |
+| OPENAI_API_KEY | Server-side text, image, and speech generation | Deterministic mocks only in explicit tests/evals; production requests fail closed |
 | STRIPE_SECRET_KEY | Billing | In-memory credits |
 | STRIPE_WEBHOOK_SECRET | Billing webhooks | Disabled |
 | REDIS_URL | Queue/cache | Not required |
 | QDRANT_URL | Vector search | Not required |
 
-## Mock Mode Capabilities
+## Deterministic test capabilities
 
 - ✅ User signup/signin flow
 - ✅ Workspace/book management
@@ -74,6 +73,6 @@ Before full production testing, apply migrations:
 
 ## Production Readiness
 
-BMAD Production Audit: **Not Live** - Migrations pending, live keys not configured, Redis/Qdrant not running
+Production note: repository migrations are installed in the authorized AI-BookWorm Supabase project. Provider and billing keys, Google OAuth, Redis/Qdrant, worker deployment, and release acceptance still require operator configuration.
 
 See `docs/release-checklist.md` for full production checklists.

@@ -20,14 +20,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 ## Current checkpoint: 2026-09-12
 
 The authorized live initialization is now complete on Supabase project
-`cyhqtwndadlyzpeatxws`: all 42 repository migrations are installed. The newest
-two migrations create a safe profile row for every Auth identity, harden an
-advisor-reported function search path, remove a duplicate index, and enforce
-zero text/image generation allowance without an explicit paid entitlement.
-The live function definitions were read back and confirm zero fallback. No seed
+`cyhqtwndadlyzpeatxws`: all 45 repository migrations are installed. The newest
+migrations create a safe profile row for every Auth identity, enforce zero
+text/image/audio generation allowance without an explicit paid entitlement,
+default commercial plans to unpublished, and add the durable audiobook queue.
+The live definitions were read back and confirm default-deny plan/audio access. No seed
 plans, test users, payments, provider calls, publishing submissions or customer
 content were created. Remaining advisor notices are the public `citext`
-extension plus intentionally private no-policy service tables and eight
+extension plus intentionally private no-policy service tables and nine
 authenticated, internally-authorized SECURITY DEFINER RPCs; review before any
 change rather than revoking them blindly.
 
@@ -36,8 +36,19 @@ API with `gpt-6-astra`; images default to `gpt-image-2.5-sunburst`; audiobook
 configuration targets `gpt-4o-mini-tts`. Current official model-specific text
 and image estimates replace the stale generic GPT rate. Mock remains explicit
 for tests. No OpenAI key is configured, so no live generation or spend was
-performed. Audiobook synthesis is configured but not yet implemented as a
-durable product workflow.
+performed.
+
+Audiobook chapter narration is now a durable, paid-only workflow. Authors can
+create an audiobook edition in Publishing Studio, choose a saved chapter,
+acknowledge the AI-voice disclosure, queue version-pinned segments, refresh
+progress, preview private MP3s, and download short-lived links. Segments are at
+most 4,096 Unicode characters; queue records hold source ranges/hashes rather
+than copied manuscript text. The leased worker (`npm run worker:audiobook`)
+uses private recovery receipts and atomically creates trusted assets, AI run
+telemetry, and `audio_credits` usage. Missing plan allowance is zero. Speech
+cost is explicitly a word-rate estimate until reconciled against OpenAI usage.
+Mastering/concatenation, loudness and pronunciation QC, retail audio packaging,
+and live-provider acceptance remain open; segment MP3s are not retail-ready.
 
 Google OAuth code and callback regression coverage pass, and the live Auth
 profile trigger is installed. Google sign-in remains unavailable because the
@@ -47,40 +58,26 @@ client and stores its ID/secret in Supabase. Exact setup is in
 not create credentials.
 
 The full shared tree is committed and pushed to
-`codex/live-platform-checkpoint-20260912` at `5038791`. The local remote no
-longer embeds a credential. Full `npm run verify` passes: 171 API, 54 web, 42
-migrations/29 SQL suites, 156 services, 8 E2E, 30 security, load smoke and mock
+`codex/live-platform-checkpoint-20260912` through commercial-safety checkpoint
+`01686c1`; the audiobook checkpoint is the next commit. The local remote no
+longer embeds a credential. Full `npm run verify` passes: 176 API, 55 web, 45
+migrations/31 SQL suites, 156 services, 8 E2E, 30 security, load smoke and mock
 evals; the isolated production web build passes with 27 routes. This is a
 checkpoint, not market-readiness: Google/OpenAI credentials, paid plan pricing,
-native Storage/scanner/provider acceptance, observability/backups, audiobook,
+native Storage/scanner/provider acceptance, observability/backups, audio mastering,
 translation, mobile completion and author beta remain open.
 
-Community creation now uses caller-authenticated `create_community_with_owner`
-to save community and owner membership atomically. Migration
-`20260912120000_community_creation.sql` and its SQL test cover validation,
-anonymous/missing-JWT denial, duplicate slug and injected last-insert rollback.
-42 migrations/29 SQL suites, community/referral API tests and API TypeScript
-pass locally. The migration is live. This is atomicity, not durable retry replay.
-
-Community directory and discussion UI have been upgraded. Discussion browser
-passed before final stale-moderator-state cleanup; latest TypeScript passes.
-Final browser rerun and production build remain disk-blocked. Temporary test
-servers4398/4399 are stopped; user app3001 untouched. No live community writes.
-
-Next: durable community creation/post/comment retry receipts, creation UI,
-then final browser acceptance when disk has headroom. Native Supabase, Storage,
-provider, billing, concurrency and broader release-checklist gaps remain open.
+Next: deploy and supervise the audiobook worker, add mastering/concatenation,
+loudness and pronunciation QC, then retail-audio packaging. Native Supabase
+Storage/scanner/provider acceptance, paid billing configuration, translation,
+observability/backups, mobile completion and broader release-checklist gaps remain open.
 Do not declare the full product complete from these local fixtures.
 
 ## Safety and recovery
 
-No live deployment, migration, payments, emails or retailer publishing is
-authorized by these notes. Never copy secrets. Change fingerprints are recorded
+Live migrations for the named AI-BookWorm Supabase project and a secret-free
+`codex/*` GitHub branch were explicitly authorized; payments, emails, provider
+spend and retailer publishing are not authorized by these notes. Never copy secrets. Change fingerprints are recorded
 by `node scripts/track-project-changes.mjs --record`; they are not source backups
-or proof of authorship. No commits/staging/reset performed.
-
-Disk exhaustion interrupted a handoff write and left this file empty. It was
-rebuilt as this compact entry point. Historical checkpoints remain in the
-intact detailed Codex vault handoff; consult that file for previous image,
-import, rendering, publishing, retrieval and recovery work. Current vault
-append must be verified separately; do not assume the interrupted write saved it.
+or proof of authorship. Commits are allowed only on the authorized checkpoint
+branch; do not reset or overwrite another agent's work.

@@ -220,7 +220,37 @@ export type EditionConfig = {
   };
   page_numbering?: { style?: "arabic" | "roman" | "none"; start_at?: number; position?: "bottom-center" | "bottom-outer" | "top-center" };
   cover?: EditionCoverConfig;
+} | {
+  kind: "audiobook";
+  schema_version?: "1.0.0";
+  voice?: AudiobookVoice;
+  instructions?: string | null;
+  speed?: number;
 };
+
+export type AudiobookVoice = "alloy" | "ash" | "ballad" | "coral" | "echo" | "fable" | "onyx" | "nova" | "sage" | "shimmer" | "verse" | "marin" | "cedar";
+
+export interface AudiobookSegmentResult {
+  index: number;
+  status: string;
+  asset: Asset | null;
+  download: { url: string; expiresIn: number } | null;
+}
+
+export interface AudiobookProjectResult {
+  id: string;
+  editionId: string;
+  chapterId: string;
+  documentVersionId: string;
+  voice: AudiobookVoice;
+  speed: number;
+  status: string;
+  segmentCount: number;
+  creditUnits: number;
+  createdAt: string;
+  completedAt: string | null;
+  segments: AudiobookSegmentResult[];
+}
 
 export interface RenderedEditionResult {
   jobId: string;
@@ -299,6 +329,7 @@ export interface BillingEntitlements {
   books: number;
   ai_credits_monthly: number;
   image_credits_monthly: number;
+  audio_credits_monthly: number;
   storage_gb: number;
   rendering: boolean;
   publishing_channels: string[];
@@ -536,6 +567,12 @@ export function createClient(opts: ClientOptions) {
       call<Edition>("PATCH", `/v1/editions/${editionId}`, body),
     renderEdition: (editionId: string, body: { idempotencyKey: string }) =>
       call<RenderedEditionResult>("POST", `/v1/editions/${editionId}/render`, body),
+    listAudiobookProjects: (editionId: string) =>
+      call<{ projects: AudiobookProjectResult[] }>("GET", `/v1/editions/${editionId}/audiobook-jobs`),
+    getAudiobookProject: (projectId: string) =>
+      call<AudiobookProjectResult>("GET", `/v1/audiobook-jobs/${projectId}`),
+    createAudiobookProject: (editionId: string, body: { chapterId: string; idempotencyKey: string; aiDisclosureAccepted: true }) =>
+      call<AudiobookProjectResult>("POST", `/v1/editions/${editionId}/audiobook-jobs`, body),
     runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
       call<PreflightResult>("POST", "/v1/publishing/validate", body),
     createPublishingJob: (body: { bookId: string; editionId: string; channel: RetailerChannel; renderJobId: string; preflightJobId: string; idempotencyKey: string }) =>
