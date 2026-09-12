@@ -1,0 +1,113 @@
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { AppError } from "../errors.js";
+import { loadBook } from "../lib/authoring.js";
+import type { SupabaseClient } from "../lib/supabase.js";
+
+const languageSchema = z.string().trim().toLowerCase().regex(/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/).max(35);
+const createSchema = z.object({ targetLanguage: languageSchema, idempotencyKey: z.string().trim().min(8).max(200) }).strict();
+const adoptSchema = z.object({ title: z.string().trim().min(1).max(500) }).strict();
+const projectIdSchema = z.string().uuid();
+
+function row(value: unknown): Record<string, unknown> | null {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  return candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : null;
+}
+
+async function hydrateProject(sb: SupabaseClient, project: Record<string, unknown>, includeText = false) {
+  const { data: chapters, error } = await sb.from("translation_chapters").select("*")
+    .eq("project_id", project.id).order("chapter_order");
+  if (error) throw new AppError(500, "Could not load translation chapters.");
+  const chapterRows = chapters ?? [];
+  const jobIds = chapterRows.map((item) => item.ai_job_id);
+  const chapterIds = chapterRows.map((item) => item.chapter_id);
+  const [{ data: jobs, error: jobsError }, { data: sources, error: sourcesError }] = await Promise.all([
+    jobIds.length ? sb.from("ai_jobs").select("id,status,error_code").in("id", jobIds) : Promise.resolve({ data: [], error: null }),
+    chapterIds.length ? sb.from("chapters").select("id,title,order_index").in("id", chapterIds) : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (jobsError || sourcesError) throw new AppError(500, "Could not load translation progress.");
+  const jobsById = new Map((jobs ?? []).map((item) => [item.id, item]));
+  const sourceById = new Map((sources ?? []).map((item) => [item.id, item]));
+  return {
+    id: project.id, bookId: project.book_id, sourceLanguage: project.source_language, targetLanguage: project.target_language,
+    status: project.status, chapterCount: project.chapter_count, completedChapterCount: project.completed_chapter_count,
+    creditUnits: project.credit_units, adoptedBookId: project.adopted_book_id ?? null, createdAt: project.created_at,
+    completedAt: project.completed_at ?? null,
+    chapters: chapterRows.map((item) => {
+      const job = jobsById.get(item.ai_job_id); const source = sourceById.get(item.chapter_id);
+      return {
+        id: item.id, chapterId: item.chapter_id, documentVersionId: item.document_version_id, chapterOrder: item.chapter_order,
+        chapterTitle: source?.title ?? "Saved chapter", status: job?.status ?? "unknown", failureCode: job?.error_code ?? null,
+        wordCount: item.translated_word_count ?? null, ...(includeText && item.translated_text ? { translatedText: item.translated_text } : {}),
+      };
+    }),
+  };
+}
+
+function queueError(error: { code?: string }) {
+  if (error.code === "23514") throw new AppError(422, "Your translation credits are used or reserved. No translation was started.", undefined, "translation_credit_capacity_exhausted");
+  if (error.code === "42501") throw new AppError(403, "Editing access is required to translate this book.");
+  if (error.code === "P0002") throw new AppError(404, "Book not found.");
+  if (error.code === "23505") throw new AppError(409, "This translation request key is already in use.");
+  if (error.code === "22023") throw new AppError(422, "The translation request is invalid. Save text in every chapter, use a different target language, and split chapters over 32,000 characters.");
+  if (error.code === "PGRST202" || error.code === "42883") throw new AppError(503, "The translation database migration is not installed.");
+  throw new AppError(500, "Could not queue translation.");
+}
+
+export function translationRoutes(app: FastifyInstance) {
+  app.get("/books/:bookId/translations", async (req, reply) => {
+    const { bookId } = req.params as { bookId: string };
+    if (!projectIdSchema.safeParse(bookId).success) throw new AppError(422, "Valid book ID required.");
+    const sb = app.supabaseFactory(req.userToken); await loadBook(sb, bookId, req.userId);
+    const { data, error } = await sb.from("translation_projects").select("*").eq("book_id", bookId).order("created_at", { ascending: false }).limit(50);
+    if (error) throw new AppError(500, "Could not load translation history.");
+    reply.header("cache-control", "private, no-store");
+    return { projects: await Promise.all((data ?? []).map((project) => hydrateProject(sb, project))) };
+  });
+
+  app.get("/translations/:projectId", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    if (!projectIdSchema.safeParse(projectId).success) throw new AppError(422, "Valid translation project ID required.");
+    const query = z.object({ includeText: z.enum(["true", "false"]).optional() }).safeParse(req.query);
+    if (!query.success) throw new AppError(422, "Invalid translation query.");
+    const sb = app.supabaseFactory(req.userToken);
+    const { data, error } = await sb.from("translation_projects").select("*").eq("id", projectId).maybeSingle();
+    if (error) throw new AppError(500, "Could not load translation project.");
+    if (!data) throw new AppError(404, "Translation project not found.");
+    reply.header("cache-control", "private, no-store");
+    return hydrateProject(sb, data, query.data.includeText === "true");
+  });
+
+  app.post("/books/:bookId/translations", async (req, reply) => {
+    const { bookId } = req.params as { bookId: string };
+    if (!projectIdSchema.safeParse(bookId).success) throw new AppError(422, "Valid book ID required.");
+    const parsed = createSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "Choose a valid target language and request key.", { issues: parsed.error.issues });
+    const sb = app.supabaseFactory(req.userToken); await loadBook(sb, bookId, req.userId, true);
+    const queued = await sb.rpc("queue_translation_project", { p_book_id: bookId, p_target_language: parsed.data.targetLanguage, p_idempotency_key: parsed.data.idempotencyKey });
+    if (queued.error) queueError(queued.error);
+    const project = row(queued.data);
+    if (!project) throw new AppError(500, "Translation queue returned no project.");
+    reply.header("cache-control", "private, no-store");
+    return reply.status(202).send(await hydrateProject(sb, project));
+  });
+
+  app.post("/translations/:projectId/adopt", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    if (!projectIdSchema.safeParse(projectId).success) throw new AppError(422, "Valid translation project ID required.");
+    const parsed = adoptSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "Provide a title for the translated draft.", { issues: parsed.error.issues });
+    const sb = app.supabaseFactory(req.userToken);
+    const result = await sb.rpc("adopt_translation_project", { p_project_id: projectId, p_title: parsed.data.title });
+    if (result.error) {
+      if (result.error.code === "42501") throw new AppError(403, "Editing access is required to create the translated draft.");
+      if (result.error.code === "P0002") throw new AppError(404, "Translation project not found.");
+      if (result.error.code === "22023") throw new AppError(422, "Translation is not ready to create as a draft.");
+      if (result.error.code === "PGRST202" || result.error.code === "42883") throw new AppError(503, "The translation database migration is not installed.");
+      throw new AppError(500, "Could not create the translated draft.");
+    }
+    const book = row(result.data); if (!book) throw new AppError(500, "Translated draft returned no book.");
+    reply.header("cache-control", "private, no-store");
+    return reply.status(201).send({ book });
+  });
+}

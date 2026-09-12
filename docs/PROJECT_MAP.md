@@ -37,6 +37,7 @@ workers/                   Long-lived PostgreSQL-lease consumers
   document/                Import consumer
   publishing/              Render/preflight/package consumer
   audiobook/               OpenAI speech consumer
+  translation/             OpenAI chapter-translation consumer
 packages/                  Shared validation, types, API client, config, UI and book model
 supabase/migrations/       Ordered, append-only schema history
 tests/                     SQL assertions, E2E, security, load and AI evaluations
@@ -49,7 +50,7 @@ docs/                      Product, operations, release, hosting and agent hando
 | --- | --- | --- |
 | Vercel | `apps/web` only: Next.js UI and server-side BFF routes | No service-role key, worker loop, scanner, renderer, or provider worker belongs here. |
 | Persistent API host | `services/api` Fastify process | Provides the private API target configured as Vercel `API_URL`. |
-| Persistent worker host | `npm run worker:ai`, `worker:document`, `worker:publishing`, `worker:audiobook` | Separate supervised processes; lease-based jobs are not Vercel request handlers. |
+| Persistent worker host | `npm run worker:ai`, `worker:document`, `worker:publishing`, `worker:audiobook`, `worker:translation` | Separate supervised processes; lease-based jobs are not Vercel request handlers. |
 | Private service host(s) | AI, document, rendering, publishing, scanning/ClamAV | Not internet-facing; API reaches them through server-only service URLs/tokens. |
 | Supabase | Auth, Postgres, RLS, private Storage, durable state | Current authorized project is `cyhqtwndadlyzpeatxws`; apply only additive reviewed migrations. |
 
@@ -82,6 +83,7 @@ npm run worker:ai
 npm run worker:document
 npm run worker:publishing
 npm run worker:audiobook
+npm run worker:translation
 ```
 
 The `Remove-Item` line above targets only the named process environment

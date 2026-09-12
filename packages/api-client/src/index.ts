@@ -252,6 +252,33 @@ export interface AudiobookProjectResult {
   segments: AudiobookSegmentResult[];
 }
 
+export interface TranslationChapterResult {
+  id: string;
+  chapterId: string;
+  documentVersionId: string;
+  chapterOrder: number;
+  chapterTitle: string;
+  status: string;
+  failureCode: string | null;
+  wordCount: number | null;
+  translatedText?: string;
+}
+
+export interface TranslationProjectResult {
+  id: string;
+  bookId: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  status: string;
+  chapterCount: number;
+  completedChapterCount: number;
+  creditUnits: number;
+  adoptedBookId: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  chapters: TranslationChapterResult[];
+}
+
 export interface RenderedEditionResult {
   jobId: string;
   status: string;
@@ -573,6 +600,14 @@ export function createClient(opts: ClientOptions) {
       call<AudiobookProjectResult>("GET", `/v1/audiobook-jobs/${projectId}`),
     createAudiobookProject: (editionId: string, body: { chapterId: string; idempotencyKey: string; aiDisclosureAccepted: true }) =>
       call<AudiobookProjectResult>("POST", `/v1/editions/${editionId}/audiobook-jobs`, body),
+    listTranslationProjects: (bookId: string) =>
+      call<{ projects: TranslationProjectResult[] }>("GET", `/v1/books/${bookId}/translations`),
+    getTranslationProject: (projectId: string, includeText = false) =>
+      call<TranslationProjectResult>("GET", `/v1/translations/${projectId}${includeText ? "?includeText=true" : ""}`),
+    createTranslationProject: (bookId: string, body: { targetLanguage: string; idempotencyKey: string }) =>
+      call<TranslationProjectResult>("POST", `/v1/books/${bookId}/translations`, body),
+    adoptTranslationProject: (projectId: string, body: { title: string }) =>
+      call<{ book: Book }>("POST", `/v1/translations/${projectId}/adopt`, body),
     runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
       call<PreflightResult>("POST", "/v1/publishing/validate", body),
     createPublishingJob: (body: { bookId: string; editionId: string; channel: RetailerChannel; renderJobId: string; preflightJobId: string; idempotencyKey: string }) =>

@@ -1758,6 +1758,80 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/translations:
+    get:
+      tags: [v1]
+      operationId: listTranslationProjects
+      summary: List safe translation-project progress for a book
+      description: Returns member-authorized project and chapter status only. It omits queued source text, source hashes, request keys and provider payloads.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Translation projects, content: { application/json: { schema: { type: object, required: [projects], properties: { projects: { type: array, items: { type: object } } } } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: queueTranslationProject
+      summary: Queue paid, version-pinned translation jobs for every saved chapter
+      description: Requires editor access and an active plan with translation_credits_monthly. The queue retains immutable document pointers and hashes rather than manuscript text; provider work begins only when the private worker claims a job.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [targetLanguage, idempotencyKey]
+              properties:
+                targetLanguage: { type: string, pattern: "^[a-z]{2,8}(-[a-z0-9]{2,8})*$", maxLength: 35 }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+      responses:
+        "202": { description: Queued or idempotently recovered translation project }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/translations/{projectId}:
+    get:
+      tags: [v1]
+      operationId: getTranslationProject
+      summary: Read a member-authorized translation project
+      description: Include translated text only with includeText=true. Results are private/no-store and never include source text stored by the queue.
+      parameters:
+        - { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: includeText, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200": { description: Translation project and chapter results }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/translations/{projectId}/adopt:
+    post:
+      tags: [v1]
+      operationId: adoptTranslationProject
+      summary: Create a separate author-review draft from a completed translation
+      description: Requires editor access. It never overwrites the source book, does not publish, and can be repeated safely for the same completed project.
+      parameters:
+        - { name: projectId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201": { description: Object containing the new translated-draft Book resource }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     AdminLimit:

@@ -1,0 +1,93 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import type { TranslationProjectResult } from "@bookworm/api-client";
+import type { Book } from "@bookworm/types";
+import { apiClient } from "./api";
+
+const editableRoles = new Set(["owner", "admin", "editor", "writer"]);
+const panel = "rounded-2xl border border-white/10 bg-white/[0.025] p-5 sm:p-6";
+const field = "mt-2 h-11 w-full rounded-xl border border-white/15 bg-black/35 px-3 text-sm text-white outline-none focus:border-white/45";
+const subtle = "rounded-full border border-white/15 px-4 py-2 text-sm text-white/75 transition hover:border-white/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-40";
+const primary = "rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-40";
+
+function badge(status: string) {
+  if (status === "succeeded") return "bg-emerald-400/15 text-emerald-100";
+  if (status === "failed" || status === "cancelled") return "bg-red-400/15 text-red-100";
+  return "bg-amber-300/10 text-amber-100";
+}
+
+export default function TranslationStudio({ bookId }: { bookId: string }) {
+  const api = apiClient(); const router = useRouter();
+  const [book, setBook] = useState<Book | null>(null); const [role, setRole] = useState<string | null>(null);
+  const [projects, setProjects] = useState<TranslationProjectResult[]>([]); const [selected, setSelected] = useState<TranslationProjectResult | null>(null);
+  const [targetLanguage, setTargetLanguage] = useState(""); const [adoptTitle, setAdoptTitle] = useState("");
+  const [busy, setBusy] = useState<"queue" | "refresh" | "preview" | "adopt" | null>(null); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState<string | null>(null);
+  const editable = role ? editableRoles.has(role) : false;
+
+  const load = useCallback(async () => {
+    const [identity, history] = await Promise.all([api.getBook(bookId), api.listTranslationProjects(bookId)]);
+    setBook(identity.book); setRole(identity.role); setProjects(history.projects);
+  }, [api, bookId]);
+
+  useEffect(() => { void load().catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load translations.")); }, [load]);
+
+  const queue = async () => {
+    if (busy || !/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/i.test(targetLanguage.trim())) { setError("Use a BCP-47 language code such as es, fr, or pt-BR."); return; }
+    setBusy("queue"); setError(null); setNotice(null);
+    try {
+      const project = await api.createTranslationProject(bookId, { targetLanguage: targetLanguage.trim().toLowerCase(), idempotencyKey: crypto.randomUUID() });
+      setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]); setSelected(project);
+      setAdoptTitle(`${book?.title ?? "Untitled"} (${project.targetLanguage.toUpperCase()})`); setNotice("Translation queued. The worker uses the exact saved version of every chapter.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not queue translation."); }
+    finally { setBusy(null); }
+  };
+
+  const preview = async (projectId: string, includeText: boolean) => {
+    if (busy) return; setBusy(includeText ? "preview" : "refresh"); setError(null); setNotice(null);
+    try {
+      const project = await api.getTranslationProject(projectId, includeText); setSelected(project);
+      setProjects((current) => current.map((item) => item.id === project.id ? { ...project, chapters: project.chapters.map(({ translatedText: _text, ...chapter }) => chapter) } : item));
+      setAdoptTitle((current) => current || `${book?.title ?? "Untitled"} (${project.targetLanguage.toUpperCase()})`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh translation."); }
+    finally { setBusy(null); }
+  };
+
+  const adopt = async () => {
+    if (!selected || busy || !adoptTitle.trim()) { setError("Give the translated draft a title before creating it."); return; }
+    setBusy("adopt"); setError(null); setNotice(null);
+    try {
+      const { book: draft } = await api.adoptTranslationProject(selected.id, { title: adoptTitle.trim() });
+      setNotice("Translated draft created. Review every chapter before layout or publishing.");
+      setProjects((current) => current.map((item) => item.id === selected.id ? { ...item, adoptedBookId: draft.id } : item));
+      setSelected((current) => current ? { ...current, adoptedBookId: draft.id } : current);
+      router.push(`/books/${draft.id}`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create translated draft."); }
+    finally { setBusy(null); }
+  };
+
+  return <main className="mx-auto min-h-[calc(100dvh-84px)] max-w-6xl bg-black px-4 py-8 text-white sm:px-6 lg:py-12">
+    <div className="flex flex-wrap items-start justify-between gap-5"><div><Link href={`/books/${bookId}`} className="text-sm text-white/50 hover:text-white">← Manuscript</Link><h1 className="mt-3 text-3xl font-medium tracking-[-0.04em]">Translate this book</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-white/55">Create a paid, version-pinned translation of your saved chapters. Nothing replaces your source book. You review the output before creating a separate draft.</p></div><Link href={`/books/${bookId}/publish`} className={subtle}>Layout & publish</Link></div>
+    {error && <p role="alert" className="mt-6 rounded-xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-100">{error}</p>}
+    {notice && <p role="status" className="mt-6 rounded-xl border border-emerald-400/30 bg-emerald-400/10 p-4 text-sm text-emerald-50">{notice}</p>}
+
+    <section className={`${panel} mt-8`} aria-labelledby="translation-setup">
+      <h2 id="translation-setup" className="text-xl font-medium">Start a translation</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-white/50">Source: <span className="font-medium text-white/80">{book?.language?.toUpperCase() ?? "…"}</span>. Each non-empty saved chapter becomes a private background job. One translation credit covers up to 1,000 source characters; your plan must explicitly include translation credits.</p>
+      <fieldset disabled={!editable || Boolean(busy)} className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-end"><label className="max-w-xs flex-1 text-sm text-white/70">Target language code<input value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value)} placeholder="es or pt-BR" maxLength={35} className={field} /></label><button type="button" onClick={() => void queue()} className={primary}>{busy === "queue" ? "Queuing…" : "Queue book translation"}</button></fieldset>
+      {!editable && <p className="mt-4 text-sm text-amber-100">An editor, writer, admin, or owner role is required to spend translation credits.</p>}
+      <p className="mt-4 text-xs leading-5 text-white/40">Chapters over 32,000 characters must be split first. The source versions remain private and unchanged; provider calls occur only after the worker claims a reserved job.</p>
+    </section>
+
+    <section className={`${panel} mt-6`} aria-labelledby="translation-history"><div className="flex flex-wrap items-center justify-between gap-4"><div><h2 id="translation-history" className="text-xl font-medium">Translation history</h2><p className="mt-2 text-sm text-white/50">Refresh to see worker progress. Previewed text is never put into browser storage.</p></div><button type="button" onClick={() => void load()} disabled={Boolean(busy)} className={subtle}>{busy === "refresh" ? "Refreshing…" : "Refresh history"}</button></div>
+      {projects.length ? <ul className="mt-6 space-y-3">{projects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/25 p-4"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="font-medium">{project.sourceLanguage.toUpperCase()} → {project.targetLanguage.toUpperCase()}</p><p className="mt-1 text-sm text-white/45">{project.completedChapterCount}/{project.chapterCount} chapters · {project.creditUnits} translation credits</p></div><div className="flex flex-wrap items-center gap-3"><span className={`rounded-full px-3 py-1 text-xs ${badge(project.status)}`}>{project.status}</span><button type="button" onClick={() => void preview(project.id, project.status === "succeeded")} disabled={Boolean(busy)} className={subtle}>{project.status === "succeeded" ? "Preview" : "Check progress"}</button></div></div>{project.adoptedBookId && <Link href={`/books/${project.adoptedBookId}`} className="mt-4 inline-block text-sm text-emerald-100 underline">Open translated draft</Link>}</li>)}</ul> : <p className="mt-6 text-sm text-white/45">No translations have been queued for this book.</p>}
+    </section>
+
+    {selected && <section className={`${panel} mt-6`} aria-labelledby="translation-preview"><div className="flex flex-wrap items-start justify-between gap-4"><div><h2 id="translation-preview" className="text-xl font-medium">{selected.sourceLanguage.toUpperCase()} → {selected.targetLanguage.toUpperCase()} review</h2><p className="mt-2 text-sm text-white/50">{selected.completedChapterCount}/{selected.chapterCount} completed chapters. Review text against your source before creating a new manuscript draft.</p></div><span className={`rounded-full px-3 py-1 text-xs ${badge(selected.status)}`}>{selected.status}</span></div>
+      <div className="mt-6 space-y-3">{selected.chapters.map((chapter) => <details key={chapter.id} className="rounded-xl border border-white/10 bg-black/25 p-4"><summary className="cursor-pointer list-none"><div className="flex flex-wrap items-center justify-between gap-3 pr-6"><span className="font-medium">{chapter.chapterOrder + 1}. {chapter.chapterTitle}</span><span className={`rounded-full px-3 py-1 text-xs ${badge(chapter.status)}`}>{chapter.status}</span></div></summary>{chapter.translatedText ? <p className="mt-4 max-h-96 overflow-y-auto whitespace-pre-wrap border-t border-white/10 pt-4 text-sm leading-7 text-white/80">{chapter.translatedText}</p> : <p className="mt-4 border-t border-white/10 pt-4 text-sm text-white/45">{chapter.failureCode ? `This chapter stopped: ${chapter.failureCode}.` : "Translation text will appear after the worker completes this chapter."}</p>}</details>)}</div>
+      {selected.status === "succeeded" && !selected.adoptedBookId && <div className="mt-7 border-t border-white/10 pt-6"><h3 className="font-medium">Create a translated draft</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-amber-100">This makes a separate draft with the translated chapter text. It does not copy a cover, publish anything, or certify translation quality. Review the manuscript, metadata, illustrations, and layout before publishing.</p><div className="mt-4 flex flex-col gap-3 sm:flex-row"><input value={adoptTitle} onChange={(event) => setAdoptTitle(event.target.value)} maxLength={500} className={field} aria-label="Translated draft title" /><button type="button" onClick={() => void adopt()} disabled={!editable || busy === "adopt"} className={primary}>{busy === "adopt" ? "Creating…" : "Create separate draft"}</button></div></div>}
+      {selected.adoptedBookId && <Link href={`/books/${selected.adoptedBookId}`} className="mt-6 inline-block text-sm text-emerald-100 underline">Open translated draft</Link>}
+    </section>}
+  </main>;
+}

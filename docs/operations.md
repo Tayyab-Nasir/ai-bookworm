@@ -99,6 +99,7 @@
 | REDIS_URL | api (/ready) | current config | Readiness compatibility only; the publishing queue is PostgreSQL-backed. |
 | QDRANT_URL / QDRANT_API_KEY | optional retrieval experiments | no | The author-facing book search uses PostgreSQL full-text retrieval. |
 | OPENAI_API_KEY / DEFAULT_AI_PROVIDER / DEFAULT_AI_MODEL | AI text and translation | yes | Keep the key server-only. Production defaults to OpenAI and fails closed without a key. |
+| OPENAI_TRANSLATION_MODEL | translation worker | no | Defaults to `DEFAULT_AI_MODEL`, then `gpt-6-astra`; never expose it or the API key to the browser. |
 | OPENAI_IMAGE_MODEL | API image generation | no | Defaults to `gpt-image-2.5-sunburst`. |
 | OPENAI_TTS_MODEL | audiobook speech generation | no | Defaults to `gpt-4o-mini-tts`; the audiobook worker remains a release gap. |
 | AI_SERVICE_URL / AI_SERVICE_TOKEN | api -> ai | prod | Private service URL and shared server-only token. |
@@ -389,3 +390,24 @@ before production tuning.
   reporting. Audio mastering, concatenation, loudness/QC, opening/closing
   credits, retailer packaging, and live-provider acceptance remain separate
   release gates; segment MP3s are not claimed to be a retail-ready audiobook.
+
+## Translation workflow
+
+- Authors queue a whole book only after every chapter has a saved current
+  version. The database creates one leased job per chapter; queued jobs retain
+  source document IDs and SHA-256 hashes, never copied manuscript text.
+- Start the consumer with `npm run worker:translation`; add `-- --once` for one
+  claim. It rehydrates the pinned chapter, rejects changed or oversized source
+  text, calls the Responses API using `OPENAI_TRANSLATION_MODEL` or
+  `gpt-6-astra`, and stores the reviewable output through an atomic completion
+  RPC. The browser never sees `OPENAI_API_KEY`.
+- One `translation_credit` covers up to 1,000 source characters. Organization
+  reservations are locked before a provider call; no subscription or missing
+  `translation_credits_monthly` entitlement means zero capacity. A terminal
+  chapter failure marks the project failed and cancels the other pending jobs.
+- Private completion receipts retain translated text only for recovery after a
+  lost database reply. A completed project can create a *separate draft* only
+  through an explicit author action. That draft is not publication-ready:
+  review translation quality, metadata, source formatting, illustrations, and
+  layout before rendering or retailer packaging. Live OpenAI quality/cost and
+  native multi-worker acceptance remain release gates.

@@ -24,7 +24,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 ## Current checkpoint: 2026-09-12
 
 The authorized live initialization is now complete on Supabase project
-`cyhqtwndadlyzpeatxws`: all 45 repository migrations are installed. The newest
+`cyhqtwndadlyzpeatxws`: all then-current 45 repository migrations are installed. The newest
 migrations create a safe profile row for every Auth identity, enforce zero
 text/image/audio generation allowance without an explicit paid entitlement,
 default commercial plans to unpublished, and add the durable audiobook queue.
@@ -54,6 +54,20 @@ cost is explicitly a word-rate estimate until reconciled against OpenAI usage.
 Mastering/concatenation, loudness and pronunciation QC, retail audio packaging,
 and live-provider acceptance remain open; segment MP3s are not retail-ready.
 
+Translation is now implemented and locally verified, but its additive
+`20260912180000_translation_workflow.sql` migration is deliberately **not yet
+applied** to the live project. It queues one paid, version-pinned chapter job
+per saved chapter and records source pointers/hashes rather than manuscript
+text. The `npm run worker:translation` consumer uses the server-only OpenAI
+Responses API (`OPENAI_TRANSLATION_MODEL`, default `gpt-6-astra`), fenced
+leases, and private completion receipts. A completed project is reviewable and
+can create a separate text-only draft only by explicit author action; it never
+overwrites or publishes the source. One credit covers each started 1,000 source
+characters, with missing `translation_credits_monthly` allowance defaulting to
+zero. No key, provider call, spend, or live migration was made by this work.
+Before live use: approve/apply that migration, set real plan entitlement,
+configure and supervise the worker, and perform live quality/cost acceptance.
+
 Google OAuth code and callback regression coverage pass, and the live Auth
 profile trigger is installed. Google sign-in remains unavailable because the
 Supabase Google provider is disabled until the operator creates one Web OAuth
@@ -64,9 +78,10 @@ not create credentials.
 The full shared tree is committed and pushed to
 `codex/live-platform-checkpoint-20260912`; durable audiobook implementation is
 saved at `e14c556`. The local remote no
-longer embeds a credential. Full `npm run verify` passes: 176 API, 55 web, 45
-migrations/31 SQL suites, 156 services, 8 E2E, 30 security, load smoke and mock
-evals; the isolated production web build passes with 27 routes. This is a
+longer embeds a credential. The current local full `npm run verify` passes: 179
+API, 55 web, 46 migrations/32 SQL suites, 156 services, 8 E2E, 30 security,
+load smoke and mock evals; the isolated production web build passes with the
+translation route. This is a
 checkpoint, not market-readiness: Google/OpenAI credentials, paid plan pricing,
 native Storage/scanner/provider acceptance, observability/backups, audio mastering,
 translation, mobile completion and author beta remain open.
@@ -79,10 +94,11 @@ source edits. The shared vault entry point is
 AST index only, with no customer files, secrets, or provider-backed semantic
 analysis.
 
-Next: deploy and supervise the audiobook worker, add mastering/concatenation,
-loudness and pronunciation QC, then retail-audio packaging. Native Supabase
-Storage/scanner/provider acceptance, paid billing configuration, translation,
-observability/backups, mobile completion and broader release-checklist gaps remain open.
+Next: deploy and supervise the audiobook and translation workers, add
+mastering/concatenation, loudness and pronunciation QC, then retail-audio
+packaging. Native Supabase Storage/scanner/provider acceptance, paid billing
+configuration, translation live acceptance, observability/backups, mobile
+completion and broader release-checklist gaps remain open.
 Do not declare the full product complete from these local fixtures.
 
 ## Safety and recovery

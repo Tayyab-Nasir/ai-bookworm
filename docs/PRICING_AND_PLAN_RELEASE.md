@@ -28,9 +28,10 @@ They are not approved commercial offers.
 
 ## Credit accounting direction
 
-The existing `ai_credits`, `image_credits`, and `audio_credits` meters are
-operational units, not provider tokens. Audio currently reserves one credit per
-started 1,000 source characters in each narration segment. Before paid launch,
+The existing `ai_credits`, `image_credits`, `audio_credits`, and
+`translation_credits` meters are operational units, not provider tokens. Audio
+and translation each reserve one credit per started 1,000 source characters in
+their version-pinned job. Before paid launch,
 define a versioned conversion table from
 provider usage and model price snapshots into customer credits. Reserve a
 conservative maximum before dispatch, reconcile against the provider receipt
