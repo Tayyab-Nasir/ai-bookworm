@@ -15,6 +15,7 @@ entire product is release-ready.
 | Product and release gaps | `docs/release-checklist.md` | Release readiness, not deployment authorization. |
 | Operations and secret ownership | `docs/operations.md` | Environment-variable matrix, workers, recovery and runbooks. |
 | Web hosting | `docs/VERCEL_DEPLOYMENT.md` | Vercel web hosting boundary and pre-deploy procedure. |
+| Shared code context | `graphify-out/GRAPH_REPORT.md` and `graphify-out/graph.json` | Local AST graph for code and SQL; refresh it after source changes. |
 
 Read the repository `AGENTS.md`, `docs/AGENT_HANDOFF.md`, vault `AGENTS.md`,
 and `git status` before editing. Preserve uncommitted work and never write API
@@ -85,3 +86,16 @@ npm run worker:audiobook
 
 The `Remove-Item` line above targets only the named process environment
 variable. It does not delete repository content.
+
+## Shared code graph
+
+Graphify is installed for Codex, Claude, Hermes, and generic agents at both
+the user and project levels. The committed `graphify-out/graph.json` lets a
+new session query the same code-and-SQL structure without rebuilding it. It is
+generated locally from source only: it contains no provider-derived document,
+image, or customer-content analysis and incurs no API cost.
+
+After source changes, run `graphify update .` from the repository root. The
+local cache, cost record, and date-stamped recovery copies are deliberately
+ignored; the graph and report are shared through Git. The companion Obsidian
+export is linked from `C:/Users/Asus/Memory-Ai/AI Bookworm Graphify Index.md`.

@@ -71,6 +71,14 @@ checkpoint, not market-readiness: Google/OpenAI credentials, paid plan pricing,
 native Storage/scanner/provider acceptance, observability/backups, audio mastering,
 translation, mobile completion and author beta remain open.
 
+Graphify is now available to Codex, Claude, Hermes, and generic project
+agents. Its committed code-and-SQL graph is `graphify-out/graph.json`; query
+it before broad code searches and refresh it with `graphify update .` after
+source edits. The shared vault entry point is
+`C:/Users/Asus/Memory-Ai/AI Bookworm Graphify Index.md`. The graph is a local
+AST index only, with no customer files, secrets, or provider-backed semantic
+analysis.
+
 Next: deploy and supervise the audiobook worker, add mastering/concatenation,
 loudness and pronunciation QC, then retail-audio packaging. Native Supabase
 Storage/scanner/provider acceptance, paid billing configuration, translation,

@@ -1,0 +1,2 @@
+# Graphify remains queryable through its CLI/skill; avoid cache invalidation from generated output.
+graphify-out/
