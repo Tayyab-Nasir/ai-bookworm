@@ -1,9 +1,4 @@
-"""Shared helpers for channel rule modules.
-
-ALL channel thresholds are PLACEHOLDERS. Verify against current official retailer
-documentation at release before shipping (spec section 14). effective_date records
-when the placeholder was written; source_ref points at the doc to verify.
-"""
+"""Shared helpers for channel rule modules."""
 from preflight import Finding, Rule, RuleSet, _meta
 
 
@@ -11,12 +6,14 @@ def metadata_rules(channel: str, prefix: str, required: list[str], effective_dat
                    source_ref: str) -> list[Rule]:
     def check(ctx, _required=required):
         md = _meta(ctx)
+        def missing(value):
+            return value is None or (isinstance(value, str) and not value.strip()) or (isinstance(value, list) and not value)
         return [
             Finding(code=f"{prefix}-META-MISSING",
                     message=f"{channel} requires metadata.{key}",
                     location=f"book.metadata.{key}")
             for key in _required
-            if not (md.get(key) or "").strip() if isinstance(md.get(key), str) or md.get(key) is None
+            if missing(md.get(key))
         ]
 
     return [Rule(f"{prefix}-META-001", "error", "channel",

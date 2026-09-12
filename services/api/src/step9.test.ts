@@ -30,8 +30,9 @@ function fakeSupabase(responses: Record<string, { data?: unknown; error?: unknow
     from: (table: string) => {
       const r = responses[table] ?? { data: null, error: null };
       const b: Record<string, unknown> = {};
-      for (const m of ["select", "eq", "update", "delete", "is", "in", "order", "limit"]) b[m] = () => b;
+      for (const m of ["select", "eq", "delete", "is", "in", "order", "limit"]) b[m] = () => b;
       b.insert = (row: unknown) => { writes.push({ table, op: "insert", row }); return b; };
+      b.update = (row: unknown) => { writes.push({ table, op: "update", row }); return b; };
       b.single = async () => r;
       b.maybeSingle = async () => r;
       b.then = (resolve: (v: unknown) => unknown) =>
@@ -115,6 +116,30 @@ test("task PATCH 422 on empty update", async () => {
   await app.close();
 });
 
+test("task target must exist in its workspace and updates refresh updated_at", async () => {
+  const { app } = await appWith({
+    workspace_members: { data: { role: "editor", status: "active" }, error: null },
+    books: { data: { id: "b1", workspace_id: "another-workspace" }, error: null },
+  });
+  const rejected = await app.inject({
+    method: "POST", url: "/v1/tasks", headers: auth,
+    payload: { workspaceId: "11111111-1111-1111-1111-111111111111", title: "Foreign", entityType: "book", entityId: "22222222-2222-2222-2222-222222222222" },
+  });
+  assert.equal(rejected.statusCode, 422);
+  await app.close();
+
+  const { app: updateApp, writes } = await appWith({
+    workspace_members: { data: { role: "editor", status: "active" }, error: null },
+    tasks: { data: { id: "t1", workspace_id: "w1", status: "todo" }, error: null },
+  });
+  const updated = await updateApp.inject({ method: "PATCH", url: "/v1/tasks/t1", headers: auth, payload: { status: "done" } });
+  assert.equal(updated.statusCode, 200);
+  const patch = writes.find((write) => write.table === "tasks" && write.op === "update")?.row as Record<string, unknown>;
+  assert.equal(patch.status, "done");
+  assert.match(String(patch.updated_at), /^\d{4}-\d{2}-\d{2}T/);
+  await updateApp.close();
+});
+
 // ---- approvals -------------------------------------------------------------
 test("approval state machine: pending->approved, second resolve 409", async () => {
   const { app } = await appWith({
@@ -126,6 +151,52 @@ test("approval state machine: pending->approved, second resolve 409", async () =
   assert.equal(again.statusCode, 409);
   const flip = await app.inject({ method: "POST", url: "/v1/approvals/a1/reject", headers: auth });
   assert.equal(flip.statusCode, 409);
+  await app.close();
+});
+
+test("editor requests approval only for a local target and an eligible reviewer", async () => {
+  const responses = {
+    workspace_members: { data: { role: "reviewer", status: "active" }, error: null },
+    books: { data: { id: "b1", workspace_id: "11111111-1111-1111-1111-111111111111" }, error: null },
+    approvals: { data: { id: "a1", status: "pending" }, error: null },
+  };
+  const { app } = await appWith(responses);
+  // The caller authorization lookup and assigned-reviewer lookup share the
+  // fixed fake row; reviewer alone cannot create, so use editor on creation.
+  responses.workspace_members.data.role = "editor";
+  const created = await app.inject({
+    method: "POST", url: "/v1/approvals", headers: auth,
+    payload: {
+      workspaceId: "11111111-1111-1111-1111-111111111111",
+      entityType: "book", entityId: "22222222-2222-2222-2222-222222222222",
+      reviewerId: "33333333-3333-3333-3333-333333333333",
+    },
+  });
+  assert.equal(created.statusCode, 201);
+  await app.close();
+
+  const { app: foreignApp } = await appWith({
+    workspace_members: { data: { role: "editor", status: "active" }, error: null },
+    assets: { data: { id: "as1", workspace_id: "different-workspace" }, error: null },
+  });
+  const foreign = await foreignApp.inject({
+    method: "POST", url: "/v1/approvals", headers: auth,
+    payload: { workspaceId: "11111111-1111-1111-1111-111111111111", entityType: "asset", entityId: "22222222-2222-2222-2222-222222222222" },
+  });
+  assert.equal(foreign.statusCode, 422);
+  await foreignApp.close();
+});
+
+test("pending approval resolution writes only the guarded status transition", async () => {
+  const { app, writes } = await appWith({
+    approvals: { data: { id: "a1", workspace_id: "w1", status: "pending", reviewer_id: null }, error: null },
+    workspace_members: { data: { role: "reviewer", status: "active" }, error: null },
+  });
+  const res = await app.inject({ method: "POST", url: "/v1/approvals/a1/approve", headers: auth });
+  assert.equal(res.statusCode, 200);
+  const patch = writes.find((write) => write.table === "approvals" && write.op === "update")?.row as Record<string, unknown>;
+  assert.equal(patch.status, "approved");
+  assert.deepEqual(Object.keys(patch).sort(), ["status", "updated_at"]);
   await app.close();
 });
 

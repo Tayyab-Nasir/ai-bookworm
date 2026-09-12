@@ -7,11 +7,12 @@ Same (book_model, edition, RENDERER_VERSION) input -> same sha256.
 import hashlib
 import zipfile
 from io import BytesIO
-from xml.sax.saxutils import escape
+from html import escape
 
-from editions import EbookEdition
+from editions import EbookEdition, resolve_text_direction
+from manuscript import block_tree, image_width, inline_markup, table_rows
 
-RENDERER_VERSION = "epub-1.0.0"
+RENDERER_VERSION = "epub-1.4.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"
@@ -22,16 +23,18 @@ _CONTAINER_XML = """<?xml version="1.0" encoding="UTF-8"?>
 </container>
 """
 
-_CSS = "body{font-family:serif;line-height:1.5}h1,h2{page-break-before:always}"
+_CSS = "body{font-family:serif;line-height:1.5}h1,h2,h3,h4,h5,h6{break-after:avoid}figure{text-align:center;margin:1.5em 0;break-inside:avoid}img{height:auto;max-width:100%}figcaption,.caption{font-size:.9em;font-style:italic}blockquote{margin:1em 2em}.page-break{break-before:page;border:0}code{font-family:monospace}.cover{margin:0;text-align:center}"
+_CSS += "table{border-collapse:collapse;width:100%;margin:1em 0}td{border:1px solid #777;padding:.4em;vertical-align:top;overflow-wrap:anywhere}"
+_CSS += 'html[dir="rtl"] body{direction:rtl;text-align:right;unicode-bidi:plaintext}html[dir="rtl"] .cover{text-align:center}'
 
 
 def _slug(chapter_id: str, index: int) -> str:
     return f"ch{index:04d}"  # deterministic, order-based; ids are uuids anyway
 
 
-def _node_html(node: dict) -> str:
+def _node_html(node: dict, image_ids: set[str] | None = None) -> str:
     t = node.get("type")
-    text = escape(node.get("text") or "")
+    text = inline_markup(node)
     if t == "heading":
         level = min(max(int(node.get("level") or 1), 1), 6)
         return f"<h{level}>{text}</h{level}>"
@@ -44,10 +47,13 @@ def _node_html(node: dict) -> str:
         return f"<ul>{items}</ul>" if items else f"<p>{text}</p>"
     if t == "image":
         asset = node.get("assetId")
-        if asset:
-            alt = escape(node.get("altText") or node.get("caption") or "")
-            return f'<figure><img alt="{alt}" src="images/{asset}.png"/></figure>'
-        return ""
+        if asset and (image_ids is None or asset in image_ids):
+            decorative = (node.get("attributes") or {}).get("decorative") is True
+            alt = "" if decorative else escape(node.get("altText") or node.get("caption") or "")
+            caption = f'<figcaption>{escape(node["caption"])}</figcaption>' if node.get("caption") else ""
+            return f'<figure><img alt="{alt}" src="images/{escape(asset)}.png" style="width:{image_width(node)}%"/>{caption}</figure>'
+        description = escape(node.get("caption") or node.get("altText") or "")
+        return f'<p class="caption">{description}</p>' if description else ""
     if t == "caption":
         return f'<p class="caption">{text}</p>'
     if t == "pageBreak":
@@ -58,25 +64,33 @@ def _node_html(node: dict) -> str:
         return f'<aside epub:type="footnote"><p>{text}</p></aside>'
     if t == "table":
         rows = "".join(
-            "<tr>" + "".join(f"<td>{escape(str(c))}</td>" for c in r) + "</tr>"
-            for r in node.get("rows", []) or [])
+            "<tr>" + "".join("<td>" + escape(str(c)).replace("\n", "<br/>") + "</td>" for c in r) + "</tr>"
+            for r in table_rows(node))
         return f"<table>{rows}</table>" if rows else f"<p>{text}</p>"
     return f"<p>{text}</p>" if text else ""
 
 
-def _chapter_xhtml(book: dict, chapter: dict, lang: str) -> str:
-    body = "".join(_node_html(n) for n in chapter.get("nodes", []))
+def _chapter_xhtml(book: dict, chapter: dict, lang: str, direction: str, image_ids: set[str] | None = None) -> str:
+    def block_html(block):
+        if "node" in block:
+            return _node_html(block["node"], image_ids)
+        tag = "ol" if block["style"] == "ordered" else "ul"
+        items = "".join("<li>" + inline_markup(item["node"]) + "".join(block_html(child) for child in item["children"]) + "</li>" for item in block["items"])
+        return f"<{tag}>{items}</{tag}>"
+    body = "".join(block_html(block) for block in block_tree(chapter.get("nodes", [])))
+    lang = escape(lang)
     title = escape(chapter.get("title") or "")
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE html>\n'
-        f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{lang}" lang="{lang}">\n'
+        f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{lang}" lang="{lang}" dir="{direction}">\n'
         f'<head><title>{title}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>\n'
         f"<body>{body}</body></html>"
     )
 
 
-def _nav_xhtml(book: dict, chapters: list[tuple[str, dict]], lang: str) -> str:
+def _nav_xhtml(book: dict, chapters: list[tuple[str, dict]], lang: str, direction: str) -> str:
+    lang = escape(lang)
     lis = "".join(
         f'<li><a href="{slug}.xhtml">{escape(ch.get("title") or slug)}</a></li>'
         for slug, ch in chapters)
@@ -84,13 +98,24 @@ def _nav_xhtml(book: dict, chapters: list[tuple[str, dict]], lang: str) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE html>\n'
-        f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{lang}" lang="{lang}">\n'
+        f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{lang}" lang="{lang}" dir="{direction}">\n'
         f'<head><title>{title} — Contents</title></head>\n'
         f'<body><nav epub:type="toc" id="toc"><h1>{title}</h1><ol>{lis}</ol></nav></body></html>'
     )
 
 
-def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], lang: str) -> str:
+def _cover_xhtml(asset_id: str, title: str, lang: str, direction: str) -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE html>\n'
+        f'<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{escape(lang)}" lang="{escape(lang)}" dir="{direction}">\n'
+        f'<head><title>{escape(title)} — Cover</title><link rel="stylesheet" type="text/css" href="style.css"/></head>\n'
+        f'<body class="cover"><img alt="Cover of {escape(title)}" src="images/{escape(asset_id)}.png"/></body></html>'
+    )
+
+
+def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], lang: str,
+         cover_asset_id: str | None, image_asset_ids: list[str]) -> str:
     md = dict(book["metadata"])
     md.update(edition.metadata_overrides)  # edition-level overrides win
     uid = f"urn:uuid:{book['bookId']}"
@@ -101,7 +126,17 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
     manifest_items += [
         f'<item href="{slug}.xhtml" id="{slug}" media-type="application/xhtml+xml"/>'
         for slug, _ in chapters]
-    spine = "".join(f'<itemref idref="{slug}"/>' for slug, _ in chapters)
+    if cover_asset_id:
+        manifest_items += [
+            f'<item href="images/{escape(cover_asset_id)}.png" id="cover-image" media-type="image/png" properties="cover-image"/>',
+            '<item href="cover.xhtml" id="cover-page" media-type="application/xhtml+xml"/>',
+        ]
+    manifest_items += [
+        f'<item href="images/{escape(asset_id)}.png" id="image-{escape(asset_id)}" media-type="image/png"/>'
+        for asset_id in image_asset_ids if asset_id != cover_asset_id
+    ]
+    spine = ('<itemref idref="cover-page" linear="no"/>' if cover_asset_id else "") + "".join(
+        f'<itemref idref="{slug}"/>' for slug, _ in chapters)
     meta = [
         f'<dc:identifier id="pub-id">{uid}</dc:identifier>',
         f"<dc:title>{escape(md.get('title', ''))}</dc:title>",
@@ -116,18 +151,22 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
         meta.append(f"<dc:subject>{escape(kw)}</dc:subject>")
     if md.get("isbn13"):
         meta.append(f"<dc:identifier>{escape(str(md['isbn13']))}</dc:identifier>")
+    if cover_asset_id:
+        meta.append('<meta name="cover" content="cover-image"/>')
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id">\n'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" prefix="bookworm: urn:bookworm:metadata:">\n'
         f'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{"".join(meta)}</metadata>\n'
         f"<manifest>{''.join(manifest_items)}</manifest>\n"
         f"<spine>{spine}</spine>\n</package>"
     )
 
 
-def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = None) -> tuple[bytes, str]:
+def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = None,
+                image_bytes: dict[str, bytes] | None = None) -> tuple[bytes, str]:
     """Render to EPUB3. Returns (zip_bytes, sha256_hex). Pure/deterministic."""
     lang = book["metadata"].get("language") or "en"
+    direction = resolve_text_direction(lang, edition.text_direction)
     chapters = [
         (_slug(ch["id"], i), ch)
         for i, ch in enumerate(sorted(book["chapters"], key=lambda c: c["order"]))
@@ -136,13 +175,19 @@ def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = N
     # fixed entry order: mimetype first (stored), then container, then sorted OEBPS files
     entries: list[tuple[str, bytes, bool]] = [("mimetype", b"application/epub+zip", True)]
     entries.append(("META-INF/container.xml", _CONTAINER_XML.encode(), False))
-    entries.append((f"{_OEBPS}/content.opf", _opf(book, edition, chapters, lang).encode(), False))
-    entries.append((f"{_OEBPS}/nav.xhtml", _nav_xhtml(book, chapters, lang).encode(), False))
+    cover_asset_id = edition.cover.asset_id if cover_bytes and edition.cover.asset_id else None
+    embedded_images = sorted((image_bytes or {}).items())
+    entries.append((f"{_OEBPS}/content.opf", _opf(book, edition, chapters, lang, cover_asset_id, [item[0] for item in embedded_images]).encode(), False))
+    entries.append((f"{_OEBPS}/nav.xhtml", _nav_xhtml(book, chapters, lang, direction).encode(), False))
     entries.append((f"{_OEBPS}/style.css", _CSS.encode(), False))
     for slug, ch in chapters:
-        entries.append((f"{_OEBPS}/{slug}.xhtml", _chapter_xhtml(book, ch, lang).encode(), False))
-    if cover_bytes and edition.cover.asset_id:
-        entries.append((f"{_OEBPS}/images/{edition.cover.asset_id}.png", cover_bytes, False))
+        entries.append((f"{_OEBPS}/{slug}.xhtml", _chapter_xhtml(book, ch, lang, direction, set(image_bytes or {}) | ({cover_asset_id} if cover_asset_id else set())).encode(), False))
+    for asset_id, data in embedded_images:
+        if asset_id != cover_asset_id:
+            entries.append((f"{_OEBPS}/images/{asset_id}.png", data, False))
+    if cover_asset_id and cover_bytes:
+        entries.append((f"{_OEBPS}/cover.xhtml", _cover_xhtml(cover_asset_id, book["metadata"].get("title", ""), lang, direction).encode(), False))
+        entries.append((f"{_OEBPS}/images/{cover_asset_id}.png", cover_bytes, False))
 
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:

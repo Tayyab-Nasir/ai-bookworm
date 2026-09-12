@@ -1,7 +1,29 @@
 // Typed fetch client for the /v1 API (spec section 9 paths).
 // ponytail: hand-written minimal client — will be replaced by a generated
 // client from services/api/openapi.yaml (e.g. openapi-typescript) later.
-import type { Workspace, Book, Chapter, AiJob, PublishingJob, Folder, Asset, Task, Approval, WorkspaceMember } from "@bookworm/types";
+import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task, Approval, WorkspaceMember, Edition } from "@bookworm/types";
+import type { BookNode } from "@bookworm/book-model";
+
+export interface ChapterDocument { chapterId: string; version: number; nodes: BookNode[] }
+export interface BookSearchResult {
+  id: string; source_type: "manuscript" | "bible"; chapter_id: string | null;
+  bible_item_id: string | null; document_version_id: string | null; node_id: string | null;
+  chunk_index: number; title: string; excerpt: string; text_hash: string; score: number;
+}
+export interface DocumentVersionSummary {
+  id: string; chapter_id: string; version_number: number; plain_text: string; word_count: number;
+  created_by: string; created_at: string; change_summary: string | null;
+}
+export interface ManuscriptImportJob {
+  id: string; book_id: string; source_asset_id: string;
+  status: "queued" | "running" | "succeeded" | "failed"; attempts: number;
+  error_code: string | null; created_at: string; available_at: string; completed_at: string | null;
+}
+
+export interface ManuscriptImportResult {
+  chapters: Chapter[]; sourceAssetId: string; assetIds?: string[];
+  report: { warnings: string[]; confidence?: string; chapterCount: number; imageCount?: number };
+}
 
 export interface ApiComment {
   id: string;
@@ -26,9 +48,28 @@ export interface ActivityEvent {
   created_at: string;
 }
 
+export interface WorkspaceInvitation {
+  id: string;
+  workspace_id: string;
+  email: string;
+  role: Exclude<WorkspaceMember["role"], "owner">;
+  status: "pending" | "accepted" | "revoked" | "expired";
+  expires_at: string;
+  invited_by: string;
+  accepted_by: string | null;
+  accepted_at: string | null;
+  revoked_by: string | null;
+  revoked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type WorkspaceTargetType = "book" | "asset" | "chapter" | "edition";
+export type TaskPriority = "low" | "medium" | "high" | "urgent";
+
 export interface ClientOptions {
   baseUrl: string;
-  token: string;
+  token?: string;
   idempotencyKey?: () => string;
 }
 
@@ -52,11 +93,182 @@ export interface CreateBookRequest {
 }
 
 export interface CreateAiJobRequest {
-  workspaceId: string;
   bookId: string;
-  agentType: string;
-  input?: Record<string, unknown>;
+  chapterIds: string[];
+  agentType: "writer" | "proofreader" | "copyeditor" | "consistency";
+  userInstruction?: string;
   idempotencyKey: string;
+  contextPolicy?: { includeBookBible?: boolean; includeStyleGuide?: boolean; includeRelatedContext?: boolean; semanticTopK?: number; maxTokens?: number };
+}
+
+export interface AiJobReview {
+  id: string;
+  book_id: string | null;
+  agent_type: string;
+  status: AiJob["status"];
+  model: string | null;
+  usage_json: AiJob["usage_json"];
+  error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  chapter_ids: string[];
+  context_source_count: number;
+}
+
+export type AiJobWithSuggestions = AiJobReview & { suggestions: AiSuggestion[] };
+
+export interface GenerateBookMetadataRequest {
+  idempotencyKey: string;
+  chapterIds?: string[];
+  audience?: string;
+  tone?: string;
+  maxTokens?: number;
+}
+
+export interface MetadataSourceRef {
+  chapterId: string;
+  nodeId: string;
+  documentVersionId?: string;
+  textHash?: string;
+}
+
+export interface GeneratedBookMetadataCandidate {
+  suggestionKind: "metadata_candidate";
+  description: string;
+  keywords: string[];
+  categories: string[];
+  audience: string;
+  rationale: string;
+  confidence: number | null;
+  sourceRefs: MetadataSourceRef[];
+  status: "pending";
+}
+
+export interface GeneratedBookMetadataResponse {
+  job: AiJob;
+  candidate: GeneratedBookMetadataCandidate;
+}
+
+export interface GenerateImageRequest {
+  referenceAssetIds?: string[];
+  workspaceId: string;
+  bookId?: string | null;
+  folderId?: string | null;
+  kind: "illustration" | "front_cover";
+  name: string;
+  prompt: string;
+  size?: "1024x1024" | "1024x1536" | "1536x1024";
+  quality?: "low" | "medium" | "high";
+  idempotencyKey: string;
+}
+
+export interface ImageGenerationJob {
+  id: string;
+  bookId: string | null;
+  kind: "illustration" | "front_cover";
+  status: string;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface GeneratedAssetResult {
+  jobId: string;
+  asset: Asset;
+  preview: { url: string; expiresIn: number };
+  provider: string;
+  model: string;
+  requestId?: string | null;
+}
+
+export interface EditionCoverConfig {
+  asset_id?: string | null;
+  title_on_cover?: boolean;
+  subtitle_on_cover?: boolean;
+  author_on_cover?: boolean;
+  text_color?: string;
+  overlay_opacity?: number;
+  qr_code?: { enabled?: boolean; url?: string | null; label?: string | null; position?: "bottom-left" | "bottom-right"; size_px?: number };
+}
+
+export type EditionConfig = {
+  kind: "ebook";
+  schema_version?: "1.0.0" | "1.1.0";
+  text_direction?: "auto" | "ltr" | "rtl";
+  flow?: "reflowable" | "fixed";
+  navigation?: "toc" | "toc+landmarks" | "none";
+  cover?: EditionCoverConfig;
+  metadata_overrides?: Record<string, string>;
+  image_policy?: { max_width_px?: number; max_bytes?: number; embed?: boolean; allowed_formats?: ("jpeg" | "png" | "gif" | "webp")[] };
+} | {
+  kind: "print";
+  schema_version?: "1.0.0" | "1.1.0";
+  text_direction?: "auto" | "ltr" | "rtl";
+  trim_size?: "5x8" | "5.5x8.5" | "6x9" | "7x10" | "8.5x11";
+  bleed_in?: number;
+  margins?: { top?: number; bottom?: number; inner?: number; outer?: number };
+  typography?: {
+    body_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold";
+    body_size_pt?: number;
+    heading_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold";
+    heading_size_pt?: number;
+    leading?: number;
+    paragraph_spacing_pt?: number;
+    first_line_indent_in?: number;
+    text_align?: "left" | "justify";
+  };
+  page_numbering?: { style?: "arabic" | "roman" | "none"; start_at?: number; position?: "bottom-center" | "bottom-outer" | "top-center" };
+  cover?: EditionCoverConfig;
+};
+
+export interface RenderedEditionResult {
+  jobId: string;
+  status: string;
+  artifacts: {
+    asset: Asset;
+    role: "rendered_ebook" | "rendered_print" | "rendered_cover";
+    download: { url: string; expiresIn: number };
+  }[];
+}
+
+export interface PreflightFinding {
+  code: string;
+  message: string;
+  location: string;
+  severity: "error" | "warning" | "info";
+  category: "package_integrity" | "epub_structure" | "navigation" | "metadata" | "images" | "fonts" | "accessibility" | "links" | "language" | "channel";
+  rule_id: string;
+  rule_version: string;
+}
+
+export interface PreflightResult {
+  jobId: string;
+  ruleVersion: string;
+  channel: string | null;
+  requestedChannel: "export" | "kdp" | "apple" | "barnesnoble" | "lulu";
+  errors: number;
+  warnings: number;
+  findings: PreflightFinding[];
+}
+
+export type RetailerChannel = "kdp" | "apple" | "barnesnoble" | "lulu";
+
+export interface PublishingPackageJob {
+  id: string;
+  bookId: string;
+  editionId: string;
+  channel: RetailerChannel;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  sourceRenderJobId: string | null;
+  sourcePreflightJobId: string | null;
+  ruleVersion: string | null;
+  failureCode: string | null;
+  submissionMode: "manual";
+  package: { asset: Asset; download: { url: string; expiresIn: number } } | null;
 }
 
 export class ApiClientError extends Error {
@@ -78,6 +290,28 @@ export interface Plan {
   price_cents: number;
   currency: string;
   entitlements_json: Record<string, unknown>;
+}
+
+export interface BillingEntitlements {
+  seats: number;
+  workspaces: number;
+  books: number;
+  ai_credits_monthly: number;
+  image_credits_monthly: number;
+  storage_gb: number;
+  rendering: boolean;
+  publishing_channels: string[];
+  [key: string]: unknown;
+}
+
+export interface BillingUsageSummary {
+  entitlements: {
+    plan: { id: string | null; name: string };
+    subscription: { id: string; status: string; current_period_end: string | null } | null;
+    entitlements: BillingEntitlements;
+  };
+  usage: Record<string, number>;
+  creditBalance: number;
 }
 
 // Step 12: community + referrals
@@ -154,14 +388,15 @@ export function createClient(opts: ClientOptions) {
   async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown): Promise<T> {
     if (body !== undefined) {
       headers["content-type"] = "application/json";
-      if (method === "POST") headers["idempotency-key"] = opts.idempotencyKey?.() ?? crypto.randomUUID();
     }
+    if (method === "POST") headers["idempotency-key"] = opts.idempotencyKey?.() ?? crypto.randomUUID();
     const res = await fetch(`${opts.baseUrl}${path}`, {
       method,
       headers,
+      credentials: "same-origin",
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const json = (await res.json()) as { error?: { code: string; message: string; requestId: string; details?: Record<string, unknown> } } & T;
+    const json = (res.status === 204 ? {} : await res.json().catch(() => ({ error: { code: "invalid_response", message: "The service returned an unreadable response.", requestId: "" } }))) as { error?: { code: string; message: string; requestId: string; details?: Record<string, unknown> } } & T;
     if (!res.ok) {
       const e = json.error ?? { code: "internal", message: res.statusText, requestId: "" };
       throw new ApiClientError(res.status, e.code, e.message, e.requestId, e.details);
@@ -170,7 +405,7 @@ export function createClient(opts: ClientOptions) {
   }
 
   const call = <T>(method: string, path: string, body?: unknown) =>
-    request<T>(method, path, { authorization: `Bearer ${opts.token}` }, body);
+    request<T>(method, path, opts.token ? { authorization: `Bearer ${opts.token}` } : {}, body);
   const callService = <T>(path: string, body: unknown, serviceToken: string) =>
     request<T>("POST", path, { "x-service-token": serviceToken }, body);
 
@@ -181,13 +416,38 @@ export function createClient(opts: ClientOptions) {
     listBooks: (workspaceId: string) =>
       call<{ books: Book[] }>("GET", `/v1/books?workspaceId=${encodeURIComponent(workspaceId)}`),
     createBook: (body: CreateBookRequest) => call<Book>("POST", "/v1/books", body),
+    getBook: (bookId: string) => call<{ book: Book; role: string }>("GET", `/v1/books/${bookId}`),
+    updateBook: (bookId: string, body: Partial<Omit<CreateBookRequest, "workspaceId" | "subtitle" | "genre">> & { subtitle?: string | null; genre?: string | null; expectedUpdatedAt: string }) =>
+      call<{ book: Book }>("PATCH", `/v1/books/${bookId}`, body),
     listChapters: (bookId: string) => call<{ chapters: Chapter[] }>("GET", `/v1/books/${bookId}/chapters`),
+    createChapter: (bookId: string, body: { title: string; nodes?: BookNode[]; idempotencyKey?: string }) =>
+      call<{ chapter: Chapter }>("POST", `/v1/books/${bookId}/chapters`, body),
+    reorderChapters: (bookId: string, body: { orderedIds: string[]; expectedIds: string[] }) =>
+      call<{ chapters: Chapter[] }>("PUT", `/v1/books/${bookId}/chapters/order`, body),
+    importManuscript: (bookId: string, assetId: string) =>
+      call<ManuscriptImportResult>("POST", `/v1/books/${bookId}/import`, { assetId }),
+    getManuscriptImport: (bookId: string, assetId: string) =>
+      call<{ import: ManuscriptImportResult | null }>("GET", `/v1/books/${bookId}/imports/${assetId}`),
+    queueManuscriptImport: (bookId: string, assetId: string) =>
+      call<{ job: ManuscriptImportJob }>("POST", `/v1/books/${bookId}/import-jobs`, { assetId }),
+    listManuscriptImports: (bookId: string) =>
+      call<{ jobs: ManuscriptImportJob[] }>("GET", `/v1/books/${bookId}/import-jobs`),
+    retryManuscriptImport: (bookId: string, jobId: string) =>
+      call<{ job: ManuscriptImportJob }>("POST", `/v1/books/${bookId}/import-jobs/${jobId}/retry`, {}),
+    getChapterDocument: (chapterId: string) =>
+      call<{ chapter: Chapter; role: string; document: ChapterDocument }>("GET", `/v1/chapters/${chapterId}/document`),
+    listDocumentVersions: (chapterId: string) =>
+      call<{ versions: DocumentVersionSummary[] }>("GET", `/v1/chapters/${chapterId}/versions`),
+    saveChapterDocument: (chapterId: string, body: { nodes: BookNode[]; expectedVersion: number; operationId: string; changeSummary?: string }) =>
+      call<{ version: number; versionId: string; document: ChapterDocument }>("PUT", `/v1/chapters/${chapterId}/document`, body),
+    restoreDocumentVersion: (chapterId: string, versionId: string, body: { expectedVersion: number; operationId: string }) =>
+      call<{ version: number; versionId: string; document: ChapterDocument }>("POST", `/v1/chapters/${chapterId}/versions/${versionId}/restore`, body),
     applyOperation: (chapterId: string, op: DocumentOperation) =>
       call<{ version: number }>("POST", `/v1/chapters/${chapterId}/operations`, op),
     createAssetUploadUrl: (body: { workspaceId: string; filename: string; mimeType: string; sizeBytes: number; folderId?: string | null; type?: string }) =>
-      call<{ uploadUrl: string; assetId: string; storagePath: string }>("POST", "/v1/assets/upload-url", body),
+      call<{ uploadUrl: string; assetId: string; path: string }>("POST", "/v1/assets/upload-url", body),
     confirmAssetUpload: (assetId: string, body: { checksumSha256: string; sizeBytes: number }) =>
-      call<{ assetId: string; status: string; confirmed: boolean }>("POST", `/v1/assets/${assetId}/confirm`, body),
+      call<{ assetId: string; status: string; scanStatus: "clean"; detectedMimeType: string; confirmed: true }>("POST", `/v1/assets/${assetId}/confirm`, body),
     // Step 9: folders / assets / collaboration / team
     listFolders: (workspaceId: string) =>
       call<{ folders: Folder[] }>("GET", `/v1/workspaces/${workspaceId}/folders`),
@@ -204,16 +464,22 @@ export function createClient(opts: ClientOptions) {
       if (filter?.status) qs.set("status", filter.status);
       return call<{ assets: Asset[] }>("GET", `/v1/assets?${qs}`);
     },
+    generateImage: (body: GenerateImageRequest) => call<GeneratedAssetResult>("POST", "/v1/assets/generate", body),
+    getAssetAccess: (workspaceId: string) => call<{ canEdit: boolean }>("GET", `/v1/assets/access?${new URLSearchParams({ workspaceId })}`),
+    listImageGenerationJobs: (workspaceId: string) => call<{ jobs: ImageGenerationJob[] }>("GET", `/v1/assets/generation-jobs?${new URLSearchParams({ workspaceId })}`),
+    finalizeImageJob: (jobId: string) => call<{ jobId: string; status: string }>("POST", `/v1/assets/generation-jobs/${encodeURIComponent(jobId)}/finalize`),
+    getAssetDownloadUrl: (assetId: string) =>
+      call<{ url: string; expiresIn: number }>("GET", `/v1/assets/${assetId}/download-url`),
     updateAsset: (assetId: string, body: { name?: string; folderId?: string | null; status?: Asset["status"] }) =>
       call<Asset>("PATCH", `/v1/assets/${assetId}`, body),
     deleteAsset: (assetId: string) => call<{ assetId: string; deleted: boolean }>("DELETE", `/v1/assets/${assetId}`),
     restoreAsset: (assetId: string) => call<{ assetId: string; restored: boolean }>("POST", `/v1/assets/${assetId}/restore`),
     createAssetVersion: (assetId: string, body: { filename: string; mimeType: string; sizeBytes: number }) =>
       call<{ assetId: string; version: number; uploadUrl: string; path: string }>("POST", `/v1/assets/${assetId}/versions`, body),
-    confirmAssetVersion: (assetId: string, version: number, body: { checksumSha256: string }) =>
-      call<{ assetId: string; version: number; confirmed: boolean }>("POST", `/v1/assets/${assetId}/versions/${version}/confirm`, body),
+    confirmAssetVersion: (assetId: string, version: number, body: { checksumSha256: string; sizeBytes: number }) =>
+      call<{ assetId: string; version: number; scanStatus: "clean"; detectedMimeType: string; confirmed: true }>("POST", `/v1/assets/${assetId}/versions/${version}/confirm`, body),
     listAssetVersions: (assetId: string) =>
-      call<{ versions: { id: string; version_number: number; checksum: string; created_by: string; created_at: string }[] }>(
+      call<{ versions: { id: string; version_number: number; checksum: string; scan_status: "pending" | "clean" | "infected" | "error" | "trusted_generated"; detected_mime_type?: string | null; created_by: string; created_at: string }[] }>(
         "GET", `/v1/assets/${assetId}/versions`),
     getAssetUsage: (assetId: string) =>
       call<{ links: { id: string; entity_type: string; entity_id: string; usage_role: string | null }[] }>("GET", `/v1/assets/${assetId}/usage`),
@@ -222,19 +488,19 @@ export function createClient(opts: ClientOptions) {
     createComment: (body: { workspaceId: string; entityType: string; entityId: string; body: string }) =>
       call<ApiComment>("POST", "/v1/comments", body),
     resolveComment: (commentId: string) => call<ApiComment>("POST", `/v1/comments/${commentId}/resolve`),
-    listTasks: (workspaceId: string, filter?: { status?: string; assigneeId?: string }) => {
+    listTasks: (workspaceId: string, filter?: { status?: Task["status"]; assigneeId?: string }) => {
       const qs = new URLSearchParams({ workspaceId });
       if (filter?.status) qs.set("status", filter.status);
       if (filter?.assigneeId) qs.set("assigneeId", filter.assigneeId);
       return call<{ tasks: Task[] }>("GET", `/v1/tasks?${qs}`);
     },
-    createTask: (body: { workspaceId: string; title: string; description?: string; assigneeId?: string | null; priority?: string; dueAt?: string | null; entityType?: string; entityId?: string }) =>
+    createTask: (body: { workspaceId: string; title: string; description?: string; assigneeId?: string | null; priority?: TaskPriority; dueAt?: string | null; entityType?: WorkspaceTargetType; entityId?: string }) =>
       call<Task>("POST", "/v1/tasks", body),
-    updateTask: (taskId: string, body: { title?: string; status?: Task["status"]; priority?: string; dueAt?: string | null; assigneeId?: string | null }) =>
+    updateTask: (taskId: string, body: { title?: string; status?: Task["status"]; priority?: TaskPriority; dueAt?: string | null; assigneeId?: string | null }) =>
       call<Task>("PATCH", `/v1/tasks/${taskId}`, body),
-    listApprovals: (workspaceId: string, status?: string) =>
+    listApprovals: (workspaceId: string, status?: Approval["status"]) =>
       call<{ approvals: Approval[] }>("GET", `/v1/approvals?workspaceId=${workspaceId}${status ? `&status=${status}` : ""}`),
-    createApproval: (body: { workspaceId: string; entityType: string; entityId: string; reviewerId?: string | null; comment?: string }) =>
+    createApproval: (body: { workspaceId: string; entityType: WorkspaceTargetType; entityId: string; reviewerId?: string | null; comment?: string }) =>
       call<Approval>("POST", "/v1/approvals", body),
     resolveApproval: (approvalId: string, action: "approve" | "reject") =>
       call<Approval>("POST", `/v1/approvals/${approvalId}/${action}`),
@@ -243,19 +509,46 @@ export function createClient(opts: ClientOptions) {
     listMembers: (workspaceId: string) =>
       call<{ members: WorkspaceMember[]; profiles: { id: string; display_name: string; avatar_url: string | null }[] }>(
         "GET", `/v1/workspaces/${workspaceId}/members`),
-    inviteMember: (workspaceId: string, body: { email: string; role?: WorkspaceMember["role"] }) =>
-      call<WorkspaceMember>("POST", `/v1/workspaces/${workspaceId}/invitations`, body),
+    listInvitations: (workspaceId: string) =>
+      call<{ invitations: WorkspaceInvitation[] }>("GET", `/v1/workspaces/${workspaceId}/invitations`),
+    inviteMember: (workspaceId: string, body: { email: string; role?: Exclude<WorkspaceMember["role"], "owner"> }) =>
+      call<{ invitation: WorkspaceInvitation; acceptanceUrl: string }>("POST", `/v1/workspaces/${workspaceId}/invitations`, body),
+    revokeInvitation: (workspaceId: string, invitationId: string) =>
+      call<{ invitationId: string; revoked: true }>("DELETE", `/v1/workspaces/${workspaceId}/invitations/${invitationId}`),
+    acceptWorkspaceInvitation: (token: string) =>
+      call<{ workspaceId: string; organizationId: string; role: WorkspaceMember["role"]; status: "active" }>("POST", "/v1/workspaces/invitations/accept", { token }),
     updateMemberRole: (workspaceId: string, userId: string, role: WorkspaceMember["role"]) =>
       call<WorkspaceMember>("PATCH", `/v1/workspaces/${workspaceId}/members/${userId}`, { role }),
-    createAiJob: (body: CreateAiJobRequest) => call<AiJob>("POST", "/v1/ai/jobs", body),
-    getAiJob: (jobId: string) => call<AiJob>("GET", `/v1/ai/jobs/${jobId}`),
-    applySuggestion: (id: string) => call<Record<string, unknown>>("POST", `/v1/ai/suggestions/${id}/apply`),
-    runPreflight: (body: { bookId: string; editionId?: string }) =>
-      call<Record<string, unknown>>("POST", "/v1/publishing/validate", body),
-    createPublishingJob: (body: { bookId: string; editionId?: string; channel: string; request?: Record<string, unknown>; idempotencyKey: string }) =>
-      call<PublishingJob>("POST", "/v1/publishing/jobs", body),
+    createAiJob: (body: CreateAiJobRequest) => call<AiJobWithSuggestions>("POST", "/v1/ai/jobs", body),
+    generateBookMetadata: (bookId: string, body: GenerateBookMetadataRequest) =>
+      call<GeneratedBookMetadataResponse>("POST", `/v1/books/${encodeURIComponent(bookId)}/metadata/generate`, body),
+    listAiJobs: (bookId: string, limit = 8) =>
+      call<{ jobs: AiJobReview[] }>("GET", `/v1/ai/jobs?bookId=${encodeURIComponent(bookId)}&limit=${limit}`),
+    getAiJob: (jobId: string) => call<AiJobWithSuggestions>("GET", `/v1/ai/jobs/${jobId}`),
+    applySuggestion: (id: string) => call<{ suggestionId: string; status: "accepted"; version: number; versionId: string }>("POST", `/v1/ai/suggestions/${id}/apply`),
+    rejectSuggestion: (id: string) => call<{ suggestion: AiSuggestion }>("POST", `/v1/ai/suggestions/${id}/reject`),
+    listEditions: (bookId: string) => call<{ editions: Edition[] }>("GET", `/v1/books/${bookId}/editions`),
+    createEdition: (bookId: string, body: { config: EditionConfig; language?: string }) =>
+      call<Edition>("POST", `/v1/books/${bookId}/editions`, body),
+    getEdition: (editionId: string) => call<Edition>("GET", `/v1/editions/${editionId}`),
+    updateEdition: (editionId: string, body: { config?: EditionConfig; language?: string; status?: "draft" | "in_review" | "approved" | "archived"; expectedUpdatedAt: string }) =>
+      call<Edition>("PATCH", `/v1/editions/${editionId}`, body),
+    renderEdition: (editionId: string, body: { idempotencyKey: string }) =>
+      call<RenderedEditionResult>("POST", `/v1/editions/${editionId}/render`, body),
+    runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
+      call<PreflightResult>("POST", "/v1/publishing/validate", body),
+    createPublishingJob: (body: { bookId: string; editionId: string; channel: RetailerChannel; renderJobId: string; preflightJobId: string; idempotencyKey: string }) =>
+      call<PublishingPackageJob>("POST", "/v1/publishing/jobs", body),
+    listPublishingJobs: (bookId: string, filter?: { editionId?: string; channel?: RetailerChannel; limit?: number }) => {
+      const qs = new URLSearchParams({ bookId });
+      if (filter?.editionId) qs.set("editionId", filter.editionId);
+      if (filter?.channel) qs.set("channel", filter.channel);
+      if (filter?.limit) qs.set("limit", String(filter.limit));
+      return call<{ jobs: PublishingPackageJob[] }>("GET", `/v1/publishing/jobs?${qs}`);
+    },
+    getPublishingJob: (jobId: string) => call<PublishingPackageJob>("GET", `/v1/publishing/jobs/${jobId}`),
     getUsage: (organizationId: string) =>
-      call<{ entitlements: unknown; usage: Record<string, number>; creditBalance: number }>(
+      call<BillingUsageSummary>(
         "GET", `/v1/usage?organizationId=${encodeURIComponent(organizationId)}`),
     listPlans: () => call<{ plans: Plan[] }>("GET", "/v1/plans"),
     createBillingCheckout: (body: { organizationId: string; planId: string; successUrl: string; cancelUrl: string }) =>
@@ -270,7 +563,7 @@ export function createClient(opts: ClientOptions) {
     createCommunity: (body: { name: string; slug: string; description?: string; visibility?: Community["visibility"] }) =>
       call<Community>("POST", "/v1/communities", body),
     joinCommunity: (communityId: string) =>
-      call<{ communityId: string; role: string }>("POST", `/v1/communities/${communityId}/join`),
+      call<{ communityId: string; role: string; alreadyMember?: boolean }>("POST", `/v1/communities/${communityId}/join`),
     listCommunityPosts: (communityId: string) =>
       call<{ posts: CommunityPost[]; role: string | null }>("GET", `/v1/communities/${communityId}/posts`),
     createCommunityPost: (communityId: string, body: { title?: string; body: string }) =>
@@ -289,13 +582,20 @@ export function createClient(opts: ClientOptions) {
     // Step 12: referrals
     getReferralCode: () => call<ReferralCode>("GET", "/v1/referrals/code"),
     claimReferral: (code: string) =>
-      call<{ referral: Referral; alreadyAttributed?: boolean }>("POST", "/v1/referrals/claim", { code }),
+      call<{ referral?: Referral; alreadyAttributed?: boolean }>("POST", "/v1/referrals/claim", { code }),
     listReferrals: () => call<{ referrals: Referral[] }>("GET", "/v1/referrals"),
-    listCreditLedger: () => call<{ entries: CreditLedgerEntry[] }>("GET", "/v1/referrals/ledger"),
+    listCreditLedger: () =>
+      call<{ entries: CreditLedgerEntry[]; summary: { creditBalance: number; referralCredits: number; rewardedReferrals: number } }>(
+        "GET",
+        "/v1/referrals/ledger"
+      ),
+    searchBook: (bookId: string, body: { query: string; limit?: number; chapterIds?: string[]; includeBible?: boolean }) =>
+      call<{ results: BookSearchResult[]; strategy: "postgres_full_text"; query: string }>("POST", `/v1/books/${encodeURIComponent(bookId)}/search`, body),
     qualifyReferral: (referredUserId: string, serviceToken: string) =>
       callService<{ qualified: boolean; held?: boolean; rewarded?: boolean }>("/v1/referrals/qualify", { referredUserId }, serviceToken),
     // Step 14: admin console (403 for non-admins)
-    adminList: (tab: "users" | "jobs" | "flags" | "support" | "audit") => {
+    adminAccess: () => call<{ admin: boolean }>("GET", "/v1/admin/access"),
+    adminList: (tab: "users" | "jobs" | "flags" | "support" | "audit", filter: { type?: "ai" | "publishing" | "document"; status?: string; search?: string; action?: string; offset?: number; limit?: number } = {}) => {
       const paths: Record<string, string> = {
         users: "/v1/admin/users", jobs: "/v1/admin/jobs", flags: "/v1/admin/flags",
         support: "/v1/admin/support", audit: "/v1/admin/audit",
@@ -303,19 +603,40 @@ export function createClient(opts: ClientOptions) {
       const keys: Record<string, string> = {
         users: "users", jobs: "jobs", flags: "flags", support: "tickets", audit: "entries",
       };
-      return call<Record<string, unknown[]>>( "GET", paths[tab]).then((d) => d[keys[tab]] ?? []);
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(filter)) {
+        if (value !== undefined && value !== "") query.set(key, String(value));
+      }
+      return call<Record<string, Record<string, unknown>[]>>("GET", `${paths[tab]}?${query}`).then((d) => d[keys[tab]] ?? []);
     },
     adminSuspendUser: (userId: string) =>
       call<{ userId: string; suspended: boolean }>("POST", `/v1/admin/users/${userId}/suspend`),
     adminRetryJob: (type: "ai" | "publishing", jobId: string) =>
       call<{ job: unknown }>("POST", `/v1/admin/jobs/${type}/${jobId}/retry`),
-    adminToggleFlag: (key: string, enabled: boolean) =>
-      request<{ flag: unknown }>("PUT", `/v1/admin/flags/${key}`, { authorization: `Bearer ${opts.token}` }, { enabled }),
-    adminUpdateTicket: (ticketId: string, status: string) =>
-      call<{ ticket: unknown }>("POST", `/v1/admin/support/${ticketId}`, { status }),
+    adminToggleFlag: (key: string, enabled: boolean, scope: { scopeType: string; scopeId: string | null; config?: Record<string, unknown> } = { scopeType: "global", scopeId: null }) =>
+      call<{ flag: unknown }>("PUT", `/v1/admin/flags/${encodeURIComponent(key)}`, { enabled, ...scope }),
+    adminUpdateTicket: (ticketId: string, status: "open" | "pending" | "resolved" | "closed", priority?: "low" | "normal" | "high" | "urgent") =>
+      call<{ ticket: unknown }>("POST", `/v1/admin/support/${ticketId}`, { status, priority }),
     adminUsageSummary: (days = 30) =>
       call<{ days: number; orgs: { organizationId: string; total: number; byMeter: Record<string, number> }[] }>(
         "GET", `/v1/admin/usage/summary?days=${days}`),
+    adminDocumentJobHealth: () => call<{ health: {
+      generated_at: string; queued: number; due_queued: number; running: number;
+      expired_running: number; succeeded: number; failed: number; dead_letters: number;
+      oldest_queued_at: string | null; oldest_running_at: string | null;
+    } }>("GET", "/v1/admin/jobs/document/health"),
+    listSupportTickets: () =>
+      call<{ tickets: { id: string; category: string; subject: string; status: string; priority: string; created_at: string }[] }>(
+        "GET", "/v1/support/tickets"),
+    createSupportTicket: (input: { category: string; subject: string; body: string }) =>
+      call<{ ticket: { id: string } }>("POST", "/v1/support/tickets", input),
+    listDataRequests: () =>
+      call<{ requests: { id: string; request_type: "export" | "delete"; status: string; reason: string | null; requested_at: string; due_at: string; completed_at: string | null }[] }>(
+        "GET", "/v1/account/data-requests"),
+    createDataRequest: (input: { type: "export" | "delete"; reason?: string; confirmation?: string }) =>
+      call<{ request: { id: string } }>("POST", "/v1/account/data-requests", input),
+    cancelDataRequest: (requestId: string) =>
+      call<{ request: unknown }>("DELETE", `/v1/account/data-requests/${requestId}`),
   };
 }
 

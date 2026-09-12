@@ -1,7 +1,7 @@
 node_modules/
 dist/
 build/
-.next/
+.next*/
 .turbo/
 coverage/
 *.log
@@ -23,3 +23,5 @@ venv/
 .vscode/
 .DS_Store
 Thumbs.db
+
+.vercel

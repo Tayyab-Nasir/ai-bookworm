@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BookModel, Chapter } from "./schema.js";
 import type { DocumentOperation } from "./operations.js";
+import { nodeInline, replaceNodeText } from "./rich-text.js";
 
 export class VersionConflictError extends Error {
   constructor(public readonly expected: number, public readonly actual: number) {
@@ -128,10 +129,7 @@ export function applyOperation(
         );
       next = putChapter(book, {
         ...chapter,
-        nodes: setAt(chapter.nodes, index, {
-          ...node,
-          text: text.slice(0, op.payload.from) + op.payload.text + text.slice(op.payload.to),
-        }),
+        nodes: setAt(chapter.nodes, index, replaceNodeText(node, op.payload.from, op.payload.to, op.payload.text)),
       });
       break;
     }
@@ -189,11 +187,11 @@ export function applyOperation(
       const { chapter, index, node, text } = requireText(book, op.payload.nodeId);
       if (op.payload.offset > text.length)
         throw new ValidationError(`offset ${op.payload.offset} out of bounds`);
-      const right = { ...node, id: randomUUID(), text: text.slice(op.payload.offset) };
+      const right = { ...replaceNodeText(node, 0, op.payload.offset, ""), id: randomUUID() };
       next = putChapter(book, {
         ...chapter,
         nodes: insertAt(
-          setAt(chapter.nodes, index, { ...node, text: text.slice(0, op.payload.offset) }),
+          setAt(chapter.nodes, index, replaceNodeText(node, op.payload.offset, text.length, "")),
           index + 1,
           right,
         ),
@@ -213,7 +211,7 @@ export function applyOperation(
         nodes: setAt(
           removeAt(left.chapter.nodes, right.index),
           left.index,
-          { ...left.node, text: left.text + right.text },
+          { ...left.node, text: left.text + right.text, attributes: { ...left.node.attributes, richText: [...nodeInline(left.node), ...nodeInline(right.node)] } },
         ),
       });
       break;

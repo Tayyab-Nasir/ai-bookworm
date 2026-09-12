@@ -7,6 +7,7 @@ import { defaultSupabaseFactory, type SupabaseFactory } from "./lib/supabase.js"
 import { workspaceRoutes } from "./routes/workspaces.js";
 import { bookRoutes } from "./routes/books.js";
 import { chapterRoutes } from "./routes/chapters.js";
+import { bookMemoryRoutes } from "./routes/book-memory.js";
 import { assetRoutes } from "./routes/assets.js";
 import { folderRoutes } from "./routes/folders.js";
 import { collabRoutes } from "./routes/collab.js";
@@ -16,13 +17,20 @@ import { communityRoutes } from "./routes/community.js";
 import { referralRoutes } from "./routes/referrals.js";
 import { adminRoutes } from "./routes/admin.js";
 import { healthRoutes } from "./routes/health.js";
+import { aiRoutes } from "./routes/ai.js";
+import { editionRoutes } from "./routes/editions.js";
+import { publishingRoutes } from "./routes/publishing.js";
+import { accountRoutes } from "./routes/account.js";
+import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
 import { adminPlugin } from "./plugins/admin.js";
 import { redactObject } from "./lib/redact.js";
 import type { StripeFactory } from "./lib/stripe.js";
+import type { ImageGenerator } from "./lib/image-generation.js";
+import type { AssetMalwareScanner } from "./lib/asset-scanner.js";
 
 export async function buildApp(
   supabaseFactory: SupabaseFactory = defaultSupabaseFactory,
-  opts: { stripeFactory?: StripeFactory } = {},
+  opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner } = {},
 ): Promise<FastifyInstance> {
   const env = loadEnv();
   const app = Fastify({ logger: { level: env.LOG_LEVEL } });
@@ -41,15 +49,21 @@ export async function buildApp(
     await v1.register(idempotencyPlugin);
     await v1.register(adminPlugin);
     workspaceRoutes(v1);
-    bookRoutes(v1);
+    bookRoutes(v1, { assetScanner: opts.assetScanner });
     chapterRoutes(v1);
-    assetRoutes(v1);
+    bookMemoryRoutes(v1);
+    metadataGenerationRoutes(v1, { fetcher: opts.aiFetch });
+    aiRoutes(v1, { fetcher: opts.aiFetch });
+    assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner });
+    editionRoutes(v1, { fetcher: opts.renderFetch });
+    publishingRoutes(v1, { renderFetcher: opts.renderFetch, publishingFetcher: opts.publishingFetch });
     folderRoutes(v1);
     collabRoutes(v1);
     teamRoutes(v1);
     billingRoutes(v1, opts);
     communityRoutes(v1);
     referralRoutes(v1);
+    accountRoutes(v1);
     adminRoutes(v1);
     stripeWebhookRoutes(v1); // own JSON parser keeps raw body for sig check
   }, { prefix: "/v1" });

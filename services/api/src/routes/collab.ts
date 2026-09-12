@@ -7,6 +7,8 @@ import { logActivity } from "../lib/activity.js";
 
 const TASK_STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"] as const;
 const PRIORITIES = ["low", "medium", "high", "urgent"] as const;
+const TARGET_TYPES = ["book", "asset", "chapter", "edition"] as const;
+const APPROVER_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer", "reviewer"]);
 
 const createCommentSchema = z.object({
   workspaceId: z.string().uuid(),
@@ -19,11 +21,13 @@ const createTaskSchema = z.object({
   workspaceId: z.string().uuid(),
   title: z.string().min(1).max(256),
   description: z.string().max(10000).optional(),
-  entityType: z.string().min(1).optional(),
+  entityType: z.enum(TARGET_TYPES).optional(),
   entityId: z.string().uuid().optional(),
   assigneeId: z.string().uuid().nullish(),
   priority: z.enum(PRIORITIES).optional(),
   dueAt: z.string().datetime().nullish(),
+}).strict().refine((value) => Boolean(value.entityType) === Boolean(value.entityId), {
+  message: "entityType and entityId must be provided together",
 });
 
 const patchTaskSchema = z
@@ -38,11 +42,33 @@ const patchTaskSchema = z
 
 const createApprovalSchema = z.object({
   workspaceId: z.string().uuid(),
-  entityType: z.string().min(1),
+  entityType: z.enum(TARGET_TYPES),
   entityId: z.string().uuid(),
   reviewerId: z.string().uuid().nullish(),
   comment: z.string().max(2000).optional(),
-});
+}).strict();
+
+async function requireTargetInWorkspace(sb: SupabaseClient, workspaceId: string, entityType: typeof TARGET_TYPES[number], entityId: string) {
+  if (entityType === "book" || entityType === "asset") {
+    const table = entityType === "book" ? "books" : "assets";
+    const { data } = await sb.from(table).select("workspace_id").eq("id", entityId).maybeSingle();
+    if (!data || data.workspace_id !== workspaceId) throw new AppError(422, "target does not exist in this workspace");
+    return;
+  }
+  const table = entityType === "chapter" ? "chapters" : "editions";
+  const { data: child } = await sb.from(table).select("book_id").eq("id", entityId).maybeSingle();
+  if (!child) throw new AppError(422, "target does not exist in this workspace");
+  const { data: book } = await sb.from("books").select("workspace_id").eq("id", child.book_id).maybeSingle();
+  if (!book || book.workspace_id !== workspaceId) throw new AppError(422, "target does not exist in this workspace");
+}
+
+async function requireActiveAssignee(sb: SupabaseClient, workspaceId: string, userId: string, approver = false) {
+  const { data } = await sb.from("workspace_members").select("role,status")
+    .eq("workspace_id", workspaceId).eq("user_id", userId).eq("status", "active").maybeSingle();
+  if (!data || (approver && !APPROVER_ROLES.has(data.role))) {
+    throw new AppError(422, approver ? "reviewer is not eligible in this workspace" : "assignee is not active in this workspace");
+  }
+}
 
 // @name / @Display Name mentions. Server-side authority: names are resolved
 // against active workspace members' profiles, client rendering is cosmetic.
@@ -153,6 +179,8 @@ export function collabRoutes(app: FastifyInstance) {
     const { workspaceId, title, description, entityType, entityId, assigneeId, priority, dueAt } = parsed.data;
     const sb = app.supabaseFactory(req.userToken);
     await requireWorkspaceEditor(sb, workspaceId, req.userId);
+    if (entityType && entityId) await requireTargetInWorkspace(sb, workspaceId, entityType, entityId);
+    if (assigneeId) await requireActiveAssignee(sb, workspaceId, assigneeId);
     const { data, error } = await sb
       .from("tasks")
       .insert({
@@ -191,6 +219,8 @@ export function collabRoutes(app: FastifyInstance) {
     if (parsed.data.priority !== undefined) update.priority = parsed.data.priority;
     if (parsed.data.dueAt !== undefined) update.due_at = parsed.data.dueAt;
     if (parsed.data.assigneeId !== undefined) update.assignee_id = parsed.data.assigneeId;
+    if (parsed.data.assigneeId) await requireActiveAssignee(sb, task.workspace_id, parsed.data.assigneeId);
+    update.updated_at = new Date().toISOString();
     const { data, error } = await sb.from("tasks").update(update).eq("id", id).select().single();
     if (error) throw new AppError(422, error.message);
     await logActivity(app.supabaseFactory(), { workspaceId: task.workspace_id, actorId: req.userId, eventType: "task_updated", entityType: "task", entityId: id, payload: update });
@@ -216,6 +246,8 @@ export function collabRoutes(app: FastifyInstance) {
     const { workspaceId, entityType, entityId, reviewerId, comment } = parsed.data;
     const sb = app.supabaseFactory(req.userToken);
     await requireWorkspaceEditor(sb, workspaceId, req.userId);
+    await requireTargetInWorkspace(sb, workspaceId, entityType, entityId);
+    if (reviewerId) await requireActiveAssignee(sb, workspaceId, reviewerId, true);
     const { data, error } = await sb
       .from("approvals")
       .insert({ workspace_id: workspaceId, entity_type: entityType, entity_id: entityId, requested_by: req.userId, reviewer_id: reviewerId ?? null, comment: comment ?? null })
@@ -240,7 +272,9 @@ export function collabRoutes(app: FastifyInstance) {
       const status = action === "approve" ? "approved" : "rejected";
       // Conditional update guards the race: two concurrent resolves both read
       // 'pending', only one write matches the status filter.
-      const { data, error } = await sb.from("approvals").update({ status }).eq("id", id).eq("status", "pending").select().single();
+      const { data, error } = await app.supabaseFactory().from("approvals")
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq("id", id).eq("workspace_id", approval.workspace_id).eq("status", "pending").select().single();
       if (error || !data) throw new AppError(409, "approval already resolved");
       await logActivity(app.supabaseFactory(), {
         workspaceId: approval.workspace_id,

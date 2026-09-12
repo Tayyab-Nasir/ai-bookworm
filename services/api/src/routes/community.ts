@@ -4,7 +4,7 @@ import { AppError } from "../errors.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 
 const createCommunitySchema = z.object({
-  name: z.string().min(1).max(200),
+  name: z.string().trim().min(1).max(200),
   slug: z.string().min(2).max(80).regex(/^[a-z0-9-]+$/),
   description: z.string().max(2000).optional(),
   visibility: z.enum(["private", "public", "unlisted"]).default("public"),
@@ -94,18 +94,17 @@ export function communityRoutes(app: FastifyInstance) {
   app.post("/communities", async (req, reply) => {
     const parsed = createCommunitySchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid community", { issues: parsed.error.issues });
-    const svc = app.supabaseFactory();
-    const { data, error } = await svc
-      .from("communities")
-      .insert({ ...parsed.data, owner_user_id: req.userId })
-      .select()
-      .single();
+    const sb = app.supabaseFactory(req.userToken);
+    const { data, error } = await sb.rpc("create_community_with_owner", {
+      p_name: parsed.data.name, p_slug: parsed.data.slug,
+      p_description: parsed.data.description ?? null, p_visibility: parsed.data.visibility,
+    });
     if (error) {
       if ((error as { code?: string }).code === "23505") throw new AppError(409, "slug already taken");
-      throw new AppError(500, error.message);
+      if (error.code === "42501") throw new AppError(403, "Community creation requires an authenticated account.");
+      if (error.code === "22023") throw new AppError(422, "invalid community");
+      throw new AppError(500, "Community creation could not be confirmed. Refresh the directory before trying again.");
     }
-    const community = data as { id: string };
-    await svc.from("community_members").insert({ community_id: community.id, user_id: req.userId, role: "owner", status: "active" });
     return reply.status(201).send(data);
   });
 

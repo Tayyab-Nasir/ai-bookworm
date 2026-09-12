@@ -12,9 +12,9 @@ const checkoutSchema = z.object({
   planId: z.string().uuid(),
   successUrl: z.string().url(),
   cancelUrl: z.string().url(),
-});
+}).strict();
 
-const portalSchema = z.object({ organizationId: z.string().uuid(), returnUrl: z.string().url() });
+const portalSchema = z.object({ organizationId: z.string().uuid(), returnUrl: z.string().url() }).strict();
 
 const deductSchema = z.object({
   userId: z.string().uuid(),
@@ -35,6 +35,20 @@ async function requireOrgAdmin(sb: SupabaseClient, organizationId: string, userI
     .maybeSingle();
   const role = (data as { role?: string } | null)?.role;
   if (role !== "owner" && role !== "admin") throw new AppError(403, "org admin required");
+}
+
+function requireWebReturnUrl(value: string) {
+  const configured = process.env.APP_URL ?? (process.env.NODE_ENV === "production" ? "" : "http://localhost:3000");
+  if (!configured) throw new AppError(503, "APP_URL is required for billing redirects");
+  let appUrl: URL;
+  let target: URL;
+  try { appUrl = new URL(configured); target = new URL(value); }
+  catch { throw new AppError(503, "billing redirect configuration is invalid"); }
+  if (!["http:", "https:"].includes(appUrl.protocol) || appUrl.username || appUrl.password
+    || target.origin !== appUrl.origin || target.username || target.password) {
+    throw new AppError(422, "billing redirects must use the configured application origin");
+  }
+  return target.toString();
 }
 
 // Stripe subscription status -> our subscriptions.status (column is free text).
@@ -80,14 +94,16 @@ export function billingRoutes(app: FastifyInstance, opts: { stripeFactory?: Stri
     if (!parsed.success) throw new AppError(422, "invalid checkout request", { issues: parsed.error.issues });
     const { organizationId, planId, successUrl, cancelUrl } = parsed.data;
     await requireOrgAdmin(app.supabaseFactory(req.userToken), organizationId, req.userId);
+    const safeSuccessUrl = requireWebReturnUrl(successUrl);
+    const safeCancelUrl = requireWebReturnUrl(cancelUrl);
     const price = planPriceIds()[planId];
     if (!price) throw new AppError(422, "no Stripe price configured for plan", { planId });
     const stripe = stripeFactory();
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price, quantity: 1 }],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
+      success_url: safeSuccessUrl,
+      cancel_url: safeCancelUrl,
       metadata: { organizationId, planId },
       subscription_data: { metadata: { organizationId, planId } },
     });
@@ -99,6 +115,7 @@ export function billingRoutes(app: FastifyInstance, opts: { stripeFactory?: Stri
     const parsed = portalSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid portal request", { issues: parsed.error.issues });
     await requireOrgAdmin(app.supabaseFactory(req.userToken), parsed.data.organizationId, req.userId);
+    const safeReturnUrl = requireWebReturnUrl(parsed.data.returnUrl);
     const svc = app.supabaseFactory();
     const { data: sub } = await svc
       .from("subscriptions")
@@ -110,7 +127,7 @@ export function billingRoutes(app: FastifyInstance, opts: { stripeFactory?: Stri
     const customerId = (sub as { provider_customer_id?: string } | null)?.provider_customer_id;
     if (!customerId) throw new AppError(404, "no billing customer for organization");
     const stripe = stripeFactory();
-    const session = await stripe.billingPortal.sessions.create({ customer: customerId, return_url: parsed.data.returnUrl });
+    const session = await stripe.billingPortal.sessions.create({ customer: customerId, return_url: safeReturnUrl });
     return { portalUrl: session.url };
   });
 

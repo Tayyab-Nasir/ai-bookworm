@@ -8,6 +8,143 @@ servers:
 tags:
   - name: v1
 paths:
+  /v1/admin/access:
+    get:
+      operationId: adminAccess
+      summary: Verify platform administrator access
+      description: Requires a verified user listed in ADMIN_USER_IDS; workspace ownership alone is insufficient.
+      responses:
+        "200":
+          description: Platform administrator
+          content:
+            application/json:
+              schema: { type: object, required: [admin], properties: { admin: { type: boolean, const: true } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/users:
+    get:
+      operationId: adminListUsers
+      summary: List user profiles and organization memberships (platform admin only)
+      parameters:
+        - { $ref: "#/components/parameters/AdminLimit" }
+        - { $ref: "#/components/parameters/AdminOffset" }
+        - name: search
+          in: query
+          schema: { type: string, maxLength: 200 }
+          description: Literal display-name substring or exact UUID.
+      responses:
+        "200": { description: "Object containing users, memberships, limit and offset." }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/jobs:
+    get:
+      operationId: adminListJobs
+      summary: Inspect durable AI, publishing or manuscript-import jobs (platform admin only)
+      parameters:
+        - { $ref: "#/components/parameters/AdminLimit" }
+        - { $ref: "#/components/parameters/AdminOffset" }
+        - name: type
+          in: query
+          schema: { type: string, enum: [ai, publishing, document], default: ai }
+        - name: status
+          in: query
+          schema: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+      responses:
+        "200": { description: "Object containing jobs, type, limit and offset." }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/flags:
+    get:
+      operationId: adminListFlags
+      summary: List feature flags across scopes (platform admin only)
+      responses:
+        "200": { description: Object containing flags ordered by key. }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/flags/{key}:
+    put:
+      operationId: adminSetFlag
+      summary: Set a scoped feature flag and atomically record the audit event
+      description: Platform administrators only. Omitted config preserves existing configuration. Null scope IDs share one unique global-scope record.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 120 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+                scopeType: { type: string, minLength: 1, maxLength: 40, default: global }
+                scopeId: { type: [string, "null"], maxLength: 120, default: null }
+                config: { type: object, additionalProperties: true }
+      responses:
+        "200": { description: Object containing the persisted flag. }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/admin/support:
+    get:
+      operationId: adminListSupport
+      summary: List support tickets (platform admin only)
+      parameters:
+        - { $ref: "#/components/parameters/AdminLimit" }
+        - { $ref: "#/components/parameters/AdminOffset" }
+        - name: status
+          in: query
+          schema: { type: string, maxLength: 40 }
+      responses:
+        "200": { description: "Object containing tickets, limit and offset." }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/support/{id}:
+    post:
+      operationId: adminUpdateTicket
+      summary: Change support-ticket status or priority (platform admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [open, pending, resolved, closed] }
+                priority: { type: string, enum: [low, normal, high, urgent] }
+      responses:
+        "200": { description: Object containing the updated ticket. }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/admin/audit:
+    get:
+      operationId: adminListAudit
+      summary: Inspect audit events (platform admin only)
+      parameters:
+        - { $ref: "#/components/parameters/AdminLimit" }
+        - { $ref: "#/components/parameters/AdminOffset" }
+        - { name: entity, in: query, schema: { type: string, maxLength: 80 } }
+        - { name: action, in: query, schema: { type: string, maxLength: 80 } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+      responses:
+        "200": { description: "Object containing entries, limit and offset." }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/usage/summary:
+    get:
+      operationId: adminUsageSummary
+      summary: Aggregate a bounded usage sample by organization and meter
+      description: Platform administrators only. Samples up to 10000 events and returns up to 50 organizations. Meter quantities have different units and should be displayed separately.
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 90, default: 30 } }
+      responses:
+        "200": { description: "Object containing days and orgs; each org includes organizationId, total and byMeter." }
+        "403": { $ref: "#/components/responses/Error" }
   /v1/workspaces:
     get:
       tags: [v1]
@@ -88,6 +225,31 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/chapters:
+    post:
+      tags: [v1]
+      operationId: createChapter
+      summary: Create a chapter with optional replay protection
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 500 }
+                nodes: { type: array, items: { type: object } }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+      responses:
+        "201": { description: Created or recovered chapter; same actor/book/key replays identical input }
+        "409": { description: Request key reused with different input }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
     get:
       tags: [v1]
       operationId: listChapters
@@ -112,6 +274,235 @@ paths:
                       type: object
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/import:
+    post:
+      tags: [v1]
+      operationId: importManuscript
+      summary: Import a clean private manuscript and its supported embedded images
+      description: >-
+        Requires editor access and a verified clean source in the same workspace.
+        Accepts TXT, DOCX, EPUB and limited PDF sources up to 20 MiB. DOCX/EPUB
+        raster images are independently verified and scanned before private upload.
+        All new imports atomically persist chapters and a replay receipt, including
+        assets for illustrated manuscripts. Completed retries return the receipt
+        before parser configuration, scanning or storage downloads, but still
+        require editor access and a clean current source with the saved checksum.
+        Limits are 100 unique images, 10 MiB per image and 40 MiB total.
+        No source bytes, embedded payloads or signed URLs are returned to the browser.
+        Unsupported layout/image features are reported as warnings; originals remain intact.
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assetId]
+              properties:
+                assetId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Imported chapters or the saved import receipt on retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManuscriptImportResult"
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/jobs/document/health:
+    get:
+      operationId: adminDocumentJobHealth
+      summary: Read aggregate manuscript-import queue health (platform admin only)
+      description: Returns counts and oldest active timestamps without manuscript, checksum, lease-token or provider payload data.
+      responses:
+        "200": { description: Aggregate document queue health snapshot. }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/imports/{assetId}:
+    get:
+      tags: [v1]
+      operationId: getManuscriptImport
+      summary: Read a previously completed manuscript import report
+      description: >-
+        Requires current book membership. Returns the saved historical result or
+        null if no receipt exists, including imports made before receipt support.
+        Does not parse, scan, download, create chapters or change source assets.
+        Returns only allowlisted chapter metadata, IDs and report fields, with
+        private no-store caching. A historical report does not approve the current
+        source version or guarantee that imported chapters remain unchanged.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Saved import result, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [import]
+                properties:
+                  import:
+                    oneOf:
+                      - { $ref: "#/components/schemas/ManuscriptImportResult" }
+                      - { type: "null" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/import-jobs:
+    get:
+      tags: [v1]
+      operationId: listManuscriptImportJobs
+      summary: List the latest durable manuscript import jobs for a book
+      description: Book members receive at most 50 safe status records. Source checksums, lease tokens and private paths are never returned. Responses are private and not cached.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Import job states
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/ManuscriptImportJob" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: queueManuscriptImport
+      summary: Queue an idempotent durable import for a clean source manuscript
+      description: Requires book editor access. The server revalidates actor membership, source workspace, clean current checksum, supported format and 20 MiB limit. Existing jobs are returned; an existing receipt makes the job immediately succeeded.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assetId]
+              properties:
+                assetId: { type: string, format: uuid }
+      responses:
+        "202":
+          description: Existing or newly queued import job
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties: { job: { $ref: "#/components/schemas/ManuscriptImportJob" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/import-jobs/{jobId}/retry:
+    post:
+      tags: [v1]
+      operationId: retryManuscriptImportJob
+      summary: Requeue a failed manuscript import
+      description: Requires editor access to the same book. Only failed jobs with an unchanged, still-clean original can restart. The retry is audited and resets the bounded attempt counter.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "202":
+          description: Import job requeued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties: { job: { $ref: "#/components/schemas/ManuscriptImportJob" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/search:
+    post:
+      tags: [v1]
+      operationId: searchBookContext
+      summary: Search the caller's current manuscript versions and optional Book Bible entries
+      description: Tenant-scoped PostgreSQL full-text retrieval. Results are verbatim evidence with stable source citations; this endpoint does not generate an AI answer.
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BookSearchRequest" }
+      responses:
+        "200":
+          description: Ranked, cited source excerpts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [results, strategy, query]
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: "#/components/schemas/BookSearchResult" }
+                  strategy: { type: string, enum: [postgres_full_text] }
+                  query: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/metadata/generate:
+    post:
+      tags: [v1]
+      operationId: generateBookMetadataCandidate
+      summary: Generate a cited, review-only metadata draft
+      description: Uses bounded current manuscript versions and Book Bible evidence. The successful draft is audited on the AI job and consumes the applicable AI credit; it never updates book_metadata. An editor must explicitly save accepted fields through the metadata update endpoint.
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenerateBookMetadataRequest" }
+      responses:
+        "200":
+          description: Idempotent replay of the existing metadata job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneratedBookMetadataResponse" }
+        "201":
+          description: Metadata candidate created for author review; canonical metadata is unchanged
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GeneratedBookMetadataResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/chapters/{chapterId}/operations:
     post:
       tags: [v1]
@@ -165,17 +556,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [uploadUrl, assetId, storagePath]
+                required: [uploadUrl, assetId, path]
                 properties:
                   uploadUrl: { type: string }
                   assetId: { type: string, format: uuid }
-                  storagePath: { type: string }
+                  path: { type: string }
         "401": { $ref: "#/components/responses/Error" }
   /v1/assets/{assetId}/confirm:
     post:
       tags: [v1]
       operationId: confirmAssetUpload
-      summary: Confirm upload and store checksum
+      summary: Verify stored bytes, scan for malware, and release a clean upload from quarantine
       parameters:
         - name: assetId
           in: path
@@ -198,17 +589,83 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [assetId, status, confirmed]
+                required: [assetId, status, scanStatus, detectedMimeType, confirmed]
                 properties:
                   assetId: { type: string, format: uuid }
                   status: { type: string }
+                  scanStatus: { type: string, enum: [clean] }
+                  detectedMimeType: { type: string }
                   confirmed: { type: boolean }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/assets/generate:
+    post:
+      tags: [v1]
+      operationId: generateImageAsset
+      summary: Generate a private illustration or cover-art asset from saved book context
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenerateImageRequest" }
+      responses:
+        "201": { description: Generated asset and short-lived private preview }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/assets/{assetId}/download-url:
+    get:
+      tags: [v1]
+      operationId: getPrivateAssetDownloadUrl
+      summary: Create a short-lived private download URL for a completed asset
+      parameters:
+        - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Private signed URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url, expiresIn]
+                properties:
+                  url: { type: string, format: uri }
+                  expiresIn: { type: integer, minimum: 1 }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /v1/ai/jobs:
+    get:
+      tags: [v1]
+      operationId: listAiJobs
+      summary: List saved text AI reviews for a book
+      description: Returns a bounded, tenant-scoped review history. Raw prompts, idempotency keys, provider input and private retrieval contents are never returned.
+      parameters:
+        - name: bookId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 20, default: 8 }
+      responses:
+        "200":
+          description: Saved AI review summaries
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
     post:
       tags: [v1]
       operationId: createAiJob
@@ -274,86 +731,103 @@ paths:
           application/json:
             schema:
               type: object
-              required: [bookId]
+              additionalProperties: false
+              required: [bookId, editionId, channel, idempotencyKey]
               properties:
                 bookId: { type: string, format: uuid }
                 editionId: { type: string, format: uuid }
+                channel: { type: string, enum: [export, kdp, apple, barnesnoble, lulu] }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
       responses:
-        "200":
+        "201":
           description: Preflight report
           content:
             application/json:
-              schema: { type: object }
-        "401": { $ref: "#/components/responses/Error" }
-  /v1/publishing/jobs:
-    post:
-      tags: [v1]
-      operationId: createPublishingJob
-      summary: Create publishing job
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [bookId, channel, idempotencyKey]
-              properties:
-                bookId: { type: string, format: uuid }
-                editionId: { type: string, format: uuid }
-                channel: { type: string }
-                request: { type: object }
-                idempotencyKey: { type: string }
-      responses:
-        "201":
-          description: Created publishing job
+              schema: { $ref: "#/components/schemas/PreflightResult" }
+        "200":
+          description: Idempotent replay of a completed preflight
           content:
             application/json:
-              schema: { type: object }
+              schema: { $ref: "#/components/schemas/PreflightResult" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
-  /v1/usage:
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/publishing/jobs:
     get:
       tags: [v1]
-      operationId: getUsage
-      summary: Usage/credits
+      operationId: listPublishingJobs
+      summary: List durable retailer export-package jobs for a book
       parameters:
-        - name: workspaceId
-          in: query
-          required: true
-          schema: { type: string, format: uuid }
+        - { name: bookId, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: editionId, in: query, schema: { type: string, format: uuid } }
+        - { name: channel, in: query, schema: { $ref: "#/components/schemas/RetailerChannel" } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 25 } }
       responses:
         "200":
-          description: Usage summary
-          content:
-            application/json:
-              schema: { type: object }
-        "401": { $ref: "#/components/responses/Error" }
-  /v1/billing/checkout:
-    post:
-      tags: [v1]
-      operationId: createBillingCheckout
-      summary: Create checkout
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [workspaceId, planId]
-              properties:
-                workspaceId: { type: string, format: uuid }
-                planId: { type: string }
-      responses:
-        "200":
-          description: Checkout session
+          description: Author-accessible package history with fresh private links for completed jobs
           content:
             application/json:
               schema:
                 type: object
-                required: [checkoutUrl]
+                required: [jobs]
                 properties:
-                  checkoutUrl: { type: string }
+                  jobs: { type: array, items: { $ref: "#/components/schemas/PublishingPackageJob" } }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: createPublishingJob
+      summary: Create a private retailer export package for manual submission
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [bookId, editionId, channel, renderJobId, preflightJobId, idempotencyKey]
+              properties:
+                bookId: { type: string, format: uuid }
+                editionId: { type: string, format: uuid }
+                channel: { $ref: "#/components/schemas/RetailerChannel" }
+                renderJobId: { type: string, format: uuid }
+                preflightJobId: { type: string, format: uuid }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+      responses:
+        "201":
+          description: Export package created and stored privately
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublishingPackageJob" }
+        "200":
+          description: Idempotent replay of a completed package
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublishingPackageJob" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/publishing/jobs/{jobId}:
+    get:
+      tags: [v1]
+      operationId: getPublishingJob
+      summary: Get one durable export-package job and refresh its private download link
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Publishing package job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublishingPackageJob" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /v1/workspaces/{workspaceId}/folders:
     get:
       tags: [v1]
@@ -473,7 +947,7 @@ paths:
     post:
       tags: [v1]
       operationId: restoreAsset
-      summary: Restore a soft-deleted asset
+      summary: Create a short-lived private download URL for a clean or trusted generated asset
       parameters:
         - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -521,7 +995,7 @@ paths:
     post:
       tags: [v1]
       operationId: confirmAssetVersion
-      summary: Confirm a pending version checksum; asset row points at the new version
+      summary: Verify and scan a pending version; latest clean version becomes current
       parameters:
         - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
         - { name: version, in: path, required: true, schema: { type: integer } }
@@ -531,11 +1005,24 @@ paths:
           application/json:
             schema:
               type: object
-              required: [checksumSha256]
+              required: [checksumSha256, sizeBytes]
               properties:
                 checksumSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+                sizeBytes: { type: integer, minimum: 1 }
       responses:
-        "200": { description: Confirmed, content: { application/json: { schema: { type: object } } } }
+        "200":
+          description: Version scanned clean and confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assetId, version, scanStatus, detectedMimeType, confirmed]
+                properties:
+                  assetId: { type: string, format: uuid }
+                  version: { type: integer }
+                  scanStatus: { type: string, enum: [clean] }
+                  detectedMimeType: { type: string }
+                  confirmed: { type: boolean }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -579,7 +1066,7 @@ paths:
               required: [workspaceId, entityType, entityId, body]
               properties:
                 workspaceId: { type: string, format: uuid }
-                entityType: { type: string }
+                entityType: { type: string, enum: [book, asset, chapter, edition] }
                 entityId: { type: string, format: uuid }
                 body: { type: string, minLength: 1 }
       responses:
@@ -627,7 +1114,7 @@ paths:
                 workspaceId: { type: string, format: uuid }
                 title: { type: string, minLength: 1 }
                 description: { type: string }
-                entityType: { type: string }
+                entityType: { type: string, enum: [book, asset, chapter, edition] }
                 entityId: { type: string, format: uuid }
                 assigneeId: { type: string, format: uuid, nullable: true }
                 priority: { type: string, enum: [low, medium, high, urgent] }
@@ -734,10 +1221,20 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
   /v1/workspaces/{workspaceId}/invitations:
+    get:
+      tags: [v1]
+      operationId: listWorkspaceInvitations
+      summary: List invitation metadata without token hashes (owner/admin)
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Invitations, content: { application/json: { schema: { type: object, required: [invitations], properties: { invitations: { type: array, items: { $ref: "#/components/schemas/WorkspaceInvitation" } } } } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
     post:
       tags: [v1]
       operationId: inviteMember
-      summary: Invite by email (owner/admin) -> workspace_members status invited; email send is a stub
+      summary: Create or rotate a hashed, seven-day invitation link (owner/admin)
       parameters:
         - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -751,7 +1248,42 @@ paths:
                 email: { type: string, format: email }
                 role: { type: string, enum: [admin, editor, writer, illustrator, designer, reviewer, viewer], default: viewer }
       responses:
-        "201": { description: Invitation row, content: { application/json: { schema: { type: object } } } }
+        "200": { description: Existing pending invitation rotated, content: { application/json: { schema: { type: object, required: [invitation, acceptanceUrl], properties: { invitation: { $ref: "#/components/schemas/WorkspaceInvitation" }, acceptanceUrl: { type: string, format: uri } } } } } }
+        "201": { description: Invitation created, content: { application/json: { schema: { type: object, required: [invitation, acceptanceUrl], properties: { invitation: { $ref: "#/components/schemas/WorkspaceInvitation" }, acceptanceUrl: { type: string, format: uri } } } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/invitations/{invitationId}:
+    delete:
+      tags: [v1]
+      operationId: revokeWorkspaceInvitation
+      summary: Revoke a pending workspace invitation (owner/admin)
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: invitationId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Invitation revoked, content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/invitations/accept:
+    post:
+      tags: [v1]
+      operationId: acceptWorkspaceInvitation
+      summary: Accept an email-bound, unexpired invitation as the signed-in user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 256 }
+      responses:
+        "200": { description: Active workspace and organization membership, content: { application/json: { schema: { type: object } } } }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -1078,9 +1610,24 @@ paths:
     get:
       tags: [v1]
       operationId: listCreditLedger
-      summary: Caller's immutable credit ledger
+      summary: Caller's bounded immutable credit ledger and lifetime referral totals
       responses:
-        "200": { description: Ledger entries }
+        "200":
+          description: Ledger entries and server-calculated summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, summary]
+                properties:
+                  entries: { type: array, items: { type: object } }
+                  summary:
+                    type: object
+                    required: [creditBalance, referralCredits, rewardedReferrals]
+                    properties:
+                      creditBalance: { type: integer }
+                      referralCredits: { type: integer }
+                      rewardedReferrals: { type: integer, minimum: 0 }
   /v1/referrals/claim:
     post:
       tags: [v1]
@@ -1136,13 +1683,168 @@ paths:
         "200": { description: Reversed }
         "403": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /v1/support/tickets:
+    get:
+      tags: [v1]
+      operationId: listSupportTickets
+      summary: List the caller's most recent support requests
+      responses:
+        "200":
+          description: Support requests owned by the caller
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tickets]
+                properties:
+                  tickets: { type: array, items: { type: object } }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: createSupportTicket
+      summary: Submit a support request with server-controlled status and priority
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSupportTicketRequest" }
+      responses:
+        "201": { description: Support request created }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/account/data-requests:
+    get:
+      tags: [v1]
+      operationId: listDataRightsRequests
+      summary: List the caller's export and deletion requests
+      responses:
+        "200":
+          description: Data-rights requests owned by the caller
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requests]
+                properties:
+                  requests: { type: array, items: { type: object } }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [v1]
+      operationId: createDataRightsRequest
+      summary: Submit a manually reviewed account-data export or deletion request
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateDataRightsRequest" }
+      responses:
+        "201": { description: Data-rights request submitted }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/account/data-requests/{requestId}:
+    delete:
+      tags: [v1]
+      operationId: cancelDataRightsRequest
+      summary: Cancel one of the caller's requests while it is still submitted
+      parameters:
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Request cancelled }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
 components:
+  parameters:
+    AdminLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+    AdminOffset:
+      name: offset
+      in: query
+      schema: { type: integer, minimum: 0, default: 0 }
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    ManuscriptImportJob:
+      type: object
+      required: [id, book_id, source_asset_id, status, attempts, error_code, created_at, available_at, completed_at]
+      properties:
+        id: { type: string, format: uuid }
+        book_id: { type: string, format: uuid }
+        source_asset_id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        attempts: { type: integer, minimum: 0, maximum: 5 }
+        error_code: { type: string, nullable: true, maxLength: 80 }
+        created_at: { type: string, format: date-time }
+        available_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }
+    ManuscriptImportResult:
+      type: object
+      required: [chapters, sourceAssetId, assetIds, report]
+      properties:
+        chapters: { type: array, minItems: 1, maxItems: 500, items: { type: object } }
+        sourceAssetId: { type: string, format: uuid }
+        assetIds: { type: array, maxItems: 100, items: { type: string, format: uuid } }
+        report:
+          type: object
+          required: [warnings, chapterCount, imageCount]
+          properties:
+            warnings: { type: array, maxItems: 100, items: { type: string, maxLength: 2000 } }
+            chapterCount: { type: integer, minimum: 1, maximum: 500 }
+            imageCount: { type: integer, minimum: 0, maximum: 100 }
+            confidence: { type: string, maxLength: 100 }
+    RetailerChannel:
+      type: string
+      enum: [kdp, apple, barnesnoble, lulu]
+    PreflightResult:
+      type: object
+      required: [jobId, ruleVersion, channel, requestedChannel, errors, warnings, findings]
+      properties:
+        jobId: { type: string, format: uuid }
+        ruleVersion: { type: string }
+        channel: { type: string, nullable: true }
+        requestedChannel: { type: string, enum: [export, kdp, apple, barnesnoble, lulu] }
+        errors: { type: integer, minimum: 0 }
+        warnings: { type: integer, minimum: 0 }
+        findings: { type: array, items: { type: object } }
+    PublishingPackageJob:
+      type: object
+      required: [id, bookId, editionId, channel, status, createdAt, sourceRenderJobId, sourcePreflightJobId, failureCode, submissionMode, package]
+      properties:
+        id: { type: string, format: uuid }
+        bookId: { type: string, format: uuid }
+        editionId: { type: string, format: uuid }
+        channel: { $ref: "#/components/schemas/RetailerChannel" }
+        status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: string, format: date-time, nullable: true }
+        completedAt: { type: string, format: date-time, nullable: true }
+        sourceRenderJobId: { type: string, format: uuid, nullable: true }
+        sourcePreflightJobId: { type: string, format: uuid, nullable: true }
+        ruleVersion: { type: string, nullable: true }
+        failureCode: { type: string, nullable: true }
+        submissionMode: { type: string, enum: [manual] }
+        package:
+          nullable: true
+          type: object
+          required: [asset, download]
+          properties:
+            asset: { type: object }
+            download:
+              type: object
+              required: [url, expiresIn]
+              properties:
+                url: { type: string, format: uri }
+                expiresIn: { type: integer, minimum: 1 }
     CreateBookRequest:
       type: object
       required: [workspaceId, title, authorName]
@@ -1153,15 +1855,152 @@ components:
         authorName: { type: string, minLength: 1 }
         language: { type: string, default: en }
         genre: { type: string }
-    CreateAiJobRequest:
+    GenerateImageRequest:
       type: object
-      required: [workspaceId, bookId, agentType, idempotencyKey]
+      additionalProperties: false
+      required: [workspaceId, kind, name, prompt, idempotencyKey]
       properties:
         workspaceId: { type: string, format: uuid }
+        bookId: { type: string, format: uuid, nullable: true }
+        folderId: { type: string, format: uuid, nullable: true }
+        kind: { type: string, enum: [illustration, front_cover] }
+        name: { type: string, minLength: 1, maxLength: 256 }
+        prompt: { type: string, minLength: 10, maxLength: 4000 }
+        size: { type: string, enum: [1024x1024, 1024x1536, 1536x1024], default: 1024x1024 }
+        quality: { type: string, enum: [low, medium, high], default: medium }
+        idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+    CreateSupportTicketRequest:
+      type: object
+      additionalProperties: false
+      required: [category, subject, body]
+      properties:
+        category: { type: string, enum: [general, technical, billing, publishing, account, privacy] }
+        subject: { type: string, minLength: 3, maxLength: 160 }
+        body: { type: string, minLength: 10, maxLength: 5000 }
+    CreateDataRightsRequest:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: { type: string, enum: [export, delete] }
+        reason: { type: string, maxLength: 2000 }
+        confirmation:
+          type: string
+          maxLength: 40
+          description: Must be exactly DELETE MY ACCOUNT when type is delete.
+    CreateAiJobRequest:
+      type: object
+      required: [bookId, chapterIds, agentType, idempotencyKey]
+      properties:
         bookId: { type: string, format: uuid }
-        agentType: { type: string }
-        input: { type: object }
-        idempotencyKey: { type: string }
+        chapterIds:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        agentType: { type: string, enum: [writer, proofreader, copyeditor, consistency] }
+        userInstruction: { type: string, minLength: 1, maxLength: 4000 }
+        idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+        contextPolicy:
+          type: object
+          additionalProperties: false
+          properties:
+            includeBookBible: { type: boolean, default: true }
+            includeStyleGuide: { type: boolean, default: true }
+            includeRelatedContext:
+              type: boolean
+              default: true
+              description: Retrieve cited, current book sources for writer and consistency jobs.
+            semanticTopK: { type: integer, minimum: 1, maximum: 20, default: 5 }
+            maxTokens: { type: integer, minimum: 256, maximum: 16000, default: 4096 }
+    GenerateBookMetadataRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey]
+      properties:
+        idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+        chapterIds:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          description: Optional author-selected chapters; otherwise the first five current chapters are sampled.
+          items: { type: string, format: uuid }
+        audience: { type: string, minLength: 1, maxLength: 500 }
+        tone: { type: string, minLength: 1, maxLength: 200 }
+        maxTokens: { type: integer, minimum: 4096, maximum: 16000, default: 12000 }
+    MetadataSourceRef:
+      type: object
+      additionalProperties: false
+      required: [chapterId, nodeId]
+      properties:
+        chapterId: { type: string, format: uuid }
+        documentVersionId: { type: string, format: uuid }
+        nodeId: { type: string, minLength: 1, maxLength: 200 }
+        textHash: { type: string, pattern: "^[a-f0-9]{64}$" }
+    GeneratedBookMetadataCandidate:
+      type: object
+      additionalProperties: false
+      required: [suggestionKind, description, keywords, categories, audience, rationale, confidence, sourceRefs, status]
+      properties:
+        suggestionKind: { type: string, enum: [metadata_candidate] }
+        description: { type: string, minLength: 40, maxLength: 4000 }
+        keywords:
+          type: array
+          minItems: 1
+          maxItems: 30
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 100 }
+        categories:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 180 }
+        audience: { type: string, minLength: 1, maxLength: 500 }
+        rationale: { type: string, minLength: 1, maxLength: 2000 }
+        confidence: { type: number, minimum: 0, maximum: 1, nullable: true }
+        sourceRefs:
+          type: array
+          minItems: 1
+          maxItems: 30
+          items: { $ref: "#/components/schemas/MetadataSourceRef" }
+        status: { type: string, enum: [pending] }
+    GeneratedBookMetadataResponse:
+      type: object
+      required: [job, candidate]
+      properties:
+        job: { type: object }
+        candidate: { $ref: "#/components/schemas/GeneratedBookMetadataCandidate" }
+    BookSearchRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query: { type: string, minLength: 1, maxLength: 1000 }
+        limit: { type: integer, minimum: 1, maximum: 20, default: 8 }
+        chapterIds:
+          type: array
+          maxItems: 50
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        includeBible: { type: boolean, default: true }
+    BookSearchResult:
+      type: object
+      required: [id, source_type, chunk_index, excerpt, text_hash, score]
+      properties:
+        id: { type: string, format: uuid }
+        source_type: { type: string, enum: [manuscript, bible] }
+        chapter_id: { type: string, format: uuid, nullable: true }
+        bible_item_id: { type: string, format: uuid, nullable: true }
+        document_version_id: { type: string, format: uuid, nullable: true }
+        node_id: { type: string, nullable: true }
+        chunk_index: { type: integer, minimum: 0 }
+        title: { type: string, nullable: true }
+        excerpt: { type: string }
+        text_hash: { type: string }
+        score: { type: number }
     DocumentOperation:
       type: object
       required: [operationId, type, target, payload, expectedVersion]
@@ -1201,6 +2040,23 @@ components:
         name: { type: string }
         slug: { type: string }
         created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    WorkspaceInvitation:
+      type: object
+      required: [id, workspace_id, email, role, status, expires_at, invited_by, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { type: string, enum: [admin, editor, writer, illustrator, designer, reviewer, viewer] }
+        status: { type: string, enum: [pending, accepted, revoked, expired] }
+        expires_at: { type: string, format: date-time }
+        invited_by: { type: string, format: uuid }
+        accepted_by: { type: string, format: uuid, nullable: true }
+        accepted_at: { type: string, format: date-time, nullable: true }
+        revoked_by: { type: string, format: uuid, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
     Plan:

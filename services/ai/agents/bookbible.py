@@ -57,7 +57,7 @@ TOOL_SCHEMA = {
 class BookBibleAgent(BaseAgent):
     agent_type = "book_bible"
     prompt_version = "v1"
-    allowed_tools = ["get_chapter", "search_book", TOOL_NAME]
+    allowed_tools = [TOOL_NAME]
 
     def tool_schemas(self) -> list[dict]:
         return [*super().tool_schemas(), TOOL_SCHEMA]

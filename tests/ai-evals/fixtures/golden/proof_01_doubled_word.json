@@ -15,7 +15,7 @@
             "operationId": "op-1",
             "type": "replace_text",
             "target": {"chapterId": "00000000-0000-0000-0000-000000000001", "nodeId": "n1"},
-            "payload": {"from": 4, "to": 18, "text": "walked"},
+            "payload": {"nodeId": "n1", "from": 4, "to": 18, "text": "walked"},
             "expectedVersion": 1
           },
           "rationale": "Doubled word 'walked'.",

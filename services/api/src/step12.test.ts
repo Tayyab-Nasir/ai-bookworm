@@ -19,12 +19,17 @@ const { buildApp } = await import("./app.js");
 type Row = Record<string, unknown>;
 interface Store {
   tables: Record<string, Row[]>;
+  rpc?: (name: string, params: Row) => { data: unknown; error: { code: string; message: string } | null };
 }
 
 const TOKENS: Record<string, string> = { good: "user-1", other: "user-2", admin: "admin-1" };
 
 function fakeSupabase(store: Store) {
   const client = {
+    rpc: async (name: string, params: Row) => {
+      assert.ok(store.rpc, `unexpected RPC ${name}`);
+      return store.rpc(name, params);
+    },
     auth: {
       getUser: async (token: string) =>
         TOKENS[token] ? { data: { user: { id: TOKENS[token] } }, error: null } : { data: { user: null }, error: { message: "bad" } },
@@ -36,11 +41,12 @@ function fakeSupabase(store: Store) {
       let matched: Row[] | null = null;
       let pendingOp: "update" | "delete" | null = null;
       let pendingPatch: Row = {};
+      let limitN: number | undefined;
       const apply = () => {
         let out = matched ?? rows;
         out = out.filter((r) => filters.every(([c, v]) => (Array.isArray(v) ? (v as unknown[]).includes(r[c]) : r[c] === v)));
         out = out.filter((r) => gteFilters.every(([c, v]) => String(r[c]) >= String(v)));
-        return out;
+        return limitN === undefined ? out : out.slice(0, limitN);
       };
       const uid = () => crypto.randomUUID(); // routes validate uuid params; fake ids must parse
       const b: Record<string, unknown> = {};
@@ -50,7 +56,7 @@ function fakeSupabase(store: Store) {
       b.in = (c: string, vs: unknown[]) => { if (pendingOp) matched = apply(); filters.push([c, vs]); return b; };
       b.gte = (c: string, v: unknown) => { if (pendingOp) matched = apply(); gteFilters.push([c, v]); return b; };
       b.order = () => b;
-      b.limit = () => b;
+      b.limit = (n: number) => { limitN = n; return b; };
       b.insert = (row: Row) => {
         const r = { ...row };
         const dup =
@@ -130,6 +136,23 @@ function communityStore(visibility = "private", extraUsers: string[] = []): Stor
 }
 
 // ---- community ---------------------------------------------------------------
+test("community creation uses the authenticated atomic RPC and sanitizes failures", async () => {
+  for (const dbCode of [null, "23505", "42501", "22023", "XX000"]) {
+    const app = await buildApp(token => fakeSupabase({ tables: {}, rpc: (name, params) => {
+      assert.equal(token, "good", "creation must use the caller JWT, not service-role credentials");
+      assert.equal(name, "create_community_with_owner");
+      assert.deepEqual(params, { p_name: "Writers", p_slug: "writers", p_description: null, p_visibility: "private" });
+      return { data: dbCode ? null : { id: "created", name: "Writers" }, error: dbCode ? { code: dbCode, message: "private database details" } : null };
+    } }));
+    try {
+      const response = await app.inject({ method: "POST", url: "/v1/communities", headers: as("good"),
+        payload: { name: " Writers ", slug: "writers", visibility: "private" } });
+      assert.equal(response.statusCode, dbCode === null ? 201 : dbCode === "23505" ? 409 : dbCode === "42501" ? 403 : dbCode === "22023" ? 422 : 500);
+      assert.doesNotMatch(response.body, /private database details/);
+    } finally { await app.close(); }
+  }
+});
+
 test("non-member cannot post in a private community; member can", async () => {
   const app = await appWith(communityStore("private"));
   const denied = await app.inject({ method: "POST", url: "/v1/communities/c1/posts", headers: as("other"), payload: { body: "hello" } });
@@ -212,114 +235,106 @@ test("self-referral rejected; one referral per referred user", async () => {
   const app = await appWith(store);
   const self = await app.inject({ method: "POST", url: "/v1/referrals/claim", headers: as("good"), payload: { code: "bw-test" } });
   assert.equal(self.statusCode, 422);
-  const claim = await app.inject({ method: "POST", url: "/v1/referrals/claim", headers: as("other"), payload: { code: "bw-test" } });
+  const claim = await app.inject({ method: "POST", url: "/v1/referrals/claim", headers: as("other"), payload: { code: " BW-TEST " } });
   assert.equal(claim.statusCode, 201);
   const again = await app.inject({ method: "POST", url: "/v1/referrals/claim", headers: as("other"), payload: { code: "bw-test" } });
   assert.equal(again.json().alreadyAttributed, true);
   assert.equal(store.tables.referrals.length, 1);
+  const incoming = await app.inject({ method: "GET", url: "/v1/referrals", headers: as("other") });
+  const outgoing = await app.inject({ method: "GET", url: "/v1/referrals", headers: as("good") });
+  assert.equal(incoming.json().referrals.length, 0);
+  assert.equal(outgoing.json().referrals.length, 1);
   await app.close();
 });
 
-test("qualify posts exactly one reward; replay is a no-op", async () => {
-  const store = referralStore();
-  const app = await appWith(store);
-  await app.inject({ method: "POST", url: "/v1/referrals/claim", headers: as("other"), payload: { code: "bw-test" } });
-  const q1 = await app.inject({ method: "POST", url: "/v1/referrals/qualify", headers: svc, payload: { referredUserId: "user-2" } });
-  assert.equal(q1.statusCode, 200, q1.body);
-  assert.equal(q1.json().rewarded, true);
-  assert.equal(q1.json().referral.status, "rewarded");
-  const rewards = () => store.tables.credit_ledger.filter((r) => r.source === "referral_reward");
-  assert.equal(rewards().length, 1);
-  assert.equal(rewards()[0].amount, 100);
-  // replay: terminal status short-circuits — no second ledger entry
-  const q2 = await app.inject({ method: "POST", url: "/v1/referrals/qualify", headers: svc, payload: { referredUserId: "user-2" } });
-  assert.equal(q2.statusCode, 200);
-  assert.equal(q2.json().duplicate, true);
-  assert.equal(rewards().length, 1);
-  // service token required
-  const noAuth = await app.inject({ method: "POST", url: "/v1/referrals/qualify", payload: { referredUserId: "user-2" } });
-  assert.equal(noAuth.statusCode, 401);
+// Transaction accounting is exercised against actual PostgreSQL in
+// tests/security/referral-transactions.test.sql. These checks cover the HTTP boundary.
+const referredId = "a8700000-0000-4000-8000-000000000002";
+const refId = "a8710000-0000-4000-8000-000000000002";
+
+test("qualification requires service auth and a UUID, then calls one transaction", async () => {
+  const calls: Row[] = [];
+  const app = await appWith({ tables: {}, rpc: (name, params) => {
+    assert.equal(name, "transition_referral");
+    calls.push(params);
+    return { data: { qualified: true, held: false, rewarded: true, referral: { id: refId, status: "rewarded" } }, error: null };
+  } });
+  const denied = await app.inject({ method: "POST", url: "/v1/referrals/qualify", payload: { referredUserId: referredId } });
+  assert.equal(denied.statusCode, 401);
+  const malformedToken = await app.inject({ method: "POST", url: "/v1/referrals/qualify", headers: { "x-service-token": "éééééééééé" }, payload: { referredUserId: referredId } });
+  assert.equal(malformedToken.statusCode, 401);
+  const invalid = await app.inject({ method: "POST", url: "/v1/referrals/qualify", headers: svc, payload: { referredUserId: "invalid" } });
+  assert.equal(invalid.statusCode, 422);
+  assert.equal(calls.length, 0);
+  const valid = await app.inject({ method: "POST", url: "/v1/referrals/qualify", headers: svc, payload: { referredUserId: referredId } });
+  assert.equal(valid.statusCode, 200, valid.body);
+  assert.equal(valid.json().rewarded, true);
+  assert.deepEqual(calls, [{ p_action: "qualify", p_referred_user_id: referredId }]);
   await app.close();
 });
 
-test("velocity flag holds the reward: no ledger entry until review", async () => {
-  const store = referralStore();
-  // 21 referrals in the last 24h for referrer user-1 => velocity flag
-  for (let i = 0; i < 21; i++) {
-    store.tables.referrals.push({
-      id: `r-old-${i}`, referrer_id: "user-1", referred_user_id: `u-old-${i}`, code_id: "code-1",
-      status: "attributed", flagged: false, created_at: new Date().toISOString(),
-    });
+test("review and reversal require admin and forward the transaction result", async () => {
+  const calls: Row[] = [];
+  const app = await appWith({ tables: {}, rpc: (name, params) => {
+    assert.equal(name, "transition_referral"); calls.push(params);
+    return { data: { alreadyResolved: true, referral: { id: refId, status: "reversed" } }, error: null };
+  } });
+  for (const path of ["review", "reverse"]) {
+    const denied = await app.inject({ method: "POST", url: `/v1/referrals/${refId}/${path}`, headers: as("good"), ...(path === "review" ? { payload: { action: "approve" } } : {}) });
+    assert.equal(denied.statusCode, 403);
   }
-  const app = await appWith(store);
-  await app.inject({ method: "POST", url: "/v1/referrals/claim", headers: as("other"), payload: { code: "bw-test" } });
-  const q = await app.inject({ method: "POST", url: "/v1/referrals/qualify", headers: svc, payload: { referredUserId: "user-2" } });
-  assert.equal(q.json().held, true);
-  assert.equal(q.json().referral.status, "held");
-  assert.equal(store.tables.credit_ledger.filter((r) => r.source === "referral_reward").length, 0);
-  await app.close();
-});
-
-test("admin review approve posts the reward exactly once", async () => {
-  const store = referralStore();
-  for (let i = 0; i < 21; i++) {
-    store.tables.referrals.push({
-      id: `r-old-${i}`, referrer_id: "user-1", referred_user_id: `u-old-${i}`, code_id: "code-1",
-      status: "attributed", flagged: false, created_at: new Date().toISOString(),
-    });
+  const invalid = await app.inject({ method: "POST", url: "/v1/referrals/no-id/reverse", headers: as("admin") });
+  assert.equal(invalid.statusCode, 422);
+  assert.equal(calls.length, 0);
+  for (const action of ["approve", "reject", "reverse"]) {
+    const response = await app.inject({ method: "POST", url: `/v1/referrals/${refId}/${action === "reverse" ? "reverse" : "review"}`, headers: as("admin"), ...(action === "reverse" ? {} : { payload: { action } }) });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().alreadyResolved, true);
   }
-  const app = await appWith(store);
-  await app.inject({ method: "POST", url: "/v1/referrals/claim", headers: as("other"), payload: { code: "bw-test" } });
-  const q = await app.inject({ method: "POST", url: "/v1/referrals/qualify", headers: svc, payload: { referredUserId: "user-2" } });
-  const referralId = q.json().referral.id as string;
-
-  // non-admin cannot review
-  const forbidden = await app.inject({ method: "POST", url: `/v1/referrals/${referralId}/review`, headers: as("good"), payload: { action: "approve" } });
-  assert.equal(forbidden.statusCode, 403);
-
-  const approve = await app.inject({ method: "POST", url: `/v1/referrals/${referralId}/review`, headers: as("admin"), payload: { action: "approve" } });
-  assert.equal(approve.statusCode, 200);
-  assert.equal(approve.json().referral.status, "rewarded");
-  const rewards = () => store.tables.credit_ledger.filter((r) => r.source === "referral_reward");
-  assert.equal(rewards().length, 1);
-  // second approve: already resolved, no double post
-  const again = await app.inject({ method: "POST", url: `/v1/referrals/${referralId}/review`, headers: as("admin"), payload: { action: "approve" } });
-  assert.equal(again.json().alreadyResolved, true);
-  assert.equal(rewards().length, 1);
+  assert.deepEqual(calls, ["approve", "reject", "reverse"].map((action) => ({ p_action: action, p_referral_id: refId })));
   await app.close();
 });
 
-test("reversal creates a compensating negative entry; cannot reverse twice", async () => {
-  const store = referralStore();
-  const app = await appWith(store);
-  await app.inject({ method: "POST", url: "/v1/referrals/claim", headers: as("other"), payload: { code: "bw-test" } });
-  const q = await app.inject({ method: "POST", url: "/v1/referrals/qualify", headers: svc, payload: { referredUserId: "user-2" } });
-  const referralId = q.json().referral.id as string;
-
-  const rev = await app.inject({ method: "POST", url: `/v1/referrals/${referralId}/reverse`, headers: as("admin") });
-  assert.equal(rev.statusCode, 200);
-  assert.equal(rev.json().reversedAmount, -100);
-  const entries = store.tables.credit_ledger;
-  assert.equal(entries.length, 2);
-  const reversal = entries.find((r) => r.source === "reversal");
-  assert.equal(reversal?.amount, -100);
-  assert.equal(reversal?.reference_id, referralId);
-  assert.equal(reversal?.balance_after, 0);
-  assert.equal(store.tables.referrals.find((r) => r.id === referralId)?.status, "reversed");
-
-  const again = await app.inject({ method: "POST", url: `/v1/referrals/${referralId}/reverse`, headers: as("admin") });
-  assert.equal(again.json().alreadyReversed, true);
-  assert.equal(entries.length, 2);
+test("referral transaction errors retain their actionable HTTP status", async () => {
+  let dbCode = "P0002";
+  const app = await appWith({ tables: {}, rpc: () => ({ data: null, error: { code: dbCode, message: "database failure" } }) });
+  for (const [code, expected] of [["P0002", 404], ["22023", 422], ["55000", 409], ["XX000", 500]] as const) {
+    dbCode = code;
+    const response = await app.inject({ method: "POST", url: `/v1/referrals/${refId}/reverse`, headers: as("admin") });
+    assert.equal(response.statusCode, expected);
+  }
   await app.close();
 });
 
-test("GET /v1/referrals/code auto-creates once", async () => {
-  const store: Store = { tables: {} };
+test("code creation uses the authenticated author and the atomic allocator", async () => {
+  const calls: Row[] = [];
+  const app = await appWith({ tables: {}, rpc: (name, params) => {
+    assert.equal(name, "get_or_create_referral_code"); calls.push(params);
+    return { data: { code: "bw-1234abcd" }, error: null };
+  } });
+  const responses = await Promise.all([1, 2].map(() => app.inject({ method: "GET", url: "/v1/referrals/code", headers: as("good") })));
+  assert.ok(responses.every((r) => r.statusCode === 200 && r.json().code === "bw-1234abcd"));
+  assert.deepEqual(calls, [{ p_user_id: "user-1" }, { p_user_id: "user-1" }]);
+  await app.close();
+});
+
+test("bounded ledger history carries independent lifetime totals and cannot hide summary failures", async () => {
+  let failSummary = false;
+  const store: Store = {
+    tables: { credit_ledger: Array.from({ length: 150 }, (_, id) => ({ id, user_id: "user-1", amount: 1, balance_after: id + 1 })) },
+    rpc: (name, params) => {
+      assert.equal(name, "referral_credit_summary"); assert.deepEqual(params, { p_user_id: "user-1" });
+      return failSummary ? { data: null, error: { code: "XX000", message: "summary unavailable" } }
+        : { data: { creditBalance: 150, referralCredits: 100, rewardedReferrals: 1 }, error: null };
+    },
+  };
   const app = await appWith(store);
-  const c1 = await app.inject({ method: "GET", url: "/v1/referrals/code", headers: as("good") });
-  assert.equal(c1.statusCode, 200);
-  const c2 = await app.inject({ method: "GET", url: "/v1/referrals/code", headers: as("good") });
-  assert.equal(c1.json().code, c2.json().code);
-  assert.equal(store.tables.referral_codes.length, 1);
+  const response = await app.inject({ method: "GET", url: "/v1/referrals/ledger", headers: as("good") });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().entries.length, 100);
+  assert.deepEqual(response.json().summary, { creditBalance: 150, referralCredits: 100, rewardedReferrals: 1 });
+  failSummary = true;
+  const failed = await app.inject({ method: "GET", url: "/v1/referrals/ledger", headers: as("good") });
+  assert.equal(failed.statusCode, 500);
   await app.close();
 });

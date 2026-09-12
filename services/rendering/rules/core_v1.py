@@ -3,9 +3,10 @@
 Generic, channel-agnostic checks. Values here follow public EPUB3 spec + common sense;
 channel-specific thresholds live in the channel rule modules.
 """
+from editions import language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
 
-VERSION = "core-1.0.0"
+VERSION = "core-1.0.2"
 
 
 def _find(code, msg, loc=""):
@@ -135,6 +136,33 @@ def check_fonts_embedded(ctx):
     return out
 
 
+def check_rtl_typography(ctx):
+    """Reject output paths known to lack the font and shaping support they need."""
+    edition = ctx.get("edition") or {}
+    metadata = _meta(ctx)
+    language = metadata.get("language")
+    direction = resolve_text_direction(language, edition.get("text_direction", "auto"))
+    requires_rtl = language_requires_rtl_shaping(language) or direction == "rtl"
+    if not requires_rtl:
+        return []
+    out = []
+    if edition.get("kind") == "print":
+        out += _find("RTL_PRINT_FONT_UNSUPPORTED",
+                     "RTL print PDF requires an embedded shaping-capable font; base PDF fonts are not safe for this script",
+                     "edition.text_direction")
+    cover = edition.get("cover") or {}
+    selected_text = cover.get("asset_id") and (
+        (cover.get("title_on_cover", True) and metadata.get("title"))
+        or (cover.get("subtitle_on_cover", True) and metadata.get("subtitle"))
+        or (cover.get("author_on_cover", True) and metadata.get("author"))
+    )
+    if selected_text:
+        out += _find("RTL_COVER_FONT_UNSUPPORTED",
+                     "RTL cover text requires an embedded shaping-capable font; the base cover font is not safe for this script",
+                     "edition.cover")
+    return out
+
+
 # ---- accessibility ------------------------------------------------------------
 
 def check_alt_text(ctx):
@@ -143,6 +171,8 @@ def check_alt_text(ctx):
     for ch in ctx["book"].get("chapters", []):
         for n in ch.get("nodes", []):
             if n.get("type") == "image":
+                if (n.get("attributes") or {}).get("decorative") is True:
+                    continue
                 alt = n.get("altText") or alt_by_id.get(n.get("assetId"))
                 if not alt:
                     out += _find("NO_ALT_TEXT", "image lacks alt text",
@@ -185,6 +215,7 @@ RULESET = RuleSet(name="core", version=VERSION, rules=[
     Rule("CORE-IMG-001", "error", "images", "image size policy", check_image_sizes),
     Rule("CORE-IMG-002", "error", "images", "image asset references", check_image_refs),
     Rule("CORE-FONT-001", "warning", "fonts", "non-builtin fonts flagged", check_fonts_embedded),
+    Rule("CORE-FONT-002", "error", "fonts", "RTL print and cover typography support", check_rtl_typography),
     Rule("CORE-A11Y-001", "error", "accessibility", "image alt text", check_alt_text),
     Rule("CORE-LINK-001", "error", "links", "link well-formedness", check_links),
     Rule("CORE-LANG-001", "error", "language", "valid language tag", check_language),

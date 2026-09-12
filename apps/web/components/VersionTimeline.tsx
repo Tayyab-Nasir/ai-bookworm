@@ -16,6 +16,7 @@ export interface VersionTimelineProps {
   versions: VersionSummary[];
   onCompare: (aId: string, bId: string) => void;
   onRestore: (versionId: string) => void;
+  readOnly?: boolean;
 }
 
 // ponytail: LCS word diff, O(n*m). Fine for chapter-sized texts; swap in the
@@ -23,6 +24,10 @@ export interface VersionTimelineProps {
 function wordDiff(a: string, b: string) {
   const wa = a.split(/\s+/).filter(Boolean);
   const wb = b.split(/\s+/).filter(Boolean);
+  // Never allocate a chapter-size quadratic matrix for a full novel.
+  if (wa.length * wb.length > 2_000_000) return [
+    { kind: "del", word: a }, { kind: "add", word: b },
+  ];
   const dp: number[][] = Array.from({ length: wa.length + 1 }, () => new Array(wb.length + 1).fill(0));
   for (let i = wa.length - 1; i >= 0; i--)
     for (let j = wb.length - 1; j >= 0; j--)
@@ -39,7 +44,7 @@ function wordDiff(a: string, b: string) {
   return out;
 }
 
-export default function VersionTimeline({ versions, onCompare, onRestore }: VersionTimelineProps) {
+export default function VersionTimeline({ versions, onCompare, onRestore, readOnly }: VersionTimelineProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const [diff, setDiff] = useState<ReturnType<typeof wordDiff> | null>(null);
 
@@ -67,7 +72,7 @@ export default function VersionTimeline({ versions, onCompare, onRestore }: Vers
                 <small>{v.created_by}{v.change_summary ? ` · ${v.change_summary}` : ""}</small>
               </span>
             </label>
-            <button style={{ marginLeft: 22 }} onClick={() => onRestore(v.id)}>Restore</button>
+            {!readOnly && <button style={{ marginLeft: 22 }} onClick={() => onRestore(v.id)}>Restore</button>}
           </li>
         ))}
       </ul>
@@ -81,9 +86,9 @@ export default function VersionTimeline({ versions, onCompare, onRestore }: Vers
               key={i}
               style={
                 d.kind === "add"
-                  ? { background: "#d4f7d4", textDecoration: "none" }
+                  ? { background: "#143a26", textDecoration: "none" }
                   : d.kind === "del"
-                    ? { background: "#fbd5d5", textDecoration: "line-through" }
+                    ? { background: "#4a2323", textDecoration: "line-through" }
                     : undefined
               }
             >

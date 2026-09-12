@@ -8,7 +8,7 @@ from agents.base import BaseAgent
 class CopyEditorAgent(BaseAgent):
     agent_type = "copyeditor"
     prompt_version = "v1"
-    allowed_tools = ["get_chapter", "get_style_guide", "search_book", "propose_edit", "create_diagnostic"]
+    allowed_tools = ["propose_edit", "create_diagnostic"]
     max_suggestion_span = 400  # chars — sentence-level rewrites allowed
 
 
@@ -18,12 +18,16 @@ AGENTS = {}
 def _register():
     from agents.bookbible import BookBibleAgent as _B
     from agents.consistency import ConsistencyAgent as _C
+    from agents.metadata import MetadataAgent as _M
     from agents.proofreader import ProofreaderAgent as _P
+    from agents.writer import WriterAgent as _W
 
     AGENTS[_P.agent_type] = _P
     AGENTS[CopyEditorAgent.agent_type] = CopyEditorAgent
     AGENTS[_B.agent_type] = _B
     AGENTS[_C.agent_type] = _C
+    AGENTS[_W.agent_type] = _W
+    AGENTS[_M.agent_type] = _M
 
 
 _register()

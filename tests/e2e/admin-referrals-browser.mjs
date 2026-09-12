@@ -1,0 +1,78 @@
+// Run against the isolated Next app + auth-browser-fixture, never production.
+import assert from 'node:assert/strict';
+import { chromium } from '@playwright/test';
+
+const origin = process.env.BROWSER_TEST_ORIGIN ?? 'http://127.0.0.1:4398';
+if (!['localhost', '127.0.0.1'].includes(new URL(origin).hostname)) throw new Error('Browser fixture must be local');
+const browser = await chromium.launch({ headless: true });
+try {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`${origin}/admin`);
+  await page.waitForURL('**/login?**');
+  await page.getByLabel('Email').fill('author@example.test');
+  await page.getByLabel('Password', { exact: true }).fill('fixture-password');
+  const loginResponse = page.waitForResponse((response) => response.url().endsWith('/api/auth/login'));
+  await page.getByRole('button', { name: /sign in/i }).click();
+  const login = await loginResponse;
+  assert.equal(login.status(), 200, `Login failed at ${page.url()}: ${login.status()} origin=${login.request().headers().origin}`);
+  await page.getByRole('heading', { name: 'Admin console' }).waitFor();
+  await page.getByText('Fixture author', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Feature flags', exact: true }).click();
+  const flag = page.getByRole('switch');
+  await flag.waitFor();
+  assert.equal(await flag.getAttribute('aria-checked'), 'false');
+  await flag.click();
+  await page.getByRole('status').filter({ hasText: 'Feature flag saved.' }).waitFor();
+  assert.equal(await flag.getAttribute('aria-checked'), 'true');
+  await page.reload();
+  await page.getByRole('button', { name: 'Feature flags', exact: true }).click();
+  await flag.waitFor();
+  assert.equal(await flag.getAttribute('aria-checked'), 'true');
+  await page.getByRole('button', { name: 'support', exact: true }).click();
+  await page.getByLabel('Ticket status').selectOption('resolved');
+  await page.getByRole('status').filter({ hasText: 'Ticket status saved.' }).waitFor();
+  assert.equal(await page.getByLabel('Ticket status').inputValue(), 'resolved');
+  await page.getByRole('button', { name: 'audit', exact: true }).click();
+  await page.getByRole('heading', { name: 'flag.update', exact: true }).first().waitFor();
+  await page.getByRole('button', { name: 'jobs', exact: true }).click();
+  await page.getByLabel('Job type').selectOption('publishing');
+  await page.getByRole('heading', { name: 'publishing', exact: true }).waitFor();
+  await page.goto(`${origin}/referrals`);
+  await page.getByLabel('Share URL').waitFor();
+  await page.waitForFunction(() => document.querySelector('input[readonly]')?.value.includes('bw-abcdef12'));
+  await page.getByLabel('Referral code', { exact: true }).fill('bw-12345678');
+  await page.getByRole('button', { name: 'Claim code', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Referral code claimed.' }).waitFor();
+  await page.goto(`${origin}/books/88888888-8888-4888-8888-888888888888/memory`);
+  await page.getByRole('heading', { name: /A memory for your world/i }).waitFor();
+  await page.getByLabel('Words or phrase').fill('Elara');
+  await page.getByRole('button', { name: 'Search saved sources', exact: true }).click();
+  await page.getByText('Elara carries a silver compass from the harbor.', { exact: true }).waitFor();
+  await page.getByText('Source citation', { exact: true }).click();
+  await page.getByText('66666666-6666-4666-8666-666666666666', { exact: true }).waitFor();
+  await page.goto(`${origin}/settings/data-rights`);
+  await page.getByRole('heading', { name: 'Data rights & support', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Request data export', exact: true }).click();
+  const exportDialog = page.getByRole('dialog', { name: 'Request data export' });
+  await exportDialog.getByRole('button', { name: 'Request export', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Export request submitted.' }).waitFor();
+  await page.getByRole('heading', { name: 'export request', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Support tickets', exact: true }).click();
+  await page.getByLabel('Category').selectOption('technical');
+  await page.getByLabel('Subject').fill('Editor question');
+  await page.getByLabel('Description').fill('The editor needs help with a chapter import.');
+  await page.getByRole('button', { name: 'Submit ticket', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Support request submitted.' }).waitFor();
+  await page.getByRole('heading', { name: 'Editor question', exact: true }).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  for (const path of ['/admin', '/referrals', '/books/88888888-8888-4888-8888-888888888888/memory', '/settings/data-rights']) {
+    await page.goto(`${origin}${path}`);
+    await page.getByRole('heading', { level: 1 }).waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${path} overflows on mobile`);
+  }
+  assert.deepEqual(errors, [], 'browser runtime errors');
+  console.log('PASS browser: auth protection, admin, referrals, cited book search, data-rights/support, mobile layouts.');
+} finally { await browser.close(); }

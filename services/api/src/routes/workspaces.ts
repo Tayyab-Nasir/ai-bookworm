@@ -3,13 +3,10 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 
 const createSchema = z.object({
-  name: z.string().min(1),
-  orgName: z.string().min(1).optional(),
-  slug: z.string().regex(/^[a-z0-9-]+$/).optional(),
-});
-
-const slugify = (s: string) =>
-  s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "workspace";
+  name: z.string().trim().min(1).max(120),
+  orgName: z.string().trim().min(1).max(160).optional(),
+  slug: z.string().max(64).regex(/^[a-z0-9]+(-[a-z0-9]+)*$/).optional(),
+}).strict();
 
 export function workspaceRoutes(app: FastifyInstance) {
   // RLS-aware client: only workspaces visible to the user come back.
@@ -19,38 +16,29 @@ export function workspaceRoutes(app: FastifyInstance) {
     return { workspaces: data };
   });
 
-  // Create = org + workspace + member via service role (RLS would block org insert).
-  // Checks are explicit; ordered inserts are the compensation strategy (ponytail:
-  // no multi-statement tx via PostgREST — upgrade path is an RPC function).
+  // A single database transaction creates the org/workspace AND both owner
+  // memberships. User-scoped RPC derives auth.uid(); no trusted owner id or
+  // service role is exposed to this flow. Failure leaves no partial tenant.
   app.post("/workspaces", async (req, reply) => {
     const parsed = createSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid request", { issues: parsed.error.issues });
-    const { name, orgName, slug } = parsed.data;
-    const sb = app.supabaseFactory(); // service role
-
-    const wsSlug = slug ?? slugify(name);
-    const org = await sb.from("organizations")
-      .insert({ name: orgName ?? `${name} Org`, slug: `${slugify(orgName ?? name)}-${Date.now().toString(36)}`, owner_user_id: req.userId })
-      .select().single();
-    if (org.error) throw new AppError(422, org.error.message);
-
-    const ws = await sb.from("workspaces")
-      .insert({ organization_id: org.data.id, name, slug: wsSlug, created_by: req.userId })
-      .select().single();
-    if (ws.error) {
-      await sb.from("organizations").delete().eq("id", org.data.id); // compensate
-      if (ws.error.code === "23505") throw new AppError(409, "workspace slug already exists");
-      throw new AppError(422, ws.error.message);
+    const { data, error } = await app.supabaseFactory(req.userToken)
+      .rpc("create_workspace_with_owner", {
+        p_name: parsed.data.name,
+        p_org_name: parsed.data.orgName ?? null,
+        p_slug: parsed.data.slug ?? null,
+      }).single();
+    if (error) {
+      if (error.code === "23505") throw new AppError(409, "workspace already exists");
+      if (error.code === "42501") throw new AppError(403, "workspace creation not permitted");
+      if (error.code === "22023") throw new AppError(422, "invalid workspace details");
+      if (error.code === "PGRST202" || error.code === "42883") {
+        throw new AppError(503, "workspace onboarding is not installed; apply the pending database migrations");
+      }
+      req.log.error({ code: error.code }, "workspace transaction failed");
+      throw new AppError(500, "workspace could not be created; no partial workspace was saved");
     }
-
-    const member = await sb.from("workspace_members")
-      .insert({ workspace_id: ws.data.id, user_id: req.userId, role: "owner", status: "active" });
-    if (member.error) {
-      await sb.from("workspaces").delete().eq("id", ws.data.id);
-      await sb.from("organizations").delete().eq("id", org.data.id);
-      throw new AppError(500, member.error.message);
-    }
-
-    return reply.status(201).send(ws.data);
+    if (!data) throw new AppError(500, "workspace creation returned no result");
+    return reply.status(201).send(data);
   });
 }

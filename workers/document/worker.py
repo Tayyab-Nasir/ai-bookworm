@@ -19,6 +19,9 @@ def process_job(payload: dict, url: str = DOCUMENT_SERVICE_URL) -> dict:
     """
     if payload.get("operation") != "parse":
         raise ValueError(f"unsupported operation: {payload.get('operation')}")
+    token = os.getenv("DOCUMENT_SERVICE_TOKEN") or os.getenv("SERVICE_AUTH_TOKEN")
+    if not token:
+        raise RuntimeError("document service authentication is not configured")
     body = json.dumps({
         "assetId": payload["assetId"],
         "format": payload["format"],
@@ -26,7 +29,7 @@ def process_job(payload: dict, url: str = DOCUMENT_SERVICE_URL) -> dict:
         "title": payload.get("title", "Untitled"),
     }).encode()
     req = urllib.request.Request(f"{url}/parse", data=body,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", "X-Service-Token": token})
     with urllib.request.urlopen(req, timeout=300) as resp:
         return json.loads(resp.read())
 

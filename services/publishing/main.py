@@ -1,13 +1,15 @@
 """Publishing channel adapters service (export-first)."""
 import base64
 import hashlib
+import hmac
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
@@ -36,6 +38,19 @@ class JobRequest(BaseModel):
     idempotencyKey: str
 
 
+class PackageRequest(BaseModel):
+    channel: str
+    editionConfig: dict
+    bookModel: dict
+    artifactsBase64: dict[str, str] = Field(default_factory=dict)
+
+
+def require_service_token(x_service_token: str | None = Header(default=None)) -> None:
+    configured = os.getenv("PUBLISHING_SERVICE_TOKEN") or os.getenv("SERVICE_AUTH_TOKEN")
+    if configured and (not x_service_token or not hmac.compare_digest(x_service_token, configured)):
+        raise HTTPException(401, "invalid service token")
+
+
 def _job_path(key: str) -> Path:
     # reject (not strip): stripping silently aliases distinct keys (e.g. "../../evil" -> "evil")
     if not key or not all(c.isalnum() or c in "-_" for c in key):
@@ -54,11 +69,12 @@ def channels() -> dict:
     return {name: {
         "formats": list(a.capabilities().formats),
         "canSubmit": a.capabilities().can_submit,
+        "canCheckStatus": a.capabilities().can_check_status,
         "requiredMetadata": list(a.capabilities().required_metadata),
     } for name, a in sorted(_ADAPTERS.items())}
 
 
-@app.post("/v1/publishing/validate")
+@app.post("/v1/publishing/validate", dependencies=[Depends(require_service_token)])
 def validate(req: ValidateRequest) -> dict:
     try:
         adapter = get_adapter(req.channel)
@@ -73,7 +89,82 @@ def validate(req: ValidateRequest) -> dict:
     return adapter.validate(ctx)
 
 
-@app.post("/v1/publishing/jobs", status_code=201)
+def build_package(req: PackageRequest) -> dict:
+    """Package exact, already-rendered private artifacts supplied by the API.
+
+    The API authorizes the book and verifies the source render/preflight jobs.
+    This service still constrains names, formats, signatures, and package size,
+    then reruns the versioned rules before producing a deterministic ZIP.
+    """
+    try:
+        adapter = get_adapter(req.channel)
+        edition = parse_edition(req.editionConfig)
+    except (KeyError, ValueError) as error:
+        raise HTTPException(422, str(error)) from error
+
+    expected_format = "epub" if edition.kind == "ebook" else "pdf"
+    if expected_format not in adapter.capabilities().formats:
+        raise HTTPException(422, f"{req.channel} does not accept {expected_format} editions")
+    primary_name = f"book.{expected_format}"
+    names = set(req.artifactsBase64)
+    if primary_name not in names or not names.issubset({primary_name, "cover.png"}):
+        raise HTTPException(422, f"artifacts must contain {primary_name} and optional cover.png")
+
+    artifacts: dict[str, bytes] = {}
+    total = 0
+    for name in sorted(names):
+        encoded = req.artifactsBase64[name]
+        if not encoded or len(encoded) > 280_000_000:
+            raise HTTPException(422, "an encoded publishing artifact exceeds the supported size")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, "publishing artifacts must be valid base64") from error
+        total += len(data)
+        if not data or total > 175 * 1024 * 1024:
+            raise HTTPException(422, "publishing artifacts exceed the 175 MB package limit")
+        signature = b"PK" if name.endswith(".epub") else b"%PDF-" if name.endswith(".pdf") else b"\x89PNG"
+        if not data.startswith(signature):
+            raise HTTPException(422, f"{name} has an invalid file signature")
+        artifacts[name] = data
+
+    primary = artifacts[primary_name]
+    ctx = {
+        "book": req.bookModel,
+        "edition": req.editionConfig,
+        # EPUB structure rules only inspect EPUB bytes. Channel package-size
+        # rules use package_bytes for either EPUB or PDF.
+        "artifact": primary if expected_format == "epub" else None,
+        "package_bytes": primary,
+        "channel": req.channel,
+        "image_bytes": {},
+        "cover_bytes": artifacts.get("cover.png"),
+    }
+    validation = adapter.validate(ctx)
+    if validation["errors"]:
+        raise HTTPException(422, "the saved artifacts no longer pass channel validation")
+    try:
+        packages = adapter.build_package(ctx, artifacts)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    return {
+        "channel": req.channel,
+        "ruleVersion": validation["ruleVersion"],
+        "errors": validation["errors"],
+        "packages": [{
+            "path": package.path,
+            "sha256": package.sha256,
+            "dataBase64": base64.b64encode(package.data).decode(),
+        } for package in packages],
+    }
+
+
+@app.post("/v1/publishing/package", dependencies=[Depends(require_service_token)])
+def create_package(req: PackageRequest) -> dict:
+    return build_package(req)
+
+
+@app.post("/v1/publishing/jobs", status_code=201, dependencies=[Depends(require_service_token)])
 def create_job(req: JobRequest) -> dict:
     """Export-package job. Idempotent on idempotencyKey: replay returns stored result."""
     try:

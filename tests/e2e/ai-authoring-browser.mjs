@@ -1,0 +1,56 @@
+// Requires the isolated auth fixture with FIXTURE_AI_DRAFT=true on 4399 and
+// a separate Next dev output on 4398. Never uses a personal browser profile.
+import assert from 'node:assert/strict';
+import { chromium } from '@playwright/test';
+const origin = 'http://127.0.0.1:4398';
+const health = await fetch('http://127.0.0.1:4399/health').then((r) => r.json());
+assert.equal(health.fixture, true);
+const browser = await chromium.launch({ headless: true, ...(process.env.BROWSER_TEST_CHANNEL ? { channel: process.env.BROWSER_TEST_CHANNEL } : {}) });
+try {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
+  page.setDefaultTimeout(20000);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('dialog', (dialog) => dialog.dismiss());
+  await page.goto(`${origin}/dashboard`);
+  await page.getByLabel('Email').fill('author@example.test');
+  await page.getByLabel('Password', { exact: true }).fill('fixture-password');
+  await page.getByRole('button', { name: /sign in/i }).click();
+  await page.locator('#workspace, #workspaceName').first().waitFor();
+  if (await page.getByRole('button', { name: 'Create workspace', exact: true }).isVisible()) await page.getByRole('button', { name: 'Create workspace', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#workspace')?.value);
+  await page.getByRole('link', { name: 'Create or import', exact: true }).click();
+  await page.getByRole('button', { name: 'Start with AI', exact: true }).click();
+  await page.getByLabel('Book title').fill('Harbor browser journey');
+  await page.getByLabel('Story brief').fill('Private story brief for Mara at the harbor.');
+  await page.getByRole('button', { name: 'Create and queue draft', exact: true }).click();
+  await page.getByText('Opening scene for author review', { exact: true }).waitFor();
+  const editor = page.locator('.tiptap');
+  assert.equal((await editor.innerText()).trim(), '', 'AI wrote before approval');
+  await page.getByRole('button', { name: 'Apply', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.tiptap')?.textContent.includes('Mara reached the harbor'));
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('.tiptap')?.textContent.includes('Mara reached the harbor'));
+  await page.getByLabel('New chapter', { exact: true }).fill('The second tide');
+  await page.getByLabel('Optional AI drafting brief').fill('Mara follows the letter.');
+  await page.getByRole('button', { name: 'Add & queue AI draft', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'recover the original chapter request' }).waitFor();
+  await page.getByRole('button', { name: 'Add & queue AI draft', exact: true }).click();
+  await page.getByRole('button', { name: 'Retry original AI request', exact: true }).click();
+  await page.getByText('Opening scene for author review', { exact: true }).waitFor();
+  assert.equal((await editor.innerText()).trim(), '', 'second draft wrote before approval');
+  const read = (path) => page.evaluate(async (path) => { const response = await fetch('/api/backend/v1/' + path); if (!response.ok) throw new Error('Fixture read failed'); return response.json(); }, path);
+  const bookId = new URL(page.url()).pathname.split('/')[2];
+  const chapters = (await read(`books/${bookId}/chapters`)).chapters;
+  assert.equal(chapters.length, 2, 'lost chapter reply duplicated chapter');
+  assert.equal((await read(`ai/jobs?bookId=${bookId}`)).jobs.length, 2, 'lost AI reply duplicated job');
+  await page.getByRole('button', { name: 'Reject', exact: true }).click();
+  await page.getByText('rejected', { exact: true }).waitFor();
+  assert.equal((await editor.innerText()).trim(), '', 'rejected draft changed manuscript');
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'editor overflows mobile');
+  assert.equal(await page.evaluate(() => [...Object.values(sessionStorage), ...Object.values(localStorage)].some((v) => v.includes('Private story brief') || v.includes('Mara follows'))), false, 'private brief persisted in web storage');
+  assert.deepEqual(errors, [], 'browser runtime errors');
+  console.log('PASS AI browser journey: auth, setup, review/apply/reload, lost chapter/AI reply recovery, reject, two chapters/two jobs, mobile containment, private brief storage.');
+} finally { await browser.close(); }

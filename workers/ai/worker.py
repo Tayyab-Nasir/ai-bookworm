@@ -1,20 +1,13 @@
-"""AI worker: consumes jobs.ai from Redis (at-least-once, idempotent).
+"""Reserved entry point for a future durable AI queue.
 
-Payload per spec section 10:
-  jobId, workspaceId, bookId, agentType, inputRef, idempotencyKey, attempt
-
-Stub only — Redis consumer implemented in Step 7.
+AI review jobs currently execute synchronously through the API and AI service;
+the database remains the durable record of each request and suggestion.
 """
 
 
 def run() -> None:
-    """Consume jobs.ai and dispatch to the AI service. Not implemented yet.
-
-    Graceful shutdown + dead-letter live in workers/ops.py:
-        from ops import run_loop
-        run_loop("jobs.ai", process_job, fetch=redis_blpop)
-    """
-    raise NotImplementedError("AI worker lands in Step 7")
+    """Reject accidental deployment until a reconstructable queue is added."""
+    raise RuntimeError("No standalone AI consumer is configured; run AI jobs through the API")
 
 
 if __name__ == "__main__":

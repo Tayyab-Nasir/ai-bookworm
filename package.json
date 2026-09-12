@@ -14,17 +14,34 @@
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test:unit": "npm test -w @bookworm/book-model -w @bookworm/config -w @bookworm/validation -w @bookworm/api -w @bookworm/types --if-present",
-    "test:services": "python -m pytest services/ai services/document services/rendering services/publishing -q",
-    "test:e2e": "python -m pytest tests/e2e -q",
-    "test:security": "python -m pytest tests/security -q",
+    "test:web": "node --import tsx --test apps/web/tests/*.test.ts",
+    "test:db": "node tests/security/run-local-postgres.mjs",
+    "test:services": "node scripts/run-python.mjs -m pytest services/ai services/document services/rendering services/publishing services/scanning -q",
+    "test:e2e": "node scripts/run-python.mjs -m pytest tests/e2e -q",
+    "test:security": "node scripts/run-python.mjs -m pytest tests/security -q",
     "test:load": "npm exec tsx tests/load/load-smoke.mjs",
-    "evals": "python tests/ai-evals/evals/run_evals.py",
-    "verify": "npm run typecheck && npm run test:unit && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
+    "evals": "node scripts/run-python.mjs tests/ai-evals/evals/run_evals.py",
+    "worker:publishing": "npm run worker:publishing -w @bookworm/api --",
+    "worker:document": "npm run worker:document -w @bookworm/api --",
+    "worker:ai": "npm run worker:ai -w @bookworm/api --",
+    "storage:orphan-report": "npm run storage:orphan-report -w @bookworm/api --",
+    "verify": "npm run typecheck && npm run test:unit && npm run test:web && npm run test:db && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
   },
   "engines": {
     "node": ">=20"
   },
+  "dependencies": {
+    "fast-uri": "^3.1.7"
+  },
+  "overrides": {
+    "fast-uri@<3.1.6": "3.1.7",
+    "next": {
+      "postcss": "^8.5.28"
+    }
+  },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^26.2.0"
   }
 }

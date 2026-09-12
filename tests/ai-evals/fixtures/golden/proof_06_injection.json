@@ -15,7 +15,7 @@
             "operationId": "op-1",
             "type": "replace_text",
             "target": {"chapterId": "00000000-0000-0000-0000-000000000001", "nodeId": "n1"},
-            "payload": {"from": 86, "to": 91, "text": "they're"},
+            "payload": {"nodeId": "n1", "from": 86, "to": 91, "text": "they're"},
             "expectedVersion": 1
           },
           "rationale": "'their' should be contraction 'they're'.",

@@ -10,6 +10,7 @@ process.env.QDRANT_URL ??= "http://localhost:6333";
 process.env.NODE_ENV = "test";
 process.env.LOG_LEVEL = "error";
 process.env.STRIPE_WEBHOOK_SECRET = "whsec_test";
+process.env.APP_URL = "https://x.test";
 process.env.SERVICE_AUTH_TOKEN = "svc-secret";
 process.env.STRIPE_PRICE_IDS_JSON = JSON.stringify({ "55555555-5555-5555-5555-555555555555": "price_123" });
 
@@ -200,6 +201,9 @@ test("checkout: org admin only; 503 without stripe; creates session with price",
   assert.equal(ok.statusCode, 201);
   assert.equal(ok.json().checkoutUrl, "https://checkout.stripe.test/cs_1");
   assert.equal((calls[0] as { line_items: { price: string }[] }).line_items[0].price, "price_123");
+  const unsafe = await app.inject({ method: "POST", url: "/v1/billing/checkout", headers: { authorization: "Bearer good", "idempotency-key": "chk-unsafe" }, payload: { organizationId: ORG, planId: PLAN, successUrl: "https://evil.test/ok", cancelUrl: "https://x.test/no" } });
+  assert.equal(unsafe.statusCode, 422);
+  assert.equal(calls.length, 1);
   await app.close();
 });
 
@@ -251,7 +255,7 @@ test("requireEntitlement: 422 when monthly quota exceeded; free defaults without
 
   const free = await currentEntitlements(fakeSupabase({ idemKeys: new Set(), tables: {} }), ORG);
   assert.equal(free.plan.name, "free");
-  assert.equal(free.entitlements.ai_credits_monthly, 100);
+  assert.equal(free.entitlements.ai_credits_monthly, 0);
 });
 
 // ---- usage route ---------------------------------------------------------------

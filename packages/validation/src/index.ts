@@ -18,6 +18,7 @@ export const ERROR_CODES = {
   403: "unauthorized",
   404: "not_found",
   409: "conflict",
+  413: "payload_too_large",
   422: "business_validation",
   429: "rate_limit",
   500: "internal",

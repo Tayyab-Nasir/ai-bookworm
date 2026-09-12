@@ -27,7 +27,7 @@ export const errorHandlerPlugin = fp(async (app: FastifyInstance) => {
       code = err.code;
       message = err.message;
       details = err.details;
-    } else if ("statusCode" in err && typeof err.statusCode === "number" && err.statusCode < 500) {
+    } else if (err instanceof Error && "statusCode" in err && typeof err.statusCode === "number" && err.statusCode < 500) {
       status = (err.statusCode in ERROR_CODES ? err.statusCode : 400) as ErrorStatus;
       code = ERROR_CODES[status];
       message = err.message;

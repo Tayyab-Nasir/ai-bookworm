@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agents.base import DELIM_BEGIN, sanitize, wrap_manuscript
+from agents.copyeditor import get_agent
 from agents.proofreader import ProofreaderAgent
 from gateway import Completion, MockProvider, Usage
 from main import _JOBS, _JOBS_BY_IDEMPOTENCY, _SUGGESTIONS, app
@@ -21,7 +22,7 @@ VALID_INPUT = {
         "operationId": "op-1",
         "type": "replace_text",
         "target": {"chapterId": CHAPTER_ID, "nodeId": "n1"},
-        "payload": {"from": 4, "to": 10, "text": "fixed"},
+        "payload": {"nodeId": "n1", "from": 4, "to": 10, "text": "fixed"},
         "expectedVersion": 1,
     },
     "rationale": "typo",
@@ -150,6 +151,14 @@ def test_usage_telemetry_recorded():
     assert result.usage.estimatedCostUsd == 0.001
 
 
+def test_writer_is_registered_and_keeps_drafts_reviewable():
+    provider = MockProvider([{"toolCalls": [{"name": "propose_edit", "input": VALID_INPUT}]}])
+    executor = InMemoryExecutor(chapters={CHAPTER_ID: {"version": 1, "nodes": [{"id": "n1", "type": "paragraph", "text": "text"}]}})
+    result = get_agent("writer", provider, executor, "mock-1").run(make_request())
+    assert result.status == "succeeded"
+    assert result.suggestions[0]["status"] == "pending"
+
+
 # ---- HTTP API: idempotency, apply ----
 
 @pytest.fixture
@@ -159,6 +168,7 @@ def client(monkeypatch):
     _SUGGESTIONS.clear()
     monkeypatch.setenv("DEFAULT_AI_PROVIDER", "mock")
     monkeypatch.setenv("DEFAULT_AI_MODEL", "mock-1")
+    monkeypatch.delenv("AI_SERVICE_TOKEN", raising=False)
     return TestClient(app)
 
 
@@ -208,3 +218,11 @@ def test_unknown_agent_type_422(client):
     payload = job_payload("key-3")
     payload["agentType"] = "world_domination"
     assert client.post("/v1/ai/jobs", json=payload).status_code == 422
+
+
+def test_configured_service_token_is_required(client, monkeypatch):
+    monkeypatch.setenv("AI_SERVICE_TOKEN", "service-secret")
+    assert client.post("/v1/ai/jobs", json=job_payload("key-4")).status_code == 401
+    assert client.post(
+        "/v1/ai/jobs", json=job_payload("key-4"), headers={"x-service-token": "service-secret"}
+    ).status_code == 201

@@ -1,8 +1,4 @@
-"""Provider-neutral LLM gateway (spec section 12 / T16).
-
-Providers are swappable via config (DEFAULT_AI_PROVIDER / DEFAULT_AI_MODEL env).
-Every complete() returns a Completion carrying per-call usage telemetry.
-"""
+"""OpenAI LLM gateway with an explicit deterministic test provider."""
 from __future__ import annotations
 
 import json
@@ -40,50 +36,24 @@ class Provider(Protocol):
         ...
 
 
-# ponytail: rough static $/token table by model prefix; refresh on pricing changes
-_PRICES: dict[str, tuple[float, float]] = {
-    "claude": (3.0e-6, 15.0e-6),
-    "gpt": (2.5e-6, 10.0e-6),
-    "mock": (0.0, 0.0),
+# Official OpenAI price snapshot, 2026-09-12. Values are dollars per token.
+# Keep this deliberately exact: an unknown model records zero rather than being
+# silently billed with a stale prefix-wide estimate.
+_TEXT_PRICES: dict[str, tuple[float, float]] = {
+    "gpt-6-astra": (10.0e-6, 50.0e-6),
 }
 
 
 def _cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    for prefix, (pi, po) in _PRICES.items():
-        if model.startswith(prefix):
-            return round(tokens_in * pi + tokens_out * po, 6)
+    canonical = "gpt-6-astra" if model.startswith("gpt-6-astra") else model
+    if canonical in _TEXT_PRICES:
+        pi, po = _TEXT_PRICES[canonical]
+        # Astra requests above 272K input tokens use the published long-context
+        # multipliers for the entire request.
+        if canonical == "gpt-6-astra" and tokens_in > 272_000:
+            pi, po = pi * 2, po * 1.5
+        return round(tokens_in * pi + tokens_out * po, 6)
     return 0.0
-
-
-class AnthropicProvider:
-    name = "anthropic"
-
-    def __init__(self, api_key: str | None = None):
-        import anthropic
-
-        self._client = anthropic.Anthropic(api_key=api_key or os.environ["ANTHROPIC_API_KEY"])
-
-    def complete(self, messages: list[dict], tools: list[dict], model: str) -> Completion:
-        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
-        convo = [m for m in messages if m["role"] != "system"]
-        resp = self._client.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system,
-            messages=convo,
-            tools=[
-                {"name": t["name"], "description": t.get("description", ""), "input_schema": t["input_schema"]}
-                for t in tools
-            ],
-        )
-        text, calls = "", []
-        for block in resp.content:
-            if block.type == "text":
-                text += block.text
-            elif block.type == "tool_use":
-                calls.append({"name": block.name, "input": block.input})
-        ti, to = resp.usage.input_tokens, resp.usage.output_tokens
-        return Completion(text, calls, Usage(ti, to, _cost(model, ti, to)))
 
 
 class OpenAIProvider:
@@ -95,22 +65,21 @@ class OpenAIProvider:
         self._client = openai.OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
 
     def complete(self, messages: list[dict], tools: list[dict], model: str) -> Completion:
-        resp = self._client.chat.completions.create(
+        resp = self._client.responses.create(
             model=model,
-            messages=messages,
+            input=messages,
             tools=[
-                {"type": "function", "function": {"name": t["name"], "description": t.get("description", ""), "parameters": t["input_schema"]}}
+                {"type": "function", "name": t["name"], "description": t.get("description", ""), "parameters": t["input_schema"]}
                 for t in tools
             ],
         )
-        msg = resp.choices[0].message
-        calls = [
-            {"name": tc.function.name, "input": json.loads(tc.function.arguments or "{}")}
-            for tc in (msg.tool_calls or [])
-        ]
-        ti = resp.usage.prompt_tokens if resp.usage else 0
-        to = resp.usage.completion_tokens if resp.usage else 0
-        return Completion(msg.content or "", calls, Usage(ti, to, _cost(model, ti, to)))
+        calls = []
+        for item in resp.output:
+            if item.type == "function_call":
+                calls.append({"name": item.name, "input": json.loads(item.arguments or "{}")})
+        ti = resp.usage.input_tokens if resp.usage else 0
+        to = resp.usage.output_tokens if resp.usage else 0
+        return Completion(resp.output_text or "", calls, Usage(ti, to, _cost(model, ti, to)))
 
 
 class MockProvider:
@@ -144,19 +113,12 @@ def completion_from_dict(d: dict) -> Completion:
     )
 
 
-_REGISTRY = {"anthropic": AnthropicProvider, "openai": OpenAIProvider, "mock": MockProvider}
-_DEFAULT_MODELS = {"anthropic": "claude-sonnet-4-5", "openai": "gpt-4o", "mock": "mock-1"}
+_REGISTRY = {"openai": OpenAIProvider, "mock": MockProvider}
+_DEFAULT_MODELS = {"openai": "gpt-6-astra", "mock": "mock-1"}
 
 
 def get_provider(name: str | None = None) -> Provider:
-    name = name or os.environ.get("DEFAULT_AI_PROVIDER", "")
-    if not name:
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            name = "anthropic"
-        elif os.environ.get("OPENAI_API_KEY"):
-            name = "openai"
-        else:
-            name = "mock"
+    name = name or os.environ.get("DEFAULT_AI_PROVIDER") or "openai"
     if name not in _REGISTRY:
         raise ValueError(f"unknown AI provider {name!r}; expected one of {sorted(_REGISTRY)}")
     return _REGISTRY[name]()

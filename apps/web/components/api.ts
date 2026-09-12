@@ -2,12 +2,12 @@
 
 import { createClient } from "@bookworm/api-client";
 
-// Same env convention as BookEditorClient: null => offline demo mode.
+const client = createClient({ baseUrl: "/api/backend" });
+
+// Stable identity prevents effect loops; tokens stay in server-managed cookies.
 export function apiClient() {
-  const baseUrl = process.env.NEXT_PUBLIC_API_URL;
-  const token = process.env.NEXT_PUBLIC_API_TOKEN;
-  return baseUrl && token ? createClient({ baseUrl, token }) : null;
+  return client;
 }
 
-// Demo workspace used when no API is configured so pages still render.
+// Compatibility fallback for pages that have not completed workspace onboarding yet.
 export const DEMO_WORKSPACE = "demo-workspace";

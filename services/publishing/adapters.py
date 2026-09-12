@@ -3,6 +3,7 @@ work locally; submit/getStatus raise NotSupportedError until official integratio
 """
 import hashlib
 import json
+import re
 import sys
 import zipfile
 from dataclasses import dataclass
@@ -63,6 +64,7 @@ class ExportAdapter:
             "channel": self.CHANNEL,
             "ruleVersion": ruleset.version,
             "errors": sum(1 for f in findings if f.severity == "error"),
+            "warnings": sum(1 for f in findings if f.severity == "warning"),
             "findings": [f.to_dict() for f in findings],
         }
 
@@ -70,10 +72,17 @@ class ExportAdapter:
         """Deterministic export zip: rendered artifact(s) + manifest.json with sha256s,
         rule version, and channel. Fixed entry order, fixed timestamps."""
         result = self.validate(ctx)
+        if result["errors"]:
+            raise ValueError(f"{self.CHANNEL} package has unresolved validation errors")
+        if not artifacts or len(artifacts) > 3 or any(
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name)
+                for name in artifacts):
+            raise ValueError("package artifacts must use safe flat filenames")
         manifest = {
             "channel": self.CHANNEL,
             "ruleVersion": result["ruleVersion"],
             "errors": result["errors"],
+            "warnings": result["warnings"],
             "files": {},
         }
         buf = BytesIO()

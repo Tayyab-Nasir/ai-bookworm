@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "root": "../..",
+  "builds": [
+    {
+      "src": "apps/web/package.json",
+      "use": "@vercel/next",
+      "config": {
+        "distDir": ".next"
+      }
+    }
+  ]
+}

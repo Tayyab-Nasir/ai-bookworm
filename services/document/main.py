@@ -3,9 +3,11 @@
 All uploaded content is untrusted: parsers never exec, guard zip-slip, cap sizes.
 """
 import base64
-from pathlib import Path
+import hmac
+import os
+from pathlib import Path, PureWindowsPath
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from parsers import MAX_FILE_BYTES, ParseError
@@ -19,11 +21,19 @@ app = FastAPI(title="bookworm-document")
 PARSERS = {"docx": parse_docx, "epub": parse_epub, "txt": parse_txt, "pdf": parse_pdf}
 
 
+def require_service_token(x_service_token: str | None = Header(default=None)) -> None:
+    configured = os.getenv("DOCUMENT_SERVICE_TOKEN") or os.getenv("SERVICE_AUTH_TOKEN")
+    if not configured:
+        raise HTTPException(503, "document service authentication is not configured")
+    if not x_service_token or not hmac.compare_digest(x_service_token, configured):
+        raise HTTPException(401, "invalid service token")
+
+
 class ParseRequest(BaseModel):
     assetId: str = Field(min_length=1)
     format: str = Field(pattern="^(docx|epub|txt|pdf)$")
     storagePath: str | None = None
-    contentBase64: str | None = None
+    contentBase64: str | None = Field(default=None, max_length=((MAX_FILE_BYTES + 2) // 3) * 4)
     title: str = "Untitled"
 
     @model_validator(mode="after")
@@ -37,7 +47,7 @@ class ParseRequest(BaseModel):
     def path_safety(cls, v: str | None) -> str | None:
         if v is None:
             return v
-        if v.startswith(("/", "\\")) or ".." in v.split("/"):
+        if v.startswith(("/", "\\")) or PureWindowsPath(v).drive or ".." in v.replace("\\", "/").split("/") or "\x00" in v:
             raise ValueError("unsafe storagePath")
         return v
 
@@ -47,22 +57,30 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/parse")
+@app.post("/parse", dependencies=[Depends(require_service_token)])
 def parse(req: ParseRequest) -> dict:
     try:
         if req.contentBase64 is not None:
             data = base64.b64decode(req.contentBase64, validate=True)
         else:
-            p = Path(req.storagePath)
+            configured_root = os.getenv("DOCUMENT_IMPORT_ROOT")
+            if not configured_root:
+                raise ParseError("filesystem import is disabled; provide contentBase64")
+            root = Path(configured_root).resolve()
+            p = (root / req.storagePath.replace("\\", "/")).resolve()
+            if not p.is_relative_to(root):
+                raise ParseError("storagePath escapes the import folder")
             if not p.is_file() or p.stat().st_size > MAX_FILE_BYTES:
                 raise ParseError("storagePath missing or exceeds size cap")
             data = p.read_bytes()
-        book, report = PARSERS[req.format](data, title=req.title)
+        embedded_assets: list[dict] = []
+        options = {"embedded_assets": embedded_assets} if req.format in ("docx", "epub") else {}
+        book, report = PARSERS[req.format](data, title=req.title, **options)
     except ParseError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=422, detail=f"cannot read input: {e}") from e
-    return {"bookModel": book, "report": report}
+        raise HTTPException(status_code=422, detail="cannot read input") from e
+    return {"bookModel": book, "report": report, "embeddedAssets": embedded_assets}
 
 
 if __name__ == "__main__":

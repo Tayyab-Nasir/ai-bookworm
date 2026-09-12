@@ -11,6 +11,18 @@ import jsonschema
 
 UUID = {"type": "string", "format": "uuid"}
 
+METADATA_SOURCE_REF_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["chapterId", "nodeId"],
+    "properties": {
+        "chapterId": UUID,
+        "documentVersionId": UUID,
+        "nodeId": {"type": "string", "minLength": 1, "maxLength": 200},
+        "textHash": {"type": "string", "minLength": 1, "maxLength": 128},
+    },
+    "additionalProperties": False,
+}
+
 PROPOSE_EDIT_OPERATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["operationId", "type", "target", "payload", "expectedVersion"],
@@ -28,11 +40,12 @@ PROPOSE_EDIT_OPERATION_SCHEMA: dict[str, Any] = {
         },
         "payload": {
             "type": "object",
-            "required": ["from", "to", "text"],
+            "required": ["nodeId", "from", "to", "text"],
             "properties": {
+                "nodeId": {"type": "string", "minLength": 1},
                 "from": {"type": "integer", "minimum": 0},
                 "to": {"type": "integer", "minimum": 0},
-                "text": {"type": "string"},
+                "text": {"type": "string", "maxLength": 100000},
             },
             "additionalProperties": False,
         },
@@ -126,6 +139,53 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "propose_metadata",
+        "description": (
+            "Propose one evidence-grounded, human-reviewable metadata draft. "
+            "This tool never saves or publishes metadata."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": [
+                "description",
+                "keywords",
+                "categories",
+                "audience",
+                "rationale",
+                "confidence",
+                "sourceRefs",
+            ],
+            "properties": {
+                "description": {"type": "string", "minLength": 40, "maxLength": 4000},
+                "keywords": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 30,
+                    "uniqueItems": True,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 100},
+                },
+                "categories": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "uniqueItems": True,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 180},
+                },
+                "audience": {"type": "string", "minLength": 1, "maxLength": 500},
+                "rationale": {"type": "string", "minLength": 1, "maxLength": 2000},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "sourceRefs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 30,
+                    "uniqueItems": True,
+                    "items": METADATA_SOURCE_REF_SCHEMA,
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "get_asset",
         "description": "Read approved asset metadata.",
         "input_schema": {
@@ -149,7 +209,7 @@ def validate_tool_input(name: str, payload: dict) -> dict:
     if schema is None:
         raise ToolValidationError(f"unknown tool {name!r}")
     try:
-        jsonschema.validate(payload, schema)
+        jsonschema.validate(payload, schema, format_checker=jsonschema.FormatChecker())
     except jsonschema.ValidationError as e:
         raise ToolValidationError(f"{name}: {e.message}") from e
     return payload
@@ -227,7 +287,7 @@ class InMemoryExecutor(ToolExecutor):
         return self.chapters[chapter_id]
 
     def search_book(self, query: str, top_k: int, chapter_ids: list[str] | None) -> list[dict]:
-        return self.search_results[:top_k]
+        return [item for item in self.search_results if chapter_ids is None or item.get("chapter_id") in chapter_ids][:top_k]
 
     def get_book_bible(self, types: list[str] | None, query: str | None) -> list[dict]:
         if not types:

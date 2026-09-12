@@ -2,6 +2,7 @@ import type { SupabaseClient } from "./supabase.js";
 import { AppError } from "../errors.js";
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
+export const canEditWorkspace = (role: string) => EDIT_ROLES.has(role);
 
 async function roleIn(supabase: SupabaseClient, workspaceId: string, userId: string) {
   const { data } = await supabase

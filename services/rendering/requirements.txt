@@ -2,3 +2,5 @@ fastapi>=0.111
 uvicorn[standard]>=0.30
 pydantic>=2.7
 reportlab>=4.2,<5
+Pillow>=11,<13
+qrcode[pil]>=8,<9

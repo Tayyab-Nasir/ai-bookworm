@@ -6,7 +6,7 @@ values
     'monthly',
     0,
     'USD',
-    '{"seats":1,"workspaces":1,"books":3,"ai_credits_monthly":100,"image_credits_monthly":5,"storage_gb":1,"rendering":true,"publishing_channels":["export"]}'::jsonb
+    '{"seats":1,"workspaces":1,"books":3,"ai_credits_monthly":0,"image_credits_monthly":0,"storage_gb":1,"rendering":true,"publishing_channels":["export"]}'::jsonb
   ),
   (
     'pro',

@@ -2,22 +2,31 @@
 builtin fonts only (no system font files), fixed flowable ordering. Same input -> same sha256.
 """
 import hashlib
+from html import escape
 from io import BytesIO
 
+from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
+from reportlab.lib import colors
 from reportlab.lib.pagesizes import inch
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import (
     BaseDocTemplate,
     Frame,
+    Image as FlowableImage,
+    KeepTogether,
+    ListFlowable,
+    ListItem,
+    LongTable,
     PageBreak,
     PageTemplate,
     Paragraph,
     Spacer,
 )
 
-from editions import PrintEdition
+from editions import PrintEdition, print_requires_unsupported_rtl_typography
+from manuscript import block_tree, image_width, inline_markup, table_rows
 
-RENDERER_VERSION = "pdf-1.0.0"
+RENDERER_VERSION = "pdf-1.4.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -36,7 +45,7 @@ class _DeterministicCanvasMaker:
         return _Canvas(*args, **kwargs)
 
 
-def _on_page(numbering, canvas, doc):
+def _on_page(numbering, margins, bleed_in, canvas, doc):
     if numbering.style == "none":
         return
     n = doc.page - 1 + numbering.start_at
@@ -47,7 +56,7 @@ def _on_page(numbering, canvas, doc):
     w, h = doc.pagesize
     y = 0.45 * inch if numbering.position.startswith("bottom") else h - 0.45 * inch
     if numbering.position == "bottom-outer":
-        x = doc.pagesize[0] - doc.rightMargin - 0.25 * inch if doc.page % 2 else doc.leftMargin + 0.25 * inch
+        x = w - (bleed_in + margins.outer / 2) * inch if doc.page % 2 else (bleed_in + margins.outer / 2) * inch
     else:
         x = w / 2
     canvas.drawCentredString(x, y, str(n))
@@ -65,8 +74,11 @@ def _roman(n: int) -> str:
     return out or "i"
 
 
-def render_pdf(book: dict, edition: PrintEdition) -> tuple[bytes, str]:
+def render_pdf(book: dict, edition: PrintEdition,
+               image_bytes: dict[str, bytes] | None = None) -> tuple[bytes, str]:
     """Render print edition to PDF. Returns (pdf_bytes, sha256_hex)."""
+    if print_requires_unsupported_rtl_typography(edition, book.get("metadata") or {}):
+        raise ValueError("RTL print PDF requires an embedded shaping-capable font; the base-font renderer cannot produce it safely")
     tw, th = edition.trim_in
     m = edition.margins
     typo = edition.typography
@@ -76,36 +88,63 @@ def render_pdf(book: dict, edition: PrintEdition) -> tuple[bytes, str]:
     doc = BaseDocTemplate(
         buf,
         pagesize=pagesize,
-        leftMargin=m.outer * inch,
-        rightMargin=m.inner * inch,
-        topMargin=m.top * inch,
-        bottomMargin=m.bottom * inch,
+        leftMargin=(m.inner + edition.bleed_in) * inch,
+        rightMargin=(m.outer + edition.bleed_in) * inch,
+        topMargin=(m.top + edition.bleed_in) * inch,
+        bottomMargin=(m.bottom + edition.bleed_in) * inch,
         title=book["metadata"].get("title", ""),
         author=book["metadata"].get("author", ""),
         creator=f"bookworm-renderer {RENDERER_VERSION}",
     )
-    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="body")
+    page_w, page_h = pagesize
+    frame_w = page_w - (m.inner + m.outer + 2 * edition.bleed_in) * inch
+    frame_h = page_h - (m.top + m.bottom + 2 * edition.bleed_in) * inch
+    odd_frame = Frame((m.inner + edition.bleed_in) * inch, (m.bottom + edition.bleed_in) * inch,
+                      frame_w, frame_h, id="odd-body", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
+    even_frame = Frame((m.outer + edition.bleed_in) * inch, (m.bottom + edition.bleed_in) * inch,
+                       frame_w, frame_h, id="even-body", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     numbering = edition.page_numbering
-    doc.addPageTemplates([PageTemplate(id="main", frames=[frame],
-                                       onPage=lambda c, d: _on_page(numbering, c, d))])
+    on_page = lambda c, d: _on_page(numbering, m, edition.bleed_in, c, d)
+    doc.addPageTemplates([
+        PageTemplate(id="odd", frames=[odd_frame], onPage=on_page, autoNextPageTemplate="even"),
+        PageTemplate(id="even", frames=[even_frame], onPage=on_page, autoNextPageTemplate="odd"),
+    ])
 
     body = ParagraphStyle("body", fontName=typo.body_font, fontSize=typo.body_size_pt,
-                          leading=typo.leading)
+                          leading=typo.leading, spaceAfter=typo.paragraph_spacing_pt,
+                          firstLineIndent=typo.first_line_indent_in * inch,
+                          alignment=TA_JUSTIFY if typo.text_align == "justify" else TA_LEFT)
     heading = ParagraphStyle("heading", fontName=typo.heading_font,
                              fontSize=typo.heading_size_pt, leading=typo.heading_size_pt * 1.2,
                              spaceAfter=typo.leading)
-    caption = ParagraphStyle("caption", parent=body, fontSize=typo.body_size_pt - 1)
+    caption = ParagraphStyle("caption", parent=body, fontSize=typo.body_size_pt - 1, firstLineIndent=0)
+    quote = ParagraphStyle("quote", parent=body, leftIndent=18, rightIndent=18, firstLineIndent=0)
+    list_body = ParagraphStyle("list-body", parent=body, firstLineIndent=0)
 
-    story: list = [Paragraph(book["metadata"].get("title", ""), heading), Spacer(1, typo.leading)]
+    def render_list(group):
+        return ListFlowable([
+            ListItem([Paragraph(inline_markup(item["node"], pdf=True), list_body),
+                      *(render_list(child) for child in item["children"])])
+            for item in group["items"]
+        ], bulletType="1" if group["style"] == "ordered" else "bullet", start=1 if group["style"] == "ordered" else "bullet", leftIndent=18,
+           bulletFontName=typo.body_font, bulletFontSize=typo.body_size_pt)
+
+    story: list = [Paragraph(escape(book["metadata"].get("title", "")), heading), Spacer(1, typo.leading)]
     for ch in sorted(book["chapters"], key=lambda c: c["order"]):
         story.append(PageBreak())
-        story.append(Paragraph(ch.get("title", ""), heading))
-        for n in ch.get("nodes", []):
-            text = (n.get("text") or "").replace("&", "&amp;").replace("<", "&lt;")
+        story.append(Paragraph(escape(ch.get("title", "")), heading))
+        for block in block_tree(ch.get("nodes", [])):
+            if "node" not in block:
+                story.append(render_list(block))
+                continue
+            n = block["node"]
+            text = inline_markup(n, pdf=True)
             t = n.get("type")
             if t == "heading":
                 story.append(Paragraph(text, heading))
-            elif t in ("paragraph", "quote", "footnote", "listItem"):
+            elif t == "quote":
+                story.append(Paragraph(text, quote))
+            elif t in ("paragraph", "footnote"):
                 story.append(Paragraph(text, body))
             elif t == "caption":
                 story.append(Paragraph(text, caption))
@@ -113,7 +152,31 @@ def render_pdf(book: dict, edition: PrintEdition) -> tuple[bytes, str]:
                 story.append(PageBreak())
             elif t == "separator":
                 story.append(Spacer(1, typo.leading))
-            # images/tables deferred: print image pipeline needs asset bytes (P1)
+            elif t == "table":
+                rows = table_rows(n)
+                if rows:
+                    columns = max(len(row) for row in rows)
+                    if columns:
+                        cells = [[Paragraph(escape(str(value)).replace("\n", "<br/>"), list_body)
+                                  for value in [*row, *([""] * (columns - len(row)))]] for row in rows]
+                        story.append(LongTable(cells, colWidths=[frame_w / columns] * columns,
+                            splitByRow=1, splitInRow=1, hAlign="LEFT", spaceAfter=typo.leading,
+                            style=[("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#777777")),
+                                   ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                   ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                                   ("RIGHTPADDING", (0, 0), (-1, -1), 5)]))
+                elif text:
+                    story.append(Paragraph(text, body))
+            elif t == "image" and n.get("assetId") in (image_bytes or {}):
+                illustration = FlowableImage(BytesIO((image_bytes or {})[n["assetId"]]))
+                scale = min(frame_w * image_width(n) / 100 / illustration.imageWidth, frame_h * 0.65 / illustration.imageHeight)
+                illustration.drawWidth = illustration.imageWidth * scale
+                illustration.drawHeight = illustration.imageHeight * scale
+                illustration.hAlign = "CENTER"
+                if n.get("caption"):
+                    story.append(KeepTogether([illustration, Paragraph(escape(n["caption"]), caption)]))
+                else:
+                    story.append(illustration)
 
     doc.build(story, canvasmaker=_DeterministicCanvasMaker.make)
     blob = buf.getvalue()

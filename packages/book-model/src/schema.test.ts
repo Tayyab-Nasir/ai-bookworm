@@ -1,9 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BookModelSchema } from "./schema.js";
+import { BookModelSchema, BookNodeSchema } from "./schema.js";
 import { DocumentOperationSchema } from "./operations.js";
 import { validateBookModel } from "./validate.js";
 import { sampleBook, CH1, ASSET1 } from "./fixture.js";
+
+test("table grids accept bounded text cells and reject arbitrary objects", () => {
+  assert.deepEqual(BookNodeSchema.parse({ id: "table", type: "table", rows: [["A", "B"]] }).rows, [["A", "B"]]);
+  for (const rows of [[{}], [[{ html: "unsafe" }]], [Array(101).fill("")]]) {
+    assert.equal(BookNodeSchema.safeParse({ id: "table", type: "table", rows }).success, false);
+  }
+});
 
 test("schema validates a sample 2-chapter book", () => {
   const parsed = BookModelSchema.parse(sampleBook());

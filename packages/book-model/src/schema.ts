@@ -13,6 +13,9 @@ export const BookNodeSchema = z
     level: z.number().int().min(1).max(6).optional(),
     attributes: z.record(z.unknown()).optional(),
     assetId: z.string().nullable().optional(),
+    altText: z.string().max(1000).optional(),
+    caption: z.string().max(2000).optional(),
+    rows: z.array(z.array(z.string().max(100000)).max(100)).max(2000).optional(),
   })
   .passthrough();
 export type BookNode = z.infer<typeof BookNodeSchema>;

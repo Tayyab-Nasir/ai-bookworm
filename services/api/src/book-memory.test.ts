@@ -1,0 +1,206 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import Fastify from "fastify";
+import { makeAuthPlugin } from "./plugins/auth.js";
+import { errorHandlerPlugin } from "./plugins/error-handler.js";
+import { bookMemoryRoutes } from "./routes/book-memory.js";
+
+const BOOK = "11111111-1111-4111-8111-111111111111";
+const OTHER_BOOK = "22222222-2222-4222-8222-222222222222";
+const WORKSPACE = "33333333-3333-4333-8333-333333333333";
+const CHAPTER = "44444444-4444-4444-8444-444444444444";
+const IMAGE = "55555555-5555-4555-8555-555555555555";
+const VERSION = "66666666-6666-4666-8666-666666666666";
+const USER = "77777777-7777-4777-8777-777777777777";
+const TIME = "2026-08-31T08:00:00.000Z";
+const auth = { authorization: "Bearer good" };
+type Row = Record<string, unknown>;
+type Store = Record<string, Row[]>;
+
+// Stateful query fake checks route filters and mutations, but intentionally
+// does not simulate RLS. Database policy tests are a separate acceptance gate.
+function fakeSupabase(store: Store, failTable?: string) {
+  return {
+    auth: { getUser: async (token: string) => ({ data: { user: token === "good" ? { id: USER } : null }, error: null }) },
+    from(table: string) {
+      const rows = store[table] ??= [];
+      const filters: ((row: Row) => boolean)[] = [];
+      let operation = "read";
+      let payload: Row = {};
+      let ascending = true;
+      let orderColumn: string | null = null;
+      let result: { data: Row[] | null; error: unknown } | undefined;
+      const run = () => {
+        if (result) return result;
+        if (table === failTable) return result = { data: null, error: { message: "deliberate database failure" } };
+        let found = rows.filter((row) => filters.every((filter) => filter(row)));
+        if (operation === "insert") {
+          if (table === "book_metadata" && rows.some((row) => row.book_id === payload.book_id)) return result = { data: null, error: { code: "23505" } };
+          const row = { id: randomUUID(), created_at: TIME, updated_at: TIME, ...payload };
+          rows.push(row); found = [row];
+        }
+        if (operation === "update") found.forEach((row) => Object.assign(row, payload));
+        if (operation === "delete") found.forEach((row) => rows.splice(rows.indexOf(row), 1));
+        if (orderColumn) found.sort((a, b) => String(a[orderColumn!]).localeCompare(String(b[orderColumn!])) * (ascending ? 1 : -1));
+        return result = { data: found.map((row) => ({ ...row })), error: null };
+      };
+      const builder = {
+        select() { return this; },
+        eq(column: string, value: unknown) { filters.push((row) => row[column] === value); return this; },
+        is(column: string, value: unknown) { filters.push((row) => row[column] === value); return this; },
+        in(column: string, values: unknown[]) { filters.push((row) => values.includes(row[column])); return this; },
+        order(column: string, options?: { ascending: boolean }) { orderColumn = column; ascending = options?.ascending ?? true; return this; },
+        insert(value: Row) { operation = "insert"; payload = value; return this; },
+        update(value: Row) { operation = "update"; payload = value; return this; },
+        delete() { operation = "delete"; return this; },
+        async maybeSingle() { const value = run(); return { ...value, data: value.data?.[0] ?? null }; },
+        async single() { return this.maybeSingle(); },
+        then(resolve: (value: unknown) => unknown) { return Promise.resolve(run()).then(resolve); },
+      };
+      return builder;
+    },
+  } as never;
+}
+
+function initialStore(role = "editor"): Store {
+  return {
+    books: [{ id: BOOK, workspace_id: WORKSPACE, title: "The Long Way Home", author_name: "Ada", updated_at: TIME }],
+    workspace_members: [{ user_id: USER, workspace_id: WORKSPACE, role, status: "active" }],
+    chapters: [{ id: CHAPTER, book_id: BOOK, title: "Arrival", current_document_version_id: VERSION }],
+    document_versions: [{ id: VERSION, chapter_id: CHAPTER }],
+    assets: [{ id: IMAGE, workspace_id: WORKSPACE, name: "Elara.png", mime_type: "image/png", checksum: "abc", deleted_at: null }],
+  };
+}
+
+async function appWith(store: Store, failTable?: string) {
+  const app = Fastify();
+  await app.register(errorHandlerPlugin);
+  await app.register(makeAuthPlugin(() => fakeSupabase(store, failTable)));
+  await app.register(async (v1) => bookMemoryRoutes(v1), { prefix: "/v1" });
+  return app;
+}
+
+const entry = { type: "character", name: "Elara", description: "A mapmaker", attributes: { appearance: "Silver hair" }, imageAssetIds: [IMAGE], sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, note: "Opening scene" }] };
+
+test("book memory requires authentication and active workspace membership", async (t) => {
+  const store = initialStore(); store.workspace_members[0].status = "suspended";
+  const app = await appWith(store); t.after(() => app.close());
+  assert.equal((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory` })).statusCode, 401);
+  assert.equal((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth })).statusCode, 403);
+  assert.equal((await app.inject({ method: "GET", url: `/v1/books/${OTHER_BOOK}/memory`, headers: auth })).statusCode, 404);
+});
+
+test("created memory persists across requests and a fresh app instance", async (t) => {
+  const store = initialStore();
+  const app = await appWith(store); t.after(() => app.close());
+  const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
+  assert.equal(created.statusCode, 201, created.body);
+  const item = created.json().item;
+  assert.equal(item.book_id, BOOK);
+  assert.deepEqual(item.attributes_json, { appearance: "Silver hair", imageAssetIds: [IMAGE] });
+  assert.deepEqual(item.source_refs_json, entry.sourceRefs);
+  const reopened = await appWith(store); t.after(() => reopened.close());
+  const loaded = await reopened.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth });
+  assert.equal(loaded.statusCode, 200, loaded.body);
+  assert.equal(loaded.json().items[0].id, item.id);
+  assert.equal(loaded.json().canEdit, true);
+});
+
+test("existing AI candidate types, nested attributes and node references round-trip", async (t) => {
+  const app = await appWith(initialStore()); t.after(() => app.close());
+  const payload = { ...entry, type: "place", attributes: { palette: ["blue", "silver"], climate: { season: "winter" } }, sourceRefs: [{ chapterId: CHAPTER, nodeId: "n1", textHash: "source-hash" }] };
+  const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload });
+  assert.equal(created.statusCode, 201, created.body);
+  assert.deepEqual(created.json().item.source_refs_json, payload.sourceRefs);
+  assert.deepEqual(created.json().item.attributes_json.palette, ["blue", "silver"]);
+});
+
+test("viewer can read saved memory but cannot create, replace, delete or edit metadata", async (t) => {
+  const store = initialStore("viewer"); const app = await appWith(store); t.after(() => app.close());
+  assert.equal((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth })).json().canEdit, false);
+  const calls = [
+    { method: "POST" as const, url: `/v1/books/${BOOK}/bible`, payload: entry },
+    { method: "PUT" as const, url: `/v1/books/${BOOK}/bible/${IMAGE}`, payload: { ...entry, expectedUpdatedAt: TIME } },
+    { method: "DELETE" as const, url: `/v1/books/${BOOK}/bible/${IMAGE}`, payload: { expectedUpdatedAt: TIME } },
+    { method: "PUT" as const, url: `/v1/books/${BOOK}/metadata`, payload: { expectedUpdatedAt: null, description: "New description" } },
+  ];
+  for (const call of calls) assert.equal((await app.inject({ ...call, headers: auth })).statusCode, 403);
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+  assert.equal(store.book_metadata?.length ?? 0, 0);
+});
+
+test("Bible rejects cross-workspace, incomplete and non-image references", async (t) => {
+  for (const patch of [{ workspace_id: "foreign" }, { checksum: "pending" }, { mime_type: "application/pdf" }, { deleted_at: TIME }]) {
+    const store = initialStore(); Object.assign(store.assets[0], patch);
+    const app = await appWith(store); t.after(() => app.close());
+    const res = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
+    assert.equal(res.statusCode, 422, res.body);
+    assert.equal(store.book_bible_items?.length ?? 0, 0);
+  }
+});
+
+test("Bible rejects foreign chapter and mismatched document-version citations", async (t) => {
+  for (const table of ["chapters", "document_versions"]) {
+    const store = initialStore();
+    Object.assign(store[table][0], table === "chapters" ? { book_id: OTHER_BOOK } : { chapter_id: OTHER_BOOK });
+    const app = await appWith(store); t.after(() => app.close());
+    const res = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
+    assert.equal(res.statusCode, 422, res.body);
+  }
+});
+
+test("Bible update and delete scope by book and prevent stale overwrites", async (t) => {
+  const store = initialStore(); const app = await appWith(store); t.after(() => app.close());
+  const create = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
+  const item = create.json().item;
+  const url = `/v1/books/${BOOK}/bible/${item.id}`;
+  const update = await app.inject({ method: "PUT", url, headers: auth, payload: { ...entry, name: "Elara Vale", expectedUpdatedAt: item.updated_at } });
+  assert.equal(update.statusCode, 200, update.body);
+  assert.equal(update.json().item.name, "Elara Vale");
+  assert.notEqual(update.json().item.updated_at, item.updated_at);
+  assert.equal((await app.inject({ method: "PUT", url, headers: auth, payload: { ...entry, name: "Stale", expectedUpdatedAt: item.updated_at } })).statusCode, 409);
+  assert.equal((await app.inject({ method: "DELETE", url, headers: auth, payload: { expectedUpdatedAt: item.updated_at } })).statusCode, 409);
+  store.books.push({ id: OTHER_BOOK, workspace_id: WORKSPACE });
+  assert.equal((await app.inject({ method: "DELETE", url: `/v1/books/${OTHER_BOOK}/bible/${item.id}`, headers: auth, payload: { expectedUpdatedAt: update.json().item.updated_at } })).statusCode, 409);
+  assert.equal((await app.inject({ method: "DELETE", url, headers: auth, payload: { expectedUpdatedAt: update.json().item.updated_at } })).statusCode, 200);
+  assert.equal(store.book_bible_items.length, 0);
+  assert.equal(store.assets.length, 1);
+  assert.equal(store.chapters.length, 1);
+});
+
+test("metadata insert and update preserve contributors and reject stale writes", async (t) => {
+  const store = initialStore(); const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/metadata`;
+  const payload = { expectedUpdatedAt: null, description: "A journey home.", keywords: ["fiction", "fiction"], categories: ["Fiction / Fantasy"], isbn13: "9780306406157", edition: "First", publicationDate: "2026-09-01" };
+  const saved = await app.inject({ method: "PUT", url, headers: auth, payload });
+  assert.equal(saved.statusCode, 200, saved.body);
+  assert.deepEqual(saved.json().metadata.keywords, ["fiction"]);
+  assert.equal((await app.inject({ method: "PUT", url, headers: auth, payload })).statusCode, 409);
+  store.book_metadata[0].contributors = [{ name: "Beth", role: "illustrator" }];
+  const updated = await app.inject({ method: "PUT", url, headers: auth, payload: { ...payload, expectedUpdatedAt: saved.json().metadata.updated_at, description: "New description." } });
+  assert.equal(updated.statusCode, 200, updated.body);
+  assert.deepEqual(updated.json().metadata.contributors, [{ name: "Beth", role: "illustrator" }]);
+  assert.equal((await app.inject({ method: "PUT", url, headers: auth, payload: { ...payload, expectedUpdatedAt: saved.json().metadata.updated_at } })).statusCode, 409);
+  const loaded = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth });
+  assert.equal(loaded.json().metadata.description, "New description.");
+});
+
+test("invalid input and unknown fields never mutate records", async (t) => {
+  const store = initialStore(); const app = await appWith(store); t.after(() => app.close());
+  const invalidEntries = [{ ...entry, name: "   " }, { ...entry, book_id: OTHER_BOOK }, { ...entry, attributes: { imageAssetIds: [OTHER_BOOK] } }, { ...entry, sourceRefs: [{ chapterId: "invalid" }] }];
+  for (const payload of invalidEntries) assert.equal((await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload })).statusCode, 422);
+  for (const payload of [{ expectedUpdatedAt: null, publicationDate: "2026-02-30" }, { expectedUpdatedAt: null, isbn13: "9780306406158" }, { description: "No concurrency token" }, { expectedUpdatedAt: null, title: "wrong table" }]) {
+    assert.equal((await app.inject({ method: "PUT", url: `/v1/books/${BOOK}/metadata`, headers: auth, payload })).statusCode, 422);
+  }
+  assert.equal(store.book_metadata?.length ?? 0, 0);
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
+
+test("database failures return errors without claiming saved data", async (t) => {
+  const store = initialStore(); const app = await appWith(store, "book_bible_items"); t.after(() => app.close());
+  assert.equal((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth })).statusCode, 500);
+  const res = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
+  assert.equal(res.statusCode, 500);
+  assert.equal(res.body.includes("deliberate database failure"), false);
+});
