@@ -9,9 +9,13 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-atomic-community.md`.
+- Latest live/Git checkpoint:
+  `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
   `Claude Sessions/2026-08/2026-08-31-ai-bookworm-project-final-handoff.md`.
 - Shared board: `Hermes Context/active-tasks.md`.
+- Repository navigation and deployment boundaries: `docs/PROJECT_MAP.md` and
+  `docs/VERCEL_DEPLOYMENT.md`.
 - Read vault `AGENTS.md` and `CLAUDE.md` before writing. Do not edit other
   agents' private memory or the generated startup briefing.
 - Read git status before edits. Preserve shared uncommitted work. Saved
