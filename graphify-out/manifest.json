@@ -312,16 +312,16 @@
     "semantic_hash": "2928a5ff75138d24209979be0227dbd3"
   },
   "apps/web/components/AuthorDashboard.tsx": {
-    "mtime": 1789192380.947364,
-    "seen": 1789192438.84208,
-    "ast_hash": "5983982b1ebae6915f11ec079114cc8c",
+    "mtime": 1789194737.4669821,
+    "seen": 1789194922.5962472,
+    "ast_hash": "5b6c3594d81457232fdca76aeeded600",
     "semantic_hash": ""
   },
   "apps/web/components/AuthorShell.tsx": {
-    "mtime": 1788776741.99983,
-    "seen": 1789189271.7201564,
-    "ast_hash": "1961d6884703bd8bfb91311024f61240",
-    "semantic_hash": "1961d6884703bd8bfb91311024f61240"
+    "mtime": 1789193069.122824,
+    "seen": 1789194122.7857485,
+    "ast_hash": "7b943d4c2a2e967b8e04d746bfc3b447",
+    "semantic_hash": ""
   },
   "apps/web/components/BillingCenter.tsx": {
     "mtime": 1789191629.0736668,
@@ -486,8 +486,8 @@
     "semantic_hash": "71423ac5400bdbc2235a9858f072440c"
   },
   "apps/web/next-env.d.ts": {
-    "mtime": 1789192077.0693855,
-    "seen": 1789192319.1308568,
+    "mtime": 1789194891.211502,
+    "seen": 1789194922.5962472,
     "ast_hash": "a95187a97b7d355b0898b514d12c9d69",
     "semantic_hash": ""
   },
@@ -582,8 +582,8 @@
     "semantic_hash": "371f413d0233f8d4492a7be1ce5870af"
   },
   "apps/web/tsconfig.json": {
-    "mtime": 1789192077.0693855,
-    "seen": 1789192319.1308568,
+    "mtime": 1789194891.211502,
+    "seen": 1789194922.5962472,
     "ast_hash": "6a10bc0029acbd9c242eea9adaa74680",
     "semantic_hash": "6a10bc0029acbd9c242eea9adaa74680"
   },
@@ -606,9 +606,9 @@
     "semantic_hash": "8843cb12ab93bfc002e8ab819671a3e7"
   },
   "packages/api-client/src/index.ts": {
-    "mtime": 1789192380.947364,
-    "seen": 1789192438.84208,
-    "ast_hash": "28512edebc393940b3a53d2d8d278b27",
+    "mtime": 1789194440.0196545,
+    "seen": 1789194922.5962472,
+    "ast_hash": "c7f493e4ef8171dd43bdd93eb3223909",
     "semantic_hash": ""
   },
   "packages/api-client/tsconfig.json": {
@@ -936,9 +936,9 @@
     "semantic_hash": "6b73d12a49e8ea7ccb498b9c18b9eb52"
   },
   "services/api/src/app.ts": {
-    "mtime": 1789191709.639876,
-    "seen": 1789192319.1308568,
-    "ast_hash": "eb18a7b6a5ee2669dd96dbc5593fa4cb",
+    "mtime": 1789192891.7550178,
+    "seen": 1789194122.7857485,
+    "ast_hash": "c57585ed6c67154063eddd890101717e",
     "semantic_hash": ""
   },
   "services/api/src/assets-media.test.ts": {
@@ -2262,9 +2262,9 @@
     "semantic_hash": ""
   },
   "AI_BOOKWORM_BUILD_PLAN.md": {
-    "mtime": 1789191922.6928985,
-    "seen": 1789192319.1308568,
-    "ast_hash": "38b55d8bfc3b860f3c56442000799874",
+    "mtime": 1789193896.684704,
+    "seen": 1789194122.7867563,
+    "ast_hash": "041c985c8d008daa69280a6673434e26",
     "semantic_hash": ""
   },
   "CLAUDE.md": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789192453.025236,
-    "seen": 1789192480.1091366,
-    "ast_hash": "44fdf8a6b8d4b8824bf2bdd26468be8a",
+    "mtime": 1789194797.9830825,
+    "seen": 1789194922.5972476,
+    "ast_hash": "1b3ee0d532f1e33b3a6b94f3d8abc428",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2370,9 +2370,9 @@
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
-    "mtime": 1789192137.2628565,
-    "seen": 1789192319.1308568,
-    "ast_hash": "41a5a7d6c587c0108a11ec25ae9e6dbd",
+    "mtime": 1789194797.9830825,
+    "seen": 1789194922.5972476,
+    "ast_hash": "83f695afd6fbde38ea47a9587e5494a0",
     "semantic_hash": ""
   },
   "services/ai/prompts/book_bible_v1.md": {
@@ -2418,9 +2418,9 @@
     "semantic_hash": ""
   },
   "services/api/openapi.yaml": {
-    "mtime": 1789191922.6928985,
-    "seen": 1789192319.1308568,
-    "ast_hash": "2214e2f93923c87ae3b51ffc1fe32dd6",
+    "mtime": 1789194666.0643876,
+    "seen": 1789194922.5972476,
+    "ast_hash": "a45588494c7db70f90d8e18cb008378e",
     "semantic_hash": ""
   },
   "services/document/requirements.txt": {
@@ -2550,21 +2550,69 @@
     "semantic_hash": ""
   },
   "apps/web/tests/dashboard.test.ts": {
-    "mtime": 1789191877.71895,
-    "seen": 1789192319.1308568,
-    "ast_hash": "9b873fcdf0df1760c0b3c2e8d09d4ae9",
+    "mtime": 1789194747.400278,
+    "seen": 1789194922.5962472,
+    "ast_hash": "71bbda7067036c8b253ac32d67cc31a3",
     "semantic_hash": ""
   },
   "services/api/src/dashboard.test.ts": {
-    "mtime": 1789192380.947364,
-    "seen": 1789192438.84208,
-    "ast_hash": "db5935a0195c2552aa029c9e2b6def52",
+    "mtime": 1789194524.963985,
+    "seen": 1789194922.5962472,
+    "ast_hash": "0002dfa1a80ff2cbfece6e99e67674a0",
     "semantic_hash": ""
   },
   "services/api/src/routes/dashboard.ts": {
-    "mtime": 1789192380.931346,
-    "seen": 1789192438.84208,
-    "ast_hash": "34a4cac97f49239821e56db949575645",
+    "mtime": 1789192891.7570214,
+    "seen": 1789194122.7867563,
+    "ast_hash": "aaf9b8661337487b4f081a40321eb731",
+    "semantic_hash": ""
+  },
+  "apps/web/app/analytics/page.tsx": {
+    "mtime": 1789194462.839801,
+    "seen": 1789194922.5962472,
+    "ast_hash": "8d1b381889076b0b13024d3bd8a0d1d6",
+    "semantic_hash": ""
+  },
+  "apps/web/lib/sales-csv.ts": {
+    "mtime": 1789194547.3062236,
+    "seen": 1789194922.5962472,
+    "ast_hash": "be95cd1ef596941ec4afe9789dc7d2bc",
+    "semantic_hash": ""
+  },
+  "apps/web/tests/sales-client.test.ts": {
+    "mtime": 1789193318.6266956,
+    "seen": 1789194122.7857485,
+    "ast_hash": "90747631f996dcd14497c945aac40a1d",
+    "semantic_hash": ""
+  },
+  "apps/web/tests/sales-csv.test.ts": {
+    "mtime": 1789194552.8324306,
+    "seen": 1789194922.5962472,
+    "ast_hash": "cbc04bf3c0ff6dbd733b804882d9e9ec",
+    "semantic_hash": ""
+  },
+  "services/api/src/routes/sales.ts": {
+    "mtime": 1789194435.2645066,
+    "seen": 1789194922.5962472,
+    "ast_hash": "1de5caf0115a87449251f9701444efb0",
+    "semantic_hash": ""
+  },
+  "services/api/src/sales.test.ts": {
+    "mtime": 1789194505.1627924,
+    "seen": 1789194922.5962472,
+    "ast_hash": "c82dac575d91c824397a63897dbde841",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260912190000_retailer_sales_imports.sql": {
+    "mtime": 1789194415.6858132,
+    "seen": 1789194922.5962472,
+    "ast_hash": "6c3287f2eb61ae3f7250f3c417d85f84",
+    "semantic_hash": ""
+  },
+  "tests/security/retailer-sales-imports.test.sql": {
+    "mtime": 1789194712.4408972,
+    "seen": 1789194922.5972476,
+    "ast_hash": "1e8c3d6031ef7cb5849ff96517291999",
     "semantic_hash": ""
   }
 }
