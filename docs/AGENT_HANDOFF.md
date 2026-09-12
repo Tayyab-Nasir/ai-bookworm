@@ -58,8 +58,8 @@ client and stores its ID/secret in Supabase. Exact setup is in
 not create credentials.
 
 The full shared tree is committed and pushed to
-`codex/live-platform-checkpoint-20260912` through commercial-safety checkpoint
-`01686c1`; the audiobook checkpoint is the next commit. The local remote no
+`codex/live-platform-checkpoint-20260912`; durable audiobook implementation is
+saved at `e14c556`. The local remote no
 longer embeds a credential. Full `npm run verify` passes: 176 API, 55 web, 45
 migrations/31 SQL suites, 156 services, 8 E2E, 30 security, load smoke and mock
 evals; the isolated production web build passes with 27 routes. This is a
