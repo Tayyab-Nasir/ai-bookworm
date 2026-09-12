@@ -17,7 +17,7 @@ retailer-package services.
 - Deployment protection is enabled. Unauthenticated requests are redirected to
   Vercel SSO; this has intentionally not been changed.
 
-The current deployment predates the verified `a61ab23` Git checkpoint. Treat
+The current deployment predates the verified `2b0710d` Git checkpoint. Treat
 it as an older protected preview of the web experience, not proof that the
 current complete workflow is publicly deployed.
 

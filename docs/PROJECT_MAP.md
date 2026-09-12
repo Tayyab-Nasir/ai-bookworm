@@ -56,7 +56,8 @@ docs/                      Product, operations, release, hosting and agent hando
 
 - Remote: `https://github.com/Tayyab-Nasir/ai-bookworm.git`
 - Shared checkpoint branch: `codex/live-platform-checkpoint-20260912`
-- Verified branch tip: `a61ab23`
+- Last verified source checkpoint before this map: `2b0710d` (always compare
+  with `git ls-remote` before continuing).
 - Last source feature checkpoint: `e14c556` — durable audiobook narration.
 
 Use normal Git collaboration: inspect `git status`, branch from the intended
