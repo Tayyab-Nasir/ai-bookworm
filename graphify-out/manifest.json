@@ -942,10 +942,10 @@
     "semantic_hash": ""
   },
   "services/api/src/assets-media.test.ts": {
-    "mtime": 1789184855.3069243,
-    "seen": 1789189271.7201564,
-    "ast_hash": "a791c18028729dae010ffb76e055ce88",
-    "semantic_hash": "a791c18028729dae010ffb76e055ce88"
+    "mtime": 1789704903.0074546,
+    "seen": 1789704962.69409,
+    "ast_hash": "8d0ab1553e77a07694822707b0fb7d78",
+    "semantic_hash": ""
   },
   "services/api/src/audiobook-worker.test.ts": {
     "mtime": 1789187902.0340545,
@@ -984,10 +984,10 @@
     "semantic_hash": "9d2b88f468adfb68964a394cd6832fcf"
   },
   "services/api/src/image-book-context.test.ts": {
-    "mtime": 1789178740.813751,
-    "seen": 1789189271.7201564,
-    "ast_hash": "3c2f996866fb2a17f7779be4040dc42a",
-    "semantic_hash": "3c2f996866fb2a17f7779be4040dc42a"
+    "mtime": 1789704903.0094576,
+    "seen": 1789704962.69409,
+    "ast_hash": "98c3fc1f139ae2b6fc9e2e1fe437f089",
+    "semantic_hash": ""
   },
   "services/api/src/image-provider.test.ts": {
     "mtime": 1789185700.7700794,
@@ -1062,10 +1062,10 @@
     "semantic_hash": ""
   },
   "services/api/src/lib/image-book-context.ts": {
-    "mtime": 1789178740.8093488,
-    "seen": 1789189271.7201564,
-    "ast_hash": "6177c3434d3e2e6118e04cb3f50a6538",
-    "semantic_hash": "6177c3434d3e2e6118e04cb3f50a6538"
+    "mtime": 1789704903.005456,
+    "seen": 1789704962.69409,
+    "ast_hash": "d77731465e244e13c1828188c819bae1",
+    "semantic_hash": ""
   },
   "services/api/src/lib/image-completion-error.ts": {
     "mtime": 1789181351.3106656,
@@ -1212,10 +1212,10 @@
     "semantic_hash": "5e4cbe13236483eb687ba40d8d2ab8ee"
   },
   "services/api/src/routes/assets.ts": {
-    "mtime": 1789181679.433745,
-    "seen": 1789189271.7201564,
-    "ast_hash": "2e543ad6b2205297fe587ffda647a777",
-    "semantic_hash": "2e543ad6b2205297fe587ffda647a777"
+    "mtime": 1789704903.0044134,
+    "seen": 1789704962.69409,
+    "ast_hash": "2b29061189061f3896ea2e54afa724ca",
+    "semantic_hash": ""
   },
   "services/api/src/routes/audiobooks.ts": {
     "mtime": 1789700038.0798936,
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789704698.3951023,
-    "seen": 1789704724.8964393,
-    "ast_hash": "a9dc316e4ea8434bdb909f5b90c1052a",
+    "mtime": 1789704954.615166,
+    "seen": 1789704962.698051,
+    "ast_hash": "4d7d78690e2214fbcc9bf7114050befc",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
