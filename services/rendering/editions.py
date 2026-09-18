@@ -97,9 +97,9 @@ class Margins(BaseModel):  # inches
 
 
 class Typography(BaseModel):
-    body_font: Literal["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"] = "Times-Roman"
+    body_font: Literal["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold"] = "Times-Roman"
     body_size_pt: float = Field(default=11.0, gt=0)
-    heading_font: Literal["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"] = "Helvetica-Bold"
+    heading_font: Literal["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold"] = "Helvetica-Bold"
     heading_size_pt: float = Field(default=16.0, gt=0)
     leading: float = Field(default=14.0, gt=0)
     paragraph_spacing_pt: float = Field(default=6.0, ge=0, le=36)

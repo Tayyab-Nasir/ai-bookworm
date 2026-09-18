@@ -5,8 +5,9 @@ channel-specific thresholds live in the channel rule modules.
 """
 from editions import language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
+from print_fonts import BASE_FONTS, EMBEDDED_FONTS, print_font_issues
 
-VERSION = "core-1.0.2"
+VERSION = "core-1.0.3"
 
 
 def _find(code, msg, loc=""):
@@ -122,10 +123,9 @@ def check_image_refs(ctx):
 # ---- fonts -------------------------------------------------------------------
 
 def check_fonts_embedded(ctx):
-    # v1 renderers use builtin/base fonts only; nothing to embed. Flag only if edition
-    # requests a non-builtin font (would need embedding + license check).
+    # Bundled Vera variants are embedded by the deterministic renderer.
     typo = ((ctx.get("edition") or {}).get("typography") or {})
-    builtin = {"Times-Roman", "Helvetica", "Helvetica-Bold", "Courier", "Times-Bold"}
+    builtin = BASE_FONTS | EMBEDDED_FONTS
     out = []
     for key in ("body_font", "heading_font"):
         f = typo.get(key)
@@ -134,6 +134,11 @@ def check_fonts_embedded(ctx):
                          f"font {f!r} is not a builtin; embedding + license check required",
                          f"edition.typography.{key}")
     return out
+
+
+def check_print_glyphs(ctx):
+    return [_find("PRINT_GLYPH_UNSUPPORTED", issue["message"], issue["location"])[0]
+            for issue in print_font_issues(ctx.get("book") or {}, ctx.get("edition") or {})]
 
 
 def check_rtl_typography(ctx):
@@ -216,6 +221,7 @@ RULESET = RuleSet(name="core", version=VERSION, rules=[
     Rule("CORE-IMG-002", "error", "images", "image asset references", check_image_refs),
     Rule("CORE-FONT-001", "warning", "fonts", "non-builtin fonts flagged", check_fonts_embedded),
     Rule("CORE-FONT-002", "error", "fonts", "RTL print and cover typography support", check_rtl_typography),
+    Rule("CORE-FONT-003", "error", "fonts", "print font glyph coverage", check_print_glyphs),
     Rule("CORE-A11Y-001", "error", "accessibility", "image alt text", check_alt_text),
     Rule("CORE-LINK-001", "error", "links", "link well-formedness", check_links),
     Rule("CORE-LANG-001", "error", "language", "valid language tag", check_language),

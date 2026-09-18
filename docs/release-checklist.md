@@ -28,6 +28,16 @@ an operational process. Saved agent claims are not evidence by themselves.
 
 ## Current local verification snapshot
 
+**2026-09-18 incremental print-font evidence:** `pdf-1.5.0` adds bundled
+Bitstream Vera body/heading choices with four embedded styles. Core rules
+`core-1.0.3` block unsupported printed glyphs with chapter/node locations,
+and the render endpoint returns 422 for the same input. Current checks pass:
+165 services, 62 web, four edition API tests, and all workspace TypeScript
+checks. PDF inspection confirms four embedded font streams, accented text
+extraction and repeatable checksums. This is limited Latin coverage; RTL
+shaping, other scripts, full embedding of code/page-number fonts and native
+retailer acceptance remain open. The full snapshot below was not rerun.
+
 Snapshot: **2026-09-12 (paid translation, author operations dashboard, and local retailer reporting)** on
 `codex/live-platform-checkpoint-20260912`. These results describe the current
 local files and tests, not production acceptance.

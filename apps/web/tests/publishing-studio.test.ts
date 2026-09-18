@@ -48,3 +48,14 @@ test("audiobook voice settings round-trip without print or cover fields", () => 
   const saved = toConfig(formFromEdition(edition), edition.edition_metadata_json);
   assert.deepEqual(saved, { kind: "audiobook", schema_version: "1.0.0", voice: "cedar", speed: 0.95, instructions: "Warm and precise." });
 });
+
+test("embedded print font choices survive save and reload", () => {
+  const config = { kind: "print", typography: { body_font: "BookwormVera", heading_font: "BookwormVera-Bold" } };
+  const edition = { type: "print", language: "fr", edition_metadata_json: config } as unknown as Edition;
+  const saved = toConfig(formFromEdition(edition));
+  assert.equal(saved.kind, "print");
+  if (saved.kind !== "print") throw new Error("wrong edition");
+  assert.equal(saved.typography?.body_font, "BookwormVera");
+  assert.equal(saved.typography?.heading_font, "BookwormVera-Bold");
+  assert.deepEqual(toConfig(formFromEdition({ ...edition, edition_metadata_json: saved })), saved);
+});

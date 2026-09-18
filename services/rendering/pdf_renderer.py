@@ -1,5 +1,5 @@
 """Print edition -> PDF via reportlab. Deterministic: fixed creation date via invariant canvas,
-builtin fonts only (no system font files), fixed flowable ordering. Same input -> same sha256.
+fixed base or bundled embedded fonts (no system fonts), fixed flowable ordering. Same input -> same sha256.
 """
 import hashlib
 from html import escape
@@ -25,8 +25,9 @@ from reportlab.platypus import (
 
 from editions import PrintEdition, print_requires_unsupported_rtl_typography
 from manuscript import block_tree, image_width, inline_markup, table_rows
+from print_fonts import print_font_issues
 
-RENDERER_VERSION = "pdf-1.4.0"
+RENDERER_VERSION = "pdf-1.5.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -79,6 +80,9 @@ def render_pdf(book: dict, edition: PrintEdition,
     """Render print edition to PDF. Returns (pdf_bytes, sha256_hex)."""
     if print_requires_unsupported_rtl_typography(edition, book.get("metadata") or {}):
         raise ValueError("RTL print PDF requires an embedded shaping-capable font; the base-font renderer cannot produce it safely")
+    font_issues = print_font_issues(book, edition.model_dump())
+    if font_issues:
+        raise ValueError(font_issues[0]["message"])
     tw, th = edition.trim_in
     m = edition.margins
     typo = edition.typography

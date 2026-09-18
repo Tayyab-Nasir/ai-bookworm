@@ -209,9 +209,9 @@ export type EditionConfig = {
   bleed_in?: number;
   margins?: { top?: number; bottom?: number; inner?: number; outer?: number };
   typography?: {
-    body_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold";
+    body_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold" | "BookwormVera" | "BookwormVera-Bold";
     body_size_pt?: number;
-    heading_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold";
+    heading_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold" | "BookwormVera" | "BookwormVera-Bold";
     heading_size_pt?: number;
     leading?: number;
     paragraph_spacing_pt?: number;

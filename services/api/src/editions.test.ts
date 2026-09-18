@@ -69,7 +69,7 @@ test("editor creates a normalized print edition with a confirmed cover and HTTPS
   const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: {
     language: "en",
     config: {
-      kind: "print", text_direction: "rtl", trim_size: "6x9", typography: { body_size_pt: 11, leading: 15 },
+      kind: "print", text_direction: "rtl", trim_size: "6x9", typography: { body_size_pt: 11, leading: 15, body_font: "BookwormVera", heading_font: "BookwormVera-Bold" },
       cover: { asset_id: COVER, qr_code: { enabled: true, url: "https://author.example/books/river" } },
     },
   } });
@@ -77,6 +77,8 @@ test("editor creates a normalized print edition with a confirmed cover and HTTPS
   const edition = response.json();
   assert.equal(edition.type, "print");
   assert.equal(edition.edition_metadata_json.margins.inner, 0.75);
+  assert.equal(edition.edition_metadata_json.typography.body_font, "BookwormVera");
+  assert.equal(edition.edition_metadata_json.typography.heading_font, "BookwormVera-Bold");
     assert.equal(edition.edition_metadata_json.typography.text_align, "justify");
     assert.equal(edition.edition_metadata_json.text_direction, "rtl");
   assert.equal(edition.edition_metadata_json.cover.qr_code.position, "bottom-right");

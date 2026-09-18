@@ -301,13 +301,26 @@ before production tuning.
   preview URLs are short-lived and are not persisted in manuscript nodes. Save
   the chapter to persist these edits; removing a placement does not delete its
   source asset.
-- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.4.0`. They preserve inline
+- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.5.0`. They preserve inline
   emphasis, breaks, nested lists and illustration captions; PDF gutters mirror
   correctly on odd/even pages. EPUB writes the saved edition's BCP-47 language and
   resolved `dir` attribute (`ltr`/`rtl`), letting reading systems apply local
   script-capable fonts and bidirectional layout. Render, preflight, and package
   requests all rebuild the model with that saved edition language, so their
-  freshness fingerprints remain consistent. Accessibility rules are `core-1.0.2`.
+  freshness fingerprints remain consistent. Core rules are `core-1.0.3`.
+- Print body and heading fonts can use `BookwormVera` / `BookwormVera-Bold`.
+  The renderer embeds ReportLab's bundled, unchanged Bitstream Vera TrueType
+  family, including regular, bold, italic and bold-italic variants. Retain the
+  installed `reportlab/fonts/bitstream-vera-license.txt` when packaging the
+  rendering runtime; no operating-system or customer font files are loaded.
+  Coverage is limited Latin, not universal Unicode or RTL shaping. Existing
+  font choices remain compatible. Inline code and page numbers retain standard
+  PDF fonts. Before rendering, glyph checks inspect the effective font for
+  headings, marked text, lists, tables and captions; unsupported characters
+  produce located `PRINT_GLYPH_UNSUPPORTED` errors instead of substituted boxes.
+  `/preflight` returns these findings without attempting invalid output;
+  `/render` rejects the same input with 422. The direct renderer also enforces
+  this guard. Re-render older artifacts before relying on this coverage.
 - DOCX import preserves supported run marks, hyperlink labels without URLs,
   named list styles and table text in body order. EPUB walks nested content once,
   retains semantic marks and mixed lists, and excludes scripts/navigation.

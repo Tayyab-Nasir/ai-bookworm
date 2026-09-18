@@ -23,6 +23,24 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 local print typography update
+
+Publishing Studio, edition API validation and the API client now accept
+`BookwormVera` / `BookwormVera-Bold` for print body and headings. The
+`pdf-1.5.0` renderer embeds ReportLab's bundled regular/bold/italic/bold-italic
+Vera fonts. Core preflight `core-1.0.3` and direct rendering check actual
+printed text against the chosen font, including marks, tables and captions;
+unsupported characters produce located errors before output. Existing font
+settings remain compatible. Coverage is limited Latin; RTL shaping, other
+scripts and complete font embedding for code/page numbers remain open.
+
+Verified in this slice: workspace TypeScript checks, 165 service tests, 62 web
+tests, and four edition API tests. Generated PDF inspection verifies four font
+streams, Unicode text extraction, and deterministic bytes. No production build,
+native browser acceptance, live migration, provider call or deployment was run
+for this slice. See `Codex Sessions/2026-09/2026-09-18-bookworm-print-fonts.md`
+in the shared vault. The older full verification snapshot below is historical.
+
 The authorized live initialization is now complete on Supabase project
 `cyhqtwndadlyzpeatxws`: all then-current 45 repository migrations are installed. The newest
 migrations create a safe profile row for every Auth identity, enforce zero

@@ -7,7 +7,8 @@ import type { Asset, Book, Chapter, Edition } from "@bookworm/types";
 import { apiClient } from "./api";
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
-const FONTS = ["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"] as const;
+const FONTS = ["BookwormVera", "BookwormVera-Bold", "Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"] as const;
+const fontLabel = (font: string) => font === "BookwormVera" ? "Bitstream Vera · embedded" : font === "BookwormVera-Bold" ? "Bitstream Vera Bold · embedded" : font;
 type Kind = "ebook" | "print" | "audiobook";
 type Channel = PreflightResult["requestedChannel"];
 const CHANNEL_FORMATS: Record<RetailerChannel, Kind[]> = { kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"] };
@@ -312,8 +313,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             </> : form.kind === "print" ? <>
               <label className="text-sm text-white/65">Trim size<select value={form.trimSize} onChange={(event) => update("trimSize", event.target.value as FormState["trimSize"])} className={fieldClass}>{["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].map((size) => <option key={size}>{size}</option>)}</select></label>
               <label className="text-sm text-white/65">Bleed<select value={form.bleed} onChange={(event) => update("bleed", Number(event.target.value))} className={fieldClass}><option value={0}>No bleed</option><option value={0.125}>0.125 in</option></select></label>
-              <label className="text-sm text-white/65">Body font<select value={form.bodyFont} onChange={(event) => update("bodyFont", event.target.value as FormState["bodyFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font}>{font}</option>)}</select></label>
-              <label className="text-sm text-white/65">Heading font<select value={form.headingFont} onChange={(event) => update("headingFont", event.target.value as FormState["headingFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font}>{font}</option>)}</select></label>
+              <label className="text-sm text-white/65">Body font<select value={form.bodyFont} onChange={(event) => update("bodyFont", event.target.value as FormState["bodyFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
+              <label className="text-sm text-white/65">Heading font<select value={form.headingFont} onChange={(event) => update("headingFont", event.target.value as FormState["headingFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
               <label className="text-sm text-white/65">Body size (pt)<input type="number" min={7} max={24} step={0.5} value={form.bodySize} onChange={(event) => update("bodySize", Number(event.target.value))} className={fieldClass} /></label>
               <label className="text-sm text-white/65">Heading size (pt)<input type="number" min={10} max={48} value={form.headingSize} onChange={(event) => update("headingSize", Number(event.target.value))} className={fieldClass} /></label>
               <label className="text-sm text-white/65">Line spacing (pt)<input type="number" min={form.bodySize} max={36} step={0.5} value={form.leading} onChange={(event) => update("leading", Number(event.target.value))} className={fieldClass} /></label>
@@ -332,6 +333,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           {form.kind === "print" && <div className="mt-5 grid grid-cols-2 gap-4 border-t border-white/10 pt-5 sm:grid-cols-4">{(["top", "bottom", "inner", "outer"] as const).map((key) => <label key={key} className="text-sm capitalize text-white/65">{key} margin (in)<input type="number" min={0.25} max={2} step={0.05} value={form[key]} onChange={(event) => update(key, Number(event.target.value))} className={fieldClass} /></label>)}</div>}
           {rtlPrintUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL print PDF is not available with the current embedded fonts.</p><p className="mt-1 text-amber-100/80">Use an EPUB for this edition, or run preflight to record the requirement while a shaping-capable print font pipeline is added.</p></div>}
         </section>
+
+        {form.kind === "print" && <p className="text-sm leading-relaxed text-white/50">Bitstream Vera embeds body and heading fonts in the PDF, including bold and italic text. It supports a limited Latin character set. Preflight identifies unsupported characters before export. Inline code and page numbers still use standard PDF fonts.</p>}
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="cover-settings">
           <h2 id="cover-settings" className="text-xl font-semibold">Cover composition</h2><p className="mt-1 text-sm text-white/45">Choose private artwork; title, author, overlay, and optional QR are composed during rendering.</p>

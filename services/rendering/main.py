@@ -23,6 +23,7 @@ from epub_renderer import render_epub, RENDERER_VERSION as EPUB_RENDERER_VERSION
 from pdf_renderer import render_pdf, RENDERER_VERSION as PDF_RENDERER_VERSION  # noqa: E402
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
+from print_fonts import print_font_issues  # noqa: E402
 
 app = FastAPI(title="bookworm-rendering")
 
@@ -135,6 +136,9 @@ def render(req: RenderRequest) -> RenderResponse:
         raise HTTPException(422, "RTL print PDF requires an embedded shaping-capable font; the base-font renderer cannot produce it safely")
     if cover_requires_unsupported_rtl_typography(edition, metadata):
         raise HTTPException(422, "RTL cover text requires an embedded shaping-capable font; the base-font cover renderer cannot produce it safely")
+    font_issues = print_font_issues(req.bookModel, edition.model_dump())
+    if font_issues:
+        raise HTTPException(422, font_issues[0]["message"])
     cover, cover_sha = _composed_cover(req, edition)
     illustrations = _illustrations(req, edition)
     cover_output = base64.b64encode(cover).decode() if cover else None
@@ -165,7 +169,7 @@ def preflight(req: PreflightRequest) -> dict:
     )
     # Return actionable findings before a known-unsupported renderer can emit an
     # unreadable PDF or raster cover. Supplied base64 remains validated here.
-    if rtl_render_blocked:
+    if rtl_render_blocked or print_font_issues(req.bookModel, edition.model_dump()):
         ctx = {"book": req.bookModel, "edition": req.editionConfig,
                "artifact": None, "package_bytes": None, "channel": req.channel,
                "image_bytes": {}, "cover_bytes": _cover_bytes(req.coverBase64)}

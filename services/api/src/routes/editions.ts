@@ -55,7 +55,7 @@ const marginsSchema = z.object({
   outer: z.number().min(0.25).max(2).default(0.5),
 }).strict().default({});
 
-const fontSchema = z.enum(["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"]);
+const fontSchema = z.enum(["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold"]);
 const typographySchema = z.object({
   body_font: fontSchema.default("Times-Roman"),
   body_size_pt: z.number().min(7).max(24).default(11),
