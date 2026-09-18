@@ -402,9 +402,9 @@
     "semantic_hash": "6eb234df7f50d335bd057332a52af6bb"
   },
   "apps/web/components/PublishingStudio.tsx": {
-    "mtime": 1789706326.5257897,
-    "seen": 1789706605.1520915,
-    "ast_hash": "be0f82fa5998f3c629824c914be3e1e5",
+    "mtime": 1789707289.485827,
+    "seen": 1789707491.5259137,
+    "ast_hash": "913748184a2d5f297ebe76e7b3e71687",
     "semantic_hash": ""
   },
   "apps/web/components/ReferralCenter.tsx": {
@@ -1464,15 +1464,15 @@
     "semantic_hash": ""
   },
   "services/rendering/epub_renderer.py": {
-    "mtime": 1789706086.2742136,
-    "seen": 1789706169.0098665,
-    "ast_hash": "9c6bb6de4d914720c367dab5680c2dff",
+    "mtime": 1789707177.868111,
+    "seen": 1789707491.5259137,
+    "ast_hash": "ddf1f9cc66ec428fd82c7551e44ef81a",
     "semantic_hash": ""
   },
   "services/rendering/main.py": {
-    "mtime": 1789703655.4844646,
-    "seen": 1789703992.8094566,
-    "ast_hash": "0123e3a7225ca5ca1bb06ff740c927ab",
+    "mtime": 1789707177.868111,
+    "seen": 1789707491.5259137,
+    "ast_hash": "c699807e5b5bdb8884ac15f7bc8cbfc0",
     "semantic_hash": ""
   },
   "services/rendering/manuscript.py": {
@@ -1482,9 +1482,9 @@
     "semantic_hash": ""
   },
   "services/rendering/pdf_renderer.py": {
-    "mtime": 1789706804.6147542,
-    "seen": 1789706898.6790314,
-    "ast_hash": "6ca139a47ed03955f31d12d6d59958b5",
+    "mtime": 1789707177.866097,
+    "seen": 1789707491.5259137,
+    "ast_hash": "676fc7fdeee37e8bc9135d411f7e7694",
     "semantic_hash": ""
   },
   "services/rendering/preflight.py": {
@@ -1662,9 +1662,9 @@
     "semantic_hash": ""
   },
   "tests/e2e/test_critical_journey.py": {
-    "mtime": 1789706545.8679986,
-    "seen": 1789706605.1520915,
-    "ast_hash": "1d1a61eec0d1e20f13ac888b8f83fcc1",
+    "mtime": 1789707396.203316,
+    "seen": 1789707491.5259137,
+    "ast_hash": "45d00d06b21fc5aa5f22a1eab36514bd",
     "semantic_hash": ""
   },
   "tests/fixtures/books/broken_book.json": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789706889.9166958,
-    "seen": 1789706898.6790314,
-    "ast_hash": "c1e15a7f70c03117974086b5d9971233",
+    "mtime": 1789707482.1227665,
+    "seen": 1789707491.5259137,
+    "ast_hash": "1daba83c3a910f5ed96ef7c9d2e04cd4",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2364,9 +2364,9 @@
     "semantic_hash": ""
   },
   "docs/operations.md": {
-    "mtime": 1789703935.870575,
-    "seen": 1789703992.8094566,
-    "ast_hash": "a09cb9578af91ac44f7610a8d160e984",
+    "mtime": 1789707396.203316,
+    "seen": 1789707491.5259137,
+    "ast_hash": "2b00009e40de3a7ae96c9005926b420c",
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
@@ -2775,6 +2775,18 @@
     "mtime": 1789706742.5876062,
     "seen": 1789706898.6790314,
     "ast_hash": "4953ed24763ea6f4555f8cfb5d5f5212",
+    "semantic_hash": ""
+  },
+  "services/rendering/fixed_epub.py": {
+    "mtime": 1789707289.485827,
+    "seen": 1789707491.5259137,
+    "ast_hash": "3dead087b7feb4aea23d87c8c3638682",
+    "semantic_hash": ""
+  },
+  "services/rendering/tests/test_fixed_epub.py": {
+    "mtime": 1789707289.485827,
+    "seen": 1789707491.5259137,
+    "ast_hash": "599506d40ed2df07abd13d3e5d406480",
     "semantic_hash": ""
   }
 }
