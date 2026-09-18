@@ -518,3 +518,25 @@ before production tuning.
   review translation quality, metadata, source formatting, illustrations, and
   layout before rendering or retailer packaging. Live OpenAI quality/cost and
   native multi-worker acceptance remain release gates.
+# Fixed-layout EPUB worker dependency
+
+Fixed-layout EPUB uses the embedded-font 6x9 PDF layout and local Poppler
+`pdftoppm` to produce paginated raster images (long edge 1800 pixels). Install
+and pin Poppler in the rendering-worker image/host; ensure `pdftoppm` is on PATH
+or set server-only `BOOKWORM_PDFTOPPM` to its executable. The converter never
+receives user-supplied paths or network URLs. Missing/conversion/timeout errors
+stop export; they do not silently fall back to reflowable output.
+
+Limits: 2000 source pages, 120 seconds total rasterization, 150 MiB page-image
+budget. Temporary source PDF is removed on success or failure. Pin both
+ReportLab and Poppler for reproducible bytes across hosts; deterministic tests
+only establish repeatability within the tested toolchain. Native Poppler tests
+are skipped on hosts without the executable, so a green run with skips is not
+fixed-layout acceptance.
+
+This output preserves appearance but text is rasterized with image alternatives,
+not selectable/reflowable. It inherits the print renderer's script limitations.
+Use reflowable EPUB for adjustable text and better reading-system accessibility.
+Fixed trim/typography customization, full-bleed illustration handling, tagged
+semantics and actual reader/retailer preview acceptance remain open. No live
+deployment is authorized by these instructions.

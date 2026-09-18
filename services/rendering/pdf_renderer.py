@@ -146,7 +146,7 @@ def _roman(n: int) -> str:
 
 
 def render_pdf(book: dict, edition: PrintEdition,
-               image_bytes: dict[str, bytes] | None = None) -> tuple[bytes, str]:
+               image_bytes: dict[str, bytes] | None = None, *, chapter_bookmarks: bool = False) -> tuple[bytes, str]:
     """Render print edition to PDF. Returns (pdf_bytes, sha256_hex)."""
     layout_issues = print_layout_issues(edition)
     if layout_issues:
@@ -245,7 +245,7 @@ def render_pdf(book: dict, edition: PrintEdition,
     for index, ch in enumerate(sorted(book["chapters"], key=lambda c: c["order"])):
         story.append(PageBreak())
         chapter_style = heading
-        if edition.include_table_of_contents:
+        if edition.include_table_of_contents or chapter_bookmarks:
             chapter_style = ParagraphStyle(f"ChapterHeading{index}", parent=heading)
             doc.toc_chapters[chapter_style.name] = (ch.get("title", ""), f"chapter-{index}")
         story.append(Paragraph(escape(ch.get("title", "")), chapter_style))

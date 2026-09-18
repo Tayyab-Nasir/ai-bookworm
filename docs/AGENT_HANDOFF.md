@@ -23,6 +23,21 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 raster fixed-layout EPUB
+
+EPUB 1.7.0 stops ignoring flow=fixed. It paginates through the embedded-font
+6x9 PDF renderer, converts actual pages using local Poppler, and packages
+viewport-sized XHTML images with pre-paginated metadata, chapter navigation,
+cover/front landmarks and text alternatives. Optional title page is honored.
+Reflowable contents navigation uses an explicit spine layout override.
+No selectable text: UI and operations docs explain rasterization, fixed default
+typography/trim and inherited script limitations. This is a working fixed-page
+path, not full fixed-layout/accessibility/retailer certification.
+Verified 296 services, 12 E2E, 65 web, all workspace TypeScript and production
+build. Native tests used Poppler 26.07.0 with no skips. Converter failure/missing
+dependency stops with actionable errors and cleans temporary files. No live work.
+Note: `Codex Sessions/2026-09/2026-09-18-bookworm-fixed-epub.md`.
+
 ### 2026-09-18 contents visual stress fix
 
 PDF 1.12.0 fixes a reproduced LayoutError with 20pt contents text, narrow trim,

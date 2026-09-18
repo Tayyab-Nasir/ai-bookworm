@@ -173,7 +173,10 @@ def render(req: RenderRequest) -> RenderResponse:
     illustrations = _illustrations(req, edition)
     cover_output = base64.b64encode(cover).decode() if cover else None
     if edition.kind == "ebook":
-        blob, sha = render_epub(req.bookModel, edition, cover, illustrations if edition.image_policy.embed else {})
+        try:
+            blob, sha = render_epub(req.bookModel, edition, cover, illustrations if edition.image_policy.embed else {})
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
         return RenderResponse(format="epub", artifactBase64=base64.b64encode(blob).decode(),
                               sha256=sha, rendererVersion=EPUB_RENDERER_VERSION,
                               coverArtifactBase64=cover_output, coverSha256=cover_sha,

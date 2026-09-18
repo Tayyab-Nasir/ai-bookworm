@@ -12,7 +12,7 @@ from html import escape
 from editions import EbookEdition, resolve_text_direction
 from manuscript import block_tree, image_width, inline_markup, table_rows
 
-RENDERER_VERSION = "epub-1.6.0"
+RENDERER_VERSION = "epub-1.7.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"
@@ -198,6 +198,9 @@ def _front_pages(book: dict, edition: EbookEdition) -> list[tuple[str, list[str]
 def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = None,
                 image_bytes: dict[str, bytes] | None = None) -> tuple[bytes, str]:
     """Render to EPUB3. Returns (zip_bytes, sha256_hex). Pure/deterministic."""
+    if edition.flow == "fixed":
+        from fixed_epub import render_fixed_epub
+        return render_fixed_epub(book, edition, cover_bytes, image_bytes)
     lang = book["metadata"].get("language") or "en"
     direction = resolve_text_direction(lang, edition.text_direction)
     chapters = [

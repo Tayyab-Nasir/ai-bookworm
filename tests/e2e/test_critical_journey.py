@@ -18,6 +18,7 @@ import importlib
 import json
 import sys
 import zipfile
+import shutil
 from io import BytesIO
 from pathlib import Path
 
@@ -74,6 +75,39 @@ BOOK_MODEL = {
 }
 
 EDITION = {"kind": "ebook", "flow": "reflowable", "navigation": "toc"}
+
+
+@pytest.mark.skipif(not shutil.which("pdftoppm"), reason="native Poppler required")
+@pytest.mark.parametrize("channel", ["kdp", "apple", "barnesnoble"])
+def test_fixed_epub_survives_real_render_preflight_and_package(monkeypatch, channel):
+    for name in ("RENDERING_SERVICE_TOKEN", "PUBLISHING_SERVICE_TOKEN"):
+        monkeypatch.setenv(name, "fixed-journey-token")
+    headers = {"x-service-token": "fixed-journey-token"}
+    model = json.loads(json.dumps(BOOK_MODEL))
+    model["metadata"].update(description="A collection of letters and memories from a quiet coastal harbor.",
+                             categories=["FICTION / General"])
+    edition = {"kind": "ebook", "flow": "fixed", "include_title_page": True, "navigation": "toc+landmarks"}
+    payload = {"bookModel": model, "editionConfig": edition}
+    rendered = _client("rendering").post("/render", headers=headers, json=payload)
+    assert rendered.status_code == 200, rendered.text
+    artifact = rendered.json()["artifactBase64"]
+    preflight = _client("rendering").post("/preflight", headers=headers, json={**payload, "channel": channel})
+    assert preflight.status_code == 200, preflight.text
+    assert preflight.json()["errors"] == 0, preflight.json()["findings"]
+    packaged = _client("publishing").post("/v1/publishing/package", headers=headers,
+        json={**payload, "channel": channel, "artifactsBase64": {"book.epub": artifact}})
+    assert packaged.status_code == 200, packaged.text
+    with zipfile.ZipFile(BytesIO(base64.b64decode(packaged.json()["packages"][0]["dataBase64"]))) as package:
+        assert package.read("book.epub") == base64.b64decode(artifact)
+
+
+def test_fixed_render_missing_converter_returns_actionable_http_error(monkeypatch):
+    monkeypatch.setenv("RENDERING_SERVICE_TOKEN", "missing-converter-token")
+    monkeypatch.setenv("BOOKWORM_PDFTOPPM", "bookworm-no-such-converter")
+    response = _client("rendering").post("/render", headers={"x-service-token": "missing-converter-token"},
+        json={"bookModel": BOOK_MODEL, "editionConfig": {"kind": "ebook", "flow": "fixed"}})
+    assert response.status_code == 422
+    assert "requires local Poppler" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("channel,kind", [
