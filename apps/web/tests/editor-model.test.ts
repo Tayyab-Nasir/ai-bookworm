@@ -19,7 +19,7 @@ test("table editing keeps canonical text, safe cells and stable roundtrip withou
 test("chapter roundtrip retains artwork, formatting, stable IDs and structural breaks", () => {
   const nodes: BookNode[] = [
     { id: "p", type: "paragraph", text: "Bold\nthen plain", attributes: { richText: [{ type: "text", text: "Bold", marks: [{ type: "bold" }] }, { type: "hardBreak" }, { type: "text", text: "then plain" }] } },
-    { id: "art", type: "image", assetId: "image-id", altText: "A bridge", caption: "Arrival", attributes: { widthPercent: 75 } },
+    { id: "art", type: "image", assetId: "image-id", altText: "A bridge", caption: "Arrival", attributes: { widthPercent: 75, printPlacement: "fullBleed", printFocalX: 0, printFocalY: 100 } },
     { id: "break", type: "pageBreak" },
   ];
   const saved = editorToNodes(nodesToEditor(nodes), () => "new-id");

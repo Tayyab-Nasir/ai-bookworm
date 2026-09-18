@@ -301,13 +301,20 @@ before production tuning.
   preview URLs are short-lived and are not persisted in manuscript nodes. Save
   the chapter to persist these edits; removing a placement does not delete its
   source asset.
-- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.7.0`. They preserve inline
+- Artwork may instead use a dedicated full-bleed print page. Horizontal and
+  vertical focus control deterministic cover-cropping; the ebook remains
+  inline. Enable the edition's printer-specific bleed first. Core preflight
+  requires enough width and height for the entire physical page at 300 DPI and
+  returns a located error before invalid output. Full-bleed pages omit the page
+  number. Inspect every crop and safe area, then order a physical proof; these
+  checks do not validate artistic focus, contrast or binding loss.
+- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.8.0`. They preserve inline
   emphasis, breaks, nested lists and illustration captions; PDF gutters mirror
   correctly on odd/even pages. EPUB writes the saved edition's BCP-47 language and
   resolved `dir` attribute (`ltr`/`rtl`), letting reading systems apply local
   script-capable fonts and bidirectional layout. Render, preflight, and package
   requests all rebuild the model with that saved edition language, so their
-  freshness fingerprints remain consistent. Core rules are `core-1.0.4`.
+  freshness fingerprints remain consistent. Core rules are `core-1.0.5`.
 - Print `bleed_edges` is explicit: `outer` adds bleed to top, bottom and the
   outer side (KDP); `all` adds it to all four sides (Lulu). Existing saved
   editions default to `all` for compatibility, so select `outer` and re-render
@@ -318,9 +325,8 @@ before production tuning.
   Margins remain trim-relative; odd/even frames alternate on every page,
   including pages after the second. Numbering is anchored to the trim area.
   KDP/Lulu rules `1.2.0` inspect actual artifact geometry, rejecting cropped,
-  rotated or stale-size interiors. This does not validate all text boundaries
-  or make in-flow illustrations edge-to-edge; full-bleed image placement and
-  complete printer page-count/font conformance remain open.
+  rotated or stale-size interiors. This does not validate all text boundaries,
+  full-bleed crop safety or complete printer page-count/font conformance.
 - Print body and heading fonts can use `BookwormVera` / `BookwormVera-Bold`.
   The renderer embeds ReportLab's bundled, unchanged Bitstream Vera TrueType
   family, including regular, bold, italic and bold-italic variants. Retain the

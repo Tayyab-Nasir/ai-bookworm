@@ -9,8 +9,10 @@ from reportlab.lib.enums import TA_JUSTIFY, TA_LEFT
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import inch
 from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     BaseDocTemplate,
+    Flowable,
     Frame,
     Image as FlowableImage,
     KeepTogether,
@@ -25,10 +27,11 @@ from reportlab.platypus import (
 )
 
 from editions import PrintEdition, print_requires_unsupported_rtl_typography
-from manuscript import block_tree, image_width, inline_markup, table_rows
+from manuscript import block_tree, image_focal_point, image_print_placement, image_width, inline_markup, table_rows
+from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
 
-RENDERER_VERSION = "pdf-1.7.0"
+RENDERER_VERSION = "pdf-1.8.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -47,8 +50,35 @@ class _DeterministicCanvasMaker:
         return _Canvas(*args, **kwargs)
 
 
+class _FullBleedImage(Flowable):
+    """Consume one body frame while painting cropped artwork over the physical PDF page."""
+
+    def __init__(self, data: bytes, pagesize: tuple[float, float], focal: tuple[float, float]):
+        super().__init__()
+        self.reader = ImageReader(BytesIO(data))
+        self.page_w, self.page_h = pagesize
+        source_w, source_h = self.reader.getSize()
+        scale = max(self.page_w / source_w, self.page_h / source_h)
+        self.draw_w, self.draw_h = source_w * scale, source_h * scale
+        self.draw_x = -(self.draw_w - self.page_w) * focal[0]
+        self.draw_y = -(self.draw_h - self.page_h) * (1 - focal[1])
+
+    def wrap(self, available_width, available_height):
+        return available_width, available_height
+
+    def drawOn(self, canvas, x, y, _sW=0):  # noqa: N802 - ReportLab API
+        canvas._bookworm_full_bleed = True
+        canvas.saveState()
+        path = canvas.beginPath()
+        path.rect(0, 0, self.page_w, self.page_h)
+        canvas.clipPath(path, stroke=0, fill=0)
+        canvas.drawImage(self.reader, self.draw_x, self.draw_y, self.draw_w, self.draw_h,
+                         preserveAspectRatio=False, mask="auto")
+        canvas.restoreState()
+
+
 def _on_page(numbering, margins, edition, canvas, doc):
-    if numbering.style == "none":
+    if numbering.style == "none" or getattr(canvas, "_bookworm_full_bleed", False):
         return
     n = doc.page - 1 + numbering.start_at
     if numbering.style == "roman":
@@ -87,6 +117,9 @@ def render_pdf(book: dict, edition: PrintEdition,
     font_issues = print_font_issues(book, edition.model_dump())
     if font_issues:
         raise ValueError(font_issues[0]["message"])
+    image_issues = full_bleed_issues(book, edition, image_bytes or {})
+    if image_issues:
+        raise ValueError(image_issues[0]["message"])
     tw, th = edition.trim_in
     m = edition.margins
     typo = edition.typography
@@ -116,9 +149,10 @@ def render_pdf(book: dict, edition: PrintEdition,
                        frame_w, frame_h, id="even-body", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     numbering = edition.page_numbering
     on_page = lambda c, d: _on_page(numbering, m, edition, c, d)
+    begin_page = lambda c, d: setattr(c, "_bookworm_full_bleed", False)
     doc.addPageTemplates([
-        PageTemplate(id="odd", frames=[odd_frame], onPage=on_page),
-        PageTemplate(id="even", frames=[even_frame], onPage=on_page),
+        PageTemplate(id="odd", frames=[odd_frame], onPage=begin_page, onPageEnd=on_page),
+        PageTemplate(id="even", frames=[even_frame], onPage=begin_page, onPageEnd=on_page),
     ])
 
     body = ParagraphStyle("body", fontName=typo.body_font, fontSize=typo.body_size_pt,
@@ -161,7 +195,8 @@ def render_pdf(book: dict, edition: PrintEdition,
             elif t == "caption":
                 story.append(Paragraph(text, caption))
             elif t == "pageBreak":
-                story.append(PageBreak())
+                if not isinstance(story[-1], PageBreak):
+                    story.append(PageBreak())
             elif t == "separator":
                 story.append(Spacer(1, typo.leading))
             elif t == "table":
@@ -181,6 +216,11 @@ def render_pdf(book: dict, edition: PrintEdition,
                 elif text:
                     story.append(Paragraph(text, body))
             elif t == "image" and n.get("assetId") in (image_bytes or {}):
+                if image_print_placement(n) == "fullBleed":
+                    if not isinstance(story[-1], PageBreak):
+                        story.append(PageBreak())
+                    story.append(_FullBleedImage((image_bytes or {})[n["assetId"]], pagesize, image_focal_point(n)))
+                    continue
                 illustration = FlowableImage(BytesIO((image_bytes or {})[n["assetId"]]))
                 scale = min(frame_w * image_width(n) / 100 / illustration.imageWidth, frame_h * 0.65 / illustration.imageHeight)
                 illustration.drawWidth = illustration.imageWidth * scale

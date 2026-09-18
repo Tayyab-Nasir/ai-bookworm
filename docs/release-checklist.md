@@ -15,7 +15,7 @@ an operational process. Saved agent claims are not evidence by themselves.
 | 5 | Provider keys and secret management | PENDING-INFRA | No live keys are required for deterministic tests and none were configured by this work. Verify server-only secret storage, rotation and egress policy in the target environment. |
 | 6 | Upload/parser safety and malware scanning | PARTIAL | A private authenticated ClamAV/clamd service, bounded streaming protocol, server-side checksum/size/type checks, fail-closed scan persistence, clean-only import/download/render gates, and Storage RLS quarantine are implemented and tested. A service-only, aggregate-only dry-run inventory identifies only old, managed, database-unreferenced private objects; it never deletes. Native Supabase Storage HTTP, deployed clamd signatures/limits, outage recovery, an EICAR staging exercise, and approved per-object cleanup acceptance remain required. |
 | 7 | DOCX, EPUB, TXT and limited PDF import fixtures | PARTIAL | Authenticated/root-confined parsers preserve supported DOCX marks/list styles and table text; EPUB nested content is imported once with semantic marks/lists. Body PNG/JPEG/GIF/WebP images pass bounded extraction, independent validation/scanning, private storage and atomic chapter/asset persistence with retry receipts. Real supplied specifications parse. Complex tables, header/footer drawings, vector images, numbering/styles and scanned-PDF OCR remain incomplete. Native Storage/Postgres acceptance and orphan reconciliation are outstanding. |
-| 8 | Deterministic EPUB/PDF/cover rendering | PARTIAL | EPUB/PDF version 1.4.0 fixtures cover inline marks, nested lists, illustrations, escaped metadata, gutters, paginated tables and RTL EPUB language/direction metadata. Edition schema 1.1.0 persists `auto`/`ltr`/`rtl`; the saved edition language is carried consistently through render, preflight, and package freshness checks. Preflight blocks RTL print and cover text when the deterministic Latin base-font renderers would be unsafe, and the Publishing Studio explains that constraint before disabling only the invalid render. Editor table insertion/edit/save/reload passes browser acceptance. Private artifacts have checksum/size verification. A licensed embedded font plus shaping pipeline, tagged PDF, merged-cell/header semantics and complete fixed-layout behavior remain incomplete. |
+| 8 | Deterministic EPUB/PDF/cover rendering | PARTIAL | EPUB 1.4.0/PDF 1.8.0 fixtures cover inline marks, nested lists, illustrations, escaped metadata, gutters, paginated tables and RTL EPUB language/direction metadata. Dedicated full-bleed pages have saved crop focus, physical-page placement, no visible page number and 300-DPI preflight. Edition schema 1.1.0 persists direction; render, preflight and package fingerprints use the saved language. Unsafe RTL print/cover text is blocked. Vera-selected editions embed all used fonts. Private artifacts have checksum/size verification. Tagged PDF, RTL shaping/full script coverage, merged-cell/header semantics, fixed-layout completion and physical print/crop proof remain incomplete. |
 | 9 | Retailer preflight, export packages and reporting | PARTIAL | Versioned KDP, Apple Books, Barnes & Noble and Lulu rules pass local tests. Zero-error preflight + exact render fingerprints gate deterministic, private ZIP packages with durable history. Local source also has database-derived, replay-safe, currency-safe retailer CSV reporting with active same-source/period overlap protection; its additive migration is not live. Submission is manual, and retailer acceptance/report-format validation is not guaranteed. |
 | 10 | Billing, credits and Stripe webhooks | PARTIAL | Local unit tests cover signatures, idempotency, entitlements and ledgers. The author dashboard and Billing Center report text, image, audio and translation meters from one zero-default entitlement contract. An authorized Stripe test-mode round trip, product/price mapping and customer recovery still need verification. |
 | 11 | Referral ledger | DONE | Atomic code allocation, qualification/review/reversal state transitions, concurrency-safe balances, bounded history and lifetime summaries have database and API tests plus browser acceptance. |
@@ -28,6 +28,14 @@ an operational process. Saved agent claims are not evidence by themselves.
 
 ## Current local verification snapshot
 
+**2026-09-18 incremental full-bleed evidence:** manuscript artwork saves inline
+or dedicated-page print placement plus crop focus. `pdf-1.8.0` renders the
+physical page deterministically and core `1.0.5` blocks missing bleed or sources
+below the trim/bleed page's 300-DPI dimensions. Current checks pass: 221 service,
+192 API and 64 web tests, workspace TypeScript, actual PDF page/content checks,
+and isolated save/reload/mobile browser acceptance. Physical printer proof,
+binding-safe crop review and native Storage/render-service acceptance remain.
+
 **2026-09-18 incremental media-finishing evidence:** private completed chapters
 can be assembled and downloaded without additional AI generation. Native tests
 verify ordered decoded audio, 44.1 kHz mono/192 kbps output, deterministic bytes,
@@ -37,7 +45,7 @@ licensed DejaVu Mono code. TypeScript checks, an isolated Next production
 build, 217 service, 192 API and 64 web tests pass, plus
 browser audio failure/retry/download and publishing/mobile acceptance. Browser
 and API transport bytes remain fixtures; native media tests are separate.
-Legacy fonts, RTL shaping, full-bleed image placement, physical proof, audio
+Legacy fonts, RTL shaping, physical proof, audio
 loudness/quality checks and production capacity remain open.
 
 **2026-09-18 incremental interior-geometry evidence:** `pdf-1.6.0` adds explicit

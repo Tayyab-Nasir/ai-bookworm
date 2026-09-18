@@ -6,10 +6,11 @@ channel-specific thresholds live in the channel rule modules.
 from editions import language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
 from print_fonts import BASE_FONTS, EMBEDDED_FONTS, print_font_issues
+from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.4"
+VERSION = "core-1.0.5"
 
 
 def _find(code, msg, loc=""):
@@ -120,6 +121,18 @@ def check_image_refs(ctx):
                 out += _find("IMAGE_REF_MISSING", "image node references unknown asset",
                              f"chapter:{ch['id']} node:{n['id']}")
     return out
+
+
+def check_full_bleed_images(ctx):
+    edition = ctx.get("edition") or {}
+    if edition.get("kind") != "print":
+        return []
+    try:
+        parsed = PrintEdition.model_validate(edition)
+    except ValueError:
+        return []
+    return [Finding(code=issue["code"], message=issue["message"], location=issue["location"])
+            for issue in full_bleed_issues(ctx.get("book") or {}, parsed, ctx.get("image_bytes") or {})]
 
 
 # ---- fonts -------------------------------------------------------------------
@@ -243,6 +256,7 @@ RULESET = RuleSet(name="core", version=VERSION, rules=[
     Rule("CORE-META-001", "error", "metadata", "required metadata", check_required_metadata),
     Rule("CORE-IMG-001", "error", "images", "image size policy", check_image_sizes),
     Rule("CORE-IMG-002", "error", "images", "image asset references", check_image_refs),
+    Rule("CORE-IMG-003", "error", "images", "print full-bleed artwork", check_full_bleed_images),
     Rule("CORE-FONT-001", "warning", "fonts", "non-builtin fonts flagged", check_fonts_embedded),
     Rule("CORE-FONT-002", "error", "fonts", "RTL print and cover typography support", check_rtl_typography),
     Rule("CORE-FONT-003", "error", "fonts", "print font glyph coverage", check_print_glyphs),

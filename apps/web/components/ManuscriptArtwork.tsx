@@ -41,12 +41,15 @@ export function ManuscriptBlockView({ node, editor, selected, updateAttributes, 
   const alt = typeof original?.altText === "string" ? original.altText : "";
   const caption = typeof original?.caption === "string" ? original.caption : "";
   const decorative = original?.attributes?.decorative === true;
+  const printPlacement = original?.attributes?.printPlacement === "fullBleed" ? "fullBleed" : "inline";
+  const focalX = typeof original?.attributes?.printFocalX === "number" ? original.attributes.printFocalX : 50;
+  const focalY = typeof original?.attributes?.printFocalY === "number" ? original.attributes.printFocalY : 50;
   const width = typeof original?.attributes?.widthPercent === "number" ? Math.min(100, Math.max(25, original.attributes.widthPercent)) : 100;
   const change = (patch: Partial<BookNode>) => { if (editor.isEditable && original) updateAttributes({ canonical: { ...original, ...patch } }); };
 
   return <NodeViewWrapper contentEditable={false} className={`my-8 rounded-lg ${selected ? "ring-2 ring-black/40 ring-offset-4 ring-offset-[#f5f1e8]" : ""}`}>
     {original?.type === "image" ? <>
-      <figure className="mx-auto" style={{ width: `${width}%` }}>
+      <figure className="mx-auto" style={{ width: `${printPlacement === "fullBleed" ? 100 : width}%` }}>
         {preview.url ? <img src={preview.url} alt={decorative ? "" : alt} onError={preview.fail} referrerPolicy="no-referrer" className="mx-auto max-h-[540px] w-auto max-w-full rounded-sm object-contain" /> : <div role="status" className="flex min-h-36 flex-col items-center justify-center gap-3 rounded-lg bg-black/5 p-5 text-center font-sans text-sm text-black/60">
           <span>{preview.error ?? "Loading private artwork…"}</span>
           {preview.error && <button type="button" onClick={preview.retry} className={action}>Refresh preview</button>}
@@ -59,7 +62,12 @@ export function ManuscriptBlockView({ node, editor, selected, updateAttributes, 
           <label className="text-xs text-black/70">Image description (alt text)<input className={field} value={alt} disabled={decorative} maxLength={1000} onChange={(event) => change({ altText: event.target.value })} /></label>
           <label className="flex min-h-11 items-center gap-2 text-xs text-black/70"><input type="checkbox" checked={decorative} onChange={(event) => change({ attributes: { ...original.attributes, decorative: event.target.checked } })} />This picture is purely decorative</label>
           <label className="text-xs text-black/70">Caption<input className={field} value={caption} maxLength={2000} onChange={(event) => change({ caption: event.target.value })} /></label>
-          <label className="text-xs text-black/70">Width<select className={field} value={width} onChange={(event) => change({ attributes: { ...original.attributes, widthPercent: Number(event.target.value) } })}><option value={100}>Full text width</option><option value={75}>Three-quarter width</option><option value={50}>Half width</option><option value={25}>Quarter width</option></select></label>
+          <label className="text-xs text-black/70">Print placement<select className={field} value={printPlacement} onChange={(event) => change({ attributes: { ...original.attributes, printPlacement: event.target.value } })}><option value="inline">Inside the text area</option><option value="fullBleed">Dedicated full-bleed page</option></select></label>
+          {printPlacement === "inline" ? <label className="text-xs text-black/70">Width<select className={field} value={width} onChange={(event) => change({ attributes: { ...original.attributes, widthPercent: Number(event.target.value) } })}><option value={100}>Full text width</option><option value={75}>Three-quarter width</option><option value={50}>Half width</option><option value={25}>Quarter width</option></select></label> : <div className="grid gap-3 sm:grid-cols-2">
+            <label className="text-xs text-black/70">Horizontal focus<select className={field} value={focalX} onChange={(event) => change({ attributes: { ...original.attributes, printFocalX: Number(event.target.value) } })}><option value={0}>Left</option><option value={50}>Center</option><option value={100}>Right</option></select></label>
+            <label className="text-xs text-black/70">Vertical focus<select className={field} value={focalY} onChange={(event) => change({ attributes: { ...original.attributes, printFocalY: Number(event.target.value) } })}><option value={0}>Top</option><option value={50}>Center</option><option value={100}>Bottom</option></select></label>
+            <p className="text-xs leading-5 text-black/55 sm:col-span-2">Print editions place this on its own page and crop it through the bleed. Preflight requires enough pixels for 300 DPI. Ebook placement remains inline.</p>
+          </div>}
           <button type="button" className={`${action} justify-self-start`} onClick={() => { if (editor.isEditable) deleteNode(); }}>Remove from chapter</button>
           <p className="text-xs text-black/55">Changes stay in your draft until you save the chapter. Removing artwork here keeps the original file in Assets.</p>
         </div>}
@@ -111,6 +119,9 @@ export function ArtworkPicker({ workspaceId, onInsert, onClose }: { workspaceId:
   const [decorative, setDecorative] = useState(false);
   const [caption, setCaption] = useState("");
   const [width, setWidth] = useState(100);
+  const [printPlacement, setPrintPlacement] = useState<"inline" | "fullBleed">("inline");
+  const [focalX, setFocalX] = useState(50);
+  const [focalY, setFocalY] = useState(50);
   const preview = usePrivateImage(selected || null);
   const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -132,14 +143,15 @@ export function ArtworkPicker({ workspaceId, onInsert, onClose }: { workspaceId:
     {loading ? <p className="py-10 text-sm" role="status">Loading workspace artwork…</p> : error ? <div role="alert" className="py-6"><p>{error}</p><button type="button" className={`${action} mt-3`} onClick={() => setRefresh((v) => v + 1)}>Retry artwork list</button></div> : !assets.length ? <div className="my-6 rounded-xl border border-dashed border-black/25 p-6 text-sm leading-6">No usable images in this workspace yet. Save your chapter before opening Assets to upload or generate an illustration.<button type="button" className={`${action} mt-3 block`} onClick={() => setRefresh((v) => v + 1)}>Refresh library</button></div> : <form className="mt-6 grid gap-6 sm:grid-cols-2" onSubmit={(event) => {
       event.preventDefault();
       if (!selected || !preview.url || loadedUrl !== preview.url || (!decorative && !alt.trim())) return;
-      onInsert({ id: crypto.randomUUID(), type: "image", assetId: selected, altText: decorative ? "" : alt.trim(), caption: caption.trim(), attributes: { widthPercent: width, decorative } });
+      onInsert({ id: crypto.randomUUID(), type: "image", assetId: selected, altText: decorative ? "" : alt.trim(), caption: caption.trim(), attributes: { widthPercent: width, decorative, printPlacement, printFocalX: focalX, printFocalY: focalY } });
     }}>
       <div className="space-y-4">
         <label className="block text-xs text-black/70">Workspace image<select autoFocus required className={field} value={selected} onChange={(event) => { setSelected(event.target.value); setLoadedUrl(null); }}><option value="">Choose artwork…</option>{assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
         <label className="block text-xs text-black/70">Image description (alt text)<textarea required={!decorative} disabled={decorative} value={alt} onChange={(event) => setAlt(event.target.value)} maxLength={1000} rows={3} className={field} placeholder="Describe what a reader should know about this picture." /></label>
         <label className="flex min-h-11 items-center gap-2 text-xs text-black/70"><input type="checkbox" checked={decorative} onChange={(event) => setDecorative(event.target.checked)} />This picture is purely decorative</label>
         <label className="block text-xs text-black/70">Caption (optional)<input className={field} value={caption} onChange={(event) => setCaption(event.target.value)} maxLength={2000} /></label>
-        <label className="block text-xs text-black/70">Width<select value={width} onChange={(event) => setWidth(Number(event.target.value))} className={field}><option value={100}>Full text width</option><option value={75}>Three-quarter width</option><option value={50}>Half width</option><option value={25}>Quarter width</option></select></label>
+        <label className="block text-xs text-black/70">Print placement<select value={printPlacement} onChange={(event) => setPrintPlacement(event.target.value as "inline" | "fullBleed")} className={field}><option value="inline">Inside the text area</option><option value="fullBleed">Dedicated full-bleed page</option></select></label>
+        {printPlacement === "inline" ? <label className="block text-xs text-black/70">Width<select value={width} onChange={(event) => setWidth(Number(event.target.value))} className={field}><option value={100}>Full text width</option><option value={75}>Three-quarter width</option><option value={50}>Half width</option><option value={25}>Quarter width</option></select></label> : <div className="grid gap-3 sm:grid-cols-2"><label className="block text-xs text-black/70">Horizontal focus<select value={focalX} onChange={(event) => setFocalX(Number(event.target.value))} className={field}><option value={0}>Left</option><option value={50}>Center</option><option value={100}>Right</option></select></label><label className="block text-xs text-black/70">Vertical focus<select value={focalY} onChange={(event) => setFocalY(Number(event.target.value))} className={field}><option value={0}>Top</option><option value={50}>Center</option><option value={100}>Bottom</option></select></label><p className="text-xs leading-5 text-black/55 sm:col-span-2">Use with a print edition that has bleed enabled. Preflight checks a 300-DPI source before publishing.</p></div>}
       </div>
       <div className="flex min-h-52 flex-col items-center justify-center rounded-xl border border-black/10 bg-black/[0.035] p-4">
         {preview.url ? <img src={preview.url} alt={decorative ? "" : alt} onLoad={() => setLoadedUrl(preview.url)} onError={preview.fail} referrerPolicy="no-referrer" className="max-h-80 max-w-full object-contain" /> : <p role="status" className="text-center text-sm text-black/60">{preview.error ?? (selected ? "Checking private image access…" : "Your illustration will appear here.")}</p>}

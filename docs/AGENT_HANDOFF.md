@@ -23,6 +23,24 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 local full-bleed illustration update
+
+Manuscript artwork can now be saved as an inline image or a dedicated
+full-bleed print page with horizontal/vertical crop focus. `pdf-1.8.0` paints
+that image across the physical PDF page, suppresses the page number, preserves
+inline ebook behavior, and fails instead of silently substituting an inline
+layout. Core rules `1.0.5` require print bleed and enough source pixels for a
+300-DPI page after crop. Print normalization retains the minimum useful raster
+instead of reducing every image to the old 2400-pixel width.
+
+Verified: 221 service, 192 API and 64 web tests; workspace TypeScript; a real
+PDF has a dedicated full-page image between the surrounding text pages;
+isolated browser acceptance saves/reloads focus controls and fits at 390px.
+No live service, migration, provider, customer-data or deployment operation.
+Production build and the final Git/graph evidence are recorded in the current
+vault session note after checkpointing. Physical printer proof and automated
+safe-zone/contrast review remain required.
+
 ### 2026-09-18 local media finishing update
 
 Completed chapter narration can now be downloaded as one private MP3 from

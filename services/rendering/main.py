@@ -3,6 +3,7 @@ import base64
 import hmac
 import os
 import sys
+from math import ceil
 from io import BytesIO
 from pathlib import Path
 from uuid import UUID
@@ -117,7 +118,11 @@ def _illustrations(req, edition) -> dict[str, bytes]:
         raise HTTPException(422, "at most 100 illustration assets may be rendered at once")
     images: dict[str, bytes] = {}
     total = 0
-    max_width = edition.image_policy.max_width_px if edition.kind == "ebook" else 2400
+    max_width = edition.image_policy.max_width_px if edition.kind == "ebook" else None
+    print_target = None if edition.kind == "ebook" else (
+        ceil((edition.trim_in[0] + edition.bleed_in + (edition.bleed_in if edition.bleed_edges == "all" else 0)) * 300),
+        ceil((edition.trim_in[1] + 2 * edition.bleed_in) * 300),
+    )
     for asset_id, encoded in sorted(req.assetImagesBase64.items()):
         try:
             UUID(asset_id)
@@ -131,9 +136,12 @@ def _illustrations(req, edition) -> dict[str, bytes]:
             with Image.open(BytesIO(raw)) as source:
                 source.load()
                 image = source.convert("RGB")
-                if image.width > max_width:
+                if max_width is not None and image.width > max_width:
                     height = max(1, round(image.height * max_width / image.width))
                     image = image.resize((max_width, height), Image.Resampling.LANCZOS)
+                elif print_target and image.width > print_target[0] and image.height > print_target[1]:
+                    scale = max(print_target[0] / image.width, print_target[1] / image.height)
+                    image = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))), Image.Resampling.LANCZOS)
                 output = BytesIO()
                 image.save(output, "PNG", optimize=False, compress_level=9)
                 images[asset_id] = output.getvalue()
@@ -170,7 +178,10 @@ def render(req: RenderRequest) -> RenderResponse:
                               sha256=sha, rendererVersion=EPUB_RENDERER_VERSION,
                               coverArtifactBase64=cover_output, coverSha256=cover_sha,
                               coverRendererVersion=COVER_RENDERER_VERSION if cover else None)
-    blob, sha = render_pdf(req.bookModel, edition, illustrations)
+    try:
+        blob, sha = render_pdf(req.bookModel, edition, illustrations)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     if edition.wrap_cover.enabled:
         try:
             cover, cover_sha = render_wrap_cover(cover, blob, edition)
@@ -212,11 +223,26 @@ def preflight(req: PreflightRequest) -> dict:
         }
     cover, _ = _composed_cover(req, edition)
     illustrations = _illustrations(req, edition)
+    initial_ctx = {"book": req.bookModel, "edition": req.editionConfig,
+                   "artifact": None, "package_bytes": None, "channel": req.channel,
+                   "image_bytes": illustrations, "cover_bytes": cover}
+    initial_findings = run_preflight(initial_ctx, ruleset)
+    if any(f.code.startswith("PRINT_FULL_BLEED_") for f in initial_findings):
+        return {
+            "ruleVersion": ruleset.version,
+            "channel": req.channel,
+            "errors": sum(1 for f in initial_findings if f.severity == "error"),
+            "warnings": sum(1 for f in initial_findings if f.severity == "warning"),
+            "findings": [f.to_dict() for f in initial_findings],
+        }
     artifact = None
     cover_pdf = None
     wrap_error = None
     if req.includeArtifact:
-        artifact, _ = render_epub(req.bookModel, edition, cover, illustrations if edition.image_policy.embed else {}) if edition.kind == "ebook" else render_pdf(req.bookModel, edition, illustrations)
+        try:
+            artifact, _ = render_epub(req.bookModel, edition, cover, illustrations if edition.image_policy.embed else {}) if edition.kind == "ebook" else render_pdf(req.bookModel, edition, illustrations)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
         if edition.kind == "print" and edition.wrap_cover.enabled:
             try:
                 cover_pdf, _ = render_wrap_cover(cover, artifact, edition)

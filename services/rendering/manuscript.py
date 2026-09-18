@@ -55,6 +55,22 @@ def image_width(node: dict) -> int:
     return min(100, max(25, round(value))) if type(value) in (int, float) and isfinite(value) else 100
 
 
+def image_print_placement(node: dict) -> str:
+    attrs = node.get("attributes")
+    return "fullBleed" if isinstance(attrs, dict) and attrs.get("printPlacement") == "fullBleed" else "inline"
+
+
+def image_focal_point(node: dict) -> tuple[float, float]:
+    attrs = node.get("attributes")
+    if not isinstance(attrs, dict):
+        return 0.5, 0.5
+    values = []
+    for key in ("printFocalX", "printFocalY"):
+        value = attrs.get(key, 50)
+        values.append(min(100, max(0, float(value))) / 100 if type(value) in (int, float) and isfinite(value) else 0.5)
+    return values[0], values[1]
+
+
 def block_tree(nodes: list[dict]) -> list[dict]:
     """Group flat canonical list items, retaining mixed nesting without HTML input."""
     result = []
