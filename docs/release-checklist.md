@@ -1,5 +1,22 @@
 # MVP Release Checklist
 
+## 2026-09-18 refreshed cross-service evidence
+
+The broad journey rerun initially found three failing print fixtures: they
+contained only three pages and lacked the full covers now required by local
+retailer rules. Fixtures now import 32 chapters, render 34-page interiors with
+title/copyright pages and embedded Vera fonts, compose real full-cover PDFs,
+and pass channel-specific bleed/preflight. All six format/channel combinations
+verify exact interior/cover bytes in deterministic ZIPs. This proves local
+service integration, not live retailer acceptance or database orchestration.
+
+Current rerun: 8/8 service-level E2E, 276/276 services, 30/30 Python security.
+Stale core-version assertions were updated to 1.0.7. Current renderers are
+PDF 1.10.0 and EPUB 1.5.0. The earlier front-matter service result preceded the
+core version increment; this full rerun now covers the final version too.
+No deployment, native Supabase check, paid generation or retailer submission.
+Front-matter browser acceptance remains pending after fixture startup denial.
+
 This checklist is a release-readiness audit, not a deployment authorization.
 `DONE` means the current local working tree has repeatable fixture/code evidence;
 `PARTIAL` means useful local evidence exists but a material control is missing;

@@ -86,21 +86,34 @@ def test_imported_manuscript_survives_render_and_retailer_package(monkeypatch, c
         monkeypatch.setenv(name, token)
     headers = {"x-service-token": token}
     text = "Chapter 1\n\nMara counted seven silver coins beside the harbor.\n\nChapter 2\n\nThe lighthouse keeper returned her letter."
+    if kind == "print":
+        text += "".join(f"\n\nChapter {index}\n\nHarbor letter {index} arrived safely." for index in range(3, 33))
     imported = _client("document").post("/parse", headers=headers, json={
         "assetId": "artifact-source", "format": "txt", "title": "Harbor Letters",
         "contentBase64": base64.b64encode(text.encode()).decode(),
     })
     assert imported.status_code == 200, imported.text
     model = imported.json()["bookModel"]
-    assert len(model["chapters"]) == 2
+    assert len(model["chapters"]) == (32 if kind == "print" else 2)
     model["metadata"].update({"title": "Harbor Letters", "author": "Fixture Author", "language": "en",
                               "description": "A mystery told through letters at a coastal harbor.",
                               "categories": ["FICTION / Mystery & Detective / General"]})
     edition = {"kind": kind, "navigation": "toc+landmarks"} if kind == "ebook" else {
-        "kind": "print", "trim_size": "6x9", "bleed_in": 0.125,
+        "kind": "print", "trim_size": "6x9", "bleed_in": 0.125, "bleed_edges": "all" if channel == "lulu" else "outer",
+        "typography": {"body_font": "BookwormVera", "heading_font": "BookwormVera-Bold"},
+        "cover": {"asset_id": "44444444-4444-4444-8444-444444444444"},
+        "wrap_cover": {"enabled": True, "profile": "kdp-white" if channel == "kdp" else "custom",
+                       "expected_page_count": 34, "spine_width_in": 0.1},
         "page_numbering": {"style": "arabic", "start_at": 7, "position": "bottom-center"},
     }
-    rendered = _client("rendering").post("/render", headers=headers, json={"bookModel": model, "editionConfig": edition})
+    edition["front_matter"] = {"copyright_notice": "Copyright Fixture Author. Permission required.", "publisher": "Harbor Press"}
+    request = {"bookModel": model, "editionConfig": edition}
+    if kind == "print":
+        from PIL import Image
+        artwork = BytesIO()
+        Image.new("RGB", (1800, 2700), "#204050").save(artwork, "PNG")
+        request["coverBase64"] = base64.b64encode(artwork.getvalue()).decode()
+    rendered = _client("rendering").post("/render", headers=headers, json=request)
     assert rendered.status_code == 200, rendered.text
     data = rendered.json()
     artifact = base64.b64decode(data["artifactBase64"], validate=True)
@@ -112,14 +125,21 @@ def test_imported_manuscript_survives_render_and_retailer_package(monkeypatch, c
     else:
         from pypdf import PdfReader
         reader = PdfReader(BytesIO(artifact))
-        assert len(reader.pages) >= 2
+        assert len(reader.pages) == 34
         content = "\n".join(page.extract_text() for page in reader.pages)
         assert "7" in reader.pages[0].extract_text(), "starting page number not rendered"
     assert "Mara counted seven silver coins" in content
     assert "The lighthouse keeper returned her letter." in content
+    assert "Harbor Press" in content
+    assert "Copyright Fixture Author. Permission required." in content
+    preflight = _client("rendering").post("/preflight", headers=headers, json={**request, "channel": channel})
+    assert preflight.status_code == 200, preflight.text
+    assert preflight.json()["errors"] == 0, preflight.json()["findings"]
     filename = "book.epub" if kind == "ebook" else "book.pdf"
     payload = {"channel": channel, "editionConfig": edition, "bookModel": model,
                "artifactsBase64": {filename: data["artifactBase64"]}}
+    if kind == "print":
+        payload["artifactsBase64"]["cover.pdf"] = data["coverArtifactBase64"]
     packaged = _client("publishing").post("/v1/publishing/package", headers=headers, json=payload)
     assert packaged.status_code == 200, packaged.text
     package = packaged.json()["packages"][0]
@@ -127,6 +147,8 @@ def test_imported_manuscript_survives_render_and_retailer_package(monkeypatch, c
     assert hashlib.sha256(blob).hexdigest() == package["sha256"]
     with zipfile.ZipFile(BytesIO(blob)) as archive:
         assert archive.read(filename) == artifact, "retailer package replaced the verified render"
+        if kind == "print":
+            assert archive.read("cover.pdf") == base64.b64decode(data["coverArtifactBase64"])
         assert json.loads(archive.read("manifest.json"))["channel"] == channel
     replay = _client("publishing").post("/v1/publishing/package", headers=headers, json=payload)
     assert replay.status_code == 200

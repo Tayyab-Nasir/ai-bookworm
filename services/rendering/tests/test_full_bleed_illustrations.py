@@ -77,7 +77,7 @@ def test_full_bleed_requires_bleed_and_300_dpi_source_in_render_and_preflight():
     findings = run_preflight({"book": book(), "edition": edition.model_dump(), "image_bytes": {ASSET: low},
                               "artifact": None, "package_bytes": None, "channel": None}, load_ruleset())
     assert {finding.code for finding in findings} >= {"PRINT_FULL_BLEED_RESOLUTION"}
-    assert all(finding.rule_version == "core-1.0.6" for finding in findings)
+    assert all(finding.rule_version == "core-1.0.7" for finding in findings)
 
 
 def test_inline_artwork_remains_inside_the_text_flow_without_bleed_requirement():

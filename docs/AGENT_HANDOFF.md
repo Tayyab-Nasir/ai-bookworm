@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 cross-service export acceptance
+
+Broad verification found three stale print E2E fixtures (too short/no full
+cover). They now import 32 chapters, render 34-page interiors with copyright
+and embedded fonts, compose covers, run actual channel preflight, and preserve
+exact PDF/cover bytes in ZIPs. Lulu uses all-edge bleed; KDP/B&N use outer.
+Corrected stale core-1.0.6 assertions left after the front-matter version bump.
+Verified: all 8 E2E, 276 service and 30 Python security tests. These tests do
+not cover live providers, database orchestration, native storage or retailer
+submission. Release checklist records the corrected evidence and open gates.
+Note: `Codex Sessions/2026-09/2026-09-18-bookworm-export-acceptance.md`.
+
 ### 2026-09-18 relevant illustration memory
 
 Illustrations now reuse book-scoped PostgreSQL full-text search to prioritize
