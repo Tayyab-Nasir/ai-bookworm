@@ -76,3 +76,22 @@ def test_wrapped_titles_link_once_and_contents_font_is_checked():
     assert not any("contents" in issue["location"] for issue in print_font_issues(model, config))
     config["include_table_of_contents"] = True
     assert any("contents" in issue["location"] for issue in print_font_issues(model, config))
+
+
+def test_large_roman_labels_and_long_titles_render_without_narrow_title_columns():
+    model = book(3)
+    title = "An unexpectedly long chapter title about boats and the keeper who waited " * 3
+    model["chapters"][1]["title"] = title
+    edition = PrintEdition(include_table_of_contents=True, trim_size="5x8",
+        page_numbering={"style": "roman", "start_at": 9999},
+        typography={"body_font": "BookwormVera", "heading_font": "BookwormVera-Bold",
+                    "body_size_pt": 20, "heading_size_pt": 24, "leading": 26})
+    data, checksum = render_pdf(model, edition)
+    assert render_pdf(model, edition)[1] == checksum
+    pdf = PdfReader(io.BytesIO(data))
+    assert len(pdf.outline) == 3
+    first_chapter = pdf.get_destination_page_number(pdf.outline[0])
+    contents = " ".join(page.extract_text() for page in pdf.pages[1:first_chapter])
+    assert " ".join(title.split()) in " ".join(contents.split())
+    for item in pdf.outline:
+        assert _roman(pdf.get_destination_page_number(item) + 9999) in contents

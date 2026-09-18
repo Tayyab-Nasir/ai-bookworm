@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 contents visual stress fix
+
+PDF 1.12.0 fixes a reproduced LayoutError with 20pt contents text, narrow trim,
+long chapter titles and Roman numbering starting at 9999. Wide labels now
+stack below titles instead of reserving most of the title width. Contents rows
+may split within a page-spanning entry. Standard layout remains unchanged.
+New scripts/preview-print-contents.py creates synthetic PDFs and PNG previews
+using local pdftoppm, no network or real manuscripts. Standard/stress pages
+were visually inspected. Verified 291 services and 8 E2E; nine focused TOC
+tests include the stress regression and deterministic output. No live work.
+Note: `Codex Sessions/2026-09/2026-09-18-bookworm-contents-visual-check.md`.
+
 ### 2026-09-18 print contents pages
 
 PDF 1.11.0 adds opt-in include_table_of_contents, saved through Studio/API/client

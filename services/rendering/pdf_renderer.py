@@ -34,8 +34,15 @@ from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
 from print_layout import NUMBER_SIZE_PT, NUMBER_TRIM_INSET_IN, number_metrics, print_layout_issues
 
-RENDERER_VERSION = "pdf-1.11.0"
+RENDERER_VERSION = "pdf-1.12.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
+
+
+class _Contents(TableOfContents):
+    def wrap(self, availWidth, availHeight):
+        size = super().wrap(availWidth, availHeight)
+        self._table.splitInRow = 1
+        return size
 
 
 class _BookDocTemplate(BaseDocTemplate):
@@ -50,7 +57,8 @@ class _BookDocTemplate(BaseDocTemplate):
         title, key = self.toc_chapters[name]
         self.canv.bookmarkPage(key)
         self.canv.addOutlineEntry(title, key, level=0)
-        self.notify("TOCEntry", (0, escape(title), self.page, key))
+        text = escape(title) + ("<br/>" if self.toc_stacked else "")
+        self.notify("TOCEntry", (0, text, self.page, key))
 
 
 class _DeterministicCanvasMaker:
@@ -172,6 +180,7 @@ def render_pdf(book: dict, edition: PrintEdition,
     )
     page_w, page_h = pagesize
     doc.toc_chapters = {}
+    doc.toc_stacked = False
     # User margins are measured from the trim edge, never from the PDF edge.
     frame_w = (tw - m.inner - m.outer) * inch
     frame_h = page_h - (m.top + m.bottom + 2 * edition.bleed_in) * inch
@@ -227,9 +236,10 @@ def render_pdf(book: dict, edition: PrintEdition,
         # page labels. The supported retailer interior range is at most 2000.
         label_width = max(pdfmetrics.stringWidth(contents_number(page), typo.body_font, typo.body_size_pt)
                           for page in range(1, 2001)) + 12
+        doc.toc_stacked = label_width > frame_w * 0.4
         contents_style = ParagraphStyle("ContentsEntry", parent=body, firstLineIndent=0,
-                                        alignment=TA_LEFT, rightIndent=label_width)
-        toc = TableOfContents(levelStyles=[contents_style], formatter=contents_number)
+                                        alignment=TA_LEFT, rightIndent=0 if doc.toc_stacked else label_width)
+        toc = _Contents(levelStyles=[contents_style], formatter=contents_number)
         toc.dotsMinLevel = -1 if numbering.style == "none" else 0
         story.extend([PageBreak(), Paragraph("Contents", heading), toc])
     for index, ch in enumerate(sorted(book["chapters"], key=lambda c: c["order"])):
