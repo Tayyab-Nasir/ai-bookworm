@@ -486,9 +486,9 @@
     "semantic_hash": "71423ac5400bdbc2235a9858f072440c"
   },
   "apps/web/next-env.d.ts": {
-    "mtime": 1789699015.0075943,
-    "seen": 1789699052.9670444,
-    "ast_hash": "9f8dc552a4d9d91b7041379d28c89ec9",
+    "mtime": 1789699084.5803134,
+    "seen": 1789699203.5361207,
+    "ast_hash": "a95187a97b7d355b0898b514d12c9d69",
     "semantic_hash": ""
   },
   "apps/web/next.config.mjs": {
@@ -582,9 +582,9 @@
     "semantic_hash": "371f413d0233f8d4492a7be1ce5870af"
   },
   "apps/web/tsconfig.json": {
-    "mtime": 1789699015.0075943,
-    "seen": 1789699052.9670444,
-    "ast_hash": "2457342dea990bc32de9d3215fc83fb3",
+    "mtime": 1789699191.3067296,
+    "seen": 1789699203.5361207,
+    "ast_hash": "6a10bc0029acbd9c242eea9adaa74680",
     "semantic_hash": ""
   },
   "apps/web/vercel.json": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789697478.1085484,
-    "seen": 1789697522.8338916,
-    "ast_hash": "b3f6db9e010bf6bdcc47f3f008d1cece",
+    "mtime": 1789699142.8639815,
+    "seen": 1789699203.5361207,
+    "ast_hash": "a6fd41c76e8bf11e979c3c2d7b5acec6",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2346,9 +2346,9 @@
     "semantic_hash": ""
   },
   "docs/PROJECT_MAP.md": {
-    "mtime": 1789190864.0133536,
-    "seen": 1789190997.7093635,
-    "ast_hash": "e14375c94447528ff3cd3efd577c68b7",
+    "mtime": 1789699142.8667164,
+    "seen": 1789699203.5361207,
+    "ast_hash": "2c474d9e83aa9202144e98e6827ad715",
     "semantic_hash": ""
   },
   "docs/SNAPOTTER_EVALUATION.md": {
@@ -2364,15 +2364,15 @@
     "semantic_hash": ""
   },
   "docs/operations.md": {
-    "mtime": 1789697392.5327842,
-    "seen": 1789697522.8338916,
-    "ast_hash": "3da29e8ae4c1acbe90ba5febfb681f7c",
+    "mtime": 1789699065.0059905,
+    "seen": 1789699203.5361207,
+    "ast_hash": "525f774466e4ee0d54cab2412f2f080c",
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
-    "mtime": 1789697478.109679,
-    "seen": 1789697522.8338916,
-    "ast_hash": "b800af47d2b9adeea899c9ff6f142782",
+    "mtime": 1789699142.8639815,
+    "seen": 1789699203.5361207,
+    "ast_hash": "2dae8e3426c65921543fc1704a2d02a1",
     "semantic_hash": ""
   },
   "services/ai/prompts/book_bible_v1.md": {
