@@ -47,7 +47,7 @@ def test_all_channels_registered():
 
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
-    assert result["ruleVersion"] == "core-1.0.3+kdp-1.1.0"
+    assert result["ruleVersion"] == "core-1.0.4+kdp-1.1.0"
     ids = {f["rule_id"] for f in result["findings"]}
     assert not result["findings"] or all(
         rid.startswith(("CORE-", "KDP-")) for rid in ids)
@@ -92,7 +92,7 @@ def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
                              artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
     first = build_package(request)
     second = build_package(request)
-    assert first["ruleVersion"] == "core-1.0.3+kdp-1.1.0"
+    assert first["ruleVersion"] == "core-1.0.4+kdp-1.1.0"
     assert first["packages"][0]["sha256"] == second["packages"][0]["sha256"]
     package = base64.b64decode(first["packages"][0]["dataBase64"])
     with zipfile.ZipFile(BytesIO(package)) as archive:
@@ -116,3 +116,34 @@ def test_internal_package_endpoint_checks_its_service_token(monkeypatch):
     with pytest.raises(Exception, match="invalid service token"):
         require_service_token("wrong")
     require_service_token("publishing-secret")
+
+
+def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geometry():
+    from PIL import Image
+    from pypdf import PdfWriter
+    from wrap_cover import render_wrap_cover
+    config = {"kind": "print", "cover": {"asset_id": "77777777-7777-4777-8777-777777777777"},
+              "wrap_cover": {"enabled": True, "profile": "kdp-cream", "back_text": "Back cover copy"}}
+    writer = PdfWriter()
+    for _ in range(100):
+        writer.add_blank_page(432, 648)
+    output = BytesIO()
+    writer.write(output)
+    interior = output.getvalue()
+    image = BytesIO()
+    Image.new("RGB", (1800, 2700), "#204050").save(image, "PNG")
+    cover, _ = render_wrap_cover(image.getvalue(), interior, parse_edition(config))
+    artifacts = {"book.pdf": base64.b64encode(interior).decode(), "cover.pdf": base64.b64encode(cover).decode()}
+    request = PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts)
+    result = build_package(request)
+    assert build_package(request) == result
+    with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
+        assert archive.read("book.pdf") == interior
+        assert archive.read("cover.pdf") == cover
+        assert set(json.loads(archive.read("manifest.json"))["files"]) == {"book.pdf", "cover.pdf"}
+    config["wrap_cover"]["profile"] = "kdp-white"
+    with pytest.raises(Exception, match="no longer pass"):
+        build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts))
+    with pytest.raises(Exception, match="no longer pass"):
+        build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID,
+                                     artifactsBase64={"book.pdf": artifacts["book.pdf"]}))

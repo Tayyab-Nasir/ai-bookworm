@@ -219,6 +219,12 @@ export type EditionConfig = {
     text_align?: "left" | "justify";
   };
   page_numbering?: { style?: "arabic" | "roman" | "none"; start_at?: number; position?: "bottom-center" | "bottom-outer" | "top-center" };
+  wrap_cover?: {
+    enabled?: boolean;
+    profile?: "kdp-white" | "kdp-cream" | "kdp-standard-color" | "kdp-premium-color" | "custom";
+    spine_width_in?: number; expected_page_count?: number | null;
+    back_text?: string; spine_text?: string; background_color?: string; text_color?: string;
+  };
   cover?: EditionCoverConfig;
 } | {
   kind: "audiobook";

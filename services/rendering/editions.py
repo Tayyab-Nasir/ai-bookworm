@@ -119,6 +119,17 @@ class PageNumbering(BaseModel):
     position: Literal["bottom-center", "bottom-outer", "top-center"] = "bottom-center"
 
 
+class WrapCover(BaseModel):
+    enabled: bool = False
+    profile: Literal["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"] = "kdp-white"
+    spine_width_in: float = Field(default=0.25, ge=0.01, le=3)
+    expected_page_count: int | None = Field(default=None, ge=1, le=2000)
+    back_text: str = Field(default="", max_length=3000)
+    spine_text: str = Field(default="", max_length=200)
+    background_color: str = Field(default="#182528", pattern=r"^#[0-9a-fA-F]{6}$")
+    text_color: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
+
+
 class PrintEdition(BaseModel):
     kind: Literal["print"] = "print"
     schema_version: str = EDITION_SCHEMA_VERSION
@@ -129,6 +140,16 @@ class PrintEdition(BaseModel):
     typography: Typography = Field(default_factory=Typography)
     page_numbering: PageNumbering = Field(default_factory=PageNumbering)
     cover: CoverConfig = Field(default_factory=CoverConfig)
+    wrap_cover: WrapCover = Field(default_factory=WrapCover)
+
+    @model_validator(mode="after")
+    def _wrap_source(self):
+        if self.wrap_cover.enabled:
+            if not self.cover.asset_id:
+                raise ValueError("full paperback cover requires front cover artwork")
+            if self.wrap_cover.profile == "custom" and not self.wrap_cover.expected_page_count:
+                raise ValueError("custom spine width requires the template page count")
+        return self
 
     @field_validator("trim_size")
     @classmethod

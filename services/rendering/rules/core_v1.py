@@ -6,8 +6,10 @@ channel-specific thresholds live in the channel rule modules.
 from editions import language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
 from print_fonts import BASE_FONTS, EMBEDDED_FONTS, print_font_issues
+from editions import PrintEdition
+from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.3"
+VERSION = "core-1.0.4"
 
 
 def _find(code, msg, loc=""):
@@ -141,6 +143,28 @@ def check_print_glyphs(ctx):
             for issue in print_font_issues(ctx.get("book") or {}, ctx.get("edition") or {})]
 
 
+def check_print_wrap(ctx):
+    edition = ctx.get("edition") or {}
+    if edition.get("kind") != "print":
+        return []
+    wrap = edition.get("wrap_cover") or {}
+    channel = ctx.get("channel")
+    if not wrap.get("enabled"):
+        return _find("PRINT_WRAP_REQUIRED", "Enable a full paperback cover (back, spine and front) before creating a retailer package", "edition.wrap_cover") if channel in {"kdp", "barnesnoble", "lulu"} else []
+    if wrap.get("profile", "kdp-white") != "custom" and channel not in {None, "export", "kdp"}:
+        return _find("PRINT_WRAP_PROFILE", "Use this printer's cover template and custom spine width; KDP paper settings cannot be reused for another printer", "edition.wrap_cover.profile")
+    interior = ctx.get("package_bytes")
+    if interior:
+        cover = ctx.get("cover_pdf_bytes")
+        if not cover:
+            return _find("PRINT_WRAP_MISSING", "The rendered full paperback cover PDF is missing", "cover.pdf")
+        try:
+            validate_wrap_pdf(cover, interior, PrintEdition.model_validate(edition))
+        except ValueError as error:
+            return _find("PRINT_WRAP_INVALID", str(error), "cover.pdf")
+    return []
+
+
 def check_rtl_typography(ctx):
     """Reject output paths known to lack the font and shaping support they need."""
     edition = ctx.get("edition") or {}
@@ -222,6 +246,7 @@ RULESET = RuleSet(name="core", version=VERSION, rules=[
     Rule("CORE-FONT-001", "warning", "fonts", "non-builtin fonts flagged", check_fonts_embedded),
     Rule("CORE-FONT-002", "error", "fonts", "RTL print and cover typography support", check_rtl_typography),
     Rule("CORE-FONT-003", "error", "fonts", "print font glyph coverage", check_print_glyphs),
+    Rule("CORE-COVER-001", "error", "channel", "full paperback cover geometry", check_print_wrap),
     Rule("CORE-A11Y-001", "error", "accessibility", "image alt text", check_alt_text),
     Rule("CORE-LINK-001", "error", "links", "link well-formedness", check_links),
     Rule("CORE-LANG-001", "error", "language", "valid language tag", check_language),

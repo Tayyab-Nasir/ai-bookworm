@@ -101,3 +101,11 @@ After source changes, run `graphify update .` from the repository root. The
 local cache, cost record, and date-stamped recovery copies are deliberately
 ignored; the graph and report are shared through Git. The companion Obsidian
 export is linked from `C:/Users/Asus/Memory-Ai/AI Bookworm Graphify Index.md`.
+
+On this Windows machine the user-level Hermes skill is at
+`C:/Users/Asus/AppData/Local/hermes/skills/graphify/SKILL.md`, not
+`C:/Users/Asus/.hermes/skills/`. The project copy is `.hermes/skills/graphify/`.
+Codex and Claude use their respective user-level `.codex/skills/graphify/`
+and `.claude/skills/graphify/` directories. Each project still needs its own
+graph refresh; installing a skill does not index all projects or synchronize
+private agent memories automatically.

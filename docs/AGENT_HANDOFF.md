@@ -23,6 +23,28 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 local full paperback cover update
+
+Publishing Studio now saves back/spine text, colors, paper profile and custom
+template dimensions. `paperback-cover-1.0.0` composes one CMYK back/spine/front
+PDF from the actual rendered interior page count. The raster front is composed
+at 300 DPI; back/spine fonts embed. Custom templates must match the page count;
+text overflow, unsupported glyphs, narrow spine text and stale PDF geometry are
+rejected. This reserves barcode space; it does not issue an ISBN or barcode.
+API render paths and private package transport preserve `cover.pdf`. Core rules
+`core-1.0.4` require full covers for print retailer packages and recheck their
+geometry. Existing ebook PNG covers remain supported.
+
+Current evidence: workspace TypeScript checks, an isolated Next production
+build, 175 service, 188 API and 63 web tests; Publishing Studio
+browser acceptance includes save/reload, paper settings, font choice, package
+history and 390px containment. Browser bytes are fixtures; actual PDFs and ZIPs
+are checked separately in service tests. No live deployment or migration.
+Printer proof/acceptance, full interior bleed/font coverage, RTL and hardcover
+remain unfinished. See the shared vault note
+`Codex Sessions/2026-09/2026-09-18-bookworm-paperback-cover.md` for final build
+and Git evidence and exact next steps.
+
 ### 2026-09-18 local print typography update
 
 Publishing Studio, edition API validation and the API client now accept

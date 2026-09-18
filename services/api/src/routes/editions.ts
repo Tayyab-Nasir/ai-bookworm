@@ -83,6 +83,15 @@ const printSchema = z.object({
     position: z.enum(["bottom-center", "bottom-outer", "top-center"]).default("bottom-center"),
   }).strict().default({}),
   cover: coverSchema,
+  wrap_cover: z.object({
+    enabled: z.boolean().default(false),
+    profile: z.enum(["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"]).default("kdp-white"),
+    spine_width_in: z.number().min(0.01).max(3).default(0.25),
+    expected_page_count: z.number().int().min(1).max(2000).nullable().default(null),
+    back_text: z.string().max(3000).default(""), spine_text: z.string().max(200).default(""),
+    background_color: z.string().regex(/^#[0-9a-f]{6}$/i).default("#182528"),
+    text_color: z.string().regex(/^#[0-9a-f]{6}$/i).default("#ffffff"),
+  }).strict().default({}),
 }).strict();
 
 const audiobookSchema = z.object({
@@ -93,7 +102,12 @@ const audiobookSchema = z.object({
   speed: z.number().min(0.25).max(4).default(1),
 }).strict();
 
-export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, printSchema, audiobookSchema]);
+export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, printSchema, audiobookSchema]).superRefine((config, ctx) => {
+  if (config.kind === "print" && config.wrap_cover.enabled) {
+    if (!config.cover.asset_id) ctx.addIssue({ code: "custom", path: ["cover", "asset_id"], message: "Choose front cover artwork for a full paperback cover." });
+    if (config.wrap_cover.profile === "custom" && !config.wrap_cover.expected_page_count) ctx.addIssue({ code: "custom", path: ["wrap_cover", "expected_page_count"], message: "Enter the printer template's page count." });
+  }
+});
 
 export function withEditionLanguage<T extends { metadata: { language: string } }>(model: T, language: unknown): T {
   const editionLanguage = typeof language === "string" ? language.trim() : "";
@@ -120,9 +134,26 @@ export const renderResponseSchema = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/i),
   rendererVersion: z.string().min(1).max(200),
   coverArtifactBase64: z.string().min(4).max(40_000_000).nullable().optional(),
+  coverFormat: z.enum(["png", "pdf"]).nullable().optional(),
   coverSha256: z.string().regex(/^[a-f0-9]{64}$/i).nullable().optional(),
   coverRendererVersion: z.string().min(1).max(200).nullable().optional(),
 }).strict();
+
+export function decodeRenderedCover(config: z.infer<typeof editionConfigSchema>, rendered: z.infer<typeof renderResponseSchema>) {
+  const expected = config.kind === "print" && config.wrap_cover.enabled ? "pdf" : "png";
+  if (Boolean(rendered.coverArtifactBase64) !== Boolean(rendered.coverSha256)) throw new AppError(503, "The renderer returned incomplete cover output.");
+  if (!rendered.coverArtifactBase64 || !rendered.coverSha256) {
+    if (config.kind !== "audiobook" && config.cover.asset_id) throw new AppError(503, "The renderer omitted the selected cover.");
+    return null;
+  }
+  if ((rendered.coverFormat ?? "png") !== expected) throw new AppError(503, "The renderer returned the wrong cover format.");
+  return {
+    bytes: decodeArtifact(rendered.coverArtifactBase64, rendered.coverSha256, 25 * 1024 * 1024,
+      expected === "pdf" ? Buffer.from("%PDF-") : Buffer.from([0x89, 0x50, 0x4e, 0x47]), `cover ${expected}`),
+    filename: `cover.${expected}`, mimeType: expected === "pdf" ? "application/pdf" : "image/png",
+    checksum: rendered.coverSha256.toLowerCase(),
+  };
+}
 
 export function decodeArtifact(encoded: string, checksum: string, maxBytes: number, signature: Buffer, label: string) {
   if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(encoded)) {
@@ -406,17 +437,15 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
         sizeBytes: primary.length,
         checksum: rendered.sha256.toLowerCase(),
       });
-      if (Boolean(rendered.coverArtifactBase64) !== Boolean(rendered.coverSha256)) {
-        throw new AppError(503, "The renderer returned incomplete cover output.");
-      }
-      if (rendered.coverArtifactBase64 && rendered.coverSha256) {
-        const cover = decodeArtifact(rendered.coverArtifactBase64, rendered.coverSha256, 25 * 1024 * 1024, Buffer.from([0x89, 0x50, 0x4e, 0x47]), "cover PNG");
+      const decodedCover = decodeRenderedCover(config, rendered);
+      if (decodedCover) {
+        const cover = decodedCover.bytes;
         const coverId = randomUUID();
-        const coverPath = `workspaces/${book.workspace_id}/assets/${coverId}/v1/cover.png`;
+        const coverPath = `workspaces/${book.workspace_id}/assets/${coverId}/v1/${decodedCover.filename}`;
         artifacts.push({
-          assetId: coverId, storagePath: coverPath, filename: "cover.png", type: "rendered_cover",
-          role: "rendered_cover", name: `${String(book.title).slice(0, 238)} cover`, mimeType: "image/png",
-          sizeBytes: cover.length, checksum: rendered.coverSha256.toLowerCase(),
+          assetId: coverId, storagePath: coverPath, filename: decodedCover.filename, type: "rendered_cover",
+          role: "rendered_cover", name: `${String(book.title).slice(0, 238)} cover`, mimeType: decodedCover.mimeType,
+          sizeBytes: cover.length, checksum: decodedCover.checksum,
         });
         (artifacts[1] as Record<string, unknown>).bytes = cover;
       }

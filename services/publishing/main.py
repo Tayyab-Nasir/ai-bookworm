@@ -107,8 +107,9 @@ def build_package(req: PackageRequest) -> dict:
         raise HTTPException(422, f"{req.channel} does not accept {expected_format} editions")
     primary_name = f"book.{expected_format}"
     names = set(req.artifactsBase64)
-    if primary_name not in names or not names.issubset({primary_name, "cover.png"}):
-        raise HTTPException(422, f"artifacts must contain {primary_name} and optional cover.png")
+    cover_name = "cover.pdf" if edition.kind == "print" and edition.wrap_cover.enabled else "cover.png"
+    if primary_name not in names or not names.issubset({primary_name, cover_name}):
+        raise HTTPException(422, f"artifacts must contain {primary_name} and optional {cover_name}")
 
     artifacts: dict[str, bytes] = {}
     total = 0
@@ -139,6 +140,7 @@ def build_package(req: PackageRequest) -> dict:
         "channel": req.channel,
         "image_bytes": {},
         "cover_bytes": artifacts.get("cover.png"),
+        "cover_pdf_bytes": artifacts.get("cover.pdf"),
     }
     validation = adapter.validate(ctx)
     if validation["errors"]:

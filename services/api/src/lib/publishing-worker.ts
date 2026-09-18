@@ -4,7 +4,7 @@ import { AppError } from "../errors.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "./authoring.js";
 import { currentEntitlements } from "./entitlements.js";
 import type { SupabaseClient } from "./supabase.js";
-import { decodeArtifact, editionConfigSchema, loadRenderImages, renderResponseSchema } from "../routes/editions.js";
+import { decodeArtifact, decodeRenderedCover, editionConfigSchema, loadRenderImages, renderResponseSchema } from "../routes/editions.js";
 import {
   assertSourceJob, decodePackage, loadRenderedPackageInputs, packageServiceResponseSchema,
   preflightResponseSchema, storedPreflightResponseSchema,
@@ -160,14 +160,13 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
   const format = config.kind === "ebook" ? "epub" : "pdf";
   if (!parsed.success || parsed.data.format !== format) throw new WorkerFailure("worker_invalid_response", true);
   const rendered = parsed.data;
-  if (Boolean(rendered.coverArtifactBase64) !== Boolean(rendered.coverSha256)) throw new WorkerFailure("worker_invalid_response", true);
+  const decodedCover = decodeRenderedCover(config, rendered);
   const primary = decodeArtifact(rendered.artifactBase64, rendered.sha256, 150 * 1024 * 1024,
     Buffer.from(format === "epub" ? "PK" : "%PDF-"), format);
   await upload(primary, `book.${format}`, "rendered_book", config.kind === "ebook" ? "rendered_ebook" : "rendered_print",
     format === "epub" ? "application/epub+zip" : "application/pdf", rendered.sha256);
-  if (rendered.coverArtifactBase64 && rendered.coverSha256) {
-    const cover = decodeArtifact(rendered.coverArtifactBase64, rendered.coverSha256, 25 * 1024 * 1024, Buffer.from([0x89, 0x50, 0x4e, 0x47]), "PNG");
-    await upload(cover, "cover.png", "rendered_cover", "rendered_cover", "image/png", rendered.coverSha256);
+  if (decodedCover) {
+    await upload(decodedCover.bytes, decodedCover.filename, "rendered_cover", "rendered_cover", decodedCover.mimeType, decodedCover.checksum);
   }
   return { artifacts, rendererVersion: rendered.rendererVersion, usage: {
     renderedBytes: artifacts.reduce((total, artifact) => total + Number(artifact.sizeBytes), 0), illustrationCount: model.assets.length,

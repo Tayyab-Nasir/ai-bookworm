@@ -8,7 +8,7 @@ try {
   page.setDefaultTimeout(25000);
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
   page.on('dialog', (dialog) => dialog.dismiss());
-  const url = 'http://127.0.0.1:4398/books/88888888-8888-4888-8888-888888888888/publish';
+  const url = 'http://localhost:4398/books/88888888-8888-4888-8888-888888888888/publish';
   await page.goto(url);
   await page.getByLabel('Email').fill('author@example.test');
   await page.getByLabel('Password', { exact: true }).fill('fixture-password');
@@ -38,13 +38,28 @@ try {
   await page.reload(); await download.waitFor();
   assert.notEqual(await download.getAttribute('href'), before, 'history did not refresh download URL');
   await page.getByRole('button', { name: 'New print', exact: true }).click();
+  await page.getByLabel('Body font').selectOption('BookwormVera');
+  await page.getByLabel('Cover artwork').selectOption({ index: 1 });
+  await page.getByLabel('Create full cover PDF', { exact: true }).check();
+  await page.getByLabel('Paper and printer').selectOption('custom');
+  await page.getByLabel('Template spine width (in)', { exact: true }).fill('0.415');
+  await page.getByLabel('Template page count', { exact: true }).fill('184');
+  await page.getByLabel('Back cover text', { exact: true }).fill('A journey through the harbor.');
+  await page.getByLabel('Spine text (optional)', { exact: true }).fill('The Long Way Home');
   await page.getByLabel('Starting page number').fill('17');
   await page.getByRole('button', { name: 'Save edition', exact: true }).click();
   await page.getByText('Edition settings saved.', { exact: true }).waitFor();
+  await page.reload();
+  await page.getByRole('button', { name: /^print /i }).click();
+  assert.equal(await page.getByLabel('Create full cover PDF', { exact: true }).isChecked(), true);
+  assert.equal(await page.getByLabel('Template spine width (in)', { exact: true }).inputValue(), '0.415');
+  assert.equal(await page.getByLabel('Template page count', { exact: true }).inputValue(), '184');
+  assert.equal(await page.getByLabel('Back cover text').inputValue(), 'A journey through the harbor.');
+  assert.equal(await page.getByLabel('Body font').inputValue(), 'BookwormVera');
   await page.getByLabel('Preflight target').selectOption('apple');
   assert.equal(await page.getByRole('button', { name: 'Run preflight', exact: true }).isEnabled(), false, 'print accepted for Apple');
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'publishing mobile overflow');
   assert.deepEqual(errors, []);
-  console.log('PASS publishing browser: save/reload QR, render, preflight gate, matching package source, download/history renewal, print start, retailer compatibility, mobile. Artifact bytes remain fixtures.');
+  console.log('PASS publishing browser: save/reload QR and full paperback settings, embedded font choice, render, preflight gate, matching package source, download/history renewal, print start, retailer compatibility, mobile. Artifact bytes remain fixtures.');
 } finally { await browser.close(); }

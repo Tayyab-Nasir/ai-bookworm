@@ -307,7 +307,7 @@ before production tuning.
   resolved `dir` attribute (`ltr`/`rtl`), letting reading systems apply local
   script-capable fonts and bidirectional layout. Render, preflight, and package
   requests all rebuild the model with that saved edition language, so their
-  freshness fingerprints remain consistent. Core rules are `core-1.0.3`.
+  freshness fingerprints remain consistent. Core rules are `core-1.0.4`.
 - Print body and heading fonts can use `BookwormVera` / `BookwormVera-Bold`.
   The renderer embeds ReportLab's bundled, unchanged Bitstream Vera TrueType
   family, including regular, bold, italic and bold-italic variants. Retain the
@@ -321,6 +321,23 @@ before production tuning.
   `/preflight` returns these findings without attempting invalid output;
   `/render` rejects the same input with 422. The direct renderer also enforces
   this guard. Re-render older artifacts before relying on this coverage.
+- Paperback editions can enable `wrap_cover`. The `paperback-cover-1.0.0`
+  renderer produces one back/spine/front CMYK PDF with embedded back/spine
+  fonts, a 300-DPI raster front and blank barcode reserve. `cover-1.2.0`
+  checks visible front-overlay glyphs. White/cream/color KDP profiles derive
+  spine width from the actual interior; custom paperback templates require
+  matching page count and spine width. Outer bleed is 0.125 inch.
+  Geometry follows [KDP's paperback cover guidance](https://kdp.amazon.com/en_US/help/topic/G201953020),
+  checked 2026-09-18. This is not retailer acceptance certification.
+  Re-render after changing paper or manuscript. Preflight/package checks reject
+  missing covers, wrong geometry, cropped bleed, rotation and multi-page covers;
+  back/spine text must fit and use supported glyphs. Private render assets use
+  `application/pdf` and `cover.pdf`, retained in the retailer ZIP and checksum
+  manifest. Install the rendering requirements (including `pypdf`) in the
+  publishing runtime, which shares the rendering rules. EPUB covers stay PNG.
+  Review front text/QR, the chosen printer's template and a physical proof.
+  Hardcover, arbitrary printer bleed, RTL shaping, complete interior print
+  conformance and actual ISBN barcode issuance remain separate work.
 - DOCX import preserves supported run marks, hyperlink labels without URLs,
   named list styles and table text in body order. EPUB walks nested content once,
   retains semantic marks and mixed lists, and excludes scripts/navigation.

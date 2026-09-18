@@ -24,6 +24,8 @@ from pdf_renderer import render_pdf, RENDERER_VERSION as PDF_RENDERER_VERSION  #
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
 from print_fonts import print_font_issues  # noqa: E402
+from wrap_cover import VERSION as WRAP_VERSION, render_wrap_cover  # noqa: E402
+from preflight import Finding  # noqa: E402
 
 app = FastAPI(title="bookworm-rendering")
 
@@ -43,6 +45,7 @@ class RenderResponse(BaseModel):
     coverArtifactBase64: str | None = None
     coverSha256: str | None = None
     coverRendererVersion: str | None = None
+    coverFormat: str | None = None
 
 
 class PreflightRequest(BaseModel):
@@ -149,10 +152,17 @@ def render(req: RenderRequest) -> RenderResponse:
                               coverArtifactBase64=cover_output, coverSha256=cover_sha,
                               coverRendererVersion=COVER_RENDERER_VERSION if cover else None)
     blob, sha = render_pdf(req.bookModel, edition, illustrations)
+    if edition.wrap_cover.enabled:
+        try:
+            cover, cover_sha = render_wrap_cover(cover, blob, edition)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        cover_output = base64.b64encode(cover).decode()
     return RenderResponse(format="pdf", artifactBase64=base64.b64encode(blob).decode(),
                           sha256=sha, rendererVersion=PDF_RENDERER_VERSION,
                           coverArtifactBase64=cover_output, coverSha256=cover_sha,
-                          coverRendererVersion=COVER_RENDERER_VERSION if cover else None)
+                          coverRendererVersion=(WRAP_VERSION if edition.wrap_cover.enabled else COVER_RENDERER_VERSION) if cover else None,
+                          coverFormat=("pdf" if edition.wrap_cover.enabled else "png") if cover else None)
 
 
 @app.post("/preflight", dependencies=[Depends(require_service_token)])
@@ -184,13 +194,25 @@ def preflight(req: PreflightRequest) -> dict:
     cover, _ = _composed_cover(req, edition)
     illustrations = _illustrations(req, edition)
     artifact = None
+    cover_pdf = None
+    wrap_error = None
     if req.includeArtifact:
         artifact, _ = render_epub(req.bookModel, edition, cover, illustrations if edition.image_policy.embed else {}) if edition.kind == "ebook" else render_pdf(req.bookModel, edition, illustrations)
+        if edition.kind == "print" and edition.wrap_cover.enabled:
+            try:
+                cover_pdf, _ = render_wrap_cover(cover, artifact, edition)
+            except ValueError as error:
+                wrap_error = str(error)
     ctx = {"book": req.bookModel, "edition": req.editionConfig,
            "artifact": artifact if edition.kind == "ebook" else None,
            "package_bytes": artifact,
-           "channel": req.channel, "image_bytes": illustrations, "cover_bytes": cover}
+           "channel": req.channel, "image_bytes": illustrations, "cover_bytes": cover,
+           "cover_pdf_bytes": cover_pdf}
     findings = run_preflight(ctx, ruleset)
+    if wrap_error:
+        findings.append(Finding(code="PRINT_WRAP_LAYOUT", message=wrap_error,
+                                location="edition.wrap_cover", severity="error", category="channel",
+                                rule_id="CORE-COVER-002", rule_version=ruleset.version))
     return {
         "ruleVersion": ruleset.version,
         "channel": req.channel,

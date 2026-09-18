@@ -59,3 +59,16 @@ test("embedded print font choices survive save and reload", () => {
   assert.equal(saved.typography?.heading_font, "BookwormVera-Bold");
   assert.deepEqual(toConfig(formFromEdition({ ...edition, edition_metadata_json: saved })), saved);
 });
+
+test("full paperback cover settings survive save and reload without leaking to EPUB", () => {
+  const config = { kind: "print", wrap_cover: { enabled: true, profile: "custom", spine_width_in: 0.415,
+    expected_page_count: 184, back_text: "Back cover copy", spine_text: "Title", background_color: "#102030", text_color: "#ffffff" } };
+  const edition = { type: "print", language: "en", edition_metadata_json: config } as unknown as Edition;
+  const form = formFromEdition(edition);
+  const saved = toConfig(form);
+  assert.equal(saved.kind, "print");
+  if (saved.kind !== "print") throw new Error("wrong edition");
+  assert.deepEqual(saved.wrap_cover, config.wrap_cover);
+  assert.deepEqual(toConfig(formFromEdition({ ...edition, edition_metadata_json: saved })), saved);
+  assert.equal("wrap_cover" in toConfig({ ...form, kind: "ebook" }), false);
+});

@@ -141,6 +141,12 @@ export async function loadRenderedPackageInputs(
   if (primary[0].mimeType !== primaryMime || primary[0].filename !== primaryName) {
     throw new AppError(422, "The selected render format does not match this edition.");
   }
+  for (const cover of covers) {
+    if (!((cover.filename === "cover.png" && cover.mimeType === "image/png")
+      || (kind === "print" && cover.filename === "cover.pdf" && cover.mimeType === "application/pdf"))) {
+      throw new AppError(422, "The selected cover has an invalid format. Render this edition again.");
+    }
+  }
 
   const descriptors = [...primary, ...covers];
   const ids = descriptors.map((artifact) => artifact.assetId);
@@ -167,12 +173,12 @@ export async function loadRenderedPackageInputs(
       || createHash("sha256").update(bytes).digest("hex") !== descriptor.checksum.toLowerCase()) {
       throw new AppError(422, "A selected render artifact failed its integrity check.");
     }
-    const signature = descriptor.role === "rendered_ebook" ? Buffer.from("PK")
-      : descriptor.role === "rendered_print" ? Buffer.from("%PDF-") : Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const signature = descriptor.mimeType === "application/epub+zip" ? Buffer.from("PK")
+      : descriptor.mimeType === "application/pdf" ? Buffer.from("%PDF-") : Buffer.from([0x89, 0x50, 0x4e, 0x47]);
     if (!bytes.subarray(0, signature.length).equals(signature)) {
       throw new AppError(422, "A selected render artifact has the wrong file format.");
     }
-    encoded[descriptor.role === "rendered_cover" ? "cover.png" : primaryName] = bytes.toString("base64");
+    encoded[descriptor.role === "rendered_cover" ? descriptor.filename : primaryName] = bytes.toString("base64");
   }
   return encoded;
 }

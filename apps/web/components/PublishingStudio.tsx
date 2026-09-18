@@ -32,6 +32,8 @@ interface FormState {
   textColor: string; overlay: number; qrEnabled: boolean; qrUrl: string; qrLabel: string;
   qrPosition: "bottom-left" | "bottom-right"; qrSize: number;
   voice: AudiobookVoice; narrationInstructions: string; narrationSpeed: number;
+  wrapEnabled: boolean; wrapProfile: "kdp-white" | "kdp-cream" | "kdp-standard-color" | "kdp-premium-color" | "custom";
+  spineWidth: number; templatePages: number; backText: string; spineText: string; wrapBackground: string; wrapTextColor: string;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -43,6 +45,8 @@ const DEFAULT_FORM: FormState = {
   subtitleOnCover: true, authorOnCover: true, textColor: "#ffffff", overlay: 0.28,
   qrEnabled: false, qrUrl: "", qrLabel: "", qrPosition: "bottom-right", qrSize: 180,
   voice: "marin", narrationInstructions: "Narrate naturally with clear chapter pacing and faithful pronunciation.", narrationSpeed: 1,
+  wrapEnabled: false, wrapProfile: "kdp-white", spineWidth: 0.25, templatePages: 0,
+  backText: "", spineText: "", wrapBackground: "#182528", wrapTextColor: "#ffffff",
 };
 
 function object(value: unknown): Record<string, unknown> {
@@ -60,6 +64,7 @@ export function formFromEdition(edition: Edition): FormState {
   const margins = object(config.margins);
   const typography = object(config.typography);
   const page = object(config.page_numbering);
+  const wrap = object(config.wrap_cover);
   return {
     ...DEFAULT_FORM,
     kind: edition.type === "print" || edition.type === "audiobook" ? edition.type : "ebook",
@@ -87,6 +92,12 @@ export function formFromEdition(edition: Edition): FormState {
     voice: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"].includes(String(config.voice)) ? config.voice as AudiobookVoice : "marin",
     narrationInstructions: typeof config.instructions === "string" ? config.instructions : DEFAULT_FORM.narrationInstructions,
     narrationSpeed: number(config.speed, 1),
+    wrapEnabled: wrap.enabled === true,
+    wrapProfile: ["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"].includes(String(wrap.profile)) ? wrap.profile as FormState["wrapProfile"] : "kdp-white",
+    spineWidth: number(wrap.spine_width_in, 0.25), templatePages: number(wrap.expected_page_count, 0),
+    backText: typeof wrap.back_text === "string" ? wrap.back_text : "", spineText: typeof wrap.spine_text === "string" ? wrap.spine_text : "",
+    wrapBackground: typeof wrap.background_color === "string" ? wrap.background_color : "#182528",
+    wrapTextColor: typeof wrap.text_color === "string" ? wrap.text_color : "#ffffff",
   };
 }
 
@@ -115,6 +126,9 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
       leading: form.leading, paragraph_spacing_pt: form.paragraphSpacing, first_line_indent_in: form.firstLineIndent, text_align: form.textAlign,
     },
     page_numbering: { style: form.numbering, start_at: form.startAt, position: form.numberPosition }, cover,
+    wrap_cover: { enabled: form.wrapEnabled, profile: form.wrapProfile, spine_width_in: form.spineWidth,
+      expected_page_count: form.templatePages || null, back_text: form.backText, spine_text: form.spineText,
+      background_color: form.wrapBackground, text_color: form.wrapTextColor },
   };
 }
 
@@ -347,6 +361,21 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           <label className="mt-5 inline-flex items-center gap-2 text-sm text-white/65"><input type="checkbox" checked={form.qrEnabled} onChange={(event) => update("qrEnabled", event.target.checked)} />Add QR code</label>
           {form.qrEnabled && <div className="mt-4 grid gap-4 sm:grid-cols-2"><label className="text-sm text-white/65">HTTPS destination<input type="url" value={form.qrUrl} onChange={(event) => update("qrUrl", event.target.value)} placeholder="https://author.example/book" className={fieldClass} /></label><label className="text-sm text-white/65">QR label<input value={form.qrLabel} onChange={(event) => update("qrLabel", event.target.value)} maxLength={120} placeholder="Read more" className={fieldClass} /></label></div>}
           {rtlCoverTextUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL cover text cannot be safely composed with the current cover renderer.</p><p className="mt-1 text-amber-100/80">Turn off the selected title, subtitle, and author overlays for artwork-only cover output, or use a shaping-capable cover workflow.</p></div>}
+        </section>}
+
+        {form.kind === "print" && <section className={cardClass} aria-labelledby="paperback-cover-title">
+          <h2 id="paperback-cover-title" className="text-xl font-semibold">Full paperback cover</h2>
+          <p className="mt-2 text-sm leading-relaxed text-white/50">Create one PDF with back cover, spine and front artwork. The spine is sized against the actual rendered interior. A blank area is reserved for your printer’s ISBN barcode.</p>
+          <label className="mt-5 inline-flex items-center gap-2 text-sm text-white/70"><input type="checkbox" checked={form.wrapEnabled} onChange={(event) => update("wrapEnabled", event.target.checked)} />Create full cover PDF</label>
+          {form.wrapEnabled && <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <label className="text-sm text-white/65 sm:col-span-2">Paper and printer<select value={form.wrapProfile} onChange={(event) => update("wrapProfile", event.target.value as FormState["wrapProfile"])} className={fieldClass}><option value="kdp-white">KDP · black ink, white paper</option><option value="kdp-cream">KDP · black ink, cream paper</option><option value="kdp-standard-color">KDP · standard color</option><option value="kdp-premium-color">KDP · premium color</option><option value="custom">Other printer · use its paperback template</option></select></label>
+            {form.wrapProfile === "custom" && <><label className="text-sm text-white/65">Template spine width (in)<input type="number" min={0.01} max={3} step={0.0001} value={form.spineWidth} onChange={(event) => update("spineWidth", Number(event.target.value))} className={fieldClass} /></label><label className="text-sm text-white/65">Template page count<input type="number" min={1} max={2000} value={form.templatePages || ""} onChange={(event) => update("templatePages", Number(event.target.value))} className={fieldClass} /></label></>}
+            <label className="text-sm text-white/65 sm:col-span-2">Back cover text<textarea rows={6} maxLength={3000} value={form.backText} onChange={(event) => update("backText", event.target.value)} className={fieldClass} placeholder="Introduce the book and give readers a reason to open it." /></label>
+            <label className="text-sm text-white/65 sm:col-span-2">Spine text (optional)<input maxLength={200} value={form.spineText} onChange={(event) => update("spineText", event.target.value)} className={fieldClass} placeholder="Book title · Author" /></label>
+            <label className="text-sm text-white/65">Back and spine background<input type="color" value={form.wrapBackground} onChange={(event) => update("wrapBackground", event.target.value)} className={`${fieldClass} h-11 p-1`} /></label>
+            <label className="text-sm text-white/65">Back and spine text color<input type="color" value={form.wrapTextColor} onChange={(event) => update("wrapTextColor", event.target.value)} className={`${fieldClass} h-11 p-1`} /></label>
+            <p className="text-xs leading-relaxed text-white/45 sm:col-span-2">Choose front artwork above, then save and render. KDP profiles calculate spine width automatically. Other printers require a matching template page count and spine width, with 0.125-inch outer bleed. Spine text must fit at 7 pt or larger. Review the PDF and your printer’s template before ordering a proof; hardcover and RTL covers need a separate workflow.</p>
+          </div>}
         </section>}
 
         {form.kind === "audiobook" && <section className={cardClass} aria-labelledby="audiobook-title">

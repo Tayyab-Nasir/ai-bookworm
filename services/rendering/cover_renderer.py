@@ -8,8 +8,9 @@ import reportlab
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 from editions import EbookEdition, PrintEdition, cover_requires_unsupported_rtl_typography
+from print_fonts import _missing
 
-COVER_RENDERER_VERSION = "cover-1.1.0"
+COVER_RENDERER_VERSION = "cover-1.2.0"
 
 
 def _font(size: int, bold: bool = False):
@@ -36,6 +37,8 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> str:
 def _target_size(edition: EbookEdition | PrintEdition) -> tuple[int, int]:
     if edition.kind == "print":
         width_in, height_in = edition.trim_in
+        if edition.wrap_cover.enabled:
+            return round((width_in + 0.125) * 300), round((height_in + 0.25) * 300)
         width = 1600
         return width, round(width * height_in / width_in)
     return 1600, 2400
@@ -49,6 +52,14 @@ def compose_front_cover(
     """Return a deterministic PNG and sha256. Artwork is never written to disk."""
     if cover_requires_unsupported_rtl_typography(edition, book.get("metadata") or {}):
         raise ValueError("RTL cover text requires an embedded shaping-capable font; the base-font cover renderer cannot produce it safely")
+    metadata = book.get("metadata") or {}
+    for enabled, key in ((edition.cover.title_on_cover, "title"),
+                         (edition.cover.subtitle_on_cover, "subtitle"),
+                         (edition.cover.author_on_cover, "author")):
+        if enabled and _missing(str(metadata.get(key) or ""), "BookwormVera"):
+            raise ValueError(f"cover {key} contains characters unsupported by the cover font")
+    if edition.cover.qr_code.enabled and _missing(edition.cover.qr_code.label or "", "BookwormVera"):
+        raise ValueError("QR label contains characters unsupported by the cover font")
     try:
         with Image.open(BytesIO(artwork)) as source:
             source.load()
@@ -97,7 +108,7 @@ def compose_front_cover(
         y = image.height - side - card.height
         image.paste(card, (x, y))
         if qr.label:
-            label_font = _font(max(18, image.width // 60))
+            label_font = _font(max(30 if edition.kind == "print" and edition.wrap_cover.enabled else 18, image.width // 60))
             draw = ImageDraw.Draw(image)
             draw.text((x + card.width / 2, y - 12), qr.label, font=label_font, fill=color, anchor="ms")
 

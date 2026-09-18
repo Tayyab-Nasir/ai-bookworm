@@ -28,6 +28,18 @@ an operational process. Saved agent claims are not evidence by themselves.
 
 ## Current local verification snapshot
 
+**2026-09-18 incremental paperback-cover evidence:** saved wrap settings now
+reach deterministic single-page CMYK PDF generation, private render storage
+and retailer ZIP assembly. Actual artifact tests check geometry, embedded
+fonts, text, color space, checksums and repeatability; preflight rejects stale
+templates, missing/cropped/wrong-size covers and unsupported back/spine text.
+Workspace TypeScript checks, an isolated Next production build, 175 service,
+188 API and 63 web tests pass. Isolated Publishing Studio browser
+acceptance passes with fixture transport, including save/reload and mobile
+containment. These are local checks, not retailer acceptance or live Storage
+evidence. Hardcover, RTL shaping, complete interior bleed/font conformance and
+physical proof review remain open. Core rules are now `core-1.0.4`.
+
 **2026-09-18 incremental print-font evidence:** `pdf-1.5.0` adds bundled
 Bitstream Vera body/heading choices with four embedded styles. Core rules
 `core-1.0.3` block unsupported printed glyphs with chapter/node locations,
