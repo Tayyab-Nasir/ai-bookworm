@@ -7,7 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,7 @@ from rules import load_ruleset  # noqa: E402
 from print_fonts import print_font_issues  # noqa: E402
 from wrap_cover import VERSION as WRAP_VERSION, render_wrap_cover  # noqa: E402
 from preflight import Finding  # noqa: E402
+from audio_assembly import assemble_audio  # noqa: E402
 
 app = FastAPI(title="bookworm-rendering")
 
@@ -57,6 +58,10 @@ class PreflightRequest(BaseModel):
     assetImagesBase64: dict[str, str] = Field(default_factory=dict)
 
 
+class AudioAssemblyRequest(BaseModel):
+    segmentsBase64: list[str] = Field(min_length=1, max_length=250)
+
+
 def require_service_token(x_service_token: str | None = Header(default=None)) -> None:
     configured = os.getenv("RENDERING_SERVICE_TOKEN") or os.getenv("SERVICE_AUTH_TOKEN")
     if configured and (not x_service_token or not hmac.compare_digest(x_service_token, configured)):
@@ -73,6 +78,20 @@ def _cover_bytes(value: str | None) -> bytes | None:
     if not data or len(data) > 25 * 1024 * 1024:
         raise HTTPException(422, "cover image must be between 1 byte and 25 MB")
     return data
+
+
+@app.post("/audio/assemble", dependencies=[Depends(require_service_token)])
+def assemble_chapter(req: AudioAssemblyRequest):
+    if sum(len(value) for value in req.segmentsBase64) > 140 * 1024 * 1024:
+        raise HTTPException(422, "chapter audio exceeds input limit")
+    try:
+        segments = [base64.b64decode(value, validate=True) for value in req.segmentsBase64]
+        audio, checksum = assemble_audio(segments)
+    except ValueError as error:
+        raise HTTPException(422, "invalid or oversized chapter audio") from error
+    except RuntimeError as error:
+        raise HTTPException(503, "audio assembly is unavailable or busy") from error
+    return Response(audio, media_type="audio/mpeg", headers={"x-artifact-sha256": checksum, "cache-control": "no-store"})
 
 
 def _composed_cover(req, edition) -> tuple[bytes | None, str | None]:

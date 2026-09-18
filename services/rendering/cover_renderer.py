@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from editions import EbookEdition, PrintEdition, cover_requires_unsupported_rtl_typography
 from print_fonts import _missing
 
-COVER_RENDERER_VERSION = "cover-1.2.0"
+COVER_RENDERER_VERSION = "cover-1.3.0"
 
 
 def _font(size: int, bold: bool = False):
@@ -20,18 +20,82 @@ def _font(size: int, bold: bool = False):
 
 
 def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> str:
+    """Wrap measured glyphs, including tokens without spaces; never discard text."""
+    def width(value: str) -> int:
+        box = draw.textbbox((0, 0), value, font=font)
+        return box[2] - box[0]
+
     lines: list[str] = []
-    current = ""
-    for word in text.split():
-        candidate = f"{current} {word}".strip()
-        if current and draw.textbbox((0, 0), candidate, font=font)[2] > max_width:
-            lines.append(current)
-            current = word
-        else:
-            current = candidate
-    if current:
+    for paragraph in text.splitlines() or [""]:
+        current = ""
+        for word in paragraph.split():
+            candidate = f"{current} {word}".strip()
+            if width(candidate) <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+                current = ""
+            for char in word:
+                if current and width(current + char) > max_width:
+                    lines.append(current)
+                    current = ""
+                current += char
         lines.append(current)
     return "\n".join(lines)
+
+
+def _fit_text(draw, text: str, width: int, height: int, preferred: int, minimum: int, *, bold=False, label: str):
+    """Choose a fitting font without shrinking below the readable floor."""
+    if len(text) > 2048 or width <= 0 or height <= 0:
+        raise ValueError(f"{label} does not fit the cover; shorten the text or disable the overlay")
+
+    def measure(size):
+        font = _font(size, bold)
+        spacing = max(4, round(size * 0.18))
+        wrapped = _wrap(draw, text, font, width)
+        box = draw.multiline_textbbox((0, 0), wrapped, font=font, align="center", spacing=spacing)
+        return (wrapped, font, spacing, box) if box[2] - box[0] <= width and box[3] - box[1] <= height else None
+
+    fitted = measure(minimum)
+    if fitted is None:
+        raise ValueError(f"{label} does not fit at a readable size; shorten the text or disable the overlay")
+    low, high = minimum + 1, max(minimum, preferred)
+    while low <= high:
+        size = (low + high) // 2
+        candidate = measure(size)
+        if candidate is None:
+            high = size - 1
+        else:
+            fitted, low = candidate, size + 1
+    return fitted
+
+
+def _paint_text(draw, fitted, left: int, top: int, width: int, color: str):
+    text, font, spacing, box = fitted
+    # Anchor the actual ink bounds, including accented capitals and descenders.
+    x = left + (width - (box[2] - box[0])) // 2 - box[0]
+    y = top - box[1]
+    draw.multiline_text((x, y), text, font=font, fill=color, align="center", spacing=spacing)
+
+
+def _qr_image(url: str, size_px: int) -> Image.Image:
+    code = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=1, border=4)
+    try:
+        code.add_data(url)
+        code.make(fit=True)
+    except (qrcode.exceptions.DataOverflowError, ValueError) as error:
+        raise ValueError("QR destination exceeds QR capacity; shorten the HTTPS URL") from error
+    modules = len(code.get_matrix())  # Includes the four-module quiet zone.
+    code.box_size = size_px // modules
+    if code.box_size < 4:
+        raise ValueError("QR size is too small for this destination; increase QR size or shorten the HTTPS URL")
+    # Do not resample: every module must occupy an integer number of pixels.
+    qr_image = code.make_image(fill_color="black", back_color="white").convert("RGB")
+    canvas = Image.new("RGB", (size_px, size_px), "white")
+    inset = (size_px - qr_image.width) // 2
+    canvas.paste(qr_image, (inset, inset))
+    return canvas
 
 
 def _target_size(edition: EbookEdition | PrintEdition) -> tuple[int, int]:
@@ -72,45 +136,49 @@ def compose_front_cover(
     if cover.overlay_opacity:
         draw.rectangle((0, 0, image.width, image.height), fill=(0, 0, 0, round(255 * cover.overlay_opacity)))
 
-    metadata = book.get("metadata") or {}
     color = cover.text_color
     side = round(image.width * 0.09)
-    title_y = round(image.height * 0.1)
-    title_font = _font(max(48, image.width // 13), bold=True)
-    subtitle_font = _font(max(30, image.width // 26))
-    author_font = _font(max(34, image.width // 23), bold=True)
-
-    if cover.title_on_cover and metadata.get("title"):
-        title = _wrap(draw, str(metadata["title"]), title_font, image.width - side * 2)
-        draw.multiline_text((image.width / 2, title_y), title, font=title_font, fill=color, anchor="ma", align="center", spacing=12)
-        title_box = draw.multiline_textbbox((image.width / 2, title_y), title, font=title_font, anchor="ma", align="center", spacing=12)
-        title_y = title_box[3] + 28
-
-    if cover.subtitle_on_cover and metadata.get("subtitle"):
-        subtitle = _wrap(draw, str(metadata["subtitle"]), subtitle_font, image.width - side * 2)
-        draw.multiline_text((image.width / 2, title_y), subtitle, font=subtitle_font, fill=color, anchor="ma", align="center", spacing=8)
-
-    if cover.author_on_cover and metadata.get("author"):
-        author = _wrap(draw, str(metadata["author"]), author_font, round(image.width * 0.65))
-        draw.multiline_text((image.width / 2, round(image.height * 0.9)), author, font=author_font, fill=color, anchor="ms", align="center", spacing=8)
-
+    safe_width = image.width - side * 2
+    gap = max(16, round(image.width * 0.015))
+    top, bottom = round(image.height * 0.1), round(image.height * 0.9)
+    print_wrap = edition.kind == "print" and edition.wrap_cover.enabled
     qr = cover.qr_code
     if qr.enabled and qr.url:
-        code = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=4)
-        code.add_data(qr.url)
-        code.make(fit=True)
-        qr_image = code.make_image(fill_color="black", back_color="white").convert("RGB")
-        qr_image = qr_image.resize((qr.size_px, qr.size_px), Image.Resampling.NEAREST)
+        qr_image = _qr_image(qr.url, qr.size_px)
         pad = max(12, qr.size_px // 12)
         card = Image.new("RGB", (qr.size_px + pad * 2, qr.size_px + pad * 2), "white")
         card.paste(qr_image, (pad, pad))
+        if card.width > safe_width or card.height > bottom - top:
+            raise ValueError("QR code does not fit within the cover safe area; reduce QR size")
         x = side if qr.position == "bottom-left" else image.width - side - card.width
-        y = image.height - side - card.height
+        y = bottom - card.height
         image.paste(card, (x, y))
-        if qr.label:
-            label_font = _font(max(30 if edition.kind == "print" and edition.wrap_cover.enabled else 18, image.width // 60))
-            draw = ImageDraw.Draw(image)
-            draw.text((x + card.width / 2, y - 12), qr.label, font=label_font, fill=color, anchor="ms")
+        bottom = y - gap
+        if qr.label and qr.label.strip():
+            fitted = _fit_text(draw, qr.label, card.width, round(image.height * 0.12), image.width // 60,
+                               30 if print_wrap else 18, label="QR label")
+            bottom -= fitted[3][3] - fitted[3][1]
+            _paint_text(draw, fitted, x, bottom, card.width, color)
+            bottom -= gap
+
+    if cover.author_on_cover and str(metadata.get("author") or "").strip():
+        fitted = _fit_text(draw, str(metadata["author"]), safe_width, min(round(image.height * 0.14), bottom - top),
+                           image.width // 23, 34, bold=True, label="cover author")
+        bottom -= fitted[3][3] - fitted[3][1]
+        _paint_text(draw, fitted, side, bottom, safe_width, color)
+        bottom -= gap
+
+    title = str(metadata.get("title") or "").strip() if cover.title_on_cover else ""
+    subtitle = str(metadata.get("subtitle") or "").strip() if cover.subtitle_on_cover else ""
+    if title:
+        available = bottom - top
+        title_height = int((available - gap) * 0.62) if subtitle else available
+        fitted = _fit_text(draw, title, safe_width, title_height, image.width // 13, 48, bold=True, label="cover title")
+        _paint_text(draw, fitted, side, top, safe_width, color)
+        top += fitted[3][3] - fitted[3][1] + gap
+    if subtitle:
+        fitted = _fit_text(draw, subtitle, safe_width, bottom - top, image.width // 26, 30, label="cover subtitle")
+        _paint_text(draw, fitted, side, top, safe_width, color)
 
     output = BytesIO()
     image.save(output, format="PNG", optimize=False, compress_level=9)

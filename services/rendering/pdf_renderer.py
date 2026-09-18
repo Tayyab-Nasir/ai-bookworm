@@ -26,9 +26,9 @@ from reportlab.platypus import (
 
 from editions import PrintEdition, print_requires_unsupported_rtl_typography
 from manuscript import block_tree, image_width, inline_markup, table_rows
-from print_fonts import print_font_issues
+from print_fonts import code_font, page_number_font, print_font_issues
 
-RENDERER_VERSION = "pdf-1.6.0"
+RENDERER_VERSION = "pdf-1.7.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -54,7 +54,7 @@ def _on_page(numbering, margins, edition, canvas, doc):
     if numbering.style == "roman":
         n = _roman(n)
     canvas.saveState()
-    canvas.setFont("Helvetica", 9)
+    canvas.setFont(page_number_font(edition.typography.body_font, edition.typography.heading_font), 9)
     w, h = doc.pagesize
     bleed_in = edition.bleed_in
     trim_left = bleed_in if edition.bleed_edges == "all" or doc.page % 2 == 0 else 0
@@ -104,6 +104,7 @@ def render_pdf(book: dict, edition: PrintEdition,
         title=book["metadata"].get("title", ""),
         author=book["metadata"].get("author", ""),
         creator=f"bookworm-renderer {RENDERER_VERSION}",
+        initialFontName=page_number_font(typo.body_font, typo.heading_font),
     )
     page_w, page_h = pagesize
     # User margins are measured from the trim edge, never from the PDF edge.
@@ -133,7 +134,7 @@ def render_pdf(book: dict, edition: PrintEdition,
 
     def render_list(group):
         return ListFlowable([
-            ListItem([Paragraph(inline_markup(item["node"], pdf=True), list_body),
+            ListItem([Paragraph(inline_markup(item["node"], pdf=True, pdf_code_font=code_font(typo.body_font)), list_body),
                       *(render_list(child) for child in item["children"])])
             for item in group["items"]
         ], bulletType="1" if group["style"] == "ordered" else "bullet", start=1 if group["style"] == "ordered" else "bullet", leftIndent=18,
@@ -149,8 +150,8 @@ def render_pdf(book: dict, edition: PrintEdition,
                 story.append(render_list(block))
                 continue
             n = block["node"]
-            text = inline_markup(n, pdf=True)
             t = n.get("type")
+            text = inline_markup(n, pdf=True, pdf_code_font=code_font(typo.heading_font if t == "heading" else typo.body_font))
             if t == "heading":
                 story.append(Paragraph(text, heading))
             elif t == "quote":
@@ -172,7 +173,8 @@ def render_pdf(book: dict, edition: PrintEdition,
                                   for value in [*row, *([""] * (columns - len(row)))]] for row in rows]
                         story.append(LongTable(cells, colWidths=[frame_w / columns] * columns,
                             splitByRow=1, splitInRow=1, hAlign="LEFT", spaceAfter=typo.leading,
-                            style=[("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#777777")),
+                            style=[("FONTNAME", (0, 0), (-1, -1), typo.body_font),
+                                   ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#777777")),
                                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
                                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
                                    ("RIGHTPADDING", (0, 0), (-1, -1), 5)]))

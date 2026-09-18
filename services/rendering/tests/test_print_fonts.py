@@ -78,7 +78,7 @@ def test_inline_code_and_stale_table_use_the_actual_printed_text_and_font():
         {"id": "table", "type": "table", "text": "Corrected", "rows": [["\u6f22"]]},
     ]
     issues = print_font_issues(book, CONFIG)
-    assert len(issues) == 1 and "Courier" in issues[0]["message"]
+    assert len(issues) == 1 and "BookwormDejaVuSansMono" in issues[0]["message"]
     assert "node:code" in issues[0]["location"]
     assert not print_font_issues(book, {"kind": "ebook"})
 

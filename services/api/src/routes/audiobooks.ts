@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import { segmentSpeechText } from "../lib/speech-generation.js";
 import type { SupabaseClient } from "../lib/supabase.js";
+import { assembleChapterAudio, loadChapterAudio } from "../lib/audio-download.js";
 
 const BUCKET = "book-assets";
 const createSchema = z.object({
@@ -58,7 +59,20 @@ async function hydrateProject(sb: SupabaseClient, project: Record<string, unknow
   };
 }
 
-export function audiobookRoutes(app: FastifyInstance) {
+export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
+  // Bounded per API process; the renderer also serializes native assembly.
+  const assembling = new Set<string>();
+  app.get("/audiobook-jobs/:projectId/audio-download", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    const key = `${req.userId}:${projectId}`;
+    if (assembling.has(key) || assembling.size >= 2) throw new AppError(429, "Audio assembly is busy. Try again shortly.");
+    assembling.add(key);
+    try {
+      const segments = await loadChapterAudio(app.supabaseFactory(req.userToken), projectId);
+      const bytes = await assembleChapterAudio(segments, options.fetcher);
+      return reply.header("cache-control", "private, no-store").header("content-disposition", 'attachment; filename="chapter.mp3"').type("audio/mpeg").send(bytes);
+    } finally { assembling.delete(key); }
+  });
   app.get("/editions/:editionId/audiobook-jobs", async (req) => {
     const { editionId } = req.params as { editionId: string };
     const sb = app.supabaseFactory(req.userToken);

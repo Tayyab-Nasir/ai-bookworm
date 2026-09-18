@@ -301,7 +301,7 @@ before production tuning.
   preview URLs are short-lived and are not persisted in manuscript nodes. Save
   the chapter to persist these edits; removing a placement does not delete its
   source asset.
-- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.6.0`. They preserve inline
+- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.7.0`. They preserve inline
   emphasis, breaks, nested lists and illustration captions; PDF gutters mirror
   correctly on odd/even pages. EPUB writes the saved edition's BCP-47 language and
   resolved `dir` attribute (`ltr`/`rtl`), letting reading systems apply local
@@ -327,8 +327,12 @@ before production tuning.
   installed `reportlab/fonts/bitstream-vera-license.txt` when packaging the
   rendering runtime; no operating-system or customer font files are loaded.
   Coverage is limited Latin, not universal Unicode or RTL shaping. Existing
-  font choices remain compatible. Inline code and page numbers retain standard
-  PDF fonts. Before rendering, glyph checks inspect the effective font for
+  font choices remain compatible. When both body and heading use Vera, inline
+  code uses the four vendored DejaVu Sans Mono faces and page numbers use Vera;
+  incidental canvas/table fonts are also embedded. Keep the unmodified font
+  files, license and checksum provenance in `services/rendering/fonts/`.
+  Legacy Times/Helvetica/Courier choices remain unchanged and unembedded.
+  Before rendering, glyph checks inspect the effective font for
   headings, marked text, lists, tables and captions; unsupported characters
   produce located `PRINT_GLYPH_UNSUPPORTED` errors instead of substituted boxes.
   `/preflight` returns these findings without attempting invalid output;
@@ -336,8 +340,12 @@ before production tuning.
   this guard. Re-render older artifacts before relying on this coverage.
 - Paperback editions can enable `wrap_cover`. The `paperback-cover-1.0.0`
   renderer produces one back/spine/front CMYK PDF with embedded back/spine
-  fonts, a 300-DPI raster front and blank barcode reserve. `cover-1.2.0`
-  checks visible front-overlay glyphs. White/cream/color KDP profiles derive
+  fonts, a 300-DPI raster front and blank barcode reserve. `cover-1.3.0`
+  checks visible front-overlay glyphs and fits measured text without clipping
+  or discarding long tokens. Footer text and QR areas do not overlap. QR
+  modules are integral pixels with a four-module quiet zone; too-small/dense
+  requests fail instead of resampling. Contrast and physical scan proof are
+  still author acceptance steps. White/cream/color KDP profiles derive
   spine width from the actual interior; custom paperback templates require
   matching page count and spine width. Outer bleed is 0.125 inch.
   Geometry follows [KDP's paperback cover guidance](https://kdp.amazon.com/en_US/help/topic/G201953020),
@@ -430,9 +438,34 @@ before production tuning.
 - Speech responses do not contain exact token usage. `ai_runs.estimated_cost`
   uses the documented model prices plus the labelled `word-rate-v1` duration
   estimate. Reconcile actual spend from OpenAI organization usage before margin
-  reporting. Audio mastering, concatenation, loudness/QC, opening/closing
+  reporting. Audio mastering, loudness/QC, opening/closing
   credits, retailer packaging, and live-provider acceptance remain separate
   release gates; segment MP3s are not claimed to be a retail-ready audiobook.
+- Completed chapters support `GET /v1/audiobook-jobs/{projectId}/audio-download`.
+  The caller's RLS client checks completion, sequential indexes and exact
+  workspace/project paths, sizes and SHA-256 before transmitting saved audio
+  to the authenticated rendering service's `/audio/assemble`. No new provider
+  call or credit spend occurs. The assembled artifact is returned as a private,
+  no-store attachment, not persisted as another asset; future downloads may
+  assemble again. The UI handles failures and retains the original segments.
+- `chapter-audio-1.0.0` decodes each MP3 to common PCM, joins in order and encodes
+  once at 44.1 kHz mono/192 kbps. This does not normalize loudness or perform
+  narration QC. Limits: 250 segments, 50 MiB each, 100 MiB total source, two-hour
+  decoded duration, 150 MiB output, 120-second processing deadline. The output
+  cap can be reached before two hours. Native assembly is serialized per
+  renderer process; API admission is two operations per process, one per
+  user/project. There is no distributed queue/cache for this download yet.
+- Install rendering requirements, including pinned `imageio-ffmpeg==0.6.0`.
+  Its Windows wheel supplies FFmpeg 7.1; `IMAGEIO_FFMPEG_EXE` may point to a
+  reviewed operator-managed executable. No shell/network protocols or caller
+  paths are accepted. Temporary files are cleaned on success/error; allow up
+  to roughly 1.3 GB scratch space per operation. Enforce corresponding private
+  service body/concurrency limits at the reverse proxy. Runtime security
+  updates, production capacity, native Storage/provider audio and recovery
+  acceptance remain required. Wrapper license is BSD-2-Clause; the bundled
+  Windows executable reports GPLv3-or-later via `-L`. Retain appropriate notices
+  and review binary redistribution obligations before distributing runtime
+  images. No FFmpeg executable is committed to the application repository.
 
 ## Translation workflow
 

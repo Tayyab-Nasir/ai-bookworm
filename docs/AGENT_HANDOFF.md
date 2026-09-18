@@ -23,6 +23,30 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 local media finishing update
+
+Completed chapter narration can now be downloaded as one private MP3 from
+Publishing Studio. Caller-scoped RLS reads verify segment order, exact private
+paths, sizes and checksums before native decoding/assembly. This reuses saved
+audio without new OpenAI calls or generation credits. `chapter-audio-1.0.0`
+uses a bounded FFmpeg subprocess, not byte concatenation. It is not loudness
+mastering, pronunciation QC or retailer-audio certification.
+
+`cover-1.3.0` fits measured title/subtitle/author/QR-label bounds, prevents
+footer collisions and preserves integer QR modules/quiet zones. `pdf-1.7.0`
+embeds every used font when both body and heading choose Vera, including
+vendored licensed DejaVu Sans Mono for code. Legacy font settings remain
+unchanged; RTL shaping is still unsupported. Source licenses/checksums are
+retained in `services/rendering/fonts/`.
+
+Verified: TypeScript checks, isolated Next production build, 217 service,
+192 API and 64 web tests; browser publishing and audio
+failure/retry/download/mobile acceptance. Native tests inspect actual audio
+duration/order/format and PDF font streams, while browser/API transports use
+fixtures. Final build/Git evidence and exact next steps are in
+`Codex Sessions/2026-09/2026-09-18-bookworm-media-finishing.md` in the vault.
+No live deployment, migration, paid generation or customer data operation.
+
 ### 2026-09-18 local interior geometry update
 
 `pdf-1.6.0` adds saved `bleed_edges` (`outer` for KDP, `all` for Lulu),
@@ -159,11 +183,11 @@ source edits. The shared vault entry point is
 AST index only, with no customer files, secrets, or provider-backed semantic
 analysis.
 
-Next: deploy and supervise the audiobook and translation workers, add
-mastering/concatenation, loudness and pronunciation QC, then retail-audio
+Next: finish local mastering, loudness and pronunciation QC, then retail-audio
 packaging. Native Supabase Storage/scanner/provider acceptance, paid billing
 configuration, translation live acceptance, observability/backups, mobile
 completion and broader release-checklist gaps remain open.
+Deploy and supervise workers only after the requested build and release gates.
 Do not declare the full product complete from these local fixtures.
 
 ## Safety and recovery

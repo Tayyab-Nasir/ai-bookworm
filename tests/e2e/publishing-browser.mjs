@@ -60,6 +60,17 @@ try {
   assert.equal(await page.getByRole('button', { name: 'Run preflight', exact: true }).isEnabled(), false, 'print accepted for Apple');
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'publishing mobile overflow');
+  await page.getByRole('button', { name: 'New audio', exact: true }).click();
+  await page.getByRole('button', { name: 'Save edition', exact: true }).click();
+  const audioButton = page.getByRole('button', { name: 'Download assembled chapter', exact: true });
+  await audioButton.click();
+  await page.getByRole('alert').filter({ hasText: 'Fixture assembly busy. Try again.' }).waitFor();
+  const audioTransfer = page.waitForEvent('download');
+  await audioButton.click();
+  const audioFile = await audioTransfer;
+  assert.equal(await audioFile.failure(), null);
+  assert.match(audioFile.suggestedFilename(), /^chapter-.*\.mp3$/);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'audiobook mobile overflow');
   assert.deepEqual(errors, []);
-  console.log('PASS publishing browser: save/reload QR and full paperback settings, embedded font choice, render, preflight gate, matching package source, download/history renewal, print start, retailer compatibility, mobile. Artifact bytes remain fixtures.');
+  console.log('PASS publishing browser: saved paperback settings, font choice, render/preflight/package, audio assembly failure/retry/download, retailer compatibility and mobile. Artifact bytes remain fixtures.');
 } finally { await browser.close(); }

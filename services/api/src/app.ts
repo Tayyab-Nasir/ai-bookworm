@@ -60,7 +60,7 @@ export async function buildApp(
     bookMemoryRoutes(v1);
     metadataGenerationRoutes(v1, { fetcher: opts.aiFetch });
     aiRoutes(v1, { fetcher: opts.aiFetch });
-    audiobookRoutes(v1);
+    audiobookRoutes(v1, { fetcher: opts.renderFetch });
     translationRoutes(v1);
     assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner });
     editionRoutes(v1, { fetcher: opts.renderFetch });

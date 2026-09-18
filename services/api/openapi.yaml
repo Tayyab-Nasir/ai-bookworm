@@ -1930,6 +1930,30 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/audiobook-jobs/{projectId}/audio-download:
+    get:
+      tags: [v1]
+      operationId: downloadAssembledAudiobookChapter
+      summary: Assemble a completed, private narration project into one chapter MP3
+      description: Verifies all stored segments and joins them in order without new AI generation. Requires RLS-visible completed narration. Limits are 250 parts, 100 MiB source audio, two hours decoded audio, 150 MiB output and 120 seconds native processing. Output is 44.1 kHz mono at 192 kbps; this is not retailer mastering or quality certification. Does not persist another asset.
+      parameters:
+        - in: path
+          name: projectId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Private, no-store chapter attachment
+          content:
+            audio/mpeg:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     AdminLimit:

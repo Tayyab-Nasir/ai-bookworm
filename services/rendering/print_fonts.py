@@ -1,6 +1,7 @@
 """Fixed font inventory and glyph checks for deterministic print output.
 
 Bitstream Vera ships with ReportLab, including its redistribution license.
+DejaVu Sans Mono is vendored with its license for embedded-edition inline code.
 No machine fonts or author-supplied font paths are loaded.
 """
 from pathlib import Path
@@ -22,11 +23,30 @@ for _name, _file in (
     pdfmetrics.registerFont(TTFont(_name, str(_FONT_DIR / _file)))
 pdfmetrics.registerFontFamily("BookwormVera", normal="BookwormVera", bold="BookwormVera-Bold",
                               italic="BookwormVera-Italic", boldItalic="BookwormVera-BoldItalic")
+for _name, _file in (
+    ("BookwormDejaVuSansMono", "DejaVuSansMono.ttf"),
+    ("BookwormDejaVuSansMono-Bold", "DejaVuSansMono-Bold.ttf"),
+    ("BookwormDejaVuSansMono-Italic", "DejaVuSansMono-Oblique.ttf"),
+    ("BookwormDejaVuSansMono-BoldItalic", "DejaVuSansMono-BoldOblique.ttf"),
+):
+    pdfmetrics.registerFont(TTFont(_name, str(Path(__file__).resolve().parent / "fonts" / _file)))
+pdfmetrics.registerFontFamily("BookwormDejaVuSansMono", normal="BookwormDejaVuSansMono",
+    bold="BookwormDejaVuSansMono-Bold", italic="BookwormDejaVuSansMono-Italic",
+    boldItalic="BookwormDejaVuSansMono-BoldItalic")
+
+
+def code_font(base: str) -> str:
+    """Vera editions use actual embedded monospace; legacy choices stay Courier."""
+    return "BookwormDejaVuSansMono" if base in EMBEDDED_FONTS else "Courier"
+
+
+def page_number_font(body: str, heading: str) -> str:
+    return "BookwormVera" if {body, heading} <= EMBEDDED_FONTS else "Helvetica"
 
 
 def _run_font(base: str, marks: list[str]) -> str:
     if "code" in marks:
-        base = "Courier"
+        base = code_font(base)
     family, bold, italic = ps2tt(base)
     return tt2ps(family, bold or "bold" in marks, italic or "italic" in marks)
 

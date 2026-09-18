@@ -21,6 +21,7 @@ const publishingEditions = new Map();
 const publishingPackages = [];
 const publishingRenders = new Map();
 const publishingChecks = new Map();
+let chapterDownloadAttempts = 0;
 const fixtureFiles = new Map();
 function fixtureDownload(name) {
   const token = randomUUID(); fixtureFiles.set(token, name);
@@ -101,6 +102,16 @@ const server = createServer(async (req, res) => {
       publishingEditions.set(edition.id, edition); return json(201, edition);
     }
     const edition = publishingEditions.get(url.pathname.split('/')[3]);
+    if (edition && req.method === 'GET' && url.pathname.endsWith('/audiobook-jobs')) {
+      return json(200, { projects: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', editionId: edition.id, chapterId: memoryChapters[0].id,
+        documentVersionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', voice: 'marin', speed: 1, status: 'succeeded', segmentCount: 2,
+        creditUnits: 2, createdAt: '2026-09-18T00:00:00Z', completedAt: '2026-09-18T00:01:00Z', aiVoiceDisclosureRequired: true, segments: [] }] });
+    }
+    if (url.pathname === '/v1/audiobook-jobs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/audio-download') {
+      if (++chapterDownloadAttempts === 1) return json(503, { error: { message: 'Fixture assembly busy. Try again.' } });
+      res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-disposition': 'attachment; filename="chapter.mp3"', 'cache-control': 'private, no-store' });
+      return res.end(Buffer.from('ID3browser-audio-fixture'));
+    }
     if (edition && req.method === 'PATCH') {
       if (body.expectedUpdatedAt !== edition.updated_at) return json(409, { error: { message: 'Edition changed' } });
       Object.assign(edition, { edition_metadata_json: body.config, language: body.language, updated_at: new Date().toISOString() });

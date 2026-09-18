@@ -31,15 +31,18 @@ def inline_runs(node: dict) -> list[dict]:
     return runs if "".join(run["text"] for run in runs) == text else [{"text": text, "marks": []}]
 
 
-def inline_markup(node: dict, *, pdf: bool = False) -> str:
+def inline_markup(node: dict, *, pdf: bool = False, pdf_code_font: str = "Courier") -> str:
     tags = {"bold": ("b", "b"), "italic": ("i", "i"), "strike": ("strike", "strike"),
-            "underline": ("u", "u"), "code": ('font name="Courier"', "font")} if pdf else {
+            "underline": ("u", "u"), "code": (f'font name="{escape(pdf_code_font, quote=True)}"', "font")} if pdf else {
                 "bold": ("strong", "strong"), "italic": ("em", "em"), "strike": ("s", "s"),
                 "underline": ("u", "u"), "code": ("code", "code")}
     output = []
     for run in inline_runs(node):
         value = escape(run["text"]).replace("\n", "<br/>")
-        for mark in run["marks"]:
+        # The embedded code family must wrap bold/italic, not reset an outer
+        # italic tag. Keep historical Courier markup unchanged for old editions.
+        marks = sorted(run["marks"], key=lambda mark: mark == "code") if pdf and pdf_code_font != "Courier" else run["marks"]
+        for mark in marks:
             start, end = tags[mark]
             value = f"<{start}>{value}</{end}>"
         output.append(value)

@@ -28,6 +28,18 @@ an operational process. Saved agent claims are not evidence by themselves.
 
 ## Current local verification snapshot
 
+**2026-09-18 incremental media-finishing evidence:** private completed chapters
+can be assembled and downloaded without additional AI generation. Native tests
+verify ordered decoded audio, 44.1 kHz mono/192 kbps output, deterministic bytes,
+limits and cleanup. `cover-1.3.0` checks measured text fit and exact QR grids;
+`pdf-1.7.0` embeds all used fonts for Vera body/heading editions, including
+licensed DejaVu Mono code. TypeScript checks, an isolated Next production
+build, 217 service, 192 API and 64 web tests pass, plus
+browser audio failure/retry/download and publishing/mobile acceptance. Browser
+and API transport bytes remain fixtures; native media tests are separate.
+Legacy fonts, RTL shaping, full-bleed image placement, physical proof, audio
+loudness/quality checks and production capacity remain open.
+
 **2026-09-18 incremental interior-geometry evidence:** `pdf-1.6.0` adds explicit
 outer/all bleed edges, fixes the actual odd/even frame cycle after page two,
 and anchors numbering to trim. KDP/Lulu `1.2.0` reject wrong bleed settings and
