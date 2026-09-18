@@ -321,7 +321,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
       if (bookResult.error || !bookResult.data) throw new AppError(404, "Book not found in this workspace.");
       book = bookResult.data;
       const bibleResult = await user.from("book_bible_items").select("type,name,description,attributes_json")
-        .eq("book_id", input.bookId).limit(100);
+        .eq("book_id", input.bookId).order("id", { ascending: true }).limit(100);
       if (bibleResult.error) throw new AppError(500, "Could not load saved book context.");
       bible = bibleResult.data ?? [];
     }
@@ -332,6 +332,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     }
 
     const referenceImages: { bytes: Buffer; mimeType: "image/png" }[] = [];
+    const referenceSources: { assetId: string; checksum: string }[] = [];
     for (const referenceId of input.referenceAssetIds) {
       const { data: asset, error } = await user.from("assets").select("id,workspace_id,storage_path,checksum,mime_type,size_bytes,deleted_at")
         .eq("id", referenceId).eq("workspace_id", input.workspaceId).maybeSingle();
@@ -354,13 +355,21 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
         throw new AppError(409, "Reference image integrity verification failed.");
       }
       referenceImages.push({ bytes, mimeType: "image/png" });
+      referenceSources.push({ assetId: referenceId, checksum: String(asset.checksum) });
     }
+    const context = imageBookContext(book, bible);
+    const instruction = input.kind === "front_cover"
+      ? "Create cover artwork only. Do not render any title, author name, lettering, logo, barcode, or QR code; Bookworm adds typography during layout."
+      : "Create a book illustration without captions, lettering, logos, watermarks, barcodes, or QR codes.";
+    const providerPrompt = `${instruction}\n${context}\nAuthor direction: ${input.prompt}`;
+    const providerPromptHash = createHash("sha256").update(providerPrompt).digest("hex");
     const jobId = randomUUID();
     const promptHash = createHash("sha256").update(input.prompt).digest("hex");
     const { error: jobError } = await service.from("ai_jobs").insert({
       id: jobId, workspace_id: input.workspaceId, book_id: input.bookId ?? null,
       agent_type: input.kind === "front_cover" ? "cover_designer" : "illustrator", status: "running",
-      input_ref: { promptHash, requestHash, size: input.size, quality: input.quality, kind: input.kind },
+      input_ref: { promptHash, requestHash, providerPromptHash, referenceSources,
+        contextVersion: "image-book-context-1", size: input.size, quality: input.quality, kind: input.kind },
       idempotency_key: input.idempotencyKey, created_by: req.userId, started_at: new Date().toISOString(),
     });
     if (jobError?.code === "23505") throw new AppError(409, "This image request was already submitted.");
@@ -371,12 +380,6 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
       throw new AppError(403, "Your editing permission changed. No image generation was started.", undefined, "image_reservation_access_changed");
     }
     if (jobError) throw new AppError(500, "Could not start image generation.");
-
-    const context = imageBookContext(book, bible);
-    const instruction = input.kind === "front_cover"
-      ? "Create cover artwork only. Do not render any title, author name, lettering, logo, barcode, or QR code; Bookworm adds typography during layout."
-      : "Create a book illustration without captions, lettering, logos, watermarks, barcodes, or QR codes.";
-    const providerPrompt = `${instruction}\n${context}\nAuthor direction: ${input.prompt}`;
 
     let generated: Awaited<ReturnType<ImageGenerator>>;
     try {

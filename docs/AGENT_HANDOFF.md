@@ -23,6 +23,20 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 illustration source fingerprints
+
+Image jobs now record a SHA-256 of the exact effective provider prompt plus
+ordered reference asset IDs/checksums and a context format version. No prompt
+text, manuscript facts, storage paths or image bytes are added to job metadata.
+Existing public history continues to omit input_ref. Book-bible retrieval is
+ordered by ID before its 100-row bound, and attribute keys are sorted before
+their bound, avoiding context changes caused only by database/key order.
+Verified: 194 API tests and API TypeScript, including actual route/provider
+prompt hash equality, reference checksums and unchanged safety checks.
+This is provenance, not a guarantee of visual consistency or a stored prompt
+snapshot. No paid provider call, migration or deployment occurred.
+Note: `Codex Sessions/2026-09/2026-09-18-bookworm-image-provenance.md`.
+
 ### 2026-09-18 edition front matter
 
 Publishing Studio now saves bounded publisher/imprint and exact copyright

@@ -2,6 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { imageBookContext } from "./lib/image-book-context.js";
 
+test("attribute insertion order does not change visual context fingerprints", () => {
+  const first = imageBookContext({ title: "Harbor" }, [{ name: "Mara", attributes_json: { hair: "silver", age: 30 } }]);
+  const second = imageBookContext({ title: "Harbor" }, [{ name: "Mara", attributes_json: { age: 30, hair: "silver" } }]);
+  assert.equal(first, second);
+  assert.notEqual(first, imageBookContext({ title: "Harbor" }, [{ name: "Mara", attributes_json: { age: 30, hair: "red" } }]));
+});
+
 test("illustration context retains visual facts but never treats asset IDs as reference images", () => {
   const prompt = imageBookContext({ title: "Harbor" }, [{ type: "character", name: "Mara", attributes_json: {
     hair: "silver", age: 30, cloak: ["blue", "embroidered"], imageAssetIds: ["private-asset-id"],

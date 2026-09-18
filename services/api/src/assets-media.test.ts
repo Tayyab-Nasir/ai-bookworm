@@ -247,6 +247,13 @@ test("reference generation forwards verified private bytes and rejects changed, 
       assert.equal(calls, scenario === "valid" ? 1 : 0);
       assert.equal(store.tables.usage_events.length, scenario === "valid" ? 1 : 0);
       assert.equal(store.tables.ai_jobs.length, scenario === "valid" ? 1 : 0);
+      if (scenario === "valid") {
+        const inputRef = store.tables.ai_jobs[0].input_ref as Row;
+        assert.deepEqual(inputRef.referenceSources, [{ assetId: EXISTING_ASSET, checksum }]);
+        assert.match(String(inputRef.providerPromptHash), /^[a-f0-9]{64}$/);
+        assert.equal(inputRef.contextVersion, "image-book-context-1");
+        assert.doesNotMatch(JSON.stringify(inputRef), /Keep this character|base64|storage_path/);
+      }
     } finally { await app.close(); }
   }
 });
@@ -268,6 +275,10 @@ test("image generation uses saved book context and atomically returns a private 
   assert.match(prompts[0], /Mira/);
   assert.match(prompts[0], /"age":12/, "saved attributes must reach the image provider");
   assert.match(prompts[0], /Do not render any title/);
+  const provenance = store.tables.ai_jobs[0].input_ref as Row;
+  assert.equal(provenance.providerPromptHash, createHash("sha256").update(prompts[0]).digest("hex"));
+  assert.deepEqual(provenance.referenceSources, []);
+  assert.doesNotMatch(JSON.stringify(provenance), /Mira|Silver hair/);
   assert.equal(response.body.includes("generated-private-image"), false);
   assert.equal(store.tables.usage_events.length, 1);
   assert.equal(store.tables.usage_events[0].meter, "image_credits");

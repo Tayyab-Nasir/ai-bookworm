@@ -7,7 +7,7 @@ export function imageBookContext(book: Record<string, unknown> | null, bible: Re
   for (const item of bible.slice(0, 100)) {
     const attributes: Record<string, unknown> = Object.create(null);
     if (item.attributes_json && typeof item.attributes_json === "object" && !Array.isArray(item.attributes_json)) {
-      for (const [key, value] of Object.entries(item.attributes_json).slice(0, 40)) {
+      for (const [key, value] of Object.entries(item.attributes_json).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).slice(0, 40)) {
         if (["imageAssetIds", "__proto__", "constructor", "prototype"].includes(key)) continue;
         if (typeof value === "string") attributes[key.slice(0, 100)] = value.slice(0, 500);
         else if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) attributes[key.slice(0, 100)] = value;
