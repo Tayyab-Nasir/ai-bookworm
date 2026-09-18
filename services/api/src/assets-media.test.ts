@@ -16,6 +16,8 @@ const { buildApp } = await import("./app.js");
 
 type Row = Record<string, unknown>;
 interface Store {
+  searchResults?: Row[];
+  searchError?: { code: string };
   imageJobInsertError?: { code: string; message: string };
   tables: Record<string, Row[]>;
   objects: Map<string, Buffer>;
@@ -88,6 +90,7 @@ function fakeSupabase(store: Store, allowPendingStorageDownload = true) {
     },
     rpc: async (name: string, args: Row) => {
       store.rpcCalls.push({ name, args });
+      if (name === "search_book_context") return { data: store.searchResults ?? [], error: store.searchError ?? null };
       if (name === "record_asset_scan_verdict") {
         const version = store.tables.asset_versions.find((row) => row.asset_id === args.p_asset_id && row.version_number === args.p_version_number);
         if (!version || version.checksum !== "pending") return { data: null, error: { code: "40001" } };
@@ -251,7 +254,7 @@ test("reference generation forwards verified private bytes and rejects changed, 
         const inputRef = store.tables.ai_jobs[0].input_ref as Row;
         assert.deepEqual(inputRef.referenceSources, [{ assetId: EXISTING_ASSET, checksum }]);
         assert.match(String(inputRef.providerPromptHash), /^[a-f0-9]{64}$/);
-        assert.equal(inputRef.contextVersion, "image-book-context-1");
+        assert.equal(inputRef.contextVersion, "image-book-context-2");
         assert.doesNotMatch(JSON.stringify(inputRef), /Keep this character|base64|storage_path/);
       }
     } finally { await app.close(); }
@@ -282,9 +285,54 @@ test("image generation uses saved book context and atomically returns a private 
   assert.equal(response.body.includes("generated-private-image"), false);
   assert.equal(store.tables.usage_events.length, 1);
   assert.equal(store.tables.usage_events[0].meter, "image_credits");
-  assert.equal(store.rpcCalls[0].name, "complete_image_job");
+  assert.ok(store.rpcCalls.some(call => call.name === "complete_image_job"));
   assert.equal(store.objects.size, 1);
   await app.close();
+});
+
+test("illustration search prioritizes bible facts beyond the initial page and rechecks book scope", async () => {
+  const store = baseStore();
+  store.tables.book_bible_items = Array.from({ length: 110 }, (_, index) => ({ id: `background-${index}`, book_id: BOOK,
+    type: "location", name: `Background ${index}`, description: "Unrelated location", attributes_json: {} }));
+  store.tables.book_bible_items.push({ id: "target", book_id: BOOK, type: "character", name: "Zarina",
+    description: "Amber eyes and a scarlet cape", attributes_json: { hat: "triangular" } },
+    { id: "foreign", book_id: "another-book", name: "PRIVATE FOREIGN CHARACTER" });
+  store.searchResults = [{ source_type: "bible", bible_item_id: "target" },
+    { source_type: "bible", bible_item_id: "foreign" }, { source_type: "bible", bible_item_id: "target" }];
+  const prompts: string[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { imageGenerator: fakeImageGenerator(prompts) });
+  try {
+    const response = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth, payload: {
+      workspaceId: WORKSPACE, bookId: BOOK, kind: "illustration", name: "Zarina portrait",
+      prompt: "Draw Zarina arriving at the harbor", idempotencyKey: "ranked-image-0001",
+    } });
+    assert.equal(response.statusCode, 201, response.body);
+    assert.match(prompts[0], /Amber eyes and a scarlet cape/);
+    assert.match(prompts[0], /triangular/);
+    assert.doesNotMatch(prompts[0], /PRIVATE FOREIGN/);
+    assert.ok(prompts[0].indexOf('"name":"Zarina"') < prompts[0].indexOf('"name":"Background'));
+    assert.equal(prompts[0].split('"name":"Zarina"').length, 2);
+    const search = store.rpcCalls.find(call => call.name === "search_book_context");
+    assert.equal(search?.args.p_book_id, BOOK);
+    assert.match(String(search?.args.p_query), /"zarina"/);
+  } finally { await app.close(); }
+});
+
+test("unavailable book search stops illustrations before provider calls and credit reservation", async () => {
+  const store = baseStore();
+  store.searchError = { code: "PGRST202" };
+  const prompts: string[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { imageGenerator: fakeImageGenerator(prompts) });
+  try {
+    const response = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth, payload: {
+      workspaceId: WORKSPACE, bookId: BOOK, kind: "illustration", name: "Character portrait",
+      prompt: "Draw Mira by the harbor", idempotencyKey: "search-failure-0001",
+    } });
+    assert.equal(response.statusCode, 503, response.body);
+    assert.equal(prompts.length, 0);
+    assert.equal(store.tables.ai_jobs.length, 0);
+    assert.equal(store.tables.usage_events.length, 0);
+  } finally { await app.close(); }
 });
 
 test("viewer cannot spend image credits or call the provider", async () => {

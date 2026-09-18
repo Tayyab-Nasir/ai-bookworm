@@ -23,6 +23,20 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 relevant illustration memory
+
+Illustrations now reuse book-scoped PostgreSQL full-text search to prioritize
+matching bible entries ahead of the first 100 fallback rows. Matches are
+rehydrated from current bible rows with book scope checked again and duplicates
+removed. Existing text budget, prompt fingerprints, reference checks and credit
+reservation remain intact. Search errors stop before provider/credit work.
+Context version is image-book-context-2. This is keyword retrieval, not semantic
+search; manuscript hits can share the top-20 search budget.
+Verified: 196 API tests, API TypeScript, all 47 migrations and 33 SQL assertion
+files in disposable PostgreSQL. New cases cover a character beyond 100 entries,
+foreign match exclusion and missing retrieval migration. No live operations.
+Note: `Codex Sessions/2026-09/2026-09-18-bookworm-image-retrieval.md`.
+
 ### 2026-09-18 illustration source fingerprints
 
 Image jobs now record a SHA-256 of the exact effective provider prompt plus

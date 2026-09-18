@@ -34,6 +34,13 @@ begin
  assert (select count(*) from public.search_book_context(b,'silver'))=0,'stale Bible remained indexed';
  delete from public.book_bible_items where id=item;
  assert not exists(select 1 from public.book_search_chunks where bible_item_id=item),'deleted Bible retained';
+ insert into public.book_bible_items(book_id,type,name,description)
+ select b,'location','Background ' || n,'An unrelated quiet location.' from generate_series(1,110) n;
+ insert into public.book_bible_items(book_id,type,name,description)
+ values(b,'character','Zarina','Amber eyes and a scarlet cape.') returning id into item;
+ select * into hit from public.search_book_context(b,'"draw" OR "zarina" OR "arriving" OR "harbor"',20);
+ assert hit.bible_item_id=item and hit.source_type='bible','large-bible character not retrieved';
+ assert hit.excerpt like '%scarlet cape%','visual facts missing from indexed character';
  begin
    perform public.search_book_context(b,'x',21);
    assert false,'unbounded search accepted';

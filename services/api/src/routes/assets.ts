@@ -8,6 +8,7 @@ import { logActivity } from "../lib/activity.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import { openAiImageGenerator, type ImageGenerator } from "../lib/image-generation.js";
 import { imageBookContext } from "../lib/image-book-context.js";
+import { retrievalQuery, searchBookContext } from "../lib/retrieval.js";
 import { imageCompletionError } from "../lib/image-completion-error.js";
 import {
   AssetInspectionError,
@@ -320,10 +321,24 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
         .eq("id", input.bookId).eq("workspace_id", input.workspaceId).maybeSingle();
       if (bookResult.error || !bookResult.data) throw new AppError(404, "Book not found in this workspace.");
       book = bookResult.data;
-      const bibleResult = await user.from("book_bible_items").select("type,name,description,attributes_json")
+      const bibleResult = await user.from("book_bible_items").select("id,type,name,description,attributes_json")
         .eq("book_id", input.bookId).order("id", { ascending: true }).limit(100);
       if (bibleResult.error) throw new AppError(500, "Could not load saved book context.");
       bible = bibleResult.data ?? [];
+      const query = retrievalQuery(input.prompt);
+      if (query) {
+        const matches = await searchBookContext(user, input.bookId, { query, limit: 20, includeBible: true });
+        const ids = [...new Set(matches.filter((match: { source_type: string; bible_item_id: string | null }) =>
+          match.source_type === "bible" && match.bible_item_id).map((match: { bible_item_id: string }) => match.bible_item_id))] as string[];
+        if (ids.length) {
+          const relevant = await user.from("book_bible_items").select("id,type,name,description,attributes_json")
+            .eq("book_id", input.bookId).in("id", ids);
+          if (relevant.error) throw new AppError(500, "Could not load relevant book context.");
+          const rows = relevant.data ?? [];
+          const ranked = ids.flatMap(id => rows.filter(row => row.id === id));
+          bible = [...ranked, ...bible.filter(row => !ids.includes(String(row.id)))];
+        }
+      }
     }
     if (input.folderId) {
       const { data: folder, error } = await user.from("folders").select("id").eq("id", input.folderId)
@@ -369,7 +384,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
       id: jobId, workspace_id: input.workspaceId, book_id: input.bookId ?? null,
       agent_type: input.kind === "front_cover" ? "cover_designer" : "illustrator", status: "running",
       input_ref: { promptHash, requestHash, providerPromptHash, referenceSources,
-        contextVersion: "image-book-context-1", size: input.size, quality: input.quality, kind: input.kind },
+        contextVersion: "image-book-context-2", size: input.size, quality: input.quality, kind: input.kind },
       idempotency_key: input.idempotencyKey, created_by: req.userId, started_at: new Date().toISOString(),
     });
     if (jobError?.code === "23505") throw new AppError(409, "This image request was already submitted.");
