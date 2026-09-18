@@ -23,6 +23,25 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 print page-number layout
+
+PDF `1.9.0` places the entire numbering font box at least 0.5in inside finished
+trim and keeps a 6pt gap from the body frame. Outer numbers align their outer
+edge with the mirrored margin, rather than centering on that boundary. Small
+top/bottom margins that cannot fit numbering produce a located preflight
+finding and a render 422; authors can increase that margin, move the numbers,
+or disable numbering. Core rules `1.0.6` also reject margins leaving no body
+area. Starting numbers now match the API's 1-10000 range. Publishing Studio
+shows the recommended 0.75in margin on the selected numbering edge.
+
+Verified: 268 services and workspace TypeScript. Twenty-five pagination tests
+include dense actual PDFs across three positions, two font paths, three bleed
+settings, mirrored alignment, HTTP error/recovery, long Roman labels and input
+bounds. pypdf's multiline visitor coordinates were unreliable; the geometry
+fixtures use short lines with explicit text matrices. This does not certify
+all imported text/image boundaries or old artifacts. No live operations.
+Current note: `Codex Sessions/2026-09/2026-09-18-bookworm-page-number-layout.md`.
+
 ### 2026-09-18 KDP rendering and preflight consistency
 
 Supersedes the odd-page blocking behavior in the checkpoint below. Cover

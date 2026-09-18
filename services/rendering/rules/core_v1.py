@@ -10,7 +10,7 @@ from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.5"
+VERSION = "core-1.0.6"
 
 
 def _find(code, msg, loc=""):
@@ -151,6 +151,19 @@ def check_fonts_embedded(ctx):
     return out
 
 
+def check_print_layout(ctx):
+    from print_layout import print_layout_issues
+    config = ctx.get("edition") or {}
+    if config.get("kind") != "print":
+        return []
+    try:
+        edition = PrintEdition.model_validate(config)
+    except ValueError:
+        return []
+    return [Finding(code=issue["code"], message=issue["message"], location=issue["location"])
+            for issue in print_layout_issues(edition)]
+
+
 def check_print_glyphs(ctx):
     return [_find("PRINT_GLYPH_UNSUPPORTED", issue["message"], issue["location"])[0]
             for issue in print_font_issues(ctx.get("book") or {}, ctx.get("edition") or {})]
@@ -260,6 +273,7 @@ RULESET = RuleSet(name="core", version=VERSION, rules=[
     Rule("CORE-FONT-001", "warning", "fonts", "non-builtin fonts flagged", check_fonts_embedded),
     Rule("CORE-FONT-002", "error", "fonts", "RTL print and cover typography support", check_rtl_typography),
     Rule("CORE-FONT-003", "error", "fonts", "print font glyph coverage", check_print_glyphs),
+    Rule("CORE-LAYOUT-001", "error", "channel", "print body and page-number space", check_print_layout),
     Rule("CORE-COVER-001", "error", "channel", "full paperback cover geometry", check_print_wrap),
     Rule("CORE-A11Y-001", "error", "accessibility", "image alt text", check_alt_text),
     Rule("CORE-LINK-001", "error", "links", "link well-formedness", check_links),

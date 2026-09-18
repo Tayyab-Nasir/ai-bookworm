@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfReader, PdfWriter
+from reportlab.pdfbase import pdfmetrics
 
 RENDERING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RENDERING))
@@ -55,7 +56,9 @@ def test_actual_page_geometry_and_mirrored_trim_relative_text(edges, bleed, widt
         expected = 0.75 + (bleed if edges == "all" else 0) if odd else 0.5 + bleed
         assert location[1] == pytest.approx(expected * 72)
         footer = next(value for value in positions if value[0] == str(index + 1))
-        assert footer[2] == pytest.approx((bleed + 0.45) * 72)
+        # The whole font box, including descenders, clears the half-inch inset.
+        descent = pdfmetrics.getDescent("Helvetica", 9)
+        assert footer[2] + descent == pytest.approx((bleed + 0.5) * 72)
 
 
 def test_retailers_reject_other_printers_bleed_and_stale_actual_dimensions():

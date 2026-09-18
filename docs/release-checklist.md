@@ -28,6 +28,16 @@ an operational process. Saved agent claims are not evidence by themselves.
 
 ## Current local verification snapshot
 
+**2026-09-18 pagination layout:** PDF `1.9.0` and core `1.0.6` prevent page
+numbers from overlapping the manuscript or extending beyond their margin
+boundary. Number font boxes clear trim by 0.5in and body by 6pt. Small margins
+produce located preflight errors; disabled numbering preserves compact layouts.
+Verification: 268 service tests and workspace TypeScript, including 25 new
+pagination tests with actual dense PDF coordinates, HTTP failure/recovery and
+long-label bounds. Existing full-bleed suppression and KDP packaging tests pass.
+No browser/production build rerun; the UI change is explanatory margin guidance.
+This is not a full-page imported glyph/image safety audit or physical proof.
+
 **2026-09-18 KDP rendering consistency:** cover `1.1.0` and KDP rules `1.4.0`
 share stock/trim page ranges and manufacturing page-count rounding. Odd books
 now complete render, preflight and package with a correctly sized spine;

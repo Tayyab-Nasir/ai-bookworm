@@ -115,7 +115,7 @@ class Typography(BaseModel):
 
 class PageNumbering(BaseModel):
     style: Literal["arabic", "roman", "none"] = "arabic"
-    start_at: int = Field(default=1, ge=0)
+    start_at: int = Field(default=1, ge=1, le=10_000)
     position: Literal["bottom-center", "bottom-outer", "top-center"] = "bottom-center"
 
 

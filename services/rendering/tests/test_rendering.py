@@ -246,7 +246,7 @@ def test_valid_book_passes_core():
     findings = run_preflight(_ctx(VALID, EBOOK, blob), load_ruleset())
     errors = [f for f in findings if f.severity == "error"]
     assert errors == []
-    assert all(f.rule_version == "core-1.0.5" for f in findings) or not findings
+    assert all(f.rule_version == "core-1.0.6" for f in findings) or not findings
 
 
 def test_broken_book_findings_with_location_and_rule_version():
@@ -260,7 +260,7 @@ def test_broken_book_findings_with_location_and_rule_version():
     assert "IMAGE_REF_MISSING" in errors
     assert "NO_ALT_TEXT" in errors
     for f in findings:
-        assert f.rule_version == "core-1.0.5"
+        assert f.rule_version == "core-1.0.6"
         assert f.rule_id
     assert errors["NO_TITLE"].location == "book.metadata.title"
     assert "chapter" in errors["IMAGE_REF_MISSING"].location
@@ -292,7 +292,7 @@ def test_rtl_preflight_blocks_only_unsupported_print_and_cover_text_paths():
 
 def test_kdp_ruleset_layers_channel_rules():
     ruleset = load_ruleset("kdp")
-    assert ruleset.version == "core-1.0.5+kdp-1.4.0"
+    assert ruleset.version == "core-1.0.6+kdp-1.4.0"
     assert any(r.id.startswith("KDP-") for r in ruleset.rules)
     with pytest.raises(KeyError):
         load_ruleset("nook-2009")

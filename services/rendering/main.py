@@ -227,7 +227,7 @@ def preflight(req: PreflightRequest) -> dict:
                    "artifact": None, "package_bytes": None, "channel": req.channel,
                    "image_bytes": illustrations, "cover_bytes": cover}
     initial_findings = run_preflight(initial_ctx, ruleset)
-    if any(f.code.startswith("PRINT_FULL_BLEED_") for f in initial_findings):
+    if any(f.code.startswith("PRINT_FULL_BLEED_") or f.rule_id == "CORE-LAYOUT-001" for f in initial_findings):
         return {
             "ruleVersion": ruleset.version,
             "channel": req.channel,

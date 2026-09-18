@@ -10,6 +10,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import inch
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
 from reportlab.platypus import (
     BaseDocTemplate,
     Flowable,
@@ -30,8 +31,9 @@ from editions import PrintEdition, print_requires_unsupported_rtl_typography
 from manuscript import block_tree, image_focal_point, image_print_placement, image_width, inline_markup, table_rows
 from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
+from print_layout import NUMBER_SIZE_PT, NUMBER_TRIM_INSET_IN, number_metrics, print_layout_issues
 
-RENDERER_VERSION = "pdf-1.8.0"
+RENDERER_VERSION = "pdf-1.9.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -84,17 +86,27 @@ def _on_page(numbering, margins, edition, canvas, doc):
     if numbering.style == "roman":
         n = _roman(n)
     canvas.saveState()
-    canvas.setFont(page_number_font(edition.typography.body_font, edition.typography.heading_font), 9)
+    font, ascent, descent = number_metrics(edition)
+    canvas.setFont(font, NUMBER_SIZE_PT)
     w, h = doc.pagesize
     bleed_in = edition.bleed_in
     trim_left = bleed_in if edition.bleed_edges == "all" or doc.page % 2 == 0 else 0
     trim_width = edition.trim_in[0]
-    y = (bleed_in + 0.45) * inch if numbering.position.startswith("bottom") else h - (bleed_in + 0.45) * inch
+    # Position the complete font box inside trim, not just its baseline.
+    y = ((bleed_in + NUMBER_TRIM_INSET_IN) * inch - descent
+         if numbering.position.startswith("bottom")
+         else h - (bleed_in + NUMBER_TRIM_INSET_IN) * inch - ascent)
+    label = str(n)
+    label_width = pdfmetrics.stringWidth(label, font, NUMBER_SIZE_PT)
+    safe_left = (trim_left + max(margins.outer if doc.page % 2 == 0 else margins.inner, NUMBER_TRIM_INSET_IN)) * inch
+    safe_right = (trim_left + trim_width - max(margins.outer if doc.page % 2 else margins.inner, NUMBER_TRIM_INSET_IN)) * inch
     if numbering.position == "bottom-outer":
-        x = (trim_left + trim_width - margins.outer) * inch if doc.page % 2 else (trim_left + margins.outer) * inch
+        x = safe_right - label_width if doc.page % 2 else safe_left
     else:
-        x = (trim_left + trim_width / 2) * inch
-    canvas.drawCentredString(x, y, str(n))
+        x = (trim_left + trim_width / 2) * inch - label_width / 2
+    if x < safe_left - 0.001 or x + label_width > safe_right + 0.001:
+        raise ValueError("Page number does not fit between the inner and outer margins. Reduce the starting number, use Arabic numbering, or change margins.")
+    canvas.drawString(x, y, label)
     canvas.restoreState()
 
 
@@ -112,6 +124,9 @@ def _roman(n: int) -> str:
 def render_pdf(book: dict, edition: PrintEdition,
                image_bytes: dict[str, bytes] | None = None) -> tuple[bytes, str]:
     """Render print edition to PDF. Returns (pdf_bytes, sha256_hex)."""
+    layout_issues = print_layout_issues(edition)
+    if layout_issues:
+        raise ValueError(layout_issues[0]["message"])
     if print_requires_unsupported_rtl_typography(edition, book.get("metadata") or {}):
         raise ValueError("RTL print PDF requires an embedded shaping-capable font; the base-font renderer cannot produce it safely")
     font_issues = print_font_issues(book, edition.model_dump())

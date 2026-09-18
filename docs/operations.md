@@ -308,13 +308,21 @@ before production tuning.
   returns a located error before invalid output. Full-bleed pages omit the page
   number. Inspect every crop and safe area, then order a physical proof; these
   checks do not validate artistic focus, contrast or binding loss.
-- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.8.0`. They preserve inline
+- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.9.0`. They preserve inline
   emphasis, breaks, nested lists and illustration captions; PDF gutters mirror
   correctly on odd/even pages. EPUB writes the saved edition's BCP-47 language and
   resolved `dir` attribute (`ltr`/`rtl`), letting reading systems apply local
   script-capable fonts and bidirectional layout. Render, preflight, and package
   requests all rebuild the model with that saved edition language, so their
-  freshness fingerprints remain consistent. Core rules are `core-1.0.5`.
+  freshness fingerprints remain consistent. Core rules are `core-1.0.6`.
+- Numbering reserves the complete 9pt font box at least 0.5in inside trim,
+  with at least 6pt of clearance from the body. Outer numbers align against
+  mirrored outer margins. Keep a 0.75in top margin for top numbers or bottom
+  margin for bottom numbers; preflight reports the exact font-dependent
+  minimum when space is insufficient. Authors may move or disable numbering
+  to retain tight body margins. Empty body areas and horizontally overflowing
+  page labels are rejected before an invalid PDF is returned. Re-render old
+  interiors to receive corrected numbering placement.
 - Print `bleed_edges` is explicit: `outer` adds bleed to top, bottom and the
   outer side (KDP); `all` adds it to all four sides (Lulu). Existing saved
   editions default to `all` for compatibility, so select `outer` and re-render
