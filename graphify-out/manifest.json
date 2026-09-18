@@ -942,9 +942,9 @@
     "semantic_hash": ""
   },
   "services/api/src/assets-media.test.ts": {
-    "mtime": 1789704903.0074546,
-    "seen": 1789704962.69409,
-    "ast_hash": "8d0ab1553e77a07694822707b0fb7d78",
+    "mtime": 1789705153.0568244,
+    "seen": 1789705622.6022565,
+    "ast_hash": "be27106d54d9028c17e1e564e3e55a58",
     "semantic_hash": ""
   },
   "services/api/src/audiobook-worker.test.ts": {
@@ -1212,9 +1212,9 @@
     "semantic_hash": "5e4cbe13236483eb687ba40d8d2ab8ee"
   },
   "services/api/src/routes/assets.ts": {
-    "mtime": 1789704903.0044134,
-    "seen": 1789704962.69409,
-    "ast_hash": "2b29061189061f3896ea2e54afa724ca",
+    "mtime": 1789705115.24605,
+    "seen": 1789705622.6022565,
+    "ast_hash": "53c3f383311234efea87cdd6ed530472",
     "semantic_hash": ""
   },
   "services/api/src/routes/audiobooks.ts": {
@@ -2100,10 +2100,10 @@
     "semantic_hash": "9b15f7335470fd7e221a80ae3bf730f7"
   },
   "tests/security/book-retrieval.test.sql": {
-    "mtime": 1788665102.3224661,
-    "seen": 1789189310.4342208,
-    "ast_hash": "b01132cf2cbe34bec3b4ba2a7e2048fd",
-    "semantic_hash": "b01132cf2cbe34bec3b4ba2a7e2048fd"
+    "mtime": 1789705557.1798136,
+    "seen": 1789705622.6022565,
+    "ast_hash": "cb34b5938b937aae402731a31a1fa070",
+    "semantic_hash": ""
   },
   "tests/security/chapter-creation.test.sql": {
     "mtime": 1789108028.099853,
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789704954.615166,
-    "seen": 1789704962.698051,
-    "ast_hash": "4d7d78690e2214fbcc9bf7114050befc",
+    "mtime": 1789705602.4632182,
+    "seen": 1789705622.6022565,
+    "ast_hash": "8e003e4ad015850fd17e29b1a27f2fff",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
