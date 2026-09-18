@@ -520,7 +520,8 @@ before production tuning.
   native multi-worker acceptance remain release gates.
 # Fixed-layout EPUB worker dependency
 
-Fixed-layout EPUB uses the embedded-font 6x9 PDF layout and local Poppler
+Fixed-layout EPUB uses saved `fixed_layout.trim_size`, `margins` and `typography`
+with the PDF paginator and local Poppler
 `pdftoppm` to produce paginated raster images (long edge 1800 pixels). Install
 and pin Poppler in the rendering-worker image/host; ensure `pdftoppm` is on PATH
 or set server-only `BOOKWORM_PDFTOPPM` to its executable. The converter never
@@ -537,6 +538,11 @@ fixed-layout acceptance.
 This output preserves appearance but text is rasterized with image alternatives,
 not selectable/reflowable. It inherits the print renderer's script limitations.
 Use reflowable EPUB for adjustable text and better reading-system accessibility.
-Fixed trim/typography customization, full-bleed illustration handling, tagged
+The editor exposes these layout settings only for fixed EPUB or print. Existing
+fixed EPUBs default to 6x9 with Vera body/heading fonts; existing print defaults
+are preserved. New editions use Vera. Fixed EPUB does not use print bleed or
+page-number controls. Switching to reflowable retains saved fixed settings but
+does not apply them to reflowable content.
+Full-bleed illustration handling, tagged
 semantics and actual reader/retailer preview acceptance remain open. No live
 deployment is authorized by these instructions.

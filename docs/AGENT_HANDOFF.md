@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 fixed EPUB layout controls
+
+EPUB 1.8.0 honors saved fixed_layout trim, margins and typography. Publishing
+Studio reuses print controls, preserves settings across flow changes, and hides
+print-only bleed/page numbering for EPUB. Legacy fixed defaults remain 6x9/Vera;
+legacy print defaults are preserved. New editions default to Vera. RTL fixed
+layout is blocked in the UI with a reflowable alternative, matching the worker.
+Verified 298 services, 197 API, 66 web, 12 E2E, TypeScript and production build.
+Native tests check actual PNG geometry, altered output and save/reload behavior.
+No browser/retailer-reader acceptance or live changes claimed.
+Note: `Codex Sessions/2026-09/2026-09-18-bookworm-fixed-layout-controls.md`.
+
 ### 2026-09-18 raster fixed-layout EPUB
 
 EPUB 1.7.0 stops ignoring flow=fixed. It paginates through the embedded-font

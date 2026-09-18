@@ -34,7 +34,7 @@ def render_fixed_epub(book: dict, edition: EbookEdition, cover: bytes | None,
         raise ValueError("Fixed-layout EPUB requires local Poppler pdftoppm on the rendering worker.")
     model = {**book, "metadata": {**book["metadata"], **edition.metadata_overrides}}
     print_config = PrintEdition(text_direction=edition.text_direction,
-        typography={"body_font": "BookwormVera", "heading_font": "BookwormVera-Bold"},
+        **edition.fixed_layout.model_dump(),
         front_matter=edition.front_matter, page_numbering={"style": "none"})
     pdf, _ = render_pdf(model, print_config, images, chapter_bookmarks=True)
     reader = PdfReader(BytesIO(pdf))

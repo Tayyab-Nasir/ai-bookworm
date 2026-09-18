@@ -1,5 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+
+test("fixed EPUB page controls survive saving and switching flow", () => {
+  const edition = { type: "ebook", language: "en", edition_metadata_json: { kind: "ebook", flow: "fixed" } } as unknown as Edition;
+  const original = formFromEdition(edition);
+  assert.equal(original.bodyFont, "BookwormVera");
+  const form = { ...original, trimSize: "7x10" as const, top: 1, bottom: 0.5, inner: 0.8, outer: 0.6,
+    bodyFont: "Courier" as const, bodySize: 15, headingFont: "Times-Bold" as const, headingSize: 24,
+    leading: 21, paragraphSpacing: 9, firstLineIndent: 0.4, textAlign: "left" as const };
+  const saved = toConfig(form);
+  assert.equal(saved.kind, "ebook");
+  if (saved.kind !== "ebook") throw new Error("wrong format");
+  assert.equal(saved.fixed_layout?.trim_size, "7x10");
+  assert.deepEqual(saved.fixed_layout?.margins, { top: 1, bottom: 0.5, inner: 0.8, outer: 0.6 });
+  assert.deepEqual(formFromEdition({ ...edition, edition_metadata_json: saved }), form);
+  const reflowable = toConfig({ ...form, flow: "reflowable" }, saved);
+  assert.deepEqual(toConfig({ ...formFromEdition({ ...edition, edition_metadata_json: reflowable }), flow: "fixed" }, reflowable), saved);
+});
 import { resolveEditionTextDirection, formFromEdition, toConfig } from "../components/PublishingStudio";
 import type { Edition } from "@bookworm/types";
 

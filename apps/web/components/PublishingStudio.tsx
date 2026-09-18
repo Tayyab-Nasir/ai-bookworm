@@ -41,7 +41,7 @@ interface FormState {
 const DEFAULT_FORM: FormState = {
   kind: "ebook", language: "en", textDirection: "auto", flow: "reflowable", navigation: "toc+landmarks",
   trimSize: "6x9", bleed: 0, bleedEdges: "outer", top: 0.75, bottom: 0.75, inner: 0.75, outer: 0.5,
-  bodyFont: "Times-Roman", bodySize: 11, headingFont: "Helvetica-Bold", headingSize: 16,
+  bodyFont: "BookwormVera", bodySize: 11, headingFont: "BookwormVera-Bold", headingSize: 16,
   leading: 14, paragraphSpacing: 6, firstLineIndent: 0.25, textAlign: "justify",
   numbering: "arabic", numberPosition: "bottom-outer", startAt: 1, coverAssetId: "", titleOnCover: true,
   subtitleOnCover: true, authorOnCover: true, textColor: "#ffffff", overlay: 0.28,
@@ -64,8 +64,10 @@ export function formFromEdition(edition: Edition): FormState {
   const config = object(edition.edition_metadata_json);
   const cover = object(config.cover);
   const qr = object(cover.qr_code);
-  const margins = object(config.margins);
-  const typography = object(config.typography);
+  const layout = edition.type === "ebook" ? object(config.fixed_layout) : config;
+  const margins = object(layout.margins);
+  const typography = object(layout.typography);
+  const embeddedDefaults = edition.type === "ebook" && !layout.typography;
   const page = object(config.page_numbering);
   const wrap = object(config.wrap_cover);
   const front = object(config.front_matter);
@@ -80,13 +82,13 @@ export function formFromEdition(edition: Edition): FormState {
     textDirection: config.text_direction === "ltr" || config.text_direction === "rtl" ? config.text_direction : "auto",
     flow: config.flow === "fixed" ? "fixed" : "reflowable",
     navigation: config.navigation === "none" || config.navigation === "toc" ? config.navigation : "toc+landmarks",
-    trimSize: ["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].includes(String(config.trim_size)) ? config.trim_size as FormState["trimSize"] : "6x9",
+    trimSize: ["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].includes(String(layout.trim_size)) ? layout.trim_size as FormState["trimSize"] : "6x9",
     bleed: number(config.bleed_in, 0),
     bleedEdges: config.bleed_edges === "outer" ? "outer" : "all",
     top: number(margins.top, 0.75), bottom: number(margins.bottom, 0.75), inner: number(margins.inner, 0.75), outer: number(margins.outer, 0.5),
-    bodyFont: FONTS.includes(typography.body_font as FormState["bodyFont"]) ? typography.body_font as FormState["bodyFont"] : "Times-Roman",
+    bodyFont: FONTS.includes(typography.body_font as FormState["bodyFont"]) ? typography.body_font as FormState["bodyFont"] : embeddedDefaults ? "BookwormVera" : "Times-Roman",
     bodySize: number(typography.body_size_pt, 11),
-    headingFont: FONTS.includes(typography.heading_font as FormState["headingFont"]) ? typography.heading_font as FormState["headingFont"] : "Helvetica-Bold",
+    headingFont: FONTS.includes(typography.heading_font as FormState["headingFont"]) ? typography.heading_font as FormState["headingFont"] : embeddedDefaults ? "BookwormVera-Bold" : "Helvetica-Bold",
     headingSize: number(typography.heading_size_pt, 16), leading: number(typography.leading, 14),
     paragraphSpacing: number(typography.paragraph_spacing_pt, 6), firstLineIndent: number(typography.first_line_indent_in, 0.25),
     textAlign: typography.text_align === "left" ? "left" : "justify",
@@ -113,6 +115,14 @@ export function formFromEdition(edition: Edition): FormState {
 export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig {
   const saved = object(savedConfig);
   const front_matter = { copyright_notice: form.copyrightNotice, publisher: form.publisher };
+  const layout = {
+    trim_size: form.trimSize,
+    margins: { top: form.top, bottom: form.bottom, inner: form.inner, outer: form.outer },
+    typography: {
+      body_font: form.bodyFont, body_size_pt: form.bodySize, heading_font: form.headingFont, heading_size_pt: form.headingSize,
+      leading: form.leading, paragraph_spacing_pt: form.paragraphSpacing, first_line_indent_in: form.firstLineIndent, text_align: form.textAlign,
+    },
+  };
   const cover = {
     asset_id: form.coverAssetId || null,
     title_on_cover: form.titleOnCover, subtitle_on_cover: form.subtitleOnCover, author_on_cover: form.authorOnCover,
@@ -122,6 +132,7 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
   if (form.kind === "ebook") return {
     kind: "ebook", schema_version: "1.1.0", text_direction: form.textDirection, flow: form.flow, navigation: form.navigation, cover, front_matter,
     include_title_page: form.ebookTitlePage,
+    fixed_layout: layout,
     image_policy: { max_width_px: 1600, max_bytes: 5 * 1024 * 1024, embed: true, allowed_formats: ["jpeg", "png", "gif"], ...(saved.kind === "ebook" ? object(saved.image_policy) : {}) },
     ...(saved.kind === "ebook" && saved.metadata_overrides ? { metadata_overrides: Object.fromEntries(Object.entries(object(saved.metadata_overrides)).filter((entry): entry is [string, string] => typeof entry[1] === "string")) } : {}),
   };
@@ -130,13 +141,9 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
     instructions: form.narrationInstructions.trim() || null, speed: form.narrationSpeed,
   };
   return {
-    kind: "print", schema_version: "1.1.0", text_direction: form.textDirection, trim_size: form.trimSize, bleed_in: form.bleed, bleed_edges: form.bleedEdges,
+    kind: "print", schema_version: "1.1.0", text_direction: form.textDirection, ...layout, bleed_in: form.bleed, bleed_edges: form.bleedEdges,
     include_table_of_contents: form.printContents,
-    margins: { top: form.top, bottom: form.bottom, inner: form.inner, outer: form.outer }, front_matter,
-    typography: {
-      body_font: form.bodyFont, body_size_pt: form.bodySize, heading_font: form.headingFont, heading_size_pt: form.headingSize,
-      leading: form.leading, paragraph_spacing_pt: form.paragraphSpacing, first_line_indent_in: form.firstLineIndent, text_align: form.textAlign,
-    },
+    front_matter,
     page_numbering: { style: form.numbering, start_at: form.startAt, position: form.numberPosition }, cover,
     wrap_cover: { enabled: form.wrapEnabled, profile: form.wrapProfile, spine_width_in: form.spineWidth,
       expected_page_count: form.templatePages || null, back_text: form.backText, spine_text: form.spineText,
@@ -174,7 +181,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const activePublishingJobs = useMemo(() => publishingJobs.filter((job) => !activeId || job.editionId === activeId), [publishingJobs, activeId]);
   const channelCompatible = form.kind !== "audiobook" && (channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind));
   const resolvedDirection = resolveEditionTextDirection(form.language, form.textDirection);
-  const rtlPrintUnsupported = form.kind === "print" && resolvedDirection === "rtl";
+  const paginated = form.kind === "print" || (form.kind === "ebook" && form.flow === "fixed");
+  const rtlPrintUnsupported = paginated && resolvedDirection === "rtl";
   const rtlCoverTextUnsupported = resolvedDirection === "rtl" && Boolean(form.coverAssetId) && (
     (form.titleOnCover && Boolean(book?.title))
     || (form.subtitleOnCover && Boolean(book?.subtitle))
@@ -333,15 +341,16 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             <label className="text-sm text-white/65">Format<select value={form.kind} onChange={(event) => update("kind", event.target.value as Kind)} disabled={Boolean(activeId)} className={fieldClass}><option value="ebook">EPUB ebook</option><option value="print">Print PDF</option><option value="audiobook">AI-narrated audiobook</option></select></label>
             <label className="text-sm text-white/65">Language<input value={form.language} onChange={(event) => update("language", event.target.value)} maxLength={35} className={fieldClass} /></label>
             {form.kind !== "audiobook" && <label className="text-sm text-white/65">Text direction<select value={form.textDirection} onChange={(event) => update("textDirection", event.target.value as FormState["textDirection"])} className={fieldClass}><option value="auto">Auto from edition language</option><option value="ltr">Left to right</option><option value="rtl">Right to left</option></select></label>}
-            {form.kind === "ebook" ? <>
+            {form.kind === "ebook" && <>
               <label className="text-sm text-white/65">Flow<select value={form.flow} onChange={(event) => update("flow", event.target.value as FormState["flow"])} className={fieldClass}><option value="reflowable">Reflowable</option><option value="fixed">Fixed layout</option></select></label>
               <label className="text-sm text-white/65">Navigation<select value={form.navigation} onChange={(event) => update("navigation", event.target.value as FormState["navigation"])} className={fieldClass}><option value="toc+landmarks">Contents page + section landmarks</option><option value="toc">Contents page</option><option value="none">Reader navigation only (no contents page)</option></select></label>
-              {form.flow === "fixed" && <p className="text-sm leading-relaxed text-amber-100/80 sm:col-span-2">Fixed layout preserves paginated 6 × 9 inch pages as images with text alternatives. Text is not selectable and cannot resize in the reader. It uses embedded Vera typography and requires Poppler on the rendering worker. Choose reflowable for adjustable text, broader script support and accessibility. Reader and retailer preview checks are still required.</p>}
-            </> : form.kind === "print" ? <>
+              {form.flow === "fixed" && <p className="text-sm leading-relaxed text-amber-100/80 sm:col-span-2">Fixed layout uses the page size, margins and typography below. Pages become images with text alternatives; text is not selectable and cannot resize in the reader. Poppler is required on the rendering worker. Choose reflowable for adjustable text, broader script support and accessibility. Reader and retailer preview checks are still required.</p>}
+            </>}
+            {paginated && <>
               <label className="text-sm text-white/65">Trim size<select value={form.trimSize} onChange={(event) => update("trimSize", event.target.value as FormState["trimSize"])} className={fieldClass}>{["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].map((size) => <option key={size}>{size}</option>)}</select></label>
-              <label className="text-sm text-white/65">Bleed<select value={form.bleed} onChange={(event) => update("bleed", Number(event.target.value))} className={fieldClass}><option value={0}>No bleed</option><option value={0.125}>0.125 in</option></select></label>
+              {form.kind === "print" && <><label className="text-sm text-white/65">Bleed<select value={form.bleed} onChange={(event) => update("bleed", Number(event.target.value))} className={fieldClass}><option value={0}>No bleed</option><option value={0.125}>0.125 in</option></select></label>
               {form.bleed > 0 && <label className="text-sm text-white/65">Interior bleed edges<select value={form.bleedEdges} onChange={(event) => update("bleedEdges", event.target.value as FormState["bleedEdges"])} className={fieldClass}><option value="outer">Top, bottom and outer edge · KDP</option><option value="all">All four edges · Lulu</option></select></label>}
-              <p className="text-xs text-white/45 sm:col-span-2">Margins below are measured from the finished trim edge. Bleed changes PDF page dimensions; it does not extend in-flow illustrations to the edge. Choose the setting required by your printer and re-render before packaging.</p>
+              <p className="text-xs text-white/45 sm:col-span-2">Margins below are measured from the finished trim edge. Bleed changes PDF page dimensions; it does not extend in-flow illustrations to the edge. Choose the setting required by your printer and re-render before packaging.</p></>}
               <label className="text-sm text-white/65">Body font<select value={form.bodyFont} onChange={(event) => update("bodyFont", event.target.value as FormState["bodyFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
               <label className="text-sm text-white/65">Heading font<select value={form.headingFont} onChange={(event) => update("headingFont", event.target.value as FormState["headingFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
               <p className="text-xs text-white/45 sm:col-span-2">Choose Bitstream Vera for both body and headings to embed every used font, including page numbers and DejaVu Sans Mono for code. Legacy Times, Helvetica and Courier retain their original behavior. Embedded fonts do not add RTL shaping.</p>
@@ -351,17 +360,18 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
               <label className="text-sm text-white/65">Paragraph spacing (pt)<input type="number" min={0} max={36} step={0.5} value={form.paragraphSpacing} onChange={(event) => update("paragraphSpacing", Number(event.target.value))} className={fieldClass} /></label>
               <label className="text-sm text-white/65">First-line indent (in)<input type="number" min={0} max={1} step={0.05} value={form.firstLineIndent} onChange={(event) => update("firstLineIndent", Number(event.target.value))} className={fieldClass} /></label>
               <label className="text-sm text-white/65">Text alignment<select value={form.textAlign} onChange={(event) => update("textAlign", event.target.value as FormState["textAlign"])} className={fieldClass}><option value="justify">Justified</option><option value="left">Left</option></select></label>
-              <label className="text-sm text-white/65">Page numbers<select value={form.numbering} onChange={(event) => update("numbering", event.target.value as FormState["numbering"])} className={fieldClass}><option value="arabic">Arabic</option><option value="roman">Roman</option><option value="none">None</option></select></label>
+              {form.kind === "print" && <><label className="text-sm text-white/65">Page numbers<select value={form.numbering} onChange={(event) => update("numbering", event.target.value as FormState["numbering"])} className={fieldClass}><option value="arabic">Arabic</option><option value="roman">Roman</option><option value="none">None</option></select></label>
               <label className="text-sm text-white/65">Starting page number<input type="number" min={1} max={10000} step={1} value={form.startAt} onChange={(event) => update("startAt", Number(event.target.value))} className={fieldClass} /></label>
-              <label className="text-sm text-white/65">Number position<select value={form.numberPosition} onChange={(event) => update("numberPosition", event.target.value as FormState["numberPosition"])} className={fieldClass}><option value="bottom-outer">Bottom outer</option><option value="bottom-center">Bottom center</option><option value="top-center">Top center</option></select></label>
-            </> : <>
+              <label className="text-sm text-white/65">Number position<select value={form.numberPosition} onChange={(event) => update("numberPosition", event.target.value as FormState["numberPosition"])} className={fieldClass}><option value="bottom-outer">Bottom outer</option><option value="bottom-center">Bottom center</option><option value="top-center">Top center</option></select></label></>}
+            </>}
+            {form.kind === "audiobook" && <>
               <label className="text-sm text-white/65">Narrator voice<select value={form.voice} onChange={(event) => update("voice", event.target.value as AudiobookVoice)} className={fieldClass}>{["marin", "cedar", "coral", "ballad", "verse", "alloy", "ash", "echo", "fable", "onyx", "nova", "sage", "shimmer"].map((voice) => <option key={voice} value={voice}>{voice}</option>)}</select></label>
               <label className="text-sm text-white/65">Narration speed ({form.narrationSpeed.toFixed(2)}×)<input type="range" min={0.25} max={4} step={0.05} value={form.narrationSpeed} onChange={(event) => update("narrationSpeed", Number(event.target.value))} className="mt-4 w-full" /></label>
               <label className="text-sm text-white/65 sm:col-span-2">Voice direction<textarea value={form.narrationInstructions} onChange={(event) => update("narrationInstructions", event.target.value)} maxLength={2000} rows={3} className={fieldClass} placeholder="Describe pacing, tone, and pronunciation." /></label>
             </>}
           </div>
-          {form.kind === "print" && <><div className="mt-5 grid grid-cols-2 gap-4 border-t border-white/10 pt-5 sm:grid-cols-4">{(["top", "bottom", "inner", "outer"] as const).map((key) => <label key={key} className="text-sm capitalize text-white/65">{key} margin (in)<input type="number" min={0.25} max={2} step={0.05} value={form[key]} onChange={(event) => update(key, Number(event.target.value))} className={fieldClass} /></label>)}</div>{form.numbering !== "none" && <p className="mt-3 text-xs leading-relaxed text-white/50">Leave at least 0.75 inches at the {form.numberPosition === "top-center" ? "top" : "bottom"} for page numbers. They stay half an inch inside the trimmed page, with space between the number and manuscript text.</p>}</>}
-          {rtlPrintUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL print PDF is not available with the current embedded fonts.</p><p className="mt-1 text-amber-100/80">Use an EPUB for this edition, or run preflight to record the requirement while a shaping-capable print font pipeline is added.</p></div>}
+          {paginated && <><div className="mt-5 grid grid-cols-2 gap-4 border-t border-white/10 pt-5 sm:grid-cols-4">{(["top", "bottom", "inner", "outer"] as const).map((key) => <label key={key} className="text-sm capitalize text-white/65">{key} margin (in)<input type="number" min={0.25} max={2} step={0.05} value={form[key]} onChange={(event) => update(key, Number(event.target.value))} className={fieldClass} /></label>)}</div>{form.kind === "print" && form.numbering !== "none" && <p className="mt-3 text-xs leading-relaxed text-white/50">Leave at least 0.75 inches at the {form.numberPosition === "top-center" ? "top" : "bottom"} for page numbers. They stay half an inch inside the trimmed page, with space between the number and manuscript text.</p>}</>}
+          {rtlPrintUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL print PDF and fixed EPUB are not available with the current fonts.</p><p className="mt-1 text-amber-100/80">Use a reflowable EPUB for this edition, or run preflight to record the requirement while a shaping-capable font pipeline is added.</p></div>}
         </section>
 
         {form.kind === "print" && <p className="text-sm leading-relaxed text-white/50">Bitstream Vera embeds body and heading fonts in the PDF, including bold and italic text. It supports a limited Latin character set. Preflight identifies unsupported characters before export. Inline code and page numbers still use standard PDF fonts.</p>}

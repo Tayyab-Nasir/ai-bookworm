@@ -84,6 +84,7 @@ class FrontMatter(BaseModel):
 
 
 class EbookEdition(BaseModel):
+    fixed_layout: "FixedLayout" = Field(default_factory=lambda: FixedLayout())
     include_title_page: bool = False
     kind: Literal["ebook"] = "ebook"
     schema_version: str = EDITION_SCHEMA_VERSION
@@ -118,6 +119,15 @@ class Typography(BaseModel):
         if self.leading < self.body_size_pt:
             raise ValueError("leading must be at least the body font size")
         return self
+
+
+class FixedLayout(BaseModel):
+    trim_size: Literal["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"] = "6x9"
+    margins: Margins = Field(default_factory=Margins)
+    typography: Typography = Field(default_factory=lambda: Typography(body_font="BookwormVera", heading_font="BookwormVera-Bold"))
+
+
+EbookEdition.model_rebuild()
 
 
 class PageNumbering(BaseModel):

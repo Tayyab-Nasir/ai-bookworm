@@ -38,6 +38,7 @@ const frontMatterSchema = z.object({
 }).strict().default({});
 
 const ebookSchema = z.object({
+  fixed_layout: z.lazy(() => fixedLayoutSchema).default({}),
   include_title_page: z.boolean().default(false),
   kind: z.literal("ebook"),
   schema_version: z.enum(["1.0.0", "1.1.0"]).default("1.1.0"),
@@ -75,6 +76,12 @@ const typographySchema = z.object({
 }).strict().superRefine((value, ctx) => {
   if (value.leading < value.body_size_pt) ctx.addIssue({ code: "custom", path: ["leading"], message: "Line spacing must be at least the body font size." });
 }).default({});
+
+const fixedLayoutSchema = z.object({
+  trim_size: z.enum(["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"]).default("6x9"),
+  margins: marginsSchema,
+  typography: typographySchema.default({ body_font: "BookwormVera", heading_font: "BookwormVera-Bold" }),
+}).strict();
 
 const printSchema = z.object({
   include_table_of_contents: z.boolean().default(false),

@@ -193,6 +193,7 @@ export interface EditionCoverConfig {
 }
 
 export type EditionConfig = {
+  fixed_layout?: Pick<Extract<EditionConfig, { kind: "print" }>, "trim_size" | "margins" | "typography">;
   include_title_page?: boolean;
   kind: "ebook";
   schema_version?: "1.0.0" | "1.1.0";

@@ -19,6 +19,35 @@ NS = {"o": "http://www.idpf.org/2007/opf", "x": "http://www.w3.org/1999/xhtml"}
 
 
 @pytest.mark.skipif(not shutil.which("pdftoppm"), reason="native Poppler is required")
+def test_fixed_layout_custom_trim_changes_real_page_geometry_and_typography():
+    def pages(layout):
+        data, _ = render_epub(BOOK, EbookEdition(flow="fixed", navigation="none", fixed_layout=layout))
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            images = [archive.read(name) for name in archive.namelist() if name.startswith("OEBPS/images/page")]
+        with Image.open(io.BytesIO(images[0])) as bitmap:
+            dimensions = bitmap.size
+        return images, dimensions
+
+    regular, dimensions = pages({"trim_size": "7x10"})
+    assert dimensions == (1260, 1800)
+    changed, changed_dimensions = pages({"trim_size": "7x10", "margins": {"top": 1.5, "inner": 1.5},
+                                         "typography": {"body_font": "Courier", "body_size_pt": 20, "leading": 28}})
+    assert changed_dimensions == dimensions
+    assert changed != regular
+    assert len(changed) >= len(regular)
+
+
+def test_fixed_layout_model_roundtrip_and_validation():
+    edition = EbookEdition(flow="fixed")
+    assert edition.fixed_layout.typography.body_font == "BookwormVera"
+    assert EbookEdition.model_validate(edition.model_dump()) == edition
+    for layout in [{"trim_size": "wrong"}, {"typography": {"body_font": "wrong"}},
+                   {"typography": {"body_size_pt": 20, "leading": 10}}]:
+        with pytest.raises(ValueError):
+            EbookEdition(flow="fixed", fixed_layout=layout)
+
+
+@pytest.mark.skipif(not shutil.which("pdftoppm"), reason="native Poppler is required")
 @pytest.mark.parametrize("title_page", [True, False])
 def test_fixed_epub_has_real_pages_dimensions_and_chapter_destinations(title_page):
     edition = EbookEdition(flow="fixed", include_title_page=title_page, navigation="toc+landmarks",
