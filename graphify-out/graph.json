@@ -602,45 +602,6 @@
       "source_location": "L16"
     },
     {
-      "id": "packages_book_model_src_operations_documentoperation",
-      "label": "DocumentOperation",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "documentoperation",
-      "source_file": "packages/book-model/src/operations.ts",
-      "source_location": "L101"
-    },
-    {
-      "id": "packages_book_model_src_validate_bookissue",
-      "label": "BookIssue",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "bookissue",
-      "source_file": "packages/book-model/src/validate.ts",
-      "source_location": "L3"
-    },
-    {
-      "id": "packages_book_model_src_validate_bookvalidation",
-      "label": "BookValidation",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "bookvalidation",
-      "source_file": "packages/book-model/src/validate.ts",
-      "source_location": "L10"
-    },
-    {
       "id": "services_ai_agents_base_agentresult",
       "label": "AgentResult",
       "_callable": true,
@@ -833,6 +794,97 @@
       "file_type": "code",
       "norm_label": "authconfigurationerror",
       "source_file": "apps/web/lib/auth/server.ts",
+      "source_location": "L4"
+    },
+    {
+      "id": "services_api_src_assets_media_test_row",
+      "label": "Row",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "row",
+      "source_file": "services/api/src/assets-media.test.ts",
+      "source_location": "L17"
+    },
+    {
+      "id": "services_api_src_assets_media_test_store",
+      "label": "Store",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "store",
+      "source_file": "services/api/src/assets-media.test.ts",
+      "source_location": "L18"
+    },
+    {
+      "id": "services_api_src_lib_image_generation_generatedimage",
+      "label": "GeneratedImage",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "generatedimage",
+      "source_file": "services/api/src/lib/image-generation.ts",
+      "source_location": "L14"
+    },
+    {
+      "id": "services_api_src_lib_image_generation_imagegenerationinput",
+      "label": "ImageGenerationInput",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "imagegenerationinput",
+      "source_file": "services/api/src/lib/image-generation.ts",
+      "source_location": "L7"
+    },
+    {
+      "id": "services_api_src_lib_image_generation_imagegenerator",
+      "label": "ImageGenerator",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "imagegenerator",
+      "source_file": "services/api/src/lib/image-generation.ts",
+      "source_location": "L23"
+    },
+    {
+      "id": "services_api_src_lib_image_generation_imagequality",
+      "label": "ImageQuality",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "imagequality",
+      "source_file": "services/api/src/lib/image-generation.ts",
+      "source_location": "L5"
+    },
+    {
+      "id": "services_api_src_lib_image_generation_imagesize",
+      "label": "ImageSize",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "imagesize",
+      "source_file": "services/api/src/lib/image-generation.ts",
       "source_location": "L4"
     },
     {
@@ -2968,6 +3020,45 @@
       "source_location": "L23"
     },
     {
+      "id": "packages_book_model_src_operations_documentoperation",
+      "label": "DocumentOperation",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 76,
+      "community_name": "engine.test.ts",
+      "file_type": "code",
+      "norm_label": "documentoperation",
+      "source_file": "packages/book-model/src/operations.ts",
+      "source_location": "L101"
+    },
+    {
+      "id": "packages_book_model_src_validate_bookissue",
+      "label": "BookIssue",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 76,
+      "community_name": "engine.test.ts",
+      "file_type": "code",
+      "norm_label": "bookissue",
+      "source_file": "packages/book-model/src/validate.ts",
+      "source_location": "L3"
+    },
+    {
+      "id": "packages_book_model_src_validate_bookvalidation",
+      "label": "BookValidation",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 76,
+      "community_name": "engine.test.ts",
+      "file_type": "code",
+      "norm_label": "bookvalidation",
+      "source_file": "packages/book-model/src/validate.ts",
+      "source_location": "L10"
+    },
+    {
       "id": "packages_book_model_src_engine_nodenotfounderror",
       "label": "NodeNotFoundError",
       "_callable": true,
@@ -3525,97 +3616,6 @@
       "norm_label": "timestamps",
       "source_file": "packages/types/src/index.ts",
       "source_location": "L22"
-    },
-    {
-      "id": "services_api_src_assets_media_test_row",
-      "label": "Row",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "row",
-      "source_file": "services/api/src/assets-media.test.ts",
-      "source_location": "L17"
-    },
-    {
-      "id": "services_api_src_assets_media_test_store",
-      "label": "Store",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "store",
-      "source_file": "services/api/src/assets-media.test.ts",
-      "source_location": "L18"
-    },
-    {
-      "id": "services_api_src_lib_image_generation_generatedimage",
-      "label": "GeneratedImage",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "generatedimage",
-      "source_file": "services/api/src/lib/image-generation.ts",
-      "source_location": "L14"
-    },
-    {
-      "id": "services_api_src_lib_image_generation_imagegenerationinput",
-      "label": "ImageGenerationInput",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "imagegenerationinput",
-      "source_file": "services/api/src/lib/image-generation.ts",
-      "source_location": "L7"
-    },
-    {
-      "id": "services_api_src_lib_image_generation_imagegenerator",
-      "label": "ImageGenerator",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "imagegenerator",
-      "source_file": "services/api/src/lib/image-generation.ts",
-      "source_location": "L23"
-    },
-    {
-      "id": "services_api_src_lib_image_generation_imagequality",
-      "label": "ImageQuality",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "imagequality",
-      "source_file": "services/api/src/lib/image-generation.ts",
-      "source_location": "L5"
-    },
-    {
-      "id": "services_api_src_lib_image_generation_imagesize",
-      "label": "ImageSize",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "imagesize",
-      "source_file": "services/api/src/lib/image-generation.ts",
-      "source_location": "L4"
     },
     {
       "id": "apps_web_lib_sales_csv_csvrow",
@@ -5496,6 +5496,30 @@
       "source_location": "L28"
     },
     {
+      "id": "services_api_src_step9_test_appwith",
+      "label": "appWith()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 112,
+      "community_name": "step9.test.ts",
+      "file_type": "code",
+      "norm_label": "appwith()",
+      "source_file": "services/api/src/step9.test.ts",
+      "source_location": "L47"
+    },
+    {
+      "id": "services_api_src_step9_test_fakesupabase",
+      "label": "fakeSupabase()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 112,
+      "community_name": "step9.test.ts",
+      "file_type": "code",
+      "norm_label": "fakesupabase()",
+      "source_file": "services/api/src/step9.test.ts",
+      "source_location": "L19"
+    },
+    {
       "id": "services_api_src_audiobook_worker_test_fakesupabase",
       "label": "fakeSupabase()",
       "_callable": true,
@@ -6574,42 +6598,6 @@
       "norm_label": "test_validation_failure_paths()",
       "source_file": "tests/e2e/test_critical_journey.py",
       "source_location": "L251"
-    },
-    {
-      "id": "packages_book_model_src_engine_test_op",
-      "label": "op()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "op()",
-      "source_file": "packages/book-model/src/engine.test.ts",
-      "source_location": "L19"
-    },
-    {
-      "id": "packages_book_model_src_fixture_samplebook",
-      "label": "sampleBook()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "samplebook()",
-      "source_file": "packages/book-model/src/fixture.ts",
-      "source_location": "L7"
-    },
-    {
-      "id": "packages_book_model_src_validate_validatebookmodel",
-      "label": "validateBookModel()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "validatebookmodel()",
-      "source_file": "packages/book-model/src/validate.ts",
-      "source_location": "L15"
     },
     {
       "id": "services_ai_agents_base_agentresult_to_dict",
@@ -7944,52 +7932,88 @@
       "source_location": "L14"
     },
     {
-      "id": "apps_web_app_page_arrowicon",
-      "label": "ArrowIcon()",
+      "id": "services_api_src_assets_media_test_basestore",
+      "label": "baseStore()",
       "_callable": true,
       "_origin": "ast",
       "community": 19,
-      "community_name": "app/page.tsx",
+      "community_name": "assets-media.test.ts",
       "file_type": "code",
-      "norm_label": "arrowicon()",
-      "source_file": "apps/web/app/page.tsx",
+      "norm_label": "basestore()",
+      "source_file": "services/api/src/assets-media.test.ts",
+      "source_location": "L165"
+    },
+    {
+      "id": "services_api_src_assets_media_test_fakeimagegenerator",
+      "label": "fakeImageGenerator()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "fakeimagegenerator()",
+      "source_file": "services/api/src/assets-media.test.ts",
+      "source_location": "L177"
+    },
+    {
+      "id": "services_api_src_assets_media_test_fakesupabase",
+      "label": "fakeSupabase()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "fakesupabase()",
+      "source_file": "services/api/src/assets-media.test.ts",
+      "source_location": "L25"
+    },
+    {
+      "id": "services_api_src_assets_media_test_repeathex",
+      "label": "repeatHex()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "repeathex()",
+      "source_file": "services/api/src/assets-media.test.ts",
+      "source_location": "L528"
+    },
+    {
+      "id": "services_api_src_assets_media_test_scan",
+      "label": "scan()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "scan()",
+      "source_file": "services/api/src/assets-media.test.ts",
+      "source_location": "L478"
+    },
+    {
+      "id": "services_api_src_lib_image_generation_estimatedimagecost",
+      "label": "estimatedImageCost()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "estimatedimagecost()",
+      "source_file": "services/api/src/lib/image-generation.ts",
       "source_location": "L28"
     },
     {
-      "id": "apps_web_app_page_header",
-      "label": "Header()",
+      "id": "services_api_src_lib_image_generation_openaiimagegenerator",
+      "label": "openAiImageGenerator()",
       "_callable": true,
       "_origin": "ast",
       "community": 19,
-      "community_name": "app/page.tsx",
+      "community_name": "assets-media.test.ts",
       "file_type": "code",
-      "norm_label": "header()",
-      "source_file": "apps/web/app/page.tsx",
-      "source_location": "L46"
-    },
-    {
-      "id": "apps_web_app_page_landingpage",
-      "label": "LandingPage()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 19,
-      "community_name": "app/page.tsx",
-      "file_type": "code",
-      "norm_label": "landingpage()",
-      "source_file": "apps/web/app/page.tsx",
-      "source_location": "L153"
-    },
-    {
-      "id": "apps_web_app_page_logomark",
-      "label": "LogoMark()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 19,
-      "community_name": "app/page.tsx",
-      "file_type": "code",
-      "norm_label": "logomark()",
-      "source_file": "apps/web/app/page.tsx",
-      "source_location": "L13"
+      "norm_label": "openaiimagegenerator()",
+      "source_file": "services/api/src/lib/image-generation.ts",
+      "source_location": "L40"
     },
     {
       "id": "services_ai_main_health",
@@ -13308,124 +13332,40 @@
       "source_location": "L24"
     },
     {
-      "id": "services_rendering_rules_init_rule_version",
-      "label": "rule_version()",
+      "id": "packages_book_model_src_engine_test_op",
+      "label": "op()",
       "_callable": true,
       "_origin": "ast",
       "community": 76,
-      "community_name": "test_print_geometry.py",
+      "community_name": "engine.test.ts",
       "file_type": "code",
-      "norm_label": "rule_version()",
-      "source_file": "services/rendering/rules/__init__.py",
-      "source_location": "L29"
-    },
-    {
-      "id": "services_rendering_tests_test_print_geometry_blank_print_pdf",
-      "label": "_blank_print_pdf()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 76,
-      "community_name": "test_print_geometry.py",
-      "file_type": "code",
-      "norm_label": "_blank_print_pdf()",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "norm_label": "op()",
+      "source_file": "packages/book-model/src/engine.test.ts",
       "source_location": "L19"
     },
     {
-      "id": "services_rendering_tests_test_print_geometry_channel_findings",
-      "label": "_channel_findings()",
+      "id": "packages_book_model_src_fixture_samplebook",
+      "label": "sampleBook()",
       "_callable": true,
       "_origin": "ast",
       "community": 76,
-      "community_name": "test_print_geometry.py",
+      "community_name": "engine.test.ts",
       "file_type": "code",
-      "norm_label": "_channel_findings()",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
-      "source_location": "L32"
+      "norm_label": "samplebook()",
+      "source_file": "packages/book-model/src/fixture.ts",
+      "source_location": "L7"
     },
     {
-      "id": "services_rendering_tests_test_print_geometry_test_actual_page_geometry_and_mirrored_trim_relative_text",
-      "label": "test_actual_page_geometry_and_mirrored_trim_relative_text()",
+      "id": "packages_book_model_src_validate_validatebookmodel",
+      "label": "validateBookModel()",
       "_callable": true,
       "_origin": "ast",
       "community": 76,
-      "community_name": "test_print_geometry.py",
+      "community_name": "engine.test.ts",
       "file_type": "code",
-      "norm_label": "test_actual_page_geometry_and_mirrored_trim_relative_text()",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
-      "source_location": "L38"
-    },
-    {
-      "id": "services_rendering_tests_test_print_geometry_test_actual_page_geometry_and_mirrored_trim_relative_text_visit",
-      "label": "visit()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 76,
-      "community_name": "test_print_geometry.py",
-      "file_type": "code",
-      "norm_label": "visit()",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
-      "source_location": "L48"
-    },
-    {
-      "id": "services_rendering_tests_test_print_geometry_test_channel_page_minimum_boundaries",
-      "label": "test_channel_page_minimum_boundaries()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 76,
-      "community_name": "test_print_geometry.py",
-      "file_type": "code",
-      "norm_label": "test_channel_page_minimum_boundaries()",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
-      "source_location": "L103"
-    },
-    {
-      "id": "services_rendering_tests_test_print_geometry_test_channel_page_minimums_use_actual_rendered_pdf",
-      "label": "test_channel_page_minimums_use_actual_rendered_pdf()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 76,
-      "community_name": "test_print_geometry.py",
-      "file_type": "code",
-      "norm_label": "test_channel_page_minimums_use_actual_rendered_pdf()",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
-      "source_location": "L90"
-    },
-    {
-      "id": "services_rendering_tests_test_print_geometry_test_kdp_blocks_odd_interior_when_generated_cover_would_use_wrong_spine",
-      "label": "test_kdp_blocks_odd_interior_when_generated_cover_would_use_wrong_spine()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 76,
-      "community_name": "test_print_geometry.py",
-      "file_type": "code",
-      "norm_label": "test_kdp_blocks_odd_interior_when_generated_cover_would_use_wrong_spine()",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
-      "source_location": "L152"
-    },
-    {
-      "id": "services_rendering_tests_test_print_geometry_test_kdp_profile_limits_and_page_count_gutter_tiers",
-      "label": "test_kdp_profile_limits_and_page_count_gutter_tiers()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 76,
-      "community_name": "test_print_geometry.py",
-      "file_type": "code",
-      "norm_label": "test_kdp_profile_limits_and_page_count_gutter_tiers()",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
-      "source_location": "L131"
-    },
-    {
-      "id": "services_rendering_tests_test_print_geometry_test_retailer_margin_rules_report_exact_actionable_edges",
-      "label": "test_retailer_margin_rules_report_exact_actionable_edges()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 76,
-      "community_name": "test_print_geometry.py",
-      "file_type": "code",
-      "norm_label": "test_retailer_margin_rules_report_exact_actionable_edges()",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
-      "source_location": "L108"
+      "norm_label": "validatebookmodel()",
+      "source_file": "packages/book-model/src/validate.ts",
+      "source_location": "L15"
     },
     {
       "id": "packages_book_model_src_engine_applyoperation",
@@ -13749,7 +13689,7 @@
       "file_type": "code",
       "norm_label": "check_print_pdf_geometry()",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L29"
+      "source_location": "L34"
     },
     {
       "id": "services_rendering_rules_channel_make_ruleset",
@@ -13761,7 +13701,7 @@
       "file_type": "code",
       "norm_label": "make_ruleset()",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L73"
+      "source_location": "L78"
     },
     {
       "id": "services_rendering_rules_channel_metadata_rules",
@@ -13773,7 +13713,7 @@
       "file_type": "code",
       "norm_label": "metadata_rules()",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L54"
+      "source_location": "L59"
     },
     {
       "id": "services_rendering_rules_channel_metadata_rules_check",
@@ -13785,7 +13725,7 @@
       "file_type": "code",
       "norm_label": "check()",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L56"
+      "source_location": "L61"
     },
     {
       "id": "services_rendering_rules_channel_metadata_rules_check_missing",
@@ -13797,7 +13737,7 @@
       "file_type": "code",
       "norm_label": "missing()",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L58"
+      "source_location": "L63"
     },
     {
       "id": "services_rendering_rules_channel_print_pdf_page_count",
@@ -14508,28 +14448,124 @@
       "source_location": "L71"
     },
     {
-      "id": "services_api_src_step9_test_appwith",
-      "label": "appWith()",
+      "id": "services_rendering_rules_init_rule_version",
+      "label": "rule_version()",
       "_callable": true,
       "_origin": "ast",
       "community": 82,
-      "community_name": "step9.test.ts",
+      "community_name": "test_print_geometry.py",
       "file_type": "code",
-      "norm_label": "appwith()",
-      "source_file": "services/api/src/step9.test.ts",
-      "source_location": "L47"
+      "norm_label": "rule_version()",
+      "source_file": "services/rendering/rules/__init__.py",
+      "source_location": "L29"
     },
     {
-      "id": "services_api_src_step9_test_fakesupabase",
-      "label": "fakeSupabase()",
+      "id": "services_rendering_tests_test_print_geometry_blank_print_pdf",
+      "label": "_blank_print_pdf()",
       "_callable": true,
       "_origin": "ast",
       "community": 82,
-      "community_name": "step9.test.ts",
+      "community_name": "test_print_geometry.py",
       "file_type": "code",
-      "norm_label": "fakesupabase()",
-      "source_file": "services/api/src/step9.test.ts",
+      "norm_label": "_blank_print_pdf()",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
       "source_location": "L19"
+    },
+    {
+      "id": "services_rendering_tests_test_print_geometry_channel_findings",
+      "label": "_channel_findings()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 82,
+      "community_name": "test_print_geometry.py",
+      "file_type": "code",
+      "norm_label": "_channel_findings()",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "source_location": "L32"
+    },
+    {
+      "id": "services_rendering_tests_test_print_geometry_test_actual_page_geometry_and_mirrored_trim_relative_text",
+      "label": "test_actual_page_geometry_and_mirrored_trim_relative_text()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 82,
+      "community_name": "test_print_geometry.py",
+      "file_type": "code",
+      "norm_label": "test_actual_page_geometry_and_mirrored_trim_relative_text()",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "source_location": "L38"
+    },
+    {
+      "id": "services_rendering_tests_test_print_geometry_test_actual_page_geometry_and_mirrored_trim_relative_text_visit",
+      "label": "visit()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 82,
+      "community_name": "test_print_geometry.py",
+      "file_type": "code",
+      "norm_label": "visit()",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "source_location": "L48"
+    },
+    {
+      "id": "services_rendering_tests_test_print_geometry_test_channel_page_minimum_boundaries",
+      "label": "test_channel_page_minimum_boundaries()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 82,
+      "community_name": "test_print_geometry.py",
+      "file_type": "code",
+      "norm_label": "test_channel_page_minimum_boundaries()",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "source_location": "L103"
+    },
+    {
+      "id": "services_rendering_tests_test_print_geometry_test_channel_page_minimums_use_actual_rendered_pdf",
+      "label": "test_channel_page_minimums_use_actual_rendered_pdf()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 82,
+      "community_name": "test_print_geometry.py",
+      "file_type": "code",
+      "norm_label": "test_channel_page_minimums_use_actual_rendered_pdf()",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "source_location": "L90"
+    },
+    {
+      "id": "services_rendering_tests_test_print_geometry_test_kdp_blocks_odd_interior_when_generated_cover_would_use_wrong_spine",
+      "label": "test_kdp_blocks_odd_interior_when_generated_cover_would_use_wrong_spine()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 82,
+      "community_name": "test_print_geometry.py",
+      "file_type": "code",
+      "norm_label": "test_kdp_blocks_odd_interior_when_generated_cover_would_use_wrong_spine()",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "source_location": "L152"
+    },
+    {
+      "id": "services_rendering_tests_test_print_geometry_test_kdp_profile_limits_and_page_count_gutter_tiers",
+      "label": "test_kdp_profile_limits_and_page_count_gutter_tiers()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 82,
+      "community_name": "test_print_geometry.py",
+      "file_type": "code",
+      "norm_label": "test_kdp_profile_limits_and_page_count_gutter_tiers()",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "source_location": "L131"
+    },
+    {
+      "id": "services_rendering_tests_test_print_geometry_test_retailer_margin_rules_report_exact_actionable_edges",
+      "label": "test_retailer_margin_rules_report_exact_actionable_edges()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 82,
+      "community_name": "test_print_geometry.py",
+      "file_type": "code",
+      "norm_label": "test_retailer_margin_rules_report_exact_actionable_edges()",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "source_location": "L108"
     },
     {
       "id": "services_scanning_scanning_service_clamd_clamdscanner_init",
@@ -15000,88 +15036,52 @@
       "source_location": "L126"
     },
     {
-      "id": "services_api_src_assets_media_test_basestore",
-      "label": "baseStore()",
+      "id": "apps_web_app_page_arrowicon",
+      "label": "ArrowIcon()",
       "_callable": true,
       "_origin": "ast",
       "community": 92,
-      "community_name": "assets-media.test.ts",
+      "community_name": "app/page.tsx",
       "file_type": "code",
-      "norm_label": "basestore()",
-      "source_file": "services/api/src/assets-media.test.ts",
-      "source_location": "L165"
-    },
-    {
-      "id": "services_api_src_assets_media_test_fakeimagegenerator",
-      "label": "fakeImageGenerator()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "fakeimagegenerator()",
-      "source_file": "services/api/src/assets-media.test.ts",
-      "source_location": "L177"
-    },
-    {
-      "id": "services_api_src_assets_media_test_fakesupabase",
-      "label": "fakeSupabase()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "fakesupabase()",
-      "source_file": "services/api/src/assets-media.test.ts",
-      "source_location": "L25"
-    },
-    {
-      "id": "services_api_src_assets_media_test_repeathex",
-      "label": "repeatHex()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "repeathex()",
-      "source_file": "services/api/src/assets-media.test.ts",
-      "source_location": "L528"
-    },
-    {
-      "id": "services_api_src_assets_media_test_scan",
-      "label": "scan()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "scan()",
-      "source_file": "services/api/src/assets-media.test.ts",
-      "source_location": "L478"
-    },
-    {
-      "id": "services_api_src_lib_image_generation_estimatedimagecost",
-      "label": "estimatedImageCost()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "estimatedimagecost()",
-      "source_file": "services/api/src/lib/image-generation.ts",
+      "norm_label": "arrowicon()",
+      "source_file": "apps/web/app/page.tsx",
       "source_location": "L28"
     },
     {
-      "id": "services_api_src_lib_image_generation_openaiimagegenerator",
-      "label": "openAiImageGenerator()",
+      "id": "apps_web_app_page_header",
+      "label": "Header()",
       "_callable": true,
       "_origin": "ast",
       "community": 92,
-      "community_name": "assets-media.test.ts",
+      "community_name": "app/page.tsx",
       "file_type": "code",
-      "norm_label": "openaiimagegenerator()",
-      "source_file": "services/api/src/lib/image-generation.ts",
-      "source_location": "L40"
+      "norm_label": "header()",
+      "source_file": "apps/web/app/page.tsx",
+      "source_location": "L46"
+    },
+    {
+      "id": "apps_web_app_page_landingpage",
+      "label": "LandingPage()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 92,
+      "community_name": "app/page.tsx",
+      "file_type": "code",
+      "norm_label": "landingpage()",
+      "source_file": "apps/web/app/page.tsx",
+      "source_location": "L153"
+    },
+    {
+      "id": "apps_web_app_page_logomark",
+      "label": "LogoMark()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 92,
+      "community_name": "app/page.tsx",
+      "file_type": "code",
+      "norm_label": "logomark()",
+      "source_file": "apps/web/app/page.tsx",
+      "source_location": "L13"
     },
     {
       "id": "apps_web_app_analytics_page_analyticspage",
@@ -18871,6 +18871,61 @@
       "source_location": "L23"
     },
     {
+      "id": "services_api_src_step9_test",
+      "label": "step9.test.ts",
+      "_origin": "ast",
+      "community": 112,
+      "community_name": "step9.test.ts",
+      "file_type": "code",
+      "norm_label": "step9.test.ts",
+      "source_file": "services/api/src/step9.test.ts",
+      "source_location": "L1"
+    },
+    {
+      "id": "services_api_src_step9_test_auth",
+      "label": "auth",
+      "_origin": "ast",
+      "community": 112,
+      "community_name": "step9.test.ts",
+      "file_type": "code",
+      "norm_label": "auth",
+      "source_file": "services/api/src/step9.test.ts",
+      "source_location": "L54"
+    },
+    {
+      "id": "services_api_src_step9_test_deletedasset",
+      "label": "deletedAsset",
+      "_origin": "ast",
+      "community": 112,
+      "community_name": "step9.test.ts",
+      "file_type": "code",
+      "norm_label": "deletedasset",
+      "source_file": "services/api/src/step9.test.ts",
+      "source_location": "L249"
+    },
+    {
+      "id": "services_api_src_step9_test_editor",
+      "label": "editor",
+      "_origin": "ast",
+      "community": 112,
+      "community_name": "step9.test.ts",
+      "file_type": "code",
+      "norm_label": "editor",
+      "source_file": "services/api/src/step9.test.ts",
+      "source_location": "L55"
+    },
+    {
+      "id": "services_api_src_step9_test_liveasset",
+      "label": "liveAsset",
+      "_origin": "ast",
+      "community": 112,
+      "community_name": "step9.test.ts",
+      "file_type": "code",
+      "norm_label": "liveasset",
+      "source_file": "services/api/src/step9.test.ts",
+      "source_location": "L250"
+    },
+    {
       "id": "supabase_migrations_20260912190000_retailer_sales_imports",
       "label": "20260912190000_retailer_sales_imports.sql",
       "_origin": "ast",
@@ -20860,94 +20915,6 @@
       "norm_label": "translation-workflow.test.sql",
       "source_file": "tests/security/translation-workflow.test.sql",
       "source_location": null
-    },
-    {
-      "id": "packages_book_model_src_engine_test",
-      "label": "engine.test.ts",
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "engine.test.ts",
-      "source_file": "packages/book-model/src/engine.test.ts",
-      "source_location": "L1"
-    },
-    {
-      "id": "packages_book_model_src_engine_test_base",
-      "label": "base",
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "base",
-      "source_file": "packages/book-model/src/engine.test.ts",
-      "source_location": "L12"
-    },
-    {
-      "id": "packages_book_model_src_fixture",
-      "label": "fixture.ts",
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "fixture.ts",
-      "source_file": "packages/book-model/src/fixture.ts",
-      "source_location": "L1"
-    },
-    {
-      "id": "packages_book_model_src_fixture_asset1",
-      "label": "ASSET1",
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "asset1",
-      "source_file": "packages/book-model/src/fixture.ts",
-      "source_location": "L5"
-    },
-    {
-      "id": "packages_book_model_src_fixture_ch1",
-      "label": "CH1",
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "ch1",
-      "source_file": "packages/book-model/src/fixture.ts",
-      "source_location": "L3"
-    },
-    {
-      "id": "packages_book_model_src_fixture_ch2",
-      "label": "CH2",
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "ch2",
-      "source_file": "packages/book-model/src/fixture.ts",
-      "source_location": "L4"
-    },
-    {
-      "id": "packages_book_model_src_schema_test",
-      "label": "schema.test.ts",
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "schema.test.ts",
-      "source_file": "packages/book-model/src/schema.test.ts",
-      "source_location": "L1"
-    },
-    {
-      "id": "packages_book_model_src_validate",
-      "label": "validate.ts",
-      "_origin": "ast",
-      "community": 136,
-      "community_name": "engine.test.ts",
-      "file_type": "code",
-      "norm_label": "validate.ts",
-      "source_file": "packages/book-model/src/validate.ts",
-      "source_location": "L1"
     },
     {
       "id": "supabase_migrations_20260903120000_render_workflow",
@@ -23680,37 +23647,70 @@
       "source_location": null
     },
     {
-      "id": "apps_web_app_page",
-      "label": "app/page.tsx",
+      "id": "services_api_src_assets_media_test",
+      "label": "assets-media.test.ts",
       "_origin": "ast",
       "community": 19,
-      "community_name": "app/page.tsx",
+      "community_name": "assets-media.test.ts",
       "file_type": "code",
-      "norm_label": "app/page.tsx",
-      "source_file": "apps/web/app/page.tsx",
+      "norm_label": "assets-media.test.ts",
+      "source_file": "services/api/src/assets-media.test.ts",
       "source_location": "L1"
     },
     {
-      "id": "apps_web_app_page_navigation",
-      "label": "navigation",
+      "id": "services_api_src_assets_media_test_auth",
+      "label": "auth",
       "_origin": "ast",
       "community": 19,
-      "community_name": "app/page.tsx",
+      "community_name": "assets-media.test.ts",
       "file_type": "code",
-      "norm_label": "navigation",
-      "source_file": "apps/web/app/page.tsx",
-      "source_location": "L6"
+      "norm_label": "auth",
+      "source_file": "services/api/src/assets-media.test.ts",
+      "source_location": "L137"
     },
     {
-      "id": "apps_web_app_page_stats",
-      "label": "stats",
+      "id": "services_api_src_assets_media_test_cleanscanner",
+      "label": "cleanScanner",
       "_origin": "ast",
       "community": 19,
-      "community_name": "app/page.tsx",
+      "community_name": "assets-media.test.ts",
       "file_type": "code",
-      "norm_label": "stats",
-      "source_file": "apps/web/app/page.tsx",
-      "source_location": "L147"
+      "norm_label": "cleanscanner",
+      "source_file": "services/api/src/assets-media.test.ts",
+      "source_location": "L187"
+    },
+    {
+      "id": "services_api_src_image_provider_test",
+      "label": "image-provider.test.ts",
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "image-provider.test.ts",
+      "source_file": "services/api/src/image-provider.test.ts",
+      "source_location": "L1"
+    },
+    {
+      "id": "services_api_src_lib_image_generation",
+      "label": "image-generation.ts",
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "image-generation.ts",
+      "source_file": "services/api/src/lib/image-generation.ts",
+      "source_location": "L1"
+    },
+    {
+      "id": "services_api_src_lib_image_generation_png_signature",
+      "label": "PNG_SIGNATURE",
+      "_origin": "ast",
+      "community": 19,
+      "community_name": "assets-media.test.ts",
+      "file_type": "code",
+      "norm_label": "png_signature",
+      "source_file": "services/api/src/lib/image-generation.ts",
+      "source_location": "L26"
     },
     {
       "id": "packages_ui_src_index",
@@ -38733,47 +38733,91 @@
       "source_location": "L49"
     },
     {
-      "id": "services_rendering_rules_init",
-      "label": "rules/__init__.py",
+      "id": "packages_book_model_src_engine_test",
+      "label": "engine.test.ts",
       "_origin": "ast",
       "community": 76,
-      "community_name": "test_print_geometry.py",
+      "community_name": "engine.test.ts",
       "file_type": "code",
-      "norm_label": "rules/__init__.py",
-      "source_file": "services/rendering/rules/__init__.py",
+      "norm_label": "engine.test.ts",
+      "source_file": "packages/book-model/src/engine.test.ts",
       "source_location": "L1"
     },
     {
-      "id": "services_rendering_tests_test_print_geometry",
-      "label": "test_print_geometry.py",
+      "id": "packages_book_model_src_engine_test_base",
+      "label": "base",
       "_origin": "ast",
       "community": 76,
-      "community_name": "test_print_geometry.py",
+      "community_name": "engine.test.ts",
       "file_type": "code",
-      "norm_label": "test_print_geometry.py",
-      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "norm_label": "base",
+      "source_file": "packages/book-model/src/engine.test.ts",
+      "source_location": "L12"
+    },
+    {
+      "id": "packages_book_model_src_fixture",
+      "label": "fixture.ts",
+      "_origin": "ast",
+      "community": 76,
+      "community_name": "engine.test.ts",
+      "file_type": "code",
+      "norm_label": "fixture.ts",
+      "source_file": "packages/book-model/src/fixture.ts",
       "source_location": "L1"
     },
     {
-      "id": "services_rendering_tests_test_print_geometry_py_parametrize",
-      "label": "parametrize",
+      "id": "packages_book_model_src_fixture_asset1",
+      "label": "ASSET1",
       "_origin": "ast",
       "community": 76,
-      "community_name": "test_print_geometry.py",
+      "community_name": "engine.test.ts",
       "file_type": "code",
-      "norm_label": "parametrize",
-      "source_file": "",
-      "source_location": ""
+      "norm_label": "asset1",
+      "source_file": "packages/book-model/src/fixture.ts",
+      "source_location": "L5"
     },
     {
-      "id": "services_rendering_rules_init_rationale_1",
-      "label": "Versioned preflight registry. Channel modules record verification dates and\u2026",
+      "id": "packages_book_model_src_fixture_ch1",
+      "label": "CH1",
       "_origin": "ast",
       "community": 76,
-      "community_name": "test_print_geometry.py",
-      "file_type": "rationale",
-      "norm_label": "versioned preflight registry. channel modules record verification dates and...",
-      "source_file": "services/rendering/rules/__init__.py",
+      "community_name": "engine.test.ts",
+      "file_type": "code",
+      "norm_label": "ch1",
+      "source_file": "packages/book-model/src/fixture.ts",
+      "source_location": "L3"
+    },
+    {
+      "id": "packages_book_model_src_fixture_ch2",
+      "label": "CH2",
+      "_origin": "ast",
+      "community": 76,
+      "community_name": "engine.test.ts",
+      "file_type": "code",
+      "norm_label": "ch2",
+      "source_file": "packages/book-model/src/fixture.ts",
+      "source_location": "L4"
+    },
+    {
+      "id": "packages_book_model_src_schema_test",
+      "label": "schema.test.ts",
+      "_origin": "ast",
+      "community": 76,
+      "community_name": "engine.test.ts",
+      "file_type": "code",
+      "norm_label": "schema.test.ts",
+      "source_file": "packages/book-model/src/schema.test.ts",
+      "source_location": "L1"
+    },
+    {
+      "id": "packages_book_model_src_validate",
+      "label": "validate.ts",
+      "_origin": "ast",
+      "community": 76,
+      "community_name": "engine.test.ts",
+      "file_type": "code",
+      "norm_label": "validate.ts",
+      "source_file": "packages/book-model/src/validate.ts",
       "source_location": "L1"
     },
     {
@@ -39107,7 +39151,7 @@
       "source_location": "L10"
     },
     {
-      "id": "services_rendering_rules_channel_rationale_30",
+      "id": "services_rendering_rules_channel_rationale_35",
       "label": "Check the uploaded artifact, not just its saved settings.",
       "_origin": "ast",
       "community": 8,
@@ -39115,7 +39159,7 @@
       "file_type": "rationale",
       "norm_label": "check the uploaded artifact, not just its saved settings.",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L30"
+      "source_location": "L35"
     },
     {
       "id": "services_rendering_rules_core_v1_rationale_1",
@@ -39283,59 +39327,48 @@
       "source_location": "L1"
     },
     {
-      "id": "services_api_src_step9_test",
-      "label": "step9.test.ts",
+      "id": "services_rendering_rules_init",
+      "label": "rules/__init__.py",
       "_origin": "ast",
       "community": 82,
-      "community_name": "step9.test.ts",
+      "community_name": "test_print_geometry.py",
       "file_type": "code",
-      "norm_label": "step9.test.ts",
-      "source_file": "services/api/src/step9.test.ts",
+      "norm_label": "rules/__init__.py",
+      "source_file": "services/rendering/rules/__init__.py",
       "source_location": "L1"
     },
     {
-      "id": "services_api_src_step9_test_auth",
-      "label": "auth",
+      "id": "services_rendering_tests_test_print_geometry",
+      "label": "test_print_geometry.py",
       "_origin": "ast",
       "community": 82,
-      "community_name": "step9.test.ts",
+      "community_name": "test_print_geometry.py",
       "file_type": "code",
-      "norm_label": "auth",
-      "source_file": "services/api/src/step9.test.ts",
-      "source_location": "L54"
+      "norm_label": "test_print_geometry.py",
+      "source_file": "services/rendering/tests/test_print_geometry.py",
+      "source_location": "L1"
     },
     {
-      "id": "services_api_src_step9_test_deletedasset",
-      "label": "deletedAsset",
+      "id": "services_rendering_tests_test_print_geometry_py_parametrize",
+      "label": "parametrize",
       "_origin": "ast",
       "community": 82,
-      "community_name": "step9.test.ts",
+      "community_name": "test_print_geometry.py",
       "file_type": "code",
-      "norm_label": "deletedasset",
-      "source_file": "services/api/src/step9.test.ts",
-      "source_location": "L249"
+      "norm_label": "parametrize",
+      "source_file": "",
+      "source_location": ""
     },
     {
-      "id": "services_api_src_step9_test_editor",
-      "label": "editor",
+      "id": "services_rendering_rules_init_rationale_1",
+      "label": "Versioned preflight registry. Channel modules record verification dates and\u2026",
       "_origin": "ast",
       "community": 82,
-      "community_name": "step9.test.ts",
-      "file_type": "code",
-      "norm_label": "editor",
-      "source_file": "services/api/src/step9.test.ts",
-      "source_location": "L55"
-    },
-    {
-      "id": "services_api_src_step9_test_liveasset",
-      "label": "liveAsset",
-      "_origin": "ast",
-      "community": 82,
-      "community_name": "step9.test.ts",
-      "file_type": "code",
-      "norm_label": "liveasset",
-      "source_file": "services/api/src/step9.test.ts",
-      "source_location": "L250"
+      "community_name": "test_print_geometry.py",
+      "file_type": "rationale",
+      "norm_label": "versioned preflight registry. channel modules record verification dates and...",
+      "source_file": "services/rendering/rules/__init__.py",
+      "source_location": "L1"
     },
     {
       "id": "services_scanning_scanning_service_config",
@@ -40284,70 +40317,37 @@
       "source_location": "L78"
     },
     {
-      "id": "services_api_src_assets_media_test",
-      "label": "assets-media.test.ts",
+      "id": "apps_web_app_page",
+      "label": "app/page.tsx",
       "_origin": "ast",
       "community": 92,
-      "community_name": "assets-media.test.ts",
+      "community_name": "app/page.tsx",
       "file_type": "code",
-      "norm_label": "assets-media.test.ts",
-      "source_file": "services/api/src/assets-media.test.ts",
+      "norm_label": "app/page.tsx",
+      "source_file": "apps/web/app/page.tsx",
       "source_location": "L1"
     },
     {
-      "id": "services_api_src_assets_media_test_auth",
-      "label": "auth",
+      "id": "apps_web_app_page_navigation",
+      "label": "navigation",
       "_origin": "ast",
       "community": 92,
-      "community_name": "assets-media.test.ts",
+      "community_name": "app/page.tsx",
       "file_type": "code",
-      "norm_label": "auth",
-      "source_file": "services/api/src/assets-media.test.ts",
-      "source_location": "L137"
+      "norm_label": "navigation",
+      "source_file": "apps/web/app/page.tsx",
+      "source_location": "L6"
     },
     {
-      "id": "services_api_src_assets_media_test_cleanscanner",
-      "label": "cleanScanner",
+      "id": "apps_web_app_page_stats",
+      "label": "stats",
       "_origin": "ast",
       "community": 92,
-      "community_name": "assets-media.test.ts",
+      "community_name": "app/page.tsx",
       "file_type": "code",
-      "norm_label": "cleanscanner",
-      "source_file": "services/api/src/assets-media.test.ts",
-      "source_location": "L187"
-    },
-    {
-      "id": "services_api_src_image_provider_test",
-      "label": "image-provider.test.ts",
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "image-provider.test.ts",
-      "source_file": "services/api/src/image-provider.test.ts",
-      "source_location": "L1"
-    },
-    {
-      "id": "services_api_src_lib_image_generation",
-      "label": "image-generation.ts",
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "image-generation.ts",
-      "source_file": "services/api/src/lib/image-generation.ts",
-      "source_location": "L1"
-    },
-    {
-      "id": "services_api_src_lib_image_generation_png_signature",
-      "label": "PNG_SIGNATURE",
-      "_origin": "ast",
-      "community": 92,
-      "community_name": "assets-media.test.ts",
-      "file_type": "code",
-      "norm_label": "png_signature",
-      "source_file": "services/api/src/lib/image-generation.ts",
-      "source_location": "L26"
+      "norm_label": "stats",
+      "source_file": "apps/web/app/page.tsx",
+      "source_location": "L147"
     },
     {
       "id": "apps_web_app_analytics_page",
@@ -52023,7 +52023,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L48",
+      "source_location": "L53",
       "weight": 1.0
     },
     {
@@ -52035,7 +52035,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L74",
+      "source_location": "L79",
       "weight": 1.0
     },
     {
@@ -52047,7 +52047,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L57",
+      "source_location": "L62",
       "weight": 1.0
     },
     {
@@ -52059,7 +52059,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L61",
+      "source_location": "L66",
       "weight": 1.0
     },
     {
@@ -52071,7 +52071,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L68",
+      "source_location": "L73",
       "weight": 1.0
     },
     {
@@ -52083,7 +52083,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L57",
+      "source_location": "L62",
       "weight": 1.0
     },
     {
@@ -52095,7 +52095,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L61",
+      "source_location": "L66",
       "weight": 1.0
     },
     {
@@ -56763,7 +56763,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L58",
+      "source_location": "L63",
       "weight": 1.0
     },
     {
@@ -67191,7 +67191,7 @@
       "confidence_score": 1.0,
       "context": "import",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L35",
+      "source_location": "L40",
       "weight": 1.0
     },
     {
@@ -95121,7 +95121,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L29",
+      "source_location": "L34",
       "weight": 1.0
     },
     {
@@ -95132,7 +95132,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L54",
+      "source_location": "L59",
       "weight": 1.0
     },
     {
@@ -95143,7 +95143,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L73",
+      "source_location": "L78",
       "weight": 1.0
     },
     {
@@ -109694,14 +109694,14 @@
       "weight": 1.0
     },
     {
-      "source": "services_rendering_rules_channel_rationale_30",
+      "source": "services_rendering_rules_channel_rationale_35",
       "target": "services_rendering_rules_channel_check_print_pdf_geometry",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L30",
+      "source_location": "L35",
       "weight": 1.0
     },
     {
@@ -114109,7 +114109,7 @@
       "confidence_score": 0.85,
       "context": "argument",
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L69",
+      "source_location": "L74",
       "weight": 1.0
     },
     {
@@ -115458,7 +115458,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.95,
       "source_file": "services/rendering/rules/_channel.py",
-      "source_location": "L37",
+      "source_location": "L42",
       "weight": 0.8
     },
     {
@@ -115859,5 +115859,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "4faada94d45fc4b837456d6f297aa41589493043"
+  "built_at_commit": "facab69b20451e2c7f34af67da68af5f4c94607b"
 }

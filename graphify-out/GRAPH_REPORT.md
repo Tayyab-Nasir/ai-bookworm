@@ -1,7 +1,7 @@
 # Graph Report - ai-bookworm  (2026-09-18)
 
 ## Corpus Check
-- 438 files · ~270,627 words
+- 438 files · ~270,642 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `4faada94`
+- Built from commit: `facab69b`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -34,7 +34,7 @@
 - test_rendering.py
 - auth.test.ts
 - 20260912180000_translation_workflow.sql
-- app/page.tsx
+- assets-media.test.ts
 - auth_provider.dart
 - publishing/main.py
 - main.dart
@@ -91,13 +91,13 @@
 - validation/package.json
 - test_rag.py
 - cover_renderer.py
-- test_print_geometry.py
+- engine.test.ts
 - 0002_core.sql
 - engine.ts
 - ReferralCenter.tsx
 - PrintEdition
 - test_metadata_agent.py
-- step9.test.ts
+- test_print_geometry.py
 - ScannerConfig
 - 0006_billing_publishing.sql
 - 0013_admin_ops.sql
@@ -107,7 +107,7 @@
 - rendering-api.test.ts
 - 0003_assets_collaboration.sql
 - test_injection.py
-- assets-media.test.ts
+- app/page.tsx
 - analytics/page.tsx
 - ui/package.json
 - @playwright/test
@@ -126,6 +126,7 @@
 - test_tenant_isolation_static.py
 - test_service_security.py
 - public.workspace_invitations
+- step9.test.ts
 - public.retailer_sales_imports
 - speech-generation.ts
 - ai.test.ts
@@ -148,7 +149,6 @@
 - 20260911110000_ai_review_jobs.sql
 - test_critical_journey.py
 - private.preserve_created_by
-- engine.test.ts
 - public.complete_render_job
 - public.complete_publishing_package_job
 - public.data_rights_requests
@@ -368,6 +368,10 @@ Nodes (31): dynamic, POST(), runtime, dynamic, GET(), dynamic, proxy(), runtime 
 ### Community 18 - "20260912180000_translation_workflow.sql"
 Cohesion: 0.13
 Nodes (17): ai_jobs_pending_translation, public.claim_translation_job(), public.reserve_translation_job_credit(), public.translation_chapters, public.translation_completion_receipts, public.translation_projects, auth.users, public (+9 more)
+
+### Community 19 - "assets-media.test.ts"
+Cohesion: 0.12
+Nodes (12): auth, cleanScanner, Row, Store, estimatedImageCost(), GeneratedImage, ImageGenerationInput, ImageGenerator (+4 more)
 
 ### Community 20 - "auth_provider.dart"
 Cohesion: 0.06
@@ -593,9 +597,9 @@ Nodes (35): DeterministicMockEmbedder, Embedder, get_embedder(), OpenAIEmbedder,
 Cohesion: 0.18
 Nodes (15): Image, ImageDraw, compose_front_cover(), _fit_text(), measure(), _font(), _paint_text(), _qr_image() (+7 more)
 
-### Community 76 - "test_print_geometry.py"
+### Community 76 - "engine.test.ts"
 Cohesion: 0.23
-Nodes (9): Versioned preflight registry. Channel modules record verification dates and…, rule_version(), _blank_print_pdf(), _channel_findings(), parametrize, test_actual_page_geometry_and_mirrored_trim_relative_text(), test_channel_page_minimum_boundaries(), test_channel_page_minimums_use_actual_rendered_pdf() (+1 more)
+Nodes (9): base, ASSET1, CH1, CH2, sampleBook(), DocumentOperation, BookIssue, BookValidation (+1 more)
 
 ### Community 77 - "0002_core.sql"
 Cohesion: 0.33
@@ -617,9 +621,9 @@ Nodes (19): PrintEdition, field_validator, _missing(), artwork(), edition(), int
 Cohesion: 0.25
 Nodes (17): MockProvider, Path, Deterministic canned responses for tests/evals. Cycles through `responses`., make_agent(), parametrize, Focused contract, grounding, and prompt-injection tests for metadata AI., request(), test_metadata_agent_is_registered_and_returns_review_only_candidate() (+9 more)
 
-### Community 82 - "step9.test.ts"
-Cohesion: 0.33
-Nodes (6): appWith(), auth, deletedAsset, editor, fakeSupabase(), liveAsset
+### Community 82 - "test_print_geometry.py"
+Cohesion: 0.23
+Nodes (9): Versioned preflight registry. Channel modules record verification dates and…, rule_version(), _blank_print_pdf(), _channel_findings(), parametrize, test_actual_page_geometry_and_mirrored_trim_relative_text(), test_channel_page_minimum_boundaries(), test_channel_page_minimums_use_actual_rendered_pdf() (+1 more)
 
 ### Community 83 - "ScannerConfig"
 Cohesion: 0.22
@@ -656,10 +660,6 @@ Nodes (11): public.activity_events, public.approvals, public.asset_links, public
 ### Community 91 - "test_injection.py"
 Cohesion: 0.24
 Nodes (12): sanitize(), wrap_manuscript(), test_manuscript_wrapped_and_sanitized(), chapter_with(), parametrize, Adversarial manuscript fixtures -> AI service containment (PRD section 28: "Use…, Adversarial manuscript text must not alter the validated pipeline: tools still…, test_adversarial_text_contained_in_wrapping() (+4 more)
-
-### Community 92 - "assets-media.test.ts"
-Cohesion: 0.12
-Nodes (12): auth, cleanScanner, Row, Store, estimatedImageCost(), GeneratedImage, ImageGenerationInput, ImageGenerator (+4 more)
 
 ### Community 93 - "analytics/page.tsx"
 Cohesion: 0.14
@@ -728,6 +728,10 @@ Nodes (5): client(), fixture, parametrize, HTTP trust boundary: parser cannot ex
 ### Community 111 - "public.workspace_invitations"
 Cohesion: 0.31
 Nodes (8): public.accept_workspace_invitation(), public.change_workspace_member_role(), public.workspace_invitations, auth.users, public.workspace_members, public.workspaces, workspace_invitations_pending_email_key, workspace_invitations_workspace_created_idx
+
+### Community 112 - "step9.test.ts"
+Cohesion: 0.33
+Nodes (6): appWith(), auth, deletedAsset, editor, fakeSupabase(), liveAsset
 
 ### Community 113 - "public.retailer_sales_imports"
 Cohesion: 0.24
@@ -812,10 +816,6 @@ Nodes (6): _client(), parametrize, P0 critical journey, service-level E2E (PRD s
 ### Community 134 - "private.preserve_created_by"
 Cohesion: 0.33
 Nodes (6): private.preserve_created_by, assets_preserve_creator, books_preserve_creator, folders_preserve_creator, tasks_preserve_creator, workspaces_preserve_creator
-
-### Community 136 - "engine.test.ts"
-Cohesion: 0.23
-Nodes (9): base, ASSET1, CH1, CH2, sampleBook(), DocumentOperation, BookIssue, BookValidation (+1 more)
 
 ### Community 137 - "public.complete_render_job"
 Cohesion: 0.33
