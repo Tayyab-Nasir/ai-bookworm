@@ -3,6 +3,21 @@ import { test } from "node:test";
 import { resolveEditionTextDirection, formFromEdition, toConfig } from "../components/PublishingStudio";
 import type { Edition } from "@bookworm/types";
 
+test("front matter survives save and reload for both book formats", () => {
+  for (const kind of ["ebook", "print"] as const) {
+    const edition = { type: kind, language: "en", edition_metadata_json: { kind } } as unknown as Edition;
+    const form = { ...formFromEdition(edition), copyrightNotice: "Copyright Ada\nPermission required.", publisher: "Finch & Fox", ebookTitlePage: true };
+    const saved = toConfig(form);
+    if (saved.kind === "audiobook") throw new Error("wrong format");
+    assert.deepEqual(saved.front_matter, { copyright_notice: form.copyrightNotice, publisher: form.publisher });
+    const restored = formFromEdition({ ...edition, edition_metadata_json: saved });
+    assert.equal(restored.copyrightNotice, form.copyrightNotice);
+    assert.equal(restored.publisher, form.publisher);
+    if (kind === "ebook") assert.equal(restored.ebookTitlePage, true);
+    assert.deepEqual(toConfig(restored, saved), saved);
+  }
+});
+
 test("interior bleed edges round-trip while legacy editions retain all-edge geometry", () => {
   const edition = { type: "print", language: "en", edition_metadata_json: { kind: "print", bleed_in: 0.125 } } as unknown as Edition;
   const original = formFromEdition(edition);

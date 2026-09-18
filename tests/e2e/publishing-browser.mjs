@@ -14,6 +14,9 @@ try {
   await page.getByLabel('Password', { exact: true }).fill('fixture-password');
   await page.getByRole('button', { name: /sign in/i }).click();
   await page.getByRole('button', { name: 'New EPUB', exact: true }).click();
+  await page.getByLabel('Include EPUB title page', { exact: false }).check();
+  await page.getByLabel('Publisher or imprint', { exact: true }).fill('Finch & Fox');
+  await page.getByLabel('Copyright notice', { exact: true }).fill('Copyright Ada\nPermission required.');
   await page.getByLabel('Add QR code').check();
   await page.getByLabel('HTTPS destination').fill('https://author.example/harbor');
   await page.getByLabel('QR label', { exact: true }).fill('Read more');
@@ -21,6 +24,9 @@ try {
   await page.getByText('Edition settings saved.', { exact: true }).waitFor();
   await page.reload();
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some((e) => e.value === 'https://author.example/harbor'));
+  assert.equal(await page.getByLabel('Publisher or imprint', { exact: true }).inputValue(), 'Finch & Fox');
+  assert.equal(await page.getByLabel('Copyright notice', { exact: true }).inputValue(), 'Copyright Ada\nPermission required.');
+  assert.equal(await page.getByLabel('Include EPUB title page', { exact: false }).isChecked(), true);
   const packageButton = page.getByRole('button', { name: 'Create retailer package', exact: true });
   assert.equal(await packageButton.isEnabled(), false);
   await page.getByLabel('Preflight target').selectOption('kdp');
@@ -38,6 +44,8 @@ try {
   await page.reload(); await download.waitFor();
   assert.notEqual(await download.getAttribute('href'), before, 'history did not refresh download URL');
   await page.getByRole('button', { name: 'New print', exact: true }).click();
+  await page.getByLabel('Publisher or imprint', { exact: true }).fill('Print Imprint');
+  await page.getByLabel('Copyright notice', { exact: true }).fill('Print permission notice.');
   await page.getByLabel('Body font').selectOption('BookwormVera');
   await page.getByLabel('Cover artwork').selectOption({ index: 1 });
   await page.getByLabel('Create full cover PDF', { exact: true }).check();
@@ -51,6 +59,8 @@ try {
   await page.getByText('Edition settings saved.', { exact: true }).waitFor();
   await page.reload();
   await page.getByRole('button', { name: /^print /i }).click();
+  assert.equal(await page.getByLabel('Publisher or imprint', { exact: true }).inputValue(), 'Print Imprint');
+  assert.equal(await page.getByLabel('Copyright notice', { exact: true }).inputValue(), 'Print permission notice.');
   assert.equal(await page.getByLabel('Create full cover PDF', { exact: true }).isChecked(), true);
   assert.equal(await page.getByLabel('Template spine width (in)', { exact: true }).inputValue(), '0.415');
   assert.equal(await page.getByLabel('Template page count', { exact: true }).inputValue(), '184');

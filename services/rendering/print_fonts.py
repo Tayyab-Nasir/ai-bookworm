@@ -87,6 +87,13 @@ def print_font_issues(book: dict, edition: dict) -> list[dict[str, str]]:
                 f"{font} cannot print {codes}. Choose a font covering these characters or use EPUB."})
 
     check((book.get("metadata") or {}).get("title"), heading, "book.metadata.title")
+    for key in ("subtitle", "author"):
+        check((book.get("metadata") or {}).get(key), body, f"book.metadata.{key}")
+    front = edition.get("front_matter") or {}
+    for key in ("copyright_notice", "publisher"):
+        check(front.get(key), body, f"edition.front_matter.{key}")
+    if any(str(value).strip() for value in front.values()):
+        check((book.get("metadata") or {}).get("isbn13"), body, "book.metadata.isbn13")
     for chapter in book.get("chapters", []):
         location = f"chapter:{chapter['id']}"
         check(chapter.get("title"), heading, location)

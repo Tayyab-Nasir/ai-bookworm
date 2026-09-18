@@ -23,6 +23,23 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 edition front matter
+
+Publishing Studio now saves bounded publisher/imprint and exact copyright
+notice text for print and EPUB. Print title pages include subtitle and author;
+EPUB title pages are opt-in to preserve existing manuscript/import behavior.
+A copyright page appears only when notice or publisher is supplied; no legal
+claims or ISBNs are invented. Saved ISBN is included when present. EPUB uses
+edition metadata overrides and registers pages in manifest/spine, plus rights
+and publisher metadata. PDF `1.10.0`, EPUB `1.5.0`, core rules `1.0.7`.
+Print font checks cover these new strings with located findings.
+
+Verified: 276 service tests, 193 API tests, 65 web tests, workspace TypeScript,
+production build; 34 focused rendering tests rerun after rule version bump.
+New browser save/reload assertions are written but not run: the tool policy
+rejected startup of the isolated fixture web server. No live operations.
+Note: `Codex Sessions/2026-09/2026-09-18-bookworm-front-matter.md`.
+
 ### 2026-09-18 print page-number layout
 
 PDF `1.9.0` places the entire numbering font box at least 0.5in inside finished

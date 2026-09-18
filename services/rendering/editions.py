@@ -78,7 +78,13 @@ class CoverConfig(BaseModel):
         return self
 
 
+class FrontMatter(BaseModel):
+    copyright_notice: str = Field(default="", max_length=3000)
+    publisher: str = Field(default="", max_length=200)
+
+
 class EbookEdition(BaseModel):
+    include_title_page: bool = False
     kind: Literal["ebook"] = "ebook"
     schema_version: str = EDITION_SCHEMA_VERSION
     text_direction: Literal["auto", "ltr", "rtl"] = "auto"
@@ -86,6 +92,7 @@ class EbookEdition(BaseModel):
     navigation: Literal["toc", "toc+landmarks", "none"] = "toc"
     cover: CoverConfig = Field(default_factory=CoverConfig)
     metadata_overrides: dict[str, str] = Field(default_factory=dict)
+    front_matter: FrontMatter = Field(default_factory=FrontMatter)
     image_policy: ImagePolicy = Field(default_factory=ImagePolicy)
 
 
@@ -142,6 +149,7 @@ class PrintEdition(BaseModel):
     page_numbering: PageNumbering = Field(default_factory=PageNumbering)
     cover: CoverConfig = Field(default_factory=CoverConfig)
     wrap_cover: WrapCover = Field(default_factory=WrapCover)
+    front_matter: FrontMatter = Field(default_factory=FrontMatter)
 
     @model_validator(mode="after")
     def _wrap_source(self):

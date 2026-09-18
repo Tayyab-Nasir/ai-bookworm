@@ -12,7 +12,7 @@ from html import escape
 from editions import EbookEdition, resolve_text_direction
 from manuscript import block_tree, image_width, inline_markup, table_rows
 
-RENDERER_VERSION = "epub-1.4.0"
+RENDERER_VERSION = "epub-1.5.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"
@@ -125,6 +125,9 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
     ]
     manifest_items += [
         f'<item href="{slug}.xhtml" id="{slug}" media-type="application/xhtml+xml"/>'
+        for slug, _ in _front_pages(book, edition)]
+    manifest_items += [
+        f'<item href="{slug}.xhtml" id="{slug}" media-type="application/xhtml+xml"/>'
         for slug, _ in chapters]
     if cover_asset_id:
         manifest_items += [
@@ -136,6 +139,7 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
         for asset_id in image_asset_ids if asset_id != cover_asset_id
     ]
     spine = ('<itemref idref="cover-page" linear="no"/>' if cover_asset_id else "") + "".join(
+        f'<itemref idref="{slug}"/>' for slug, _ in _front_pages(book, edition)) + "".join(
         f'<itemref idref="{slug}"/>' for slug, _ in chapters)
     meta = [
         f'<dc:identifier id="pub-id">{uid}</dc:identifier>',
@@ -147,6 +151,10 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
     ]
     if md.get("description"):
         meta.append(f"<dc:description>{escape(md['description'])}</dc:description>")
+    if edition.front_matter.publisher.strip():
+        meta.append(f"<dc:publisher>{escape(edition.front_matter.publisher)}</dc:publisher>")
+    if edition.front_matter.copyright_notice.strip():
+        meta.append(f"<dc:rights>{escape(edition.front_matter.copyright_notice)}</dc:rights>")
     for kw in sorted(md.get("keywords") or []):
         meta.append(f"<dc:subject>{escape(kw)}</dc:subject>")
     if md.get("isbn13"):
@@ -160,6 +168,16 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
         f"<manifest>{''.join(manifest_items)}</manifest>\n"
         f"<spine>{spine}</spine>\n</package>"
     )
+
+
+def _front_pages(book: dict, edition: EbookEdition) -> list[tuple[str, list[str]]]:
+    md = {**book["metadata"], **edition.metadata_overrides}
+    pages = [("title-page", [md.get(key) or "" for key in ("title", "subtitle", "author")])] if edition.include_title_page else []
+    front = edition.front_matter
+    if front.copyright_notice.strip() or front.publisher.strip():
+        pages.append(("copyright-page", [front.copyright_notice, front.publisher,
+                      f"ISBN: {md['isbn13']}" if md.get("isbn13") else ""]))
+    return pages
 
 
 def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = None,
@@ -180,6 +198,15 @@ def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = N
     entries.append((f"{_OEBPS}/content.opf", _opf(book, edition, chapters, lang, cover_asset_id, [item[0] for item in embedded_images]).encode(), False))
     entries.append((f"{_OEBPS}/nav.xhtml", _nav_xhtml(book, chapters, lang, direction).encode(), False))
     entries.append((f"{_OEBPS}/style.css", _CSS.encode(), False))
+    for slug, lines in _front_pages(book, edition):
+        body = "".join(f"<p>{escape(line).replace(chr(10), '<br/>')}</p>" for line in lines if line.strip())
+        semantic = "titlepage" if slug == "title-page" else "copyright-page"
+        document = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{escape(lang)}" lang="{escape(lang)}" dir="{direction}">'
+            f'<head><title>{"Title page" if slug == "title-page" else "Copyright"}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>'
+            f'<body epub:type="{semantic}">{body}</body></html>')
+        entries.append((f"{_OEBPS}/{slug}.xhtml", document.encode(), False))
     for slug, ch in chapters:
         entries.append((f"{_OEBPS}/{slug}.xhtml", _chapter_xhtml(book, ch, lang, direction, set(image_bytes or {}) | ({cover_asset_id} if cover_asset_id else set())).encode(), False))
     for asset_id, data in embedded_images:

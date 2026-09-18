@@ -35,6 +35,7 @@ interface FormState {
   voice: AudiobookVoice; narrationInstructions: string; narrationSpeed: number;
   wrapEnabled: boolean; wrapProfile: "kdp-white" | "kdp-cream" | "kdp-standard-color" | "kdp-premium-color" | "custom";
   spineWidth: number; templatePages: number; backText: string; spineText: string; wrapBackground: string; wrapTextColor: string;
+  copyrightNotice: string; publisher: string; ebookTitlePage: boolean;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -48,6 +49,7 @@ const DEFAULT_FORM: FormState = {
   voice: "marin", narrationInstructions: "Narrate naturally with clear chapter pacing and faithful pronunciation.", narrationSpeed: 1,
   wrapEnabled: false, wrapProfile: "kdp-white", spineWidth: 0.25, templatePages: 0,
   backText: "", spineText: "", wrapBackground: "#182528", wrapTextColor: "#ffffff",
+  copyrightNotice: "", publisher: "", ebookTitlePage: false,
 };
 
 function object(value: unknown): Record<string, unknown> {
@@ -66,8 +68,12 @@ export function formFromEdition(edition: Edition): FormState {
   const typography = object(config.typography);
   const page = object(config.page_numbering);
   const wrap = object(config.wrap_cover);
+  const front = object(config.front_matter);
   return {
     ...DEFAULT_FORM,
+    copyrightNotice: typeof front.copyright_notice === "string" ? front.copyright_notice : "",
+    ebookTitlePage: config.include_title_page === true,
+    publisher: typeof front.publisher === "string" ? front.publisher : "",
     kind: edition.type === "print" || edition.type === "audiobook" ? edition.type : "ebook",
     language: edition.language ?? "en",
     textDirection: config.text_direction === "ltr" || config.text_direction === "rtl" ? config.text_direction : "auto",
@@ -105,6 +111,7 @@ export function formFromEdition(edition: Edition): FormState {
 
 export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig {
   const saved = object(savedConfig);
+  const front_matter = { copyright_notice: form.copyrightNotice, publisher: form.publisher };
   const cover = {
     asset_id: form.coverAssetId || null,
     title_on_cover: form.titleOnCover, subtitle_on_cover: form.subtitleOnCover, author_on_cover: form.authorOnCover,
@@ -112,7 +119,8 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
     qr_code: { enabled: form.qrEnabled, url: form.qrEnabled ? form.qrUrl : null, label: form.qrLabel || null, position: form.qrPosition, size_px: form.qrSize },
   };
   if (form.kind === "ebook") return {
-    kind: "ebook", schema_version: "1.1.0", text_direction: form.textDirection, flow: form.flow, navigation: form.navigation, cover,
+    kind: "ebook", schema_version: "1.1.0", text_direction: form.textDirection, flow: form.flow, navigation: form.navigation, cover, front_matter,
+    include_title_page: form.ebookTitlePage,
     image_policy: { max_width_px: 1600, max_bytes: 5 * 1024 * 1024, embed: true, allowed_formats: ["jpeg", "png", "gif"], ...(saved.kind === "ebook" ? object(saved.image_policy) : {}) },
     ...(saved.kind === "ebook" && saved.metadata_overrides ? { metadata_overrides: Object.fromEntries(Object.entries(object(saved.metadata_overrides)).filter((entry): entry is [string, string] => typeof entry[1] === "string")) } : {}),
   };
@@ -122,7 +130,7 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
   };
   return {
     kind: "print", schema_version: "1.1.0", text_direction: form.textDirection, trim_size: form.trimSize, bleed_in: form.bleed, bleed_edges: form.bleedEdges,
-    margins: { top: form.top, bottom: form.bottom, inner: form.inner, outer: form.outer },
+    margins: { top: form.top, bottom: form.bottom, inner: form.inner, outer: form.outer }, front_matter,
     typography: {
       body_font: form.bodyFont, body_size_pt: form.bodySize, heading_font: form.headingFont, heading_size_pt: form.headingSize,
       leading: form.leading, paragraph_spacing_pt: form.paragraphSpacing, first_line_indent_in: form.firstLineIndent, text_align: form.textAlign,
@@ -355,6 +363,15 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
         {form.kind === "print" && <p className="text-sm leading-relaxed text-white/50">Bitstream Vera embeds body and heading fonts in the PDF, including bold and italic text. It supports a limited Latin character set. Preflight identifies unsupported characters before export. Inline code and page numbers still use standard PDF fonts.</p>}
 
+        {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="front-matter-settings">
+          <h2 id="front-matter-settings" className="text-xl font-semibold">Title & copyright pages</h2>
+          <p className="mt-1 text-sm text-white/45">Print includes a title page; EPUB can include one below. It uses your saved book title, subtitle and author. Add your own notice or publisher to include a copyright page, with the saved ISBN when available. This does not register copyright or assign an ISBN.</p>
+          <div className="mt-5 grid gap-4">
+            {form.kind === "ebook" && <label className="inline-flex items-center gap-2 text-sm text-white/65"><input type="checkbox" checked={form.ebookTitlePage} onChange={(event) => update("ebookTitlePage", event.target.checked)} />Include EPUB title page (leave off if your manuscript already contains one)</label>}
+            <label className="text-sm text-white/65">Publisher or imprint<input value={form.publisher} maxLength={200} onChange={(event) => update("publisher", event.target.value)} className={fieldClass} /></label>
+            <label className="text-sm text-white/65">Copyright notice<textarea value={form.copyrightNotice} maxLength={3000} rows={5} onChange={(event) => update("copyrightNotice", event.target.value)} className={fieldClass} placeholder="Enter the exact notice and permissions text you want printed." /></label>
+          </div>
+        </section>}
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="cover-settings">
           <h2 id="cover-settings" className="text-xl font-semibold">Cover composition</h2><p className="mt-1 text-sm text-white/45">Choose private artwork; title, author, overlay, and optional QR are composed during rendering.</p>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">

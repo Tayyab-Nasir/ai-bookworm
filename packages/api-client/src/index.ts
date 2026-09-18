@@ -193,6 +193,7 @@ export interface EditionCoverConfig {
 }
 
 export type EditionConfig = {
+  include_title_page?: boolean;
   kind: "ebook";
   schema_version?: "1.0.0" | "1.1.0";
   text_direction?: "auto" | "ltr" | "rtl";
@@ -200,6 +201,7 @@ export type EditionConfig = {
   navigation?: "toc" | "toc+landmarks" | "none";
   cover?: EditionCoverConfig;
   metadata_overrides?: Record<string, string>;
+  front_matter?: { copyright_notice?: string; publisher?: string };
   image_policy?: { max_width_px?: number; max_bytes?: number; embed?: boolean; allowed_formats?: ("jpeg" | "png" | "gif" | "webp")[] };
 } | {
   kind: "print";
@@ -209,6 +211,7 @@ export type EditionConfig = {
   bleed_in?: number;
   bleed_edges?: "all" | "outer";
   margins?: { top?: number; bottom?: number; inner?: number; outer?: number };
+  front_matter?: { copyright_notice?: string; publisher?: string };
   typography?: {
     body_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold" | "BookwormVera" | "BookwormVera-Bold";
     body_size_pt?: number;

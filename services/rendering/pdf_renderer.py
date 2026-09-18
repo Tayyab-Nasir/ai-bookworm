@@ -33,7 +33,7 @@ from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
 from print_layout import NUMBER_SIZE_PT, NUMBER_TRIM_INSET_IN, number_metrics, print_layout_issues
 
-RENDERER_VERSION = "pdf-1.9.0"
+RENDERER_VERSION = "pdf-1.10.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -191,6 +191,16 @@ def render_pdf(book: dict, edition: PrintEdition,
 
     # Explicit cycle avoids autoNextPageTemplate retaining a stale next index.
     story: list = [NextPageTemplate(["even", "odd"]), Paragraph(escape(book["metadata"].get("title", "")), heading), Spacer(1, typo.leading)]
+    front_style = ParagraphStyle("FrontMatter", parent=body, firstLineIndent=0, alignment=TA_LEFT)
+    for key in ("subtitle", "author"):
+        if book["metadata"].get(key):
+            story.append(Paragraph(escape(book["metadata"][key]), front_style))
+    if edition.front_matter.copyright_notice.strip() or edition.front_matter.publisher.strip():
+        story.append(PageBreak())
+        for text in (edition.front_matter.copyright_notice, edition.front_matter.publisher,
+                     f"ISBN: {book['metadata']['isbn13']}" if book["metadata"].get("isbn13") else ""):
+            if text.strip():
+                story.append(Paragraph(escape(text).replace("\n", "<br/>"), front_style))
     for ch in sorted(book["chapters"], key=lambda c: c["order"]):
         story.append(PageBreak())
         story.append(Paragraph(escape(ch.get("title", "")), heading))

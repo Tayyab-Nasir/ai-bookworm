@@ -32,7 +32,13 @@ const coverSchema = z.object({
   if (value.qr_code.enabled && !value.asset_id) ctx.addIssue({ code: "custom", path: ["asset_id"], message: "Choose cover art before enabling QR." });
 }).default({});
 
+const frontMatterSchema = z.object({
+  copyright_notice: z.string().max(3000).default(""),
+  publisher: z.string().max(200).default(""),
+}).strict().default({});
+
 const ebookSchema = z.object({
+  include_title_page: z.boolean().default(false),
   kind: z.literal("ebook"),
   schema_version: z.enum(["1.0.0", "1.1.0"]).default("1.1.0"),
   text_direction: z.enum(["auto", "ltr", "rtl"]).default("auto"),
@@ -40,6 +46,7 @@ const ebookSchema = z.object({
   navigation: z.enum(["toc", "toc+landmarks", "none"]).default("toc"),
   cover: coverSchema,
   metadata_overrides: z.record(z.string().max(2_000)).default({}),
+  front_matter: frontMatterSchema,
   image_policy: z.object({
     max_width_px: z.number().int().min(320).max(6_000).default(1_600),
     max_bytes: z.number().int().min(100_000).max(25 * 1024 * 1024).default(5 * 1024 * 1024),
@@ -77,6 +84,7 @@ const printSchema = z.object({
   bleed_in: z.number().min(0).max(0.25).default(0),
   bleed_edges: z.enum(["all", "outer"]).default("all"),
   margins: marginsSchema,
+  front_matter: frontMatterSchema,
   typography: typographySchema,
   page_numbering: z.object({
     style: z.enum(["arabic", "roman", "none"]).default("arabic"),
