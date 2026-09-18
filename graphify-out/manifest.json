@@ -402,9 +402,9 @@
     "semantic_hash": "6eb234df7f50d335bd057332a52af6bb"
   },
   "apps/web/components/PublishingStudio.tsx": {
-    "mtime": 1789707289.485827,
-    "seen": 1789707491.5259137,
-    "ast_hash": "913748184a2d5f297ebe76e7b3e71687",
+    "mtime": 1789707985.7807064,
+    "seen": 1789708175.606106,
+    "ast_hash": "7f7c25fa2e02d9fa59e4e1f7f8893637",
     "semantic_hash": ""
   },
   "apps/web/components/ReferralCenter.tsx": {
@@ -564,9 +564,9 @@
     "semantic_hash": "c7e88c37d3619ff2c31bc09d9fbecd8d"
   },
   "apps/web/tests/publishing-studio.test.ts": {
-    "mtime": 1789706381.6797247,
-    "seen": 1789706605.1520915,
-    "ast_hash": "9be1fdda91ebb8de2cd182663db495f3",
+    "mtime": 1789708041.3213482,
+    "seen": 1789708175.606106,
+    "ast_hash": "cb5a61829e53721ea8f8a08804bc2fa6",
     "semantic_hash": ""
   },
   "apps/web/tests/referrals.test.ts": {
@@ -606,9 +606,9 @@
     "semantic_hash": "8843cb12ab93bfc002e8ab819671a3e7"
   },
   "packages/api-client/src/index.ts": {
-    "mtime": 1789706326.5257897,
-    "seen": 1789706605.1520915,
-    "ast_hash": "04d01dca1a2d6792fa2cfec8125f7f37",
+    "mtime": 1789707930.1553478,
+    "seen": 1789708175.606106,
+    "ast_hash": "41bac328507d92c7094d344e6b8e194c",
     "semantic_hash": ""
   },
   "packages/api-client/tsconfig.json": {
@@ -1260,9 +1260,9 @@
     "semantic_hash": "0e1c16106728ca9bdc45d141b35a1406"
   },
   "services/api/src/routes/editions.ts": {
-    "mtime": 1789706326.5257897,
-    "seen": 1789706605.1520915,
-    "ast_hash": "1c8b70cd04065ec144370bd913945647",
+    "mtime": 1789707651.2893262,
+    "seen": 1789708175.606106,
+    "ast_hash": "c263b3119dac7e6f215819c14b746a30",
     "semantic_hash": ""
   },
   "services/api/src/routes/folders.ts": {
@@ -1458,15 +1458,15 @@
     "semantic_hash": ""
   },
   "services/rendering/editions.py": {
-    "mtime": 1789706326.5257897,
-    "seen": 1789706605.1520915,
-    "ast_hash": "1fb07f8dfcffef5306a7f203c10e69f1",
+    "mtime": 1789707651.285725,
+    "seen": 1789708175.606106,
+    "ast_hash": "623ce597843cbec34eac395db592a43d",
     "semantic_hash": ""
   },
   "services/rendering/epub_renderer.py": {
-    "mtime": 1789707177.868111,
-    "seen": 1789707491.5259137,
-    "ast_hash": "ddf1f9cc66ec428fd82c7551e44ef81a",
+    "mtime": 1789707651.287715,
+    "seen": 1789708175.606106,
+    "ast_hash": "594036ad419a6ac8dc5f15d905125b28",
     "semantic_hash": ""
   },
   "services/rendering/main.py": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789707482.1227665,
-    "seen": 1789707491.5259137,
-    "ast_hash": "1daba83c3a910f5ed96ef7c9d2e04cd4",
+    "mtime": 1789708159.1546519,
+    "seen": 1789708175.606106,
+    "ast_hash": "c7eff42a643637c7a62256777bd49511",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2364,9 +2364,9 @@
     "semantic_hash": ""
   },
   "docs/operations.md": {
-    "mtime": 1789707396.203316,
-    "seen": 1789707491.5259137,
-    "ast_hash": "2b00009e40de3a7ae96c9005926b420c",
+    "mtime": 1789708159.1546519,
+    "seen": 1789708175.606106,
+    "ast_hash": "756cb1e654b734514f10a5916c39c167",
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
@@ -2748,9 +2748,9 @@
     "semantic_hash": ""
   },
   "services/api/src/front-matter.test.ts": {
-    "mtime": 1789706381.6857505,
-    "seen": 1789706605.1520915,
-    "ast_hash": "b5d4c74224d0e509da608d0abea66674",
+    "mtime": 1789708041.323589,
+    "seen": 1789708175.606106,
+    "ast_hash": "a0860f5bdbf1fcdf453263a3b1f1b5b9",
     "semantic_hash": ""
   },
   "services/rendering/tests/test_front_matter.py": {
@@ -2778,15 +2778,15 @@
     "semantic_hash": ""
   },
   "services/rendering/fixed_epub.py": {
-    "mtime": 1789707289.485827,
-    "seen": 1789707491.5259137,
-    "ast_hash": "3dead087b7feb4aea23d87c8c3638682",
+    "mtime": 1789707651.2867165,
+    "seen": 1789708175.606106,
+    "ast_hash": "18116ff6ae5e354d3c4d1dc5212c42a0",
     "semantic_hash": ""
   },
   "services/rendering/tests/test_fixed_epub.py": {
-    "mtime": 1789707289.485827,
-    "seen": 1789707491.5259137,
-    "ast_hash": "599506d40ed2df07abd13d3e5d406480",
+    "mtime": 1789708041.323589,
+    "seen": 1789708175.606106,
+    "ast_hash": "a9fc4b803f7ecdafda672db238c56dd4",
     "semantic_hash": ""
   }
 }
