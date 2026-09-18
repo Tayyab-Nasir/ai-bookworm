@@ -17,13 +17,18 @@ def print_pdf_page_count(ctx) -> int | None:
     blob = ctx.get("package_bytes")
     if config.get("kind") != "print" or not blob:
         return None
+    if "_print_pdf_page_count" in ctx:
+        return ctx["_print_pdf_page_count"]
     try:
         reader = PdfReader(BytesIO(blob))
         if reader.is_encrypted or not 1 <= len(reader.pages) <= 2000:
-            return None
-        return len(reader.pages)
+            count = None
+        else:
+            count = len(reader.pages)
     except Exception:
-        return None
+        count = None
+    ctx["_print_pdf_page_count"] = count
+    return count
 
 
 def check_print_pdf_geometry(ctx):
