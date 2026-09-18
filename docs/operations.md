@@ -324,9 +324,21 @@ before production tuning.
   [Lulu](https://help.lulu.com/en/support/solutions/articles/64000255584).
   Margins remain trim-relative; odd/even frames alternate on every page,
   including pages after the second. Numbering is anchored to the trim area.
-  KDP/Lulu rules `1.2.0` inspect actual artifact geometry, rejecting cropped,
-  rotated or stale-size interiors. This does not validate all text boundaries,
-  full-bleed crop safety or complete printer page-count/font conformance.
+  KDP `1.3.0`, B&N `1.2.0`, and Lulu `1.3.0` inspect actual artifact geometry
+  and page count rather than trusting saved settings. KDP uses the selected
+  ink/paper profile and trim-specific current page range, rounds an odd count
+  the same way KDP does, applies the page-count gutter tier, and stops an odd
+  interior from producing a mismatched generated cover spine. B&N applies the
+  supported 18-800 page range and its 0.75in inside/0.5in other margin guide.
+  Lulu's current perfect-bound paperback range is 32-800; its 0.5in safe-area
+  and page-count gutter guidance are warnings because Lulu documents them as
+  recommendations. Sources checked 2026-09-18:
+  [KDP paperback guidelines](https://kdp.amazon.com/en_US/help/topic/G201857950),
+  [B&N rejection limits](https://help-press.barnesandnoble.com/hc/en-us/articles/5359031189787-Cover-Interior-Not-Accepted),
+  [B&N interior guide](https://www2.nookassets.com/npassets-spb/pod/resources/interior-file-preparation-quick-guide-v1.pdf), and
+  [Lulu formatting limits](https://help.lulu.com/en/support/solutions/articles/64000255583).
+  This still does not validate artistic crop safety, binding loss, every text
+  boundary, or acceptance by a retailer's live upload service.
 - Print body and heading fonts can use `BookwormVera` / `BookwormVera-Bold`.
   The renderer embeds ReportLab's bundled, unchanged Bitstream Vera TrueType
   family, including regular, bold, italic and bold-italic variants. Retain the

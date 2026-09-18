@@ -23,6 +23,23 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 local retailer page and margin update
+
+KDP `1.3.0`, B&N `1.2.0`, and Lulu `1.3.0` now evaluate the actual rendered
+PDF. KDP uses trim plus saved ink/paper profile for current min/max pages,
+applies its page-count-dependent gutter and outside margins, and blocks an odd
+interior when KDP's even-page rounding would invalidate the generated cover
+spine. B&N enforces 18-800 pages and its 0.75in inner/0.5in other margins.
+Lulu enforces the 32-800 perfect-bound range and reports its documented
+safe-area/gutter recommendations as warnings. B&N now receives the same actual
+geometry validation already used by KDP/Lulu.
+
+Focused tests use real PDFs; the full rendering suite passes 101 tests. Final
+workspace, Git, graph and shared-vault evidence belongs in the current session
+note after checkpointing. This is deterministic local preflight, not live
+retailer acceptance or physical printer proof. No deployment, migration,
+provider call, customer-data operation or retailer submission was performed.
+
 ### 2026-09-18 local full-bleed illustration update
 
 Manuscript artwork can now be saved as an inline image or a dedicated

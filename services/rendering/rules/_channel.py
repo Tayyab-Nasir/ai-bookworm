@@ -1,5 +1,29 @@
 """Shared helpers for channel rule modules."""
+from io import BytesIO
+
+from pypdf import PdfReader
+
 from preflight import Finding, Rule, RuleSet, _meta
+
+
+def print_pdf_page_count(ctx) -> int | None:
+    """Return the actual rendered page count, or ``None`` when it is unavailable.
+
+    Channel page limits must be evaluated against the artifact a retailer will
+    receive. Invalid PDFs are reported by ``check_print_pdf_geometry`` so count
+    rules intentionally stay quiet instead of emitting misleading follow-ons.
+    """
+    config = ctx.get("edition") or {}
+    blob = ctx.get("package_bytes")
+    if config.get("kind") != "print" or not blob:
+        return None
+    try:
+        reader = PdfReader(BytesIO(blob))
+        if reader.is_encrypted or not 1 <= len(reader.pages) <= 2000:
+            return None
+        return len(reader.pages)
+    except Exception:
+        return None
 
 
 def check_print_pdf_geometry(ctx):
@@ -8,8 +32,6 @@ def check_print_pdf_geometry(ctx):
     blob = ctx.get("package_bytes")
     if config.get("kind") != "print" or not blob:
         return []
-    from io import BytesIO
-    from pypdf import PdfReader
     from editions import PrintEdition
     try:
         edition = PrintEdition.model_validate(config)

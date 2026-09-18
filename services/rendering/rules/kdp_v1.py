@@ -1,14 +1,30 @@
-"""KDP channel rules verified against first-party KDP help on 2026-09-03."""
+"""KDP channel rules verified against first-party KDP help on 2026-09-18."""
 from preflight import Finding, Rule
-from rules._channel import make_ruleset, metadata_rules, check_print_pdf_geometry
+from rules._channel import (check_print_pdf_geometry, make_ruleset,
+                            metadata_rules, print_pdf_page_count)
 
-VERSION = "kdp-1.2.0"
-EFFECTIVE_DATE = "2026-09-03"
+VERSION = "kdp-1.3.0"
+EFFECTIVE_DATE = "2026-09-18"
 SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G202145060"
 ISBN_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201834170"
 
 KDP_MAX_MANUSCRIPT_BYTES = 650 * 1024 * 1024
 GEOMETRY_SOURCE = "https://kdp.amazon.com/en_US/help/topic/GVBQ3CMEQW3W2VL6"
+
+# Paperback page ranges from KDP's current US trim-size table. The renderer
+# exposes these stock/ink choices as wrap-cover profiles.
+_REGULAR_LIMITS = {
+    "kdp-white": (24, 828),
+    "kdp-cream": (24, 776),
+    "kdp-standard-color": (72, 600),
+    "kdp-premium-color": (24, 828),
+}
+_LETTER_LIMITS = {
+    "kdp-white": (24, 590),
+    "kdp-cream": (24, 550),
+    "kdp-standard-color": (72, 600),
+    "kdp-premium-color": (24, 590),
+}
 
 
 def check_kdp_bleed(ctx):
@@ -38,6 +54,79 @@ def check_kdp_isbn(ctx):
     return []
 
 
+def check_kdp_page_count(ctx):
+    count = print_pdf_page_count(ctx)
+    if count is None:
+        return []
+    edition = ctx.get("edition") or {}
+    profile = (edition.get("wrap_cover") or {}).get("profile", "kdp-white")
+    limits = _LETTER_LIMITS if edition.get("trim_size", "6x9") == "8.5x11" else _REGULAR_LIMITS
+    minimum, maximum = limits.get(profile, (24, 600 if edition.get("trim_size") == "8.5x11" else 828))
+    effective = count + count % 2  # KDP rounds an odd manuscript up to even.
+    if not minimum <= effective <= maximum:
+        label = profile.removeprefix("kdp-").replace("-", " ")
+        return [Finding(
+            code="KDP-PRINT-PAGE-COUNT",
+            message=(f"KDP {label} at {edition.get('trim_size', '6x9')} requires "
+                     f"{minimum}-{maximum} pages; the rendered interior has {count} "
+                     f"({effective} after KDP's even-page rounding)"),
+            location="interior.pages",
+        )]
+    return []
+
+
+def check_kdp_profile_known(ctx):
+    edition = ctx.get("edition") or {}
+    profile = (edition.get("wrap_cover") or {}).get("profile", "kdp-white")
+    if edition.get("kind") == "print" and profile == "custom":
+        return [Finding(
+            code="KDP-PRINT-PROFILE-UNKNOWN",
+            message="Select the matching KDP ink/paper profile to validate its exact page range and generated spine",
+            location="edition.wrap_cover.profile",
+        )]
+    return []
+
+
+def check_kdp_margins(ctx):
+    count = print_pdf_page_count(ctx)
+    if count is None:
+        return []
+    edition = ctx.get("edition") or {}
+    margins = edition.get("margins") or {}
+    effective = count + count % 2
+    inside = next((required for upper, required in (
+        (150, 0.375), (300, 0.5), (500, 0.625), (700, 0.75), (828, 0.875)
+    ) if effective <= upper), 0.875)
+    outside = 0.375 if edition.get("bleed_in", 0) else 0.25
+    failures = []
+    if margins.get("inner", 0.75) < inside:
+        failures.append(f"inner {margins.get('inner', 0.75):g}in (minimum {inside:g}in)")
+    for edge in ("top", "bottom", "outer"):
+        actual = margins.get(edge, 0.75 if edge != "outer" else 0.5)
+        if actual < outside:
+            failures.append(f"{edge} {actual:g}in (minimum {outside:g}in)")
+    if failures:
+        return [Finding(
+            code="KDP-PRINT-MARGINS",
+            message=f"KDP margins are too small for the rendered {count}-page interior: " + ", ".join(failures),
+            location="edition.margins",
+        )]
+    return []
+
+
+def check_kdp_odd_wrap_count(ctx):
+    count = print_pdf_page_count(ctx)
+    wrap = ((ctx.get("edition") or {}).get("wrap_cover") or {})
+    if count is not None and count % 2 and wrap.get("enabled"):
+        return [Finding(
+            code="KDP-PRINT-EVEN-COVER",
+            message=(f"KDP will round the {count}-page interior to {count + 1}; add a final blank page "
+                     "and render again so the generated spine matches KDP's cover template"),
+            location="interior.pages",
+        )]
+    return []
+
+
 RULESET = make_ruleset("kdp", VERSION, metadata_rules(
     "kdp", "KDP", ["title", "author", "language", "description"],
     EFFECTIVE_DATE, SOURCE_REF) + [
@@ -49,4 +138,12 @@ RULESET = make_ruleset("kdp", VERSION, metadata_rules(
          channels=("kdp",), effective_date="2026-09-18", source_ref=GEOMETRY_SOURCE),
     Rule("KDP-PRINT-003", "error", "channel", "KDP actual interior geometry", check_print_pdf_geometry,
          channels=("kdp",), effective_date="2026-09-18", source_ref=GEOMETRY_SOURCE),
+    Rule("KDP-PRINT-004", "error", "channel", "KDP actual paperback page range", check_kdp_page_count,
+         channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),
+    Rule("KDP-PRINT-005", "error", "channel", "KDP page-count-dependent margins", check_kdp_margins,
+         channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),
+    Rule("KDP-PRINT-006", "error", "channel", "KDP even cover template count", check_kdp_odd_wrap_count,
+         channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),
+    Rule("KDP-PRINT-007", "warning", "channel", "KDP stock profile selection", check_kdp_profile_known,
+         channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),
 ])
