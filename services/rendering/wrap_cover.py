@@ -17,9 +17,10 @@ from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import Paragraph
 
 from editions import PrintEdition
+from kdp_print import kdp_page_count, kdp_page_range
 from print_fonts import _missing
 
-VERSION = "paperback-cover-1.0.0"
+VERSION = "paperback-cover-1.1.0"
 BLEED = 0.125
 FACTORS = {"kdp-white": 0.002252, "kdp-cream": 0.0025,
            "kdp-standard-color": 0.002252, "kdp-premium-color": 0.002347}
@@ -47,9 +48,12 @@ def wrap_geometry(edition: PrintEdition, count: int) -> tuple[float, float, floa
             raise ValueError(f"printer template expects {config.expected_page_count} pages but the rendered interior has {count}; update the template and spine width")
         spine = config.spine_width_in
     else:
-        if count < 24:
-            raise ValueError(f"KDP paperback requires at least 24 pages; the rendered interior has {count}")
-        spine = count * FACTORS[config.profile]
+        effective = kdp_page_count(count)
+        minimum, maximum = kdp_page_range(config.profile, edition.trim_size)
+        if not minimum <= effective <= maximum:
+            raise ValueError(f"KDP {config.profile} at {edition.trim_size} requires {minimum}-{maximum} pages; "
+                             f"the rendered interior has {count} ({effective} after even-page rounding)")
+        spine = effective * FACTORS[config.profile]
     width, height = edition.trim_in
     return 2 * width + spine + 2 * BLEED, height + 2 * BLEED, spine
 

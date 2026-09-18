@@ -1,31 +1,16 @@
 """KDP channel rules verified against first-party KDP help on 2026-09-18."""
 from preflight import Finding, Rule
+from kdp_print import kdp_page_count, kdp_page_range
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "kdp-1.3.0"
+VERSION = "kdp-1.4.0"
 EFFECTIVE_DATE = "2026-09-18"
 SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G202145060"
 ISBN_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201834170"
 
 KDP_MAX_MANUSCRIPT_BYTES = 650 * 1024 * 1024
 GEOMETRY_SOURCE = "https://kdp.amazon.com/en_US/help/topic/GVBQ3CMEQW3W2VL6"
-
-# Paperback page ranges from KDP's current US trim-size table. The renderer
-# exposes these stock/ink choices as wrap-cover profiles.
-_REGULAR_LIMITS = {
-    "kdp-white": (24, 828),
-    "kdp-cream": (24, 776),
-    "kdp-standard-color": (72, 600),
-    "kdp-premium-color": (24, 828),
-}
-_LETTER_LIMITS = {
-    "kdp-white": (24, 590),
-    "kdp-cream": (24, 550),
-    "kdp-standard-color": (72, 600),
-    "kdp-premium-color": (24, 590),
-}
-
 
 def check_kdp_bleed(ctx):
     edition = ctx.get("edition") or {}
@@ -60,9 +45,8 @@ def check_kdp_page_count(ctx):
         return []
     edition = ctx.get("edition") or {}
     profile = (edition.get("wrap_cover") or {}).get("profile", "kdp-white")
-    limits = _LETTER_LIMITS if edition.get("trim_size", "6x9") == "8.5x11" else _REGULAR_LIMITS
-    minimum, maximum = limits.get(profile, (24, 600 if edition.get("trim_size") == "8.5x11" else 828))
-    effective = count + count % 2  # KDP rounds an odd manuscript up to even.
+    minimum, maximum = kdp_page_range(profile, edition.get("trim_size", "6x9"))
+    effective = kdp_page_count(count)
     if not minimum <= effective <= maximum:
         label = profile.removeprefix("kdp-").replace("-", " ")
         return [Finding(
@@ -93,7 +77,7 @@ def check_kdp_margins(ctx):
         return []
     edition = ctx.get("edition") or {}
     margins = edition.get("margins") or {}
-    effective = count + count % 2
+    effective = kdp_page_count(count)
     inside = next((required for upper, required in (
         (150, 0.375), (300, 0.5), (500, 0.625), (700, 0.75), (828, 0.875)
     ) if effective <= upper), 0.875)
@@ -114,14 +98,14 @@ def check_kdp_margins(ctx):
     return []
 
 
-def check_kdp_odd_wrap_count(ctx):
+def check_kdp_rounded_count(ctx):
     count = print_pdf_page_count(ctx)
     wrap = ((ctx.get("edition") or {}).get("wrap_cover") or {})
-    if count is not None and count % 2 and wrap.get("enabled"):
+    if count is not None and count % 2 and wrap.get("enabled") and wrap.get("profile", "kdp-white") != "custom":
         return [Finding(
-            code="KDP-PRINT-EVEN-COVER",
-            message=(f"KDP will round the {count}-page interior to {count + 1}; add a final blank page "
-                     "and render again so the generated spine matches KDP's cover template"),
+            code="KDP-PRINT-ROUNDED-COUNT",
+            message=(f"KDP counts this {count}-page interior as {count + 1} pages. "
+                     f"The generated cover uses {count + 1} pages for its spine; use that count in KDP's template calculator."),
             location="interior.pages",
         )]
     return []
@@ -142,7 +126,7 @@ RULESET = make_ruleset("kdp", VERSION, metadata_rules(
          channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),
     Rule("KDP-PRINT-005", "error", "channel", "KDP page-count-dependent margins", check_kdp_margins,
          channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),
-    Rule("KDP-PRINT-006", "error", "channel", "KDP even cover template count", check_kdp_odd_wrap_count,
+    Rule("KDP-PRINT-006", "info", "channel", "KDP manufacturing page count", check_kdp_rounded_count,
          channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),
     Rule("KDP-PRINT-007", "warning", "channel", "KDP stock profile selection", check_kdp_profile_known,
          channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),

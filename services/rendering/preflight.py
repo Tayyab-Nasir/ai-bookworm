@@ -61,6 +61,10 @@ class RuleSet:
 def run_preflight(ctx: dict, ruleset: RuleSet) -> list[Finding]:
     """ctx: {book, edition (dict), artifact (epub bytes|None), channel, image_bytes {assetId: bytes}}.
     Findings sorted by (rule_id, code, location) for determinism."""
+    # Rules share request-local parsing results. Never reuse a caller's cache
+    # when the same context is evaluated again with a different artifact.
+    ctx = dict(ctx)
+    ctx.pop("_print_pdf_page_count", None)
     out: list[Finding] = []
     for rule in sorted(ruleset.rules, key=lambda r: r.id):
         for f in rule.check(ctx):

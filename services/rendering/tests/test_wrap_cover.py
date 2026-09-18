@@ -67,10 +67,55 @@ def test_page_count_controls_spine_and_custom_template_cannot_go_stale():
     assert wrap_geometry(custom, 100)[2] == 0.4
     with pytest.raises(ValueError, match="expects 100 pages"):
         wrap_geometry(custom, 102)
-    with pytest.raises(ValueError, match="at least 24"):
+    with pytest.raises(ValueError, match="24-828"):
         wrap_geometry(edition(), 10)
     with pytest.raises(ValueError, match="template page count"):
         edition(profile="custom")
+
+
+@pytest.mark.parametrize("profile,trim,minimum,maximum", [
+    ("kdp-white", "6x9", 24, 828),
+    ("kdp-cream", "6x9", 24, 776),
+    ("kdp-standard-color", "6x9", 72, 600),
+    ("kdp-premium-color", "6x9", 24, 828),
+    ("kdp-white", "8.5x11", 24, 590),
+    ("kdp-cream", "8.5x11", 24, 550),
+    ("kdp-standard-color", "8.5x11", 72, 600),
+    ("kdp-premium-color", "8.5x11", 24, 590),
+])
+def test_cover_rendering_applies_stock_limits_including_rounding(profile, trim, minimum, maximum):
+    config = edition(profile=profile)
+    config.trim_size = trim
+    assert wrap_geometry(config, minimum - 1) == wrap_geometry(config, minimum)
+    assert wrap_geometry(config, maximum - 1) == wrap_geometry(config, maximum)
+    for count in (minimum - 2, maximum + 1):
+        with pytest.raises(ValueError, match=f"{minimum}-{maximum} pages"):
+            wrap_geometry(config, count)
+
+
+def test_odd_manuscript_cover_uses_manufacturing_count_and_rejects_old_spine():
+    config = edition(profile="kdp-cream")
+    odd = interior(25)
+    cover, checksum = render_wrap_cover(artwork(), odd, config)
+    page = PdfReader(io.BytesIO(cover)).pages[0]
+    assert float(page.mediabox.width) == pytest.approx((12.25 + 26 * 0.0025) * 72)
+    assert render_wrap_cover(artwork(), interior(26), config) == (cover, checksum)
+    validate_wrap_pdf(cover, odd, config)
+    # Simulate an old artifact whose spine was calculated from 25 pages.
+    page.mediabox.upper_right = ((12.25 + 25 * 0.0025) * 72, 9.25 * 72)
+    writer = PdfWriter()
+    writer.add_page(page)
+    old = io.BytesIO()
+    writer.write(old)
+    with pytest.raises(ValueError, match="dimensions"):
+        validate_wrap_pdf(old.getvalue(), odd, config)
+
+
+def test_custom_printer_template_preserves_exact_odd_count():
+    config = edition(profile="custom", expected_page_count=25, spine_width_in=0.3)
+    assert wrap_geometry(config, 25)[2] == 0.3
+    with pytest.raises(ValueError, match="expects 25 pages"):
+        wrap_geometry(config, 26)
 
 
 @pytest.mark.parametrize("settings, message", [

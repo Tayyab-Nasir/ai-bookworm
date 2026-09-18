@@ -1,6 +1,7 @@
 """Adapter tests: channel rules wired, export package deterministic, submit not supported."""
 import json
 import base64
+import copy
 import importlib.util
 import sys
 import zipfile
@@ -47,7 +48,7 @@ def test_all_channels_registered():
 
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
-    assert result["ruleVersion"] == "core-1.0.5+kdp-1.3.0"
+    assert result["ruleVersion"] == "core-1.0.5+kdp-1.4.0"
     ids = {f["rule_id"] for f in result["findings"]}
     assert not result["findings"] or all(
         rid.startswith(("CORE-", "KDP-")) for rid in ids)
@@ -92,7 +93,7 @@ def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
                              artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
     first = build_package(request)
     second = build_package(request)
-    assert first["ruleVersion"] == "core-1.0.5+kdp-1.3.0"
+    assert first["ruleVersion"] == "core-1.0.5+kdp-1.4.0"
     assert first["packages"][0]["sha256"] == second["packages"][0]["sha256"]
     package = base64.b64decode(first["packages"][0]["dataBase64"])
     with zipfile.ZipFile(BytesIO(package)) as archive:
@@ -147,3 +148,47 @@ def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geom
     with pytest.raises(Exception, match="no longer pass"):
         build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID,
                                      artifactsBase64={"book.pdf": artifacts["book.pdf"]}))
+
+
+def test_odd_book_renders_preflights_and_packages_without_manual_blank_page(monkeypatch):
+    from fastapi.testclient import TestClient
+    from PIL import Image
+    from pypdf import PdfReader
+
+    spec = importlib.util.spec_from_file_location("bookworm_odd_render", ROOT / "rendering" / "main.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("RENDERING_SERVICE_TOKEN", "odd-book-fixture")
+    book = copy.deepcopy(VALID)
+    book["chapters"] = []
+    for index in range(24):
+        chapter = copy.deepcopy(VALID["chapters"][0])
+        chapter.update(id=f"chapter-{index}", order=index, title=f"Chapter {index + 1}")
+        book["chapters"].append(chapter)
+    config = {"kind": "print", "cover": {"asset_id": "77777777-7777-4777-8777-777777777777"},
+              "wrap_cover": {"enabled": True, "profile": "kdp-cream"}}
+    artwork = BytesIO()
+    Image.new("RGB", (1800, 2700), "#204050").save(artwork, "PNG")
+    payload = {"bookModel": book, "editionConfig": config,
+               "coverBase64": base64.b64encode(artwork.getvalue()).decode()}
+    with TestClient(module.app) as client:
+        headers = {"x-service-token": "odd-book-fixture"}
+        response = client.post("/render", headers=headers, json=payload)
+        assert response.status_code == 200, response.text
+        rendered = response.json()
+        assert rendered["coverRendererVersion"] == "paperback-cover-1.1.0"
+        interior = base64.b64decode(rendered["artifactBase64"])
+        cover = base64.b64decode(rendered["coverArtifactBase64"])
+        assert len(PdfReader(BytesIO(interior)).pages) == 25
+        assert float(PdfReader(BytesIO(cover)).pages[0].mediabox.width) == pytest.approx((12.25 + 26 * 0.0025) * 72)
+        response = client.post("/preflight", headers=headers, json={**payload, "channel": "kdp"})
+        assert response.status_code == 200, response.text
+        check = response.json()
+        assert check["errors"] == 0, check
+        rounding = next(f for f in check["findings"] if f["code"] == "KDP-PRINT-ROUNDED-COUNT")
+        assert rounding["severity"] == "info"
+        package = build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=book,
+            artifactsBase64={"book.pdf": rendered["artifactBase64"], "cover.pdf": rendered["coverArtifactBase64"]}))
+        with zipfile.ZipFile(BytesIO(base64.b64decode(package["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.pdf") == interior
+            assert archive.read("cover.pdf") == cover

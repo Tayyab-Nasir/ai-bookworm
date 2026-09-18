@@ -28,6 +28,16 @@ an operational process. Saved agent claims are not evidence by themselves.
 
 ## Current local verification snapshot
 
+**2026-09-18 KDP rendering consistency:** cover `1.1.0` and KDP rules `1.4.0`
+share stock/trim page ranges and manufacturing page-count rounding. Odd books
+now complete render, preflight and package with a correctly sized spine;
+custom templates retain exact page-count matching. Request-local preflight
+caching prevents stale counts on reevaluation. Verification: 243 service tests
+and workspace TypeScript. A real 25-page manuscript passes both HTTP stages
+and produces an exact-byte ZIP; measured PDF geometry matches 26 manufacturing
+pages, while old unrounded covers fail. Production build/browser evidence
+below remains historical; this pass changed only explanatory UI copy.
+
 **2026-09-18 incremental retailer-page evidence:** KDP `1.3.0`, B&N `1.2.0`
 and Lulu `1.3.0` read the actual generated PDF page count. Current first-party
 page ranges, KDP profile/trim maxima and gutter tiers, B&N margins, Lulu

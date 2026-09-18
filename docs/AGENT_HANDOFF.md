@@ -23,6 +23,26 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 KDP rendering and preflight consistency
+
+Supersedes the odd-page blocking behavior in the checkpoint below. Cover
+renderer `paperback-cover-1.1.0` uses KDP's even manufacturing page count
+automatically; a 25-page manuscript receives a spine calculated for 26 pages.
+KDP `1.4.0` reports this as information, so authors can package the book without
+manually adding a blank page. Custom printer templates still require their
+exact supplied count. Cover generation and preflight share the same stock/trim
+page ranges, including standard-color minimums and letter-size maxima.
+Preflight's parsed page-count cache is now confined to one evaluation.
+
+Verified: 243 service tests and all workspace TypeScript checks. An actual
+25-page book goes through rendering HTTP, preflight HTTP and deterministic ZIP
+packaging, with exact interior/cover bytes preserved and the expected spine
+width measured from the PDF. Regression tests reject stale odd-count covers
+and check all eight supported KDP profile/regular-or-letter combinations.
+Shared note: `Codex Sessions/2026-09/2026-09-18-bookworm-kdp-render-consistency.md`.
+No production build or browser test rerun was needed for the single UI copy
+change; the previous build is historical. No live operations occurred.
+
 ### 2026-09-18 local retailer page and margin update
 
 KDP `1.3.0`, B&N `1.2.0`, and Lulu `1.3.0` now evaluate the actual rendered

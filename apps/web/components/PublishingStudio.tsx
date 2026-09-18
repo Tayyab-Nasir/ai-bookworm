@@ -370,7 +370,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
         {form.kind === "print" && <section className={cardClass} aria-labelledby="paperback-cover-title">
           <h2 id="paperback-cover-title" className="text-xl font-semibold">Full paperback cover</h2>
-          <p className="mt-2 text-sm leading-relaxed text-white/50">Create one PDF with back cover, spine and front artwork. The spine is sized against the actual rendered interior. A blank area is reserved for your printer’s ISBN barcode.</p>
+          <p className="mt-2 text-sm leading-relaxed text-white/50">Create one PDF with back cover, spine and front artwork. The spine follows your rendered page count; KDP profiles round an odd count up to the next even page. A blank area is reserved for your printer’s ISBN barcode.</p>
           <label className="mt-5 inline-flex items-center gap-2 text-sm text-white/70"><input type="checkbox" checked={form.wrapEnabled} onChange={(event) => update("wrapEnabled", event.target.checked)} />Create full cover PDF</label>
           {form.wrapEnabled && <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-white/65 sm:col-span-2">Paper and printer<select value={form.wrapProfile} onChange={(event) => update("wrapProfile", event.target.value as FormState["wrapProfile"])} className={fieldClass}><option value="kdp-white">KDP · black ink, white paper</option><option value="kdp-cream">KDP · black ink, cream paper</option><option value="kdp-standard-color">KDP · standard color</option><option value="kdp-premium-color">KDP · premium color</option><option value="custom">Other printer · use its paperback template</option></select></label>

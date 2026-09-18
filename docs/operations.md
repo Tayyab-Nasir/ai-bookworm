@@ -324,11 +324,14 @@ before production tuning.
   [Lulu](https://help.lulu.com/en/support/solutions/articles/64000255584).
   Margins remain trim-relative; odd/even frames alternate on every page,
   including pages after the second. Numbering is anchored to the trim area.
-  KDP `1.3.0`, B&N `1.2.0`, and Lulu `1.3.0` inspect actual artifact geometry
+  KDP `1.4.0`, B&N `1.2.0`, and Lulu `1.3.0` inspect actual artifact geometry
   and page count rather than trusting saved settings. KDP uses the selected
   ink/paper profile and trim-specific current page range, rounds an odd count
-  the same way KDP does, applies the page-count gutter tier, and stops an odd
-  interior from producing a mismatched generated cover spine. B&N applies the
+  the same way KDP does, and applies the page-count gutter tier. Covers use
+  that even manufacturing count automatically, with an informational preflight
+  message for odd interiors. Do not add a blank page solely to work around
+  older Bookworm odd-page errors; re-render using the current cover version.
+  B&N applies the
   supported 18-800 page range and its 0.75in inside/0.5in other margin guide.
   Lulu's current perfect-bound paperback range is 32-800; its 0.5in safe-area
   and page-count gutter guidance are warnings because Lulu documents them as
@@ -356,7 +359,7 @@ before production tuning.
   `/preflight` returns these findings without attempting invalid output;
   `/render` rejects the same input with 422. The direct renderer also enforces
   this guard. Re-render older artifacts before relying on this coverage.
-- Paperback editions can enable `wrap_cover`. The `paperback-cover-1.0.0`
+- Paperback editions can enable `wrap_cover`. The `paperback-cover-1.1.0`
   renderer produces one back/spine/front CMYK PDF with embedded back/spine
   fonts, a 300-DPI raster front and blank barcode reserve. `cover-1.3.0`
   checks visible front-overlay glyphs and fits measured text without clipping
@@ -364,7 +367,9 @@ before production tuning.
   modules are integral pixels with a four-module quiet zone; too-small/dense
   requests fail instead of resampling. Contrast and physical scan proof are
   still author acceptance steps. White/cream/color KDP profiles derive
-  spine width from the actual interior; custom paperback templates require
+  spine width from the actual interior rounded up to KDP's even manufacturing
+  count. Cover generation enforces the same stock/trim page limits as KDP
+  preflight. Custom paperback templates require
   matching page count and spine width. Outer bleed is 0.125 inch.
   Geometry follows [KDP's paperback cover guidance](https://kdp.amazon.com/en_US/help/topic/G201953020),
   checked 2026-09-18. This is not retailer acceptance certification.

@@ -149,11 +149,12 @@ def test_kdp_profile_limits_and_page_count_gutter_tiers(monkeypatch):
     assert "exact page range" in profile.message
 
 
-def test_kdp_blocks_odd_interior_when_generated_cover_would_use_wrong_spine(monkeypatch):
-    import rules.kdp_v1 as kdp_rules
-
-    monkeypatch.setattr(kdp_rules, "print_pdf_page_count", lambda _ctx: 25)
-    findings = kdp_rules.check_kdp_odd_wrap_count({"edition": {
-        "kind": "print", "wrap_cover": {"enabled": True}}})
-    assert findings[0].code == "KDP-PRINT-EVEN-COVER"
-    assert "26" in findings[0].message
+def test_preflight_uses_new_artifact_when_context_is_reused():
+    config = {"kind": "print"}
+    context = {"book": BOOK, "edition": config, "channel": "kdp",
+               "package_bytes": _blank_print_pdf(config, 24)}
+    rules = load_ruleset("kdp")
+    assert "KDP-PRINT-PAGE-COUNT" not in {f.code for f in run_preflight(context, rules)}
+    assert "_print_pdf_page_count" not in context
+    context["package_bytes"] = _blank_print_pdf(config, 20)
+    assert "KDP-PRINT-PAGE-COUNT" in {f.code for f in run_preflight(context, rules)}
