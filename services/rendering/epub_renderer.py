@@ -12,7 +12,7 @@ from html import escape
 from editions import EbookEdition, resolve_text_direction
 from manuscript import block_tree, image_width, inline_markup, table_rows
 
-RENDERER_VERSION = "epub-1.5.0"
+RENDERER_VERSION = "epub-1.6.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"
@@ -89,18 +89,32 @@ def _chapter_xhtml(book: dict, chapter: dict, lang: str, direction: str, image_i
     )
 
 
-def _nav_xhtml(book: dict, chapters: list[tuple[str, dict]], lang: str, direction: str) -> str:
+def _nav_xhtml(book: dict, chapters: list[tuple[str, dict]], lang: str, direction: str,
+               edition: EbookEdition, has_cover: bool) -> str:
     lang = escape(lang)
     lis = "".join(
         f'<li><a href="{slug}.xhtml">{escape(ch.get("title") or slug)}</a></li>'
         for slug, ch in chapters)
-    title = escape(book["metadata"]["title"])
+    title = escape(edition.metadata_overrides.get("title", book["metadata"]["title"]))
+    landmarks = ""
+    if edition.navigation == "toc+landmarks":
+        links = [("toc", "nav.xhtml#toc", "Contents")]
+        if has_cover:
+            links.insert(0, ("cover", "cover.xhtml", "Cover"))
+        for slug, _ in _front_pages(book, edition):
+            links.append(("titlepage" if slug == "title-page" else "copyright-page", f"{slug}.xhtml",
+                          "Title page" if slug == "title-page" else "Copyright"))
+        if chapters:
+            links.append(("bodymatter", f"{chapters[0][0]}.xhtml", chapters[0][1].get("title") or "Start reading"))
+        items = "".join(f'<li><a epub:type="{kind}" href="{href}">{escape(label)}</a></li>' for kind, href, label in links)
+        landmarks = f'<nav epub:type="landmarks" id="landmarks" hidden="hidden"><h2>Guide</h2><ol>{items}</ol></nav>'
+    hidden = ' hidden="hidden"' if edition.navigation == "none" else ""
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE html>\n'
         f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="{lang}" lang="{lang}" dir="{direction}">\n'
-        f'<head><title>{title} — Contents</title></head>\n'
-        f'<body><nav epub:type="toc" id="toc"><h1>{title}</h1><ol>{lis}</ol></nav></body></html>'
+        f'<head><title>{title} — Contents</title><link rel="stylesheet" type="text/css" href="style.css"/></head>\n'
+        f'<body><nav epub:type="toc" id="toc"{hidden}><h1>{title} — Contents</h1><ol>{lis}</ol></nav>{landmarks}</body></html>'
     )
 
 
@@ -139,7 +153,8 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
         for asset_id in image_asset_ids if asset_id != cover_asset_id
     ]
     spine = ('<itemref idref="cover-page" linear="no"/>' if cover_asset_id else "") + "".join(
-        f'<itemref idref="{slug}"/>' for slug, _ in _front_pages(book, edition)) + "".join(
+        f'<itemref idref="{slug}"/>' for slug, _ in _front_pages(book, edition)) + (
+        '<itemref idref="nav"/>' if edition.navigation != "none" else "") + "".join(
         f'<itemref idref="{slug}"/>' for slug, _ in chapters)
     meta = [
         f'<dc:identifier id="pub-id">{uid}</dc:identifier>',
@@ -196,7 +211,7 @@ def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = N
     cover_asset_id = edition.cover.asset_id if cover_bytes and edition.cover.asset_id else None
     embedded_images = sorted((image_bytes or {}).items())
     entries.append((f"{_OEBPS}/content.opf", _opf(book, edition, chapters, lang, cover_asset_id, [item[0] for item in embedded_images]).encode(), False))
-    entries.append((f"{_OEBPS}/nav.xhtml", _nav_xhtml(book, chapters, lang, direction).encode(), False))
+    entries.append((f"{_OEBPS}/nav.xhtml", _nav_xhtml(book, chapters, lang, direction, edition, bool(cover_asset_id)).encode(), False))
     entries.append((f"{_OEBPS}/style.css", _CSS.encode(), False))
     for slug, lines in _front_pages(book, edition):
         body = "".join(f"<p>{escape(line).replace(chr(10), '<br/>')}</p>" for line in lines if line.strip())

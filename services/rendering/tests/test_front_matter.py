@@ -47,7 +47,7 @@ def test_front_matter_artifacts(kind):
             assert not rights.findall(".//permission")
             opf = ET.fromstring(archive.read("OEBPS/content.opf"))
             ns = {"o": "http://www.idpf.org/2007/opf", "dc": "http://purl.org/dc/elements/1.1/"}
-            assert [item.attrib["idref"] for item in opf.findall("o:spine/o:itemref", ns)][:3] == ["title-page", "copyright-page", "ch0000"]
+            assert [item.attrib["idref"] for item in opf.findall("o:spine/o:itemref", ns)][:4] == ["title-page", "copyright-page", "nav", "ch0000"]
             assert opf.find("o:metadata/dc:publisher", ns).text == FRONT["publisher"]
             assert opf.find("o:metadata/dc:rights", ns).text == FRONT["copyright_notice"]
             for item in opf.findall("o:manifest/o:item", ns):

@@ -23,6 +23,19 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 EPUB navigation settings
+
+EPUB 1.6.0 now honors saved navigation: toc inserts a readable contents page
+after front matter; toc+landmarks also emits section links to available cover,
+title/copyright, contents and first chapter; none keeps mandatory reader TOC
+but omits the contents page from the spine. UI labels explain this distinction.
+Navigation title honors metadata overrides, escapes text and retains direction.
+Verified 282 services, 8 E2E, 65 web tests and web TypeScript. Six new cases
+check every nav target/fragment, mode/front-matter combination and determinism;
+existing import roundtrips remain green. No live/paid operations.
+Print TOC remains a separate unimplemented feature, not covered by this change.
+Note: `Codex Sessions/2026-09/2026-09-18-bookworm-epub-navigation.md`.
+
 ### 2026-09-18 cross-service export acceptance
 
 Broad verification found three stale print E2E fixtures (too short/no full
