@@ -17,6 +17,7 @@ from reportlab.platypus import (
     ListFlowable,
     ListItem,
     LongTable,
+    NextPageTemplate,
     PageBreak,
     PageTemplate,
     Paragraph,
@@ -27,7 +28,7 @@ from editions import PrintEdition, print_requires_unsupported_rtl_typography
 from manuscript import block_tree, image_width, inline_markup, table_rows
 from print_fonts import print_font_issues
 
-RENDERER_VERSION = "pdf-1.5.0"
+RENDERER_VERSION = "pdf-1.6.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -46,7 +47,7 @@ class _DeterministicCanvasMaker:
         return _Canvas(*args, **kwargs)
 
 
-def _on_page(numbering, margins, bleed_in, canvas, doc):
+def _on_page(numbering, margins, edition, canvas, doc):
     if numbering.style == "none":
         return
     n = doc.page - 1 + numbering.start_at
@@ -55,11 +56,14 @@ def _on_page(numbering, margins, bleed_in, canvas, doc):
     canvas.saveState()
     canvas.setFont("Helvetica", 9)
     w, h = doc.pagesize
-    y = 0.45 * inch if numbering.position.startswith("bottom") else h - 0.45 * inch
+    bleed_in = edition.bleed_in
+    trim_left = bleed_in if edition.bleed_edges == "all" or doc.page % 2 == 0 else 0
+    trim_width = edition.trim_in[0]
+    y = (bleed_in + 0.45) * inch if numbering.position.startswith("bottom") else h - (bleed_in + 0.45) * inch
     if numbering.position == "bottom-outer":
-        x = w - (bleed_in + margins.outer / 2) * inch if doc.page % 2 else (bleed_in + margins.outer / 2) * inch
+        x = (trim_left + trim_width - margins.outer) * inch if doc.page % 2 else (trim_left + margins.outer) * inch
     else:
-        x = w / 2
+        x = (trim_left + trim_width / 2) * inch
     canvas.drawCentredString(x, y, str(n))
     canvas.restoreState()
 
@@ -86,13 +90,14 @@ def render_pdf(book: dict, edition: PrintEdition,
     tw, th = edition.trim_in
     m = edition.margins
     typo = edition.typography
-    pagesize = ((tw + 2 * edition.bleed_in) * inch, (th + 2 * edition.bleed_in) * inch)
+    inside_bleed = edition.bleed_in if edition.bleed_edges == "all" else 0
+    pagesize = ((tw + inside_bleed + edition.bleed_in) * inch, (th + 2 * edition.bleed_in) * inch)
 
     buf = BytesIO()
     doc = BaseDocTemplate(
         buf,
         pagesize=pagesize,
-        leftMargin=(m.inner + edition.bleed_in) * inch,
+        leftMargin=(m.inner + inside_bleed) * inch,
         rightMargin=(m.outer + edition.bleed_in) * inch,
         topMargin=(m.top + edition.bleed_in) * inch,
         bottomMargin=(m.bottom + edition.bleed_in) * inch,
@@ -101,17 +106,18 @@ def render_pdf(book: dict, edition: PrintEdition,
         creator=f"bookworm-renderer {RENDERER_VERSION}",
     )
     page_w, page_h = pagesize
-    frame_w = page_w - (m.inner + m.outer + 2 * edition.bleed_in) * inch
+    # User margins are measured from the trim edge, never from the PDF edge.
+    frame_w = (tw - m.inner - m.outer) * inch
     frame_h = page_h - (m.top + m.bottom + 2 * edition.bleed_in) * inch
-    odd_frame = Frame((m.inner + edition.bleed_in) * inch, (m.bottom + edition.bleed_in) * inch,
+    odd_frame = Frame((m.inner + inside_bleed) * inch, (m.bottom + edition.bleed_in) * inch,
                       frame_w, frame_h, id="odd-body", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     even_frame = Frame((m.outer + edition.bleed_in) * inch, (m.bottom + edition.bleed_in) * inch,
                        frame_w, frame_h, id="even-body", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     numbering = edition.page_numbering
-    on_page = lambda c, d: _on_page(numbering, m, edition.bleed_in, c, d)
+    on_page = lambda c, d: _on_page(numbering, m, edition, c, d)
     doc.addPageTemplates([
-        PageTemplate(id="odd", frames=[odd_frame], onPage=on_page, autoNextPageTemplate="even"),
-        PageTemplate(id="even", frames=[even_frame], onPage=on_page, autoNextPageTemplate="odd"),
+        PageTemplate(id="odd", frames=[odd_frame], onPage=on_page),
+        PageTemplate(id="even", frames=[even_frame], onPage=on_page),
     ])
 
     body = ParagraphStyle("body", fontName=typo.body_font, fontSize=typo.body_size_pt,
@@ -133,7 +139,8 @@ def render_pdf(book: dict, edition: PrintEdition,
         ], bulletType="1" if group["style"] == "ordered" else "bullet", start=1 if group["style"] == "ordered" else "bullet", leftIndent=18,
            bulletFontName=typo.body_font, bulletFontSize=typo.body_size_pt)
 
-    story: list = [Paragraph(escape(book["metadata"].get("title", "")), heading), Spacer(1, typo.leading)]
+    # Explicit cycle avoids autoNextPageTemplate retaining a stale next index.
+    story: list = [NextPageTemplate(["even", "odd"]), Paragraph(escape(book["metadata"].get("title", "")), heading), Spacer(1, typo.leading)]
     for ch in sorted(book["chapters"], key=lambda c: c["order"]):
         story.append(PageBreak())
         story.append(Paragraph(escape(ch.get("title", "")), heading))

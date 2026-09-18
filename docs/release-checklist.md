@@ -28,6 +28,16 @@ an operational process. Saved agent claims are not evidence by themselves.
 
 ## Current local verification snapshot
 
+**2026-09-18 incremental interior-geometry evidence:** `pdf-1.6.0` adds explicit
+outer/all bleed edges, fixes the actual odd/even frame cycle after page two,
+and anchors numbering to trim. KDP/Lulu `1.2.0` reject wrong bleed settings and
+actual PDF dimensions/crop/rotation. Verification: 180 service tests, 64 web
+tests, six targeted API tests and workspace TypeScript checks. New tests inspect
+actual PDF heading/footer coordinates and dimensions. No browser or production
+build was rerun in this small geometry slice; the prior cover-slice evidence
+below is historical. Full-bleed illustration placement, complete font/page
+limits and native printer proof acceptance remain incomplete.
+
 **2026-09-18 incremental paperback-cover evidence:** saved wrap settings now
 reach deterministic single-page CMYK PDF generation, private render storage
 and retailer ZIP assembly. Actual artifact tests check geometry, embedded

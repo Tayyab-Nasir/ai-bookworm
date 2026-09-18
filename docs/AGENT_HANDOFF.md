@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 local interior geometry update
+
+`pdf-1.6.0` adds saved `bleed_edges` (`outer` for KDP, `all` for Lulu),
+corrects mirrored frame cycling after page two, and anchors page numbering to
+the finished trim area. Existing editions without the field keep their old
+all-edge setting; new UI drafts default to outer edges. KDP/Lulu rule versions
+are now `1.2.0`: they reject wrong printer bleed and inspect actual PDF page
+dimensions/crop/rotation. Margins are measured from the trim edge. This does
+not yet place illustrations into the bleed area or certify printer acceptance.
+See `Codex Sessions/2026-09/2026-09-18-bookworm-interior-geometry.md` in the
+shared vault for final test/Git evidence and remaining work.
+
 ### 2026-09-18 local full paperback cover update
 
 Publishing Studio now saves back/spine text, colors, paper profile and custom

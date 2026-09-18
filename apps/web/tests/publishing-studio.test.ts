@@ -3,6 +3,18 @@ import { test } from "node:test";
 import { resolveEditionTextDirection, formFromEdition, toConfig } from "../components/PublishingStudio";
 import type { Edition } from "@bookworm/types";
 
+test("interior bleed edges round-trip while legacy editions retain all-edge geometry", () => {
+  const edition = { type: "print", language: "en", edition_metadata_json: { kind: "print", bleed_in: 0.125 } } as unknown as Edition;
+  const original = formFromEdition(edition);
+  assert.equal(original.bleedEdges, "all");
+  const saved = toConfig({ ...original, bleedEdges: "outer" });
+  assert.equal(saved.kind, "print");
+  if (saved.kind !== "print") throw new Error("wrong edition");
+  assert.equal(saved.bleed_edges, "outer");
+  assert.equal(formFromEdition({ ...edition, edition_metadata_json: saved }).bleedEdges, "outer");
+  assert.equal("bleed_edges" in toConfig({ ...original, kind: "ebook" }), false);
+});
+
 test("edition direction honors explicit choice before language inference", () => {
   assert.equal(resolveEditionTextDirection("ar", "ltr"), "ltr");
   assert.equal(resolveEditionTextDirection("en", "rtl"), "rtl");

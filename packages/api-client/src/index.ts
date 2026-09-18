@@ -207,6 +207,7 @@ export type EditionConfig = {
   text_direction?: "auto" | "ltr" | "rtl";
   trim_size?: "5x8" | "5.5x8.5" | "6x9" | "7x10" | "8.5x11";
   bleed_in?: number;
+  bleed_edges?: "all" | "outer";
   margins?: { top?: number; bottom?: number; inner?: number; outer?: number };
   typography?: {
     body_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold" | "BookwormVera" | "BookwormVera-Bold";

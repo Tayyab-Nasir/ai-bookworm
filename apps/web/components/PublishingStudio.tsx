@@ -23,7 +23,7 @@ export function resolveEditionTextDirection(language: string, preference: "auto"
 
 interface FormState {
   kind: Kind; language: string; textDirection: "auto" | "ltr" | "rtl"; flow: "reflowable" | "fixed"; navigation: "toc" | "toc+landmarks" | "none";
-  trimSize: "5x8" | "5.5x8.5" | "6x9" | "7x10" | "8.5x11"; bleed: number;
+  trimSize: "5x8" | "5.5x8.5" | "6x9" | "7x10" | "8.5x11"; bleed: number; bleedEdges: "all" | "outer";
   top: number; bottom: number; inner: number; outer: number;
   bodyFont: typeof FONTS[number]; bodySize: number; headingFont: typeof FONTS[number]; headingSize: number;
   leading: number; paragraphSpacing: number; firstLineIndent: number; textAlign: "left" | "justify";
@@ -38,7 +38,7 @@ interface FormState {
 
 const DEFAULT_FORM: FormState = {
   kind: "ebook", language: "en", textDirection: "auto", flow: "reflowable", navigation: "toc+landmarks",
-  trimSize: "6x9", bleed: 0, top: 0.75, bottom: 0.75, inner: 0.75, outer: 0.5,
+  trimSize: "6x9", bleed: 0, bleedEdges: "outer", top: 0.75, bottom: 0.75, inner: 0.75, outer: 0.5,
   bodyFont: "Times-Roman", bodySize: 11, headingFont: "Helvetica-Bold", headingSize: 16,
   leading: 14, paragraphSpacing: 6, firstLineIndent: 0.25, textAlign: "justify",
   numbering: "arabic", numberPosition: "bottom-outer", startAt: 1, coverAssetId: "", titleOnCover: true,
@@ -74,6 +74,7 @@ export function formFromEdition(edition: Edition): FormState {
     navigation: config.navigation === "none" || config.navigation === "toc" ? config.navigation : "toc+landmarks",
     trimSize: ["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].includes(String(config.trim_size)) ? config.trim_size as FormState["trimSize"] : "6x9",
     bleed: number(config.bleed_in, 0),
+    bleedEdges: config.bleed_edges === "outer" ? "outer" : "all",
     top: number(margins.top, 0.75), bottom: number(margins.bottom, 0.75), inner: number(margins.inner, 0.75), outer: number(margins.outer, 0.5),
     bodyFont: FONTS.includes(typography.body_font as FormState["bodyFont"]) ? typography.body_font as FormState["bodyFont"] : "Times-Roman",
     bodySize: number(typography.body_size_pt, 11),
@@ -119,7 +120,7 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
     instructions: form.narrationInstructions.trim() || null, speed: form.narrationSpeed,
   };
   return {
-    kind: "print", schema_version: "1.1.0", text_direction: form.textDirection, trim_size: form.trimSize, bleed_in: form.bleed,
+    kind: "print", schema_version: "1.1.0", text_direction: form.textDirection, trim_size: form.trimSize, bleed_in: form.bleed, bleed_edges: form.bleedEdges,
     margins: { top: form.top, bottom: form.bottom, inner: form.inner, outer: form.outer },
     typography: {
       body_font: form.bodyFont, body_size_pt: form.bodySize, heading_font: form.headingFont, heading_size_pt: form.headingSize,
@@ -327,6 +328,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             </> : form.kind === "print" ? <>
               <label className="text-sm text-white/65">Trim size<select value={form.trimSize} onChange={(event) => update("trimSize", event.target.value as FormState["trimSize"])} className={fieldClass}>{["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].map((size) => <option key={size}>{size}</option>)}</select></label>
               <label className="text-sm text-white/65">Bleed<select value={form.bleed} onChange={(event) => update("bleed", Number(event.target.value))} className={fieldClass}><option value={0}>No bleed</option><option value={0.125}>0.125 in</option></select></label>
+              {form.bleed > 0 && <label className="text-sm text-white/65">Interior bleed edges<select value={form.bleedEdges} onChange={(event) => update("bleedEdges", event.target.value as FormState["bleedEdges"])} className={fieldClass}><option value="outer">Top, bottom and outer edge · KDP</option><option value="all">All four edges · Lulu</option></select></label>}
+              <p className="text-xs text-white/45 sm:col-span-2">Margins below are measured from the finished trim edge. Bleed changes PDF page dimensions; it does not extend in-flow illustrations to the edge. Choose the setting required by your printer and re-render before packaging.</p>
               <label className="text-sm text-white/65">Body font<select value={form.bodyFont} onChange={(event) => update("bodyFont", event.target.value as FormState["bodyFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
               <label className="text-sm text-white/65">Heading font<select value={form.headingFont} onChange={(event) => update("headingFont", event.target.value as FormState["headingFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
               <label className="text-sm text-white/65">Body size (pt)<input type="number" min={7} max={24} step={0.5} value={form.bodySize} onChange={(event) => update("bodySize", Number(event.target.value))} className={fieldClass} /></label>

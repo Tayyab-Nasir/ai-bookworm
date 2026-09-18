@@ -136,6 +136,7 @@ class PrintEdition(BaseModel):
     text_direction: Literal["auto", "ltr", "rtl"] = "auto"
     trim_size: str = "6x9"
     bleed_in: float = Field(default=0.0, ge=0, le=0.25)
+    bleed_edges: Literal["all", "outer"] = "all"
     margins: Margins = Field(default_factory=Margins)
     typography: Typography = Field(default_factory=Typography)
     page_numbering: PageNumbering = Field(default_factory=PageNumbering)

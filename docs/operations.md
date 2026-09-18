@@ -301,13 +301,26 @@ before production tuning.
   preview URLs are short-lived and are not persisted in manuscript nodes. Save
   the chapter to persist these edits; removing a placement does not delete its
   source asset.
-- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.5.0`. They preserve inline
+- EPUB/PDF renderer versions are `epub-1.4.0` / `pdf-1.6.0`. They preserve inline
   emphasis, breaks, nested lists and illustration captions; PDF gutters mirror
   correctly on odd/even pages. EPUB writes the saved edition's BCP-47 language and
   resolved `dir` attribute (`ltr`/`rtl`), letting reading systems apply local
   script-capable fonts and bidirectional layout. Render, preflight, and package
   requests all rebuild the model with that saved edition language, so their
   freshness fingerprints remain consistent. Core rules are `core-1.0.4`.
+- Print `bleed_edges` is explicit: `outer` adds bleed to top, bottom and the
+  outer side (KDP); `all` adds it to all four sides (Lulu). Existing saved
+  editions default to `all` for compatibility, so select `outer` and re-render
+  before sending a bleeding interior to KDP. A 6x9 trim at 0.125in bleed is
+  6.125x9.25 for KDP and 6.25x9.25 for Lulu. Sources checked 2026-09-18:
+  [KDP](https://kdp.amazon.com/en_US/help/topic/GVBQ3CMEQW3W2VL6),
+  [Lulu](https://help.lulu.com/en/support/solutions/articles/64000255584).
+  Margins remain trim-relative; odd/even frames alternate on every page,
+  including pages after the second. Numbering is anchored to the trim area.
+  KDP/Lulu rules `1.2.0` inspect actual artifact geometry, rejecting cropped,
+  rotated or stale-size interiors. This does not validate all text boundaries
+  or make in-flow illustrations edge-to-edge; full-bleed image placement and
+  complete printer page-count/font conformance remain open.
 - Print body and heading fonts can use `BookwormVera` / `BookwormVera-Bold`.
   The renderer embeds ReportLab's bundled, unchanged Bitstream Vera TrueType
   family, including regular, bold, italic and bold-italic variants. Retain the

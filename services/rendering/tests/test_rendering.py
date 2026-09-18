@@ -292,7 +292,7 @@ def test_rtl_preflight_blocks_only_unsupported_print_and_cover_text_paths():
 
 def test_kdp_ruleset_layers_channel_rules():
     ruleset = load_ruleset("kdp")
-    assert ruleset.version == "core-1.0.4+kdp-1.1.0"
+    assert ruleset.version == "core-1.0.4+kdp-1.2.0"
     assert any(r.id.startswith("KDP-") for r in ruleset.rules)
     with pytest.raises(KeyError):
         load_ruleset("nook-2009")
