@@ -1446,9 +1446,9 @@
     "semantic_hash": ""
   },
   "services/publishing/tests/test_adapters.py": {
-    "mtime": 1789703700.844311,
-    "seen": 1789703992.8094566,
-    "ast_hash": "1d4f30c3c0bb34b4828bb3ffb60a1383",
+    "mtime": 1789705793.206433,
+    "seen": 1789705884.9504144,
+    "ast_hash": "18aa8728e979ffdd1f17e0c59e228ee7",
     "semantic_hash": ""
   },
   "services/rendering/cover_renderer.py": {
@@ -1662,10 +1662,10 @@
     "semantic_hash": ""
   },
   "tests/e2e/test_critical_journey.py": {
-    "mtime": 1789109211.7339485,
-    "seen": 1789189271.7201564,
-    "ast_hash": "26502f12fa87247e37fde0d8d517cf2b",
-    "semantic_hash": "26502f12fa87247e37fde0d8d517cf2b"
+    "mtime": 1789705821.1178923,
+    "seen": 1789705884.9504144,
+    "ast_hash": "305007a265b6149b409e706ca4ecd39a",
+    "semantic_hash": ""
   },
   "tests/fixtures/books/broken_book.json": {
     "mtime": 1786340779.4345384,
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789705602.4632182,
-    "seen": 1789705622.6022565,
-    "ast_hash": "8e003e4ad015850fd17e29b1a27f2fff",
+    "mtime": 1789705875.882174,
+    "seen": 1789705884.9504144,
+    "ast_hash": "b49c4b955b3da5684bf9cfd9f70c1a99",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2370,9 +2370,9 @@
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
-    "mtime": 1789703935.8715746,
-    "seen": 1789703992.8094566,
-    "ast_hash": "db9265cc4ab4a17f23b0f28b51478922",
+    "mtime": 1789705875.8811917,
+    "seen": 1789705884.9504144,
+    "ast_hash": "cfeea46f913f551eaf39dc24cb8052f2",
     "semantic_hash": ""
   },
   "services/ai/prompts/book_bible_v1.md": {
@@ -2718,9 +2718,9 @@
     "semantic_hash": ""
   },
   "services/rendering/tests/test_full_bleed_illustrations.py": {
-    "mtime": 1789703760.1106005,
-    "seen": 1789703992.8094566,
-    "ast_hash": "e897034ea5c968574884e448989fc26b",
+    "mtime": 1789705793.207863,
+    "seen": 1789705884.9504144,
+    "ast_hash": "03a9fd5f40959c56c0052cf6a3496202",
     "semantic_hash": ""
   },
   "tests/e2e/full-bleed-artwork-browser.mjs": {
