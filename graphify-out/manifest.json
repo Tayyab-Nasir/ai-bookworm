@@ -402,9 +402,9 @@
     "semantic_hash": "6eb234df7f50d335bd057332a52af6bb"
   },
   "apps/web/components/PublishingStudio.tsx": {
-    "mtime": 1789704492.6842089,
-    "seen": 1789704724.8928695,
-    "ast_hash": "4966c4d724e9464841f52d9ad46cc01d",
+    "mtime": 1789706086.275219,
+    "seen": 1789706169.0098665,
+    "ast_hash": "e06123e01a6cf3a38dfdd939807941d9",
     "semantic_hash": ""
   },
   "apps/web/components/ReferralCenter.tsx": {
@@ -1464,9 +1464,9 @@
     "semantic_hash": ""
   },
   "services/rendering/epub_renderer.py": {
-    "mtime": 1789704492.6842089,
-    "seen": 1789704724.8928695,
-    "ast_hash": "0c68a3d3f8668d395527096b5b818863",
+    "mtime": 1789706086.2742136,
+    "seen": 1789706169.0098665,
+    "ast_hash": "9c6bb6de4d914720c367dab5680c2dff",
     "semantic_hash": ""
   },
   "services/rendering/main.py": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789705875.882174,
-    "seen": 1789705884.9504144,
-    "ast_hash": "b49c4b955b3da5684bf9cfd9f70c1a99",
+    "mtime": 1789706160.0313685,
+    "seen": 1789706169.0098665,
+    "ast_hash": "5e3249c102e311dccc71a1e41b1c7e6e",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2754,9 +2754,15 @@
     "semantic_hash": ""
   },
   "services/rendering/tests/test_front_matter.py": {
-    "mtime": 1789704492.6961353,
-    "seen": 1789704724.8928695,
-    "ast_hash": "ed86123c417cb340bbfd9c53026fcbf7",
+    "mtime": 1789706086.2772274,
+    "seen": 1789706169.0098665,
+    "ast_hash": "32a7e6f6a233a6c7626fb9a0bf7bbf8c",
+    "semantic_hash": ""
+  },
+  "services/rendering/tests/test_epub_navigation.py": {
+    "mtime": 1789706086.278222,
+    "seen": 1789706169.0098665,
+    "ast_hash": "3385d1b13a18c12edb05f20f9e5da433",
     "semantic_hash": ""
   }
 }
