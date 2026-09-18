@@ -77,6 +77,7 @@ const typographySchema = z.object({
 }).default({});
 
 const printSchema = z.object({
+  include_table_of_contents: z.boolean().default(false),
   kind: z.literal("print"),
   schema_version: z.enum(["1.0.0", "1.1.0"]).default("1.1.0"),
   text_direction: z.enum(["auto", "ltr", "rtl"]).default("auto"),

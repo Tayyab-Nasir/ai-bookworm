@@ -35,7 +35,7 @@ interface FormState {
   voice: AudiobookVoice; narrationInstructions: string; narrationSpeed: number;
   wrapEnabled: boolean; wrapProfile: "kdp-white" | "kdp-cream" | "kdp-standard-color" | "kdp-premium-color" | "custom";
   spineWidth: number; templatePages: number; backText: string; spineText: string; wrapBackground: string; wrapTextColor: string;
-  copyrightNotice: string; publisher: string; ebookTitlePage: boolean;
+  copyrightNotice: string; publisher: string; ebookTitlePage: boolean; printContents: boolean;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -49,7 +49,7 @@ const DEFAULT_FORM: FormState = {
   voice: "marin", narrationInstructions: "Narrate naturally with clear chapter pacing and faithful pronunciation.", narrationSpeed: 1,
   wrapEnabled: false, wrapProfile: "kdp-white", spineWidth: 0.25, templatePages: 0,
   backText: "", spineText: "", wrapBackground: "#182528", wrapTextColor: "#ffffff",
-  copyrightNotice: "", publisher: "", ebookTitlePage: false,
+  copyrightNotice: "", publisher: "", ebookTitlePage: false, printContents: false,
 };
 
 function object(value: unknown): Record<string, unknown> {
@@ -73,6 +73,7 @@ export function formFromEdition(edition: Edition): FormState {
     ...DEFAULT_FORM,
     copyrightNotice: typeof front.copyright_notice === "string" ? front.copyright_notice : "",
     ebookTitlePage: config.include_title_page === true,
+    printContents: config.include_table_of_contents === true,
     publisher: typeof front.publisher === "string" ? front.publisher : "",
     kind: edition.type === "print" || edition.type === "audiobook" ? edition.type : "ebook",
     language: edition.language ?? "en",
@@ -130,6 +131,7 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
   };
   return {
     kind: "print", schema_version: "1.1.0", text_direction: form.textDirection, trim_size: form.trimSize, bleed_in: form.bleed, bleed_edges: form.bleedEdges,
+    include_table_of_contents: form.printContents,
     margins: { top: form.top, bottom: form.bottom, inner: form.inner, outer: form.outer }, front_matter,
     typography: {
       body_font: form.bodyFont, body_size_pt: form.bodySize, heading_font: form.headingFont, heading_size_pt: form.headingSize,
@@ -367,6 +369,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           <h2 id="front-matter-settings" className="text-xl font-semibold">Title & copyright pages</h2>
           <p className="mt-1 text-sm text-white/45">Print includes a title page; EPUB can include one below. It uses your saved book title, subtitle and author. Add your own notice or publisher to include a copyright page, with the saved ISBN when available. This does not register copyright or assign an ISBN.</p>
           <div className="mt-5 grid gap-4">
+            {form.kind === "print" && <label className="inline-flex items-center gap-2 text-sm text-white/65"><input type="checkbox" checked={form.printContents} onChange={(event) => update("printContents", event.target.checked)} />Include chapter contents (page references follow your numbering settings; changes affect the final page count)</label>}
             {form.kind === "ebook" && <label className="inline-flex items-center gap-2 text-sm text-white/65"><input type="checkbox" checked={form.ebookTitlePage} onChange={(event) => update("ebookTitlePage", event.target.checked)} />Include EPUB title page (leave off if your manuscript already contains one)</label>}
             <label className="text-sm text-white/65">Publisher or imprint<input value={form.publisher} maxLength={200} onChange={(event) => update("publisher", event.target.value)} className={fieldClass} /></label>
             <label className="text-sm text-white/65">Copyright notice<textarea value={form.copyrightNotice} maxLength={3000} rows={5} onChange={(event) => update("copyrightNotice", event.target.value)} className={fieldClass} placeholder="Enter the exact notice and permissions text you want printed." /></label>

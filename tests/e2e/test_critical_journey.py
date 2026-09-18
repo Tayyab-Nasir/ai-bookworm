@@ -100,10 +100,11 @@ def test_imported_manuscript_survives_render_and_retailer_package(monkeypatch, c
                               "categories": ["FICTION / Mystery & Detective / General"]})
     edition = {"kind": kind, "navigation": "toc+landmarks"} if kind == "ebook" else {
         "kind": "print", "trim_size": "6x9", "bleed_in": 0.125, "bleed_edges": "all" if channel == "lulu" else "outer",
+        "include_table_of_contents": True,
         "typography": {"body_font": "BookwormVera", "heading_font": "BookwormVera-Bold"},
         "cover": {"asset_id": "44444444-4444-4444-8444-444444444444"},
         "wrap_cover": {"enabled": True, "profile": "kdp-white" if channel == "kdp" else "custom",
-                       "expected_page_count": 34, "spine_width_in": 0.1},
+                       "expected_page_count": 36, "spine_width_in": 0.1},
         "page_numbering": {"style": "arabic", "start_at": 7, "position": "bottom-center"},
     }
     edition["front_matter"] = {"copyright_notice": "Copyright Fixture Author. Permission required.", "publisher": "Harbor Press"}
@@ -125,7 +126,9 @@ def test_imported_manuscript_survives_render_and_retailer_package(monkeypatch, c
     else:
         from pypdf import PdfReader
         reader = PdfReader(BytesIO(artifact))
-        assert len(reader.pages) == 34
+        assert len(reader.pages) == 36
+        assert len(reader.outline) == 32
+        assert "Contents" in reader.pages[2].extract_text()
         content = "\n".join(page.extract_text() for page in reader.pages)
         assert "7" in reader.pages[0].extract_text(), "starting page number not rendered"
     assert "Mara counted seven silver coins" in content

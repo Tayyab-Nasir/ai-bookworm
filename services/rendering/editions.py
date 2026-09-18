@@ -138,6 +138,7 @@ class WrapCover(BaseModel):
 
 
 class PrintEdition(BaseModel):
+    include_table_of_contents: bool = False
     kind: Literal["print"] = "print"
     schema_version: str = EDITION_SCHEMA_VERSION
     text_direction: Literal["auto", "ltr", "rtl"] = "auto"

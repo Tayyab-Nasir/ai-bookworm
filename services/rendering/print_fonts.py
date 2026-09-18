@@ -97,6 +97,8 @@ def print_font_issues(book: dict, edition: dict) -> list[dict[str, str]]:
     for chapter in book.get("chapters", []):
         location = f"chapter:{chapter['id']}"
         check(chapter.get("title"), heading, location)
+        if edition.get("include_table_of_contents"):
+            check(chapter.get("title"), body, f"{location} contents")
         for node in chapter.get("nodes", []):
             node_location = f"{location} node:{node['id']}"
             kind = node.get("type")

@@ -10,7 +10,7 @@ from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.7"
+VERSION = "core-1.0.8"
 
 
 def _find(code, msg, loc=""):

@@ -19,4 +19,7 @@ test("edition front matter validates, preserves exact text and defaults without 
   }
   const ebook = editionConfigSchema.parse({ kind: "ebook", include_title_page: true });
   assert.equal(ebook.kind === "ebook" && ebook.include_title_page, true);
+  const print = editionConfigSchema.parse({ kind: "print", include_table_of_contents: true });
+  assert.equal(print.kind === "print" && print.include_table_of_contents, true);
+  assert.equal(editionConfigSchema.safeParse({ kind: "print", include_table_of_contents: "yes" }).success, false);
 });

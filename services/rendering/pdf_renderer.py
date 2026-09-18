@@ -11,6 +11,7 @@ from reportlab.lib.pagesizes import inch
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
+from reportlab.platypus.tableofcontents import TableOfContents
 from reportlab.platypus import (
     BaseDocTemplate,
     Flowable,
@@ -33,8 +34,23 @@ from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
 from print_layout import NUMBER_SIZE_PT, NUMBER_TRIM_INSET_IN, number_metrics, print_layout_issues
 
-RENDERER_VERSION = "pdf-1.10.0"
+RENDERER_VERSION = "pdf-1.11.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
+
+
+class _BookDocTemplate(BaseDocTemplate):
+    def beforeDocument(self):
+        self._toc_seen = set()
+
+    def afterFlowable(self, flowable):
+        name = getattr(getattr(flowable, "style", None), "name", None)
+        if name not in self.toc_chapters or name in self._toc_seen:
+            return
+        self._toc_seen.add(name)
+        title, key = self.toc_chapters[name]
+        self.canv.bookmarkPage(key)
+        self.canv.addOutlineEntry(title, key, level=0)
+        self.notify("TOCEntry", (0, escape(title), self.page, key))
 
 
 class _DeterministicCanvasMaker:
@@ -142,7 +158,7 @@ def render_pdf(book: dict, edition: PrintEdition,
     pagesize = ((tw + inside_bleed + edition.bleed_in) * inch, (th + 2 * edition.bleed_in) * inch)
 
     buf = BytesIO()
-    doc = BaseDocTemplate(
+    doc = _BookDocTemplate(
         buf,
         pagesize=pagesize,
         leftMargin=(m.inner + inside_bleed) * inch,
@@ -155,6 +171,7 @@ def render_pdf(book: dict, edition: PrintEdition,
         initialFontName=page_number_font(typo.body_font, typo.heading_font),
     )
     page_w, page_h = pagesize
+    doc.toc_chapters = {}
     # User margins are measured from the trim edge, never from the PDF edge.
     frame_w = (tw - m.inner - m.outer) * inch
     frame_h = page_h - (m.top + m.bottom + 2 * edition.bleed_in) * inch
@@ -201,9 +218,27 @@ def render_pdf(book: dict, edition: PrintEdition,
                      f"ISBN: {book['metadata']['isbn13']}" if book["metadata"].get("isbn13") else ""):
             if text.strip():
                 story.append(Paragraph(escape(text).replace("\n", "<br/>"), front_style))
-    for ch in sorted(book["chapters"], key=lambda c: c["order"]):
+    if edition.include_table_of_contents:
+        def contents_number(page):
+            number = page - 1 + numbering.start_at
+            return "" if numbering.style == "none" else _roman(number) if numbering.style == "roman" else str(number)
+
+        # Reserve a separate label area so wrapped chapter titles cannot cover
+        # page labels. The supported retailer interior range is at most 2000.
+        label_width = max(pdfmetrics.stringWidth(contents_number(page), typo.body_font, typo.body_size_pt)
+                          for page in range(1, 2001)) + 12
+        contents_style = ParagraphStyle("ContentsEntry", parent=body, firstLineIndent=0,
+                                        alignment=TA_LEFT, rightIndent=label_width)
+        toc = TableOfContents(levelStyles=[contents_style], formatter=contents_number)
+        toc.dotsMinLevel = -1 if numbering.style == "none" else 0
+        story.extend([PageBreak(), Paragraph("Contents", heading), toc])
+    for index, ch in enumerate(sorted(book["chapters"], key=lambda c: c["order"])):
         story.append(PageBreak())
-        story.append(Paragraph(escape(ch.get("title", "")), heading))
+        chapter_style = heading
+        if edition.include_table_of_contents:
+            chapter_style = ParagraphStyle(f"ChapterHeading{index}", parent=heading)
+            doc.toc_chapters[chapter_style.name] = (ch.get("title", ""), f"chapter-{index}")
+        story.append(Paragraph(escape(ch.get("title", "")), chapter_style))
         for block in block_tree(ch.get("nodes", [])):
             if "node" not in block:
                 story.append(render_list(block))
@@ -256,6 +291,9 @@ def render_pdf(book: dict, edition: PrintEdition,
                 else:
                     story.append(illustration)
 
-    doc.build(story, canvasmaker=_DeterministicCanvasMaker.make)
+    if edition.include_table_of_contents:
+        doc.multiBuild(story, canvasmaker=_DeterministicCanvasMaker.make)
+    else:
+        doc.build(story, canvasmaker=_DeterministicCanvasMaker.make)
     blob = buf.getvalue()
     return blob, hashlib.sha256(blob).hexdigest()

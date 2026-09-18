@@ -205,6 +205,7 @@ export type EditionConfig = {
   image_policy?: { max_width_px?: number; max_bytes?: number; embed?: boolean; allowed_formats?: ("jpeg" | "png" | "gif" | "webp")[] };
 } | {
   kind: "print";
+  include_table_of_contents?: boolean;
   schema_version?: "1.0.0" | "1.1.0";
   text_direction?: "auto" | "ltr" | "rtl";
   trim_size?: "5x8" | "5.5x8.5" | "6x9" | "7x10" | "8.5x11";

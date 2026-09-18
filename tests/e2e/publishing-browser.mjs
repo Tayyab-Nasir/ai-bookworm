@@ -44,6 +44,7 @@ try {
   await page.reload(); await download.waitFor();
   assert.notEqual(await download.getAttribute('href'), before, 'history did not refresh download URL');
   await page.getByRole('button', { name: 'New print', exact: true }).click();
+  await page.getByLabel('Include chapter contents', { exact: false }).check();
   await page.getByLabel('Publisher or imprint', { exact: true }).fill('Print Imprint');
   await page.getByLabel('Copyright notice', { exact: true }).fill('Print permission notice.');
   await page.getByLabel('Body font').selectOption('BookwormVera');
@@ -59,6 +60,7 @@ try {
   await page.getByText('Edition settings saved.', { exact: true }).waitFor();
   await page.reload();
   await page.getByRole('button', { name: /^print /i }).click();
+  assert.equal(await page.getByLabel('Include chapter contents', { exact: false }).isChecked(), true);
   assert.equal(await page.getByLabel('Publisher or imprint', { exact: true }).inputValue(), 'Print Imprint');
   assert.equal(await page.getByLabel('Copyright notice', { exact: true }).inputValue(), 'Print permission notice.');
   assert.equal(await page.getByLabel('Create full cover PDF', { exact: true }).isChecked(), true);

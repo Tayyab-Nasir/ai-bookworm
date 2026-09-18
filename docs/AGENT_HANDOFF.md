@@ -23,6 +23,21 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-18 print contents pages
+
+PDF 1.11.0 adds opt-in include_table_of_contents, saved through Studio/API/client
+and Python edition config. Multi-pass layout resolves actual chapter pages;
+contents links and PDF bookmarks use chapter destinations. Arabic/Roman labels
+follow starting-number settings; hidden numbering omits labels. Title wrapping
+reserves space for page labels, and core 1.0.8 validates contents-font glyphs.
+Eight new actual-PDF tests cover 65-chapter/multi-page TOCs, exact label-title
+pairs, destinations, font repagination, wrapping, opt-out and determinism.
+Verified 290 services, 196 API, 65 web, all workspace TypeScript, production
+build and 8 E2E. Print retailer journeys now have 36 pages including contents,
+and exact cover/interior bytes survive preflight/packaging. Browser assertions
+added but not run (previous fixture startup policy denial remains). No live work.
+Note: `Codex Sessions/2026-09/2026-09-18-bookworm-print-contents.md`.
+
 ### 2026-09-18 EPUB navigation settings
 
 EPUB 1.6.0 now honors saved navigation: toc inserts a readable contents page
