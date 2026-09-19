@@ -343,6 +343,8 @@ export function metadataGenerationRoutes(app: FastifyInstance, options: { fetche
       }
       return reply.status(200).send({ job: existing, candidate: candidateFromJob(existing) });
     }
+    if (insertError?.code === "23514") throw new AppError(422, "Metadata credit capacity is exhausted. Wait for pending requests or add funded capacity.", undefined, "quota_exceeded");
+    if (insertError?.code === "42501") throw new AppError(403, "Metadata generation requires editing access.");
     if (insertError || !job) throw new AppError(500, "Could not create the metadata AI job.");
 
     const serviceUrl = process.env.AI_SERVICE_URL ?? `http://127.0.0.1:${process.env.AI_SERVICE_PORT ?? "8000"}`;

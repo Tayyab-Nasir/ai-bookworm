@@ -8,6 +8,10 @@ insert into public.organizations(id,name,slug,owner_user_id) values
   ('a7100000-0000-4000-8000-000000000002','Metadata Org','metadata-org','a7100000-0000-4000-8000-000000000001');
 insert into public.organization_members(organization_id,user_id,role) values
   ('a7100000-0000-4000-8000-000000000002','a7100000-0000-4000-8000-000000000001','owner');
+insert into public.plans(id,name,billing_period,price_cents,entitlements_json) values
+  ('a7100000-0000-4000-8000-000000000009','Metadata test','month',1000,'{"ai_credits_monthly":2}');
+insert into public.subscriptions(organization_id,plan_id,status) values
+  ('a7100000-0000-4000-8000-000000000002','a7100000-0000-4000-8000-000000000009','active');
 insert into public.workspaces(id,organization_id,name,slug,created_by) values
   ('a7100000-0000-4000-8000-000000000003','a7100000-0000-4000-8000-000000000002','Metadata Workspace','metadata-workspace','a7100000-0000-4000-8000-000000000001');
 insert into public.workspace_members(workspace_id,user_id,role) values

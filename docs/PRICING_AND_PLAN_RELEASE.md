@@ -28,6 +28,14 @@ They are not approved commercial offers.
 
 ## Credit accounting direction
 
+Local migration `20260919050000_metadata_credit_reservations.sql` adds a
+database-side hold for the existing one-unit metadata operation before provider
+execution. It counts pending metadata requests across organization workspaces.
+This is not a versioned token-to-customer-credit policy and is not installed live
+by the build. Other text-generation paths sharing ai_credits must participate in
+the same reservation model before paid launch; do not interpret this component
+check as full billing readiness.
+
 The existing `ai_credits`, `image_credits`, `audio_credits`, and
 `translation_credits` meters are operational units, not provider tokens. Audio
 and translation each reserve one credit per started 1,000 source characters in

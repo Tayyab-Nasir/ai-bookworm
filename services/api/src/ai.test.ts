@@ -14,7 +14,7 @@ process.env.AI_SERVICE_URL = "http://ai.test";
 const { buildApp } = await import("./app.js");
 
 type Row = Record<string, unknown>;
-interface Store { tables: Record<string, Row[]>; rpcCalls: { name: string; args: Row }[] }
+interface Store { tables: Record<string, Row[]>; rpcCalls: { name: string; args: Row }[]; metadataInsertError?: string }
 
 function fakeSupabase(store: Store) {
   return {
@@ -54,6 +54,10 @@ function fakeSupabase(store: Store) {
       builder.insert = (row: Row) => { pendingInsert = row; return builder; };
       builder.update = (row: Row) => { pendingUpdate = row; return builder; };
       builder.single = async () => {
+        if (table === "ai_jobs" && pendingInsert?.agent_type === "metadata" && store.metadataInsertError) {
+          pendingInsert = null;
+          return { data: null, error: { code: store.metadataInsertError } };
+        }
         if (table === "ai_jobs" && pendingInsert?.agent_type === "metadata" && rows.some((row) =>
           row.agent_type === "metadata" && row.book_id === pendingInsert!.book_id && row.created_by === pendingInsert!.created_by
           && ["queued", "running"].includes(String(row.status)))) {
@@ -316,6 +320,20 @@ test("metadata recovery refuses foreign receipts and never frees an unknown requ
   job.created_by = "another-user";
   assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: {} })).statusCode, 404);
   assert.equal(calls, 1);
+});
+
+test("metadata reservation quota and role failures stop before provider execution", async (t) => {
+  for (const [code, status] of [["23514", 422], ["42501", 403]] as const) {
+    const store = baseStore(); store.metadataInsertError = code;
+    let calls = 0;
+    const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => { calls++; return new Response(JSON.stringify(metadataResult())); } });
+    t.after(() => app.close());
+    const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/metadata/generate`, headers: auth,
+      payload: { idempotencyKey: "quota-race-request", chapterIds: [CHAPTER] } });
+    assert.equal(response.statusCode, status, response.body);
+    assert.equal(calls, 0);
+    assert.equal(store.tables.ai_jobs.length, 0);
+  }
 });
 
 test("metadata generation returns a cited review draft without overwriting saved metadata", async () => {

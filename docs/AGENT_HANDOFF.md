@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 metadata funding reservation (local only)
+
+Migration 20260919050000 reserves one current operational ai_credits unit when
+metadata jobs enter queued/running. It locks the organization, requires editing
+membership and explicit allowance, and counts monthly usage plus pending metadata
+across its workspaces. Queued-to-running retains a hold; reactivation rechecks.
+API quota/role conflicts stop before the provider. 204 API tests, API TypeScript,
+50 local migrations and 35 SQL assertion files pass. NOT applied live.
+This does not approve retail pricing or finish usage-based conversion. Reservation
+coordination with other text-generation workflows sharing ai_credits remains a
+launch gate, along with token-cost quoting/reconciliation and native race tests.
+
 ### 2026-09-19 durable metadata receipts (local only)
 
 New metadata_service_receipts table is service-only/RLS-enabled, linked to the
