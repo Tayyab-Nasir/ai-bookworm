@@ -606,9 +606,9 @@
     "semantic_hash": "8843cb12ab93bfc002e8ab819671a3e7"
   },
   "packages/api-client/src/index.ts": {
-    "mtime": 1789790079.5190873,
-    "seen": 1789790176.1045678,
-    "ast_hash": "e88f40e81a0db5c4c5755802e8aaf480",
+    "mtime": 1789791076.2629232,
+    "seen": 1789791114.2708864,
+    "ast_hash": "421f872a06f4216d7e683f3c72da1a2a",
     "semantic_hash": ""
   },
   "packages/api-client/tsconfig.json": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789790494.8481812,
-    "seen": 1789790523.97873,
-    "ast_hash": "a81b8ba4826a75091b18ec40ff780c56",
+    "mtime": 1789790762.7970471,
+    "seen": 1789790798.0377374,
+    "ast_hash": "10e1fc7f9347095d1513dfe1365cde19",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2514,9 +2514,9 @@
     "semantic_hash": ""
   },
   "services/api/src/routes/translations.ts": {
-    "mtime": 1789790335.486291,
-    "seen": 1789790460.3119452,
-    "ast_hash": "7fb6cbfd63515274df4bb1a067e762ab",
+    "mtime": 1789791076.2619276,
+    "seen": 1789791114.2708864,
+    "ast_hash": "7a74547e7afa9751be3f338bafc2c28d",
     "semantic_hash": ""
   },
   "services/api/src/translation-worker.test.ts": {
@@ -2526,9 +2526,9 @@
     "semantic_hash": ""
   },
   "services/api/src/translations.test.ts": {
-    "mtime": 1789790419.3926852,
-    "seen": 1789790460.3119452,
-    "ast_hash": "93f0008c7646866cd26a431bc0d0569b",
+    "mtime": 1789791076.2649286,
+    "seen": 1789791114.2708864,
+    "ast_hash": "5f1ae59d724138724bda9ccda5562617",
     "semantic_hash": ""
   },
   "supabase/migrations/20260912180000_translation_workflow.sql": {
@@ -3015,6 +3015,18 @@
     "mtime": 1789790686.5322976,
     "seen": 1789790729.1611483,
     "ast_hash": "632d3b8f3095b14a28a6b0dd46ad86fa",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919150000_translation_quote_proposals.sql": {
+    "mtime": 1789790918.707641,
+    "seen": 1789791018.853443,
+    "ast_hash": "8bee89390f78065eebae77f27f9d042e",
+    "semantic_hash": ""
+  },
+  "tests/security/translation-proposals.test.sql": {
+    "mtime": 1789791004.0388393,
+    "seen": 1789791018.853443,
+    "ast_hash": "a2e11981495814b265d41d99aa6e890b",
     "semantic_hash": ""
   }
 }

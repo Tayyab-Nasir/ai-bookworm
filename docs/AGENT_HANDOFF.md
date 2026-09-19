@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 durable proposal acceptance
+
+Sources 3d3254f (DB), 8db8005 (API/client): private immutable saved offers,
+atomic all-chapter job+hold acceptance, same-proposal replay, payer/access/expiry/
+source checks. Local 60 migrations/42 SQL suites and native CI 35420563579 pass;
+234 API tests pass. No live changes. Creation service/proposal GET/UI remain next.
+Shared: Codex Sessions/2026-09/2026-09-19-bookworm-proposal-acceptance.md.
+
 ### 2026-09-19 token-counted translation proposals
 
 Source aa25927 adds internal proposal preparation using exact provider input-token
