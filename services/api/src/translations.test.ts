@@ -49,6 +49,15 @@ function fakeSupabase(role = "editor", seed: Partial<Record<string, Row[]>> = {}
   return { client: client as never, calls };
 }
 
+test("private proposal reads cannot reveal another payer's saved offer",async()=>{
+  const fake=fakeSupabase("editor",{translation_quote_proposals:[{id:PROJECT,book_id:BOOK,user_id:WORKSPACE}]});
+  const app=await buildApp(()=>fake.client);
+  try {
+    const response=await app.inject({method:"GET",url:`/v1/translation-quotes/${PROJECT}`,headers:{authorization:"Bearer good"}});
+    assert.equal(response.statusCode,404);
+  }finally{await app.close();}
+});
+
 test("quote preparation requires explicit consent and editing access before queueing", async () => {
   const fake=fakeSupabase(); const app=await buildApp(()=>fake.client);
   const payload={targetLanguage:"es",modelId:"test-model",idempotencyKey:"quote-request-1"};

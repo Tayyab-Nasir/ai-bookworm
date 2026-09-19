@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import type { TranslationBillingResult, TranslationProjectResult } from "@bookworm/api-client";
 import type { Book } from "@bookworm/types";
 import { apiClient } from "./api";
+import TranslationQuotePanel from "./TranslationQuotePanel";
 
 const editableRoles = new Set(["owner", "admin", "editor", "writer"]);
 const panel = "rounded-2xl border border-white/10 bg-white/[0.025] p-5 sm:p-6";
@@ -23,7 +24,7 @@ export default function TranslationStudio({ bookId }: { bookId: string }) {
   const api = apiClient(); const router = useRouter();
   const [book, setBook] = useState<Book | null>(null); const [role, setRole] = useState<string | null>(null);
   const [projects, setProjects] = useState<TranslationProjectResult[]>([]); const [selected, setSelected] = useState<TranslationProjectResult | null>(null);
-  const [targetLanguage, setTargetLanguage] = useState(""); const [adoptTitle, setAdoptTitle] = useState("");
+  const [adoptTitle, setAdoptTitle] = useState("");
   const [busy, setBusy] = useState<"queue" | "refresh" | "preview" | "adopt" | "cancel" | null>(null); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState<string | null>(null);
   const [cancelConfirmation, setCancelConfirmation] = useState<string | null>(null);
   const [billing, setBilling] = useState<TranslationBillingResult | null>(null);
@@ -45,17 +46,6 @@ export default function TranslationStudio({ bookId }: { bookId: string }) {
   }, [api, bookId]);
 
   useEffect(() => { void load().catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load translations.")); }, [load]);
-
-  const queue = async () => {
-    if (busy || !/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/i.test(targetLanguage.trim())) { setError("Use a BCP-47 language code such as es, fr, or pt-BR."); return; }
-    setBusy("queue"); setError(null); setNotice(null);
-    try {
-      const project = await api.createTranslationProject(bookId, { targetLanguage: targetLanguage.trim().toLowerCase(), idempotencyKey: crypto.randomUUID() });
-      setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]); setSelected(project);
-      setAdoptTitle(`${book?.title ?? "Untitled"} (${project.targetLanguage.toUpperCase()})`); setNotice("Translation queued. The worker uses the exact saved version of every chapter.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not queue translation."); }
-    finally { setBusy(null); }
-  };
 
   const preview = async (projectId: string, includeText: boolean) => {
     if (busy) return; setBusy(includeText ? "preview" : "refresh"); setError(null); setNotice(null);
@@ -103,12 +93,11 @@ export default function TranslationStudio({ bookId }: { bookId: string }) {
     {error && <p role="alert" className="mt-6 rounded-xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-100">{error}</p>}
     {notice && <p role="status" className="mt-6 rounded-xl border border-emerald-400/30 bg-emerald-400/10 p-4 text-sm text-emerald-50">{notice}</p>}
 
-    <section className={`${panel} mt-8`} aria-labelledby="translation-setup">
-      <h2 id="translation-setup" className="text-xl font-medium">Start a translation</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-white/50">Source: <span className="font-medium text-white/80">{book?.language?.toUpperCase() ?? "…"}</span>. Each non-empty saved chapter becomes a private background job. One translation credit covers up to 1,000 source characters; your plan must explicitly include translation credits.</p>
-      <fieldset disabled={!editable || Boolean(busy)} className="mt-5 flex flex-col gap-4 sm:flex-row sm:items-end"><label className="max-w-xs flex-1 text-sm text-white/70">Target language code<input value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value)} placeholder="es or pt-BR" maxLength={35} className={field} /></label><button type="button" onClick={() => void queue()} className={primary}>{busy === "queue" ? "Queuing…" : "Queue book translation"}</button></fieldset>
-      {!editable && <p className="mt-4 text-sm text-amber-100">An editor, writer, admin, or owner role is required to spend translation credits.</p>}
-      <p className="mt-4 text-xs leading-5 text-white/40">Chapters over 32,000 characters must be split first. The source versions remain private and unchanged; provider calls occur only after the worker claims a reserved job.</p>
-    </section>
+    <TranslationQuotePanel key={bookId} bookId={bookId} sourceLanguage={book?.language ?? ""} editable={editable} disabled={Boolean(busy)} onAccepted={(project) => {
+      setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]); setSelected(project);
+      setAdoptTitle(`${book?.title ?? "Untitled"} (${project.targetLanguage.toUpperCase()})`);
+      setNotice("Translation purchase confirmed. Track chapter progress and your held credits below.");
+    }} />
 
     <section className={`${panel} mt-6`} aria-labelledby="translation-history"><div className="flex flex-wrap items-center justify-between gap-4"><div><h2 id="translation-history" className="text-xl font-medium">Translation history</h2><p className="mt-2 text-sm text-white/50">Refresh to see worker progress. Previewed text is never put into browser storage.</p></div><button type="button" onClick={() => void load()} disabled={Boolean(busy)} className={subtle}>{busy === "refresh" ? "Refreshing…" : "Refresh history"}</button></div>
 {projects.length ? <ul className="mt-6 space-y-3">{projects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/25 p-4"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="font-medium">{project.sourceLanguage.toUpperCase()} → {project.targetLanguage.toUpperCase()}</p><p className="mt-1 text-sm text-white/45">{project.completedChapterCount}/{project.chapterCount} chapters · {project.billingMode === "quoted" ? "Usage-priced" : `${project.creditUnits} translation credits`}</p></div><div className="flex flex-wrap items-center gap-3"><span className={`rounded-full px-3 py-1 text-xs ${badge(project.status)}`}>{project.status}</span><button type="button" onClick={() => void preview(project.id, project.status === "succeeded")} disabled={Boolean(busy)} className={subtle}>{project.status === "succeeded" ? "Preview" : "Check progress"}</button></div></div>{project.adoptedBookId && <Link href={`/books/${project.adoptedBookId}`} className="mt-4 inline-block text-sm text-emerald-100 underline">Open translated draft</Link>}</li>)}</ul> : <p className="mt-6 text-sm text-white/45">No translations have been queued for this book.</p>}

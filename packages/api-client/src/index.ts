@@ -291,6 +291,14 @@ export interface TranslationQuoteRequestResult {
   createdAt: string; targetLanguage: string; modelId: string;
 }
 
+export interface TranslationProposalResult {
+  id: string; bookId: string; sourceLanguage: string; targetLanguage: string;
+  reservedCredits: number; expiresAt: string; status: "ready" | "expired" | "accepted";
+  acceptedProjectId: string | null;
+  chapters: { chapterId: string; documentVersionId: string; chapterOrder: number; reservedCredits: string; model: string }[];
+}
+export interface TranslationModelChoice { id: string; label: string; model: string; priceVersion: string; policyVersion: string }
+
 export interface TranslationProjectResult {
   canViewBilling?: boolean;
   billingMode?: "operational" | "quoted";
@@ -701,6 +709,10 @@ export function createClient(opts: ClientOptions) {
       call<TranslationQuoteRequestResult>("GET", `/v1/translation-quote-requests/${requestId}`),
     listTranslationQuoteRequests: (bookId: string) =>
       call<{ requests: TranslationQuoteRequestResult[] }>("GET", `/v1/books/${bookId}/translation-quotes`),
+    getTranslationProposal: (proposalId: string) =>
+      call<TranslationProposalResult>("GET", `/v1/translation-quotes/${proposalId}`),
+    listTranslationModels: () =>
+      call<{ catalogVersion: string; models: TranslationModelChoice[] }>("GET", "/v1/translations/models"),
     runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
       call<PreflightResult>("POST", "/v1/publishing/validate", body),
     createPublishingJob: (body: { bookId: string; editionId: string; channel: RetailerChannel; renderJobId: string; preflightJobId: string; idempotencyKey: string }) =>

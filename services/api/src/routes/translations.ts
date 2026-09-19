@@ -5,6 +5,7 @@ import { loadBook } from "../lib/authoring.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { summarizeTranslationBilling } from "../lib/translation-billing.js";
 import { availableTranslationModels, readTranslationCatalog } from "../lib/translation-catalog.js";
+import { publicTranslationProposal } from "../lib/translation-proposal.js";
 
 const languageSchema = z.string().trim().toLowerCase().regex(/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/).max(35);
 const createSchema = z.object({ targetLanguage: languageSchema, idempotencyKey: z.string().trim().min(8).max(200) }).strict();
@@ -72,6 +73,15 @@ function queueError(error: { code?: string }) {
 }
 
 export function translationRoutes(app: FastifyInstance) {
+  app.get("/translation-quotes/:proposalId",async (req,reply)=>{
+    const {proposalId}=req.params as {proposalId:string};
+    if (!projectIdSchema.safeParse(proposalId).success) throw new AppError(422,"Valid quote ID required.");
+    const saved=await app.supabaseFactory().from("translation_quote_proposals").select("*").eq("id",proposalId).eq("user_id",req.userId).maybeSingle();
+    if (saved.error) throw new AppError(503,"Could not load your quote.");
+    if (!saved.data) throw new AppError(404,"Translation quote not found.");
+    await loadBook(app.supabaseFactory(req.userToken),saved.data.book_id,req.userId);
+    reply.header("cache-control","private, no-store");return publicTranslationProposal(saved.data);
+  });
   app.get("/books/:bookId/translation-quotes",async (req,reply)=>{
     const {bookId}=req.params as {bookId:string};
     if (!projectIdSchema.safeParse(bookId).success) throw new AppError(422,"Valid book ID required.");
