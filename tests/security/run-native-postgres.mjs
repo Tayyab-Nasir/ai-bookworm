@@ -158,6 +158,59 @@ async function fundedQuoteRace() {
   assert.equal(firstDispatch.stdout.split('\n')[0], 't');
   console.log('PASS native one-time funded dispatch');
 }
+async function proposalAcceptanceRace(mode) {
+  const f = await fixture({ meter: 'translation_credits', first: 'translator', second: 'translator' });
+  const book = randomUUID(), first = randomUUID(), second = randomUUID();
+  const chapters = Array.from({ length: 2 }, (_, index) => ({ id: randomUUID(), doc: randomUUID(), index }));
+  await sql(`insert into books(id,workspace_id,title,author_name,language,created_by)
+    values('${book}','${f.ws}','Concurrent proposals','Author','en','${f.u}');
+    insert into credit_ledger(user_id,source,amount,balance_after) values('${f.u}','purchase',4,4);`);
+  for (const c of chapters) await sql(`insert into chapters(id,book_id,order_index,title) values('${c.id}','${book}',${c.index},'Chapter');
+    insert into document_versions(id,chapter_id,version_number,content_json,plain_text,word_count,created_by)
+      values('${c.doc}','${c.id}',1,'{}','Source',1,'${f.u}');`);
+  for (const proposal of [first, second]) {
+    const items = chapters.map((c) => {
+      const job = randomUUID();
+      return `jsonb_build_object('chapterId','${c.id}','documentVersionId','${c.doc}','chapterOrder',${c.index},'jobId','${job}',
+        'sourceSha256',encode(digest(convert_to('Source','UTF8'),'sha256'),'hex'),
+        'quote',jsonb_build_object('scope',jsonb_build_object('jobId','${job}','userId','${f.u}','workspaceId','${f.ws}','inputSha256',repeat('a',64)),
+          'reservedCredits','2','fingerprint',repeat('b',64),'policy',jsonb_build_object('approved',true,'version','test'),
+          'price',jsonb_build_object('version','test','provider','openai','model','synthetic'),
+          'createdAt',clock_timestamp()-interval '1 second','expiresAt',clock_timestamp()+interval '20 minutes'))`;
+    });
+    await sql(`insert into translation_quote_proposals(id,user_id,workspace_id,book_id,source_language,target_language,catalog_version,chapters_json,reserved_credits,expires_at)
+      values('${proposal}','${f.u}','${f.ws}','${book}','en','es','test',jsonb_build_array(${items.join(',')}),4,clock_timestamp()+interval '10 minutes');`);
+  }
+  const accept = (id) => `set request.jwt.claim.role='service_role'; select (accept_translation_quote('${id}','${f.u}',4)).id;`;
+  const held = session();
+  held.child.stdin.write(`begin; ${accept(first)} select 'BOOKWORM_READY';\n`);
+  await until(() => { assert.equal(held.ended, false, held.stderr); return held.stdout.includes('BOOKWORM_READY'); }, 'Proposal holder not ready');
+  const name = `proposal_${randomUUID().replaceAll('-', '')}`;
+  const contender = session(database, name);
+  contender.child.stdin.end(accept(mode === 'replay' ? first : second));
+  await until(async () => {
+    assert.equal(contender.ended, false, `Proposal contender did not wait: ${contender.stderr}`);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${name}' and wait_event_type='Lock';`) === '1';
+  }, 'Proposal acceptance did not wait for proposal/balance lock');
+  held.child.stdin.end(mode === 'rollback' ? 'rollback;\n' : 'commit;\n');
+  assert.equal((await held.done).code, 0, held.stderr);
+  const result = await contender.done;
+  if (mode === 'competing') {
+    assert.notEqual(result.code, 0); assert.match(result.stderr, /23514.*insufficient credits/s);
+  } else {
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), mode === 'replay' ? first : second);
+  }
+  const winner = mode === 'rollback' ? second : first;
+  assert.equal(await sql(`select id from translation_projects where book_id='${book}';`), winner);
+  assert.equal(await sql(`select count(*) from ai_jobs where book_id='${book}' and billing_mode='quoted';`), '2');
+  assert.equal(await sql(`select count(*) from funded_usage_quotes where user_id='${f.u}';`), '2');
+  assert.equal(await sql(`select count(*) from credit_ledger where user_id='${f.u}' and source='generation_reservation';`), '2');
+  assert.equal(await sql(`select sum(amount) from credit_ledger where user_id='${f.u}';`), '0');
+  assert.equal(await sql(`select accepted_project_id from translation_quote_proposals where user_id='${f.u}' and accepted_project_id is not null;`), winner);
+  console.log(`PASS native translation proposal ${mode}`);
+}
+
 let created = false;
 try {
   assert.equal(await sql("select count(*) from pg_roles where rolname in ('anon','authenticated','service_role');", 'postgres'), '0', 'Refusing a reused/shared server: Supabase roles already exist');
@@ -182,6 +235,7 @@ try {
   await deductionRace(true);
   await deductionRace(false);
   await fundedQuoteRace();
+  for (const mode of ['replay', 'competing', 'rollback']) await proposalAcceptanceRace(mode);
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');
