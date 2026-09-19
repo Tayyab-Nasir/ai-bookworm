@@ -372,7 +372,11 @@ async function quotedCancellationFixture() {
       values('${job}','${f.ws}','${book}','translator','quoted',jsonb_build_object('translationProjectId','${project}','creditUnits',1),'${randomUUID()}','${f.u}');
     insert into translation_chapters(project_id,ai_job_id,chapter_id,document_version_id,chapter_order,source_sha256,credit_units)
       values('${project}','${job}','${chapter}','${document}',0,repeat('c',64),1);
-    insert into credit_ledger(user_id,source,amount,balance_after) values('${f.u}','purchase',2,2);`);
+    insert into credit_ledger(user_id,source,amount,balance_after) values('${f.u}','purchase',2,2);
+    -- Earlier proposal-race fixtures leave valid quoted work in this shared
+    -- disposable database. Make this fixture the deterministic next claim
+    -- without changing the production worker's global queue semantics.
+    update ai_jobs set available_at=clock_timestamp()-interval '1 day' where id='${job}';`);
   await sql(`${serviceRole} select reserve_funded_usage_quote(${fundedQuoteSql(f, job)});`);
   const claimedText = await sql(`${serviceRole} select json_build_object('id',id,'leaseToken',lease_token)::text from claim_quoted_translation_job(60);`);
   const claimed = JSON.parse(claimedText);
