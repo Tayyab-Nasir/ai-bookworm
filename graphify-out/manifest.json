@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789786334.316883,
-    "seen": 1789786343.9251952,
-    "ast_hash": "363fd7f79c246a18f85434d50ba468d1",
+    "mtime": 1789786444.1745603,
+    "seen": 1789786454.4191954,
+    "ast_hash": "95ec20456348bd84dc0f1842e774fb25",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2850,15 +2850,27 @@
     "semantic_hash": ""
   },
   "tests/security/run-native-postgres.mjs": {
-    "mtime": 1789786294.1365266,
-    "seen": 1789786343.9251952,
-    "ast_hash": "fdb363972def6f21850b16f5b7da03a7",
+    "mtime": 1789786556.2276623,
+    "seen": 1789786577.5808032,
+    "ast_hash": "2c9a102c1f86e48df88ae909d3ad2353",
     "semantic_hash": ""
   },
   ".github/workflows/native-database.yml": {
     "mtime": 1789786294.1375306,
     "seen": 1789786343.9251952,
     "ast_hash": "77b40c3b3bfa17c003a109aa9f9feb31",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919070000_media_credit_accounting_lock.sql": {
+    "mtime": 1789786556.2256615,
+    "seen": 1789786577.5808032,
+    "ast_hash": "dbc5f9773231748ece749c8f0bdaeda1",
+    "semantic_hash": ""
+  },
+  "tests/security/media-accounting.test.sql": {
+    "mtime": 1789786556.2286675,
+    "seen": 1789786577.5808032,
+    "ast_hash": "db576cce11cc3c545b9377307fe1b42f",
     "semantic_hash": ""
   }
 }

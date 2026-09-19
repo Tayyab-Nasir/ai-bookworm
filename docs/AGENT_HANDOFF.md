@@ -23,6 +23,15 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 media completion accounting (local migration only)
+
+Migration 20260919070000 serializes audio/translation/image usage insertion with
+organization-locked reservations. Native CI run 35417114024 succeeded for source
+3a4ce5c: 52 migrations, 37 SQL suites and 12 concurrency cases across four meters.
+No live changes. Next audit: active audio/translation input_ref.creditUnits
+mutation, then versioned retail conversion and broad product acceptance.
+Shared note: Codex Sessions/2026-09/2026-09-19-bookworm-media-accounting.md.
+
 ### 2026-09-19 native concurrency acceptance harness
 
 Added tests/security/run-native-postgres.mjs and a dedicated PostgreSQL 16 CI
