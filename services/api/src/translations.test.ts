@@ -48,6 +48,30 @@ function fakeSupabase(role = "editor", seed: Partial<Record<string, Row[]>> = {}
   return { client: client as never, calls };
 }
 
+test("billing route authenticates payer, scopes quotes and returns only public credit totals", async () => {
+  const job = "d7000000-0000-4000-8000-000000000008";
+  const seed = {
+    translation_projects: [{id:PROJECT,book_id:BOOK,workspace_id:WORKSPACE,created_by:USER}],
+    translation_chapters: [{project_id:PROJECT,ai_job_id:job}],
+    funded_usage_quotes: [{job_id:job,user_id:USER,workspace_id:WORKSPACE,reserved_credits:7,status:"held",settlement_json:null,quote_json:{private:"secret"}}],
+  };
+  const fake = fakeSupabase("editor",seed); const app = await buildApp(() => fake.client);
+  try {
+    const response = await app.inject({method:"GET",url:`/v1/translations/${PROJECT}/billing`,headers:{authorization:"Bearer good"}});
+    assert.equal(response.statusCode,200,response.body); assert.equal(response.headers["cache-control"],"private, no-store");
+    assert.deepEqual(response.json(),{reservedCredits:"7",heldCredits:"7",chargedCredits:"0",returnedCredits:"0",reviewChapters:0,chapterCount:1});
+    assert.equal(fake.calls.length,0);
+  } finally { await app.close(); }
+  const denied = fakeSupabase("editor",{...seed,translation_projects:[{...seed.translation_projects[0],created_by:WORKSPACE}]});
+  let serviceAccess = 0;
+  const deniedApp = await buildApp((token?: string) => { if (!token) serviceAccess++; return denied.client; });
+  try {
+    const before = serviceAccess;
+    const response = await deniedApp.inject({method:"GET",url:`/v1/translations/${PROJECT}/billing`,headers:{authorization:"Bearer good"}});
+    assert.equal(response.statusCode,403); assert.equal(serviceAccess,before);
+  } finally { await deniedApp.close(); }
+});
+
 test("translation queue uses the authenticated book, returns safe progress, and never calls a provider", async () => {
   const fake = fakeSupabase(); const app = await buildApp(() => fake.client);
   try {

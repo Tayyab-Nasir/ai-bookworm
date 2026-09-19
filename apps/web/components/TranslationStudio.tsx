@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { TranslationProjectResult } from "@bookworm/api-client";
+import type { TranslationBillingResult, TranslationProjectResult } from "@bookworm/api-client";
 import type { Book } from "@bookworm/types";
 import { apiClient } from "./api";
 
@@ -26,6 +26,17 @@ export default function TranslationStudio({ bookId }: { bookId: string }) {
   const [targetLanguage, setTargetLanguage] = useState(""); const [adoptTitle, setAdoptTitle] = useState("");
   const [busy, setBusy] = useState<"queue" | "refresh" | "preview" | "adopt" | "cancel" | null>(null); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState<string | null>(null);
   const [cancelConfirmation, setCancelConfirmation] = useState<string | null>(null);
+  const [billing, setBilling] = useState<TranslationBillingResult | null>(null);
+  const [billingError, setBillingError] = useState<string | null>(null);
+  const [billingRevision, setBillingRevision] = useState(0);
+  const billingProjectId = selected?.canViewBilling ? selected.id : null;
+  useEffect(() => {
+    let active = true; setBilling(null); setBillingError(null);
+    if (billingProjectId) void api.getTranslationBilling(billingProjectId).then((result) => {
+      if (active) setBilling(result);
+    }).catch(() => { if (active) setBillingError("Billing could not be confirmed. Refresh to check your held credits; do not pay again to resolve this message."); });
+    return () => { active = false; };
+  }, [api, billingProjectId, billingRevision]);
   const editable = role ? editableRoles.has(role) : false;
 
   const load = useCallback(async () => {
@@ -50,6 +61,7 @@ export default function TranslationStudio({ bookId }: { bookId: string }) {
     if (busy) return; setBusy(includeText ? "preview" : "refresh"); setError(null); setNotice(null);
     try {
       const project = await api.getTranslationProject(projectId, includeText); setSelected(project);
+      setBillingRevision((revision) => revision + 1);
       setProjects((current) => current.map((item) => item.id === project.id ? { ...project, chapters: project.chapters.map(({ translatedText: _text, ...chapter }) => chapter) } : item));
       setAdoptTitle((current) => current || `${book?.title ?? "Untitled"} (${project.targetLanguage.toUpperCase()})`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh translation."); }
@@ -80,6 +92,7 @@ export default function TranslationStudio({ bookId }: { bookId: string }) {
       } : current);
       setProjects((current) => current.map((item) => item.id === result.projectId ? { ...item, status: "cancelled", canCancelBeforeDispatch: false } : item));
       setCancelConfirmation(null);
+      setBilling(null); setBillingRevision((revision) => revision + 1);
       setNotice(`Translation cancelled before dispatch. ${result.releasedCredits} held credits returned.`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not confirm cancellation. Refresh the project before retrying."); }
     finally { setBusy(null); }
@@ -102,6 +115,17 @@ export default function TranslationStudio({ bookId }: { bookId: string }) {
     </section>
 
     {selected && <section className={`${panel} mt-6`} aria-labelledby="translation-preview"><div className="flex flex-wrap items-start justify-between gap-4"><div><h2 id="translation-preview" className="text-xl font-medium">{selected.sourceLanguage.toUpperCase()} → {selected.targetLanguage.toUpperCase()} review</h2><p className="mt-2 text-sm text-white/50">{selected.completedChapterCount}/{selected.chapterCount} completed chapters. Review text against your source before creating a new manuscript draft.</p></div><span className={`rounded-full px-3 py-1 text-xs ${badge(selected.status)}`}>{selected.status}</span></div>
+      {selected.canViewBilling && <section className="mt-5 rounded-xl border border-white/15 p-4" aria-label="Translation credit summary">
+        <h3 className="font-medium">Your translation credits</h3>
+        {billingError ? <p role="alert" className="mt-3 text-sm text-amber-100">{billingError}</p> : billing ? <>
+          <dl className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+            {[["Originally reserved", billing.reservedCredits], ["Still held", billing.heldCredits], ["Charged", billing.chargedCredits], ["Returned", billing.returnedCredits]].map(([label, amount]) => <div key={label}><dt className="text-xs text-white/55">{label}</dt><dd className="mt-1 text-lg tabular-nums">{amount}</dd></div>)}
+          </dl>
+          <p className="mt-3 text-xs leading-5 text-white/55">Held credits are not a final charge. Returned credits are restored to your balance. These totals cover this translation, not your whole account.</p>
+          {billing.reviewChapters > 0 && <p role="status" className="mt-3 text-sm text-amber-100">{billing.reviewChapters} chapter(s) need billing review. Their credits remain held; do not start another translation to retry them.</p>}
+        </> : <p role="status" className="mt-3 text-sm text-white/55">Loading credit summary…</p>}
+        <button type="button" className={`${subtle} mt-3`} disabled={Boolean(busy)} onClick={() => { setBilling(null); setBillingRevision((revision) => revision + 1); }}>Refresh billing</button>
+      </section>}
       {editable && selected.canCancelBeforeDispatch && <div className="mt-5 rounded-xl border border-white/15 p-4">
         <p className="text-sm leading-6 text-white/65">You can cancel this usage-priced translation only before any chapter is dispatched. The server checks again before returning held credits.</p>
         {cancelConfirmation === selected.id ? <div className="mt-3 flex flex-wrap items-center gap-3"><p className="w-full text-sm text-amber-100">Cancel all chapters in this translation? Your source manuscript stays unchanged.</p><button type="button" className={subtle} disabled={Boolean(busy)} onClick={() => void cancel()}>{busy === "cancel" ? "Cancelling…" : "Confirm cancellation"}</button><button type="button" className={subtle} disabled={Boolean(busy)} onClick={() => setCancelConfirmation(null)}>Keep translation</button></div>

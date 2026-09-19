@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import { loadBook } from "../lib/authoring.js";
 import type { SupabaseClient } from "../lib/supabase.js";
+import { summarizeTranslationBilling } from "../lib/translation-billing.js";
 
 const languageSchema = z.string().trim().toLowerCase().regex(/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/).max(35);
 const createSchema = z.object({ targetLanguage: languageSchema, idempotencyKey: z.string().trim().min(8).max(200) }).strict();
@@ -31,6 +32,7 @@ async function hydrateProject(sb: SupabaseClient, project: Record<string, unknow
   const quoted = jobIds.length > 0 && jobs?.length === jobIds.length && jobs.every((job) => job.billing_mode === "quoted");
   return {
     billingMode: quoted ? "quoted" : "operational",
+    canViewBilling: quoted && project.created_by === userId,
     canCancelBeforeDispatch: quoted && project.created_by === userId && project.status !== "succeeded" && project.status !== "cancelled",
     id: project.id, bookId: project.book_id, sourceLanguage: project.source_language, targetLanguage: project.target_language,
     status: project.status, chapterCount: project.chapter_count, completedChapterCount: project.completed_chapter_count,
@@ -58,6 +60,27 @@ function queueError(error: { code?: string }) {
 }
 
 export function translationRoutes(app: FastifyInstance) {
+  app.get("/translations/:projectId/billing", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    if (!projectIdSchema.safeParse(projectId).success) throw new AppError(422, "Valid translation project ID required.");
+    const sb = app.supabaseFactory(req.userToken);
+    const { data: project, error } = await sb.from("translation_projects").select("id,book_id,workspace_id,created_by").eq("id", projectId).maybeSingle();
+    if (error) throw new AppError(503, "Could not load translation billing.");
+    if (!project) throw new AppError(404, "Translation project not found.");
+    await loadBook(sb, project.book_id, req.userId);
+    if (project.created_by !== req.userId) throw new AppError(403, "Only the translation payer can view its billing.");
+    const { data: chapters, error: chapterError } = await sb.from("translation_chapters").select("ai_job_id").eq("project_id", projectId);
+    const ids = z.array(z.object({ ai_job_id: z.string().uuid() })).min(1).safeParse(chapters);
+    if (chapterError || !ids.success) throw new AppError(503, "Translation billing is not available yet.");
+    const jobIds = ids.data.map((c) => c.ai_job_id);
+    // Service access only AFTER user-scoped book/membership and payer checks.
+    const quotes = await app.supabaseFactory().from("funded_usage_quotes")
+      .select("job_id,user_id,workspace_id,reserved_credits,status,settlement_json")
+      .eq("user_id", req.userId).eq("workspace_id", project.workspace_id).in("job_id", jobIds);
+    if (quotes.error) throw new AppError(503, "Could not load translation billing. Refresh before making another payment.");
+    reply.header("cache-control", "private, no-store");
+    return summarizeTranslationBilling(quotes.data, jobIds, req.userId, project.workspace_id);
+  });
   app.post("/translations/:projectId/cancel", async (req, reply) => {
     const { projectId } = req.params as { projectId: string };
     if (!projectIdSchema.safeParse(projectId).success) throw new AppError(422, "Valid translation project ID required.");
