@@ -840,10 +840,10 @@
     "semantic_hash": "59ea151fc0a7a2c1b9d93b62a37cba90"
   },
   "services/ai/main.py": {
-    "mtime": 1789185869.1069114,
-    "seen": 1789189271.7201564,
-    "ast_hash": "e3470b871c78e5dd9f4523e0fdd78faf",
-    "semantic_hash": "e3470b871c78e5dd9f4523e0fdd78faf"
+    "mtime": 1789784722.071751,
+    "seen": 1789784922.7233353,
+    "ast_hash": "e11ad181b50264853ccda4f72c5f0f3d",
+    "semantic_hash": ""
   },
   "services/ai/prompts/__init__.py": {
     "mtime": 1786338380.2239332,
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789784254.949833,
-    "seen": 1789784276.802704,
-    "ast_hash": "ba23e4d2d08116652d1a9bb6f028e807",
+    "mtime": 1789784902.2398036,
+    "seen": 1789784922.7248404,
+    "ast_hash": "95c63b29fe480f2626039a66edddd8a0",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2364,9 +2364,9 @@
     "semantic_hash": ""
   },
   "docs/operations.md": {
-    "mtime": 1789783938.8104346,
-    "seen": 1789783950.530097,
-    "ast_hash": "d2f80ec2ae29e03d83d2e832a38d63d8",
+    "mtime": 1789784902.2418015,
+    "seen": 1789784922.7248404,
+    "ast_hash": "cbac9cc6ae6381b882b8d221a336e0f1",
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
@@ -2799,6 +2799,30 @@
     "mtime": 1789783853.1395144,
     "seen": 1789783950.530097,
     "ast_hash": "6aaabc7e1cb8bbd907f2242ad6784339",
+    "semantic_hash": ""
+  },
+  "services/ai/result_store.py": {
+    "mtime": 1789784722.0617266,
+    "seen": 1789784922.7233353,
+    "ast_hash": "c9dd00156b2796ed9d62f19907915de9",
+    "semantic_hash": ""
+  },
+  "services/ai/tests/test_result_store.py": {
+    "mtime": 1789784849.8719075,
+    "seen": 1789784922.7233353,
+    "ast_hash": "44ac360b144e381b5004fa3004650bfe",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919040000_metadata_service_receipts.sql": {
+    "mtime": 1789784722.0607398,
+    "seen": 1789784922.7233353,
+    "ast_hash": "aa9b205892892ba75ba0cf9d194db292",
+    "semantic_hash": ""
+  },
+  "tests/security/metadata-receipts.test.sql": {
+    "mtime": 1789784803.1566024,
+    "seen": 1789784922.7233353,
+    "ast_hash": "f903d5686da66780bbdf8efe0bf10382",
     "semantic_hash": ""
   }
 }
