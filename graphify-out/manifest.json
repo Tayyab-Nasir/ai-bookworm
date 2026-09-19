@@ -336,9 +336,9 @@
     "semantic_hash": ""
   },
   "apps/web/components/BookMemoryClient.tsx": {
-    "mtime": 1789782878.1681325,
-    "seen": 1789783008.9930987,
-    "ast_hash": "de28419f363646a29f24767a4cc0187e",
+    "mtime": 1789783273.5294132,
+    "seen": 1789783283.0723677,
+    "ast_hash": "7078db0d739d8a715718f0a307c86ab2",
     "semantic_hash": ""
   },
   "apps/web/components/BookSearchPanel.tsx": {
@@ -954,9 +954,9 @@
     "semantic_hash": "ee32dafc484e4205e9e9249241c01fd2"
   },
   "services/api/src/book-memory.test.ts": {
-    "mtime": 1789782937.859999,
-    "seen": 1789783008.994097,
-    "ast_hash": "1f21ec51289580a3b488110aee759186",
+    "mtime": 1789783214.9380977,
+    "seen": 1789783283.0729365,
+    "ast_hash": "8a335212e4d2d59211a628608b91b490",
     "semantic_hash": ""
   },
   "services/api/src/chapter-creation.test.ts": {
@@ -1278,9 +1278,9 @@
     "semantic_hash": "afe96bc7718e668e82f396a946010499"
   },
   "services/api/src/routes/metadata-generation.ts": {
-    "mtime": 1789782878.1661384,
-    "seen": 1789783008.994097,
-    "ast_hash": "ab6fb2605bece8b3ad8ce8fe2cca6618",
+    "mtime": 1789783184.1657636,
+    "seen": 1789783283.0729365,
+    "ast_hash": "145a442cb5315fa1a2bccc157dcad8f7",
     "semantic_hash": ""
   },
   "services/api/src/routes/publishing.ts": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789782986.9276109,
-    "seen": 1789783008.994097,
-    "ast_hash": "96e33eb3eafbe23129e9dc0448798437",
+    "mtime": 1789783273.531417,
+    "seen": 1789783283.0735161,
+    "ast_hash": "9314173fc7f16b788466c0f761cc3516",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2790,9 +2790,9 @@
     "semantic_hash": ""
   },
   "apps/web/tests/metadata-retry.test.ts": {
-    "mtime": 1789782626.5395703,
-    "seen": 1789782681.07666,
-    "ast_hash": "bcc518bcc9732fca17ee0b1a0337026b",
+    "mtime": 1789783184.169767,
+    "seen": 1789783283.0729365,
+    "ast_hash": "a4f5bc4f0a855b356def32f9c35ad260",
     "semantic_hash": ""
   }
 }

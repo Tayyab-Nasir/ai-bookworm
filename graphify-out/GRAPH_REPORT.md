@@ -1,16 +1,16 @@
 # Graph Report - ai-bookworm  (2026-09-19)
 
 ## Corpus Check
-- 449 files · ~279,782 words
+- 449 files · ~280,240 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 3674 nodes · 6747 edges · 314 communities (182 shown, 71 thin omitted)
+- 3678 nodes · 6755 edges · 311 communities (181 shown, 69 thin omitted)
 - Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 180 edges (avg confidence: 0.9)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `f607e382`
+- Built from commit: `cd8e4709`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -22,26 +22,26 @@
 - models.dart
 - sales.ts
 - api_client.dart
-- EbookEdition
+- render_epub
 - core_v1.py
 - types/src/index.ts
-- PublishingStudio.tsx
+- react
 - app.ts
 - pdf_renderer.py
 - compilerOptions
 - BaseAgent
 - CollaborationCenter.tsx
-- render_epub
+- test_rendering.py
 - auth.test.ts
 - 20260912180000_translation_workflow.sql
-- .__init__
+- test_wrap_cover.py
 - auth_provider.dart
 - QdrantRag
 - main.dart
 - auth-browser-fixture.mjs
 - api.dart
 - BookEditorClient.tsx
-- rendering/main.py
+- editions.py
 - AuthCard.tsx
 - books_screen.dart
 - ai_assistant_screen.dart
@@ -57,8 +57,8 @@
 - test_scanning.py
 - compilerOptions
 - api-client/src/index.ts
-- assets-media.test.ts
-- test_wrap_cover.py
+- AuthorShell.tsx
+- print_font_issues
 - web/package.json
 - reader_screen.dart
 - render_pdf
@@ -74,7 +74,7 @@
 - RichBookEditor.tsx
 - apiClient
 - test_agents.py
-- editions.py
+- rendering/main.py
 - assets_screen.dart
 - community_screen.dart
 - publishing_screen.dart
@@ -82,8 +82,8 @@
 - PostgresBackedExecutor
 - private.preserve_parent_reference
 - public.manuscript_import_jobs
-- schema.ts
-- audiobooks.ts
+- engine.ts
+- operations.ts
 - test_audio_assembly.py
 - test_cover_fit.py
 - tasks_screen.dart
@@ -91,29 +91,29 @@
 - validation/package.json
 - test_rag.py
 - test_context_budget.py
-- test_adapters.py
+- assets-media.test.ts
 - 0002_core.sql
 - load-smoke.mjs
-- ai.ts
+- schema.ts
 - team-invitations.test.ts
 - test_metadata_agent.py
 - books.ts
-- config.py
+- ScannerConfig
 - 0006_billing_publishing.sql
 - 0013_admin_ops.sql
-- ai-review-worker.ts
+- ai.ts
 - types/package.json
 - package.json
 - rendering-api.test.ts
 - 0003_assets_collaboration.sql
-- translation-worker.ts
-- dependencies
+- cover_renderer.py
+- book-memory.ts
 - analytics/page.tsx
 - ui/package.json
 - @playwright/test
 - track-project-changes.mjs
 - FakeSocket
-- scripts
+- rich-text.ts
 - manuscript-import-quarantine.test.ts
 - api/package.json
 - 0012_community_extras.sql
@@ -128,7 +128,7 @@
 - public.workspace_invitations
 - metadata-generation.ts
 - public.retailer_sales_imports
-- test_pdf_font_completion.py
+- step9.test.ts
 - tools.py
 - step11.test.ts
 - publishing/main.py
@@ -142,7 +142,7 @@
 - layout.tsx
 - devDependencies
 - data-rights/page.tsx
-- community.ts
+- test_adapters.py
 - public.ai_jobs
 - 0010_step9_collab.sql
 - 0011_stripe_events.sql
@@ -234,7 +234,7 @@
 - public.plans
 - AI Book Publishing SaaS — Build Plan
 - AI Bookworm - Local Development Setup
-- storage-reconciliation.ts
+- translation-worker.ts
 - Hosting AI Bookworm on Vercel
 - AI Bookworm — Implementation Plan
 - Supabase Migration Instructions
@@ -257,16 +257,13 @@
 - AI Bookworm cross-agent context
 - Google sign-in setup
 - SnapOtter integration decision
-- app/page.tsx
+- translations.ts
 - step14.test.ts
 - src/dashboard.test.ts
 - test_injection.py
-- translation-generation.ts
+- FakeQdrantClient
 - speech-generation.ts
-- scripts
-- CommentThread.tsx
-- _BookDocTemplate
-- devDependencies
+- .__init__
 - test_print_geometry.py
 
 ## God Nodes (most connected - your core abstractions)
@@ -296,7 +293,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (314 total, 71 thin omitted)
+## Communities (311 total, 69 thin omitted)
 
 ### Community 0 - "test_parsers.py"
 Cohesion: 0.06
@@ -304,15 +301,15 @@ Nodes (77): BeautifulSoup, parse(), ParseRequest, BaseModel, field_validator, mo
 
 ### Community 1 - "editions.ts"
 Cohesion: 0.05
-Nodes (65): bytes, config, rendered, sha, bookModelFingerprint(), buildPublishingOutput(), upload(), Job (+57 more)
+Nodes (66): bytes, config, rendered, sha, bookModelFingerprint(), requireEntitlement(), buildPublishingOutput(), upload() (+58 more)
 
 ### Community 2 - "apply-migrations.sql"
 Cohesion: 0.07
 Nodes (64): activity_events_workspace_idx, assets_workspace_idx, comments_entity_idx, credit_ledger_no_update, credit_ledger_reference_uniq, idx_activity_workspace_time, idx_ai_jobs_workspace_status, idx_assets_folder (+56 more)
 
 ### Community 3 - "collab.ts"
-Cohesion: 0.08
-Nodes (40): logActivity(), APPROVE_ROLES, EDIT_ROLES, requireWorkspaceAdmin(), requireWorkspaceApprover(), requireWorkspaceEditor(), requireWorkspaceMember(), roleIn() (+32 more)
+Cohesion: 0.09
+Nodes (35): logActivity(), APPROVE_ROLES, canEditWorkspace(), EDIT_ROLES, requireWorkspaceAdmin(), requireWorkspaceApprover(), requireWorkspaceEditor(), requireWorkspaceMember() (+27 more)
 
 ### Community 4 - "models.dart"
 Cohesion: 0.04
@@ -320,35 +317,35 @@ Nodes (56): agentType, AiJob, AiSuggestion, ApiError, AssetItem, authorName, bod
 
 ### Community 5 - "sales.ts"
 Cohesion: 0.09
-Nodes (26): currentEntitlements, Entitlements, FREE_DEFAULTS, METER_QUOTA, monthUsage(), requireEntitlement(), activeJobStatuses, agentLabels (+18 more)
+Nodes (25): currentEntitlements, Entitlements, FREE_DEFAULTS, METER_QUOTA, monthUsage(), activeJobStatuses, agentLabels, dashboardRoutes() (+17 more)
 
 ### Community 6 - "api_client.dart"
 Cohesion: 0.04
 Nodes (55): _accessToken, ApiClient, ApiException, AuthResult, avatarUrl, baseUrl, body, cancelDataRequest (+47 more)
 
-### Community 7 - "EbookEdition"
-Cohesion: 0.13
-Nodes (24): EbookEdition, Resolve an explicit edition preference, then infer a safe default from language., resolve_text_direction(), _cover_xhtml(), _front_pages(), _nav_xhtml(), _opf(), Book Model JSON -> deterministic EPUB3 (stdlib zipfile only). Determinism:… (+16 more)
+### Community 7 - "render_epub"
+Cohesion: 0.15
+Nodes (27): EbookEdition, Resolve an explicit edition preference, then infer a safe default from language., resolve_text_direction(), _cover_xhtml(), _front_pages(), _nav_xhtml(), _opf(), Book Model JSON -> deterministic EPUB3 (stdlib zipfile only). Determinism:… (+19 more)
 
 ### Community 8 - "core_v1.py"
 Cohesion: 0.07
-Nodes (62): language_requires_rtl_shaping(), Return whether a BCP-47-ish tag selects a script needing RTL shaping., kdp_page_count(), kdp_page_range(), KDP paperback page ranges shared by cover rendering and preflight. Source:…, KDP rounds manuscript pages up to an even number before manufacturing., Finding, _meta() (+54 more)
+Nodes (58): language_requires_rtl_shaping(), Return whether a BCP-47-ish tag selects a script needing RTL shaping., Finding, _meta(), _open_epub(), ZipFile, Deterministic preflight rule engine (PRD section 19). Rule sets are versioned…, Rule (+50 more)
 
 ### Community 9 - "types/src/index.ts"
 Cohesion: 0.08
 Nodes (32): AssetsPageInner(), VersionRow, AssetBrowser(), AssetBrowserProps, AssetPermissions, ImageGenerationJob, AiRun, Approval (+24 more)
 
-### Community 10 - "PublishingStudio.tsx"
-Cohesion: 0.11
-Nodes (23): ChapterAudioDownload(), Channel, CHANNEL_FORMATS, DEFAULT_FORM, EDIT_ROLES, fontLabel(), FONTS, formFromEdition() (+15 more)
+### Community 10 - "react"
+Cohesion: 0.13
+Nodes (6): navigation, stats, ChapterAudioDownload(), Comment, CommentThreadProps, react
 
 ### Community 11 - "app.ts"
-Cohesion: 0.08
-Nodes (39): Env, envSchema, loadEnv(), resetEnvCache(), valid, buildApp(), env, CreditEntry (+31 more)
+Cohesion: 0.09
+Nodes (34): Env, envSchema, loadEnv(), resetEnvCache(), valid, buildApp(), env, defaultStripeFactory (+26 more)
 
 ### Community 12 - "pdf_renderer.py"
-Cohesion: 0.08
-Nodes (41): _chapter_xhtml(), block_html(), _node_html(), block_tree(), image_focal_point(), image_print_placement(), image_width(), inline_markup() (+33 more)
+Cohesion: 0.10
+Nodes (30): BaseDocTemplate, _chapter_xhtml(), block_html(), _node_html(), block_tree(), image_focal_point(), image_print_placement(), image_width() (+22 more)
 
 ### Community 13 - "compilerOptions"
 Cohesion: 0.22
@@ -359,24 +356,24 @@ Cohesion: 0.08
 Nodes (30): AgentResult, AgentValidationError, BaseAgent, ValueError, Agent base loop (spec section 12): build context, call gateway with tools,…, Route a validated tool payload into the result. Read tools are ignored in the…, Model output failed schema/shape validation; the job must fail wholesale., BookBibleAgent (+22 more)
 
 ### Community 15 - "CollaborationCenter.tsx"
-Cohesion: 0.09
+Cohesion: 0.10
 Nodes (19): approveRoles, CollaborationCenter(), editRoles, InviteRole, MemberProfile, roles, SessionUser, shortId() (+11 more)
 
-### Community 16 - "render_epub"
+### Community 16 - "test_rendering.py"
 Cohesion: 0.12
-Nodes (42): parse_edition(), Parse untyped edition config dict into the right model., Render to EPUB3. Returns (zip_bytes, sha256_hex). Pure/deterministic., render_epub(), ctx: {book, edition (dict), artifact (epub bytes|None), channel, image_bytes…, run_preflight(), load_ruleset(), Core rules + channel rules if channel given. (+34 more)
+Nodes (39): validate(), test_package_endpoint_rejects_wrong_channel_format_and_untrusted_names(), test_package_endpoint_uses_the_exact_saved_artifact_deterministically(), parse_edition(), Parse untyped edition config dict into the right model., ctx: {book, edition (dict), artifact (epub bytes|None), channel, image_bytes…, run_preflight(), load_ruleset() (+31 more)
 
 ### Community 17 - "auth.test.ts"
 Cohesion: 0.13
-Nodes (32): dynamic, POST(), runtime, dynamic, GET(), dynamic, proxy(), runtime (+24 more)
+Nodes (31): dynamic, POST(), runtime, dynamic, GET(), dynamic, proxy(), runtime (+23 more)
 
 ### Community 18 - "20260912180000_translation_workflow.sql"
 Cohesion: 0.13
 Nodes (17): ai_jobs_pending_translation, public.claim_translation_job(), public.reserve_translation_job_credit(), public.translation_chapters, public.translation_completion_receipts, public.translation_projects, auth.users, public (+9 more)
 
-### Community 19 - ".__init__"
-Cohesion: 0.50
-Nodes (3): _DeterministicCanvasMaker, __init__(), reportlab Canvas subclass pinning CreationDate/ModDate/Producer for…
+### Community 19 - "test_wrap_cover.py"
+Cohesion: 0.20
+Nodes (24): kdp_page_count(), kdp_page_range(), KDP paperback page ranges shared by cover rendering and preflight. Source:…, KDP rounds manuscript pages up to an even number before manufacturing., artwork(), edition(), interior(), parametrize (+16 more)
 
 ### Community 20 - "auth_provider.dart"
 Cohesion: 0.06
@@ -402,13 +399,13 @@ Nodes (31): ApiClient, applyAiSuggestion, applyChapterOperation, baseUrl, confir
 Cohesion: 0.10
 Nodes (23): AiAssistantPanel(), Mode, modeLabel(), modes, operationPreview(), reviewTargetsChapter(), BookEditorClient(), chapterDraftIdempotencyKey() (+15 more)
 
-### Community 26 - "rendering/main.py"
-Cohesion: 0.11
-Nodes (31): Image, ImageDraw, compose_front_cover(), _fit_text(), measure(), _font(), _paint_text(), _qr_image() (+23 more)
+### Community 26 - "editions.py"
+Cohesion: 0.19
+Nodes (12): CoverConfig, FixedLayout, FrontMatter, ImagePolicy, Margins, PageNumbering, BaseModel, model_validator (+4 more)
 
 ### Community 27 - "AuthCard.tsx"
 Cohesion: 0.11
-Nodes (10): AuthCard(), onSubmit(), submit(), AuthCardProps, NAV_LINKS, SiteHeader(), PageBackground(), StarField() (+2 more)
+Nodes (11): AuthCard(), onSubmit(), submit(), AuthCardProps, NAV_LINKS, SiteHeader(), PageBackground(), StarField() (+3 more)
 
 ### Community 28 - "books_screen.dart"
 Cohesion: 0.09
@@ -419,8 +416,8 @@ Cohesion: 0.07
 Nodes (26): AiJob?, _agent, _agents, _apply, auth, book, _books, build (+18 more)
 
 ### Community 30 - "BookSetupClient.tsx"
-Cohesion: 0.16
-Nodes (18): BookSetupClient(), SetupMode, stageLabels, readSetupCheckpoint(), recoverManuscriptReport(), runManuscriptSetup(), SetupApi, SetupCheckpoint (+10 more)
+Cohesion: 0.11
+Nodes (20): BookSetupClient(), SetupMode, stageLabels, readSetupCheckpoint(), recoverManuscriptReport(), runManuscriptSetup(), SetupApi, SetupCheckpoint (+12 more)
 
 ### Community 31 - "adapters.py"
 Cohesion: 0.17
@@ -428,7 +425,7 @@ Nodes (11): AppleBooksAdapter, BarnesNobleAdapter, ChannelCapabilities, ExportAd
 
 ### Community 32 - "assets.ts"
 Cohesion: 0.09
-Nodes (31): AssetInspectionError, AssetScanInput, AssetScanVerdict, DetectedAssetMimeType, extensionOf(), isUtf8Text(), MAX_USER_ASSET_BYTES, MIME_BY_EXTENSION (+23 more)
+Nodes (30): AssetInspectionError, AssetScanInput, AssetScanVerdict, DetectedAssetMimeType, extensionOf(), isUtf8Text(), MAX_USER_ASSET_BYTES, MIME_BY_EXTENSION (+22 more)
 
 ### Community 33 - "20260912160000_audiobook_workflow.sql"
 Cohesion: 0.16
@@ -439,8 +436,8 @@ Cohesion: 0.08
 Nodes (23): _aiBaseUrl, _apiBaseUrl, AuthState, _guard, init, login, _refresh, resetPassword (+15 more)
 
 ### Community 35 - "BookMemoryClient.tsx"
-Cohesion: 0.12
-Nodes (21): BookMemoryClient(), chooseEntry(), deleteEntry(), generateMetadata(), loadMetadataHistory(), saveEntry(), saveIdentity(), saveMetadata() (+13 more)
+Cohesion: 0.11
+Nodes (24): BookMemoryClient(), chooseEntry(), deleteEntry(), generateMetadata(), loadMetadataHistory(), saveEntry(), saveIdentity(), saveMetadata() (+16 more)
 
 ### Community 36 - "compilerOptions"
 Cohesion: 0.08
@@ -455,8 +452,8 @@ Cohesion: 0.10
 Nodes (21): idx_activity_workspace_time, idx_ai_jobs_workspace_status, idx_assets_folder, idx_assets_workspace, idx_books_workspace, idx_chapters_book, idx_doc_versions_chapter, idx_publish_jobs_book (+13 more)
 
 ### Community 39 - "test_scanning.py"
-Cohesion: 0.32
-Nodes (18): client(), fixture, test_preflight_reports_glyph_failure_without_trying_to_render(), create_app(), Build the service; explicit dependencies keep tests deterministic., auth(), config(), FakeScanner (+10 more)
+Cohesion: 0.23
+Nodes (22): client(), fixture, test_preflight_reports_glyph_failure_without_trying_to_render(), parametrize, test_importable_raster_formats_are_normalized_to_real_pngs_in_export(), test_render_service_returns_rtl_preflight_findings_before_attempting_print_output(), create_app(), Build the service; explicit dependencies keep tests deterministic. (+14 more)
 
 ### Community 40 - "compilerOptions"
 Cohesion: 0.09
@@ -464,19 +461,19 @@ Nodes (21): compilerOptions, baseUrl, declaration, declarationMap, esModuleInter
 
 ### Community 41 - "api-client/src/index.ts"
 Cohesion: 0.06
-Nodes (32): CommunityDiscussion(), KINDS, ActivityEvent, AiJobReview, ApiClient, ApiComment, AudiobookSegmentResult, BillingEntitlements (+24 more)
+Nodes (45): Channel, CHANNEL_FORMATS, DEFAULT_FORM, EDIT_ROLES, fontLabel(), FONTS, formFromEdition(), FormState (+37 more)
 
-### Community 42 - "assets-media.test.ts"
+### Community 42 - "AuthorShell.tsx"
+Cohesion: 0.11
+Nodes (8): AuthorHeader(), AuthorPage(), navItems, BillingCenter(), channelName(), meter(), BillingUsageSummary, Plan
+
+### Community 43 - "print_font_issues"
 Cohesion: 0.12
-Nodes (12): auth, cleanScanner, Row, Store, estimatedImageCost(), GeneratedImage, ImageGenerationInput, ImageGenerator (+4 more)
-
-### Community 43 - "test_wrap_cover.py"
-Cohesion: 0.28
-Nodes (19): artwork(), edition(), interior(), parametrize, test_cover_rendering_applies_stock_limits_including_rounding(), test_custom_printer_template_preserves_exact_odd_count(), test_front_cover_checks_only_visible_glyphs_and_uses_print_resolution(), test_layout_refuses_unreadable_or_overflowing_text() (+11 more)
+Nodes (22): print_font_issues(), check(), Check only text the print renderer emits, using its effective marked font., parametrize, Actual front-matter artifacts, escaping, bounds and font safety., test_empty_front_matter_preserves_legacy_epub_and_does_not_invent_rights(), test_front_matter_artifacts(), test_front_matter_bounds() (+14 more)
 
 ### Community 44 - "web/package.json"
-Cohesion: 0.10
-Nodes (19): @bookworm/book-model, @bookworm/types, @supabase/supabase-js, @types/node, typescript, name, private, type (+11 more)
+Cohesion: 0.08
+Nodes (24): @bookworm/book-model, @bookworm/types, @supabase/supabase-js, @types/node, typescript, name, private, scripts (+16 more)
 
 ### Community 45 - "reader_screen.dart"
 Cohesion: 0.10
@@ -484,7 +481,7 @@ Nodes (20): ../api.dart, _addComment, auth, build, chapter, _comments, createSta
 
 ### Community 46 - "render_pdf"
 Cohesion: 0.10
-Nodes (35): Flowable, main(), Generate local, deterministic print-layout samples for visual inspection.…, PrintEdition, field_validator, _Contents, _FullBleedImage, _on_page() (+27 more)
+Nodes (34): Flowable, main(), Generate local, deterministic print-layout samples for visual inspection.…, PrintEdition, field_validator, _Contents, _FullBleedImage, Render print edition to PDF. Returns (pdf_bytes, sha256_hex). (+26 more)
 
 ### Community 47 - "scripts"
 Cohesion: 0.10
@@ -495,7 +492,7 @@ Cohesion: 0.10
 Nodes (19): dependencies, zod, devDependencies, tsx, typescript, exports, ./rich-text, tsx (+11 more)
 
 ### Community 49 - "AdminConsole.tsx"
-Cohesion: 0.19
+Cohesion: 0.22
 Nodes (8): AdminConsole(), date(), Row, Tab, tabs, TicketStatus, ticketStatuses, value()
 
 ### Community 50 - "book_overview_screen.dart"
@@ -507,36 +504,36 @@ Cohesion: 0.11
 Nodes (18): dependencies, @bookworm/book-model, @bookworm/types, devDependencies, typescript, exports, ./email, @bookworm/book-model (+10 more)
 
 ### Community 52 - "scanning_service/main.py"
-Cohesion: 0.16
-Nodes (20): FastAPI, JSONResponse, Request, Configuration whose network destination cannot be supplied by a request., ScannerConfig, _authorized(), _bounded_body(), health() (+12 more)
+Cohesion: 0.18
+Nodes (17): JSONResponse, Request, _authorized(), _bounded_body(), health(), ready(), scan(), _error() (+9 more)
 
 ### Community 53 - "AppError"
-Cohesion: 0.08
-Nodes (41): ApiError, apiErrorSchema, ERROR_CODES, ErrorStatus, fastify, fastify-plugin, AppError, isAdmin() (+33 more)
+Cohesion: 0.06
+Nodes (53): ApiError, apiErrorSchema, ERROR_CODES, ErrorStatus, fastify, fastify-plugin, AppError, isAdmin() (+45 more)
 
 ### Community 54 - "ClamdScanner"
-Cohesion: 0.16
-Nodes (12): ClamdScanner, EngineMetadata, RuntimeError, No trustworthy malware verdict could be obtained., Bounded clamd client with an injectable socket boundary for tests., ScannerUnavailable, ScanResult, lifespan() (+4 more)
+Cohesion: 0.19
+Nodes (10): ClamdScanner, EngineMetadata, RuntimeError, No trustworthy malware verdict could be obtained., Bounded clamd client with an injectable socket boundary for tests., ScannerUnavailable, ScanResult, Protocol (+2 more)
 
 ### Community 55 - "20260905060000_book_retrieval.sql"
 Cohesion: 0.15
 Nodes (14): private.refresh_bible_search, private.refresh_chapter_search, bible_search_refresh, book_search_chunks_bible, book_search_chunks_book, book_search_chunks_chapter, book_search_chunks_fts, chapter_search_refresh (+6 more)
 
 ### Community 56 - "RichBookEditor.tsx"
-Cohesion: 0.18
-Nodes (19): EditorJson, editorToNodes(), manuscriptTableRows(), nodesToEditor(), withTableRows(), ArtworkPicker(), ManuscriptBlockView(), ManuscriptTable() (+11 more)
+Cohesion: 0.17
+Nodes (19): EditorJson, editorToNodes(), manuscriptTableRows(), nodesToEditor(), withTableRows(), ManuscriptBlockView(), ManuscriptTable(), CanonicalAttributes (+11 more)
 
 ### Community 57 - "apiClient"
-Cohesion: 0.06
-Nodes (28): AccountMenu(), apiClient(), client, DEMO_WORKSPACE, AuthorHeader(), AuthorPage(), navItems, BillingCenter() (+20 more)
+Cohesion: 0.07
+Nodes (23): CommunityDiscussion(), KINDS, AccountMenu(), apiClient(), client, DEMO_WORKSPACE, BookSearchPanel(), search() (+15 more)
 
 ### Community 58 - "test_agents.py"
 Cohesion: 0.12
 Nodes (21): get_agent(), ProofreaderAgent, Proofreader agent (P0): grammar/spelling/punctuation. Reads chapter + style…, job_payload(), make_agent(), make_request(), Step 7 tests: validation, injection defense, idempotency, telemetry, schemas., test_apply_suggestion_marks_accepted_and_returns_operation() (+13 more)
 
-### Community 59 - "editions.py"
-Cohesion: 0.19
-Nodes (12): CoverConfig, FixedLayout, FrontMatter, ImagePolicy, Margins, PageNumbering, BaseModel, model_validator (+4 more)
+### Community 59 - "rendering/main.py"
+Cohesion: 0.22
+Nodes (17): _post, cover_requires_unsupported_rtl_typography(), edition_requires_rtl_typography(), print_requires_unsupported_rtl_typography(), True when the selected language or explicit direction needs RTL support., assemble_chapter(), AudioAssemblyRequest, _composed_cover() (+9 more)
 
 ### Community 60 - "assets_screen.dart"
 Cohesion: 0.12
@@ -566,13 +563,13 @@ Nodes (16): private.preserve_parent_reference, approvals_preserve_entity_id, app
 Cohesion: 0.23
 Nodes (14): public.book_import_receipts, manuscript_import_job_poll, public.claim_manuscript_import(), public.complete_leased_manuscript_import(), public.enqueue_manuscript_import(), public.fail_manuscript_import(), public.manuscript_import_jobs, public.retry_manuscript_import() (+6 more)
 
-### Community 67 - "schema.ts"
-Cohesion: 0.06
-Nodes (50): applyOperation(), insertAt(), locate(), nodeIndex(), NodeNotFoundError, putChapter(), removeAt(), requireText() (+42 more)
+### Community 67 - "engine.ts"
+Cohesion: 0.27
+Nodes (11): applyOperation(), insertAt(), locate(), nodeIndex(), NodeNotFoundError, putChapter(), removeAt(), requireText() (+3 more)
 
-### Community 68 - "audiobooks.ts"
-Cohesion: 0.22
-Nodes (13): bytes, fixture(), ids, sha(), assembleChapterAudio(), assetSchema, loadChapterAudio(), projectSchema (+5 more)
+### Community 68 - "operations.ts"
+Cohesion: 0.11
+Nodes (20): base, ASSET1, CH1, CH2, sampleBook(), AttachAssetOp, DeleteNodeOp, DetachAssetOp (+12 more)
 
 ### Community 69 - "test_audio_assembly.py"
 Cohesion: 0.10
@@ -595,16 +592,16 @@ Cohesion: 0.13
 Nodes (14): dependencies, zod, devDependencies, typescript, typescript, zod, main, name (+6 more)
 
 ### Community 74 - "test_rag.py"
-Cohesion: 0.06
-Nodes (35): DeterministicMockEmbedder, Embedder, get_embedder(), OpenAIEmbedder, Protocol, Embedding providers (Step 8), mirroring gateway.py's swappable pattern. OpenAI…, Hashes each text into a fixed-dim unit vector. Stable across runs — for…, text_hash() (+27 more)
+Cohesion: 0.08
+Nodes (33): DeterministicMockEmbedder, Embedder, get_embedder(), OpenAIEmbedder, Protocol, Embedding providers (Step 8), mirroring gateway.py's swappable pattern. OpenAI…, Hashes each text into a fixed-dim unit vector. Stable across runs — for…, text_hash() (+25 more)
 
 ### Community 75 - "test_context_budget.py"
 Cohesion: 0.43
 Nodes (6): Drafting agent: generates or rewrites one reviewable chapter-node span., WriterAgent, agent(), test_budget_omits_references_but_never_truncates_edit_targets(), test_reference_opt_out_and_unadvertised_tool_fail_closed(), test_writer_uses_cited_context_and_bible_as_untrusted_data()
 
-### Community 76 - "test_adapters.py"
-Cohesion: 0.23
-Nodes (15): get_adapter(), build_package(), PackageRequest, Package exact, already-rendered private artifacts supplied by the API. The API…, _ctx(), Adapter tests: channel rules wired, export package deterministic, submit not…, test_all_channels_registered(), test_build_package_deterministic_export_zip() (+7 more)
+### Community 76 - "assets-media.test.ts"
+Cohesion: 0.11
+Nodes (13): openai, auth, cleanScanner, Row, Store, estimatedImageCost(), GeneratedImage, ImageGenerationInput (+5 more)
 
 ### Community 77 - "0002_core.sql"
 Cohesion: 0.33
@@ -614,9 +611,9 @@ Nodes (13): public.book_bible_items, public.book_metadata, public.book_versions,
 Cohesion: 0.25
 Nodes (5): auth, fiveXx, lat, requests, started
 
-### Community 79 - "ai.ts"
-Cohesion: 0.18
-Nodes (22): BookModel, appendVersion(), assembleBookModel(), checkAssetReferences(), latestVersion(), loadChapter(), nodesSchema, parseNodes() (+14 more)
+### Community 79 - "schema.ts"
+Cohesion: 0.15
+Nodes (12): BookAsset, BookAssetSchema, BookBible, BookBibleEntity, BookBibleEntitySchema, BookBibleSchema, BookMetadata, BookMetadataSchema (+4 more)
 
 ### Community 80 - "team-invitations.test.ts"
 Cohesion: 0.33
@@ -630,9 +627,9 @@ Nodes (17): MockProvider, Path, Deterministic canned responses for tests/evals. 
 Cohesion: 0.12
 Nodes (24): BookModelSchema, fixture(), job, AssetMalwareScanner, createHttpAssetScanner(), loadBook(), claimSchema, DocumentWorkerOutcome (+16 more)
 
-### Community 83 - "config.py"
-Cohesion: 0.36
-Nodes (8): ConfigurationError, _host(), _integer(), _number(), ValueError, Validated, environment-only scanner configuration., Raised when scanner configuration is absent or unsafe., test_environment_configuration_is_validated_and_destination_is_fixed()
+### Community 83 - "ScannerConfig"
+Cohesion: 0.22
+Nodes (12): ConfigurationError, _host(), _integer(), _number(), ValueError, Validated, environment-only scanner configuration., Raised when scanner configuration is absent or unsafe., Configuration whose network destination cannot be supplied by a request. (+4 more)
 
 ### Community 84 - "0006_billing_publishing.sql"
 Cohesion: 0.27
@@ -642,9 +639,9 @@ Nodes (12): public.audit_logs, public.editions, public.plans, public.publishing_
 Cohesion: 0.19
 Nodes (12): idx_audit_logs_created, idx_audit_logs_org_time, idx_org_members_user, idx_support_tickets_status, public.dead_letter_jobs, public.feature_flags, public.support_tickets, auth.users (+4 more)
 
-### Community 86 - "ai-review-worker.ts"
+### Community 86 - "ai.ts"
 Cohesion: 0.08
-Nodes (33): DocumentOperationSchema, Row, agentTypes, AiReviewFailure, AiReviewWorkerOutcome, claimedSchema, contextForJob(), editSchema (+25 more)
+Nodes (41): DocumentOperationSchema, BookModel, Row, agentTypes, AiReviewFailure, AiReviewWorkerOutcome, claimedSchema, contextForJob() (+33 more)
 
 ### Community 87 - "types/package.json"
 Cohesion: 0.17
@@ -662,13 +659,13 @@ Nodes (8): auth, baseStore(), Row, sha(), Store, successfulPackager(), successfu
 Cohesion: 0.42
 Nodes (11): public.activity_events, public.approvals, public.asset_links, public.asset_versions, public.assets, public.comment_mentions, public.comments, public.folders (+3 more)
 
-### Community 91 - "translation-worker.ts"
-Cohesion: 0.20
-Nodes (10): claimSchema, completeFromReceipt(), inputSchema, projectSchema, receiptSchema, row(), runOneTranslationJob(), TranslationFailure (+2 more)
+### Community 91 - "cover_renderer.py"
+Cohesion: 0.18
+Nodes (16): Image, ImageDraw, compose_front_cover(), _fit_text(), measure(), _font(), _paint_text(), _qr_image() (+8 more)
 
-### Community 92 - "dependencies"
-Cohesion: 0.14
-Nodes (14): dependencies, @bookworm/book-model, @bookworm/config, @bookworm/types, @bookworm/validation, fastify, @fastify/cookie, @fastify/formbody (+6 more)
+### Community 92 - "book-memory.ts"
+Cohesion: 0.16
+Nodes (15): attributes, bibleRow(), bibleSchema, bookMemoryRoutes(), deleteBibleSchema, editableRoles, id, metadataSchema (+7 more)
 
 ### Community 93 - "analytics/page.tsx"
 Cohesion: 0.14
@@ -688,19 +685,19 @@ Nodes (8): capture(), checkProject(), compare(), generatedDirectories, git(), is
 
 ### Community 97 - "FakeSocket"
 Cohesion: 0.20
-Nodes (7): FakeSocket, FakeSocketFactory, parametrize, test_clamd_infected_scan_returns_bounded_signature(), test_clamd_outage_and_bad_version_fail_closed(), test_clamd_readiness_requires_ping_and_version(), test_clamd_untrusted_protocol_replies_fail_closed()
+Nodes (7): FakeSocket, FakeSocketFactory, parametrize, test_clamd_clean_scan_uses_version_and_bounded_instream_frames(), test_clamd_infected_scan_returns_bounded_signature(), test_clamd_readiness_requires_ping_and_version(), test_clamd_untrusted_protocol_replies_fail_closed()
 
-### Community 98 - "scripts"
-Cohesion: 0.18
-Nodes (11): scripts, dev, start, storage:orphan-report, test, typecheck, worker:ai, worker:audiobook (+3 more)
+### Community 98 - "rich-text.ts"
+Cohesion: 0.54
+Nodes (6): InlineRun, inlineText(), MARKS, nodeInline(), replaceNodeText(), safeInline()
 
 ### Community 99 - "manuscript-import-quarantine.test.ts"
 Cohesion: 0.20
 Nodes (10): AUTH, fixture(), FixtureOptions, parserDocument(), QueryCall, RpcCall, savedImport, ScanStatus (+2 more)
 
 ### Community 100 - "api/package.json"
-Cohesion: 0.11
-Nodes (18): @bookworm/config, @bookworm/validation, @fastify/cookie, @fastify/formbody, @fastify/jwt, stripe, @bookworm/book-model, @bookworm/types (+10 more)
+Cohesion: 0.04
+Nodes (47): @bookworm/config, @bookworm/validation, @fastify/cookie, @fastify/formbody, @fastify/jwt, stripe, dependencies, @bookworm/book-model (+39 more)
 
 ### Community 101 - "0012_community_extras.sql"
 Cohesion: 0.20
@@ -739,16 +736,16 @@ Cohesion: 0.31
 Nodes (8): public.accept_workspace_invitation(), public.change_workspace_member_role(), public.workspace_invitations, auth.users, public.workspace_members, public.workspaces, workspace_invitations_pending_email_key, workspace_invitations_workspace_created_idx
 
 ### Community 112 - "metadata-generation.ts"
-Cohesion: 0.12
-Nodes (20): appWith(), auth, entry, fakeSupabase(), Row, Store, errorHandlerPlugin, aiResponse (+12 more)
+Cohesion: 0.08
+Nodes (32): bytes, fixture(), ids, sha(), appWith(), auth, entry, fakeSupabase() (+24 more)
 
 ### Community 113 - "public.retailer_sales_imports"
 Cohesion: 0.24
 Nodes (13): public.import_retailer_sales(), public.retailer_sales_imports, public.retailer_sales_rows, retailer_sales_imports_replacement_once, retailer_sales_imports_workspace_created, retailer_sales_rows_book_sold_on, retailer_sales_rows_workspace_sold_on, auth.users (+5 more)
 
-### Community 114 - "test_pdf_font_completion.py"
+### Community 114 - "step9.test.ts"
 Cohesion: 0.33
-Nodes (8): _fonts(), _marked(), parametrize, Prove complete embedded-edition PDF resources, including incidental fonts., test_bold_embedded_settings_keep_all_resources_embedded(), test_embedded_code_glyph_check_matches_the_font_actually_printed(), test_embedded_edition_has_no_base_fonts_including_code_tables_lists_and_numbering(), test_legacy_font_choices_are_not_silently_substituted()
+Nodes (6): appWith(), auth, deletedAsset, editor, fakeSupabase(), liveAsset
 
 ### Community 115 - "tools.py"
 Cohesion: 0.20
@@ -759,8 +756,8 @@ Cohesion: 0.29
 Nodes (5): appWith(), auth, fakeSupabase(), Store, svc
 
 ### Community 117 - "publishing/main.py"
-Cohesion: 0.14
-Nodes (19): _get, _post, health(), health(), channels(), create_job(), create_package(), health() (+11 more)
+Cohesion: 0.13
+Nodes (21): _get, FastAPI, health(), health(), build_package(), channels(), create_job(), create_package() (+13 more)
 
 ### Community 118 - "20260901090000_ai_workflow_transactions.sql"
 Cohesion: 0.25
@@ -802,9 +799,9 @@ Nodes (5): devDependencies, @types/node, @types/react, @types/react-dom, typescr
 Cohesion: 0.27
 Nodes (10): DataRequest, DataRightsPage(), cancelRequest(), loadData(), submitRequest(), submitSupportTicket(), date(), statusBadge() (+2 more)
 
-### Community 128 - "community.ts"
-Cohesion: 0.20
-Nodes (15): allowPost, allowReport, commentSchema, communityRoutes(), CommunityRow, createCommunitySchema, getCommunity(), getPost() (+7 more)
+### Community 128 - "test_adapters.py"
+Cohesion: 0.33
+Nodes (10): get_adapter(), require_service_token(), _ctx(), Adapter tests: channel rules wired, export package deterministic, submit not…, test_all_channels_registered(), test_build_package_deterministic_export_zip(), test_internal_package_endpoint_checks_its_service_token(), test_kdp_validate_flags_missing_description() (+2 more)
 
 ### Community 129 - "public.ai_jobs"
 Cohesion: 0.43
@@ -859,8 +856,8 @@ Cohesion: 0.40
 Nodes (3): auth.users, storage.buckets, storage.objects
 
 ### Community 143 - "AuthorDashboard.tsx"
-Cohesion: 0.26
-Nodes (10): activityLabel(), AuthorDashboard(), createWorkspace(), dashboardMeter(), jobStatusClass(), statusClass(), statusLabel(), DashboardOverview (+2 more)
+Cohesion: 0.18
+Nodes (14): activityLabel(), AuthorDashboard(), createWorkspace(), dashboardMeter(), jobStatusClass(), statusClass(), statusLabel(), badge() (+6 more)
 
 ### Community 145 - "editions.test.ts"
 Cohesion: 0.33
@@ -922,9 +919,9 @@ Nodes (16): AI Book Publishing SaaS — Build Plan, Step 10 — Publishing engin
 Cohesion: 0.17
 Nodes (11): AI Bookworm - Local Development Setup, Database Migration Required, Deterministic test capabilities, Environment Setup, How to Start Services, Missing keys and local test behavior, Production Readiness, Quick Start (+3 more)
 
-### Community 273 - "storage-reconciliation.ts"
-Cohesion: 0.26
-Nodes (10): assertGraceHours(), classifyStorageObjects(), dateOrNull(), inspectPrivateStorageOrphans(), listObjects(), loadImageReceiptPaths(), loadPaths(), OrphanReport (+2 more)
+### Community 273 - "translation-worker.ts"
+Cohesion: 0.09
+Nodes (24): assertGraceHours(), classifyStorageObjects(), dateOrNull(), inspectPrivateStorageOrphans(), listObjects(), loadImageReceiptPaths(), loadPaths(), OrphanReport (+16 more)
 
 ### Community 274 - "Hosting AI Bookworm on Vercel"
 Cohesion: 0.22
@@ -976,7 +973,7 @@ Nodes (4): _open_socket(), Protocol, Minimal, fail-closed ClamAV clamd TCP clien
 
 ### Community 286 - "Current checkpoint: 2026-09-12"
 Cohesion: 0.08
-Nodes (23): 2026-09-18 contents visual stress fix, 2026-09-18 cross-service export acceptance, 2026-09-18 edition front matter, 2026-09-18 EPUB navigation settings, 2026-09-18 fixed EPUB layout controls, 2026-09-18 illustration source fingerprints, 2026-09-18 KDP rendering and preflight consistency, 2026-09-18 local full-bleed illustration update (+15 more)
+Nodes (24): 2026-09-18 contents visual stress fix, 2026-09-18 cross-service export acceptance, 2026-09-18 edition front matter, 2026-09-18 EPUB navigation settings, 2026-09-18 fixed EPUB layout controls, 2026-09-18 illustration source fingerprints, 2026-09-18 KDP rendering and preflight consistency, 2026-09-18 local full-bleed illustration update (+16 more)
 
 ### Community 287 - "Book Retrieval Decision"
 Cohesion: 0.40
@@ -998,48 +995,42 @@ Nodes (4): 2026-09-18 refreshed cross-service evidence, Current local verificati
 Cohesion: 0.50
 Nodes (3): AI Bookworm scanning service, Configuration, HTTP contract
 
+### Community 302 - "translations.ts"
+Cohesion: 0.31
+Nodes (8): adoptSchema, createSchema, hydrateProject(), languageSchema, projectIdSchema, queueError(), row(), translationRoutes()
+
 ### Community 303 - "step14.test.ts"
 Cohesion: 0.23
 Nodes (9): redactObject(), redactValue(), SENSITIVE_KEYS, appWith(), fakeSupabase(), Row, rpc(), Store (+1 more)
 
 ### Community 305 - "test_injection.py"
-Cohesion: 0.24
-Nodes (12): sanitize(), wrap_manuscript(), test_manuscript_wrapped_and_sanitized(), chapter_with(), parametrize, Adversarial manuscript fixtures -> AI service containment (PRD section 28: "Use…, Adversarial manuscript text must not alter the validated pipeline: tools still…, test_adversarial_text_contained_in_wrapping() (+4 more)
-
-### Community 307 - "translation-generation.ts"
-Cohesion: 0.33
-Nodes (6): openai, estimateCost(), GeneratedTranslation, openAiTranslationGenerator(), TranslationGenerationInput, TranslationGenerator
+Cohesion: 0.27
+Nodes (11): sanitize(), wrap_manuscript(), test_manuscript_wrapped_and_sanitized(), chapter_with(), parametrize, Adversarial manuscript fixtures -> AI service containment (PRD section 28: "Use…, Adversarial manuscript text must not alter the validated pipeline: tools still…, test_adversarial_text_contained_in_wrapping() (+3 more)
 
 ### Community 308 - "speech-generation.ts"
 Cohesion: 0.12
-Nodes (18): AudiobookWorkerOutcome, claimSchema, completeFromReceipt(), projectSchema, receiptSchema, row(), runOneAudiobookJob(), AUDIOBOOK_VOICES (+10 more)
+Nodes (19): AudiobookWorkerOutcome, claimSchema, completeFromReceipt(), projectSchema, receiptSchema, row(), runOneAudiobookJob(), AUDIOBOOK_VOICES (+11 more)
 
-### Community 309 - "scripts"
-Cohesion: 0.40
-Nodes (5): scripts, build, dev, start, typecheck
-
-### Community 312 - "devDependencies"
+### Community 309 - ".__init__"
 Cohesion: 0.50
-Nodes (4): devDependencies, tsx, @types/node, typescript
+Nodes (3): _DeterministicCanvasMaker, __init__(), reportlab Canvas subclass pinning CreationDate/ModDate/Producer for…
 
 ### Community 314 - "test_print_geometry.py"
-Cohesion: 0.24
-Nodes (10): Versioned preflight registry. Channel modules record verification dates and…, rule_version(), _blank_print_pdf(), _channel_findings(), parametrize, test_actual_page_geometry_and_mirrored_trim_relative_text(), test_channel_page_minimum_boundaries(), test_channel_page_minimums_use_actual_rendered_pdf() (+2 more)
+Cohesion: 0.35
+Nodes (8): _blank_print_pdf(), _channel_findings(), parametrize, test_actual_page_geometry_and_mirrored_trim_relative_text(), test_channel_page_minimum_boundaries(), test_channel_page_minimums_use_actual_rendered_pdf(), test_preflight_uses_new_artifact_when_context_is_reused(), test_retailer_margin_rules_report_exact_actionable_edges()
 
 ## Knowledge Gaps
-- **1118 isolated node(s):** `ApiClient`, `baseUrl`, `token`, `_headers`, `_u` (+1113 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1803 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **71 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **1121 isolated node(s):** `ApiClient`, `baseUrl`, `token`, `_headers`, `_u` (+1116 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 1806 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **69 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `FormState` connect `PublishingStudio.tsx` to `main.dart`?**
-  _High betweenness centrality (0.241) - this node is a cross-community bridge._
-- **Why does `_post` connect `publishing/main.py` to `api.dart`, `test_parsers.py`, `rendering/main.py`, `gateway.py`?**
-  _High betweenness centrality (0.215) - this node is a cross-community bridge._
-- **Why does `AudiobookVoice` connect `PublishingStudio.tsx` to `api-client/src/index.ts`?**
-  _High betweenness centrality (0.082) - this node is a cross-community bridge._
+- **Why does `FormState` connect `api-client/src/index.ts` to `main.dart`?**
+  _High betweenness centrality (0.230) - this node is a cross-community bridge._
+- **Why does `_post` connect `rendering/main.py` to `test_parsers.py`, `gateway.py`, `test_rendering.py`, `publishing/main.py`, `api.dart`?**
+  _High betweenness centrality (0.208) - this node is a cross-community bridge._
 - **Are the 4 inferred relationships involving `render_pdf()` (e.g. with `main()` and `test_docx_tables_stay_between_paragraphs_and_reach_epub_and_pdf()`) actually correct?**
   _`render_pdf()` has 4 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 28 inferred relationships involving `PrintEdition` (e.g. with `main()` and `test_docx_tables_stay_between_paragraphs_and_reach_epub_and_pdf()`) actually correct?**
@@ -1047,4 +1038,6 @@ _Questions this graph is uniquely positioned to answer:_
 - **Are the 9 inferred relationships involving `render_epub()` (e.g. with `test_docx_tables_stay_between_paragraphs_and_reach_epub_and_pdf()` and `test_import_export_import_keeps_quotes_lists_marks_and_text_once()`) actually correct?**
   _`render_epub()` has 9 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `ApiClient`, `baseUrl`, `token` to the rest of the system?**
-  _1118 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _1121 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `test_parsers.py` be split into smaller, more focused modules?**
+  _Cohesion score 0.060542309490416085 - nodes in this community are weakly interconnected._
