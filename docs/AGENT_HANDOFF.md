@@ -23,6 +23,20 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 durable metadata receipts (local only)
+
+New metadata_service_receipts table is service-only/RLS-enabled, linked to the
+AI job with cascade deletion and a bounded result object. Production metadata
+requires a saved job ID, service token and Supabase service credentials. It
+reserves a request fingerprint before provider execution, saves the result before
+success, and reads persisted results after process-cache loss. Unknown reserved
+outcomes never regenerate; changed fingerprints conflict. Mock-only tests can
+opt into durable storage with AI_RESULT_STORE=supabase. No new dependencies.
+This migration has NOT been applied live. Worker restarts are covered with an
+HTTP storage simulation; actual deployed PostgREST/multi-worker acceptance stays
+open. A crash between provider completion and receipt persistence can still leave
+an unknown outcome requiring reconciliation, not automatic retry spending.
+
 ### 2026-09-19 metadata result recovery
 
 Lost AI-service responses and uncertain completion persistence no longer mark

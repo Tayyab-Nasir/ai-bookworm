@@ -522,6 +522,18 @@ before production tuning.
 
 ## Metadata generation concurrency migration
 
+Production AI workers also require migration
+`20260919040000_metadata_service_receipts.sql`, `SUPABASE_URL`, server-only
+`SUPABASE_SERVICE_ROLE_KEY`, and a nonempty `AI_SERVICE_TOKEN`. Metadata generation
+fails before provider execution if receipt reservation cannot be confirmed.
+Real providers always use durable receipts; `AI_RESULT_STORE=supabase` enables
+the same path for the deterministic mock. Do not expose credentials to browsers.
+Receipts contain private generated content, not raw input prompts; they cascade
+with AI-job deletion and are unavailable to anon/authenticated database roles.
+Include them in protected backups and data-retention review. Never clear an
+unresolved reservation merely because it is old: the provider may have completed.
+These migrations are local build artifacts until explicitly deployed/verified.
+
 Apply `20260919030000_metadata_single_active_request.sql` through the reviewed
 migration workflow before relying on cross-tab metadata request protection.
 It creates a partial unique index for active metadata jobs per author/book.

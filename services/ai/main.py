@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import uuid
 import os
+import hashlib
+import json
 from hmac import compare_digest
 from typing import Literal
 
@@ -16,6 +18,7 @@ from pydantic import BaseModel, Field
 from agents.copyeditor import get_agent
 from gateway import default_model, get_provider
 from tools import InMemoryExecutor
+from result_store import MetadataResultStore, ReceiptUnavailable, ReceiptConflict
 
 app = FastAPI(title="bookworm-ai")
 
@@ -69,8 +72,26 @@ def health() -> dict:
 @app.post("/v1/ai/jobs", status_code=201)
 def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(default=None)) -> dict:
     authorize_service(x_service_token)
+    provider = get_provider()  # Missing production provider credentials fail closed.
+    receipt_store = None
+    fingerprint = None
+    if req.agentType == "metadata" and (provider.name != "mock" or os.environ.get("AI_RESULT_STORE") == "supabase"):
+        if req.jobId is None:
+            raise HTTPException(status_code=422, detail="Durable metadata generation requires a saved job ID.")
+        fingerprint = hashlib.sha256(json.dumps(req.model_dump(mode="json"), sort_keys=True,
+                                               separators=(",", ":")).encode()).hexdigest()
+        try:
+            receipt_store = MetadataResultStore()
+            existing = receipt_store.reserve(req.jobId, fingerprint)
+            if existing is not None:
+                return existing
+        except ReceiptConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ReceiptUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     if req.idempotencyKey in _JOBS_BY_IDEMPOTENCY:
-        return _JOBS[_JOBS_BY_IDEMPOTENCY[req.idempotencyKey]]
+        if receipt_store is None:
+            return _JOBS[_JOBS_BY_IDEMPOTENCY[req.idempotencyKey]]
 
     job_id = str(req.jobId or uuid.uuid4())
     job = {
@@ -84,7 +105,6 @@ def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(def
         "usage": {"inputTokens": 0, "outputTokens": 0, "estimatedCostUsd": 0.0},
     }
 
-    provider = get_provider()  # production default is OpenAI; missing keys fail closed
     model = default_model(provider.name)
     job.update({"provider": provider.name, "model": model})
     executor = InMemoryExecutor(
@@ -108,6 +128,11 @@ def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(def
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     job.update(result.to_dict())
+    if receipt_store is not None:
+        try:
+            receipt_store.save(job_id, fingerprint, job)
+        except ReceiptUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     # Only document-edit suggestions have an apply endpoint and durable ID in
     # this service. Review-only outputs (for example metadata candidates) are
     # returned with their job and must never be routed through the editor
@@ -125,6 +150,17 @@ def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(def
 def get_job(job_id: str, x_service_token: str | None = Header(default=None)) -> dict:
     authorize_service(x_service_token)
     if job_id not in _JOBS:
+        if os.environ.get("DEFAULT_AI_PROVIDER") != "mock" or os.environ.get("AI_RESULT_STORE") == "supabase":
+            try:
+                uuid.UUID(job_id)
+            except ValueError:
+                raise HTTPException(status_code=404, detail="job not found")
+            try:
+                result = MetadataResultStore().load(job_id)
+                if isinstance(result, dict):
+                    return result
+            except ReceiptUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
         raise HTTPException(status_code=404, detail="job not found")
     return _JOBS[job_id]
 
