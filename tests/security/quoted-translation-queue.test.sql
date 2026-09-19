@@ -3,7 +3,7 @@ do $$
 declare
   u uuid:=gen_random_uuid(); org uuid:=gen_random_uuid(); ws uuid:=gen_random_uuid(); book uuid:=gen_random_uuid();
   chapter uuid:=gen_random_uuid(); doc uuid:=gen_random_uuid(); project uuid:=gen_random_uuid(); job uuid:=gen_random_uuid();
-  q jsonb; claimed public.ai_jobs;
+  q jsonb; claimed public.ai_jobs; usage jsonb; settlement jsonb; result public.ai_jobs;
 begin
   assert not has_function_privilege('authenticated','public.claim_quoted_translation_job(integer)','execute');
   insert into auth.users(id,email) values(u,'quoted-queue@local.test');
@@ -43,5 +43,24 @@ begin
   assert claimed.id=job and claimed.status='running' and claimed.lease_token is not null;
   assert claim_funded_dispatch(job,claimed.lease_token,repeat('c',64),'synthetic');
   assert not claim_funded_dispatch(job,claimed.lease_token,repeat('c',64),'synthetic');
+  usage:='{"inputTokens":10,"outputTokens":10,"estimatedCostUsd":0.001,"latencyMs":10,"measuredTokens":[]}';
+  settlement:=jsonb_build_object('status','settle','fingerprint',repeat('a',64),'requestId','req-quoted',
+    'debitCredits','1','releaseCredits','1','priceVersion','test','policyVersion','test');
+  insert into translation_completion_receipts(ai_job_id,completion_json) values(job,jsonb_build_object(
+    'p_job_id',job,'p_translated_text','Traducido','p_provider','openai','p_model','synthetic','p_request_id','req-quoted','p_usage',usage));
+  begin
+    perform complete_translation_chapter(job,claimed.lease_token,'Traducido','openai','synthetic','req-quoted',usage);
+    raise exception 'quoted job completed without settlement';
+  exception when check_violation then assert sqlerrm='quoted translation requires matching settlement'; end;
+  begin
+    perform complete_quoted_translation(job,gen_random_uuid(),'Traducido','openai','synthetic','req-quoted',usage,settlement);
+    raise exception 'stale lease settled';
+  exception when serialization_failure then assert sqlerrm='lease lost'; end;
+  assert (select status from funded_usage_quotes where job_id=job)='held';
+  select * into result from complete_quoted_translation(job,claimed.lease_token,'Traducido','openai','synthetic','req-quoted',usage,settlement);
+  assert result.status='succeeded';
+  assert (select status from funded_usage_quotes where job_id=job)='settled';
+  assert (select sum(amount) from credit_ledger where user_id=u)=1;
+  assert not exists(select 1 from usage_events where ai_job_id=job and meter='translation_credits');
 end $$;
 rollback;
