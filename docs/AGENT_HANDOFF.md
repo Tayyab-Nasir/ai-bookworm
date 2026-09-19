@@ -23,6 +23,25 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 Story Blueprint authoring (local only)
+
+The authoring flow now has a revisioned, tenant-scoped Story Blueprint: story
+direction and a stable chapter plan can be saved by editors and read by all
+members. An editor can materialize exactly one empty manuscript chapter from a
+plan item, with replay-safe idempotency and an optimistic revision check. This
+is intentionally human-authored planning: it does not invoke a model, send
+manuscript text to a provider, create an AI job, or spend credits. The new
+database migration `20260919190000_story_blueprints.sql` has strict JSON bounds,
+RLS, service-owned RPCs and a materialization receipt; it is NOT applied live.
+The API/client/OpenAPI and responsive `/books/<bookId>/plan` screen are wired.
+The full local `npm run verify` gate passes: 246 API tests, 73 web tests, 64
+migrations/44 SQL assertion files, 303 service tests, 12 E2E tests, 30 security
+tests, load smoke and deterministic evals. Native-harness syntax and a
+production web build pass. The new actual PostgreSQL materialization race still
+needs its GitHub Actions run after the source checkpoint is pushed. No live
+migration, provider use, customer-data write or deployment occurred. Shared:
+Codex Sessions/2026-09/2026-09-19-bookworm-story-blueprint.md.
+
 ### 2026-09-19 quote-only translation retirement
 
 Sources 36d3e99/6bbd98a remove direct legacy translation creation and

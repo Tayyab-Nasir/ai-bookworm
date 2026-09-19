@@ -330,9 +330,9 @@
     "semantic_hash": ""
   },
   "apps/web/components/BookEditorClient.tsx": {
-    "mtime": 1789190557.8079503,
-    "seen": 1789190997.7031176,
-    "ast_hash": "cb32bc3e010ab9d7855752021a828273",
+    "mtime": 1789795235.0262268,
+    "seen": 1789795319.8226833,
+    "ast_hash": "e53c61e657c38a1397040939ff1fc8e8",
     "semantic_hash": ""
   },
   "apps/web/components/BookMemoryClient.tsx": {
@@ -486,8 +486,8 @@
     "semantic_hash": "71423ac5400bdbc2235a9858f072440c"
   },
   "apps/web/next-env.d.ts": {
-    "mtime": 1789793147.8227036,
-    "seen": 1789793169.5549486,
+    "mtime": 1789795909.16541,
+    "seen": 1789796318.3357737,
     "ast_hash": "a95187a97b7d355b0898b514d12c9d69",
     "semantic_hash": ""
   },
@@ -606,9 +606,9 @@
     "semantic_hash": "8843cb12ab93bfc002e8ab819671a3e7"
   },
   "packages/api-client/src/index.ts": {
-    "mtime": 1789793442.1404626,
-    "seen": 1789793794.9750946,
-    "ast_hash": "e7493d6be37f0316fffd5fa711256335",
+    "mtime": 1789795216.8358822,
+    "seen": 1789795319.8226833,
+    "ast_hash": "adf3d464610267b660405a4e25445fc6",
     "semantic_hash": ""
   },
   "packages/api-client/tsconfig.json": {
@@ -936,9 +936,9 @@
     "semantic_hash": "6b73d12a49e8ea7ccb498b9c18b9eb52"
   },
   "services/api/src/app.ts": {
-    "mtime": 1789700038.080892,
-    "seen": 1789700658.0168757,
-    "ast_hash": "0182f1326b3f5aa24b6da739f1472889",
+    "mtime": 1789795194.8135402,
+    "seen": 1789795319.8226833,
+    "ast_hash": "81bd86b51ef880ee1767fb5780b52de7",
     "semantic_hash": ""
   },
   "services/api/src/assets-media.test.ts": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789794281.1715314,
-    "seen": 1789794312.7047977,
-    "ast_hash": "fe89721802c3f5bbc7cc5368974ef863",
+    "mtime": 1789796288.6393332,
+    "seen": 1789796318.3367727,
+    "ast_hash": "abc7dd935137abe173e7372ee8f717ba",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2418,9 +2418,9 @@
     "semantic_hash": ""
   },
   "services/api/openapi.yaml": {
-    "mtime": 1789793442.1404626,
-    "seen": 1789793794.9782927,
-    "ast_hash": "04cb8124b4232e6f6d0343dac3cbcabf",
+    "mtime": 1789795439.5290954,
+    "seen": 1789795556.4494724,
+    "ast_hash": "86b9754386daeaa1b188e5dd130c95d0",
     "semantic_hash": ""
   },
   "services/document/requirements.txt": {
@@ -2850,9 +2850,9 @@
     "semantic_hash": ""
   },
   "tests/security/run-native-postgres.mjs": {
-    "mtime": 1789794167.8373506,
-    "seen": 1789794192.0841496,
-    "ast_hash": "dc37cfd4c9419954a35e486cee83b281",
+    "mtime": 1789795116.27853,
+    "seen": 1789795319.8226833,
+    "ast_hash": "3c523f1a31664659b9cdae61a174c26c",
     "semantic_hash": ""
   },
   ".github/workflows/native-database.yml": {
@@ -3099,6 +3099,48 @@
     "mtime": 1789793702.0477643,
     "seen": 1789793794.9782927,
     "ast_hash": "cdb6077115a4cbc0f79ac683b7c4d99e",
+    "semantic_hash": ""
+  },
+  "apps/web/app/books/[bookId]/plan/page.tsx": {
+    "mtime": 1789795235.0252235,
+    "seen": 1789795319.8226833,
+    "ast_hash": "c25c94d98d7124ac2dfce8cb9d0c01ff",
+    "semantic_hash": ""
+  },
+  "apps/web/components/StoryBlueprintClient.tsx": {
+    "mtime": 1789796168.7543094,
+    "seen": 1789796318.3357737,
+    "ast_hash": "62b7d2a543f717d7deb5256a8c91814a",
+    "semantic_hash": ""
+  },
+  "apps/web/tests/story-blueprint-client.test.ts": {
+    "mtime": 1789795235.0302281,
+    "seen": 1789795319.8226833,
+    "ast_hash": "21bb420d5271a8562042ed268e8734eb",
+    "semantic_hash": ""
+  },
+  "services/api/src/routes/story-blueprints.ts": {
+    "mtime": 1789796168.7553163,
+    "seen": 1789796318.3367727,
+    "ast_hash": "1ea3beb1e73e43875e33dd1239b86f16",
+    "semantic_hash": ""
+  },
+  "services/api/src/story-blueprints.test.ts": {
+    "mtime": 1789796168.7563226,
+    "seen": 1789796318.3367727,
+    "ast_hash": "c094d22ddbe2530d82d7e0cdeaeedf96",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919190000_story_blueprints.sql": {
+    "mtime": 1789794936.2733421,
+    "seen": 1789795319.8226833,
+    "ast_hash": "30d42086c22b2cb229ca2fff3c16d4e9",
+    "semantic_hash": ""
+  },
+  "tests/security/story-blueprints.test.sql": {
+    "mtime": 1789795010.460641,
+    "seen": 1789795319.8226833,
+    "ast_hash": "790447eefbe3d66bfd94f3850c515438",
     "semantic_hash": ""
   }
 }

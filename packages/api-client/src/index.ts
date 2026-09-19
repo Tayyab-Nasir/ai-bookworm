@@ -151,6 +151,51 @@ export interface GeneratedBookMetadataResponse {
   candidate: GeneratedBookMetadataCandidate;
 }
 
+export interface StoryBlueprintStory {
+  workingTitle: string;
+  premise: string;
+  readerPromise: string;
+  genre: string;
+  tone: string;
+  pointOfView: string;
+  tense: string;
+  targetWordCount: number | null;
+  synopsis: string;
+  theme: string;
+  notes: string;
+}
+
+export interface StoryBlueprintPlanItem {
+  id: string;
+  title: string;
+  purpose: string;
+  summary: string;
+  targetWords: number | null;
+}
+
+export interface StoryBlueprintMaterialization {
+  planItemId: string;
+  chapterId: string;
+}
+
+export interface StoryBlueprint {
+  revision: number;
+  story: StoryBlueprintStory;
+  chapterPlan: StoryBlueprintPlanItem[];
+  materializations: StoryBlueprintMaterialization[];
+}
+
+export interface SaveStoryBlueprintRequest {
+  expectedRevision: number;
+  story: StoryBlueprintStory;
+  chapterPlan: StoryBlueprintPlanItem[];
+}
+
+export interface MaterializeStoryBlueprintChapterRequest {
+  expectedRevision: number;
+  idempotencyKey: string;
+}
+
 export interface GenerateImageRequest {
   referenceAssetIds?: string[];
   workspaceId: string;
@@ -567,6 +612,12 @@ export function createClient(opts: ClientOptions) {
     getBook: (bookId: string) => call<{ book: Book; role: string }>("GET", `/v1/books/${bookId}`),
     updateBook: (bookId: string, body: Partial<Omit<CreateBookRequest, "workspaceId" | "subtitle" | "genre">> & { subtitle?: string | null; genre?: string | null; expectedUpdatedAt: string }) =>
       call<{ book: Book }>("PATCH", `/v1/books/${bookId}`, body),
+    getStoryBlueprint: (bookId: string) =>
+      call<{ blueprint: StoryBlueprint | null; role: string }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint`),
+    saveStoryBlueprint: (bookId: string, body: SaveStoryBlueprintRequest) =>
+      call<{ blueprint: StoryBlueprint; role: string }>("PUT", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint`, body),
+    materializeStoryBlueprintChapter: (bookId: string, planItemId: string, body: MaterializeStoryBlueprintChapterRequest) =>
+      call<{ chapter: Chapter }>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/chapters/${encodeURIComponent(planItemId)}/materialize`, body),
     listChapters: (bookId: string) => call<{ chapters: Chapter[] }>("GET", `/v1/books/${bookId}/chapters`),
     createChapter: (bookId: string, body: { title: string; nodes?: BookNode[]; idempotencyKey?: string }) =>
       call<{ chapter: Chapter }>("POST", `/v1/books/${bookId}/chapters`, body),

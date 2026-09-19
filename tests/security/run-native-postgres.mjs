@@ -422,6 +422,43 @@ async function cancellationDispatchRace() {
   console.log('PASS native quoted cancellation dispatch conflict and recovery');
 }
 
+async function storyBlueprintMaterializationRace() {
+  const f = await fixture({ meter: 'ai_credits', first: 'writer', second: 'writer' });
+  const [book, planChapter] = [randomUUID(), randomUUID()];
+  await sql(`insert into books(id,workspace_id,title,author_name,language,created_by)
+    values('${book}','${f.ws}','Concurrent blueprint','Author','en','${f.u}');`);
+  const details = `jsonb_build_object('workingTitle','Concurrent blueprint','premise','','readerPromise','','genre','','tone','','pointOfView','','tense','','targetWordCount',null,'synopsis','','theme','','notes','')`;
+  const plan = `jsonb_build_array(jsonb_build_object('id','${planChapter}','title','First chapter','purpose','','summary','','targetWords',1200))`;
+  const auth = `set local role authenticated; set local request.jwt.claims='{"sub":"${f.u}"}';`;
+  await sql(`begin; ${auth} select id from save_story_blueprint('${book}',0,${details},${plan}); commit;`);
+  const materialize = (key) => `${auth} select id from materialize_story_blueprint_chapter('${book}','${planChapter}',1,'${key}');`;
+  const held = session();
+  held.child.stdin.write(`begin; ${materialize('blueprint-race-one')} select 'BOOKWORM_READY';\n`);
+  await until(() => {
+    assert.equal(held.ended, false, held.stderr);
+    return held.stdout.includes('BOOKWORM_READY');
+  }, 'Blueprint materialization holder not ready');
+  const firstId = held.stdout.split('\n').find((line) => /^[0-9a-f-]{36}$/.test(line));
+  assert.ok(firstId, `Blueprint holder returned no chapter: ${held.stdout}`);
+  const name = `blueprint_${randomUUID().replaceAll('-', '')}`;
+  const contender = session(database, name);
+  contender.child.stdin.end(`begin; ${materialize('blueprint-race-two')} commit;`);
+  await until(async () => {
+    assert.equal(contender.ended, false, contender.stderr);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${name}' and wait_event_type='Lock';`) === '1';
+  }, 'Competing blueprint materialization did not wait for the book lock');
+  held.child.stdin.end('commit;\n');
+  assert.equal((await held.done).code, 0, held.stderr);
+  const second = await contender.done;
+  assert.equal(second.code, 0, second.stderr);
+  assert.equal(second.stdout.trim(), firstId);
+  assert.equal(await sql(`select count(*) from chapters where book_id='${book}';`), '1');
+  assert.equal(await sql(`select count(*) from document_versions d join chapters c on c.id=d.chapter_id where c.book_id='${book}';`), '1');
+  assert.equal(await sql(`select count(*) from story_blueprint_materializations m join story_blueprints b on b.id=m.blueprint_id where b.book_id='${book}';`), '1');
+  assert.equal(await sql(`select count(*) from ai_jobs where book_id='${book}';`), '0');
+  console.log('PASS native concurrent story blueprint materialization replay');
+}
+
 let created = false;
 try {
   assert.equal(await sql("select count(*) from pg_roles where rolname in ('anon','authenticated','service_role');", 'postgres'), '0', 'Refusing a reused/shared server: Supabase roles already exist');
@@ -451,6 +488,7 @@ try {
   await quoteCountRecoveryRace();
   await quoteCompletionRace();
   await cancellationDispatchRace();
+  await storyBlueprintMaterializationRace();
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');

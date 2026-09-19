@@ -503,6 +503,101 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint:
+    get:
+      tags: [v1]
+      operationId: getStoryBlueprint
+      summary: Read a book's human-authored Story Blueprint
+      description: >-
+        Requires book membership and returns a safe planning projection with
+        materialized chapter links. This is private, no-store data. It never
+        starts generation, contacts a provider, or spends credits.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Current blueprint or null when none has been saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [blueprint, role]
+                properties:
+                  blueprint:
+                    oneOf:
+                      - { $ref: "#/components/schemas/StoryBlueprint" }
+                      - { type: "null" }
+                  role: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [v1]
+      operationId: saveStoryBlueprint
+      summary: Create or revision-save a human-authored Story Blueprint
+      description: >-
+        Requires book editor access. expectedRevision 0 is create-only; later
+        writes must use the exact saved revision. A 409 never overwrites the
+        other editor's work. This endpoint stores plan data only and does not
+        call AI or use credits.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SaveStoryBlueprintRequest" }
+      responses:
+        "200":
+          description: Updated blueprint
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintResponse" }
+        "201":
+          description: Created blueprint
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/chapters/{planItemId}/materialize:
+    post:
+      tags: [v1]
+      operationId: materializeStoryBlueprintChapter
+      summary: Create one empty manuscript chapter from a saved plan item
+      description: >-
+        Requires book editor access and an exact blueprint revision for a new
+        materialization. An idempotency key safely replays a lost response.
+        The result is one empty chapter only: it never copies plan text into
+        the manuscript, calls AI, sends text to a provider, or spends credits.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: planItemId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MaterializeStoryBlueprintChapterRequest" }
+      responses:
+        "200":
+          description: Created or safely replayed chapter
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [chapter]
+                properties: { chapter: { $ref: "#/components/schemas/Chapter" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/chapters/{chapterId}/operations:
     post:
       tags: [v1]
@@ -2194,6 +2289,78 @@ components:
       properties:
         job: { type: object }
         candidate: { $ref: "#/components/schemas/GeneratedBookMetadataCandidate" }
+    StoryBlueprintStory:
+      type: object
+      additionalProperties: false
+      required: [workingTitle, premise, readerPromise, genre, tone, pointOfView, tense, targetWordCount, synopsis, theme, notes]
+      properties:
+        workingTitle: { type: string, maxLength: 500 }
+        premise: { type: string, maxLength: 12000 }
+        readerPromise: { type: string, maxLength: 4000 }
+        genre: { type: string, maxLength: 240 }
+        tone: { type: string, maxLength: 240 }
+        pointOfView: { type: string, maxLength: 120 }
+        tense: { type: string, maxLength: 120 }
+        targetWordCount: { type: [integer, "null"], minimum: 100, maximum: 2000000 }
+        synopsis: { type: string, maxLength: 24000 }
+        theme: { type: string, maxLength: 4000 }
+        notes: { type: string, maxLength: 12000 }
+    StoryBlueprintPlanItem:
+      type: object
+      additionalProperties: false
+      required: [id, title, purpose, summary, targetWords]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string, minLength: 1, maxLength: 500 }
+        purpose: { type: string, maxLength: 4000 }
+        summary: { type: string, maxLength: 16000 }
+        targetWords: { type: [integer, "null"], minimum: 10, maximum: 200000 }
+    StoryBlueprintMaterialization:
+      type: object
+      additionalProperties: false
+      required: [planItemId, chapterId]
+      properties:
+        planItemId: { type: string, format: uuid }
+        chapterId: { type: string, format: uuid }
+    StoryBlueprint:
+      type: object
+      additionalProperties: false
+      required: [revision, story, chapterPlan, materializations]
+      properties:
+        revision: { type: integer, minimum: 1 }
+        story: { $ref: "#/components/schemas/StoryBlueprintStory" }
+        chapterPlan:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/StoryBlueprintPlanItem" }
+        materializations:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/StoryBlueprintMaterialization" }
+    SaveStoryBlueprintRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, story, chapterPlan]
+      properties:
+        expectedRevision: { type: integer, minimum: 0 }
+        story: { $ref: "#/components/schemas/StoryBlueprintStory" }
+        chapterPlan:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/StoryBlueprintPlanItem" }
+    StoryBlueprintResponse:
+      type: object
+      required: [blueprint, role]
+      properties:
+        blueprint: { $ref: "#/components/schemas/StoryBlueprint" }
+        role: { type: string }
+    MaterializeStoryBlueprintChapterRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, idempotencyKey]
+      properties:
+        expectedRevision: { type: integer, minimum: 0 }
+        idempotencyKey: { type: string, minLength: 8, maxLength: 160 }
     BookSearchRequest:
       type: object
       additionalProperties: false
