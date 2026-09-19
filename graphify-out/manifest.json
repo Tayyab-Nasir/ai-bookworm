@@ -336,10 +336,10 @@
     "semantic_hash": ""
   },
   "apps/web/components/BookMemoryClient.tsx": {
-    "mtime": 1789177828.683036,
-    "seen": 1789189271.7201564,
-    "ast_hash": "ce2b73842ddfa44d4800a0e2a176857e",
-    "semantic_hash": "ce2b73842ddfa44d4800a0e2a176857e"
+    "mtime": 1789782668.5801833,
+    "seen": 1789782681.07666,
+    "ast_hash": "239e2925c69e83c634c79f64eda3938b",
+    "semantic_hash": ""
   },
   "apps/web/components/BookSearchPanel.tsx": {
     "mtime": 1788665102.2290554,
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789708159.1546519,
-    "seen": 1789708175.606106,
-    "ast_hash": "c7eff42a643637c7a62256777bd49511",
+    "mtime": 1789782668.5821776,
+    "seen": 1789782681.0776622,
+    "ast_hash": "f04c1f08ef7497310cff4b4d476ef63d",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2787,6 +2787,12 @@
     "mtime": 1789708041.323589,
     "seen": 1789708175.606106,
     "ast_hash": "a9fc4b803f7ecdafda672db238c56dd4",
+    "semantic_hash": ""
+  },
+  "apps/web/tests/metadata-retry.test.ts": {
+    "mtime": 1789782626.5395703,
+    "seen": 1789782681.07666,
+    "ast_hash": "bcc518bcc9732fca17ee0b1a0337026b",
     "semantic_hash": ""
   }
 }
