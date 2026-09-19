@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789788354.9518456,
-    "seen": 1789788384.6576478,
-    "ast_hash": "e27744e06f67e40edbe1311467b93720",
+    "mtime": 1789788689.147299,
+    "seen": 1789788700.1975017,
+    "ast_hash": "2c82f4bbc6734fc2f95c27a887fdc0dc",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2502,9 +2502,9 @@
     "semantic_hash": ""
   },
   "services/api/src/lib/translation-generation.ts": {
-    "mtime": 1789190315.8225982,
-    "seen": 1789190997.7093635,
-    "ast_hash": "523275098dfc07b958aaa5cbc17e6bdf",
+    "mtime": 1789788841.7561104,
+    "seen": 1789789142.0156999,
+    "ast_hash": "520c7be2d8dbb6424bb72e9500c1384e",
     "semantic_hash": ""
   },
   "services/api/src/lib/translation-worker.ts": {
@@ -2544,9 +2544,9 @@
     "semantic_hash": ""
   },
   "workers/translation/worker.ts": {
-    "mtime": 1789190315.8225982,
-    "seen": 1789190997.7093635,
-    "ast_hash": "7fd43ca079c2abff2ccbac5035735b03",
+    "mtime": 1789788959.6285675,
+    "seen": 1789789142.0156999,
+    "ast_hash": "5ef4023fb320509c94da2f8bab04a967",
     "semantic_hash": ""
   },
   "apps/web/tests/dashboard.test.ts": {
@@ -2946,9 +2946,27 @@
     "semantic_hash": ""
   },
   "tests/security/quoted-translation-queue.test.sql": {
-    "mtime": 1789788575.83745,
-    "seen": 1789788610.9614868,
-    "ast_hash": "6ba7f34220f6e5a69b734d2f383c3210",
+    "mtime": 1789789051.3045144,
+    "seen": 1789789142.0156999,
+    "ast_hash": "f1d5625ee4b7a81d870faac6d9e2f2ba",
+    "semantic_hash": ""
+  },
+  "services/api/src/lib/quoted-translation-worker.ts": {
+    "mtime": 1789789110.4729788,
+    "seen": 1789789142.0156999,
+    "ast_hash": "48405244471b24aa080d123f021b2dbd",
+    "semantic_hash": ""
+  },
+  "services/api/src/quoted-translation-worker.test.ts": {
+    "mtime": 1789789110.4739764,
+    "seen": 1789789142.0156999,
+    "ast_hash": "64fd3f107e9c8ed509bead5cf228cdf8",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919130000_quoted_translation_completion.sql": {
+    "mtime": 1789788959.62256,
+    "seen": 1789789142.0156999,
+    "ast_hash": "70e88e00ce1c3338cf2ed44a9de51fec",
     "semantic_hash": ""
   }
 }

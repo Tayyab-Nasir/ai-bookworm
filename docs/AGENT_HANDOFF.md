@@ -23,6 +23,15 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 quoted translation worker integration
+
+Source 8ea4597 adds opt-in --quoted worker: exact request hash/model/output limit,
+funded dispatch, durable measured receipt, atomic settlement+completion, no second
+operational charge. Missing/uncertain usage cannot redispatch; overrun retains hold.
+221 API tests, TypeScript, 58 migrations/41 SQL suites and native CI 35419141932
+(16 races) pass. No live calls. Approved catalog, quoted enqueue/UI and review/
+cancellation still next. Shared note: Codex Sessions/2026-09/2026-09-19-bookworm-quoted-worker.md.
+
 ### 2026-09-19 quoted translation queue isolation
 
 Migration 20260919120000 adds immutable billing_mode, translator-only quoted
