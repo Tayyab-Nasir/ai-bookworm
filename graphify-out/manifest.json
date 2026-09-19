@@ -924,9 +924,9 @@
     "semantic_hash": "ae3f6cebab8e2e07e9adb129c48cbea3"
   },
   "services/api/src/ai.test.ts": {
-    "mtime": 1789784196.7116306,
-    "seen": 1789784276.801704,
-    "ast_hash": "2a0ea0ec3cfd51578a25fed2ebac74a7",
+    "mtime": 1789785245.462624,
+    "seen": 1789785322.9668155,
+    "ast_hash": "e4dc842dcbcdd7b6cdaaa2adb8557759",
     "semantic_hash": ""
   },
   "services/api/src/app.test.ts": {
@@ -1278,9 +1278,9 @@
     "semantic_hash": "afe96bc7718e668e82f396a946010499"
   },
   "services/api/src/routes/metadata-generation.ts": {
-    "mtime": 1789784128.4233897,
-    "seen": 1789784276.801704,
-    "ast_hash": "de838586fcc873e75b7f558e8ddf55e9",
+    "mtime": 1789785204.4258165,
+    "seen": 1789785322.9668155,
+    "ast_hash": "26d20c0219a555408a672a0542736618",
     "semantic_hash": ""
   },
   "services/api/src/routes/publishing.ts": {
@@ -2184,9 +2184,9 @@
     "semantic_hash": "52a341d230a35e2aa3d1ba1c8d37a4fe"
   },
   "tests/security/metadata-ai-workflow.test.sql": {
-    "mtime": 1789783853.143517,
-    "seen": 1789783950.530097,
-    "ast_hash": "2939f7c97d38b2b25f1553121c6314cf",
+    "mtime": 1789785204.4238129,
+    "seen": 1789785322.9668155,
+    "ast_hash": "1bf64e7ad118e04260217125fc4eff36",
     "semantic_hash": ""
   },
   "tests/security/onboarding.test.sql": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789784902.2398036,
-    "seen": 1789784922.7248404,
-    "ast_hash": "95c63b29fe480f2626039a66edddd8a0",
+    "mtime": 1789785311.235558,
+    "seen": 1789785322.9668155,
+    "ast_hash": "fc4033092fd6d88e0bf711087369c3b4",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2340,9 +2340,9 @@
     "semantic_hash": ""
   },
   "docs/PRICING_AND_PLAN_RELEASE.md": {
-    "mtime": 1789190864.0133536,
-    "seen": 1789190997.7093635,
-    "ast_hash": "82f6090ac09d2c26d3798d90d5eb8af3",
+    "mtime": 1789785311.2375546,
+    "seen": 1789785322.9668155,
+    "ast_hash": "6572f58f1d5399264fbbf2186327eeaf",
     "semantic_hash": ""
   },
   "docs/PROJECT_MAP.md": {
@@ -2823,6 +2823,18 @@
     "mtime": 1789784803.1566024,
     "seen": 1789784922.7233353,
     "ast_hash": "f903d5686da66780bbdf8efe0bf10382",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919050000_metadata_credit_reservations.sql": {
+    "mtime": 1789785204.422815,
+    "seen": 1789785322.9668155,
+    "ast_hash": "96a18257e79e4e074db31c89c2ad2552",
+    "semantic_hash": ""
+  },
+  "tests/security/metadata-reservations.test.sql": {
+    "mtime": 1789785204.4268196,
+    "seen": 1789785322.9668155,
+    "ast_hash": "ec49b5026d9c026d652796dcd4dbc0f6",
     "semantic_hash": ""
   }
 }
