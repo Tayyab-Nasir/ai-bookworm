@@ -120,9 +120,9 @@ async function fundedQuoteRace() {
   await sql(`insert into ai_jobs(id,workspace_id,agent_type,input_ref,idempotency_key,created_by) values
     ('${a}','${f.ws}','test_quote','{}','${a}','${f.u}'),('${b}','${f.ws}','test_quote','{}','${b}','${f.u}');
     insert into credit_ledger(user_id,source,amount,balance_after) values('${f.u}','purchase',2,2);`);
-  const quote = (job) => `jsonb_build_object('scope',jsonb_build_object('jobId','${job}','workspaceId','${f.ws}','userId','${f.u}'),
+  const quote = (job) => `jsonb_build_object('scope',jsonb_build_object('jobId','${job}','workspaceId','${f.ws}','userId','${f.u}','inputSha256',repeat('c',64)),
     'reservedCredits','2','fingerprint',repeat('b',64),'policy',jsonb_build_object('approved',true,'version','test'),
-    'price',jsonb_build_object('version','test'),'createdAt',now()-interval '1 second','expiresAt',now()+interval '10 minutes')`;
+    'price',jsonb_build_object('version','test','provider','openai','model','synthetic'),'createdAt',now()-interval '1 second','expiresAt',now()+interval '10 minutes')`;
   const held = session();
   held.child.stdin.write(`begin; set request.jwt.claim.role='service_role'; select reserve_funded_usage_quote(${quote(a)}); select 'BOOKWORM_READY';\n`);
   await until(() => { assert.equal(held.ended, false, held.stderr); return held.stdout.includes('BOOKWORM_READY'); }, 'Quote holder not ready');
@@ -139,6 +139,24 @@ async function fundedQuoteRace() {
   assert.equal(await sql(`select count(*) from funded_usage_quotes where user_id='${f.u}';`), '1');
   assert.equal(await sql(`select sum(amount) from credit_ledger where user_id='${f.u}';`), '0');
   console.log('PASS native competing funded quotes');
+  const lease = randomUUID();
+  await sql(`update ai_jobs set status='running',lease_token='${lease}',lease_expires_at=now()+interval '5 minutes' where id='${a}';`);
+  const dispatchSql = `set request.jwt.claim.role='service_role'; select claim_funded_dispatch('${a}','${lease}',repeat('c',64),'synthetic');`;
+  const firstDispatch = session();
+  firstDispatch.child.stdin.write(`begin; ${dispatchSql} select 'BOOKWORM_READY';\n`);
+  await until(() => { assert.equal(firstDispatch.ended, false, firstDispatch.stderr); return firstDispatch.stdout.includes('BOOKWORM_READY'); }, 'Dispatch holder not ready');
+  const dispatchName = `dispatch_${randomUUID().replaceAll('-', '')}`;
+  const secondDispatch = session(database, dispatchName); secondDispatch.child.stdin.end(dispatchSql);
+  await until(async () => {
+    assert.equal(secondDispatch.ended, false, secondDispatch.stderr);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${dispatchName}' and wait_event_type='Lock';`) === '1';
+  }, 'Competing dispatch did not wait');
+  firstDispatch.child.stdin.end('commit;\n');
+  assert.equal((await firstDispatch.done).code, 0, firstDispatch.stderr);
+  const secondResult = await secondDispatch.done;
+  assert.equal(secondResult.code, 0, secondResult.stderr); assert.equal(secondResult.stdout.trim(), 'f');
+  assert.equal(firstDispatch.stdout.split('\n')[0], 't');
+  console.log('PASS native one-time funded dispatch');
 }
 let created = false;
 try {

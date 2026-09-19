@@ -4,10 +4,12 @@ declare
   u uuid:=gen_random_uuid(); org uuid:=gen_random_uuid(); ws uuid:=gen_random_uuid();
   job uuid:=gen_random_uuid(); other uuid:=gen_random_uuid(); plan uuid:=gen_random_uuid();
   q jsonb; q2 jsonb; s jsonb; a public.funded_usage_quotes; b public.funded_usage_quotes;
+  lease uuid:=gen_random_uuid();
 begin
   assert not has_table_privilege('authenticated','public.funded_usage_quotes','select');
   assert not has_function_privilege('authenticated','public.reserve_funded_usage_quote(jsonb)','execute');
   assert not has_function_privilege('authenticated','public.settle_funded_usage_quote(uuid,jsonb)','execute');
+  assert not has_function_privilege('authenticated','public.claim_funded_dispatch(uuid,uuid,text,text)','execute');
   insert into auth.users(id,email) values(u,'funded@local.test');
   insert into organizations(id,name,slug,owner_user_id) values(org,'Funded','funded-quotes',u);
   insert into workspaces(id,organization_id,name,slug,created_by) values(ws,org,'Funded','funded-quotes',u);
@@ -19,9 +21,9 @@ begin
   insert into credit_ledger(user_id,source,amount,balance_after) values(u,'purchase',5,5);
   perform set_config('request.jwt.claim.role','service_role',true);
   -- Synthetic trusted service output; calculator correctness has separate tests.
-  q:=jsonb_build_object('scope',jsonb_build_object('jobId',job,'workspaceId',ws,'userId',u),
+  q:=jsonb_build_object('scope',jsonb_build_object('jobId',job,'workspaceId',ws,'userId',u,'inputSha256',repeat('c',64)),
     'reservedCredits','4','fingerprint',repeat('a',64),'policy',jsonb_build_object('approved',true,'version','test-v1'),
-    'price',jsonb_build_object('version','synthetic-v1'),
+    'price',jsonb_build_object('version','synthetic-v1','model','synthetic','provider','openai'),
     'createdAt',clock_timestamp()-interval '1 second','expiresAt',clock_timestamp()+interval '10 minutes');
   a:=public.reserve_funded_usage_quote(q); b:=public.reserve_funded_usage_quote(q);
   assert a=b; assert a.status='held';
@@ -44,6 +46,39 @@ begin
   s:=jsonb_build_object('status','settle','fingerprint',repeat('a',64),'requestId','req-test',
     'debitCredits','2','releaseCredits','2','priceVersion','synthetic-v1','policyVersion','test-v1');
   begin
+    perform public.settle_funded_usage_quote(job,s);
+    raise exception 'undispatched settlement accepted';
+  exception when check_violation then assert sqlerrm='undispatched quote cannot settle'; end;
+  update ai_jobs set status='running',lease_token=lease,lease_expires_at=clock_timestamp()+interval '5 minutes' where id=job;
+  begin
+    perform public.claim_funded_dispatch(job,gen_random_uuid(),repeat('c',64),'synthetic');
+    raise exception 'wrong lease dispatched';
+  exception when serialization_failure then assert sqlerrm='funded dispatch lease lost'; end;
+  begin
+    perform public.claim_funded_dispatch(job,lease,repeat('d',64),'synthetic');
+    raise exception 'changed input dispatched';
+  exception when invalid_parameter_value then assert sqlerrm='funded dispatch request mismatch'; end;
+  begin
+    perform public.claim_funded_dispatch(job,lease,repeat('c',64),'other-model');
+    raise exception 'changed model dispatched';
+  exception when invalid_parameter_value then assert sqlerrm='funded dispatch request mismatch'; end;
+  update workspace_members set role='viewer' where workspace_id=ws and user_id=u;
+  begin
+    perform public.claim_funded_dispatch(job,lease,repeat('c',64),'synthetic');
+    raise exception 'viewer dispatched';
+  exception when insufficient_privilege then assert sqlerrm='funded dispatch editing access revoked'; end;
+  update workspace_members set role='editor' where workspace_id=ws and user_id=u;
+  assert public.claim_funded_dispatch(job,lease,repeat('c',64),'synthetic');
+  assert not public.claim_funded_dispatch(job,lease,repeat('c',64),'synthetic');
+  begin
+    update funded_usage_quotes set dispatched_at=null,dispatched_lease=null where job_id=job;
+    raise exception 'dispatch reset accepted';
+  exception when check_violation then assert sqlerrm='funded dispatch cannot be reset'; end;
+  begin
+    update funded_usage_quotes set quote_json=jsonb_set(quote_json,'{reservedCredits}','"1"') where job_id=job;
+    raise exception 'quote mutation accepted';
+  exception when check_violation then assert sqlerrm='funded quote is immutable'; end;
+  begin
     perform public.settle_funded_usage_quote(job,jsonb_set(s,'{releaseCredits}','"3"'));
     raise exception 'unbalanced settlement accepted';
   exception when check_violation then assert sqlerrm='settlement does not balance reservation'; end;
@@ -58,6 +93,8 @@ begin
   -- Review holds remain funded; they are not automatically refunded.
   q2:=jsonb_set(q2,'{reservedCredits}','"3"');
   perform public.reserve_funded_usage_quote(q2);
+  update ai_jobs set status='running',lease_token=lease,lease_expires_at=clock_timestamp()+interval '5 minutes' where id=other;
+  assert public.claim_funded_dispatch(other,lease,repeat('c',64),'synthetic');
   a:=public.settle_funded_usage_quote(other,jsonb_build_object('status','requires_review',
     'fingerprint',repeat('a',64),'requestId','req-review','heldCredits','3'));
   assert a.status='requires_review';

@@ -87,3 +87,21 @@ export async function settlePricedUsage(
   }
   return result;
 }
+
+export async function claimPricedDispatch(supabase: SupabaseClient, input: {
+  jobId: string; leaseToken: string; inputSha256: string; model: string;
+}) {
+  const request = z.object({ jobId: z.string().uuid(), leaseToken: z.string().uuid(),
+    inputSha256: z.string().regex(/^[a-f0-9]{64}$/), model: z.string().min(1).max(128) }).strict().parse(input);
+  // SQL checks lease/expiry/role and commits the irreversible dispatch marker.
+  // On network failure, do not infer permission: subsequent calls return false
+  // if the first committed. Recover provider receipts instead of regenerating.
+  const { data, error } = await supabase.rpc("claim_funded_dispatch", {
+    p_job_id: request.jobId, p_lease_token: request.leaseToken,
+    p_input_sha256: request.inputSha256, p_model: request.model,
+  });
+  if (error?.code === "40001") throw new AppError(409, "funded dispatch lease lost");
+  if (error) throw databaseError(error);
+  if (data === false) throw new AppError(409, "funded request already dispatched; recover its receipt");
+  if (data !== true) throw new AppError(503, "funded dispatch outcome unknown");
+}

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { quoteUsage } from "./lib/usage-pricing.js";
-import { reservePricedUsage, settlePricedUsage } from "./lib/funded-usage.js";
+import { reservePricedUsage, settlePricedUsage, claimPricedDispatch } from "./lib/funded-usage.js";
 import type { SupabaseClient } from "./lib/supabase.js";
 
 const scope = { jobId: "11111111-1111-4111-8111-111111111111", workspaceId: "22222222-2222-4222-8222-222222222222", userId: "33333333-3333-4333-8333-333333333333", inputSha256: "a".repeat(64) };
@@ -76,4 +76,19 @@ test("missing and mismatched saved rows cannot settle", async () => {
   state.row!.reserved_credits = 10;
   await assert.rejects(() => settlePricedUsage(client, scope.jobId, receipt()), /identity mismatch/);
   assert.equal(state.calls.length, 1);
+});
+
+test("dispatch accepts only affirmative database authorization and never treats replay as permission", async () => {
+  const input = { jobId: scope.jobId, leaseToken: scope.userId, inputSha256: scope.inputSha256, model: "synthetic" };
+  for (const data of [false, null, {}, "true"]) {
+    const client = { rpc: async () => ({ data, error: null }) } as unknown as SupabaseClient;
+    await assert.rejects(() => claimPricedDispatch(client, input));
+  }
+  const client = { rpc: async (name: string, args: Record<string, unknown>) => {
+    assert.equal(name, "claim_funded_dispatch"); assert.equal(args.p_lease_token, input.leaseToken);
+    return { data: true, error: null };
+  } } as unknown as SupabaseClient;
+  await claimPricedDispatch(client, input);
+  const stale = { rpc: async () => ({ data: null, error: { code: "40001" } }) } as unknown as SupabaseClient;
+  await assert.rejects(() => claimPricedDispatch(stale, input), /lease lost/);
 });
