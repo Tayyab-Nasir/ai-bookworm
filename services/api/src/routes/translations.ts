@@ -61,6 +61,28 @@ function queueError(error: { code?: string }) {
 }
 
 export function translationRoutes(app: FastifyInstance) {
+  app.post("/translation-quotes/:proposalId/accept", async (req, reply) => {
+    const { proposalId } = req.params as { proposalId: string };
+    const body = z.object({ expectedCredits: z.number().int().positive().max(2147483647) }).strict().safeParse(req.body);
+    if (!projectIdSchema.safeParse(proposalId).success || !body.success) throw new AppError(422, "Confirm a valid translation quote and its credit total.");
+    const service = app.supabaseFactory();
+    const offer = await service.from("translation_quote_proposals").select("id,book_id")
+      .eq("id", proposalId).eq("user_id", req.userId).maybeSingle();
+    if (offer.error) throw new AppError(503,"Could not load your translation quote.");
+    if (!offer.data) throw new AppError(404,"Translation quote not found.");
+    const sb = app.supabaseFactory(req.userToken);
+    await loadBook(sb,offer.data.book_id,req.userId,true);
+    const accepted = await service.rpc("accept_translation_quote",{p_proposal_id:proposalId,p_user_id:req.userId,p_expected_credits:body.data.expectedCredits});
+    if (accepted.error) {
+      if (accepted.error.code === "42501") throw new AppError(403,"Editing access is required to accept this quote.");
+      if (["23514","22023","23505","40001","40P01"].includes(accepted.error.code)) throw new AppError(409,"Quote could not be accepted. Check its expiry, credit total and available balance; no partial purchase was applied.");
+      throw new AppError(503,"Could not confirm quote acceptance. Retry this same quote to recover its result.");
+    }
+    const project=row(accepted.data);
+    if (!project) throw new AppError(503,"Could not confirm quote acceptance. Retry this same quote.");
+    reply.header("cache-control","private, no-store");
+    return reply.status(202).send(await hydrateProject(sb,project,false,req.userId));
+  });
   app.get("/translations/models", async (_req, reply) => {
     const catalog = readTranslationCatalog(process.env.TRANSLATION_PRICING_CATALOG_JSON, new Date().toISOString());
     reply.header("cache-control", "private, no-store");

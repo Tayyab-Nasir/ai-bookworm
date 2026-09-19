@@ -687,6 +687,8 @@ export function createClient(opts: ClientOptions) {
       call<{ projectId: string; status: "cancelled"; releasedCredits: string; cancelledChapters: number }>("POST", `/v1/translations/${projectId}/cancel`, {}),
     getTranslationBilling: (projectId: string) =>
       call<TranslationBillingResult>("GET", `/v1/translations/${projectId}/billing`),
+    acceptTranslationQuote: (proposalId: string, expectedCredits: number) =>
+      call<TranslationProjectResult>("POST", `/v1/translation-quotes/${proposalId}/accept`, { expectedCredits }),
     runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
       call<PreflightResult>("POST", "/v1/publishing/validate", body),
     createPublishingJob: (body: { bookId: string; editionId: string; channel: RetailerChannel; renderJobId: string; preflightJobId: string; idempotencyKey: string }) =>

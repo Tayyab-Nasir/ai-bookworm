@@ -29,6 +29,7 @@ function fakeSupabase(role = "editor", seed: Partial<Record<string, Row[]>> = {}
     auth: { getUser: async (token: string) => token === "good" ? { data: { user: { id: USER } }, error: null } : { data: { user: null }, error: { message: "bad" } } },
     rpc: async (name: string, args: Row) => {
       calls.push({ name, args });
+      if (name === "accept_translation_quote") return {data:{id:PROJECT,book_id:BOOK,created_by:USER,status:"queued"},error:null};
       if (name === "cancel_quoted_translation") return { data: { projectId: PROJECT, status: "cancelled", releasedCredits: "2", cancelledChapters: 1 }, error: null };
       if (name === "queue_translation_project") return { data: [{ id: PROJECT, book_id: BOOK, source_language: "en", target_language: "es", status: "queued", chapter_count: 1, completed_chapter_count: 0, credit_units: 2, adopted_book_id: null, created_at: "2026-09-12T00:00:00.000Z", completed_at: null }], error: null };
       return { data: null, error: null };
@@ -47,6 +48,26 @@ function fakeSupabase(role = "editor", seed: Partial<Record<string, Row[]>> = {}
   };
   return { client: client as never, calls };
 }
+
+test("quote acceptance uses the saved payer-scoped proposal and rejects caller prices", async () => {
+  const seed={translation_quote_proposals:[{id:PROJECT,book_id:BOOK,user_id:USER}]};
+  const fake=fakeSupabase("editor",seed); const app=await buildApp(()=>fake.client);
+  try {
+    const bad=await app.inject({method:"POST",url:`/v1/translation-quotes/${PROJECT}/accept`,headers:{authorization:"Bearer good"},payload:{expectedCredits:4,quote:{price:0}}});
+    assert.equal(bad.statusCode,422); assert.equal(fake.calls.length,0);
+    const good=await app.inject({method:"POST",url:`/v1/translation-quotes/${PROJECT}/accept`,headers:{authorization:"Bearer good"},payload:{expectedCredits:4}});
+    assert.equal(good.statusCode,202,good.body);
+    assert.deepEqual(fake.calls,[{name:"accept_translation_quote",args:{p_proposal_id:PROJECT,p_user_id:USER,p_expected_credits:4}}]);
+  } finally { await app.close(); }
+  for (const [role,payer,expected] of [["viewer",USER,403],["editor",WORKSPACE,404]] as const) {
+    const denied=fakeSupabase(role,{translation_quote_proposals:[{id:PROJECT,book_id:BOOK,user_id:payer}]});
+    const deniedApp=await buildApp(()=>denied.client);
+    try {
+      const response=await deniedApp.inject({method:"POST",url:`/v1/translation-quotes/${PROJECT}/accept`,headers:{authorization:"Bearer good"},payload:{expectedCredits:4}});
+      assert.equal(response.statusCode,expected); assert.equal(denied.calls.length,0);
+    } finally { await deniedApp.close(); }
+  }
+});
 
 test("translation model catalog is authenticated and missing configuration cannot advertise offers", async () => {
   const original = process.env.TRANSLATION_PRICING_CATALOG_JSON;
