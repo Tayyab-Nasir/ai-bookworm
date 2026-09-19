@@ -23,6 +23,15 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 atomic service credit deduction (local only)
+
+Migration 20260919090000 makes legacy credits/deduct usage+ledger+receipt atomic.
+Same request replays; changed request or historical debit without receipt conflicts.
+54 migrations/39 SQL suites, 205 API tests, API TypeScript and native CI
+35417527844 (14 concurrency cases) pass. Source e603477, type fix 26dfeb4 pushed.
+No live migration. Versioned retail pricing and provider provenance remain open.
+Shared note: Codex Sessions/2026-09/2026-09-19-bookworm-atomic-deduction.md.
+
 ### 2026-09-19 accepted media request immutability (local only)
 
 Migration 20260919080000 prevents narrator/translator input and billing-identity

@@ -1044,10 +1044,10 @@
     "semantic_hash": "36063499229a2ebea9e562f51f5573c3"
   },
   "services/api/src/lib/credits.ts": {
-    "mtime": 1786341995.4246018,
-    "seen": 1789189271.7201564,
-    "ast_hash": "5d987e6bae3fadd1095375443a8a26e1",
-    "semantic_hash": "5d987e6bae3fadd1095375443a8a26e1"
+    "mtime": 1789787100.5223954,
+    "seen": 1789787115.6104486,
+    "ast_hash": "de5d1d9cf13ebba26e8508f2286cf6be",
+    "semantic_hash": ""
   },
   "services/api/src/lib/document-worker.ts": {
     "mtime": 1789090894.9341147,
@@ -1314,10 +1314,10 @@
     "semantic_hash": "372c8b4ad604d880bda112ed1c5c1a33"
   },
   "services/api/src/step11.test.ts": {
-    "mtime": 1789186656.6944065,
-    "seen": 1789189271.7201564,
-    "ast_hash": "8d31e78e4432c19e0c76edb350a95d81",
-    "semantic_hash": "8d31e78e4432c19e0c76edb350a95d81"
+    "mtime": 1789787045.3615327,
+    "seen": 1789787096.1979513,
+    "ast_hash": "7e1cd5e9537719efae59059d04a579b3",
+    "semantic_hash": ""
   },
   "services/api/src/step12.test.ts": {
     "mtime": 1789182905.4154058,
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789786685.0211296,
-    "seen": 1789786695.8154402,
-    "ast_hash": "2bc108673e44058448637d0c42e1d640",
+    "mtime": 1789786879.9152963,
+    "seen": 1789786890.7882638,
+    "ast_hash": "3657acda1b1841eeae019173af0da1ca",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2850,9 +2850,9 @@
     "semantic_hash": ""
   },
   "tests/security/run-native-postgres.mjs": {
-    "mtime": 1789786556.2276623,
-    "seen": 1789786577.5808032,
-    "ast_hash": "2c9a102c1f86e48df88ae909d3ad2353",
+    "mtime": 1789787086.6237867,
+    "seen": 1789787096.1989532,
+    "ast_hash": "1221a831c233da9d220b2bb29a25a84f",
     "semantic_hash": ""
   },
   ".github/workflows/native-database.yml": {
@@ -2883,6 +2883,18 @@
     "mtime": 1789786783.850001,
     "seen": 1789786797.9156675,
     "ast_hash": "00aeef13c212049739a43e4ea8017ef6",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919090000_atomic_credit_deduction.sql": {
+    "mtime": 1789786996.6518364,
+    "seen": 1789787096.1989532,
+    "ast_hash": "0cd72c57292d1f701866afadbf866a35",
+    "semantic_hash": ""
+  },
+  "tests/security/atomic-deduction.test.sql": {
+    "mtime": 1789787045.3635335,
+    "seen": 1789787096.1989532,
+    "ast_hash": "a3270ca17251cb9c26530f0a5d840ddc",
     "semantic_hash": ""
   }
 }
