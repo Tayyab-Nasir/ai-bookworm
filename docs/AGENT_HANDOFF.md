@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 customer quote review/confirmation
+
+Source d40333d: payer-only canonical proposal GET and web model/consent/request/
+progress/review/explicit acceptance replace direct queue controls. 241 API/70 web
+tests and workspace TypeScript pass. Browser acceptance still pending; no live
+activation. Older direct API remains for other consumers and needs launch audit.
+Shared: Codex Sessions/2026-09/2026-09-19-bookworm-quote-confirmation-ui.md.
+
 ### 2026-09-19 durable quote-counting worker
 
 Source 4712d6d adds --prepare-quotes: bounded leased chapter counting, saved
