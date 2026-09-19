@@ -285,6 +285,12 @@ export interface TranslationBillingResult {
   chapterCount: number;
 }
 
+export interface TranslationQuoteRequestResult {
+  id: string; bookId: string; status: "queued" | "running" | "ready" | "failed";
+  chapterCount: number; countedChapters: number; proposalId: string | null;
+  createdAt: string; targetLanguage: string; modelId: string;
+}
+
 export interface TranslationProjectResult {
   canViewBilling?: boolean;
   billingMode?: "operational" | "quoted";
@@ -689,6 +695,12 @@ export function createClient(opts: ClientOptions) {
       call<TranslationBillingResult>("GET", `/v1/translations/${projectId}/billing`),
     acceptTranslationQuote: (proposalId: string, expectedCredits: number) =>
       call<TranslationProjectResult>("POST", `/v1/translation-quotes/${proposalId}/accept`, { expectedCredits }),
+    requestTranslationQuote: (bookId: string, body: { targetLanguage: string; modelId: string; idempotencyKey: string; allowProviderTokenCounting: true }) =>
+      call<TranslationQuoteRequestResult>("POST", `/v1/books/${bookId}/translation-quotes`, body),
+    getTranslationQuoteRequest: (requestId: string) =>
+      call<TranslationQuoteRequestResult>("GET", `/v1/translation-quote-requests/${requestId}`),
+    listTranslationQuoteRequests: (bookId: string) =>
+      call<{ requests: TranslationQuoteRequestResult[] }>("GET", `/v1/books/${bookId}/translation-quotes`),
     runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
       call<PreflightResult>("POST", "/v1/publishing/validate", body),
     createPublishingJob: (body: { bookId: string; editionId: string; channel: RetailerChannel; renderJobId: string; preflightJobId: string; idempotencyKey: string }) =>

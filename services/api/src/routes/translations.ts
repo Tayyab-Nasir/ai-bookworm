@@ -16,6 +16,17 @@ function row(value: unknown): Record<string, unknown> | null {
   return candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : null;
 }
 
+function quoteRequestProgress(value: unknown) {
+  const parsed=z.object({id:z.string().uuid(),book_id:z.string().uuid(),status:z.enum(["queued","running","ready","failed"]),
+    chapters_json:z.array(z.object({chapterId:z.string().uuid()})).min(1).max(500),counts_json:z.record(z.unknown()),
+    proposal_id:z.string().uuid().nullable(),created_at:z.string(),target_language:z.string(),model_id:z.string()}).safeParse(value);
+  if (!parsed.success) throw new AppError(503,"Could not confirm quote preparation. Refresh this request.");
+  const request=parsed.data;
+  return {id:request.id,bookId:request.book_id,status:request.status,chapterCount:request.chapters_json.length,
+    countedChapters:Object.keys(request.counts_json).length,proposalId:request.proposal_id,
+    createdAt:request.created_at,targetLanguage:request.target_language,modelId:request.model_id};
+}
+
 async function hydrateProject(sb: SupabaseClient, project: Record<string, unknown>, includeText = false, userId?: string) {
   const { data: chapters, error } = await sb.from("translation_chapters").select("*")
     .eq("project_id", project.id).order("chapter_order");
@@ -61,6 +72,44 @@ function queueError(error: { code?: string }) {
 }
 
 export function translationRoutes(app: FastifyInstance) {
+  app.get("/books/:bookId/translation-quotes",async (req,reply)=>{
+    const {bookId}=req.params as {bookId:string};
+    if (!projectIdSchema.safeParse(bookId).success) throw new AppError(422,"Valid book ID required.");
+    await loadBook(app.supabaseFactory(req.userToken),bookId,req.userId);
+    const saved=await app.supabaseFactory().from("translation_quote_requests").select("*")
+      .eq("book_id",bookId).eq("user_id",req.userId).order("created_at",{ascending:false}).limit(20);
+    if (saved.error) throw new AppError(503,"Could not recover quote requests.");
+    reply.header("cache-control","private, no-store");return {requests:(saved.data??[]).map(quoteRequestProgress)};
+  });
+  app.post("/books/:bookId/translation-quotes", async (req, reply) => {
+    const {bookId}=req.params as {bookId:string};
+    const body=z.object({targetLanguage:languageSchema,modelId:z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
+      idempotencyKey:z.string().min(8).max(200),allowProviderTokenCounting:z.literal(true)}).strict().safeParse(req.body);
+    if (!projectIdSchema.safeParse(bookId).success || !body.success) throw new AppError(422,"Choose a model and language and consent to provider token counting.");
+    await loadBook(app.supabaseFactory(req.userToken),bookId,req.userId,true);
+    const catalog=readTranslationCatalog(process.env.TRANSLATION_PRICING_CATALOG_JSON,new Date().toISOString());
+    if (!catalog.entries.some((entry)=>entry.id===body.data.modelId)) throw new AppError(422,"Choose an available translation model.");
+    const queued=await app.supabaseFactory().rpc("request_translation_quote",{p_book_id:bookId,p_user_id:req.userId,
+      p_target_language:body.data.targetLanguage,p_model_id:body.data.modelId,p_catalog_json:catalog,p_idempotency_key:body.data.idempotencyKey});
+    if (queued.error) {
+      if (queued.error.code==="42501") throw new AppError(403,"Editing access is required to request a quote.");
+      if (queued.error.code==="54000") throw new AppError(429,"Quote request limit reached. Try again later.");
+      if (queued.error.code==="23505") throw new AppError(409,"A quote is already preparing or this request key is in use. Recover the original request.");
+      if (queued.error.code==="22023") throw new AppError(422,"Save text in every chapter, check chapter sizes and choose a different language.");
+      throw new AppError(503,"Could not confirm quote preparation. Retry with the same request key.");
+    }
+    reply.header("cache-control","private, no-store");
+    return reply.status(202).send(quoteRequestProgress(row(queued.data)));
+  });
+  app.get("/translation-quote-requests/:requestId", async (req,reply)=>{
+    const {requestId}=req.params as {requestId:string};
+    if (!projectIdSchema.safeParse(requestId).success) throw new AppError(422,"Valid quote request ID required.");
+    const saved=await app.supabaseFactory().from("translation_quote_requests").select("*").eq("id",requestId).eq("user_id",req.userId).maybeSingle();
+    if (saved.error) throw new AppError(503,"Could not load quote preparation.");
+    if (!saved.data) throw new AppError(404,"Quote request not found.");
+    await loadBook(app.supabaseFactory(req.userToken),saved.data.book_id,req.userId);
+    reply.header("cache-control","private, no-store"); return quoteRequestProgress(saved.data);
+  });
   app.post("/translation-quotes/:proposalId/accept", async (req, reply) => {
     const { proposalId } = req.params as { proposalId: string };
     const body = z.object({ expectedCredits: z.number().int().positive().max(2147483647) }).strict().safeParse(req.body);

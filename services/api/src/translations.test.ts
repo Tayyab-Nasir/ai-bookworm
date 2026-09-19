@@ -49,6 +49,39 @@ function fakeSupabase(role = "editor", seed: Partial<Record<string, Row[]>> = {}
   return { client: client as never, calls };
 }
 
+test("quote preparation requires explicit consent and editing access before queueing", async () => {
+  const fake=fakeSupabase(); const app=await buildApp(()=>fake.client);
+  const payload={targetLanguage:"es",modelId:"test-model",idempotencyKey:"quote-request-1"};
+  try {
+    for (const extra of [{},{allowProviderTokenCounting:false},{allowProviderTokenCounting:true,price:0}]) {
+      const response=await app.inject({method:"POST",url:`/v1/books/${BOOK}/translation-quotes`,headers:{authorization:"Bearer good"},payload:{...payload,...extra}});
+      assert.equal(response.statusCode,422);
+    }
+    assert.equal(fake.calls.length,0);
+  } finally { await app.close(); }
+  const viewer=fakeSupabase("viewer"); const viewerApp=await buildApp(()=>viewer.client);
+  try {
+    const response=await viewerApp.inject({method:"POST",url:`/v1/books/${BOOK}/translation-quotes`,headers:{authorization:"Bearer good"},payload:{...payload,allowProviderTokenCounting:true}});
+    assert.equal(response.statusCode,403); assert.equal(viewer.calls.length,0);
+  } finally { await viewerApp.close(); }
+});
+
+test("quote preparation recovery exposes only payer-owned safe progress",async()=>{
+  const request={id:PROJECT,user_id:USER,book_id:BOOK,status:"queued",chapters_json:[{chapterId:CHAPTER,private:"hidden"}],
+    counts_json:{},proposal_id:null,created_at:"2026-09-19T00:00:00Z",target_language:"es",model_id:"test",catalog_json:{private:"hidden"}};
+  const fake=fakeSupabase("editor",{translation_quote_requests:[request,{...request,id:WORKSPACE,user_id:WORKSPACE}]});
+  const app=await buildApp(()=>fake.client);
+  try {
+    const list=await app.inject({method:"GET",url:`/v1/books/${BOOK}/translation-quotes`,headers:{authorization:"Bearer good"}});
+    assert.equal(list.statusCode,200,list.body); assert.equal(list.json().requests.length,1);
+    assert.equal(list.body.includes("hidden"),false); assert.equal(list.headers["cache-control"],"private, no-store");
+    const other=await app.inject({method:"GET",url:`/v1/translation-quote-requests/${WORKSPACE}`,headers:{authorization:"Bearer good"}});
+    assert.equal(other.statusCode,404);
+    const own=await app.inject({method:"GET",url:`/v1/translation-quote-requests/${PROJECT}`,headers:{authorization:"Bearer good"}});
+    assert.equal(own.statusCode,200); assert.equal(own.json().countedChapters,0); assert.equal(own.body.includes("hidden"),false);
+  } finally { await app.close(); }
+});
+
 test("quote acceptance uses the saved payer-scoped proposal and rejects caller prices", async () => {
   const seed={translation_quote_proposals:[{id:PROJECT,book_id:BOOK,user_id:USER}]};
   const fake=fakeSupabase("editor",seed); const app=await buildApp(()=>fake.client);
