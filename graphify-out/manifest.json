@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789788023.7566555,
-    "seen": 1789788027.0552,
-    "ast_hash": "eaee42fb6794097a4df01a6a0fdc2bfd",
+    "mtime": 1789788354.9518456,
+    "seen": 1789788384.6576478,
+    "ast_hash": "e27744e06f67e40edbe1311467b93720",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2937,6 +2937,18 @@
     "mtime": 1789788174.5344381,
     "seen": 1789788277.7745686,
     "ast_hash": "a63a091d64b038138b891945acb9f080",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919120000_quoted_translation_queue.sql": {
+    "mtime": 1789788575.8354487,
+    "seen": 1789788610.960487,
+    "ast_hash": "fb316137178b10ca9efc83fb45d27706",
+    "semantic_hash": ""
+  },
+  "tests/security/quoted-translation-queue.test.sql": {
+    "mtime": 1789788575.83745,
+    "seen": 1789788610.9614868,
+    "ast_hash": "6ba7f34220f6e5a69b734d2f383c3210",
     "semantic_hash": ""
   }
 }

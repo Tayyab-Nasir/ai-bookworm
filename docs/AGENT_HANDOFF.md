@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 quoted translation queue isolation
+
+Migration 20260919120000 adds immutable billing_mode, translator-only quoted
+enqueue, funded-hold running guard and separate quoted claim RPC. Legacy claims
+skip quoted jobs. 57 migrations/41 SQL suites and native CI 35418711607 (16 races)
+pass, source 6ed37a5 pushed. Quoted worker/provider/receipt integration remains next.
+No live changes. Shared note: Codex Sessions/2026-09/2026-09-19-bookworm-quoted-queue.md.
+
 ### 2026-09-19 one-time funded dispatch
 
 Migration 20260919110000 and claimPricedDispatch authorize one provider call
