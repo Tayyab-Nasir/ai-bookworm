@@ -43,25 +43,25 @@ async function until(check, message) {
   while (Date.now() < deadline) { if (await check()) return; await delay(40); }
   throw new Error(message);
 }
-async function fixture() {
+async function fixture(media) {
   const [u, org, ws, other, plan, job] = Array.from({ length: 6 }, () => randomUUID());
   await sql(`insert into auth.users(id,email) values('${u}','native@local.test');
     insert into organizations(id,name,slug,owner_user_id) values('${org}','Native race','${org}','${u}');
     insert into workspaces(id,organization_id,name,slug,created_by) values
       ('${ws}','${org}','First','${ws}','${u}'),('${other}','${org}','Second','${other}','${u}');
     insert into workspace_members(workspace_id,user_id,role) values('${ws}','${u}','editor'),('${other}','${u}','editor');
-    insert into plans(id,name,billing_period,price_cents,entitlements_json) values('${plan}','Native test','month',1000,'{"ai_credits_monthly":1}');
+    insert into plans(id,name,billing_period,price_cents,entitlements_json) values('${plan}','Native test','month',1000,'{"${media.meter}_monthly":1}');
     insert into subscriptions(organization_id,plan_id,status) values('${org}','${plan}','active');`);
   const insert = (workspace, id, agent) => `insert into ai_jobs(id,workspace_id,agent_type,status,input_ref,idempotency_key,created_by)
-    values('${id}','${workspace}','${agent}','running','{}','${id}','${u}');`;
-  return { u, org, ws, job, first: insert(ws, job, 'writer'), second: insert(other, randomUUID(), 'metadata') };
+    values('${id}','${workspace}','${agent}','running','{"creditUnits":1}','${id}','${u}');`;
+  return { u, org, ws, job, first: insert(ws, job, media.first), second: insert(other, randomUUID(), media.second) };
 }
-async function race(kind) {
-  const f = await fixture();
+async function race(kind, media) {
+  const f = await fixture(media);
   if (kind === 'completion') await sql(f.first);
   const held = session();
   const work = kind === 'completion'
-    ? `insert into usage_events(organization_id,workspace_id,user_id,meter,quantity) values('${f.org}','${f.ws}','${f.u}','ai_credits',1);
+    ? `insert into usage_events(ai_job_id,organization_id,workspace_id,user_id,meter,quantity) values('${f.job}','${f.org}','${f.ws}','${f.u}','${media.meter}',1);
        update ai_jobs set status='succeeded' where id='${f.job}';`
     : f.first;
   held.child.stdin.write(`begin; ${work} select 'BOOKWORM_READY';\n`);
@@ -79,9 +79,9 @@ async function race(kind) {
   assert.equal((await held.done).code, 0, held.stderr);
   const result = await contender.done;
   if (kind === 'rollback') assert.equal(result.code, 0, result.stderr);
-  else { assert.notEqual(result.code, 0); assert.match(result.stderr, /23514.*text credit capacity exhausted/s); }
+  else { assert.notEqual(result.code, 0); assert.match(result.stderr, new RegExp(`23514.*${media.label} credit capacity exhausted`, 's')); }
   assert.equal(await sql(`select count(*) from ai_jobs j join workspaces w on w.id=j.workspace_id where w.organization_id='${f.org}' and j.status in ('queued','running');`), kind === 'completion' ? '0' : '1');
-  console.log(`PASS native concurrent ${kind}`);
+  console.log(`PASS native concurrent ${media.label} ${kind}`);
 }
 let created = false;
 try {
@@ -96,7 +96,14 @@ try {
     await sql(await readFile(join(root, 'tests/security', file), 'utf8'));
     console.log(`PASS native assertions ${file}`);
   }
-  for (const kind of ['reservation', 'completion', 'rollback']) await race(kind);
+  for (const media of [
+    { label: 'text', meter: 'ai_credits', first: 'writer', second: 'metadata' },
+    { label: 'image', meter: 'image_credits', first: 'illustrator', second: 'cover_designer' },
+    { label: 'audio', meter: 'audio_credits', first: 'narrator', second: 'narrator' },
+    { label: 'translation', meter: 'translation_credits', first: 'translator', second: 'translator' },
+  ]) {
+    for (const kind of ['reservation', 'completion', 'rollback']) await race(kind, media);
+  }
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');
