@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 durable quote-counting worker
+
+Source 4712d6d adds --prepare-quotes: bounded leased chapter counting, saved
+count recovery, no automatic recount after expired lease, atomic ready proposal.
+238 API tests, workspace TypeScript, 62 migrations/43 SQL suites pass locally.
+No live calls. Proposal GET and quote-review UI remain next. Shared note:
+Codex Sessions/2026-09/2026-09-19-bookworm-quote-counting-worker.md.
+
 ### 2026-09-19 durable quote preparation queue
 
 Source 92ec9ae adds private immutable request snapshots, one active/book and

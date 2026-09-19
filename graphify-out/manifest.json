@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789791149.0116055,
-    "seen": 1789791181.1129653,
-    "ast_hash": "a3993defa89118909876e9e74d4dc910",
+    "mtime": 1789791527.0401933,
+    "seen": 1789791569.834816,
+    "ast_hash": "bae563fb12932f42972fff57ab9e5c16",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2544,9 +2544,9 @@
     "semantic_hash": ""
   },
   "workers/translation/worker.ts": {
-    "mtime": 1789788959.6285675,
-    "seen": 1789789142.0156999,
-    "ast_hash": "5ef4023fb320509c94da2f8bab04a967",
+    "mtime": 1789791721.250393,
+    "seen": 1789791870.2620206,
+    "ast_hash": "b0cb228c3161680d89dae454fde8ac45",
     "semantic_hash": ""
   },
   "apps/web/tests/dashboard.test.ts": {
@@ -3036,9 +3036,27 @@
     "semantic_hash": ""
   },
   "tests/security/translation-quote-requests.test.sql": {
-    "mtime": 1789791408.189942,
-    "seen": 1789791486.3564322,
-    "ast_hash": "ccc1243423c76fffb5b7c16d1499a5ed",
+    "mtime": 1789791766.9206593,
+    "seen": 1789791870.2620206,
+    "ast_hash": "ccf6bb892e50dfe80f544e3494bfb79f",
+    "semantic_hash": ""
+  },
+  "services/api/src/lib/translation-quote-worker.ts": {
+    "mtime": 1789791721.2493842,
+    "seen": 1789791870.2620206,
+    "ast_hash": "afaf48c83dbaa5e1e559fb33238943f9",
+    "semantic_hash": ""
+  },
+  "services/api/src/translation-quote-worker.test.ts": {
+    "mtime": 1789791820.835928,
+    "seen": 1789791870.2620206,
+    "ast_hash": "10c963e82c0ec2ee09717b369a632225",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919170000_translation_quote_worker.sql": {
+    "mtime": 1789791660.1892078,
+    "seen": 1789791870.2620206,
+    "ast_hash": "98220d0f5ff7ee3b3b86e37f47de52c8",
     "semantic_hash": ""
   }
 }
