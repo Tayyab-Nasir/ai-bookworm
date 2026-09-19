@@ -94,7 +94,7 @@ export async function deductCredits(
     throw new AppError(500, "credit deduction could not be recorded");
   }
   if (!data || typeof data !== "object" || !("usage" in data) || !("entry" in data)) {
-    throw new AppError(502, "invalid credit deduction receipt");
+    throw new AppError(500, "invalid credit deduction receipt");
   }
   return data as { usage: unknown; entry: unknown };
 }
