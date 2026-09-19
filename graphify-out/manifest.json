@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789786879.9152963,
-    "seen": 1789786890.7882638,
-    "ast_hash": "3657acda1b1841eeae019173af0da1ca",
+    "mtime": 1789787420.5849433,
+    "seen": 1789787430.329504,
+    "ast_hash": "2cbcbb165e361b6272f765857b8a4aa4",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2340,9 +2340,9 @@
     "semantic_hash": ""
   },
   "docs/PRICING_AND_PLAN_RELEASE.md": {
-    "mtime": 1789785705.2673123,
-    "seen": 1789785715.9196088,
-    "ast_hash": "72e7f9906be4f86e8dd3a8bc8bf49f9c",
+    "mtime": 1789787420.5799353,
+    "seen": 1789787430.329504,
+    "ast_hash": "8ecdab64a2fc38f314a2f17f0a5941df",
     "semantic_hash": ""
   },
   "docs/PROJECT_MAP.md": {
@@ -2895,6 +2895,18 @@
     "mtime": 1789787045.3635335,
     "seen": 1789787096.1989532,
     "ast_hash": "a3270ca17251cb9c26530f0a5d840ddc",
+    "semantic_hash": ""
+  },
+  "services/api/src/lib/usage-pricing.ts": {
+    "mtime": 1789787368.37447,
+    "seen": 1789787430.3285065,
+    "ast_hash": "8248c0ceb00eaa905832346cbd1cad34",
+    "semantic_hash": ""
+  },
+  "services/api/src/usage-pricing.test.ts": {
+    "mtime": 1789787368.375477,
+    "seen": 1789787430.329504,
+    "ast_hash": "a8d1c2ccc33fc34a3bfa9e6b1ae6822f",
     "semantic_hash": ""
   }
 }
