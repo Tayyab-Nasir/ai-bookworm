@@ -17,6 +17,9 @@ export type GeneratedMetadataCandidate = {
   sourceRefs: GeneratedSourceRef[];
 };
 type MetadataFields = { description: string; keywords: string; categories: string };
+type PendingMetadata = { id: string; createdAt: string; status: "queued" | "running" };
+type MetadataHistoryResponse = { drafts: { id: string; createdAt: string; candidate: unknown }[]; pending: PendingMetadata[] };
+export const metadataGenerationBlocked = (pending: PendingMetadata[] | null) => pending === null || pending.length > 0;
 type Memory = {
   book: Book;
   metadata: BookMetadata | null;
@@ -130,6 +133,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const [metadataFields, setMetadataFields] = useState<MetadataFields>({ description: "", keywords: "", categories: "" });
   const [metadataCandidate, setMetadataCandidate] = useState<GeneratedMetadataCandidate | null>(null);
   const [metadataHistory, setMetadataHistory] = useState<{ id: string; createdAt: string; candidate: GeneratedMetadataCandidate }[] | null>(null);
+  const [pendingMetadata, setPendingMetadata] = useState<PendingMetadata[] | null>(null);
   const [metadataTone, setMetadataTone] = useState("compelling");
   const [metadataAudience, setMetadataAudience] = useState("");
   const [metadataGenerationError, setMetadataGenerationError] = useState<string | null>(null);
@@ -143,6 +147,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
+    setPendingMetadata(null);
     try {
       const result = await request<Memory>(`${endpoint}/memory`);
       setMemory(result); setDraft(null); setDeleting(null);
@@ -155,6 +160,13 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       setMetadataHistory(null);
       setIdentityDirty(false); setMetadataDirty(false); setEntryDirty(false);
       setFormRevision((value) => value + 1);
+      if (result.canEdit) {
+        try {
+          const history = await request<MetadataHistoryResponse>(`${endpoint}/metadata/drafts`);
+          setMetadataHistory(history.drafts.map((draft) => ({ ...draft, candidate: parseGeneratedMetadataCandidate(draft.candidate) })));
+          setPendingMetadata(history.pending);
+        } catch (reason) { setMetadataGenerationError(messageOf(reason)); }
+      }
     } catch (reason) { setError(messageOf(reason)); }
     finally { setLoading(false); }
   }, [endpoint]);
@@ -253,15 +265,17 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   async function loadMetadataHistory() {
     if (!memory?.canEdit || busy) return;
     setSaving("metadata-history"); setMetadataGenerationError(null);
+    setPendingMetadata(null);
     try {
-      const result = await request<{ drafts: { id: string; createdAt: string; candidate: unknown }[] }>(`${endpoint}/metadata/drafts`);
+      const result = await request<MetadataHistoryResponse>(`${endpoint}/metadata/drafts`);
       setMetadataHistory(result.drafts.map((draft) => ({ ...draft, candidate: parseGeneratedMetadataCandidate(draft.candidate) })));
+      setPendingMetadata(result.pending);
     } catch (reason) { setMetadataGenerationError(messageOf(reason)); }
     finally { setSaving(null); }
   }
 
   async function generateMetadata() {
-    if (!memory?.canEdit || busy) return;
+    if (!memory?.canEdit || busy || metadataGenerationBlocked(pendingMetadata)) return;
     const idempotencyKey = metadataRequestKey ?? crypto.randomUUID();
     setMetadataRequestKey(idempotencyKey); setGeneratingMetadata(true); setMetadataGenerationError(null); setNotice(null);
     try {
@@ -388,7 +402,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           {memory.canEdit && <div className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[0.05] p-4 sm:p-5" aria-labelledby="metadata-draft-title">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div><h3 id="metadata-draft-title" className="font-medium text-violet-50">AI metadata draft</h3><p id="metadata-draft-help" className="mt-1 max-w-xl text-xs leading-5 text-[#aaa]">Create a reviewed suggestion from this book’s saved manuscript and Book Bible. Generation uses AI credits. Nothing is added to the form or saved until you choose it.</p></div>
-              <button type="button" onClick={() => void generateMetadata()} disabled={generatingMetadata || !!saving} aria-describedby="metadata-draft-help" className={secondaryClass}>{generatingMetadata ? "Generating draft…" : metadataGenerationError ? "Try generation again" : "Generate draft"}</button>
+              <button type="button" onClick={() => void generateMetadata()} disabled={generatingMetadata || !!saving || metadataGenerationBlocked(pendingMetadata)} aria-describedby="metadata-draft-help" className={secondaryClass}>{generatingMetadata ? "Generating draft…" : metadataGenerationError ? "Try generation again" : "Generate draft"}</button>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <label className="text-xs text-[#bbb]">Description tone<select value={metadataTone} onChange={(event) => setMetadataTone(event.target.value)} disabled={generatingMetadata || Boolean(metadataRequestKey)} className={inputClass}><option value="compelling">Compelling</option><option value="warm">Warm</option><option value="literary">Literary</option><option value="direct">Direct</option><option value="playful">Playful</option></select></label>
@@ -396,6 +410,8 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               {metadataRequestKey && !generatingMetadata && <p role="status" className="text-xs text-amber-100 sm:col-span-2">The previous request is not resolved yet. Retry to recover that draft using the same brief and request key, without starting another generation.</p>}
             </div>
             <div className="mt-4 border-t border-white/10 pt-4">
+              {pendingMetadata === null && <p role="status" className="mb-3 text-xs text-amber-100">Verify saved request status before starting another generation. Load saved drafts to retry the check.</p>}
+              {pendingMetadata && pendingMetadata.length > 0 && <div role="status" className="mb-3 text-sm text-amber-100"><p>You have an unresolved metadata request. Refresh saved drafts to check its result; no new generation will start here while it is pending.</p><ul className="mt-2 text-xs">{pendingMetadata.map((job) => <li key={job.id}>{job.status} · {new Date(job.createdAt).toLocaleString()} · request {job.id}</li>)}</ul><p className="mt-2 text-xs">If it remains stuck, contact support with the request ID. Age alone does not prove a job failed.</p></div>}
               <button type="button" onClick={() => void loadMetadataHistory()} disabled={busy} className={secondaryClass}>{saving === "metadata-history" ? "Loading saved drafts…" : "Load saved drafts · no credits"}</button>
               {metadataHistory && <div className="mt-3 space-y-2">
                 <p className="text-xs text-[#aaa]">Latest 20 successful generations. These may reference older manuscript versions. Opening does not change your form or start generation.</p>

@@ -101,7 +101,7 @@ test("saved metadata drafts recover across fresh app instances without leaking j
     const response = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/metadata/drafts`, headers: auth });
     assert.equal(response.statusCode, 200, response.body);
     assert.equal(response.headers["cache-control"], "private, no-store");
-    assert.deepEqual(response.json(), { drafts: [{ id: job.id, createdAt: TIME, candidate }] });
+    assert.deepEqual(response.json(), { pending: [], drafts: [{ id: job.id, createdAt: TIME, candidate }] });
     assert.equal(response.body.includes("private"), false);
   }
   assert.equal(store.ai_jobs.length, 5);
@@ -116,6 +116,23 @@ test("metadata history requires authentication and membership and reports databa
   assert.equal((await app.inject({ method: "GET", url: `/v1/books/${OTHER_BOOK}/metadata/drafts`, headers: auth })).statusCode, 404);
   const failing = await appWith(initialStore(), "ai_jobs"); t.after(() => failing.close());
   assert.equal((await failing.inject({ method: "GET", url, headers: auth })).statusCode, 500);
+});
+
+test("pending metadata status is scoped to this author and book without exposing inputs", async (t) => {
+  const store = initialStore();
+  const job = { id: randomUUID(), book_id: BOOK, agent_type: "metadata", status: "running", created_by: USER,
+    created_at: TIME, input_ref: { secret: "private" }, idempotency_key: "private-key" };
+  store.ai_jobs = [job, { ...job, id: randomUUID(), created_by: randomUUID() },
+    { ...job, id: randomUUID(), book_id: OTHER_BOOK }, { ...job, id: randomUUID(), agent_type: "writer" },
+    { ...job, id: randomUUID(), status: "failed" }];
+  const app = await appWith(store); t.after(() => app.close());
+  const read = () => app.inject({ method: "GET", url: `/v1/books/${BOOK}/metadata/drafts`, headers: auth });
+  const response = await read();
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { drafts: [], pending: [{ id: job.id, createdAt: TIME, status: "running" }] });
+  assert.equal(response.body.includes("private"), false);
+  job.status = "failed";
+  assert.deepEqual((await read()).json().pending, []);
 });
 
 test("book memory requires authentication and active workspace membership", async (t) => {

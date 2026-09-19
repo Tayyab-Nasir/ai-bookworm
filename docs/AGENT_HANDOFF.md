@@ -23,6 +23,17 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 pending metadata visibility
+
+Metadata history also returns safe id/time/status fields for the current user's
+queued/running metadata jobs in this book. The editor checks history on load and
+blocks new generation while status is unknown or pending; refresh is read-only.
+Failed reads fail closed, and terminal jobs disappear from pending results.
+No prompt/key exposure, stale-age cancellation, or automatic retry spending.
+This is a UI recovery guard, not a database concurrency lock across tabs.
+200 API and 68 web tests pass; API/web TypeScript passed. Browser acceptance
+and stuck-job operational reconciliation still require work.
+
 ### 2026-09-19 saved metadata draft recovery
 
 GET /books/:bookId/metadata/drafts returns the latest 20 successful metadata

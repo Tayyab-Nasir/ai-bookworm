@@ -145,8 +145,13 @@ export function metadataGenerationRoutes(app: FastifyInstance, options: { fetche
       .eq("book_id", bookId.data).eq("agent_type", "metadata").eq("status", "succeeded")
       .order("created_at", { ascending: false }).limit(20);
     if (error) throw new AppError(500, "Could not load saved metadata drafts.");
+    const { data: pending, error: pendingError } = await user.from("ai_jobs")
+      .select("id,created_at,status").eq("book_id", bookId.data).eq("agent_type", "metadata")
+      .eq("created_by", req.userId).in("status", ["queued", "running"])
+      .order("created_at", { ascending: false }).limit(20);
+    if (pendingError) throw new AppError(500, "Could not verify pending metadata requests.");
     reply.header("cache-control", "private, no-store");
-    return { drafts: (data ?? []).flatMap((job) => {
+    return { pending: (pending ?? []).map((job) => ({ id: job.id, createdAt: job.created_at, status: job.status })), drafts: (data ?? []).flatMap((job) => {
       const candidate = candidateFromJob(job);
       return candidate ? [{ id: job.id, createdAt: job.created_at, candidate }] : [];
     }) };
