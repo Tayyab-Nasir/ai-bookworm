@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 accepted media request immutability (local only)
+
+Migration 20260919080000 prevents narrator/translator input and billing-identity
+mutation across statuses. Regression reproduced before fixing. Native CI run
+35417274720 passed for source 755c5f7: 53 migrations, 38 SQL suites and 12 races.
+Normal lifecycle updates remain allowed. No live migration or paid generation.
+Shared note: Codex Sessions/2026-09/2026-09-19-bookworm-media-immutability.md.
+
 ### 2026-09-19 media completion accounting (local migration only)
 
 Migration 20260919070000 serializes audio/translation/image usage insertion with
