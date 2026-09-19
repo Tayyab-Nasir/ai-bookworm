@@ -113,6 +113,33 @@ async function deductionRace(replay) {
   assert.equal(await sql(`select sum(amount) from credit_ledger where user_id='${user}';`), '0');
   console.log(`PASS native deduction ${replay ? 'receipt replay' : 'competing debit rollback'}`);
 }
+async function fundedQuoteRace() {
+  const f = await fixture({ meter: 'ai_credits', first: 'writer', second: 'metadata' });
+  const a = randomUUID(); const b = randomUUID();
+  // Synthetic non-provider jobs isolate ledger concurrency from operational quotas.
+  await sql(`insert into ai_jobs(id,workspace_id,agent_type,input_ref,idempotency_key,created_by) values
+    ('${a}','${f.ws}','test_quote','{}','${a}','${f.u}'),('${b}','${f.ws}','test_quote','{}','${b}','${f.u}');
+    insert into credit_ledger(user_id,source,amount,balance_after) values('${f.u}','purchase',2,2);`);
+  const quote = (job) => `jsonb_build_object('scope',jsonb_build_object('jobId','${job}','workspaceId','${f.ws}','userId','${f.u}'),
+    'reservedCredits','2','fingerprint',repeat('b',64),'policy',jsonb_build_object('approved',true,'version','test'),
+    'price',jsonb_build_object('version','test'),'createdAt',now()-interval '1 second','expiresAt',now()+interval '10 minutes')`;
+  const held = session();
+  held.child.stdin.write(`begin; set request.jwt.claim.role='service_role'; select reserve_funded_usage_quote(${quote(a)}); select 'BOOKWORM_READY';\n`);
+  await until(() => { assert.equal(held.ended, false, held.stderr); return held.stdout.includes('BOOKWORM_READY'); }, 'Quote holder not ready');
+  const name = `quote_${randomUUID().replaceAll('-', '')}`;
+  const contender = session(database, name);
+  contender.child.stdin.end(`set request.jwt.claim.role='service_role'; select reserve_funded_usage_quote(${quote(b)});`);
+  await until(async () => {
+    assert.equal(contender.ended, false, contender.stderr);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${name}' and wait_event_type='Lock';`) === '1';
+  }, 'Quote contender did not wait for funds');
+  held.child.stdin.end('commit;\n'); assert.equal((await held.done).code, 0, held.stderr);
+  const result = await contender.done;
+  assert.notEqual(result.code, 0); assert.match(result.stderr, /23514.*insufficient credits/s);
+  assert.equal(await sql(`select count(*) from funded_usage_quotes where user_id='${f.u}';`), '1');
+  assert.equal(await sql(`select sum(amount) from credit_ledger where user_id='${f.u}';`), '0');
+  console.log('PASS native competing funded quotes');
+}
 let created = false;
 try {
   assert.equal(await sql("select count(*) from pg_roles where rolname in ('anon','authenticated','service_role');", 'postgres'), '0', 'Refusing a reused/shared server: Supabase roles already exist');
@@ -136,6 +163,7 @@ try {
   }
   await deductionRace(true);
   await deductionRace(false);
+  await fundedQuoteRace();
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');
