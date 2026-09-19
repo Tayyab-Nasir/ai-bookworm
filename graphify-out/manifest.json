@@ -336,9 +336,9 @@
     "semantic_hash": ""
   },
   "apps/web/components/BookMemoryClient.tsx": {
-    "mtime": 1789783273.5294132,
-    "seen": 1789783283.0723677,
-    "ast_hash": "7078db0d739d8a715718f0a307c86ab2",
+    "mtime": 1789783853.1425169,
+    "seen": 1789783950.5290976,
+    "ast_hash": "a38e64251a8af0c549431d4874b78019",
     "semantic_hash": ""
   },
   "apps/web/components/BookSearchPanel.tsx": {
@@ -924,10 +924,10 @@
     "semantic_hash": "ae3f6cebab8e2e07e9adb129c48cbea3"
   },
   "services/api/src/ai.test.ts": {
-    "mtime": 1789184977.6620274,
-    "seen": 1789189271.7201564,
-    "ast_hash": "272f102af9e8dbd89e007ced36f9338d",
-    "semantic_hash": "272f102af9e8dbd89e007ced36f9338d"
+    "mtime": 1789783886.225516,
+    "seen": 1789783950.530097,
+    "ast_hash": "50924209d949f1bb95f43a8ce4bfaad2",
+    "semantic_hash": ""
   },
   "services/api/src/app.test.ts": {
     "mtime": 1788665191.8966503,
@@ -1278,9 +1278,9 @@
     "semantic_hash": "afe96bc7718e668e82f396a946010499"
   },
   "services/api/src/routes/metadata-generation.ts": {
-    "mtime": 1789783184.1657636,
-    "seen": 1789783283.0729365,
-    "ast_hash": "145a442cb5315fa1a2bccc157dcad8f7",
+    "mtime": 1789783853.140518,
+    "seen": 1789783950.530097,
+    "ast_hash": "a9df92b6c1324cc8262fa3fd051cc4c5",
     "semantic_hash": ""
   },
   "services/api/src/routes/publishing.ts": {
@@ -2184,10 +2184,10 @@
     "semantic_hash": "52a341d230a35e2aa3d1ba1c8d37a4fe"
   },
   "tests/security/metadata-ai-workflow.test.sql": {
-    "mtime": 1788755739.7440796,
-    "seen": 1789189310.4342208,
-    "ast_hash": "2e6ea23e4ddb1ca446b5fcdcef99d0f0",
-    "semantic_hash": "2e6ea23e4ddb1ca446b5fcdcef99d0f0"
+    "mtime": 1789783853.143517,
+    "seen": 1789783950.530097,
+    "ast_hash": "2939f7c97d38b2b25f1553121c6314cf",
+    "semantic_hash": ""
   },
   "tests/security/onboarding.test.sql": {
     "mtime": 1789185247.7507446,
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789783273.531417,
-    "seen": 1789783283.0735161,
-    "ast_hash": "9314173fc7f16b788466c0f761cc3516",
+    "mtime": 1789783938.809426,
+    "seen": 1789783950.530097,
+    "ast_hash": "f087a8de2d891b734ffe679397f22a71",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2364,9 +2364,9 @@
     "semantic_hash": ""
   },
   "docs/operations.md": {
-    "mtime": 1789708159.1546519,
-    "seen": 1789708175.606106,
-    "ast_hash": "756cb1e654b734514f10a5916c39c167",
+    "mtime": 1789783938.8104346,
+    "seen": 1789783950.530097,
+    "ast_hash": "d2f80ec2ae29e03d83d2e832a38d63d8",
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
@@ -2793,6 +2793,12 @@
     "mtime": 1789783184.169767,
     "seen": 1789783283.0729365,
     "ast_hash": "a4f5bc4f0a855b356def32f9c35ad260",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919030000_metadata_single_active_request.sql": {
+    "mtime": 1789783853.1395144,
+    "seen": 1789783950.530097,
+    "ast_hash": "6aaabc7e1cb8bbd907f2242ad6784339",
     "semantic_hash": ""
   }
 }
