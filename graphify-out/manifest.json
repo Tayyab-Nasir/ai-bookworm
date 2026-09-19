@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789785705.2657812,
-    "seen": 1789785715.9196088,
-    "ast_hash": "227896ceb4995f266f051d0c7c6a0bba",
+    "mtime": 1789786334.316883,
+    "seen": 1789786343.9251952,
+    "ast_hash": "363fd7f79c246a18f85434d50ba468d1",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2847,6 +2847,18 @@
     "mtime": 1789785660.3746293,
     "seen": 1789785715.9196088,
     "ast_hash": "1078c4e489185980d4ab2ea8df829876",
+    "semantic_hash": ""
+  },
+  "tests/security/run-native-postgres.mjs": {
+    "mtime": 1789786294.1365266,
+    "seen": 1789786343.9251952,
+    "ast_hash": "fdb363972def6f21850b16f5b7da03a7",
+    "semantic_hash": ""
+  },
+  ".github/workflows/native-database.yml": {
+    "mtime": 1789786294.1375306,
+    "seen": 1789786343.9251952,
+    "ast_hash": "77b40c3b3bfa17c003a109aa9f9feb31",
     "semantic_hash": ""
   }
 }
