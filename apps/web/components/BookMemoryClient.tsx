@@ -60,6 +60,11 @@ async function request<T>(path: string, method = "GET", body?: unknown): Promise
 }
 
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "Something went wrong. Please try again.";
+export function metadataRequestCanRestart(error: unknown): boolean {
+  const failure = error as { status?: number; details?: Record<string, unknown> } | null;
+  // A network/5xx response may follow an accepted, billable job. Keep its key.
+  return failure?.details?.status === "failed" || [400, 401, 403, 404, 422].includes(failure?.status ?? 0);
+}
 const emptyDraft = (): EntryDraft => ({ type: "character", name: "", description: "", attributes: [], imageAssetIds: [], sourceRefs: [] });
 
 const stringList = (value: unknown, limit: number, maxLength: number) => Array.isArray(value)
@@ -254,14 +259,12 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         ...(metadataAudience.trim() ? { audience: metadataAudience.trim() } : {}),
       });
       if (!result.candidate) {
-        setMetadataRequestKey(null);
-        throw new Error("The previous generation attempt did not complete. Choose Generate draft to start a new request.");
+        throw new Error("The generation response is incomplete. Retry the same request to recover its draft.");
       }
       setMetadataCandidate(parseGeneratedMetadataCandidate(result.candidate));
       setMetadataRequestKey(null);
     } catch (reason) {
-      const requestError = reason as Error & { details?: Record<string, unknown> };
-      if (requestError.details?.status === "failed") setMetadataRequestKey(null);
+      if (metadataRequestCanRestart(reason)) setMetadataRequestKey(null);
       setMetadataGenerationError(messageOf(reason));
     }
     finally { setGeneratingMetadata(false); }
@@ -376,8 +379,9 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               <button type="button" onClick={() => void generateMetadata()} disabled={generatingMetadata || !!saving} aria-describedby="metadata-draft-help" className={secondaryClass}>{generatingMetadata ? "Generating draft…" : metadataGenerationError ? "Try generation again" : "Generate draft"}</button>
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="text-xs text-[#bbb]">Description tone<select value={metadataTone} onChange={(event) => { setMetadataTone(event.target.value); setMetadataRequestKey(null); }} disabled={generatingMetadata} className={inputClass}><option value="compelling">Compelling</option><option value="warm">Warm</option><option value="literary">Literary</option><option value="direct">Direct</option><option value="playful">Playful</option></select></label>
-              <label className="text-xs text-[#bbb]">Intended audience · optional<input value={metadataAudience} onChange={(event) => { setMetadataAudience(event.target.value); setMetadataRequestKey(null); }} disabled={generatingMetadata} maxLength={500} className={inputClass} placeholder="e.g. adult cozy-fantasy readers" /></label>
+              <label className="text-xs text-[#bbb]">Description tone<select value={metadataTone} onChange={(event) => setMetadataTone(event.target.value)} disabled={generatingMetadata || Boolean(metadataRequestKey)} className={inputClass}><option value="compelling">Compelling</option><option value="warm">Warm</option><option value="literary">Literary</option><option value="direct">Direct</option><option value="playful">Playful</option></select></label>
+              <label className="text-xs text-[#bbb]">Intended audience · optional<input value={metadataAudience} onChange={(event) => setMetadataAudience(event.target.value)} disabled={generatingMetadata || Boolean(metadataRequestKey)} maxLength={500} className={inputClass} placeholder="e.g. adult cozy-fantasy readers" /></label>
+              {metadataRequestKey && !generatingMetadata && <p role="status" className="text-xs text-amber-100 sm:col-span-2">The previous request is not resolved yet. Retry to recover that draft using the same brief and request key, without starting another generation.</p>}
             </div>
             <div aria-live="polite" aria-atomic="true">
               {generatingMetadata && <p role="status" className="mt-4 text-sm text-violet-100">Reading saved book evidence and preparing a draft…</p>}

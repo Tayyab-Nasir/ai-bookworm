@@ -23,6 +23,15 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 metadata retry safety
+
+BookMemoryClient now locks tone/audience while an unresolved metadata generation
+key exists. Editing previously discarded the key after a lost response, allowing
+another paid generation. Network/5xx/running and incomplete-success responses
+retain the key; confirmed failed jobs and pre-generation validation failures
+allow correction. This is tab-local recovery, not cross-session persistence.
+67 web tests passed; full product/release gates remain open.
+
 ### 2026-09-18 fixed EPUB layout controls
 
 EPUB 1.8.0 honors saved fixed_layout trim, margins and typography. Publishing
