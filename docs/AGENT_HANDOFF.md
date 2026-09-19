@@ -21,7 +21,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Read git status before edits. Preserve shared uncommitted work. Saved
   completion claims require current code and behavioral verification.
 
-## Current checkpoint: 2026-09-12
+## Current checkpoint: 2026-09-19
 
 ### 2026-09-19 Story Blueprint authoring (local only)
 
@@ -34,12 +34,13 @@ manuscript text to a provider, create an AI job, or spend credits. The new
 database migration `20260919190000_story_blueprints.sql` has strict JSON bounds,
 RLS, service-owned RPCs and a materialization receipt; it is NOT applied live.
 The API/client/OpenAPI and responsive `/books/<bookId>/plan` screen are wired.
-The full local `npm run verify` gate passes: 246 API tests, 73 web tests, 64
-migrations/44 SQL assertion files, 303 service tests, 12 E2E tests, 30 security
-tests, load smoke and deterministic evals. Native-harness syntax and a
-production web build pass. The new actual PostgreSQL materialization race still
-needs its GitHub Actions run after the source checkpoint is pushed. No live
-migration, provider use, customer-data write or deployment occurred. Shared:
+Source `5c94d9a` is pushed to
+`codex/live-platform-checkpoint-20260912`. The full local `npm run verify` gate
+passes: 246 API tests, 73 web tests, 64 migrations/44 SQL assertion files, 303
+service tests, 12 E2E tests, 30 security tests, load smoke and deterministic
+evals. Native-harness syntax and a production web build pass. Native GitHub
+Actions run `35424562823` passed the real PostgreSQL materialization race. No
+live migration, provider use, customer-data write or deployment occurred. Shared:
 Codex Sessions/2026-09/2026-09-19-bookworm-story-blueprint.md.
 
 ### 2026-09-19 quote-only translation retirement
