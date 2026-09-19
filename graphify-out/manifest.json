@@ -606,9 +606,9 @@
     "semantic_hash": "8843cb12ab93bfc002e8ab819671a3e7"
   },
   "packages/api-client/src/index.ts": {
-    "mtime": 1789789441.1158857,
-    "seen": 1789789831.9324787,
-    "ast_hash": "7dc254ffe368806fdc05849de7c2d3a1",
+    "mtime": 1789790079.5190873,
+    "seen": 1789790176.1045678,
+    "ast_hash": "e88f40e81a0db5c4c5755802e8aaf480",
     "semantic_hash": ""
   },
   "packages/api-client/tsconfig.json": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789789203.794586,
-    "seen": 1789789249.2186396,
-    "ast_hash": "50af83e54e8fde923bdb7c6c54f963bd",
+    "mtime": 1789789926.4739845,
+    "seen": 1789789937.4994483,
+    "ast_hash": "f9d3769cb7ead0679aa65bb818b5647d",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2496,9 +2496,9 @@
     "semantic_hash": ""
   },
   "apps/web/components/TranslationStudio.tsx": {
-    "mtime": 1789789837.1097393,
-    "seen": 1789789851.539641,
-    "ast_hash": "452c4395acda0039ab4f3138eccbe5d8",
+    "mtime": 1789790079.5200908,
+    "seen": 1789790176.1045678,
+    "ast_hash": "89603d2bbe246a92aa3506830fd4e0b6",
     "semantic_hash": ""
   },
   "services/api/src/lib/translation-generation.ts": {
@@ -2514,9 +2514,9 @@
     "semantic_hash": ""
   },
   "services/api/src/routes/translations.ts": {
-    "mtime": 1789789441.1138823,
-    "seen": 1789789831.9324787,
-    "ast_hash": "4af080de6336591d9fadbf83b207b6cb",
+    "mtime": 1789790040.1006572,
+    "seen": 1789790176.1045678,
+    "ast_hash": "02a01056d9bc7e42b3debfedc5586bc9",
     "semantic_hash": ""
   },
   "services/api/src/translation-worker.test.ts": {
@@ -2526,9 +2526,9 @@
     "semantic_hash": ""
   },
   "services/api/src/translations.test.ts": {
-    "mtime": 1789789552.9419782,
-    "seen": 1789789831.9324787,
-    "ast_hash": "59cb007dee92e781fec52a2d71ca3b43",
+    "mtime": 1789790120.8612792,
+    "seen": 1789790176.1045678,
+    "ast_hash": "36c7357c267e530c967b82237d26c30d",
     "semantic_hash": ""
   },
   "supabase/migrations/20260912180000_translation_workflow.sql": {
@@ -2973,6 +2973,24 @@
     "mtime": 1789789393.9874115,
     "seen": 1789789831.9324787,
     "ast_hash": "1a8b6467ec322ed9126a2dc73c06da01",
+    "semantic_hash": ""
+  },
+  "services/api/src/lib/translation-billing.ts": {
+    "mtime": 1789790040.0986474,
+    "seen": 1789790176.1045678,
+    "ast_hash": "d5da425a47695b18469b82b936ff07f4",
+    "semantic_hash": ""
+  },
+  "services/api/src/translation-billing.test.ts": {
+    "mtime": 1789790120.8602705,
+    "seen": 1789790176.1045678,
+    "ast_hash": "20ca19ab9bb7900211f8235f9bbb24f9",
+    "semantic_hash": ""
+  },
+  "apps/web/tests/translation-billing-client.test.ts": {
+    "mtime": 1789790175.892775,
+    "seen": 1789790194.6635358,
+    "ast_hash": "ffbb5de9708ac5f94192b145b95b9f2c",
     "semantic_hash": ""
   }
 }

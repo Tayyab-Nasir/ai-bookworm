@@ -23,6 +23,15 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 private translation billing summary
+
+Source a6e5829 adds payer-only credit totals endpoint/client/UI: held, charged,
+returned and review counts, without exposing private quotes or receipts. Missing
+or inconsistent accounting is unavailable, not zero. 225 API/69 web tests and
+workspace TypeScript pass. No live changes or browser acceptance. Catalog and
+quoted public enqueue remain next. Latest shared note:
+Codex Sessions/2026-09/2026-09-19-bookworm-billing-summary.md.
+
 ### 2026-09-19 quoted translation cancellation
 
 Source 1fb778a adds creator-only pre-dispatch cancellation, one-time held-credit
