@@ -23,6 +23,15 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 persistent funded quotes (local only)
+
+Migration 20260919100000 persists service-owned quotes with atomic ledger holds,
+one-time settlement/release and review retention. Legacy and quoted debits cannot
+both charge a job. Source 81ea1ec; 55 migrations/40 SQL suites and native CI
+35418020168 (15 races) pass. Service calculator/receipt adapter and generation UI
+integration remain next; SQL does not authenticate provider receipts or price math.
+Shared note: Codex Sessions/2026-09/2026-09-19-bookworm-funded-quotes.md.
+
 ### 2026-09-19 versioned usage pricing math
 
 usage-pricing.ts adds exact version-pinned quote/settlement math; 210 API tests

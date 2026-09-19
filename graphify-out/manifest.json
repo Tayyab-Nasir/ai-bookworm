@@ -2850,9 +2850,9 @@
     "semantic_hash": ""
   },
   "tests/security/run-native-postgres.mjs": {
-    "mtime": 1789787086.6237867,
-    "seen": 1789787096.1989532,
-    "ast_hash": "1221a831c233da9d220b2bb29a25a84f",
+    "mtime": 1789787706.3196025,
+    "seen": 1789787715.071304,
+    "ast_hash": "6d31f2a914ade2b340f15dad569c0752",
     "semantic_hash": ""
   },
   ".github/workflows/native-database.yml": {
@@ -2907,6 +2907,18 @@
     "mtime": 1789787368.375477,
     "seen": 1789787430.329504,
     "ast_hash": "a8d1c2ccc33fc34a3bfa9e6b1ae6822f",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919100000_funded_usage_quotes.sql": {
+    "mtime": 1789787657.633722,
+    "seen": 1789787715.071304,
+    "ast_hash": "d09cda3aa5cca398dcb1cce4e42a4445",
+    "semantic_hash": ""
+  },
+  "tests/security/funded-quotes.test.sql": {
+    "mtime": 1789787657.6347218,
+    "seen": 1789787715.071304,
+    "ast_hash": "67e1674455f8698e146a1d90dca36ba4",
     "semantic_hash": ""
   }
 }
