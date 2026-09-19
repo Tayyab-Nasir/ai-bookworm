@@ -210,6 +210,213 @@ async function proposalAcceptanceRace(mode) {
   assert.equal(await sql(`select accepted_project_id from translation_quote_proposals where user_id='${f.u}' and accepted_project_id is not null;`), winner);
   console.log(`PASS native translation proposal ${mode}`);
 }
+const serviceRole = "set request.jwt.claim.role='service_role';";
+function firstJson(output, message) {
+  const line = output.split('\n').find((entry) => entry.startsWith('{'));
+  assert.ok(line, `${message}: ${output}`);
+  return JSON.parse(line);
+}
+function quoteCatalog() {
+  return `jsonb_build_object('version','native-test','approved',true,
+    'effectiveAt',clock_timestamp()-interval '1 minute','expiresAt',clock_timestamp()+interval '30 minutes',
+    'entries',jsonb_build_array(jsonb_build_object('id','test-model','price',jsonb_build_object('model','synthetic'))))`;
+}
+function quoteCount() {
+  return `jsonb_build_object('inputTokens',12,'inputSha256',repeat('a',64),'model','synthetic')`;
+}
+function claimQuoteSql() {
+  return `${serviceRole} select json_build_object('id',id,'leaseToken',lease_token,'chapters',chapters_json,'counts',counts_json)::text
+    from claim_translation_quote_request();`;
+}
+async function quoteRequestFixture() {
+  const f = await fixture({ meter: 'translation_credits', first: 'translator', second: 'translator' });
+  const [book, chapter, document] = Array.from({ length: 3 }, () => randomUUID());
+  await sql(`insert into books(id,workspace_id,title,author_name,language,created_by)
+      values('${book}','${f.ws}','Concurrent quote preparation','Author','en','${f.u}');
+    insert into chapters(id,book_id,order_index,title) values('${chapter}','${book}',0,'Chapter');
+    insert into document_versions(id,chapter_id,version_number,content_json,plain_text,word_count,created_by)
+      values('${document}','${chapter}',1,'{}','Source',1,'${f.u}');
+    update chapters set current_document_version_id='${document}' where id='${chapter}';`);
+  const request = await sql(`${serviceRole} select (request_translation_quote('${book}','${f.u}','es','test-model',${quoteCatalog()},'${randomUUID()}')).id;`);
+  return { ...f, book, chapter, document, request };
+}
+async function claimQuoteRequest() {
+  const row = await sql(claimQuoteSql());
+  assert.notEqual(row, '', 'Expected a queued quote preparation request');
+  return JSON.parse(row);
+}
+function recordQuoteSql(request, leaseToken, jobId) {
+  return `${serviceRole} select record_translation_quote_count('${request}','${leaseToken}','${jobId}',${quoteCount()});`;
+}
+function proposalChaptersSql(request, f) {
+  return `(select jsonb_agg(c||jsonb_build_object('quote',jsonb_build_object(
+    'scope',jsonb_build_object('jobId',c->>'jobId','userId','${f.u}','workspaceId','${f.ws}','inputSha256',repeat('a',64)),
+    'reservedCredits','2','expiresAt',clock_timestamp()+interval '10 minutes')) order by ord)
+    from jsonb_array_elements((select chapters_json from translation_quote_requests where id='${request}'))
+      with ordinality as entries(c,ord))`;
+}
+function completeQuoteSql(request, leaseToken, f) {
+  return `${serviceRole} select complete_translation_quote_request('${request}','${leaseToken}',${proposalChaptersSql(request, f)});`;
+}
+async function quotePreparationClaimRace() {
+  const f = await quoteRequestFixture();
+  const held = session();
+  held.child.stdin.write(`begin; ${claimQuoteSql()} select 'BOOKWORM_READY';\n`);
+  await until(() => {
+    assert.equal(held.ended, false, held.stderr);
+    return held.stdout.includes('BOOKWORM_READY');
+  }, 'Quote claim holder did not become ready');
+  const claimed = firstJson(held.stdout, 'Quote claim holder did not return a lease');
+  assert.equal(claimed.id, f.request);
+  assert.ok(claimed.leaseToken);
+  const name = `quote_claim_${randomUUID().replaceAll('-', '')}`;
+  const contender = session(database, name); contender.child.stdin.end(claimQuoteSql());
+  // The claim uses FOR UPDATE SKIP LOCKED: a second worker must return promptly,
+  // rather than block and accidentally receive the same request after commit.
+  await until(() => contender.ended, `Quote claim contender did not skip the locked request: ${contender.stderr}`);
+  const result = await contender.done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout.trim(), '');
+  held.child.stdin.end('commit;\n');
+  assert.equal((await held.done).code, 0, held.stderr);
+  assert.equal(await sql(`select status from translation_quote_requests where id='${f.request}';`), 'running');
+  assert.equal(await sql(`select count(*) from translation_quote_requests where id='${f.request}' and lease_token is not null;`), '1');
+  console.log('PASS native quote preparation claim skip locked');
+}
+async function quoteCountRecoveryRace() {
+  const f = await quoteRequestFixture();
+  const claimed = await claimQuoteRequest();
+  const jobId = claimed.chapters[0].jobId;
+  const held = session();
+  held.child.stdin.write(`begin; ${recordQuoteSql(f.request, claimed.leaseToken, jobId)} select 'BOOKWORM_READY';\n`);
+  await until(() => {
+    assert.equal(held.ended, false, held.stderr);
+    return held.stdout.includes('BOOKWORM_READY');
+  }, 'Quote count holder did not become ready');
+  const duplicateName = `quote_count_${randomUUID().replaceAll('-', '')}`;
+  const duplicate = session(database, duplicateName); duplicate.child.stdin.end(recordQuoteSql(f.request, claimed.leaseToken, jobId));
+  await until(async () => {
+    assert.equal(duplicate.ended, false, duplicate.stderr);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${duplicateName}' and wait_event_type='Lock';`) === '1';
+  }, 'Duplicate quote count did not wait for the request lock');
+  const failureName = `quote_fail_${randomUUID().replaceAll('-', '')}`;
+  const failure = session(database, failureName);
+  failure.child.stdin.end(`${serviceRole} select fail_translation_quote_request('${f.request}','${claimed.leaseToken}');`);
+  await until(async () => {
+    assert.equal(failure.ended, false, failure.stderr);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${failureName}' and wait_event_type='Lock';`) === '1';
+  }, 'Competing quote failure did not wait for the request lock');
+  held.child.stdin.end('commit;\n');
+  assert.equal((await held.done).code, 0, held.stderr);
+  const duplicateResult = await duplicate.done;
+  assert.notEqual(duplicateResult.code, 0);
+  assert.match(duplicateResult.stderr, /40001.*quote lease lost/s);
+  const failureResult = await failure.done;
+  assert.equal(failureResult.code, 0, failureResult.stderr);
+  assert.equal(failureResult.stdout.trim(), 'f');
+  assert.equal(await sql(`select status from translation_quote_requests where id='${f.request}';`), 'queued');
+  assert.equal(await sql(`select counts_json->'${jobId}'->>'inputTokens' from translation_quote_requests where id='${f.request}';`), '12');
+  assert.equal(await sql(`select count(*) from translation_quote_requests r cross join lateral jsonb_object_keys(r.counts_json) where r.id='${f.request}';`), '1');
+  const resumed = await claimQuoteRequest();
+  assert.equal(resumed.id, f.request);
+  assert.equal(resumed.counts[jobId].inputTokens, 12);
+  console.log('PASS native quote count persisted through competing recovery');
+}
+async function quoteCompletionRace() {
+  const f = await quoteRequestFixture();
+  let claimed = await claimQuoteRequest();
+  const jobId = claimed.chapters[0].jobId;
+  await sql(recordQuoteSql(f.request, claimed.leaseToken, jobId));
+  claimed = await claimQuoteRequest();
+  const complete = completeQuoteSql(f.request, claimed.leaseToken, f);
+  const held = session();
+  held.child.stdin.write(`begin; ${complete} select 'BOOKWORM_READY';\n`);
+  await until(() => {
+    assert.equal(held.ended, false, held.stderr);
+    return held.stdout.includes('BOOKWORM_READY');
+  }, 'Quote completion holder did not become ready');
+  const name = `quote_complete_${randomUUID().replaceAll('-', '')}`;
+  const contender = session(database, name); contender.child.stdin.end(complete);
+  await until(async () => {
+    assert.equal(contender.ended, false, contender.stderr);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${name}' and wait_event_type='Lock';`) === '1';
+  }, 'Quote completion contender did not wait for the request lock');
+  held.child.stdin.end('commit;\n');
+  assert.equal((await held.done).code, 0, held.stderr);
+  const result = await contender.done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout.trim(), f.request);
+  assert.equal(await sql(`select status from translation_quote_requests where id='${f.request}';`), 'ready');
+  assert.equal(await sql(`select count(*) from translation_quote_proposals where id='${f.request}';`), '1');
+  assert.equal(await sql(`select count(*) from ai_jobs where book_id='${f.book}';`), '0');
+  assert.equal(await sql(`select count(*) from credit_ledger where user_id='${f.u}';`), '0');
+  console.log('PASS native quote completion replay');
+}
+function fundedQuoteSql(f, job) {
+  return `jsonb_build_object('scope',jsonb_build_object('jobId','${job}','workspaceId','${f.ws}','userId','${f.u}','inputSha256',repeat('c',64)),
+    'reservedCredits','2','fingerprint',repeat('b',64),'policy',jsonb_build_object('approved',true,'version','test'),
+    'price',jsonb_build_object('version','test','provider','openai','model','synthetic'),
+    'createdAt',clock_timestamp()-interval '1 second','expiresAt',clock_timestamp()+interval '10 minutes')`;
+}
+async function quotedCancellationFixture() {
+  const f = await fixture({ meter: 'translation_credits', first: 'translator', second: 'translator' });
+  const [book, chapter, document, project, job] = Array.from({ length: 5 }, () => randomUUID());
+  await sql(`insert into books(id,workspace_id,title,author_name,language,created_by)
+      values('${book}','${f.ws}','Concurrent cancellation','Author','en','${f.u}');
+    insert into chapters(id,book_id,order_index,title) values('${chapter}','${book}',0,'Chapter');
+    insert into document_versions(id,chapter_id,version_number,content_json,plain_text,word_count,created_by)
+      values('${document}','${chapter}',1,'{}','Source',1,'${f.u}');
+    insert into translation_projects(id,workspace_id,book_id,source_language,target_language,chapter_count,credit_units,idempotency_key,created_by)
+      values('${project}','${f.ws}','${book}','en','es',1,1,'${randomUUID()}','${f.u}');
+    insert into ai_jobs(id,workspace_id,book_id,agent_type,billing_mode,input_ref,idempotency_key,created_by)
+      values('${job}','${f.ws}','${book}','translator','quoted',jsonb_build_object('translationProjectId','${project}','creditUnits',1),'${randomUUID()}','${f.u}');
+    insert into translation_chapters(project_id,ai_job_id,chapter_id,document_version_id,chapter_order,source_sha256,credit_units)
+      values('${project}','${job}','${chapter}','${document}',0,repeat('c',64),1);
+    insert into credit_ledger(user_id,source,amount,balance_after) values('${f.u}','purchase',2,2);`);
+  await sql(`${serviceRole} select reserve_funded_usage_quote(${fundedQuoteSql(f, job)});`);
+  const claimedText = await sql(`${serviceRole} select json_build_object('id',id,'leaseToken',lease_token)::text from claim_quoted_translation_job(60);`);
+  const claimed = JSON.parse(claimedText);
+  assert.equal(claimed.id, job);
+  assert.ok(claimed.leaseToken);
+  return { ...f, book, project, job, leaseToken: claimed.leaseToken };
+}
+async function cancellationDispatchRace() {
+  const f = await quotedCancellationFixture();
+  const dispatch = `${serviceRole} select claim_funded_dispatch('${f.job}','${f.leaseToken}',repeat('c',64),'synthetic');`;
+  const held = session();
+  held.child.stdin.write(`begin; ${dispatch} select 'BOOKWORM_READY';\n`);
+  await until(() => {
+    assert.equal(held.ended, false, held.stderr);
+    return held.stdout.includes('BOOKWORM_READY');
+  }, 'Dispatch holder did not become ready');
+  const name = `quote_cancel_${randomUUID().replaceAll('-', '')}`;
+  const cancellation = session(database, name);
+  cancellation.child.stdin.end(`${serviceRole} select cancel_quoted_translation('${f.project}','${f.u}');`);
+  // Cancellation locks every job with NOWAIT. It must fail before it releases
+  // any credit while a worker still holds a pre-dispatch transaction.
+  await until(() => cancellation.ended, `Cancellation did not return after NOWAIT worker conflict: ${cancellation.stderr}`);
+  const blocked = await cancellation.done;
+  assert.notEqual(blocked.code, 0);
+  assert.match(blocked.stderr, /55P03.*could not obtain lock/s);
+  assert.equal(await sql(`select status from translation_projects where id='${f.project}';`), 'running');
+  assert.equal(await sql(`select status from ai_jobs where id='${f.job}';`), 'running');
+  assert.equal(await sql(`select status from funded_usage_quotes where job_id='${f.job}';`), 'held');
+  assert.equal(await sql(`select count(*) from credit_ledger where reference_id='${f.job}' and source='generation_release';`), '0');
+  held.child.stdin.end('rollback;\n');
+  assert.equal((await held.done).code, 0, held.stderr);
+  const cancelledText = await sql(`${serviceRole} select cancel_quoted_translation('${f.project}','${f.u}')::text;`);
+  const cancelled = JSON.parse(cancelledText);
+  assert.equal(cancelled.releasedCredits, '2');
+  assert.equal(cancelled.cancelledChapters, 1);
+  const replay = JSON.parse(await sql(`${serviceRole} select cancel_quoted_translation('${f.project}','${f.u}')::text;`));
+  assert.deepEqual(replay, cancelled);
+  assert.equal(await sql(`select status from translation_projects where id='${f.project}';`), 'cancelled');
+  assert.equal(await sql(`select status from ai_jobs where id='${f.job}';`), 'cancelled');
+  assert.equal(await sql(`select status from funded_usage_quotes where job_id='${f.job}';`), 'cancelled');
+  assert.equal(await sql(`select count(*) from credit_ledger where reference_id='${f.job}' and source='generation_release';`), '1');
+  assert.equal(await sql(`select sum(amount) from credit_ledger where user_id='${f.u}';`), '2');
+  console.log('PASS native quoted cancellation dispatch conflict and recovery');
+}
 
 let created = false;
 try {
@@ -236,6 +443,10 @@ try {
   await deductionRace(false);
   await fundedQuoteRace();
   for (const mode of ['replay', 'competing', 'rollback']) await proposalAcceptanceRace(mode);
+  await quotePreparationClaimRace();
+  await quoteCountRecoveryRace();
+  await quoteCompletionRace();
+  await cancellationDispatchRace();
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');

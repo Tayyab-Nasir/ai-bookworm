@@ -31,7 +31,6 @@ function fakeSupabase(role = "editor", seed: Partial<Record<string, Row[]>> = {}
       calls.push({ name, args });
       if (name === "accept_translation_quote") return {data:{id:PROJECT,book_id:BOOK,created_by:USER,status:"queued"},error:null};
       if (name === "cancel_quoted_translation") return { data: { projectId: PROJECT, status: "cancelled", releasedCredits: "2", cancelledChapters: 1 }, error: null };
-      if (name === "queue_translation_project") return { data: [{ id: PROJECT, book_id: BOOK, source_language: "en", target_language: "es", status: "queued", chapter_count: 1, completed_chapter_count: 0, credit_units: 2, adopted_book_id: null, created_at: "2026-09-12T00:00:00.000Z", completed_at: null }], error: null };
       return { data: null, error: null };
     },
     from: (table: string) => {
@@ -152,21 +151,21 @@ test("billing route authenticates payer, scopes quotes and returns only public c
   } finally { await deniedApp.close(); }
 });
 
-test("translation queue uses the authenticated book, returns safe progress, and never calls a provider", async () => {
+test("legacy translation creation is retired and cannot enqueue a provider job", async () => {
   const fake = fakeSupabase(); const app = await buildApp(() => fake.client);
   try {
     const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/translations`, headers: { authorization: "Bearer good" }, payload: { targetLanguage: "es", idempotencyKey: "translation-api-1" } });
-    assert.equal(response.statusCode, 202, response.body); assert.equal(response.headers["cache-control"], "private, no-store");
-    assert.deepEqual(fake.calls, [{ name: "queue_translation_project", args: { p_book_id: BOOK, p_target_language: "es", p_idempotency_key: "translation-api-1" } }]);
-    assert.equal(response.json().chapters.length, 0);
+    assert.equal(response.statusCode, 410, response.body);
+    assert.equal(response.json().error.code, "translation_quote_required");
+    assert.equal(fake.calls.length, 0);
   } finally { await app.close(); }
 });
 
-test("translation routes reject viewers and list output without leaking queued source input", async () => {
+test("legacy translation creation is retired for viewers and history does not leak queued source input", async () => {
   const viewer = fakeSupabase("viewer"); const viewerApp = await buildApp(() => viewer.client);
   try {
     const denied = await viewerApp.inject({ method: "POST", url: `/v1/books/${BOOK}/translations`, headers: { authorization: "Bearer good" }, payload: { targetLanguage: "es", idempotencyKey: "translation-api-2" } });
-    assert.equal(denied.statusCode, 403); assert.equal(viewer.calls.length, 0);
+    assert.equal(denied.statusCode, 410); assert.equal(viewer.calls.length, 0);
   } finally { await viewerApp.close(); }
   const history = fakeSupabase("editor", {
     translation_projects: [{ id: PROJECT, book_id: BOOK, source_language: "en", target_language: "es", status: "queued", chapter_count: 1, completed_chapter_count: 0, credit_units: 1, adopted_book_id: null, created_at: "2026-09-12T00:00:00.000Z", completed_at: null }],

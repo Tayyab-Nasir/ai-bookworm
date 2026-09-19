@@ -1871,28 +1871,14 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
     post:
       tags: [v1]
-      operationId: queueTranslationProject
-      summary: Queue paid, version-pinned translation jobs for every saved chapter
-      description: Requires editor access and an active plan with translation_credits_monthly. The queue retains immutable document pointers and hashes rather than manuscript text; provider work begins only when the private worker claims a job.
+      operationId: queueLegacyTranslationProject
+      deprecated: true
+      summary: Retired legacy translation creation endpoint
+      description: This endpoint never queues work. Use the quote request and quote acceptance endpoints so the author explicitly reviews the usage-priced maximum credit hold before translation begins.
       parameters:
         - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [targetLanguage, idempotencyKey]
-              properties:
-                targetLanguage: { type: string, pattern: "^[a-z]{2,8}(-[a-z0-9]{2,8})*$", maxLength: 35 }
-                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
       responses:
-        "202": { description: Queued or idempotently recovered translation project }
-        "403": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
-        "422": { $ref: "#/components/responses/Error" }
-        "503": { $ref: "#/components/responses/Error" }
+        "410": { description: Translation quote confirmation is required, content: { application/json: { schema: { $ref: "#/components/schemas/ApiError" } } } }
   /v1/translations/{projectId}:
     get:
       tags: [v1]

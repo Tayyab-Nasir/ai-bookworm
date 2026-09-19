@@ -8,7 +8,6 @@ import { availableTranslationModels, readTranslationCatalog } from "../lib/trans
 import { publicTranslationProposal } from "../lib/translation-proposal.js";
 
 const languageSchema = z.string().trim().toLowerCase().regex(/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/).max(35);
-const createSchema = z.object({ targetLanguage: languageSchema, idempotencyKey: z.string().trim().min(8).max(200) }).strict();
 const adoptSchema = z.object({ title: z.string().trim().min(1).max(500) }).strict();
 const projectIdSchema = z.string().uuid();
 
@@ -60,16 +59,6 @@ async function hydrateProject(sb: SupabaseClient, project: Record<string, unknow
       };
     }),
   };
-}
-
-function queueError(error: { code?: string }) {
-  if (error.code === "23514") throw new AppError(422, "Your translation credits are used or reserved. No translation was started.", undefined, "translation_credit_capacity_exhausted");
-  if (error.code === "42501") throw new AppError(403, "Editing access is required to translate this book.");
-  if (error.code === "P0002") throw new AppError(404, "Book not found.");
-  if (error.code === "23505") throw new AppError(409, "This translation request key is already in use.");
-  if (error.code === "22023") throw new AppError(422, "The translation request is invalid. Save text in every chapter, use a different target language, and split chapters over 32,000 characters.");
-  if (error.code === "PGRST202" || error.code === "42883") throw new AppError(503, "The translation database migration is not installed.");
-  throw new AppError(500, "Could not queue translation.");
 }
 
 export function translationRoutes(app: FastifyInstance) {
@@ -212,18 +201,11 @@ export function translationRoutes(app: FastifyInstance) {
     return hydrateProject(sb, data, query.data.includeText === "true", req.userId);
   });
 
-  app.post("/books/:bookId/translations", async (req, reply) => {
-    const { bookId } = req.params as { bookId: string };
-    if (!projectIdSchema.safeParse(bookId).success) throw new AppError(422, "Valid book ID required.");
-    const parsed = createSchema.safeParse(req.body);
-    if (!parsed.success) throw new AppError(422, "Choose a valid target language and request key.", { issues: parsed.error.issues });
-    const sb = app.supabaseFactory(req.userToken); await loadBook(sb, bookId, req.userId, true);
-    const queued = await sb.rpc("queue_translation_project", { p_book_id: bookId, p_target_language: parsed.data.targetLanguage, p_idempotency_key: parsed.data.idempotencyKey });
-    if (queued.error) queueError(queued.error);
-    const project = row(queued.data);
-    if (!project) throw new AppError(500, "Translation queue returned no project.");
-    reply.header("cache-control", "private, no-store");
-    return reply.status(202).send(await hydrateProject(sb, project, false, req.userId));
+  // The pre-quote endpoint used an entitlement counter, not an immutable
+  // provider-priced hold. Keep the route explicit for old clients, but never
+  // permit it to enqueue paid provider work. Existing projects remain readable.
+  app.post("/books/:bookId/translations", async () => {
+    throw new AppError(410, "Direct translation creation is retired. Prepare and confirm a usage-priced quote before translating.", undefined, "translation_quote_required");
   });
 
   app.post("/translations/:projectId/adopt", async (req, reply) => {

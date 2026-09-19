@@ -17,6 +17,7 @@ export const ERROR_CODES = {
   401: "unauthenticated",
   403: "unauthorized",
   404: "not_found",
+  410: "gone",
   409: "conflict",
   413: "payload_too_large",
   422: "business_validation",

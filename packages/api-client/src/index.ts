@@ -693,8 +693,6 @@ export function createClient(opts: ClientOptions) {
       call<{ projects: TranslationProjectResult[] }>("GET", `/v1/books/${bookId}/translations`),
     getTranslationProject: (projectId: string, includeText = false) =>
       call<TranslationProjectResult>("GET", `/v1/translations/${projectId}${includeText ? "?includeText=true" : ""}`),
-    createTranslationProject: (bookId: string, body: { targetLanguage: string; idempotencyKey: string }) =>
-      call<TranslationProjectResult>("POST", `/v1/books/${bookId}/translations`, body),
     adoptTranslationProject: (projectId: string, body: { title: string }) =>
       call<{ book: Book }>("POST", `/v1/translations/${projectId}/adopt`, body),
     cancelQuotedTranslation: (projectId: string) =>
