@@ -4,6 +4,7 @@ import { AppError } from "../errors.js";
 import { loadBook } from "../lib/authoring.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { summarizeTranslationBilling } from "../lib/translation-billing.js";
+import { availableTranslationModels, readTranslationCatalog } from "../lib/translation-catalog.js";
 
 const languageSchema = z.string().trim().toLowerCase().regex(/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/).max(35);
 const createSchema = z.object({ targetLanguage: languageSchema, idempotencyKey: z.string().trim().min(8).max(200) }).strict();
@@ -60,6 +61,11 @@ function queueError(error: { code?: string }) {
 }
 
 export function translationRoutes(app: FastifyInstance) {
+  app.get("/translations/models", async (_req, reply) => {
+    const catalog = readTranslationCatalog(process.env.TRANSLATION_PRICING_CATALOG_JSON, new Date().toISOString());
+    reply.header("cache-control", "private, no-store");
+    return availableTranslationModels(catalog);
+  });
   app.get("/translations/:projectId/billing", async (req, reply) => {
     const { projectId } = req.params as { projectId: string };
     if (!projectIdSchema.safeParse(projectId).success) throw new AppError(422, "Valid translation project ID required.");

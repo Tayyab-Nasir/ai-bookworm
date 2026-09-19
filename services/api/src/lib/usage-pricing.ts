@@ -8,13 +8,13 @@ import { z } from "zod";
 const integer = z.string().regex(/^(0|[1-9][0-9]{0,20})$/);
 const positive = integer.refine((v) => BigInt(v) > 0n);
 const dimension = z.enum(["text_input", "text_cached_input", "text_output", "image_input", "image_cached_input", "image_output", "audio_input", "audio_cached_input", "audio_output"]);
-const priceSchema = z.object({
+export const priceSchema = z.object({
   version: z.string().min(1).max(128), provider: z.literal("openai"), model: z.string().min(1).max(128),
   // Every listed quantity is mutually exclusive (cached input is not repeated
   // in uncached input). Units are provider tokens, not source character counts.
   rates: z.array(z.object({ dimension, microUsdPerMillionTokens: integer }).strict()).min(1).max(9),
 }).strict();
-const policySchema = z.object({
+export const policySchema = z.object({
   version: z.string().min(1).max(128), approved: z.literal(true),
   microUsdPerCredit: positive,
   // Multiplier, NOT gross-margin percentage: 15000 means cost * 1.5.

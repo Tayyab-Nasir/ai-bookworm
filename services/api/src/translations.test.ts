@@ -48,6 +48,23 @@ function fakeSupabase(role = "editor", seed: Partial<Record<string, Row[]>> = {}
   return { client: client as never, calls };
 }
 
+test("translation model catalog is authenticated and missing configuration cannot advertise offers", async () => {
+  const original = process.env.TRANSLATION_PRICING_CATALOG_JSON;
+  delete process.env.TRANSLATION_PRICING_CATALOG_JSON;
+  const fake = fakeSupabase(); const app = await buildApp(() => fake.client);
+  try {
+    const anonymous = await app.inject({method:"GET",url:"/v1/translations/models"});
+    assert.equal(anonymous.statusCode,401);
+    const missing = await app.inject({method:"GET",url:"/v1/translations/models",headers:{authorization:"Bearer good"}});
+    assert.equal(missing.statusCode,503);
+    assert.equal(fake.calls.length,0);
+  } finally {
+    await app.close();
+    if (original === undefined) delete process.env.TRANSLATION_PRICING_CATALOG_JSON;
+    else process.env.TRANSLATION_PRICING_CATALOG_JSON = original;
+  }
+});
+
 test("billing route authenticates payer, scopes quotes and returns only public credit totals", async () => {
   const job = "d7000000-0000-4000-8000-000000000008";
   const seed = {

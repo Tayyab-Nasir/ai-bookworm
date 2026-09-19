@@ -28,6 +28,27 @@ They are not approved commercial offers.
 
 ## Credit accounting direction
 
+### Server-owned translation catalog
+
+`TRANSLATION_PRICING_CATALOG_JSON` is optional server-only deployment configuration.
+When absent, invalid, not effective or expired, `/v1/translations/models` returns
+503. It must not be populated from a browser payload or exposed in `NEXT_PUBLIC_*`.
+`translation-catalog.ts` validates catalog version, approval reference, validity
+window, quote lifetime, unique model IDs and version-consistent price/policy
+snapshots. Text entries require cached-input, input and output rates, positive
+uncached/output rates and dated model snapshot names. No real offers are seeded.
+The model list exposes labels/model/version IDs, not rates or approval metadata.
+
+The internal quote helper takes trusted server-counted input bounds, pins rates
+and policy, caps output, clips quote expiry to catalog expiry and checks ledger
+capacity. It conservatively reserves both cached and uncached input bounds;
+final mutually exclusive provider counts release the surplus. It does not count
+tokens, persist an accepted quote, enqueue jobs, or grant dispatch permission.
+Those steps must be wired transactionally before switching public creation.
+Approval flags/references are operator audit metadata, not evidence that the
+owner actually approved a price. Verify official model/rate data and obtain the
+commercial decision before configuring this on a deployed system.
+
 ### Versioned calculation component
 
 `services/api/src/lib/usage-pricing.ts` provides pure quote/reconciliation math.
