@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 shared text funding (local only)
+
+Migration 20260919060000 replaces the metadata-only reservation trigger with one
+shared guard for metadata, writer, proofreader, copyeditor, consistency and
+bookbible jobs. It counts all their active holds under the organization lock.
+ai_credits usage insertion acquires that same lock through commit so completion
+cannot race the consumed/pending reads. Text enqueue maps capacity/role errors;
+accepted request replay now precedes quota checking and validates book/agent.
+205 API tests, API TypeScript, 51 migrations and 36 SQL suites pass locally.
+NOT applied live. Native multi-connection proof and token-based retail conversion
+are still open; tests are not a claim of full billing or product readiness.
+
 ### 2026-09-19 metadata funding reservation (local only)
 
 Migration 20260919050000 reserves one current operational ai_credits unit when

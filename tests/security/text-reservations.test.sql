@@ -4,7 +4,9 @@ declare
   u uuid := gen_random_uuid(); org uuid := gen_random_uuid(); ws uuid := gen_random_uuid();
   other_ws uuid := gen_random_uuid(); plan uuid; first_job uuid; second_job uuid;
 begin
-  insert into auth.users(id,email) values(u,'metadata-reservation@local.test');
+  assert not has_function_privilege('authenticated','public.reserve_text_job_credit()','execute');
+  assert not has_function_privilege('authenticated','public.lock_text_credit_accounting()','execute');
+  insert into auth.users(id,email) values(u,'text-reservation@local.test');
   insert into public.organizations(id,name,slug,owner_user_id) values(org,'Metadata holds','metadata-holds',u);
   insert into public.workspaces(id,organization_id,name,slug,created_by)
     values(ws,org,'First','meta-first',u),(other_ws,org,'Second','meta-second',u);
@@ -19,7 +21,7 @@ begin
   insert into public.subscriptions(organization_id,plan_id,status) values(org,plan,'active');
   insert into public.usage_events(organization_id,workspace_id,user_id,meter,quantity) values(org,ws,u,'ai_credits',1);
   insert into public.ai_jobs(workspace_id,agent_type,status,input_ref,idempotency_key,created_by)
-    values(ws,'metadata','queued','{}','metadata-hold',u) returning id into first_job;
+    values(ws,'writer','queued','{}','metadata-hold',u) returning id into first_job;
   update public.ai_jobs set status='running' where id=first_job;
   begin
     insert into public.ai_jobs(workspace_id,agent_type,status,input_ref,idempotency_key,created_by)
@@ -28,7 +30,7 @@ begin
   exception when check_violation then assert sqlerrm='text credit capacity exhausted'; end;
   update public.ai_jobs set status='failed' where id=first_job;
   insert into public.ai_jobs(workspace_id,agent_type,status,input_ref,idempotency_key,created_by)
-    values(other_ws,'metadata','running','{}','metadata-replacement',u) returning id into second_job;
+    values(other_ws,'copyeditor','running','{}','metadata-replacement',u) returning id into second_job;
   begin
     update public.ai_jobs set status='running' where id=first_job;
     raise exception 'reactivation bypassed metadata capacity';

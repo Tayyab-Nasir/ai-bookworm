@@ -336,6 +336,20 @@ test("metadata reservation quota and role failures stop before provider executio
   }
 });
 
+test("accepted text request replays without spare quota and rejects reuse for another agent", async (t) => {
+  const store = baseStore();
+  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => { throw new Error("Enqueue must not invoke provider"); } });
+  t.after(() => app.close());
+  const payload = { bookId: BOOK, chapterIds: [CHAPTER], agentType: "proofreader", idempotencyKey: "review-quota-replay" };
+  const send = (body: Row) => app.inject({ method: "POST", url: "/v1/ai/jobs", headers: auth, payload: body });
+  assert.equal((await send(payload)).statusCode, 202);
+  store.tables.usage_events.push({ organization_id: ORG, meter: "ai_credits", quantity: 100 });
+  assert.equal((await send(payload)).statusCode, 200);
+  assert.equal(store.tables.ai_jobs.length, 1);
+  assert.equal((await send({ ...payload, agentType: "copyeditor" })).statusCode, 409);
+  assert.equal((await send({ ...payload, idempotencyKey: "genuinely-new-review" })).statusCode, 422);
+});
+
 test("metadata generation returns a cited review draft without overwriting saved metadata", async () => {
   const store = baseStore();
   store.tables.book_bible_items.push({

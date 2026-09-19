@@ -36,6 +36,12 @@ by the build. Other text-generation paths sharing ai_credits must participate in
 the same reservation model before paid launch; do not interpret this component
 check as full billing readiness.
 
+Follow-up local migration `20260919060000_shared_text_credit_reservations.sql`
+extends that hold across writer, proofreader, copyeditor, consistency, bookbible
+and metadata jobs. Completion usage takes the same organization lock as new
+reservations. Native multi-connection acceptance remains required, and this
+still uses operational units rather than an approved retail token conversion.
+
 The existing `ai_credits`, `image_credits`, `audio_credits`, and
 `translation_credits` meters are operational units, not provider tokens. Audio
 and translation each reserve one credit per started 1,000 source characters in

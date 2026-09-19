@@ -12,6 +12,11 @@ insert into public.organizations(id,name,slug,owner_user_id) values
 insert into public.organization_members(organization_id,user_id,role) values
   ('10000000-0000-4000-8000-000000000001','a5000000-0000-0000-0000-000000000001','owner'),
   ('10000000-0000-4000-8000-000000000002','c5000000-0000-0000-0000-000000000001','owner');
+insert into public.plans(id,name,billing_period,price_cents,entitlements_json) values
+  ('90000000-0000-4000-8000-000000000001','AI workflow fixture','month',1000,'{"ai_credits_monthly":100}');
+insert into public.subscriptions(organization_id,plan_id,status) values
+  ('10000000-0000-4000-8000-000000000001','90000000-0000-4000-8000-000000000001','active'),
+  ('10000000-0000-4000-8000-000000000002','90000000-0000-4000-8000-000000000001','active');
 insert into public.workspaces(id,organization_id,name,slug,created_by) values
   ('20000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000001','AI Workspace A','ai-ws-a','a5000000-0000-0000-0000-000000000001'),
   ('20000000-0000-4000-8000-000000000002','10000000-0000-4000-8000-000000000002','AI Workspace B','ai-ws-b','c5000000-0000-0000-0000-000000000001');

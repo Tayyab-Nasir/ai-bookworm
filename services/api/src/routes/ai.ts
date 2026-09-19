@@ -176,6 +176,13 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
     const user = app.supabaseFactory(req.userToken);
     const { book } = await loadBook(user, body.bookId, req.userId, true);
     const service = app.supabaseFactory();
+    const { data: replay, error: replayError } = await service.from("ai_jobs").select("*")
+      .eq("idempotency_key", body.idempotencyKey).eq("workspace_id", book.workspace_id).eq("created_by", req.userId).maybeSingle();
+    if (replayError) throw new AppError(500, "Could not verify the AI request key.");
+    if (replay) {
+      if (replay.book_id !== body.bookId || replay.agent_type !== body.agentType) throw new AppError(409, "That AI request key is already in use.");
+      return reply.status(200).send(await jobWithSuggestions(service, replay));
+    }
     const { data: workspace, error: workspaceError } = await service.from("workspaces").select("organization_id").eq("id", book.workspace_id).maybeSingle();
     if (workspaceError || !workspace) throw new AppError(500, "Could not resolve AI usage for this workspace.");
     await requireEntitlement(service, workspace.organization_id, "ai_credits", 1);
@@ -202,9 +209,11 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
     if (insertError?.code === "23505") {
       const { data: existing } = await service.from("ai_jobs").select("*")
         .eq("idempotency_key", body.idempotencyKey).eq("workspace_id", book.workspace_id).eq("created_by", req.userId).maybeSingle();
-      if (!existing) throw new AppError(409, "That AI request key is already in use.");
+      if (!existing || existing.book_id !== body.bookId || existing.agent_type !== body.agentType) throw new AppError(409, "That AI request key is already in use.");
       return reply.status(200).send(await jobWithSuggestions(service, existing));
     }
+    if (insertError?.code === "23514") throw new AppError(422, "Text credit capacity is exhausted. Wait for pending requests or add funded capacity.", undefined, "quota_exceeded");
+    if (insertError?.code === "42501") throw new AppError(403, "AI generation requires editing access.");
     if (insertError || !job) throw new AppError(500, "Could not create the AI job.");
 
     // The request finishes here. A service-role worker rehydrates the exact
