@@ -30,7 +30,8 @@ workflow. Uses separate psql connections and pg_stat_activity lock assertions
 for competing reservations, completion accounting and rollback release. Only
 loopback port 55439/test user, a generated disposable database and synthetic
 fixtures are used; no application credentials or live migrations. Syntax and
-51 migrations/36 SQL suites pass locally. Native execution is NOT yet verified.
+51 migrations/36 SQL suites pass locally. Native GitHub Actions run 35416935051
+completed successfully for source aed4094, including all three concurrency cases.
 Latest continuation: Codex Sessions/2026-09/2026-09-19-bookworm-native-ci.md.
 
 ### 2026-09-19 shared text funding (local only)
