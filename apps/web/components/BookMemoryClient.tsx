@@ -129,6 +129,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const [metadataDirty, setMetadataDirty] = useState(false);
   const [metadataFields, setMetadataFields] = useState<MetadataFields>({ description: "", keywords: "", categories: "" });
   const [metadataCandidate, setMetadataCandidate] = useState<GeneratedMetadataCandidate | null>(null);
+  const [metadataHistory, setMetadataHistory] = useState<{ id: string; createdAt: string; candidate: GeneratedMetadataCandidate }[] | null>(null);
   const [metadataTone, setMetadataTone] = useState("compelling");
   const [metadataAudience, setMetadataAudience] = useState("");
   const [metadataGenerationError, setMetadataGenerationError] = useState<string | null>(null);
@@ -151,6 +152,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         categories: result.metadata?.categories.join("\n") ?? "",
       });
       setMetadataCandidate(null); setMetadataGenerationError(null); setMetadataRequestKey(null);
+      setMetadataHistory(null);
       setIdentityDirty(false); setMetadataDirty(false); setEntryDirty(false);
       setFormRevision((value) => value + 1);
     } catch (reason) { setError(messageOf(reason)); }
@@ -245,6 +247,16 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       setMetadataFields({ description: metadata.description ?? "", keywords: metadata.keywords.join("\n"), categories: metadata.categories.join("\n") });
       setMetadataDirty(false); setNotice("Publishing metadata saved.");
     } catch (reason) { setError(messageOf(reason)); }
+    finally { setSaving(null); }
+  }
+
+  async function loadMetadataHistory() {
+    if (!memory?.canEdit || busy) return;
+    setSaving("metadata-history"); setMetadataGenerationError(null);
+    try {
+      const result = await request<{ drafts: { id: string; createdAt: string; candidate: unknown }[] }>(`${endpoint}/metadata/drafts`);
+      setMetadataHistory(result.drafts.map((draft) => ({ ...draft, candidate: parseGeneratedMetadataCandidate(draft.candidate) })));
+    } catch (reason) { setMetadataGenerationError(messageOf(reason)); }
     finally { setSaving(null); }
   }
 
@@ -382,6 +394,14 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               <label className="text-xs text-[#bbb]">Description tone<select value={metadataTone} onChange={(event) => setMetadataTone(event.target.value)} disabled={generatingMetadata || Boolean(metadataRequestKey)} className={inputClass}><option value="compelling">Compelling</option><option value="warm">Warm</option><option value="literary">Literary</option><option value="direct">Direct</option><option value="playful">Playful</option></select></label>
               <label className="text-xs text-[#bbb]">Intended audience · optional<input value={metadataAudience} onChange={(event) => setMetadataAudience(event.target.value)} disabled={generatingMetadata || Boolean(metadataRequestKey)} maxLength={500} className={inputClass} placeholder="e.g. adult cozy-fantasy readers" /></label>
               {metadataRequestKey && !generatingMetadata && <p role="status" className="text-xs text-amber-100 sm:col-span-2">The previous request is not resolved yet. Retry to recover that draft using the same brief and request key, without starting another generation.</p>}
+            </div>
+            <div className="mt-4 border-t border-white/10 pt-4">
+              <button type="button" onClick={() => void loadMetadataHistory()} disabled={busy} className={secondaryClass}>{saving === "metadata-history" ? "Loading saved drafts…" : "Load saved drafts · no credits"}</button>
+              {metadataHistory && <div className="mt-3 space-y-2">
+                <p className="text-xs text-[#aaa]">Latest 20 successful generations. These may reference older manuscript versions. Opening does not change your form or start generation.</p>
+                {!metadataHistory.length && <p className="text-sm text-[#aaa]">No saved drafts found.</p>}
+                {metadataHistory.map((draft) => <button key={draft.id} type="button" disabled={busy} onClick={() => { setMetadataCandidate(draft.candidate); setNotice("Saved draft opened for review. No generation credits used."); }} className="block w-full rounded-xl border border-white/15 p-3 text-left text-sm hover:bg-white/5 disabled:opacity-50"><span className="block text-xs text-[#999]">{new Date(draft.createdAt).toLocaleString()}</span><span className="mt-1 block">{draft.candidate.description.slice(0, 140)}{draft.candidate.description.length > 140 ? "…" : ""}</span></button>)}
+              </div>}
             </div>
             <div aria-live="polite" aria-atomic="true">
               {generatingMetadata && <p role="status" className="mt-4 text-sm text-violet-100">Reading saved book evidence and preparing a draft…</p>}

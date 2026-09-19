@@ -23,6 +23,16 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 saved metadata draft recovery
+
+GET /books/:bookId/metadata/drafts returns the latest 20 successful metadata
+jobs as validated candidates after book membership checks. Private prompts,
+request keys and job diagnostics are not returned. No provider or billing calls.
+BookMemoryClient can load/open these drafts after a reload without overwriting
+the form; explicit Use draft and Save metadata remain required. The UI warns
+that drafts may refer to older manuscript versions. Malformed saved candidates
+are omitted, not presented as valid. Pending-job recovery remains separate.
+
 ### 2026-09-19 metadata retry safety
 
 BookMemoryClient now locks tone/audience while an unresolved metadata generation

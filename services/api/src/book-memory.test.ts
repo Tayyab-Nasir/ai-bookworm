@@ -5,6 +5,7 @@ import Fastify from "fastify";
 import { makeAuthPlugin } from "./plugins/auth.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
 import { bookMemoryRoutes } from "./routes/book-memory.js";
+import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
 
 const BOOK = "11111111-1111-4111-8111-111111111111";
 const OTHER_BOOK = "22222222-2222-4222-8222-222222222222";
@@ -30,6 +31,7 @@ function fakeSupabase(store: Store, failTable?: string) {
       let payload: Row = {};
       let ascending = true;
       let orderColumn: string | null = null;
+      let rowLimit = Infinity;
       let result: { data: Row[] | null; error: unknown } | undefined;
       const run = () => {
         if (result) return result;
@@ -43,10 +45,11 @@ function fakeSupabase(store: Store, failTable?: string) {
         if (operation === "update") found.forEach((row) => Object.assign(row, payload));
         if (operation === "delete") found.forEach((row) => rows.splice(rows.indexOf(row), 1));
         if (orderColumn) found.sort((a, b) => String(a[orderColumn!]).localeCompare(String(b[orderColumn!])) * (ascending ? 1 : -1));
-        return result = { data: found.map((row) => ({ ...row })), error: null };
+        return result = { data: found.slice(0, rowLimit).map((row) => ({ ...row })), error: null };
       };
       const builder = {
         select() { return this; },
+        limit(value: number) { rowLimit = value; return this; },
         eq(column: string, value: unknown) { filters.push((row) => row[column] === value); return this; },
         is(column: string, value: unknown) { filters.push((row) => row[column] === value); return this; },
         in(column: string, values: unknown[]) { filters.push((row) => values.includes(row[column])); return this; },
@@ -78,10 +81,42 @@ async function appWith(store: Store, failTable?: string) {
   await app.register(errorHandlerPlugin);
   await app.register(makeAuthPlugin(() => fakeSupabase(store, failTable)));
   await app.register(async (v1) => bookMemoryRoutes(v1), { prefix: "/v1" });
+  await app.register(async (v1) => metadataGenerationRoutes(v1, { fetcher: async () => { throw new Error("History must never call an AI provider"); } }), { prefix: "/v1" });
   return app;
 }
 
 const entry = { type: "character", name: "Elara", description: "A mapmaker", attributes: { appearance: "Silver hair" }, imageAssetIds: [IMAGE], sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, note: "Opening scene" }] };
+
+test("saved metadata drafts recover across fresh app instances without leaking job inputs", async (t) => {
+  const store = initialStore();
+  const candidate = { suggestionKind: "metadata_candidate", description: "A mapmaker discovers a hidden world beyond the familiar shore.",
+    keywords: ["fantasy"], categories: ["Fiction"], audience: "Adults", rationale: "Based on the opening scene", confidence: 0.8,
+    sourceRefs: [{ chapterId: CHAPTER, nodeId: "p1" }], status: "pending" };
+  const job = { id: randomUUID(), book_id: BOOK, agent_type: "metadata", status: "succeeded", created_at: TIME,
+    input_ref: { secret: "private instructions" }, idempotency_key: "private-key", output_ref: { candidate, diagnostics: "private diagnostics" } };
+  store.ai_jobs = [job, { ...job, id: randomUUID(), book_id: OTHER_BOOK }, { ...job, id: randomUUID(), agent_type: "writer" },
+    { ...job, id: randomUUID(), status: "running" }, { ...job, id: randomUUID(), output_ref: { candidate: {} } }];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const app = await appWith(store); t.after(() => app.close());
+    const response = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/metadata/drafts`, headers: auth });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.headers["cache-control"], "private, no-store");
+    assert.deepEqual(response.json(), { drafts: [{ id: job.id, createdAt: TIME, candidate }] });
+    assert.equal(response.body.includes("private"), false);
+  }
+  assert.equal(store.ai_jobs.length, 5);
+});
+
+test("metadata history requires authentication and membership and reports database failure", async (t) => {
+  const store = initialStore(); store.workspace_members[0].status = "suspended";
+  const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/metadata/drafts`;
+  assert.equal((await app.inject({ method: "GET", url })).statusCode, 401);
+  assert.equal((await app.inject({ method: "GET", url, headers: auth })).statusCode, 403);
+  assert.equal((await app.inject({ method: "GET", url: `/v1/books/${OTHER_BOOK}/metadata/drafts`, headers: auth })).statusCode, 404);
+  const failing = await appWith(initialStore(), "ai_jobs"); t.after(() => failing.close());
+  assert.equal((await failing.inject({ method: "GET", url, headers: auth })).statusCode, 500);
+});
 
 test("book memory requires authentication and active workspace membership", async (t) => {
   const store = initialStore(); store.workspace_members[0].status = "suspended";

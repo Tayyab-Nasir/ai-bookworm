@@ -135,6 +135,23 @@ function validateCandidateSources(candidate: z.infer<typeof metadataCandidate>, 
 export function metadataGenerationRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
   const fetcher = options.fetcher ?? fetch;
 
+  app.get("/books/:bookId/metadata/drafts", async (req, reply) => {
+    const bookId = uuid.safeParse((req.params as { bookId: string }).bookId);
+    if (!bookId.success) throw new AppError(422, "Invalid book ID.");
+    const user = app.supabaseFactory(req.userToken);
+    await loadBook(user, bookId.data, req.userId);
+    const { data, error } = await user.from("ai_jobs")
+      .select("id,created_at,completed_at,output_ref")
+      .eq("book_id", bookId.data).eq("agent_type", "metadata").eq("status", "succeeded")
+      .order("created_at", { ascending: false }).limit(20);
+    if (error) throw new AppError(500, "Could not load saved metadata drafts.");
+    reply.header("cache-control", "private, no-store");
+    return { drafts: (data ?? []).flatMap((job) => {
+      const candidate = candidateFromJob(job);
+      return candidate ? [{ id: job.id, createdAt: job.created_at, candidate }] : [];
+    }) };
+  });
+
   app.post("/books/:bookId/metadata/generate", async (req, reply) => {
     const parsed = generationRequest.safeParse(req.body);
     const parsedBookId = uuid.safeParse((req.params as { bookId: string }).bookId);
