@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 funded pricing adapter
+
+funded-usage.ts connects validated saved quotes to reservation and calculated
+settlement. 215 API tests and TypeScript pass, source 3af3fad pushed. Worker
+dispatch gating and authenticated provider receipt normalization are still next;
+a reserve replay is NOT permission to dispatch. No live changes.
+Shared note: Codex Sessions/2026-09/2026-09-19-bookworm-funded-adapter.md.
+
 ### 2026-09-19 persistent funded quotes (local only)
 
 Migration 20260919100000 persists service-owned quotes with atomic ledger holds,
