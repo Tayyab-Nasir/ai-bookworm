@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 quote browser acceptance
+
+Source f3d74a6: real browser with synthetic responses verifies quote consent,
+retry identity, accepted recovery, expiry, viewer/mobile and history errors.
+Fixed expired consent reset and unhandled refresh rejection. 70 web tests and
+web TypeScript pass. No live activation. Worker concurrency and legacy consumer
+audit remain next. Shared: Codex Sessions/2026-09/2026-09-19-bookworm-quote-browser.md.
+
 ### 2026-09-19 native proposal concurrency
 
 Source 1b33168 adds actual-lock-wait races for same-proposal replay, competing

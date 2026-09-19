@@ -486,9 +486,9 @@
     "semantic_hash": "71423ac5400bdbc2235a9858f072440c"
   },
   "apps/web/next-env.d.ts": {
-    "mtime": 1789704622.4828258,
-    "seen": 1789704724.8928695,
-    "ast_hash": "7caf7b959a5019aec71517b87a1cbb04",
+    "mtime": 1789793147.8227036,
+    "seen": 1789793169.5549486,
+    "ast_hash": "a95187a97b7d355b0898b514d12c9d69",
     "semantic_hash": ""
   },
   "apps/web/next.config.mjs": {
@@ -582,8 +582,8 @@
     "semantic_hash": "371f413d0233f8d4492a7be1ce5870af"
   },
   "apps/web/tsconfig.json": {
-    "mtime": 1789701795.3609998,
-    "seen": 1789701848.0303586,
+    "mtime": 1789793136.6355824,
+    "seen": 1789793169.5549486,
     "ast_hash": "6a10bc0029acbd9c242eea9adaa74680",
     "semantic_hash": ""
   },
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789792388.166653,
-    "seen": 1789792417.5187087,
-    "ast_hash": "6f794c87cfec934bb283653e750c6128",
+    "mtime": 1789793208.3252811,
+    "seen": 1789793221.5614839,
+    "ast_hash": "12e26f8dcbd23534e0b472975a4e5380",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2364,9 +2364,9 @@
     "semantic_hash": ""
   },
   "docs/operations.md": {
-    "mtime": 1789784902.2418015,
-    "seen": 1789784922.7248404,
-    "ast_hash": "cbac9cc6ae6381b882b8d221a336e0f1",
+    "mtime": 1789792574.110357,
+    "seen": 1789792641.9377003,
+    "ast_hash": "7b1d299f1ee3b2cd741baafc71c92ce9",
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
@@ -2496,9 +2496,9 @@
     "semantic_hash": ""
   },
   "apps/web/components/TranslationStudio.tsx": {
-    "mtime": 1789792178.0158722,
-    "seen": 1789792352.892948,
-    "ast_hash": "6cf2778d0667821122ad56ded4b4b796",
+    "mtime": 1789793105.0365348,
+    "seen": 1789793169.5549486,
+    "ast_hash": "aa3d4a4e105544de9b4295f3c719be8d",
     "semantic_hash": ""
   },
   "services/api/src/lib/translation-generation.ts": {
@@ -3060,9 +3060,9 @@
     "semantic_hash": ""
   },
   "apps/web/components/TranslationQuotePanel.tsx": {
-    "mtime": 1789792298.328203,
-    "seen": 1789792352.892948,
-    "ast_hash": "5b690072e5e9e24b4739b49526ecfc21",
+    "mtime": 1789793057.3510156,
+    "seen": 1789793169.5549486,
+    "ast_hash": "7e66f79305ef7d62ac564d2856dd704b",
     "semantic_hash": ""
   },
   "services/api/src/lib/translation-proposal.ts": {
@@ -3075,6 +3075,12 @@
     "mtime": 1789792253.4848633,
     "seen": 1789792352.8939493,
     "ast_hash": "831e6eae9766d8ec0fd429dd8e31c907",
+    "semantic_hash": ""
+  },
+  "tests/e2e/translation-quotes-browser.mjs": {
+    "mtime": 1789793105.049984,
+    "seen": 1789793169.5554678,
+    "ast_hash": "5d2a36ba6d8dfe9fdb34f8d84d38f3bd",
     "semantic_hash": ""
   }
 }
