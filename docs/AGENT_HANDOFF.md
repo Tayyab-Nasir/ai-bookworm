@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 server-owned translation catalog
+
+Source 4ff8f0f validates optional approved/versioned/expiring server catalog and
+exposes authenticated model choices. Internal quote helper pins rates/bounds and
+clips expiry. No real offers activated; 229 API tests and API TypeScript pass.
+Trusted token counting, quote persistence/acceptance and UI remain next. Shared:
+Codex Sessions/2026-09/2026-09-19-bookworm-translation-catalog.md.
+
 ### 2026-09-19 private translation billing summary
 
 Source a6e5829 adds payer-only credit totals endpoint/client/UI: held, charged,
