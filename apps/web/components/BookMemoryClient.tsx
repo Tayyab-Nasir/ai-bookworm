@@ -291,6 +291,8 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       setMetadataRequestKey(null);
     } catch (reason) {
       if (metadataRequestCanRestart(reason)) setMetadataRequestKey(null);
+      const failure = reason as { details?: { status?: string } };
+      if (["queued", "running"].includes(failure.details?.status ?? "")) setPendingMetadata(null);
       setMetadataGenerationError(messageOf(reason));
     }
     finally { setGeneratingMetadata(false); }

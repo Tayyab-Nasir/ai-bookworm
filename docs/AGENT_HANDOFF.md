@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 metadata concurrency constraint (local only)
+
+Migration 20260919030000 enforces one queued/running metadata job per author/book
+with a partial unique index. API insert conflicts return the existing active ID
+before any provider call; UI requires status refresh. Terminal jobs free the slot.
+Existing duplicate active rows make migration fail; no cancellation/deletion is
+performed. Reconcile real provider state before resolving such duplicates.
+Verified 201 API/68 web tests and 48 local migrations/33 SQL assertion files.
+Includes concurrent API requests against a stateful constraint fake and real SQL
+constraint/slot-release assertions. Native multi-connection race test remains.
+NOT applied live. Deployment must include this migration before relying on it.
+
 ### 2026-09-19 pending metadata visibility
 
 Metadata history also returns safe id/time/status fields for the current user's

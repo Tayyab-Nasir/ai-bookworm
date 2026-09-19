@@ -53,7 +53,15 @@ function fakeSupabase(store: Store) {
       builder.limit = (value: number) => { limit = value; return builder; };
       builder.insert = (row: Row) => { pendingInsert = row; return builder; };
       builder.update = (row: Row) => { pendingUpdate = row; return builder; };
-      builder.single = async () => ({ data: mutate()[0] ?? null, error: null });
+      builder.single = async () => {
+        if (table === "ai_jobs" && pendingInsert?.agent_type === "metadata" && rows.some((row) =>
+          row.agent_type === "metadata" && row.book_id === pendingInsert!.book_id && row.created_by === pendingInsert!.created_by
+          && ["queued", "running"].includes(String(row.status)))) {
+          pendingInsert = null;
+          return { data: null, error: { code: "23505" } };
+        }
+        return { data: mutate()[0] ?? null, error: null };
+      };
       builder.maybeSingle = async () => ({ data: mutate()[0] ?? null, error: null });
       builder.then = (resolve: (value: unknown) => unknown) => resolve({ data: mutate(), error: null });
       return builder;
@@ -229,6 +237,35 @@ test("writer receives book-scoped cited context but persists only source identif
   assert.equal(JSON.stringify(store.tables.ai_jobs[0].input_ref).includes("Private silver"), false);
   assert.equal((store.tables.ai_jobs[0].input_ref as Row).userInstruction, "Continue Elara's silver compass story");
   await app.close();
+});
+
+test("concurrent metadata keys cannot start a second provider call and completion releases the slot", async (t) => {
+  const store = baseStore();
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => {
+    calls++; entered(); await gate;
+    return new Response(JSON.stringify(metadataResult()));
+  } });
+  t.after(() => app.close());
+  const generate = (key: string) => app.inject({ method: "POST", url: `/v1/books/${BOOK}/metadata/generate`, headers: auth,
+    payload: { idempotencyKey: key, chapterIds: [CHAPTER] } });
+  const first = generate("concurrent-first").then((response) => response);
+  await started;
+  try {
+    const second = await generate("concurrent-second");
+    assert.equal(second.statusCode, 409, second.body);
+    assert.equal(second.json().error.details.jobId, store.tables.ai_jobs[0].id);
+    assert.equal(second.json().error.details.status, "running");
+    assert.equal(calls, 1);
+    assert.equal(store.tables.ai_jobs.length, 1);
+  } finally { release(); }
+  assert.equal((await first).statusCode, 201);
+  assert.equal((await generate("concurrent-second")).statusCode, 201);
+  assert.equal(calls, 2);
 });
 
 test("metadata generation returns a cited review draft without overwriting saved metadata", async () => {

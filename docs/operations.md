@@ -520,6 +520,18 @@ before production tuning.
   native multi-worker acceptance remain release gates.
 # Fixed-layout EPUB worker dependency
 
+## Metadata generation concurrency migration
+
+Apply `20260919030000_metadata_single_active_request.sql` through the reviewed
+migration workflow before relying on cross-tab metadata request protection.
+It creates a partial unique index for active metadata jobs per author/book.
+If existing duplicates prevent creation, inspect their provider receipts and
+completion state first. Do not cancel by age, delete job records, or silently
+mark them failed to make the migration pass. This local checkpoint does not
+apply the migration to Supabase. API conflicts stop before provider execution.
+
+## Fixed-layout conversion
+
 Fixed-layout EPUB uses saved `fixed_layout.trim_size`, `margins` and `typography`
 with the PDF paginator and local Poppler
 `pdftoppm` to produce paginated raster images (long edge 1800 pixels). Install

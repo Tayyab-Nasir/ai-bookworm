@@ -29,12 +29,18 @@ insert into public.ai_jobs(id,workspace_id,book_id,agent_type,status,input_ref,i
   ('a7100000-0000-4000-8000-000000000007','a7100000-0000-4000-8000-000000000003','a7100000-0000-4000-8000-000000000004','metadata','running',
    '{"contextSources":[{"chapterId":"a7100000-0000-4000-8000-000000000005","documentVersionId":"a7100000-0000-4000-8000-000000000006","nodeId":"n1","textHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}',
    'metadata-valid','a7100000-0000-4000-8000-000000000001'),
-  ('a7100000-0000-4000-8000-000000000008','a7100000-0000-4000-8000-000000000003','a7100000-0000-4000-8000-000000000004','metadata','running',
+  ('a7100000-0000-4000-8000-000000000008','a7100000-0000-4000-8000-000000000003','a7100000-0000-4000-8000-000000000004','metadata','failed',
    '{"contextSources":[{"chapterId":"a7100000-0000-4000-8000-000000000005","documentVersionId":"a7100000-0000-4000-8000-000000000006","nodeId":"n1","textHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}',
    'metadata-invalid','a7100000-0000-4000-8000-000000000001');
 
 do $$
 begin
+  begin
+    update public.ai_jobs set status='running'
+      where id='a7100000-0000-4000-8000-000000000008';
+    assert false, 'second active metadata job for the same author/book was allowed';
+  exception when unique_violation then null;
+  end;
   assert not has_function_privilege('anon','public.complete_metadata_ai_job(uuid,text,text,jsonb,jsonb,jsonb,numeric)','execute'),
     'anon can complete metadata AI jobs';
   assert not has_function_privilege('authenticated','public.complete_metadata_ai_job(uuid,text,text,jsonb,jsonb,jsonb,numeric)','execute'),
@@ -102,6 +108,10 @@ begin
     '{"inputTokens":80,"outputTokens":30,"estimatedCostUsd":0,"latencyMs":12}','[]',candidate,0);
   assert run_count=(select count(*) from public.ai_runs where ai_job_id=result.id), 'retry duplicated AI run';
   assert usage_count=(select count(*) from public.usage_events where ai_job_id=result.id), 'retry duplicated credit event';
+
+  update public.ai_jobs set status='running'
+    where id='a7100000-0000-4000-8000-000000000008';
+  assert found, 'completion did not release the metadata generation slot';
 
   begin
     perform public.complete_metadata_ai_job(

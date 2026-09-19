@@ -276,6 +276,13 @@ export function metadataGenerationRoutes(app: FastifyInstance, options: { fetche
         .eq("created_by", req.userId)
         .maybeSingle();
       if (!existing || existing.book_id !== bookId || existing.agent_type !== "metadata") {
+        const { data: active, error: activeError } = await service.from("ai_jobs")
+          .select("id,status").eq("book_id", bookId).eq("created_by", req.userId)
+          .eq("agent_type", "metadata").in("status", ["queued", "running"]).limit(1).maybeSingle();
+        if (activeError) throw new AppError(500, "Could not verify the active metadata request.");
+        if (active) throw new AppError(409, "Another metadata request is still processing. Refresh saved drafts to recover its result.", {
+          jobId: active.id, status: active.status,
+        });
         throw new AppError(409, "That AI request key is already in use.");
       }
       if (existing.status === "failed") {
