@@ -82,7 +82,7 @@ export default function TranslationQuotePanel({bookId,sourceLanguage,editable,di
       <p className="mt-2 text-xs text-white/55">Expires: {new Date(proposal.expiresAt).toLocaleString()} · {proposal.status}</p>
       <details className="mt-4 text-sm"><summary className="cursor-pointer">Saved chapter versions and model</summary><ul className="mt-2 space-y-2 text-xs text-white/60">{proposal.chapters.map((chapter)=><li key={chapter.chapterId} className="break-words">Chapter {chapter.chapterOrder+1}: {chapter.reservedCredits} credits · {chapter.model}<br/>Saved version: {chapter.documentVersionId}</li>)}</ul></details>
       <button type="button" className={`${button} mt-5 bg-white text-black`} disabled={locked||!editable||proposal.status==="expired"} onClick={()=>void accept()}>{proposal.acceptedProjectId?"Open accepted translation":`Confirm ${proposal.reservedCredits}-credit hold & translate`}</button>
-      {proposal.status==="expired"&&<button type="button" className={`${button} ml-3 mt-3`} disabled={locked} onClick={()=>{intent.current=null;setProposal(null);setNotice("Choose a model and language above to request a fresh quote.");}}>Request a fresh quote</button>}
+      {proposal.status==="expired"&&<button type="button" className={`${button} ml-3 mt-3`} disabled={locked||!editable} onClick={()=>{intent.current=null;setProposal(null);setConsent(false);setNotice("Choose a model and language above, then consent to request a fresh quote.");}}>Request a fresh quote</button>}
     </div>}
   </section>;
 }

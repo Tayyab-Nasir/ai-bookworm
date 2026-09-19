@@ -47,6 +47,14 @@ export default function TranslationStudio({ bookId }: { bookId: string }) {
 
   useEffect(() => { void load().catch((reason) => setError(reason instanceof Error ? reason.message : "Could not load translations.")); }, [load]);
 
+  const refreshHistory = async () => {
+    if (busy) return;
+    setBusy("refresh"); setError(null);
+    try { await load(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh translations."); }
+    finally { setBusy(null); }
+  };
+
   const preview = async (projectId: string, includeText: boolean) => {
     if (busy) return; setBusy(includeText ? "preview" : "refresh"); setError(null); setNotice(null);
     try {
@@ -99,7 +107,7 @@ export default function TranslationStudio({ bookId }: { bookId: string }) {
       setNotice("Translation purchase confirmed. Track chapter progress and your held credits below.");
     }} />
 
-    <section className={`${panel} mt-6`} aria-labelledby="translation-history"><div className="flex flex-wrap items-center justify-between gap-4"><div><h2 id="translation-history" className="text-xl font-medium">Translation history</h2><p className="mt-2 text-sm text-white/50">Refresh to see worker progress. Previewed text is never put into browser storage.</p></div><button type="button" onClick={() => void load()} disabled={Boolean(busy)} className={subtle}>{busy === "refresh" ? "Refreshing…" : "Refresh history"}</button></div>
+    <section className={`${panel} mt-6`} aria-labelledby="translation-history"><div className="flex flex-wrap items-center justify-between gap-4"><div><h2 id="translation-history" className="text-xl font-medium">Translation history</h2><p className="mt-2 text-sm text-white/50">Refresh to see worker progress. Previewed text is never put into browser storage.</p></div><button type="button" onClick={() => void refreshHistory()} disabled={Boolean(busy)} className={subtle}>{busy === "refresh" ? "Refreshing…" : "Refresh history"}</button></div>
 {projects.length ? <ul className="mt-6 space-y-3">{projects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/25 p-4"><div className="flex flex-wrap items-start justify-between gap-4"><div><p className="font-medium">{project.sourceLanguage.toUpperCase()} → {project.targetLanguage.toUpperCase()}</p><p className="mt-1 text-sm text-white/45">{project.completedChapterCount}/{project.chapterCount} chapters · {project.billingMode === "quoted" ? "Usage-priced" : `${project.creditUnits} translation credits`}</p></div><div className="flex flex-wrap items-center gap-3"><span className={`rounded-full px-3 py-1 text-xs ${badge(project.status)}`}>{project.status}</span><button type="button" onClick={() => void preview(project.id, project.status === "succeeded")} disabled={Boolean(busy)} className={subtle}>{project.status === "succeeded" ? "Preview" : "Check progress"}</button></div></div>{project.adoptedBookId && <Link href={`/books/${project.adoptedBookId}`} className="mt-4 inline-block text-sm text-emerald-100 underline">Open translated draft</Link>}</li>)}</ul> : <p className="mt-6 text-sm text-white/45">No translations have been queued for this book.</p>}
     </section>
 
