@@ -45,6 +45,15 @@ capacity. It conservatively reserves both cached and uncached input bounds;
 final mutually exclusive provider counts release the surplus. It does not count
 tokens, persist an accepted quote, enqueue jobs, or grant dispatch permission.
 Those steps must be wired transactionally before switching public creation.
+`translation-quote.ts` now prepares a per-chapter proposal using OpenAI's
+`responses.inputTokens.count` for the exact model/system/user messages produced
+by the generation payload builder. It binds the full generation request hash
+(including output cap), rejects malformed counts and rechecks catalog validity
+after counting. SDK retries are disabled. This sends manuscript text to OpenAI
+when invoked: require authenticated chapter access and explicit quote intent,
+rate limits and privacy disclosure before exposing it in the customer flow.
+It does not generate text, reserve credits, persist a quote or enqueue a job.
+Documentation: https://developers.openai.com/api/docs/guides/token-counting
 Approval flags/references are operator audit metadata, not evidence that the
 owner actually approved a price. Verify official model/rate data and obtain the
 commercial decision before configuring this on a deployed system.
