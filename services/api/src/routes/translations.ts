@@ -14,7 +14,7 @@ function row(value: unknown): Record<string, unknown> | null {
   return candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : null;
 }
 
-async function hydrateProject(sb: SupabaseClient, project: Record<string, unknown>, includeText = false) {
+async function hydrateProject(sb: SupabaseClient, project: Record<string, unknown>, includeText = false, userId?: string) {
   const { data: chapters, error } = await sb.from("translation_chapters").select("*")
     .eq("project_id", project.id).order("chapter_order");
   if (error) throw new AppError(500, "Could not load translation chapters.");
@@ -22,13 +22,16 @@ async function hydrateProject(sb: SupabaseClient, project: Record<string, unknow
   const jobIds = chapterRows.map((item) => item.ai_job_id);
   const chapterIds = chapterRows.map((item) => item.chapter_id);
   const [{ data: jobs, error: jobsError }, { data: sources, error: sourcesError }] = await Promise.all([
-    jobIds.length ? sb.from("ai_jobs").select("id,status,error_code").in("id", jobIds) : Promise.resolve({ data: [], error: null }),
+    jobIds.length ? sb.from("ai_jobs").select("id,status,error_code,billing_mode").in("id", jobIds) : Promise.resolve({ data: [], error: null }),
     chapterIds.length ? sb.from("chapters").select("id,title,order_index").in("id", chapterIds) : Promise.resolve({ data: [], error: null }),
   ]);
   if (jobsError || sourcesError) throw new AppError(500, "Could not load translation progress.");
   const jobsById = new Map((jobs ?? []).map((item) => [item.id, item]));
   const sourceById = new Map((sources ?? []).map((item) => [item.id, item]));
+  const quoted = jobIds.length > 0 && jobs?.length === jobIds.length && jobs.every((job) => job.billing_mode === "quoted");
   return {
+    billingMode: quoted ? "quoted" : "operational",
+    canCancelBeforeDispatch: quoted && project.created_by === userId && project.status !== "succeeded" && project.status !== "cancelled",
     id: project.id, bookId: project.book_id, sourceLanguage: project.source_language, targetLanguage: project.target_language,
     status: project.status, chapterCount: project.chapter_count, completedChapterCount: project.completed_chapter_count,
     creditUnits: project.credit_units, adoptedBookId: project.adopted_book_id ?? null, createdAt: project.created_at,
@@ -55,6 +58,27 @@ function queueError(error: { code?: string }) {
 }
 
 export function translationRoutes(app: FastifyInstance) {
+  app.post("/translations/:projectId/cancel", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    if (!projectIdSchema.safeParse(projectId).success) throw new AppError(422, "Valid translation project ID required.");
+    if (!z.object({}).strict().safeParse(req.body ?? {}).success) throw new AppError(422, "Cancellation does not accept user IDs or refund amounts.");
+    const sb = app.supabaseFactory(req.userToken);
+    const { data: project, error } = await sb.from("translation_projects").select("id,book_id,created_by").eq("id", projectId).maybeSingle();
+    if (error) throw new AppError(500, "Could not load translation project.");
+    if (!project) throw new AppError(404, "Translation project not found.");
+    await loadBook(sb, project.book_id, req.userId, true);
+    if (project.created_by !== req.userId) throw new AppError(403, "Only the translation creator can cancel it.");
+    const cancelled = await app.supabaseFactory().rpc("cancel_quoted_translation", { p_project_id: projectId, p_user_id: req.userId });
+    if (cancelled.error) {
+      if (cancelled.error.code === "42501") throw new AppError(403, "Translation cancellation access denied.");
+      if (["23514", "55P03", "40001", "40P01"].includes(cancelled.error.code)) throw new AppError(409, "Translation may already be processing. Refresh its status; no cancellation refund was applied.");
+      if (["PGRST202", "42883"].includes(cancelled.error.code)) throw new AppError(503, "Translation cancellation is not configured.");
+      throw new AppError(500, "Could not confirm translation cancellation. Refresh before retrying.");
+    }
+    const result = z.object({ projectId: z.literal(projectId), status: z.literal("cancelled"), releasedCredits: z.string().regex(/^\d+$/), cancelledChapters: z.number().int().positive() }).safeParse(cancelled.data);
+    if (!result.success) throw new AppError(500, "Cancellation returned an invalid receipt. Refresh its status.");
+    reply.header("cache-control", "private, no-store"); return result.data;
+  });
   app.get("/books/:bookId/translations", async (req, reply) => {
     const { bookId } = req.params as { bookId: string };
     if (!projectIdSchema.safeParse(bookId).success) throw new AppError(422, "Valid book ID required.");
@@ -62,7 +86,7 @@ export function translationRoutes(app: FastifyInstance) {
     const { data, error } = await sb.from("translation_projects").select("*").eq("book_id", bookId).order("created_at", { ascending: false }).limit(50);
     if (error) throw new AppError(500, "Could not load translation history.");
     reply.header("cache-control", "private, no-store");
-    return { projects: await Promise.all((data ?? []).map((project) => hydrateProject(sb, project))) };
+    return { projects: await Promise.all((data ?? []).map((project) => hydrateProject(sb, project, false, req.userId))) };
   });
 
   app.get("/translations/:projectId", async (req, reply) => {
@@ -75,7 +99,7 @@ export function translationRoutes(app: FastifyInstance) {
     if (error) throw new AppError(500, "Could not load translation project.");
     if (!data) throw new AppError(404, "Translation project not found.");
     reply.header("cache-control", "private, no-store");
-    return hydrateProject(sb, data, query.data.includeText === "true");
+    return hydrateProject(sb, data, query.data.includeText === "true", req.userId);
   });
 
   app.post("/books/:bookId/translations", async (req, reply) => {
@@ -89,7 +113,7 @@ export function translationRoutes(app: FastifyInstance) {
     const project = row(queued.data);
     if (!project) throw new AppError(500, "Translation queue returned no project.");
     reply.header("cache-control", "private, no-store");
-    return reply.status(202).send(await hydrateProject(sb, project));
+    return reply.status(202).send(await hydrateProject(sb, project, false, req.userId));
   });
 
   app.post("/translations/:projectId/adopt", async (req, reply) => {

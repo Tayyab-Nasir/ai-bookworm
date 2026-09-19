@@ -29,6 +29,7 @@ function fakeSupabase(role = "editor", seed: Partial<Record<string, Row[]>> = {}
     auth: { getUser: async (token: string) => token === "good" ? { data: { user: { id: USER } }, error: null } : { data: { user: null }, error: { message: "bad" } } },
     rpc: async (name: string, args: Row) => {
       calls.push({ name, args });
+      if (name === "cancel_quoted_translation") return { data: { projectId: PROJECT, status: "cancelled", releasedCredits: "2", cancelledChapters: 1 }, error: null };
       if (name === "queue_translation_project") return { data: [{ id: PROJECT, book_id: BOOK, source_language: "en", target_language: "es", status: "queued", chapter_count: 1, completed_chapter_count: 0, credit_units: 2, adopted_book_id: null, created_at: "2026-09-12T00:00:00.000Z", completed_at: null }], error: null };
       return { data: null, error: null };
     },
@@ -75,4 +76,24 @@ test("translation routes reject viewers and list output without leaking queued s
     assert.equal(listed.statusCode, 200, listed.body); assert.equal(JSON.stringify(listed.json()).includes("never return this"), false);
     assert.equal(listed.json().projects[0].chapters[0].chapterTitle, "Opening");
   } finally { await historyApp.close(); }
+});
+
+test("quoted cancellation binds authenticated creator and rejects refund/actor injection", async () => {
+  const seed = { translation_projects: [{ id: PROJECT, book_id: BOOK, created_by: USER, status: "queued" }] };
+  const fake = fakeSupabase("editor", seed); const app = await buildApp(() => fake.client);
+  try {
+    const injected = await app.inject({ method: "POST", url: `/v1/translations/${PROJECT}/cancel`, headers: { authorization: "Bearer good" }, payload: { userId: USER, releasedCredits: 1000 } });
+    assert.equal(injected.statusCode, 422); assert.equal(fake.calls.length, 0);
+    const ok = await app.inject({ method: "POST", url: `/v1/translations/${PROJECT}/cancel`, headers: { authorization: "Bearer good" }, payload: {} });
+    assert.equal(ok.statusCode, 200, ok.body); assert.equal(ok.json().releasedCredits, "2");
+    assert.deepEqual(fake.calls, [{ name: "cancel_quoted_translation", args: { p_project_id: PROJECT, p_user_id: USER } }]);
+  } finally { await app.close(); }
+  for (const [role, creator] of [["viewer", USER], ["editor", PROJECT]]) {
+    const denied = fakeSupabase(role, { translation_projects: [{ id: PROJECT, book_id: BOOK, created_by: creator }] });
+    const deniedApp = await buildApp(() => denied.client);
+    try {
+      const response = await deniedApp.inject({ method: "POST", url: `/v1/translations/${PROJECT}/cancel`, headers: { authorization: "Bearer good" }, payload: {} });
+      assert.equal(response.statusCode, 403); assert.equal(denied.calls.length, 0);
+    } finally { await deniedApp.close(); }
+  }
 });

@@ -11,7 +11,7 @@ import { assertQuoteDispatchable, quoteUsage, reconcileUsage, type UsageQuote } 
 const rowSchema = z.object({
   job_id: z.string().uuid(), user_id: z.string().uuid(), workspace_id: z.string().uuid(),
   quote_json: z.unknown(), reserved_credits: z.number().int().positive().max(2147483647),
-  status: z.enum(["held", "settled", "requires_review"]), settlement_json: z.unknown().nullable(),
+  status: z.enum(["held", "settled", "requires_review", "cancelled"]), settlement_json: z.unknown().nullable(),
 });
 function validatedQuote(value: unknown): UsageQuote {
   try {

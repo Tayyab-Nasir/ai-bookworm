@@ -277,6 +277,8 @@ export interface TranslationChapterResult {
 }
 
 export interface TranslationProjectResult {
+  billingMode?: "operational" | "quoted";
+  canCancelBeforeDispatch?: boolean;
   id: string;
   bookId: string;
   sourceLanguage: string;
@@ -671,6 +673,8 @@ export function createClient(opts: ClientOptions) {
       call<TranslationProjectResult>("POST", `/v1/books/${bookId}/translations`, body),
     adoptTranslationProject: (projectId: string, body: { title: string }) =>
       call<{ book: Book }>("POST", `/v1/translations/${projectId}/adopt`, body),
+    cancelQuotedTranslation: (projectId: string) =>
+      call<{ projectId: string; status: "cancelled"; releasedCredits: string; cancelledChapters: number }>("POST", `/v1/translations/${projectId}/cancel`, {}),
     runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
       call<PreflightResult>("POST", "/v1/publishing/validate", body),
     createPublishingJob: (body: { bookId: string; editionId: string; channel: RetailerChannel; renderJobId: string; preflightJobId: string; idempotencyKey: string }) =>
