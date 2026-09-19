@@ -23,6 +23,15 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 durable quote preparation queue
+
+Source 92ec9ae adds private immutable request snapshots, one active/book and
+three/hour limits, explicit consent API and payer-only recovery/progress client.
+236 API tests, workspace TypeScript, 61 migrations/43 SQL suites pass locally.
+No debit/generation at request time. Counting worker/proposal GET/UI remain next;
+queue is not yet operational end to end. Shared note:
+Codex Sessions/2026-09/2026-09-19-bookworm-quote-preparation-queue.md.
+
 ### 2026-09-19 durable proposal acceptance
 
 Sources 3d3254f (DB), 8db8005 (API/client): private immutable saved offers,
