@@ -83,7 +83,7 @@ npm run worker:ai
 npm run worker:document
 npm run worker:publishing
 npm run worker:audiobook
-npm run worker:translation
+npm run worker:translation # quoted paid translations only; run -- --prepare-quotes separately
 ```
 
 The `Remove-Item` line above targets only the named process environment

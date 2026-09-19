@@ -606,9 +606,9 @@
     "semantic_hash": "8843cb12ab93bfc002e8ab819671a3e7"
   },
   "packages/api-client/src/index.ts": {
-    "mtime": 1789792043.394738,
-    "seen": 1789792352.8939493,
-    "ast_hash": "a2064329eddbd700b9c4e63cfe922283",
+    "mtime": 1789793442.1404626,
+    "seen": 1789793794.9750946,
+    "ast_hash": "e7493d6be37f0316fffd5fa711256335",
     "semantic_hash": ""
   },
   "packages/api-client/tsconfig.json": {
@@ -756,10 +756,10 @@
     "semantic_hash": "2b69bf2bb39147086cd1bd597e9dbc25"
   },
   "packages/validation/src/index.ts": {
-    "mtime": 1788775255.1846259,
-    "seen": 1789189271.7201564,
-    "ast_hash": "5926c572256b835156eef51bfdeb20b4",
-    "semantic_hash": "5926c572256b835156eef51bfdeb20b4"
+    "mtime": 1789793442.1364238,
+    "seen": 1789793794.9750946,
+    "ast_hash": "1e1168dff879eccc4e7ddcb29603722f",
+    "semantic_hash": ""
   },
   "packages/validation/tsconfig.json": {
     "mtime": 1786335328.692936,
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789793208.3252811,
-    "seen": 1789793221.5614839,
-    "ast_hash": "12e26f8dcbd23534e0b472975a4e5380",
+    "mtime": 1789794281.1715314,
+    "seen": 1789794312.7047977,
+    "ast_hash": "fe89721802c3f5bbc7cc5368974ef863",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2346,9 +2346,9 @@
     "semantic_hash": ""
   },
   "docs/PROJECT_MAP.md": {
-    "mtime": 1789699142.8667164,
-    "seen": 1789699203.5361207,
-    "ast_hash": "2c474d9e83aa9202144e98e6827ad715",
+    "mtime": 1789793637.49374,
+    "seen": 1789793794.9782927,
+    "ast_hash": "945bf1467a96f2c002533cdcaad2c3ab",
     "semantic_hash": ""
   },
   "docs/SNAPOTTER_EVALUATION.md": {
@@ -2364,9 +2364,9 @@
     "semantic_hash": ""
   },
   "docs/operations.md": {
-    "mtime": 1789792574.110357,
-    "seen": 1789792641.9377003,
-    "ast_hash": "7b1d299f1ee3b2cd741baafc71c92ce9",
+    "mtime": 1789793822.7441123,
+    "seen": 1789793860.0262957,
+    "ast_hash": "686540f4cf430a4308374068d9c94b48",
     "semantic_hash": ""
   },
   "docs/release-checklist.md": {
@@ -2418,9 +2418,9 @@
     "semantic_hash": ""
   },
   "services/api/openapi.yaml": {
-    "mtime": 1789700327.6226969,
-    "seen": 1789700658.0325089,
-    "ast_hash": "7e1fba3f2de60228cb53f9d45fd38a91",
+    "mtime": 1789793442.1404626,
+    "seen": 1789793794.9782927,
+    "ast_hash": "04cb8124b4232e6f6d0343dac3cbcabf",
     "semantic_hash": ""
   },
   "services/document/requirements.txt": {
@@ -2514,9 +2514,9 @@
     "semantic_hash": ""
   },
   "services/api/src/routes/translations.ts": {
-    "mtime": 1789792043.3937535,
-    "seen": 1789792352.8939493,
-    "ast_hash": "60042188423d256982b6c6efb722ca1a",
+    "mtime": 1789793442.1384444,
+    "seen": 1789793794.9750946,
+    "ast_hash": "42ac0a56ce3720a5259290181f8149e7",
     "semantic_hash": ""
   },
   "services/api/src/translation-worker.test.ts": {
@@ -2526,9 +2526,9 @@
     "semantic_hash": ""
   },
   "services/api/src/translations.test.ts": {
-    "mtime": 1789792253.4858663,
-    "seen": 1789792352.8939493,
-    "ast_hash": "232a79ab63ef5c42c067cfbb7b3fa776",
+    "mtime": 1789793442.142483,
+    "seen": 1789793794.9750946,
+    "ast_hash": "99e7ce880cf35bc32880409079b2314d",
     "semantic_hash": ""
   },
   "supabase/migrations/20260912180000_translation_workflow.sql": {
@@ -2538,15 +2538,15 @@
     "semantic_hash": ""
   },
   "tests/security/translation-workflow.test.sql": {
-    "mtime": 1789190474.7157922,
-    "seen": 1789190997.7093635,
-    "ast_hash": "bb3f89a7e7f723d66d4ff08ca5833e36",
+    "mtime": 1789793702.0487766,
+    "seen": 1789793794.9782927,
+    "ast_hash": "d6d214673dbdb02d7f8a7cc5bfa83473",
     "semantic_hash": ""
   },
   "workers/translation/worker.ts": {
-    "mtime": 1789791721.250393,
-    "seen": 1789791870.2620206,
-    "ast_hash": "b0cb228c3161680d89dae454fde8ac45",
+    "mtime": 1789793637.4886165,
+    "seen": 1789793794.9782927,
+    "ast_hash": "bb022201452e99e87eac7e0ed63c21f1",
     "semantic_hash": ""
   },
   "apps/web/tests/dashboard.test.ts": {
@@ -2850,9 +2850,9 @@
     "semantic_hash": ""
   },
   "tests/security/run-native-postgres.mjs": {
-    "mtime": 1789792498.601732,
-    "seen": 1789792508.2868354,
-    "ast_hash": "a520766793134ae1c35084c130739f6b",
+    "mtime": 1789794167.8373506,
+    "seen": 1789794192.0841496,
+    "ast_hash": "dc37cfd4c9419954a35e486cee83b281",
     "semantic_hash": ""
   },
   ".github/workflows/native-database.yml": {
@@ -3081,6 +3081,24 @@
     "mtime": 1789793105.049984,
     "seen": 1789793169.5554678,
     "ast_hash": "5d2a36ba6d8dfe9fdb34f8d84d38f3bd",
+    "semantic_hash": ""
+  },
+  "services/api/src/lib/translation-worker-mode.ts": {
+    "mtime": 1789793637.4886165,
+    "seen": 1789793794.9750946,
+    "ast_hash": "05deb575613155c3a62daef6cffe4573",
+    "semantic_hash": ""
+  },
+  "services/api/src/translation-worker-mode.test.ts": {
+    "mtime": 1789793637.4886165,
+    "seen": 1789793794.9750946,
+    "ast_hash": "5df3d94392a4ec1eb3a9a5394e32350a",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919180000_retire_legacy_translation_queue.sql": {
+    "mtime": 1789793702.0477643,
+    "seen": 1789793794.9782927,
+    "ast_hash": "cdb6077115a4cbc0f79ac683b7c4d99e",
     "semantic_hash": ""
   }
 }

@@ -525,8 +525,8 @@ delete receipts, release holds or reset dispatch markers to unblock a worker.
 
 Add `--once` to either command for a bounded operator diagnostic. This may call
 OpenAI when work is queued: it is NOT a free health check. Never combine
-`--prepare-quotes` and `--quoted`. The unflagged worker consumes only the older
-operational queue and cannot process the web quote flow.
+`--prepare-quotes` and `--quoted`. The unflagged worker now defaults to
+`--quoted`; it never consumes legacy operational jobs.
 
 Both processes require server-injected `SUPABASE_URL`,
 `SUPABASE_SERVICE_ROLE_KEY` and `OPENAI_API_KEY`. The API requires the approved
@@ -536,7 +536,7 @@ with a default model or today's rates. A missing/expired catalog prevents new
 quotes. No approved commercial config is seeded by this build.
 
 Before enabling this flow live, review/apply migrations through
-`20260919170000_translation_quote_worker.sql`, verify native database tests,
+`20260919180000_retire_legacy_translation_queue.sql`, verify native database tests,
 exercise synthetic browser acceptance, configure both workers and confirm
 queue movement and receipt recovery. None of these commands deploys migrations.
 Monitor request counts by status and oldest queued age; worker logs deliberately
@@ -545,26 +545,23 @@ quote can expire before acceptance; request a fresh quote rather than extending
 its saved validity. An accepted proposal can be reread/replayed to recover the
 same purchase without another debit.
 
-### Legacy operational queue (older API/mobile clients)
+### Retired operational queue
 
-- Authors queue a whole book only after every chapter has a saved current
-  version. The database creates one leased job per chapter; queued jobs retain
-  source document IDs and SHA-256 hashes, never copied manuscript text.
-- Start the consumer with `npm run worker:translation`; add `-- --once` for one
-  claim. It rehydrates the pinned chapter, rejects changed or oversized source
-  text, calls the Responses API using `OPENAI_TRANSLATION_MODEL` or
-  `gpt-6-astra`, and stores the reviewable output through an atomic completion
-  RPC. The browser never sees `OPENAI_API_KEY`.
-- One `translation_credit` covers up to 1,000 source characters. Organization
-  reservations are locked before a provider call; no subscription or missing
-  `translation_credits_monthly` entitlement means zero capacity. A terminal
-  chapter failure marks the project failed and cancels the other pending jobs.
-- Private completion receipts retain translated text only for recovery after a
-  lost database reply. A completed project can create a *separate draft* only
-  through an explicit author action. That draft is not publication-ready:
-  review translation quality, metadata, source formatting, illustrations, and
-  layout before rendering or retailer packaging. Live OpenAI quality/cost and
-  native multi-worker acceptance remain release gates.
+The pre-quote `queue_translation_project` RPC and HTTP endpoint are retired.
+They cannot create new work, and `npm run worker:translation` never claims their
+jobs. Do not invoke `runOneTranslationJob` through an ad-hoc script: it has no
+usage-priced quote, provider cost ceiling or funded hold. If a pre-retirement
+project exists, freeze it, reconcile entitlement/payment and provider state,
+then create a fresh quote or issue a documented customer remedy. Never start it
+to "clear" a queue or infer whether a provider call happened.
+
+Before applying the retirement migration to a live environment, stop every
+legacy translation consumer and wait through the maximum existing 900-second
+lease (or reconcile each live lease). Then apply the migration, verify no new
+legacy claim can occur, and start only the `--prepare-quotes` and `--quoted`
+workers. Existing running jobs keep renewal/completion/failure permission so
+operators can settle their known outcome; never revoke those paths mid-lease.
+
 # Fixed-layout EPUB worker dependency
 
 ## Metadata generation concurrency migration

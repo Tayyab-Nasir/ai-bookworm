@@ -23,6 +23,16 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 quote-only translation retirement
+
+Sources 36d3e99/6bbd98a remove direct legacy translation creation and
+service-role claims, default translation worker execution to funded quoted jobs
+and add native quote preparation/cancellation races. Local 242 API/70 web,
+workspace TypeScript and 63 migrations/43 SQL suites pass. Native GitHub run
+35422912543 passed. No live migration, provider call or deployment. Existing
+queued legacy jobs freeze; only known in-flight jobs may settle. Shared:
+Codex Sessions/2026-09/2026-09-19-bookworm-quote-only-retirement.md.
+
 ### 2026-09-19 quote browser acceptance
 
 Source f3d74a6: real browser with synthetic responses verifies quote consent,
@@ -591,19 +601,20 @@ cost is explicitly a word-rate estimate until reconciled against OpenAI usage.
 Mastering/concatenation, loudness and pronunciation QC, retail audio packaging,
 and live-provider acceptance remain open; segment MP3s are not retail-ready.
 
-Translation is now implemented and locally verified, but its additive
-`20260912180000_translation_workflow.sql` migration is deliberately **not yet
-applied** to the live project. It queues one paid, version-pinned chapter job
-per saved chapter and records source pointers/hashes rather than manuscript
-text. The `npm run worker:translation` consumer uses the server-only OpenAI
-Responses API (`OPENAI_TRANSLATION_MODEL`, default `gpt-6-astra`), fenced
-leases, and private completion receipts. A completed project is reviewable and
-can create a separate text-only draft only by explicit author action; it never
-overwrites or publishes the source. One credit covers each started 1,000 source
-characters, with missing `translation_credits_monthly` allowance defaulting to
-zero. No key, provider call, spend, or live migration was made by this work.
-Before live use: approve/apply that migration, set real plan entitlement,
-configure and supervise the worker, and perform live quality/cost acceptance.
+Translation is now implemented and locally verified, but its additive quote
+migrations are deliberately **not yet applied** to the live project. The only
+supported consumer is `npm run worker:translation -- --quoted` (also its
+unflagged default), which requires a server-owned, accepted funded quote. The
+old operational queue and direct endpoint are retired/frozen; never use it to
+dispatch OpenAI work. Translation jobs retain source pointers/hashes rather
+than manuscript text, use server-only OpenAI Responses API (`gpt-6-astra` by
+default), fenced leases and private completion receipts. A completed project is
+reviewable and can create a separate text-only draft only by explicit author
+action; it never overwrites or publishes source. No key, provider call, spend,
+or live migration was made by this work. Before live use: review/apply quote
+migrations through `20260919180000_retire_legacy_translation_queue.sql`, set an
+approved catalog, supervise both quote workers, and perform live quality/cost
+acceptance.
 
 The author dashboard now uses one tenant-scoped aggregate endpoint instead of
 demo counters or one browser request per book. It shows real books, live asset
