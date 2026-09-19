@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 versioned usage pricing math
+
+usage-pricing.ts adds exact version-pinned quote/settlement math; 210 API tests
+and API TypeScript pass. Synthetic test rates only. Not wired to generation,
+funded reservations or charges. Persist server-owned quotes next; checksums and
+approval flags are not authentication. No live changes.
+Shared note: Codex Sessions/2026-09/2026-09-19-bookworm-usage-pricing.md.
+
 ### 2026-09-19 atomic service credit deduction (local only)
 
 Migration 20260919090000 makes legacy credits/deduct usage+ledger+receipt atomic.

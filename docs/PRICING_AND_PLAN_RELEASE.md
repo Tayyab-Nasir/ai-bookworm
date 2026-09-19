@@ -28,6 +28,27 @@ They are not approved commercial offers.
 
 ## Credit accounting direction
 
+### Versioned calculation component
+
+`services/api/src/lib/usage-pricing.ts` provides pure quote/reconciliation math.
+Rates are integer micro-USD per million tokens; quantities and money remain
+decimal strings and BigInt internally. Customer credits round up once after
+platform cost and an explicit markup multiplier. Cached/uncached and modality
+dimensions must be supplied separately with complete, non-overlapping counts.
+Missing dimensions, unknown models relative to the quote, duplicate counters,
+estimated receipts and changed scope cannot settle a quote. Usage above any
+quoted dimension retains the hold for review, even when its total cost is lower.
+
+The fingerprint is an integrity checksum, NOT authentication or a signature.
+Only server-owned persisted price/policy snapshots may be trusted; a caller
+setting `approved: true` is not commercial approval. The component does not
+reserve funds, authenticate provider receipts, persist idempotency, or connect
+to generation endpoints yet. Before using it for charges: persist scoped quotes,
+reserve funded balances transactionally before dispatch, normalize actual usage
+without double-counting cached tokens/retries, and settle/release once against
+the saved quote. Speech estimates remain non-billable until reconciled.
+All calculator test rates are synthetic, not OpenAI prices or retail offers.
+
 Local migration `20260919050000_metadata_credit_reservations.sql` adds a
 database-side hold for the existing one-unit metadata operation before provider
 execution. It counts pending metadata requests across organization workspaces.
