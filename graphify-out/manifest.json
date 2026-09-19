@@ -2850,9 +2850,9 @@
     "semantic_hash": ""
   },
   "tests/security/run-native-postgres.mjs": {
-    "mtime": 1789787706.3196025,
-    "seen": 1789787715.071304,
-    "ast_hash": "6d31f2a914ade2b340f15dad569c0752",
+    "mtime": 1789788267.8722725,
+    "seen": 1789788277.7745686,
+    "ast_hash": "6519e47908ff2f89b87f3a0d5f2ab013",
     "semantic_hash": ""
   },
   ".github/workflows/native-database.yml": {
@@ -2916,21 +2916,27 @@
     "semantic_hash": ""
   },
   "tests/security/funded-quotes.test.sql": {
-    "mtime": 1789787657.6347218,
-    "seen": 1789787715.071304,
-    "ast_hash": "67e1674455f8698e146a1d90dca36ba4",
+    "mtime": 1789788224.5386255,
+    "seen": 1789788277.7745686,
+    "ast_hash": "4fff429114921400ee7e8c4327773129",
     "semantic_hash": ""
   },
   "services/api/src/funded-usage.test.ts": {
-    "mtime": 1789787949.691293,
-    "seen": 1789787984.3161392,
-    "ast_hash": "2a09eb5991fd76c5c7e743f3b7ada949",
+    "mtime": 1789788224.5401423,
+    "seen": 1789788277.7735775,
+    "ast_hash": "93be57db8b986d37c747a52db303fe8d",
     "semantic_hash": ""
   },
   "services/api/src/lib/funded-usage.ts": {
-    "mtime": 1789787949.689778,
-    "seen": 1789787984.3161392,
-    "ast_hash": "4aad994c835245ff3435423fe3894b19",
+    "mtime": 1789788174.5364292,
+    "seen": 1789788277.7735775,
+    "ast_hash": "4c0f13c555ba4f6634482aff63e9e5e1",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919110000_funded_dispatch_claim.sql": {
+    "mtime": 1789788174.5344381,
+    "seen": 1789788277.7745686,
+    "ast_hash": "a63a091d64b038138b891945acb9f080",
     "semantic_hash": ""
   }
 }

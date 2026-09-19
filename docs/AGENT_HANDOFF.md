@@ -23,6 +23,15 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 one-time funded dispatch
+
+Migration 20260919110000 and claimPricedDispatch authorize one provider call
+against a held quote and live lease; replay denies redispatch. Quote/dispatch
+identity is immutable and pre-dispatch settlement is blocked. 216 API tests,
+TypeScript, 56 migrations/40 SQL suites and native CI 35418456271 (16 races) pass.
+Source 750e3f7 pushed. Worker and quote-required enqueue integration remain next.
+Shared note: Codex Sessions/2026-09/2026-09-19-bookworm-funded-dispatch.md.
+
 ### 2026-09-19 funded pricing adapter
 
 funded-usage.ts connects validated saved quotes to reservation and calculated
