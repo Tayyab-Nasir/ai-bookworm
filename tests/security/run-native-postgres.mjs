@@ -83,6 +83,36 @@ async function race(kind, media) {
   assert.equal(await sql(`select count(*) from ai_jobs j join workspaces w on w.id=j.workspace_id where w.organization_id='${f.org}' and j.status in ('queued','running');`), kind === 'completion' ? '0' : '1');
   console.log(`PASS native concurrent ${media.label} ${kind}`);
 }
+async function deductionRace(replay) {
+  const user = randomUUID(); const job = randomUUID();
+  await sql(`insert into auth.users(id,email) values('${user}','deduction@local.test');
+    insert into credit_ledger(user_id,source,amount,balance_after) values('${user}','purchase',1,1);`);
+  const call = (id) => `set request.jwt.claim.role='service_role'; select public.deduct_job_credits('${user}',null,null,'ai_credits',1,'${id}');`;
+  const held = session();
+  held.child.stdin.write(`begin; ${call(job)} select 'BOOKWORM_READY';\n`);
+  await until(() => { assert.equal(held.ended, false, held.stderr); return held.stdout.includes('BOOKWORM_READY'); }, 'Deduction holder not ready');
+  const name = `deduct_${randomUUID().replaceAll('-', '')}`;
+  const contender = session(database, name);
+  contender.child.stdin.end(call(replay ? job : randomUUID()));
+  await until(async () => {
+    assert.equal(contender.ended, false, contender.stderr);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${name}' and wait_event_type='Lock';`) === '1';
+  }, 'Deduction did not wait for receipt/balance lock');
+  held.child.stdin.end('commit;\n');
+  assert.equal((await held.done).code, 0, held.stderr);
+  const result = await contender.done;
+  if (replay) {
+    assert.equal(result.code, 0, result.stderr);
+    const first = JSON.parse(held.stdout.split('\n').find((line) => line.startsWith('{')));
+    assert.deepEqual(JSON.parse(result.stdout.trim()), first);
+  } else {
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /23514.*insufficient credits/s);
+  }
+  assert.equal(await sql(`select count(*) from usage_events where user_id='${user}';`), '1');
+  assert.equal(await sql(`select sum(amount) from credit_ledger where user_id='${user}';`), '0');
+  console.log(`PASS native deduction ${replay ? 'receipt replay' : 'competing debit rollback'}`);
+}
 let created = false;
 try {
   assert.equal(await sql("select count(*) from pg_roles where rolname in ('anon','authenticated','service_role');", 'postgres'), '0', 'Refusing a reused/shared server: Supabase roles already exist');
@@ -104,6 +134,8 @@ try {
   ]) {
     for (const kind of ['reservation', 'completion', 'rollback']) await race(kind, media);
   }
+  await deductionRace(true);
+  await deductionRace(false);
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');

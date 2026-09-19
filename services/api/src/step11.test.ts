@@ -26,6 +26,23 @@ interface Store {
 }
 function fakeSupabase(store: Store) {
   const client = {
+    rpc: async (name: string, p: Record<string, unknown>) => {
+      assert.equal(name, "deduct_job_credits");
+      const receipts = (store.tables.credit_deduction_receipts ??= []);
+      const prior = receipts.find((r) => r.job === p.p_job_id);
+      const fingerprint = JSON.stringify(p);
+      if (prior) return prior.fingerprint === fingerprint
+        ? { data: prior.result, error: null }
+        : { data: null, error: { code: "23505", message: "conflict" } };
+      const ledger = (store.tables.credit_ledger ??= []);
+      const balance = ledger.filter((r) => r.user_id === p.p_user_id).reduce((sum, r) => sum + Number(r.amount), 0);
+      if (balance < Number(p.p_amount)) return { data: null, error: { code: "23514", message: "insufficient credits" } };
+      const entry = { user_id: p.p_user_id, source: "consumption", amount: -Number(p.p_amount), balance_after: balance - Number(p.p_amount), reference_id: p.p_job_id };
+      const usage = { meter: p.p_meter, quantity: p.p_amount, metadata_json: { jobId: p.p_job_id } };
+      ledger.push(entry); (store.tables.usage_events ??= []).push(usage);
+      const result = { entry, usage }; receipts.push({ job: p.p_job_id, fingerprint, result });
+      return { data: result, error: null };
+    },
     auth: {
       getUser: async (token: string) =>
         token === "good" ? { data: { user: { id: "user-1" } }, error: null } : { data: { user: null }, error: { message: "bad" } },
@@ -263,11 +280,14 @@ test("deductCredits references job id in usage metadata + ledger reference", asy
   assert.equal((usage as { metadata_json: { jobId: string } }).metadata_json.jobId, JOB);
 });
 
-test("double deduct with same job id: one wins, second is rejected", async () => {
+test("double deduct replays one receipt; conflicting amount and overdraft create no usage", async () => {
   const store: Store = { idemKeys: new Set(), tables: { credit_ledger: [{ user_id: USER, source: "purchase", amount: 10, balance_after: 10, reference_id: null }] } };
   const sb = fakeSupabase(store);
-  await deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 3, jobId: JOB });
-  await assert.rejects(() => deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 3, jobId: JOB }));
+  const first = await deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 3, jobId: JOB });
+  assert.deepEqual(await deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 3, jobId: JOB }), first);
+  await assert.rejects(() => deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 4, jobId: JOB }), /conflict/);
+  await assert.rejects(() => deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 20, jobId: PLAN }), /insufficient credits/);
+  assert.equal(store.tables.usage_events.length, 1);
   assert.equal(store.tables.credit_ledger.filter((r) => r.source === "consumption").length, 1);
 });
 

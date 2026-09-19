@@ -75,29 +75,26 @@ export async function recordUsage(
   return data;
 }
 
-// Meter consumption: usage_events row references the consuming job, then the
-// ledger entry carries the same reference. Deduct first-come: concurrent
-// requests race on read-then-insert; the loser's negative check or unique
-// reference constraint rejects the second post.
+// Usage, debit and replay receipt commit together. The database owns balance
+// locking; never split these writes or retry with a different request payload.
 export async function deductCredits(
   supabase: SupabaseClient,
   e: { userId: string; workspaceId?: string | null; organizationId?: string | null; meter: string; amount: number; jobId: string },
 ) {
-  const usage = await recordUsage(supabase, {
-    organizationId: e.organizationId,
-    userId: e.userId,
-    workspaceId: e.workspaceId,
-    meter: e.meter,
-    quantity: e.amount,
-    metadata: { jobId: e.jobId },
+  const { data, error } = await supabase.rpc("deduct_job_credits", {
+    p_user_id: e.userId, p_workspace_id: e.workspaceId ?? null,
+    p_organization_id: e.organizationId ?? null, p_meter: e.meter,
+    p_amount: e.amount, p_job_id: e.jobId,
   });
-  const entry = await postCreditEntry(supabase, {
-    userId: e.userId,
-    workspaceId: e.workspaceId,
-    source: "consumption",
-    amount: -Math.abs(e.amount),
-    referenceType: "job",
-    referenceId: e.jobId,
-  });
-  return { usage, entry };
+  if (error) {
+    const code = (error as { code?: string }).code;
+    if (code === "23514") throw new AppError(422, "insufficient credits", undefined, "insufficient_credits");
+    if (code === "23505") throw new AppError(409, "credit deduction request conflict", undefined, "deduction_conflict");
+    if (code === "22023") throw new AppError(422, "invalid credit deduction");
+    throw new AppError(500, "credit deduction could not be recorded");
+  }
+  if (!data || typeof data !== "object" || !("usage" in data) || !("entry" in data)) {
+    throw new AppError(502, "invalid credit deduction receipt");
+  }
+  return data as { usage: unknown; entry: unknown };
 }
