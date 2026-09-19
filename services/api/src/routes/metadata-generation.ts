@@ -135,6 +135,52 @@ function validateCandidateSources(candidate: z.infer<typeof metadataCandidate>, 
 export function metadataGenerationRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
   const fetcher = options.fetcher ?? fetch;
 
+  app.post("/books/:bookId/metadata/jobs/:jobId/recover", async (req) => {
+    const params = z.object({ bookId: uuid, jobId: uuid }).safeParse(req.params);
+    if (!params.success) throw new AppError(422, "Invalid metadata recovery request.");
+    const user = app.supabaseFactory(req.userToken);
+    const { book } = await loadBook(user, params.data.bookId, req.userId, true);
+    const service = app.supabaseFactory();
+    const { data: job, error } = await service.from("ai_jobs").select("*")
+      .eq("id", params.data.jobId).eq("book_id", book.id).eq("agent_type", "metadata")
+      .eq("created_by", req.userId).maybeSingle();
+    if (error) throw new AppError(500, "Could not load the metadata request.");
+    if (!job) throw new AppError(404, "Metadata request not found.");
+    const saved = candidateFromJob(job);
+    if (job.status === "succeeded" && saved) return { candidate: saved };
+    if (!["queued", "running"].includes(job.status)) throw new AppError(409, "This request is not pending recovery.");
+    const refs = z.array(candidateSourceRef.extend({ documentVersionId: uuid, textHash: z.string().regex(/^[a-f0-9]{64}$/u) })).min(1)
+      .safeParse((job.input_ref as { contextSources?: unknown } | null)?.contextSources);
+    if (!refs.success) throw new AppError(409, "This request lacks trusted evidence for automatic recovery. Contact support.");
+    const serviceUrl = process.env.AI_SERVICE_URL ?? `http://127.0.0.1:${process.env.AI_SERVICE_PORT ?? "8000"}`;
+    let raw: unknown;
+    try {
+      const response = await fetcher(`${serviceUrl.replace(/\/$/u, "")}/v1/ai/jobs/${job.id}`, {
+        method: "GET", redirect: "error", signal: AbortSignal.timeout(15_000),
+        headers: { ...(process.env.AI_SERVICE_TOKEN ? { "x-service-token": process.env.AI_SERVICE_TOKEN } : {}) },
+      });
+      const text = await response.text();
+      if (!response.ok || Buffer.byteLength(text) > 2_000_000) throw new Error("Result unavailable");
+      raw = JSON.parse(text);
+    } catch { throw new AppError(503, "The existing result is not available. No new generation was started; the request remains pending."); }
+    const result = aiResponse.safeParse(raw);
+    if (!result.success || result.data.jobId !== job.id || result.data.bookId !== book.id
+      || result.data.workspaceId !== book.workspace_id || result.data.agentType !== "metadata"
+      || result.data.status !== "succeeded" || result.data.suggestions.length !== 1) {
+      throw new AppError(503, "The existing result cannot be verified. The request remains pending for review.");
+    }
+    const candidate = metadataCandidate.safeParse(result.data.suggestions[0]);
+    if (!candidate.success) throw new AppError(503, "The existing draft is invalid. The request remains pending for review.");
+    validateCandidateSources(candidate.data, refs.data);
+    const { data: completed, error: completionError } = await service.rpc("complete_metadata_ai_job", {
+      p_job_id: job.id, p_provider: result.data.provider, p_model: result.data.model,
+      p_usage: result.data.usage, p_diagnostics: result.data.diagnostics, p_candidate: candidate.data,
+      p_credit_quantity: result.data.provider === "mock" ? 0 : 1,
+    });
+    if (completionError || !completed) throw new AppError(503, "Could not save the recovered draft. Retry recovery; do not start a new generation.");
+    return { candidate: candidate.data };
+  });
+
   app.get("/books/:bookId/metadata/drafts", async (req, reply) => {
     const bookId = uuid.safeParse((req.params as { bookId: string }).bookId);
     if (!bookId.success) throw new AppError(422, "Invalid book ID.");
@@ -342,8 +388,7 @@ export function metadataGenerationRoutes(app: FastifyInstance, options: { fetche
       if (!response.ok || Buffer.byteLength(text) > 2_000_000) throw new Error("AI service rejected metadata generation");
       raw = JSON.parse(text);
     } catch {
-      await markFailed(service, jobId, "ai_service_unavailable", "AI service unavailable");
-      throw new AppError(503, "The AI service is unavailable. No metadata was saved or charged.");
+      throw new AppError(503, "The AI service response was lost or unavailable. Refresh saved requests and recover the existing result before starting another generation.", { jobId, status: "running" });
     }
 
     const result = aiResponse.safeParse(raw);
@@ -377,7 +422,6 @@ export function metadataGenerationRoutes(app: FastifyInstance, options: { fetche
       if (recovered?.status === "succeeded" && candidateFromJob(recovered)) {
         return reply.status(200).send({ job: recovered, candidate: candidateFromJob(recovered) });
       }
-      await markFailed(service, jobId, "ai_persistence_failed", "Metadata AI completion could not be persisted");
       if (completionError?.code === "PGRST202" || completionError?.code === "42883") {
         throw new AppError(503, "The metadata AI workflow migration is not installed. Nothing was charged.");
       }

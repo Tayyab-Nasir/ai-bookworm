@@ -268,6 +268,56 @@ test("concurrent metadata keys cannot start a second provider call and completio
   assert.equal(calls, 2);
 });
 
+test("lost metadata response remains reserved and recovery reads one existing result without regenerating", async (t) => {
+  const store = baseStore();
+  let receipt: Row | null = null;
+  let generationCalls = 0;
+  let recoveryCalls = 0;
+  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async (_url, init) => {
+    if (init?.method === "POST") {
+      generationCalls++;
+      const body = JSON.parse(String(init.body));
+      receipt = { ...metadataResult(), jobId: body.jobId, bookId: BOOK, workspaceId: WORKSPACE, agentType: "metadata" };
+      throw new Error("Connection lost after provider completion");
+    }
+    assert.equal(init?.method, "GET"); recoveryCalls++;
+    return new Response(JSON.stringify(receipt));
+  } });
+  t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/metadata/generate`, headers: auth,
+    payload: { idempotencyKey: "lost-result-recovery", chapterIds: [CHAPTER] } });
+  assert.equal(response.statusCode, 503);
+  const job = store.tables.ai_jobs[0];
+  assert.equal(job.status, "running");
+  const recover = () => app.inject({ method: "POST", url: `/v1/books/${BOOK}/metadata/jobs/${job.id}/recover`, headers: auth, payload: {} });
+  assert.equal((await recover()).statusCode, 200);
+  assert.equal(job.status, "succeeded");
+  assert.equal((await recover()).statusCode, 200);
+  assert.equal(generationCalls, 1);
+  assert.equal(recoveryCalls, 1);
+  assert.equal(store.rpcCalls.filter((call) => call.name === "complete_metadata_ai_job").length, 1);
+  assert.equal(store.tables.book_metadata[0].description, "Author saved copy");
+});
+
+test("metadata recovery refuses foreign receipts and never frees an unknown request", async (t) => {
+  const store = baseStore();
+  const job = { id: VERSION_2, book_id: BOOK, workspace_id: WORKSPACE, created_by: USER, agent_type: "metadata", status: "running",
+    input_ref: { contextSources: [{ chapterId: CHAPTER, documentVersionId: VERSION_1, nodeId: "n1", textHash: createHash("sha256").update("Old text").digest("hex") }] } };
+  store.tables.ai_jobs.push(job);
+  let calls = 0;
+  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => {
+    calls++; return new Response(JSON.stringify({ ...metadataResult(), jobId: job.id, bookId: BOOK, workspaceId: "foreign", agentType: "metadata" }));
+  } });
+  t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/metadata/jobs/${job.id}/recover`;
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: {} })).statusCode, 503);
+  assert.equal(job.status, "running");
+  assert.equal(store.rpcCalls.length, 0);
+  job.created_by = "another-user";
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: {} })).statusCode, 404);
+  assert.equal(calls, 1);
+});
+
 test("metadata generation returns a cited review draft without overwriting saved metadata", async () => {
   const store = baseStore();
   store.tables.book_bible_items.push({

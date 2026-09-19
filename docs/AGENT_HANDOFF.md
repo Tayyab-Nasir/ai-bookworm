@@ -23,6 +23,19 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 metadata result recovery
+
+Lost AI-service responses and uncertain completion persistence no longer mark
+metadata jobs failed/release their active slot. New author-scoped recovery POST
+reads the existing AI-service job with GET only, validates job/book/workspace/
+agent identity and pinned source refs, then uses the idempotent completion RPC.
+The editor exposes Recover existing result with original-credit settlement copy.
+Missing, foreign or unverifiable receipts keep the request pending; no age-based
+failure or new provider generation. The AI service currently retains results in
+process memory only, so a service restart can still require manual reconciliation.
+203 API and 68 web tests pass. Native PostgreSQL CLI/container tooling was absent,
+so native two-connection race testing remains unverified. No live actions.
+
 ### 2026-09-19 metadata concurrency constraint (local only)
 
 Migration 20260919030000 enforces one queued/running metadata job per author/book

@@ -274,6 +274,19 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     finally { setSaving(null); }
   }
 
+  async function recoverMetadata(jobId: string) {
+    if (!memory?.canEdit || busy) return;
+    setSaving("metadata-recovery"); setMetadataGenerationError(null);
+    try {
+      const result = await request<{ candidate: unknown }>(`${endpoint}/metadata/jobs/${encodeURIComponent(jobId)}/recover`, "POST", {});
+      setMetadataCandidate(parseGeneratedMetadataCandidate(result.candidate));
+      setPendingMetadata((current) => current?.filter((job) => job.id !== jobId) ?? null);
+      setMetadataRequestKey(null);
+      setNotice("Existing metadata result recovered for review. No new generation was started.");
+    } catch (reason) { setMetadataGenerationError(messageOf(reason)); }
+    finally { setSaving(null); }
+  }
+
   async function generateMetadata() {
     if (!memory?.canEdit || busy || metadataGenerationBlocked(pendingMetadata)) return;
     const idempotencyKey = metadataRequestKey ?? crypto.randomUUID();
@@ -413,7 +426,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
             </div>
             <div className="mt-4 border-t border-white/10 pt-4">
               {pendingMetadata === null && <p role="status" className="mb-3 text-xs text-amber-100">Verify saved request status before starting another generation. Load saved drafts to retry the check.</p>}
-              {pendingMetadata && pendingMetadata.length > 0 && <div role="status" className="mb-3 text-sm text-amber-100"><p>You have an unresolved metadata request. Refresh saved drafts to check its result; no new generation will start here while it is pending.</p><ul className="mt-2 text-xs">{pendingMetadata.map((job) => <li key={job.id}>{job.status} · {new Date(job.createdAt).toLocaleString()} · request {job.id}</li>)}</ul><p className="mt-2 text-xs">If it remains stuck, contact support with the request ID. Age alone does not prove a job failed.</p></div>}
+              {pendingMetadata && pendingMetadata.length > 0 && <div role="status" className="mb-3 text-sm text-amber-100"><p>You have an unresolved metadata request. Refresh saved drafts to check its result; no new generation will start here while it is pending.</p><ul className="mt-2 space-y-3 text-xs">{pendingMetadata.map((job) => <li key={job.id}>{job.status} · {new Date(job.createdAt).toLocaleString()} · request {job.id}<button type="button" disabled={busy} onClick={() => void recoverMetadata(job.id)} className={`${secondaryClass} mt-2 block`}>Recover existing result</button></li>)}</ul><p className="mt-2 text-xs">Recovery reads the existing result, without generating again. Saving a recovered result may settle credits for that original request once. If unavailable, contact support with the request ID; age alone does not prove failure.</p></div>}
               <button type="button" onClick={() => void loadMetadataHistory()} disabled={busy} className={secondaryClass}>{saving === "metadata-history" ? "Loading saved drafts…" : "Load saved drafts · no credits"}</button>
               {metadataHistory && <div className="mt-3 space-y-2">
                 <p className="text-xs text-[#aaa]">Latest 20 successful generations. These may reference older manuscript versions. Opening does not change your form or start generation.</p>
