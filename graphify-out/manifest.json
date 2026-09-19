@@ -606,9 +606,9 @@
     "semantic_hash": "8843cb12ab93bfc002e8ab819671a3e7"
   },
   "packages/api-client/src/index.ts": {
-    "mtime": 1789707930.1553478,
-    "seen": 1789708175.606106,
-    "ast_hash": "41bac328507d92c7094d344e6b8e194c",
+    "mtime": 1789789441.1158857,
+    "seen": 1789789831.9324787,
+    "ast_hash": "7dc254ffe368806fdc05849de7c2d3a1",
     "semantic_hash": ""
   },
   "packages/api-client/tsconfig.json": {
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789788689.147299,
-    "seen": 1789788700.1975017,
-    "ast_hash": "2c82f4bbc6734fc2f95c27a887fdc0dc",
+    "mtime": 1789789203.794586,
+    "seen": 1789789249.2186396,
+    "ast_hash": "50af83e54e8fde923bdb7c6c54f963bd",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2496,9 +2496,9 @@
     "semantic_hash": ""
   },
   "apps/web/components/TranslationStudio.tsx": {
-    "mtime": 1789190586.709682,
-    "seen": 1789190997.7031176,
-    "ast_hash": "faba64691ce98fbd1143fc70096cc17f",
+    "mtime": 1789789837.1097393,
+    "seen": 1789789851.539641,
+    "ast_hash": "452c4395acda0039ab4f3138eccbe5d8",
     "semantic_hash": ""
   },
   "services/api/src/lib/translation-generation.ts": {
@@ -2514,9 +2514,9 @@
     "semantic_hash": ""
   },
   "services/api/src/routes/translations.ts": {
-    "mtime": 1789190397.1530876,
-    "seen": 1789190997.7093635,
-    "ast_hash": "2c6f8b7f0e5763df0ece4b8d5e1cd66b",
+    "mtime": 1789789441.1138823,
+    "seen": 1789789831.9324787,
+    "ast_hash": "4af080de6336591d9fadbf83b207b6cb",
     "semantic_hash": ""
   },
   "services/api/src/translation-worker.test.ts": {
@@ -2526,9 +2526,9 @@
     "semantic_hash": ""
   },
   "services/api/src/translations.test.ts": {
-    "mtime": 1789190665.0112584,
-    "seen": 1789190997.7093635,
-    "ast_hash": "6714f71da07e8dd84b21a88d7092bb40",
+    "mtime": 1789789552.9419782,
+    "seen": 1789789831.9324787,
+    "ast_hash": "59cb007dee92e781fec52a2d71ca3b43",
     "semantic_hash": ""
   },
   "supabase/migrations/20260912180000_translation_workflow.sql": {
@@ -2928,9 +2928,9 @@
     "semantic_hash": ""
   },
   "services/api/src/lib/funded-usage.ts": {
-    "mtime": 1789788174.5364292,
-    "seen": 1789788277.7735775,
-    "ast_hash": "4c0f13c555ba4f6634482aff63e9e5e1",
+    "mtime": 1789789393.988417,
+    "seen": 1789789831.9324787,
+    "ast_hash": "622f9cec2c31a6701360e5bcf659b1f0",
     "semantic_hash": ""
   },
   "supabase/migrations/20260919110000_funded_dispatch_claim.sql": {
@@ -2946,9 +2946,9 @@
     "semantic_hash": ""
   },
   "tests/security/quoted-translation-queue.test.sql": {
-    "mtime": 1789789051.3045144,
-    "seen": 1789789142.0156999,
-    "ast_hash": "f1d5625ee4b7a81d870faac6d9e2f2ba",
+    "mtime": 1789789552.9364226,
+    "seen": 1789789831.9324787,
+    "ast_hash": "f0e3f4dc86a8fc73ed3785e1e99fcdf9",
     "semantic_hash": ""
   },
   "services/api/src/lib/quoted-translation-worker.ts": {
@@ -2967,6 +2967,12 @@
     "mtime": 1789788959.62256,
     "seen": 1789789142.0156999,
     "ast_hash": "70e88e00ce1c3338cf2ed44a9de51fec",
+    "semantic_hash": ""
+  },
+  "supabase/migrations/20260919140000_cancel_undispatched_translation.sql": {
+    "mtime": 1789789393.9874115,
+    "seen": 1789789831.9324787,
+    "ast_hash": "1a8b6467ec322ed9126a2dc73c06da01",
     "semantic_hash": ""
   }
 }

@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 quoted translation cancellation
+
+Source 1fb778a adds creator-only pre-dispatch cancellation, one-time held-credit
+release and UI confirmation. Local 222 API/68 web tests, TypeScript and 59
+migrations/41 SQL suites pass. Native CI 35419700447 succeeded (16 race cases).
+No live changes. Quoted public enqueue/catalog and browser acceptance remain open.
+Latest shared note: Codex Sessions/2026-09/2026-09-19-bookworm-quoted-cancellation.md.
+
 ### 2026-09-19 quoted translation worker integration
 
 Source 8ea4597 adds opt-in --quoted worker: exact request hash/model/output limit,
