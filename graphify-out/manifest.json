@@ -336,9 +336,9 @@
     "semantic_hash": ""
   },
   "apps/web/components/BookMemoryClient.tsx": {
-    "mtime": 1789782668.5801833,
-    "seen": 1789782681.07666,
-    "ast_hash": "239e2925c69e83c634c79f64eda3938b",
+    "mtime": 1789782878.1681325,
+    "seen": 1789783008.9930987,
+    "ast_hash": "de28419f363646a29f24767a4cc0187e",
     "semantic_hash": ""
   },
   "apps/web/components/BookSearchPanel.tsx": {
@@ -954,10 +954,10 @@
     "semantic_hash": "ee32dafc484e4205e9e9249241c01fd2"
   },
   "services/api/src/book-memory.test.ts": {
-    "mtime": 1788665191.9006345,
-    "seen": 1789189271.7201564,
-    "ast_hash": "5187c838f14166798b39460e880f3998",
-    "semantic_hash": "5187c838f14166798b39460e880f3998"
+    "mtime": 1789782937.859999,
+    "seen": 1789783008.994097,
+    "ast_hash": "1f21ec51289580a3b488110aee759186",
+    "semantic_hash": ""
   },
   "services/api/src/chapter-creation.test.ts": {
     "mtime": 1789177530.2130592,
@@ -1278,10 +1278,10 @@
     "semantic_hash": "afe96bc7718e668e82f396a946010499"
   },
   "services/api/src/routes/metadata-generation.ts": {
-    "mtime": 1788756240.1465893,
-    "seen": 1789189271.7201564,
-    "ast_hash": "768e1822dd058792d366ff1915fbd015",
-    "semantic_hash": "768e1822dd058792d366ff1915fbd015"
+    "mtime": 1789782878.1661384,
+    "seen": 1789783008.994097,
+    "ast_hash": "ab6fb2605bece8b3ad8ce8fe2cca6618",
+    "semantic_hash": ""
   },
   "services/api/src/routes/publishing.ts": {
     "mtime": 1789698033.7184103,
@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789782668.5821776,
-    "seen": 1789782681.0776622,
-    "ast_hash": "f04c1f08ef7497310cff4b4d476ef63d",
+    "mtime": 1789782986.9276109,
+    "seen": 1789783008.994097,
+    "ast_hash": "96e33eb3eafbe23129e9dc0448798437",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
