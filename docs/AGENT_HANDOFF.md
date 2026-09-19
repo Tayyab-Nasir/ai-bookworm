@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 native proposal concurrency
+
+Source 1b33168 adds actual-lock-wait races for same-proposal replay, competing
+funds and rollback recovery. Native CI 35421681010 passed all 19 races. Worker
+runbook now separates --prepare-quotes/--quoted/legacy modes. No live changes.
+Browser acceptance remains next. Shared:
+Codex Sessions/2026-09/2026-09-19-bookworm-proposal-races.md.
+
 ### 2026-09-19 customer quote review/confirmation
 
 Source d40333d: payer-only canonical proposal GET and web model/consent/request/

@@ -500,6 +500,53 @@ before production tuning.
 
 ## Translation workflow
 
+### Usage-priced web flow
+
+The web translation screen now prepares and confirms saved quotes. Run these as
+two separate supervised processes on a persistent worker host, not in Vercel
+HTTP handlers:
+
+```text
+npm run worker:translation -- --prepare-quotes
+npm run worker:translation -- --quoted
+```
+
+`--prepare-quotes` counts one pinned chapter per 120-second leased step and
+checkpoints the count. When every chapter is counted, it atomically publishes a
+proposal. It does not reserve credits or generate translated text. Counting
+sends the saved manuscript to OpenAI only after the user's explicit consent.
+An abandoned running count becomes `counting_outcome_unknown`; do not reset it
+to queued automatically. A committed count survives an uncertain reply.
+
+`--quoted` handles accepted, funded translation jobs. Separate acceptance holds
+the full proposal amount atomically. One-time dispatch, durable provider receipts
+and measured settlement protect recovery; unverified usage remains held. Do not
+delete receipts, release holds or reset dispatch markers to unblock a worker.
+
+Add `--once` to either command for a bounded operator diagnostic. This may call
+OpenAI when work is queued: it is NOT a free health check. Never combine
+`--prepare-quotes` and `--quoted`. The unflagged worker consumes only the older
+operational queue and cannot process the web quote flow.
+
+Both processes require server-injected `SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY` and `OPENAI_API_KEY`. The API requires the approved
+`TRANSLATION_PRICING_CATALOG_JSON` described in `PRICING_AND_PLAN_RELEASE.md`.
+Workers use the request's saved catalog/model snapshot; they do not replace it
+with a default model or today's rates. A missing/expired catalog prevents new
+quotes. No approved commercial config is seeded by this build.
+
+Before enabling this flow live, review/apply migrations through
+`20260919170000_translation_quote_worker.sql`, verify native database tests,
+exercise synthetic browser acceptance, configure both workers and confirm
+queue movement and receipt recovery. None of these commands deploys migrations.
+Monitor request counts by status and oldest queued age; worker logs deliberately
+omit manuscript text, API keys, token receipts and price configuration. A ready
+quote can expire before acceptance; request a fresh quote rather than extending
+its saved validity. An accepted proposal can be reread/replayed to recover the
+same purchase without another debit.
+
+### Legacy operational queue (older API/mobile clients)
+
 - Authors queue a whole book only after every chapter has a saved current
   version. The database creates one leased job per chapter; queued jobs retain
   source document IDs and SHA-256 hashes, never copied manuscript text.
