@@ -23,6 +23,16 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 native concurrency acceptance harness
+
+Added tests/security/run-native-postgres.mjs and a dedicated PostgreSQL 16 CI
+workflow. Uses separate psql connections and pg_stat_activity lock assertions
+for competing reservations, completion accounting and rollback release. Only
+loopback port 55439/test user, a generated disposable database and synthetic
+fixtures are used; no application credentials or live migrations. Syntax and
+51 migrations/36 SQL suites pass locally. Native execution is NOT yet verified.
+Latest continuation: Codex Sessions/2026-09/2026-09-19-bookworm-native-ci.md.
+
 ### 2026-09-19 shared text funding (local only)
 
 Migration 20260919060000 replaces the metadata-only reservation trigger with one

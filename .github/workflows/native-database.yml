@@ -1,0 +1,37 @@
+name: Native database acceptance
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['supabase/migrations/**', 'tests/security/**', '.github/workflows/native-database.yml']
+  push:
+    branches: [main, master, 'codex/**']
+    paths: ['supabase/migrations/**', 'tests/security/**', '.github/workflows/native-database.yml']
+permissions:
+  contents: read
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bookworm_ci
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: postgres
+        ports: ['55439:5432']
+        options: >-
+          --health-cmd "pg_isready -U bookworm_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: node tests/security/run-native-postgres.mjs
+        env:
+          BOOKWORM_NATIVE_TEST: '1'
+          BOOKWORM_NATIVE_TEST_PASSWORD: disposable-ci-only
