@@ -2286,9 +2286,9 @@
     "semantic_hash": ""
   },
   "docs/AGENT_HANDOFF.md": {
-    "mtime": 1789790223.9319162,
-    "seen": 1789790252.2103713,
-    "ast_hash": "989ff35b2108edc4ad58012f9612b87c",
+    "mtime": 1789790494.8481812,
+    "seen": 1789790523.97873,
+    "ast_hash": "a81b8ba4826a75091b18ec40ff780c56",
     "semantic_hash": ""
   },
   "docs/BOOK_RETRIEVAL_DECISION.md": {
@@ -2340,9 +2340,9 @@
     "semantic_hash": ""
   },
   "docs/PRICING_AND_PLAN_RELEASE.md": {
-    "mtime": 1789790387.3026967,
-    "seen": 1789790460.3119452,
-    "ast_hash": "998b5409de08d0778d7d076d55baf052",
+    "mtime": 1789790686.5333054,
+    "seen": 1789790729.1611483,
+    "ast_hash": "c77aad5380e1db36aad67f1001992430",
     "semantic_hash": ""
   },
   "docs/PROJECT_MAP.md": {
@@ -3003,6 +3003,18 @@
     "mtime": 1789790387.3006985,
     "seen": 1789790460.3119452,
     "ast_hash": "62de15facfd24d9cce1dc6af6c2b565c",
+    "semantic_hash": ""
+  },
+  "services/api/src/lib/translation-quote.ts": {
+    "mtime": 1789790646.6302395,
+    "seen": 1789790729.1611483,
+    "ast_hash": "24a67518130b6a9e3fb8fe92eab03e1f",
+    "semantic_hash": ""
+  },
+  "services/api/src/translation-quote.test.ts": {
+    "mtime": 1789790686.5322976,
+    "seen": 1789790729.1611483,
+    "ast_hash": "632d3b8f3095b14a28a6b0dd46ad86fa",
     "semantic_hash": ""
   }
 }

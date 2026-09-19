@@ -23,6 +23,14 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-12
 
+### 2026-09-19 token-counted translation proposals
+
+Source aa25927 adds internal proposal preparation using exact provider input-token
+count and full generation hash. No fallback estimates/retries; expiry rechecked.
+233 API tests and API TypeScript pass; no live provider calls. Proposal persistence,
+authenticated quote endpoint/atomic acceptance/UI remain next. Shared note:
+Codex Sessions/2026-09/2026-09-19-bookworm-token-counted-quotes.md.
+
 ### 2026-09-19 server-owned translation catalog
 
 Source 4ff8f0f validates optional approved/versioned/expiring server catalog and
