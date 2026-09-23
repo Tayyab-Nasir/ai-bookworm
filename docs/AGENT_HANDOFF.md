@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-memory-image-clearance.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-package-metadata.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,17 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Retailer metadata handoff
+
+New export ZIPs include `metadata.json` (allowlisted saved listing fields)
+and `README.txt` (manual transfer/review instructions). Manifest package version
+2.0 hashes both files alongside the unchanged render/cover bytes. Unicode and
+multiline text are preserved; internal metadata and Book Bible content are not
+serialized. Reserved filenames cannot overwrite the manifest or handoff files.
+Existing packages remain unchanged. These files are not retailer import schemas
+or evidence of submission/approval. All 323 service tests and 28 focused
+publishing/E2E tests pass. No retailer/provider call or deployment occurred.
 
 ### Book Bible image clearance
 

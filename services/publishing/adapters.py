@@ -20,6 +20,26 @@ class NotSupportedError(Exception):
     """Raised for submit/getStatus: export-first mode, no live retailer integration."""
 
 
+def publishing_metadata(book: dict) -> dict:
+    """Project public listing fields only; never serialize the full book model."""
+    source = book.get("metadata", {})
+    if not isinstance(source, dict):
+        raise ValueError("publishing metadata must be an object")
+    result = {}
+    for field in ("title", "subtitle", "author", "language", "description", "isbn13", "edition"):
+        value = source.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"publishing metadata {field} must be text")
+        if field in source:
+            result[field] = value
+    for field in ("keywords", "categories"):
+        value = source.get(field, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError(f"publishing metadata {field} must be a text list")
+        result[field] = value
+    return {"schemaVersion": "1.0", "metadata": result}
+
+
 @dataclass(frozen=True)
 class ChannelCapabilities:
     formats: tuple[str, ...]  # "epub" | "pdf"
@@ -78,7 +98,24 @@ class ExportAdapter:
                 not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name)
                 for name in artifacts):
             raise ValueError("package artifacts must use safe flat filenames")
+        if set(artifacts) & {"manifest.json", "metadata.json", "README.txt"}:
+            raise ValueError("package artifact name is reserved")
+        files = {**artifacts,
+                 "metadata.json": json.dumps(publishing_metadata(ctx.get("book", {})),
+                                             indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8"),
+                 "README.txt": (
+                     f"AI Bookworm - {self.CHANNEL} author handoff\n\n"
+                     "This package has NOT been submitted, published or approved by a retailer.\n"
+                     "Use book.epub or book.pdf and the included cover, when present, in the retailer's own upload form.\n"
+                     "metadata.json contains the saved listing text for manual entry, not a retailer import schema.\n"
+                     "Review description, keywords and categories against the current retailer form.\n"
+                     "Confirm rights, ISBN entitlement, territories, pricing and required AI-content disclosures yourself.\n"
+                     "Inspect the retailer preview or physical proof before approving publication.\n"
+                     "manifest.json records checksums and the validation rule version; zero errors is not retailer approval.\n"
+                     "This is a snapshot: later book changes require a new render, preflight and package.\n"
+                 ).encode("utf-8")}
         manifest = {
+            "packageVersion": "2.0",
             "channel": self.CHANNEL,
             "ruleVersion": result["ruleVersion"],
             "errors": result["errors"],
@@ -86,10 +123,10 @@ class ExportAdapter:
             "files": {},
         }
         buf = BytesIO()
-        names = sorted(artifacts)
+        names = sorted(files)
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for name in names:
-                data = artifacts[name]
+                data = files[name]
                 manifest["files"][name] = hashlib.sha256(data).hexdigest()
                 info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED

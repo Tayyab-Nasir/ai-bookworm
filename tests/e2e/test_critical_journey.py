@@ -194,6 +194,8 @@ def test_imported_manuscript_survives_render_and_retailer_package(monkeypatch, c
         if kind == "print":
             assert archive.read("cover.pdf") == base64.b64decode(data["coverArtifactBase64"])
         assert json.loads(archive.read("manifest.json"))["channel"] == channel
+        assert json.loads(archive.read("metadata.json"))["metadata"]["description"] == model["metadata"]["description"]
+        assert "NOT been submitted" in archive.read("README.txt").decode()
     replay = _client("publishing").post("/v1/publishing/package", headers=headers, json=payload)
     assert replay.status_code == 200
     assert replay.json()["packages"][0]["sha256"] == package["sha256"]

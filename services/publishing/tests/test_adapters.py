@@ -87,6 +87,50 @@ def test_submit_and_status_not_supported():
     assert caps.can_submit is False and caps.can_check_status is False
 
 
+def test_package_metadata_is_exact_allowlisted_unicode_and_checksum_bound():
+    import hashlib
+    ctx = _ctx()
+    book = copy.deepcopy(VALID)
+    book["metadata"].update(title="Le voyage — 帰郷", description="First line\nSecond line: café",
+                            keywords=["cozy fantasy", "帰郷"], subtitle="A saved subtitle",
+                            privateToken="DO-NOT-EXPORT", internalNotes={"secret": "DO-NOT-EXPORT"})
+    book["bookBible"] = {"entities": [{"description": "DO-NOT-EXPORT"}]}
+    ctx["book"] = book
+    adapter = get_adapter("kdp")
+    artifacts = {"book.epub": ctx["artifact"]}
+    first = adapter.build_package(ctx, artifacts)[0]
+    assert first.data == adapter.build_package(ctx, artifacts)[0].data
+    assert list(artifacts) == ["book.epub"], "caller artifacts mutated"
+    with zipfile.ZipFile(BytesIO(first.data)) as archive:
+        listing = json.loads(archive.read("metadata.json"))
+        assert listing["schemaVersion"] == "1.0"
+        assert listing["metadata"] == {key: value for key, value in book["metadata"].items()
+                                       if key not in {"privateToken", "internalNotes"}}
+        assert b"DO-NOT-EXPORT" not in archive.read("metadata.json")
+        assert b"not a retailer import schema" in archive.read("README.txt")
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["packageVersion"] == "2.0"
+        assert set(manifest["files"]) == set(archive.namelist()) - {"manifest.json"}
+        for name, checksum in manifest["files"].items():
+            assert hashlib.sha256(archive.read(name)).hexdigest() == checksum
+
+
+@pytest.mark.parametrize("name", ["manifest.json", "metadata.json", "README.txt"])
+def test_package_rejects_reserved_artifact_names(name):
+    ctx = _ctx()
+    with pytest.raises(ValueError, match="reserved"):
+        get_adapter("kdp").build_package(ctx, {"book.epub": ctx["artifact"], name: b"spoofed"})
+
+
+@pytest.mark.parametrize("field,value", [("description", {"secret": "hidden"}), ("keywords", [{"secret": "hidden"}])])
+def test_metadata_projection_rejects_nested_values(field, value):
+    from adapters import publishing_metadata
+    book = copy.deepcopy(VALID)
+    book["metadata"][field] = value
+    with pytest.raises(ValueError, match="must be"):
+        publishing_metadata(book)
+
+
 def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
     blob, _ = render_epub(VALID, parse_edition(EBOOK))
     request = PackageRequest(channel="kdp", editionConfig=EBOOK, bookModel=VALID,
@@ -141,7 +185,7 @@ def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geom
     with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
         assert archive.read("book.pdf") == interior
         assert archive.read("cover.pdf") == cover
-        assert set(json.loads(archive.read("manifest.json"))["files"]) == {"book.pdf", "cover.pdf"}
+        assert set(json.loads(archive.read("manifest.json"))["files"]) == {"book.pdf", "cover.pdf", "metadata.json", "README.txt"}
     config["wrap_cover"]["profile"] = "kdp-white"
     with pytest.raises(Exception, match="no longer pass"):
         build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts))
