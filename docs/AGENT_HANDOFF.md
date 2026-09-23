@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-cover-inspection.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-worker-runtime.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -29,8 +29,10 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 modes and optional single-pass execution. Translation and Blueprint roles pin
 funded quote modes. Linux systemd templates and a startup-validation workflow
 are in `ops/systemd/` and `.github/workflows/worker-runtime.yml`.
-All three launcher tests pass locally, including configuration refusal for
-every role. See `docs/WORKER_RUNTIME.md`. No host services have been installed
+All three launcher tests pass locally and in Linux CI run `35843831453`,
+including configuration refusal for every role. Native systemd unit syntax
+validation and workspace TypeScript pass. Source checkpoints: `e3c1501`,
+`97e2e52`. See `docs/WORKER_RUNTIME.md`. No host services have been installed
 or started; host restart/recovery, credentials, alerts and release acceptance
 remain open.
 
