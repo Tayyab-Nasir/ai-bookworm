@@ -14,6 +14,7 @@ const blueprint = {
 };
 let statusReads = 0;
 let releaseQuote = false;
+let failNextRecoveryRead = false;
 let quotePosts = 0;
 let generationRequests = 0;
 const errors = [];
@@ -39,6 +40,10 @@ try {
     }
     if (path === `/books/${bookId}/story-blueprint/quote-requests/${requestId}`) {
       statusReads++;
+      if (failNextRecoveryRead) {
+        failNextRecoveryRead = false;
+        return json({ error: { message: 'Temporary fixture read failure' } }, 503);
+      }
       if (!releaseQuote) return json({ request: { id: requestId, status: 'counting' }, proposal: null });
       return json({ request: { id: requestId, status: 'ready' }, proposal: {
         id: proposalId, requestId, sourceRevision: 3, model: 'synthetic-model', reservedCredits: 42,
@@ -60,7 +65,11 @@ try {
   assert.equal(quotePosts, 1);
   assert.equal(generationRequests, 0);
 
+  failNextRecoveryRead = true;
   await page.reload();
+  await expect(page.locator('[aria-label="Recovering saved Story Blueprint quote"]')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Prepare fixed quote' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Refresh status' }).click();
   await expect(page.locator('[aria-label="Preparing Story Blueprint quote"]')).toBeVisible();
   await expect(page.getByText('Counting tokens', { exact: true })).toBeVisible();
   releaseQuote = true;

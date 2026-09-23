@@ -93,6 +93,7 @@ export default function StoryBlueprintProposalPanel({
   const [consent, setConsent] = useState(false);
   const [quote, setQuote] = useState<StoryBlueprintQuote | null>(null);
   const [quoteRequest, setQuoteRequest] = useState<StoryBlueprintQuoteRequest | null>(null);
+  const [recoveryTarget, setRecoveryTarget] = useState<StoredQuote | null>(null);
   const [candidate, setCandidate] = useState<StoryBlueprintCandidate | null>(null);
   const [reviewStatus, setReviewStatus] = useState<NonNullable<StoryBlueprintProposalResult["reviewStatus"]>>("pending");
   const [loadingModels, setLoadingModels] = useState(false);
@@ -108,15 +109,17 @@ export default function StoryBlueprintProposalPanel({
   const currentQuote = Boolean(quote && currentRevision !== null && quote.sourceRevision === currentRevision);
   const quotePreparing = quoteRequest?.status === "queued" || quoteRequest?.status === "counting";
   const quoteRequestId = quoteRequest?.id;
+  const recoveringSavedQuote = recoveryTarget !== null;
   const hasPendingAcceptedProposal = quote?.status === "accepted" && !candidate;
   const canRequestQuote = editable && Boolean(blueprint) && !blocked && !loadingModels
-    && !quotePreparing && !hasPendingAcceptedProposal && (!currentQuote || (quote !== null && isExpired(quote)));
+    && !quotePreparing && !recoveringSavedQuote && !hasPendingAcceptedProposal && (!currentQuote || (quote !== null && isExpired(quote)));
   const canApply = editable && Boolean(blueprint) && Boolean(quote) && Boolean(candidate)
     && currentQuote && !blocked;
 
   const setProposal = useCallback((next: StoryBlueprintProposalResult) => {
     setQuote(next.proposal);
     setQuoteRequest(null);
+    setRecoveryTarget(null);
     setCandidate(next.candidate);
     setReviewStatus(next.reviewStatus ?? (next.candidate ? "ready" : "pending"));
     writeStoredProposal(bookId, next.proposal.id);
@@ -129,6 +132,7 @@ export default function StoryBlueprintProposalPanel({
     }
     setQuote(null);
     setCandidate(null);
+    setRecoveryTarget(null);
     if (next.request.status === "failed") {
       setQuoteRequest(null);
       intent.current = null;
@@ -188,6 +192,7 @@ export default function StoryBlueprintProposalPanel({
     if (!blueprint) return () => { active = false; };
     const stored = readStoredQuote(bookId);
     if (!stored) return () => { active = false; };
+    setRecoveryTarget(stored);
     const load = stored.proposalId
       ? api.getStoryBlueprintProposal(bookId, stored.proposalId)
       : api.getStoryBlueprintQuoteRequest(bookId, stored.requestId!);
@@ -197,9 +202,9 @@ export default function StoryBlueprintProposalPanel({
         else setQuotePreparation(result);
       } })
       .catch(() => {
-        // Never reveal whether another account owns a proposal. Drop an invalid
-        // local pointer and let the person refresh or request their own quote.
-        if (active) clearStoredProposal(bookId);
+        // A read failure may be transient. Keep the id-only pointer and block
+        // another paid request until the author explicitly retries recovery.
+        if (active) setError("Could not reload this saved quote. Refresh its status before preparing another; the previous request may still be active.");
       });
     return () => { active = false; };
   }, [api, bookId, Boolean(blueprint), setProposal, setQuotePreparation]);
@@ -247,7 +252,14 @@ export default function StoryBlueprintProposalPanel({
   }, [api, bookId, blueprint, candidate, quote?.acceptedJobId, quote?.id, reviewStatus, setProposal]);
 
   const refresh = () => void run(async () => {
-    if (quote) {
+    if (recoveryTarget?.proposalId) {
+      setProposal(await api.getStoryBlueprintProposal(bookId, recoveryTarget.proposalId));
+      setNotice("Saved proposal recovered. Review its current status before starting other paid work.");
+    } else if (recoveryTarget?.requestId) {
+      const result = await api.getStoryBlueprintQuoteRequest(bookId, recoveryTarget.requestId);
+      setQuotePreparation(result);
+      setNotice(result.proposal ? "Quote ready. No AI proposal has been generated and no credits are held." : "Exact token count is still being prepared. No AI proposal has been generated and no credits are held.");
+    } else if (quote) {
       setProposal(await api.getStoryBlueprintProposal(bookId, quote.id));
       setNotice("Proposal status refreshed. AI output stays review-only until you explicitly apply it.");
     } else if (quoteRequest) {
@@ -332,7 +344,7 @@ export default function StoryBlueprintProposalPanel({
       </div>
       {quote
         ? <span className="rounded-full border border-white/15 px-3 py-1 text-xs text-white/65">{quote.status === "accepted" ? "Queued for review" : quoteExpired ? "Quote expired" : "Quote ready"}</span>
-        : quoteRequest && <span className="rounded-full border border-white/15 px-3 py-1 text-xs text-white/65">{quoteRequest.status === "counting" ? "Counting tokens" : quoteRequest.status === "failed" ? "Quote unavailable" : "Quote queued"}</span>}
+      : quoteRequest && <span className="rounded-full border border-white/15 px-3 py-1 text-xs text-white/65">{quoteRequest.status === "counting" ? "Counting tokens" : quoteRequest.status === "failed" ? "Quote unavailable" : "Quote queued"}</span>}
     </div>
 
     {catalogError && <p role="status" className="mt-5 rounded-xl border border-amber-300/25 bg-amber-300/[0.08] p-4 text-sm leading-6 text-amber-50">{catalogError}</p>}
@@ -356,6 +368,10 @@ export default function StoryBlueprintProposalPanel({
     {quoteRequest && quotePreparing && <div className="mt-6 rounded-xl border border-violet-300/25 bg-violet-300/[0.05] p-5" aria-label="Preparing Story Blueprint quote">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-white">Preparing exact token count</p><p className="mt-2 max-w-2xl text-sm leading-6 text-white/65">The saved Story Blueprint is queued for one provider token count. No AI proposal has been generated and no credits are held.</p></div><button type="button" className={button} disabled={busy} onClick={refresh}>Refresh status</button></div>
       <p className="mt-3 text-xs text-white/50">If counting cannot be confirmed, this request fails safely and is never converted into a paid generation.</p>
+    </div>}
+
+    {recoveringSavedQuote && !quote && !quoteRequest && <div className="mt-6 rounded-xl border border-amber-300/25 bg-amber-300/[0.05] p-5" aria-label="Recovering saved Story Blueprint quote">
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-sm font-medium text-white">Recover saved quote status</p><p className="mt-2 max-w-2xl text-sm leading-6 text-white/65">A previous quote or paid proposal is still linked to this book. Refresh its status before preparing another request.</p></div><button type="button" className={button} disabled={busy} onClick={refresh}>Refresh status</button></div>
     </div>}
 
     {quote && <div className="mt-6 rounded-xl border border-emerald-300/25 bg-emerald-300/[0.05] p-5" aria-label="Review Story Blueprint quote">
