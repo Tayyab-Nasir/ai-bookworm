@@ -12,7 +12,7 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 2g
     pids_limit: 128
-    tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
     configs:
       - source: freshclam_config
         target: /etc/clamav/bookworm-freshclam.conf
@@ -31,7 +31,7 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 4g
     pids_limit: 128
-    tmpfs: [/tmp:rw,noexec,nosuid,size=256m]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=256m"]
     configs:
       - source: clamd_config
         target: /etc/clamav/bookworm.conf
@@ -54,7 +54,7 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 1g
     pids_limit: 64
-    tmpfs: [/tmp:rw,noexec,nosuid,size=32m]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
     networks: [engine, callers]
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/ready', timeout=20).read()"]
