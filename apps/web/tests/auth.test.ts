@@ -136,7 +136,7 @@ test("Google sign-in uses the active app origin and Supabase callback flow", asy
   assert.equal(redirect.origin, "http://auth.example.test");
   assert.equal(redirect.pathname, "/auth/v1/authorize");
   assert.equal(redirect.searchParams.get("provider"), "google");
-  assert.equal(redirect.searchParams.get("redirect_to"), "http://localhost:3000/auth/callback?next=%2Fdashboard");
+  assert.equal(redirect.searchParams.get("redirect_to"), "http://localhost:3000/auth/callback?next=%2Fdashboard&from=google");
 });
 
 test("BFF accepts empty streamed actions but rejects non-JSON payloads", async () => {
@@ -188,5 +188,16 @@ test("reset requires an authenticated session and recovery response does not enu
 
 test("callback failure is a fixed login URL, never an external next target", async () => {
   const response = await callback(new NextRequest("http://localhost:3000/auth/callback?next=https://evil.test"));
+  assert.equal(response.headers.get("location"), "http://localhost:3000/login?error=confirmation");
+});
+
+test("Google OAuth callback errors use a fixed recovery state and never reflect provider text", async () => {
+  const response = await callback(new NextRequest("http://localhost:3000/auth/callback?from=google&error=server_error&error_code=provider_disabled&error_description=secret-provider-detail&next=https://evil.test"));
+  assert.equal(response.headers.get("location"), "http://localhost:3000/login?error=oauth&next=%2Fdashboard");
+  assert.equal(calls.length, 0);
+});
+
+test("non-Google auth callback errors retain the email-confirmation recovery flow", async () => {
+  const response = await callback(new NextRequest("http://localhost:3000/auth/callback?error=access_denied&error_code=expired_confirmation"));
   assert.equal(response.headers.get("location"), "http://localhost:3000/login?error=confirmation");
 });

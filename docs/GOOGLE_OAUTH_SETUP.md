@@ -9,6 +9,13 @@ Bookworm customers do **not** create OAuth credentials. The Bookworm operator
 creates one Google OAuth client for the application; customers then choose their
 normal Google account on Google's consent screen.
 
+The app's Google button presents callback failures as a safe, actionable message
+without echoing provider-supplied error text. This is recovery UX, not provider
+discovery: when Google is disabled in Supabase, the hosted authorization page can
+stop before Bookworm receives a callback. The email/password path remains
+available; successful Gmail sign-in still requires the operator configuration
+below and a real new/returning-account test.
+
 ## One-time operator configuration
 
 1. In Google Cloud Console, create or select the Bookworm project, configure the

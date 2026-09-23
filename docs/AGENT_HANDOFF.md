@@ -23,6 +23,19 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-23
 
+### Google OAuth recovery UX (local code, provider setup still pending)
+
+The Google sign-in button now has an explicit accessible name, visible keyboard
+focus, and an adjacent alert region. Google-start failures use a neutral
+temporary-unavailable message. Callback errors for the Google flow are mapped
+to a fixed `/login?error=oauth` state without reflecting provider error text;
+the safe internal `next` path survives recovery. Email confirmation errors keep
+their existing path. Verified with 79 web tests, workspace web typecheck, and
+the local `/login?error=oauth` UI. No actual OAuth account, provider setting,
+or external login was touched. The live Google provider remains disabled until
+the app owner configures the client as documented in `docs/GOOGLE_OAUTH_SETUP.md`;
+Supabase may show an error before it ever redirects to this callback.
+
 ### 2026-09-23 local release-gate rerun
 
 On branch `codex/paid-story-blueprint-20260923` at
