@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-native-scanner.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-scanner-freshness.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,22 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Scanner signature freshness
+
+`cdd8bf7` enforces database freshness at readiness and before file dispatch:
+default 72 hours, configurable 1-168, invalid/future dates rejected. Stale
+signatures return 503 `scanner_database_stale`, never a clean verdict.
+Daemon TZ=UTC and synchronized clocks are required. Local 347 service tests
+and 30 security tests pass (33 scanner cases). Native run `35847110819`
+correctly refused bundled database 28129 dated September 20. `64c0b1a` adds
+FreshClam to test-image preparation; run `35847248112` passes with database
+28132 dated September 23: real clean/detection, outage refusal and recovery.
+Runtime remains network-isolated; build-time official signature downloads are
+required. This is not a deployed production updater. Persistent databases,
+supervised FreshClam/reload/alerts and hosted upload/quarantine acceptance
+remain open. Graphify refreshed; generated dirt preserved. No live deployment,
+provider spend or migration. See the latest vault checkpoint for exact evidence.
 
 ### Native scanner protocol and recovery
 
