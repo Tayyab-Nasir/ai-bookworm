@@ -42,6 +42,24 @@ def test_authenticated_bytes_import_and_bad_base64(client):
     assert client.post("/parse", json={**BODY, "contentBase64": "not-base64"}, headers=AUTH).status_code == 422
 
 
+@pytest.mark.parametrize("token", ["", "   "])
+def test_document_blank_token_configuration_is_not_an_auth_bypass(client, monkeypatch, token):
+    monkeypatch.setenv("DOCUMENT_SERVICE_TOKEN", token)
+    assert client.post("/parse", json=BODY, headers=AUTH).status_code == 503
+
+
+def test_document_fallback_precedence_and_non_ascii_denial(client, monkeypatch):
+    from fastapi import HTTPException
+    monkeypatch.delenv("DOCUMENT_SERVICE_TOKEN")
+    monkeypatch.setenv("SERVICE_AUTH_TOKEN", "shared-document-fixture")
+    assert client.post("/parse", json=BODY, headers={"x-service-token": "shared-document-fixture"}).status_code == 200
+    monkeypatch.setenv("DOCUMENT_SERVICE_TOKEN", AUTH["x-service-token"])
+    assert client.post("/parse", json=BODY, headers={"x-service-token": "shared-document-fixture"}).status_code == 401
+    with pytest.raises(HTTPException) as caught:
+        module.require_service_token("wrong-é")
+    assert caught.value.status_code == 401
+
+
 @pytest.mark.parametrize("path", ["../secret.txt", "..\\secret.txt", "/etc/passwd", "C:\\secret.txt", "C:secret.txt", "\\\\host\\share\\secret", "a/../../secret.txt", "a\x00b"])
 def test_absolute_and_traversal_paths_are_rejected(client, path):
     assert client.post("/parse", json={"assetId": "x", "format": "txt", "storagePath": path}, headers=AUTH).status_code == 422

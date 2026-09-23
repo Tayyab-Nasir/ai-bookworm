@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-private-publishing.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-render-document-auth.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Rendering/document authentication
+
+Rendering now rejects missing/blank internal credentials with 503 across render,
+preflight, audio assembly and cover inspection. Wrong/missing request tokens
+return 401 before processing. Document parsing already rejected missing config;
+it now also rejects whitespace-only config. Both compare UTF-8 bytes safely.
+Dedicated-token precedence and shared fallback remain supported. Tests use
+explicit fixture credentials, not an unauthenticated development bypass.
+336 service tests, 30 security tests and 31 focused auth/E2E checks pass.
+Configure matching service/caller tokens before rollout. No live service changed;
+private network isolation and hosted recovery/acceptance remain open.
 
 ### Private publishing boundary
 

@@ -58,9 +58,10 @@ def _client(name: str) -> TestClient:
         os.environ.setdefault("AI_SERVICE_TOKEN", "e2e-private-service-token")
         os.environ.setdefault("DEFAULT_AI_PROVIDER", "mock")
         return TestClient(_apps[name], headers={"x-service-token": os.environ["AI_SERVICE_TOKEN"]})
-    if name == "publishing":
-        os.environ.setdefault("PUBLISHING_SERVICE_TOKEN", "e2e-publishing-token")
-        return TestClient(_apps[name], headers={"x-service-token": os.environ["PUBLISHING_SERVICE_TOKEN"]})
+    if name in ("publishing", "rendering"):
+        token_name = f"{name.upper()}_SERVICE_TOKEN"
+        os.environ.setdefault(token_name, f"e2e-{name}-token")
+        return TestClient(_apps[name], headers={"x-service-token": os.environ[token_name]})
     return TestClient(_apps[name])
 
 

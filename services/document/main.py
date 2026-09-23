@@ -22,10 +22,10 @@ PARSERS = {"docx": parse_docx, "epub": parse_epub, "txt": parse_txt, "pdf": pars
 
 
 def require_service_token(x_service_token: str | None = Header(default=None)) -> None:
-    configured = os.getenv("DOCUMENT_SERVICE_TOKEN") or os.getenv("SERVICE_AUTH_TOKEN")
+    configured = (os.getenv("DOCUMENT_SERVICE_TOKEN") or os.getenv("SERVICE_AUTH_TOKEN") or "").strip()
     if not configured:
         raise HTTPException(503, "document service authentication is not configured")
-    if not x_service_token or not hmac.compare_digest(x_service_token, configured):
+    if not x_service_token or not hmac.compare_digest(x_service_token.encode("utf-8"), configured.encode("utf-8")):
         raise HTTPException(401, "invalid service token")
 
 

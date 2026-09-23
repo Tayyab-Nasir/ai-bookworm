@@ -468,6 +468,14 @@ before production tuning.
 
 ## Private publishing service boundary
 
+Document parsing and rendering also fail closed when their dedicated token or
+shared fallback is missing/blank. Configure `DOCUMENT_SERVICE_TOKEN` and
+`RENDERING_SERVICE_TOKEN` (or `SERVICE_AUTH_TOKEN`) on each service and matching
+callers. Rendering protects `/render`, `/preflight`, `/audio/assemble` and
+`/images/inspect-cover`; document protects `/parse`. Health endpoints remain
+public. These credentials supplement private networking; they do not replace
+network isolation, TLS, body-size limits or runtime acceptance.
+
 The Python publishing service requires `PUBLISHING_SERVICE_TOKEN` (or the
 `SERVICE_AUTH_TOKEN` fallback) for validation and packaging. Missing/blank
 configuration returns 503; missing/wrong credentials return 401. Configure the
