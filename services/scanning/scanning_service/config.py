@@ -68,6 +68,7 @@ class ScannerConfig:
     max_file_bytes: int = 25 * 1024 * 1024
     max_concurrency: int = 4
     chunk_bytes: int = 64 * 1024
+    max_database_age_hours: int = 72
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ScannerConfig":
@@ -96,4 +97,5 @@ class ScannerConfig:
             chunk_bytes=_integer(
                 values, "SCANNING_CHUNK_BYTES", 64 * 1024, 1024, 1024 * 1024
             ),
+            max_database_age_hours=_integer(values, "SCANNING_MAX_DATABASE_AGE_HOURS", 72, 1, 168),
         )

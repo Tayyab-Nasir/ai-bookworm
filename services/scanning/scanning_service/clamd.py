@@ -8,6 +8,7 @@ executes a process.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import re
 import socket
 import struct
@@ -19,6 +20,10 @@ from .config import ScannerConfig
 
 class ScannerUnavailable(RuntimeError):
     """No trustworthy malware verdict could be obtained."""
+
+
+class ScannerDatabaseStale(ScannerUnavailable):
+    """Reachable engine, but its signature database exceeded the age policy."""
 
 
 class SocketLike(Protocol):
@@ -40,12 +45,14 @@ class EngineMetadata:
     name: str
     version: str
     database_version: str
+    database_date: str | None = None
 
     def as_dict(self) -> dict[str, str]:
         return {
             "name": self.name,
             "version": self.version,
             "databaseVersion": self.database_version,
+            **({"databaseDate": self.database_date} if self.database_date else {}),
         }
 
 
@@ -56,8 +63,25 @@ class ScanResult:
     engine: EngineMetadata
 
 
-_VERSION = re.compile(r"^ClamAV ([A-Za-z0-9][A-Za-z0-9.+_-]{0,63})/([0-9]{1,12})/.{1,256}$")
+_VERSION = re.compile(r"^ClamAV ([A-Za-z0-9][A-Za-z0-9.+_-]{0,63})/([0-9]{1,12})/(.{1,256})$")
 _FOUND = re.compile(r"^stream: ([\x20-\x7e]{1,256}) FOUND$")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _database_date(value: str) -> datetime:
+    # clamd ctime has no timezone. The deployment contract requires daemon
+    # TZ=UTC. Parse English months independently of this process's locale.
+    match = re.fullmatch(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) ([A-Z][a-z]{2}) +([0-9]{1,2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}) ([0-9]{4})", value)
+    if not match:
+        raise ScannerUnavailable("clamd returned an invalid database date")
+    try:
+        month = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec").index(match[1]) + 1
+        return datetime(int(match[6]), month, int(match[2]), int(match[3]), int(match[4]), int(match[5]), tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ScannerUnavailable("clamd returned an invalid database date") from exc
 
 
 class ClamdScanner:
@@ -123,8 +147,15 @@ class ClamdScanner:
         match = _VERSION.fullmatch(self._command(b"VERSION"))
         if match is None:
             raise ScannerUnavailable("clamd returned an unrecognized version reply")
+        date = _database_date(match.group(3))
+        age = (_utcnow() - date).total_seconds()
+        if age < -300:
+            raise ScannerUnavailable("clamd database is future-dated")
+        if age > self._config.max_database_age_hours * 3600:
+            raise ScannerDatabaseStale("clamd database exceeded the configured age limit")
         return EngineMetadata(
-            name="ClamAV", version=match.group(1), database_version=match.group(2)
+            name="ClamAV", version=match.group(1), database_version=match.group(2),
+            database_date=date.isoformat().replace("+00:00", "Z"),
         )
 
     def probe(self) -> EngineMetadata:

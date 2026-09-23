@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .clamd import ClamdScanner, EngineMetadata, ScanResult, ScannerUnavailable
+from .clamd import ClamdScanner, EngineMetadata, ScanResult, ScannerUnavailable, ScannerDatabaseStale
 from .config import ScannerConfig
 
 
@@ -180,6 +180,8 @@ def create_app(
         limiter: anyio.CapacityLimiter = request.app.state.scan_limiter
         try:
             engine = await anyio.to_thread.run_sync(active_scanner.probe, limiter=limiter)
+        except ScannerDatabaseStale:
+            return _error(503, "scanner_database_stale", "malware signature database requires an update")
         except (ScannerUnavailable, OSError, TimeoutError):
             return _error(503, "scanner_unavailable", "malware scanner is not ready")
         return JSONResponse(
@@ -212,6 +214,8 @@ def create_app(
             result = await anyio.to_thread.run_sync(
                 lambda: active_scanner.scan(scan_payload.content), limiter=limiter
             )
+        except ScannerDatabaseStale:
+            return _error(503, "scanner_database_stale", "malware signature database requires an update")
         except (ScannerUnavailable, OSError, TimeoutError, ValueError):
             return _error(
                 503,

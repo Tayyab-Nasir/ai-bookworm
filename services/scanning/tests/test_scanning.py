@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 import struct
 import sys
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -24,7 +25,49 @@ from scanning_service.main import create_app  # noqa: E402
 
 
 TOKEN = "scanner-test-token-that-is-at-least-32-characters"
-ENGINE = EngineMetadata(name="ClamAV", version="1.4.2", database_version="27888")
+ENGINE = EngineMetadata(name="ClamAV", version="1.4.2", database_version="27888", database_date="2026-09-07T00:00:00Z")
+
+
+@pytest.fixture(autouse=True)
+def fixture_clock(monkeypatch):
+    monkeypatch.setattr("scanning_service.clamd._utcnow", lambda: datetime(2026, 9, 7, 1, tzinfo=timezone.utc))
+
+
+@pytest.mark.parametrize("date", ["Thu Sep 03 00:00:00 2026", "Tue Sep 08 00:00:00 2026",
+    "not a date", "Mon Sep 31 00:00:00 2026", "Mon Foo 07 00:00:00 2026"])
+def test_bad_database_dates_never_dispatch_file_bytes(date):
+    version = FakeSocket(f"ClamAV 1.4.2/27888/{date}\0".encode())
+    factory = FakeSocketFactory(version)
+    with pytest.raises(ScannerUnavailable):
+        ClamdScanner(config(), socket_factory=factory).scan(b"private manuscript")
+    assert len(factory.calls) == 1
+    assert version.sent == [b"zVERSION\0"]
+
+
+def test_database_age_boundary_and_readiness(monkeypatch):
+    date = b"ClamAV 1.4.2/27888/Fri Sep 04 01:00:00 2026\0"
+    engine = ClamdScanner(config(), socket_factory=FakeSocketFactory(FakeSocket(date))).version()
+    assert engine.as_dict()["databaseDate"] == "2026-09-04T01:00:00Z"
+    monkeypatch.setattr("scanning_service.clamd._utcnow", lambda: datetime(2026, 9, 7, 1, 0, 1, tzinfo=timezone.utc))
+    scanner = ClamdScanner(config(), socket_factory=FakeSocketFactory(FakeSocket(b"PONG\0"), FakeSocket(date)))
+    with TestClient(create_app(config(), scanner)) as client:
+        response = client.get("/ready")
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "scanner_database_stale"
+        assert client.get("/health").status_code == 200
+    stale = ClamdScanner(config(), socket_factory=FakeSocketFactory(FakeSocket(date)))
+    with TestClient(create_app(config(), stale)) as client:
+        response = client.post("/v1/scan", headers={**auth(), "Content-Type": "application/octet-stream",
+            "X-Content-Sha256": hashlib.sha256(b"fixture").hexdigest(), "X-Content-Mime": "text/plain"}, content=b"fixture")
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "scanner_database_stale"
+        assert "verdict" not in response.json()
+
+
+@pytest.mark.parametrize("value", ["0", "169", "-1", "NaN"])
+def test_database_age_configuration_has_no_disabled_or_unbounded_mode(value):
+    with pytest.raises(ConfigurationError):
+        ScannerConfig.from_env({"SCANNING_SERVICE_TOKEN": TOKEN, "SCANNING_MAX_DATABASE_AGE_HOURS": value})
 
 
 def config(**overrides: object) -> ScannerConfig:

@@ -17,6 +17,18 @@ from a request:
 - `SCANNING_MAX_FILE_BYTES` (default 25 MiB, hard maximum 100 MiB)
 - `SCANNING_MAX_CONCURRENCY` (default `4`, hard maximum `32`)
 - `SCANNING_CHUNK_BYTES` (default 64 KiB)
+- `SCANNING_MAX_DATABASE_AGE_HOURS` (default 72, bounded 1-168; cannot disable)
+
+Run the **clamd daemon with `TZ=UTC`**. Its VERSION timestamp is timezone-free
+ctime; Bookworm interprets it as UTC and rejects invalid dates, timestamps more
+than five minutes in the future, and databases older than the configured limit.
+Freshness is checked on readiness and before sending each file to INSTREAM.
+Successful engine metadata includes `databaseDate` in UTC. Stale readiness/scan
+returns 503 with `scanner_database_stale`, never a clean verdict; liveness stays
+available. Alert on this code and repair FreshClam updates/engine reload, not by
+disabling the gate. This age policy is Bookworm's operator-configurable policy,
+not a ClamAV certification of coverage or a guarantee that every signature set
+is up to date. Keep daemon/scanner clocks synchronized.
 
 Set clamd's `StreamMaxLength` to at least `SCANNING_MAX_FILE_BYTES`. Restrict
 clamd TCP access to the scanner service network; clamd has no authentication.
