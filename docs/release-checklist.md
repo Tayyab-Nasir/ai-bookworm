@@ -1,5 +1,26 @@
 # MVP Release Checklist
 
+## 2026-09-23 audiobook QC history and author sign-off
+
+Commit `b643083` on `codex/paid-story-blueprint-20260923` adds durable QC
+metadata for assembled audiobook files, exact audio/source hashes, a
+workspace-authorized listening attestation, and stale-manuscript-version
+rejection. The same-origin web proxy forwards only validated QC metadata for
+the private MP3 response. The signed-in Publishing Studio browser journey
+passes with Microsoft Edge and synthetic Auth/API/audio fixtures; it exercises
+download, report ID, required listening confirmation, saved history and the
+ACX AI-voice warning. This is not provider or retailer acceptance.
+
+`npm run verify` passes on the committed source: workspace TypeScript, 262 API
+tests, 80 web tests, 66 migrations plus 45 SQL assertion files in
+disposable PostgreSQL, 316 service tests, 12 service-level E2E, 30 Python
+security tests, 50-request load smoke with no 5xx, and six deterministic AI
+evals (live provider run skipped because no key is configured). No isolated
+production build was run for this slice. Migration
+`20260923040940_audiobook_qc_review_signoffs.sql` remains a local repository
+migration and was not applied live. No live provider, payment, deployment,
+retailer submission, or customer audio was used.
+
 ## 2026-09-23 local verification refresh
 
 On branch `codex/paid-story-blueprint-20260923` at `968f7cce`, the full
@@ -40,8 +61,8 @@ an operational process. Saved agent claims are not evidence by themselves.
 | # | Item | Status | Evidence / remaining acceptance work |
 |---|---|---|---|
 | 1 | Production domain, TLS, CDN and WAF | PENDING-INFRA | No production environment was changed. Verify the trusted certificate chain, HTTPS redirects, security headers and active WAF rules on an authorized deployment. |
-| 2 | Native Supabase project and migrations | PARTIAL | The authorized live project has the first 45 migrations. All 47 repository migrations execute in disposable PostgreSQL; the additive translation and retailer-sales migrations are reviewed but not live. Native PostgREST/Storage acceptance and drift checks remain before production. |
-| 3 | Tenant isolation and least privilege | PARTIAL | Thirty-three SQL boundary/workflow suites execute locally, and 30 Python security tests pass. The disposable PostgreSQL fixture does not prove Storage HTTP, JWT claims, GoTrue or multi-connection race behavior. |
+| 2 | Native Supabase project and migrations | PARTIAL | The last verified live state had the first 45 repository migrations. All 66 current repository migrations execute in disposable PostgreSQL; the new audiobook QC/sign-off migration remains local-only. Native PostgREST/Storage acceptance and current drift checks remain before production. |
+| 3 | Tenant isolation and least privilege | PARTIAL | Forty-five SQL boundary/workflow suites execute locally, and 30 Python security tests pass. The disposable PostgreSQL fixture does not prove Storage HTTP, JWT claims, GoTrue or multi-connection race behavior. |
 | 4 | Durable jobs and retrieval services | PARTIAL | Render, preflight, export-package, manuscript-import, editor text-AI-review, audiobook and translation jobs use fenced PostgreSQL leases and durable recovery state. Translation reserves paid credits, pins each saved chapter, keeps source text out of queue rows, stores private recovery receipts, and creates a separate review draft only after explicit author adoption. Author-facing retrieval uses tenant-safe PostgreSQL full-text search with citations. Worker supervision, production credentials, native multi-process races, live provider quality/cost and optional LightRAG/Qdrant experiments remain unverified. |
 | 5 | Provider keys and secret management | PENDING-INFRA | No live keys are required for deterministic tests and none were configured by this work. Verify server-only secret storage, rotation and egress policy in the target environment. |
 | 6 | Upload/parser safety and malware scanning | PARTIAL | A private authenticated ClamAV/clamd service, bounded streaming protocol, server-side checksum/size/type checks, fail-closed scan persistence, clean-only import/download/render gates, and Storage RLS quarantine are implemented and tested. A service-only, aggregate-only dry-run inventory identifies only old, managed, database-unreferenced private objects; it never deletes. Native Supabase Storage HTTP, deployed clamd signatures/limits, outage recovery, an EICAR staging exercise, and approved per-object cleanup acceptance remain required. |
