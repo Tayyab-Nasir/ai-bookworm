@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-processing-containers.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-native-scanner.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,23 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Native scanner protocol and recovery
+
+Source `047fee6` adds real scanner/ClamAV container acceptance. Linux run
+`35845869937` passes with ClamAV 1.5.4/database 28129: actual INSTREAM clean
+and harmless fixture detection, auth/hash/size rejection, fail-closed engine
+outage and recovery after engine restart. Containers use an internal network,
+no host mounts/published ports and bounded resources. The custom signature is
+test-only; do not deploy it. Local scanner tests: 23 passed; security: 30 passed.
+Scanner non-ASCII authorization no longer throws a comparison error. This does
+not prove current signature freshness, FreshClam updates, production capacity
+or hosted Supabase upload/quarantine integration. No live services changed.
+
+Full local `npm run verify` also passes on this checkpoint: workspace TypeScript,
+three worker-launcher tests, unit/API and 81 web tests, 67 migrations/45 SQL
+suites, 337 service tests, 12 E2E, 30 security, load smoke without 5xx and six
+deterministic AI evals. Live provider evals are skipped without a key.
 
 ### Native processing containers
 
