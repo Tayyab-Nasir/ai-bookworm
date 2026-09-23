@@ -1,0 +1,20 @@
+# Explicit build-context allowlist: never send env files, vaults or customer data.
+**
+!services/
+!services/document/
+!services/document/parsers/
+!services/document/**/*.py
+!services/document/requirements.txt
+!services/rendering/
+!services/rendering/rules/
+!services/rendering/**/*.py
+!services/rendering/requirements.txt
+!services/rendering/fonts/
+!services/rendering/fonts/**
+!services/publishing/
+!services/publishing/**/*.py
+!services/publishing/requirements.txt
+**/tests/**
+**/__pycache__/**
+**/.jobs/**
+**/.env*
