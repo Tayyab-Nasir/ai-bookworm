@@ -9,6 +9,8 @@
     "packages/*"
   ],
   "scripts": {
+    "worker": "node --import tsx workers/run.mjs",
+    "test:worker-launcher": "node --test tests/worker-launcher.test.mjs",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
@@ -29,7 +31,7 @@
     "worker:translation": "npm run worker:translation -w @bookworm/api --",
     "worker:story-blueprint": "npm run worker:story-blueprint -w @bookworm/api --",
     "storage:orphan-report": "npm run storage:orphan-report -w @bookworm/api --",
-    "verify": "npm run typecheck && npm run test:unit && npm run test:web && npm run test:db && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
+    "verify": "npm run typecheck && npm run test:worker-launcher && npm run test:unit && npm run test:web && npm run test:db && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
   },
   "engines": {
     "node": ">=20"

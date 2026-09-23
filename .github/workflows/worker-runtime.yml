@@ -1,0 +1,26 @@
+name: Worker runtime acceptance
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['workers/**', 'ops/systemd/**', 'tests/worker-launcher.test.mjs', 'package.json', 'package-lock.json', '.github/workflows/worker-runtime.yml']
+  push:
+    branches: [main, master, 'codex/**']
+    paths: ['workers/**', 'ops/systemd/**', 'tests/worker-launcher.test.mjs', 'package.json', 'package-lock.json', '.github/workflows/worker-runtime.yml']
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --include=dev
+      - run: npm run test:worker-launcher
+      - name: Validate service templates without starting workers
+        run: systemd-analyze verify --man=no ops/systemd/bookworm-worker@.service ops/systemd/bookworm-workers.target
+        env:
+          SYSTEMD_UNIT_PATH: ${{ github.workspace }}/ops/systemd:/usr/lib/systemd/system:/lib/systemd/system

@@ -23,6 +23,17 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-23
 
+### Worker runtime checkpoint
+
+`workers/run.mjs` provides nine allowlisted roles, inspection-only list/check
+modes and optional single-pass execution. Translation and Blueprint roles pin
+funded quote modes. Linux systemd templates and a startup-validation workflow
+are in `ops/systemd/` and `.github/workflows/worker-runtime.yml`.
+All three launcher tests pass locally, including configuration refusal for
+every role. See `docs/WORKER_RUNTIME.md`. No host services have been installed
+or started; host restart/recovery, credentials, alerts and release acceptance
+remain open.
+
 ### Full cover decoding before audiobook export
 
 The worker now requires a clean/trusted asset version matching the selected

@@ -1,5 +1,13 @@
 # MVP Release Checklist
 
+## 2026-09-23 worker runtime preparation
+
+Nine worker roles now share an allowlisted launcher, with Linux systemd fleet
+templates and a credential-free startup/CI acceptance harness. Three launcher
+tests pass locally. These are checked-in setup artifacts, not configured live
+supervision: gate 14 still requires host installation, restart/recovery tests,
+alerts and backup evidence. See [Worker runtime](WORKER_RUNTIME.md).
+
 ## 2026-09-23 durable Google Play audiobook exports
 
 Cover validation now verifies a clean/trusted exact asset version, followed by

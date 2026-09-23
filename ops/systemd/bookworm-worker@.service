@@ -1,0 +1,41 @@
+[Unit]
+Description=AI Bookworm %i worker
+Documentation=file:/opt/bookworm/docs/WORKER_RUNTIME.md
+Wants=network-online.target
+After=network-online.target
+PartOf=bookworm-workers.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=bookworm
+Group=bookworm
+WorkingDirectory=/opt/bookworm
+Environment=NODE_ENV=production
+Environment=TMPDIR=/var/lib/bookworm-%i
+EnvironmentFile=/etc/bookworm/workers.env
+ExecStart=/usr/bin/node --import tsx /opt/bookworm/workers/run.mjs %i
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=360s
+StateDirectory=bookworm-%i
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+LimitNOFILE=4096
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=bookworm-workers.target

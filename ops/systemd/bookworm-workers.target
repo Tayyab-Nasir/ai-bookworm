@@ -1,0 +1,9 @@
+[Unit]
+Description=AI Bookworm background workers
+Wants=bookworm-worker@document.service bookworm-worker@publishing.service bookworm-worker@ai.service
+Wants=bookworm-worker@audiobook.service bookworm-worker@audiobook-export.service
+Wants=bookworm-worker@translation-quotes.service bookworm-worker@translation.service
+Wants=bookworm-worker@blueprint-quotes.service bookworm-worker@blueprint.service
+
+[Install]
+WantedBy=multi-user.target
