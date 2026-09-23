@@ -163,6 +163,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [narrationChapterId, setNarrationChapterId] = useState("");
   const [audiobookProjects, setAudiobookProjects] = useState<AudiobookProjectResult[]>([]);
+  const [googlePlayIdentifier, setGooglePlayIdentifier] = useState("");
+  const [googlePlayCoverId, setGooglePlayCoverId] = useState("");
   const [aiDisclosureAccepted, setAiDisclosureAccepted] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
@@ -192,6 +194,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
   const load = useCallback(async () => {
     setBusy("load");
+    setGooglePlayIdentifier(""); setGooglePlayCoverId("");
     try {
       const [identity, editionResult, packageHistory, chapterResult] = await Promise.all([api.getBook(bookId), api.listEditions(bookId), api.listPublishingJobs(bookId), api.listChapters(bookId)]);
       const assetResult = await api.listAssets(identity.book.workspace_id);
@@ -301,6 +304,31 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     setBusy("audiobook"); setError(null);
     try { setAudiobookProjects((await api.listAudiobookProjects(activeId)).projects); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh audiobook progress."); }
+    finally { setBusy(null); }
+  };
+
+  const exportGooglePlayAudiobook = async () => {
+    if (!editable || !activeId || form.kind !== "audiobook" || dirty || busy || !googlePlayIdentifier.trim() || !googlePlayCoverId) return;
+    setBusy("audiobook"); setError(null); setNotice(null);
+    try {
+      const response = await fetch(`/api/backend/v1/editions/${activeId}/audiobook-google-play-export`, {
+        method: "POST", credentials: "include", cache: "no-store",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ identifier: googlePlayIdentifier.trim(), coverAssetId: googlePlayCoverId }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error?.message ?? "Could not create the Google Play audio archive.");
+      }
+      if (!response.headers.get("content-type")?.startsWith("application/zip")
+        || response.headers.get("content-disposition") !== `attachment; filename=\"${googlePlayIdentifier.trim()}.zip\"`) {
+        throw new Error("The export service returned an unexpected file.");
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a"); link.href = url; link.download = `${googlePlayIdentifier.trim()}.zip`;
+      document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setNotice("Private Google Play audio archive downloaded. In Partner Center, label this AI-narrated title “Synthesized voice.” This did not submit or publish it.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create the Google Play audio archive."); }
     finally { setBusy(null); }
   };
 
@@ -420,7 +448,13 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           <label className="mt-5 flex items-start gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.07] p-4 text-sm text-amber-50"><input type="checkbox" checked={aiDisclosureAccepted} onChange={(event) => setAiDisclosureAccepted(event.target.checked)} className="mt-1" /><span>I understand this is an AI-generated voice and will disclose that to listeners wherever required. Generation consumes paid audio credits and starts only after the server reserves enough capacity.</span></label>
           <button type="button" onClick={() => void generateAudiobook()} disabled={!editable || !activeId || dirty || Boolean(busy) || !narrationChapterId || !aiDisclosureAccepted} className="glass-solid mt-5 rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{busy === "audiobook" ? "Queuing…" : "Generate chapter narration"}</button>
           {dirty && <p className="mt-3 text-xs text-amber-200">Save the voice settings before generating narration.</p>}
-          <div className="mt-7 border-t border-white/10 pt-5"><h3 className="font-medium">Narration history</h3>{audiobookProjects.length ? <ul className="mt-4 space-y-4">{audiobookProjects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/30 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium">{chapters.find((chapter) => chapter.id === project.chapterId)?.title ?? "Saved chapter"}</p><p className="mt-1 text-xs text-white/40">{project.segmentCount} segments · {project.creditUnits} audio credits · {project.voice}</p></div><span className={`rounded-full px-3 py-1 text-xs ${project.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : project.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{project.status}</span></div><ChapterAudioDownload projectId={project.id} ready={project.status === "succeeded"} /><div className="mt-4 grid gap-3 md:grid-cols-2">{project.segments.map((segment) => <div key={segment.index} className="rounded-lg border border-white/10 p-3"><p className="text-xs text-white/45">Part {segment.index + 1} · {segment.status}</p>{segment.download ? <><audio controls preload="none" src={segment.download.url} className="mt-2 w-full" /><a href={segment.download.url} download className="mt-2 inline-block text-xs underline">Download private MP3</a></> : <p className="mt-2 text-xs text-white/35">Audio will appear after the worker completes this segment.</p>}</div>)}</div></li>)}</ul> : <p className="mt-3 text-sm text-white/45">No narration has been queued for this edition.</p>}</div>
+          <div className="mt-7 border-t border-white/10 pt-5"><h3 className="font-medium">Narration history</h3>{audiobookProjects.length ? <ul className="mt-4 space-y-4">{audiobookProjects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/30 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium">{chapters.find((chapter) => chapter.id === project.chapterId)?.title ?? "Saved chapter"}</p><p className="mt-1 text-xs text-white/40">{project.segmentCount} segments · {project.creditUnits} audio credits · {project.voice}</p></div><span className={`rounded-full px-3 py-1 text-xs ${project.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : project.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{project.status}</span></div><ChapterAudioDownload projectId={project.id} ready={project.status === "succeeded"} /><div className="mt-4 grid gap-3 md:grid-cols-2">{project.segments.map((segment) => <div key={segment.index} className="rounded-lg border border-white/10 p-3"><p className="text-xs text-white/45">Part {segment.index + 1} · {segment.status}</p>{segment.download ? <><audio controls preload="none" src={segment.download.url} className="mt-2 w-full" /><a href={segment.download.url} download className="mt-2 inline-block text-xs underline">Download private MP3</a></> : <p className="mt-2 text-xs text-white/35">Audio will appear after the worker completes this segment.</p>}</div>)}</div></li>)}</ul> : <p className="mt-3 text-sm text-white/45">No narration has been queued for this edition.</p>}
+            <div className="mt-6 rounded-xl border border-white/10 bg-black/20 p-4"><h3 className="font-medium">Google Play export · download only</h3><p className="mt-1 text-sm text-white/45">Builds an ordered, private ZIP for manual Partner Center upload. Every current chapter must have narration, a saved QC report, and an approver’s exact-audio listening sign-off.</p>
+              <div className="mt-4 grid gap-3 md:grid-cols-2"><label className="text-sm text-white/65">ISBN-13 or publisher book ID<input value={googlePlayIdentifier} onChange={(event) => setGooglePlayIdentifier(event.target.value)} maxLength={64} autoComplete="off" className={fieldClass} placeholder="978… or your Google book ID" /></label>
+                <label className="text-sm text-white/65">Audiobook cover<select value={googlePlayCoverId} onChange={(event) => setGooglePlayCoverId(event.target.value)} className={fieldClass}><option value="">Choose JPEG or PNG artwork</option>{coverAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label></div>
+              <p className="mt-3 text-xs leading-relaxed text-amber-100/75">Google Play requires AI-narrated uploads to be labeled “Synthesized voice.” The package does not submit, publish, register an ISBN, or guarantee Partner Center eligibility. Verify cover resolution and current account/territory rules before upload.</p>
+              <button type="button" onClick={() => void exportGooglePlayAudiobook()} disabled={!editable || !activeId || dirty || Boolean(busy) || !googlePlayIdentifier.trim() || !googlePlayCoverId || audiobookProjects.length === 0} className="glass-solid mt-4 rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{busy === "audiobook" ? "Preparing private archive…" : "Download Google Play archive"}</button>
+            </div></div>
         </section>}
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="export-title">

@@ -25,8 +25,22 @@ First-party audio policy review is recorded in `docs/AUDIOBOOK_TECHNICAL_QC.md`:
 ACX remains blocked for this AI voice absent authorization; Google Play is a
 possible export-only target with Synthesized voice disclosure and partner /
 territory constraints; Apple Books' digital-narration path is partner-based,
-and acceptance of externally generated GPT narration remains unverified. No
-retailer-specific audio archive has been implemented or submitted.
+and acceptance of externally generated GPT narration remains unverified. The
+local worktree adds an export-only Google Play ZIP route. It requires exact
+current QC sign-off for every chapter, a private cover and a safe book
+identifier. Full `npm run verify` passes after this change: all workspace
+TypeScript, 267 API/unit tests, 81 web tests, 66 migrations + 45 SQL suites in
+disposable PostgreSQL, 316 service tests, 12 E2E, 30 security tests, 50-request
+load smoke and six deterministic AI evals (live provider eval skipped because
+no key is configured). Signed-in Microsoft Edge browser acceptance now covers
+the synthetic Google Play ZIP download, AI-voice disclosure reminder, exact
+QC sign-off prerequisite, 390px containment and no page errors. An isolated
+Next production build passes with 30 app routes. The QC migration is unapplied
+live. This is not retailer acceptance or submission.
+Current implementation is synchronous, ZIP32-size bounded and not a durable
+large-title job; cover DPI is author-verified, not automatically measured. ACX
+remains unavailable absent express authorization; Apple audiobook export
+remains disabled/neutral.
 
 ## 2026-09-23 local verification refresh
 

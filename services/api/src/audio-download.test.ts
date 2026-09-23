@@ -11,6 +11,10 @@ const WORKSPACE = "b6000000-0000-4000-8000-000000000002";
 const USER = "b6000000-0000-4000-8000-000000000003";
 const VERSION = "b6000000-0000-4000-8000-000000000006";
 const QC_REPORT = "b6000000-0000-4000-8000-000000000007";
+const BOOK = "b6000000-0000-4000-8000-000000000008";
+const EDITION = "b6000000-0000-4000-8000-000000000009";
+const COVER = "b6000000-0000-4000-8000-000000000010";
+const ISBN = "9780306406157";
 const ids = ["b6000000-0000-4000-8000-000000000004", "b6000000-0000-4000-8000-000000000005"];
 const bytes = [Buffer.from("ID3fixture-one"), Buffer.from("ID3fixture-two")];
 const sha = (data: Buffer) => createHash("sha256").update(data).digest("hex");
@@ -19,14 +23,22 @@ const quality = { schemaVersion: 1, profile: "ACX technical preflight; not retai
   technicalChecks: { rms: { status: "pass", value: -20, unit: "dBFS", limit: "-23 to -18 dB RMS" },
     noiseFloor: { status: "manual_review", value: null, limit: "listening required" } }, reviewRequired: true,
   acxNarrationPolicy: "explicit_authorization_required_for_ai_voice" };
+function png(width = 1024, height = 1024) {
+  const value = Buffer.alloc(24); Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(value);
+  value.writeUInt32BE(width, 16); value.writeUInt32BE(height, 20); return value;
+}
 function fixture() {
   const tables: Record<string, Record<string, any>[]> = {
-    audiobook_projects: [{ id: PROJECT, workspace_id: WORKSPACE, chapter_id: ids[0], document_version_id: VERSION, status: "succeeded", segment_count: 2 }],
+    audiobook_projects: [{ id: PROJECT, workspace_id: WORKSPACE, book_id: BOOK, edition_id: EDITION, chapter_id: ids[0], document_version_id: VERSION, status: "succeeded", segment_count: 2, created_at: "2026-09-23T00:00:00Z" }],
+    books: [{ id: BOOK, workspace_id: WORKSPACE, title: "Fixture book", author_name: "Test author" }],
+    editions: [{ id: EDITION, book_id: BOOK, type: "audiobook" }],
     workspace_members: [{ workspace_id: WORKSPACE, user_id: USER, status: "active", role: "reviewer" }],
-    chapters: [{ id: ids[0], current_document_version_id: VERSION }],
+    chapters: [{ id: ids[0], book_id: BOOK, order_index: 0, title: "Chapter one", current_document_version_id: VERSION }],
+    document_versions: [{ id: VERSION, chapter_id: ids[0], plain_text: "A chapter long enough for the export fixture." }],
     audiobook_segments: ids.map((id, index) => ({ project_id: PROJECT, segment_index: index, asset_id: id, completed_at: "2026-09-18" })),
-    assets: ids.map((id, index) => ({ id, workspace_id: WORKSPACE, storage_path: `workspaces/${WORKSPACE}/audiobooks/${PROJECT}/${index}.mp3`,
+    assets: [...ids.map((id, index) => ({ id, workspace_id: WORKSPACE, storage_path: `workspaces/${WORKSPACE}/audiobooks/${PROJECT}/${index}.mp3`,
       mime_type: "audio/mpeg", type: "audiobook_segment", size_bytes: bytes[index].length, checksum: sha(bytes[index]), deleted_at: null })),
+    { id: COVER, workspace_id: WORKSPACE, storage_path: `workspaces/${WORKSPACE}/assets/${COVER}/v1/cover.png`, mime_type: "image/png", size_bytes: png().length, checksum: sha(png()), deleted_at: null }],
     audiobook_qc_reports: [],
     audiobook_qc_signoffs: [],
   };
@@ -51,7 +63,9 @@ function fixture() {
       return builder;
     },
     storage: { from: () => ({ download: async (path: string) => {
-      reads.push(path); const index = path.endsWith("/0.mp3") ? 0 : 1;
+      reads.push(path);
+      if (path.endsWith("cover.png")) return { data: new Blob([png()]), error: null };
+      const index = path.endsWith("/0.mp3") ? 0 : 1;
       return { data: new Blob([bytes[index]]), error: null };
     } }) },
   } as never;
@@ -66,7 +80,7 @@ test("chapter assembly reads exact, ordered, RLS-scoped private segments", async
   assert.equal(loaded.workspaceId, WORKSPACE);
   assert.equal(loaded.documentVersionId, VERSION);
   assert.match(loaded.sourceManifestSha256, /^[a-f0-9]{64}$/);
-  assert.deepEqual(data.reads, data.tables.assets.map((asset) => asset.storage_path));
+  assert.deepEqual(data.reads, data.tables.assets.slice(0, 2).map((asset) => asset.storage_path));
   await assert.rejects(loadChapterAudio(data.sb, USER), /not found/);
   await assert.rejects(loadChapterAudio(data.sb, "invalid"), /not found/);
 });
@@ -121,6 +135,45 @@ test("download route returns a private attachment and releases its concurrency s
     assert.deepEqual(response.rawPayload, output);
   }
   assert.equal(data.tables.audiobook_qc_reports.length, 1, "same measured artifact should have one immutable report");
+  await app.close();
+});
+
+test("Google Play export requires exact current QC sign-off and returns only a private disclosure-marked ZIP", async () => {
+  const data = fixture();
+  const output = Buffer.from("ID3assembled-chapter-for-export");
+  data.tables.audiobook_qc_reports.push({ id: QC_REPORT, project_id: PROJECT, document_version_id: VERSION,
+    audio_sha256: sha(output), source_manifest_sha256: (await loadChapterAudio(data.sb, PROJECT)).sourceManifestSha256 });
+  const exportQuality = { ...quality, chapterDurationSeconds: 300 };
+  const app = Fastify();
+  app.decorate("supabaseFactory", () => data.sb);
+  app.addHook("onRequest", async (req) => { req.userId = USER; req.userToken = "fixture"; });
+  await app.register(errorHandlerPlugin);
+  audiobookRoutes(app, { fetcher: async () => new Response(output, { headers: { "x-artifact-sha256": sha(output), "x-bookworm-audio-qc": JSON.stringify(exportQuality) } }) });
+  const url = `/editions/${EDITION}/audiobook-google-play-export`;
+  const noSignoff = await app.inject({ method: "POST", url, payload: { identifier: ISBN, coverAssetId: COVER } });
+  assert.equal(noSignoff.statusCode, 409, noSignoff.body);
+  data.tables.audiobook_qc_signoffs.push({ report_id: QC_REPORT, reviewer_id: USER, listened_to_exact_audio: true });
+  data.tables.chapters[0].current_document_version_id = ids[1];
+  const stale = await app.inject({ method: "POST", url, payload: { identifier: ISBN, coverAssetId: COVER } });
+  assert.equal(stale.statusCode, 409, stale.body);
+  data.tables.chapters[0].current_document_version_id = VERSION;
+  data.tables.workspace_members[0].role = "viewer";
+  const viewer = await app.inject({ method: "POST", url, payload: { identifier: ISBN, coverAssetId: COVER } });
+  assert.equal(viewer.statusCode, 403, viewer.body);
+  data.tables.workspace_members[0].role = "reviewer";
+  const invalidIdentifier = await app.inject({ method: "POST", url, payload: { identifier: "9780306406158", coverAssetId: COVER } });
+  assert.equal(invalidIdentifier.statusCode, 422, invalidIdentifier.body);
+  const response = await app.inject({ method: "POST", url, payload: { identifier: ISBN, coverAssetId: COVER } });
+  assert.equal(response.statusCode, 200, response.body.toString());
+  assert.equal(response.headers["content-type"], "application/zip");
+  assert.equal(response.headers["content-disposition"], `attachment; filename=\"${ISBN}.zip\"`);
+  assert.equal(response.headers["x-bookworm-audio-disclosure"], "synthesized-voice-required");
+  assert.equal(response.headers["cache-control"], "private, no-store");
+  const archive = response.rawPayload;
+  assert.equal(archive.readUInt32LE(0), 0x04034b50);
+  const names = archive.toString("utf8");
+  assert.ok(names.includes(`Audio/${ISBN}_ch1.mp3`));
+  assert.ok(names.includes(`Cover/${ISBN}.png`));
   await app.close();
 });
 

@@ -2223,6 +2223,48 @@ paths:
         "422": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/editions/{editionId}/audiobook-google-play-export:
+    post:
+      tags: [v1]
+      operationId: exportGooglePlayAudiobook
+      summary: Download a private Google Play Books audiobook ZIP for manual review
+      description: >-
+        Requires an audiobook edition, workspace approver access, a current
+        completed narration project for every chapter, and an exact-audio
+        listening sign-off for every current assembled chapter. Accepts a
+        checksum-valid private JPEG/PNG cover between 1,024 and 7,200 pixels
+        per side and a valid ISBN-13 or safe publisher book identifier. The
+        archive is export-only and does not create retailer credentials,
+        submit, publish, or guarantee account eligibility. Authors must select
+        Synthesized voice in Google Play Partner Center for this AI narration.
+        Requires migration 20260923040940 for durable QC reports/sign-offs.
+      parameters:
+        - { in: path, name: editionId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [identifier, coverAssetId]
+              properties:
+                identifier: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9][A-Za-z0-9_-]*$' }
+                coverAssetId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Private, no-store Google Play audiobook ZIP; contains ordered MP3 chapters and one cover image.
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
     AdminLimit:

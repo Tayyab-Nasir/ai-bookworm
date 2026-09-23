@@ -514,6 +514,23 @@ before production tuning.
   cap can be reached before two hours. Native assembly is serialized per
   renderer process; API admission is two operations per process, one per
   user/project. There is no distributed queue/cache for this download yet.
+- The local source also exposes
+  `POST /v1/editions/{editionId}/audiobook-google-play-export`. It is an
+  author-triggered, synchronous download, not a retailer integration. Before
+  assembly it requires every current chapter to have succeeded narration and
+  an exact-audio QC sign-off, plus a private cover and publisher identifier.
+  It reassembles each chapter to match the immutable QC hash, writes an
+  uncompressed ZIP to a mode-0600 temporary file, and streams the result; the
+  ZIP is removed when the response closes. Cap is 3,750 MiB and 250 chapters.
+  A disconnect aborts the author download and causes temporary cleanup; retry
+  may repeat CPU-only assembly but never provider generation or credit usage.
+  This long synchronous work does not yet have durable job recovery and may
+  exceed the BFF/serverless request window for large titles. Do not treat it as
+  a production-scale export queue. Its required QC tables are in
+  `20260923040940_audiobook_qc_review_signoffs.sql`, which remains unapplied
+  live. Cover pixel bounds are checked; dpi metadata is not measured, so the
+  author must verify the retailer's 72-dpi requirement. The download never
+  marks the title as uploaded or published.
 - Install rendering requirements, including pinned `imageio-ffmpeg==0.6.0`.
   Its Windows wheel supplies FFmpeg 7.1; `IMAGEIO_FFMPEG_EXE` may point to a
   reviewed operator-managed executable. No shell/network protocols or caller

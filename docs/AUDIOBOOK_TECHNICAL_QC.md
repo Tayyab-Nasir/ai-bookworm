@@ -33,6 +33,31 @@ schema is reviewed and applied; audio download remains non-blocking if report
 persistence is unavailable. No new generation credits are spent, and audio
 remains in private storage.
 
+## Google Play author-side archive (local source only)
+
+The Publishing Studio now has a local export-only route for audiobook editions.
+It requires workspace approver access, a succeeded narration project pinned to
+the current manuscript version for every chapter, a saved QC report for each
+exact assembled MP3, an immutable listening sign-off for each report, and a
+private same-workspace JPEG/PNG cover with both dimensions between 1,024 and
+7,200 pixels. It accepts a checksum-valid ISBN-13 (including its check digit)
+or a safe partner/book identifier. It assembles chapters in manuscript order
+and writes `Audio/<ID>_chN.mp3` and `Cover/<ID>.jpg|png` into a ZIP named
+`<ID>.zip`. It verifies Google Play's five-minute minimum and 100-hour maximum,
+and the listed MP3 bitrate/channel minima. It makes no provider calls and
+spends no additional credits.
+
+This is not a Google submission, retailer approval, ISBN registration, pricing
+or territory check. Authors must manually label this AI-generated title
+“Synthesized voice” in Partner Center and verify the cover's 72 dpi requirement
+(dpi metadata is not measured by the current export check). The ZIP is created
+synchronously into a private temporary file, capped below ZIP32's 4 GiB limit;
+the BFF has a finite request timeout. This first implementation is suitable for
+bounded author-side exports, not yet a durable large-audiobook export queue.
+The QC migration remains unapplied live, so this route is not active for the
+production Supabase project. No live retailer request or data operation was
+made.
+
 ## Distribution research (first-party sources, checked 2026-09-23)
 
 - **ACX / Audible:** human narration is required unless the title has separate
@@ -54,7 +79,7 @@ remains in private storage.
   package. Keep Apple audio export disabled/neutral until a named partner
   confirms its current third-party AI narration and disclosure terms.
 
-Any future retailer-specific export must validate the retailer's exact format,
+Any retailer-specific export must validate the retailer's exact format,
 metadata/disclosure, ISBN, cover and duration rules; must require author rights
 and listening attestations; and must be export-only until direct integrations
 and partner permissions are separately verified. Policy pages can change.

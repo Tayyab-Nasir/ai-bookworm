@@ -61,6 +61,14 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         response.headers.set("x-bookworm-audio-qc-history", "unavailable");
       }
     }
+    const audioArchive = /^attachment; filename="([A-Za-z0-9_-]{1,64}\.zip)"$/u.exec(upstream.headers.get("content-disposition") ?? "");
+    if (contentType.split(";", 1)[0].trim().toLowerCase() === "application/zip" && audioArchive
+      && upstream.headers.get("x-bookworm-audio-disclosure") === "synthesized-voice-required") {
+      response.headers.set("content-disposition", `attachment; filename="${audioArchive[1]}"`);
+      response.headers.set("x-bookworm-audio-disclosure", "synthesized-voice-required");
+      const contentLength = upstream.headers.get("content-length");
+      if (contentLength && /^\d{1,10}$/u.test(contentLength)) response.headers.set("content-length", contentLength);
+    }
     return auth.finish(response);
   } catch (error) {
     const response = authError(503, error instanceof AuthConfigurationError ? error.message : "The workspace service is unavailable. Your changes have not been confirmed saved.", "dependency_unavailable");

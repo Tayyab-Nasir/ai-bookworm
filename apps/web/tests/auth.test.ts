@@ -146,6 +146,25 @@ test("BFF forwards only validated audiobook QC metadata with the private MP3", a
   assert.equal(response.headers.get("x-internal-secret"), null);
 });
 
+test("BFF forwards a sanitized Google Play audiobook ZIP attachment and disclosure marker only", async () => {
+  const signedIn = await login();
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    return new Response("PKfixture", { status: 200, headers: {
+      "content-type": "application/zip", "content-disposition": 'attachment; filename="9780306406157.zip"',
+      "x-bookworm-audio-disclosure": "synthesized-voice-required", "x-internal-secret": "must-not-cross-the-proxy",
+    } });
+  };
+  const response = await backendPost(new NextRequest("http://localhost:3000/api/backend/v1/editions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/audiobook-google-play-export", {
+    method: "POST", headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", "content-type": "application/json" }, body: JSON.stringify({ identifier: "9780306406157" }),
+  }), { params: Promise.resolve({ path: ["v1", "editions", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "audiobook-google-play-export"] }) });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="9780306406157.zip"');
+  assert.equal(response.headers.get("x-bookworm-audio-disclosure"), "synthesized-voice-required");
+  assert.equal(response.headers.get("x-internal-secret"), null);
+  assert.equal(await response.text(), "PKfixture");
+});
+
 test("BFF rejects anonymous writes, cross-site writes and service-only routes", async () => {
   const context = { params: Promise.resolve({ path: ["v1", "books"] }) };
   assert.equal((await backendPost(request("x", {}), context)).status, 401);

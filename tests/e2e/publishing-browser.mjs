@@ -104,7 +104,15 @@ try {
   await page.getByRole('button', { name: 'Save listening sign-off', exact: true }).click();
   await page.getByRole('status').filter({ hasText: 'Listening sign-off saved for this exact audio file.' }).waitFor();
   await page.getByText(/signed by you/i).waitFor();
+  await page.getByLabel('ISBN-13 or publisher book ID', { exact: true }).fill('9780306406157');
+  await page.getByLabel('Audiobook cover', { exact: false }).selectOption('55555555-5555-4555-8555-555555555555');
+  const googlePlayTransfer = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download Google Play archive', exact: true }).click();
+  const googlePlayFile = await googlePlayTransfer;
+  assert.equal(await googlePlayFile.failure(), null);
+  assert.equal(googlePlayFile.suggestedFilename(), '9780306406157.zip');
+  await page.getByRole('status').filter({ hasText: 'label this AI-narrated title “Synthesized voice.”' }).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'audiobook mobile overflow');
   assert.deepEqual(errors, []);
-  console.log('PASS publishing browser: saved paperback settings, font choice, render/preflight/package, audio assembly failure/retry/download, QC report, exact-audio listening sign-off/history, ACX policy warning and mobile. Artifact bytes remain fixtures.');
+  console.log('PASS publishing browser: saved paperback settings, font choice, render/preflight/package, audio assembly failure/retry/download, QC report, exact-audio listening sign-off/history, synthetic Google Play ZIP export, AI-voice disclosure, ACX policy warning and mobile. Artifact bytes remain fixtures.');
 } finally { await browser.close(); }

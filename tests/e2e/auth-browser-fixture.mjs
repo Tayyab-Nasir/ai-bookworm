@@ -103,6 +103,15 @@ const server = createServer(async (req, res) => {
       publishingEditions.set(edition.id, edition); return json(201, edition);
     }
     const edition = publishingEditions.get(url.pathname.split('/')[3]);
+    if (edition && req.method === 'POST' && url.pathname.endsWith('/audiobook-google-play-export')) {
+      if (edition.type !== 'audiobook' || body.identifier !== '9780306406157' || body.coverAssetId !== memoryImages[0].id
+        || !publishingAudioQcReports.some((report) => report.isCurrentSource && report.signoffs.some((signoff) => signoff.reviewerId === user.id))) {
+        return json(409, { error: { message: 'Fixture requires the signed-off audiobook and selected cover.' } });
+      }
+      res.writeHead(200, { 'content-type': 'application/zip', 'content-disposition': 'attachment; filename="9780306406157.zip"',
+        'cache-control': 'private, no-store', 'x-bookworm-audio-disclosure': 'synthesized-voice-required' });
+      return res.end(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('fixture-only-google-play-archive')]));
+    }
     if (edition && req.method === 'GET' && url.pathname.endsWith('/audiobook-jobs')) {
       return json(200, { projects: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', editionId: edition.id, chapterId: memoryChapters[0].id,
         documentVersionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', voice: 'marin', speed: 1, status: 'succeeded', segmentCount: 2,
