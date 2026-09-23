@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-scanner-runtime.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-revision-ledger.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,21 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Author revision ledger
+
+`4538302` makes text comparisons chronological regardless of click order,
+preserves Unicode/whitespace, distinguishes unavailable from empty text and
+bounds diff work. Chapter-scoped component state prevents comparisons leaking
+between chapters. Version history now uses a dark editorial ledger with clear
+selection, accessible controls and explicit saved-text-only scope. No backend
+version/restore semantics changed. All 84 web tests, web TypeScript and isolated
+production build pass. Edge synthetic-auth/API acceptance passes save/reverse
+selection/diff/deselection/chapter reset/viewer controls and 390px containment.
+The test uses localhost:4398; the initial 127.0.0.1 login got invalid-origin 403
+and needs separate local-origin investigation. No auth guard was weakened.
+Graphify refreshed; existing Gradle parse warnings and generated dirt remain.
+No deployment, migration, provider or customer operation occurred.
 
 ### Persistent private scanner runtime
 
