@@ -2,8 +2,9 @@
 
 Drives all four FastAPI services via TestClient (in-process, no ports):
 create book payload -> document parse (import) -> AI job (mock provider) ->
-apply suggestion -> render EPUB -> deterministic preflight -> idempotent
-export job. The artifact matrix carries parsed text into real EPUB/PDF bytes
+apply suggestion -> render EPUB -> deterministic preflight -> deterministic
+exact-artifact package. Durable job idempotency is tested in API/SQL suites.
+The artifact matrix carries parsed text into real EPUB/PDF bytes
 and checks the exact bytes inside retailer ZIPs. AI operation application is
 simulated here; database persistence, live providers and retailer submission
 are not covered by this in-process suite.
@@ -57,6 +58,9 @@ def _client(name: str) -> TestClient:
         os.environ.setdefault("AI_SERVICE_TOKEN", "e2e-private-service-token")
         os.environ.setdefault("DEFAULT_AI_PROVIDER", "mock")
         return TestClient(_apps[name], headers={"x-service-token": os.environ["AI_SERVICE_TOKEN"]})
+    if name == "publishing":
+        os.environ.setdefault("PUBLISHING_SERVICE_TOKEN", "e2e-publishing-token")
+        return TestClient(_apps[name], headers={"x-service-token": os.environ["PUBLISHING_SERVICE_TOKEN"]})
     return TestClient(_apps[name])
 
 
@@ -300,20 +304,19 @@ def test_p0_journey(monkeypatch, tmp_path):
     assert pf.status_code == 200, pf.text
     assert pf.json()["errors"] == 0, pf.json()["findings"]
 
-    # Publishing service: export job, idempotent replay.
-    import publishing_main
-    monkeypatch.setattr(publishing_main, "_JOBS_DIR", tmp_path)
+    # Publishing service packages the exact reviewed artifact; job identity and
+    # durable storage belong to the API/worker, not this private service.
     pub = _client("publishing")
-    export = pub.post("/v1/publishing/jobs", json={
+    payload = {
         "channel": "kdp", "editionConfig": EDITION, "bookModel": model,
-        "idempotencyKey": "e2e-export-1"})
-    assert export.status_code == 201, export.text
-    assert export.json()["status"] == "exported"
+        "artifactsBase64": {"book.epub": epub_body["artifactBase64"]}}
+    export = pub.post("/v1/publishing/package", json=payload)
+    assert export.status_code == 200, export.text
     assert export.json()["packages"], "no export artifacts"
-    replay = pub.post("/v1/publishing/jobs", json={
-        "channel": "kdp", "editionConfig": EDITION, "bookModel": model,
-        "idempotencyKey": "e2e-export-1"})
-    assert replay.json()["replayed"] is True
+    with zipfile.ZipFile(BytesIO(base64.b64decode(export.json()["packages"][0]["dataBase64"]))) as archive:
+        assert archive.read("book.epub") == base64.b64decode(epub_body["artifactBase64"])
+    replay = pub.post("/v1/publishing/package", json=payload)
+    assert replay.json() == export.json()
 
 
 def test_validation_failure_paths():
@@ -338,7 +341,7 @@ def test_validation_failure_paths():
     # Unknown channel -> 422
     assert pub.post("/v1/publishing/validate", json={
         "channel": "darkweb", "editionConfig": EDITION, "bookModel": BOOK_MODEL}).status_code == 422
-    # Path-unsafe idempotency key -> 422 (job path traversal guard)
+    # Retired local-file route cannot consume caller-controlled job keys.
     assert pub.post("/v1/publishing/jobs", json={
         "channel": "kdp", "editionConfig": EDITION, "bookModel": BOOK_MODEL,
-        "idempotencyKey": "../../evil"}).status_code == 422
+        "idempotencyKey": "../../evil"}).status_code == 410

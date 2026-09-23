@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-package-metadata.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-private-publishing.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Private publishing boundary
+
+The Python packager now fails closed with 503 if its service credential is
+missing/blank and 401 for absent/wrong caller tokens. Its legacy local-file
+`POST /v1/publishing/jobs` returns authenticated 410; no old cache is read,
+written, created or deleted. The Fastify public durable job route is unchanged.
+E2E now packages exact saved render bytes via the current private endpoint.
+328 service tests, 30 security tests, 33 publishing/E2E checks and 12 focused
+public API/worker tests pass. Configure the shared token on both callers and
+packager before deploying. Document/rendering missing-token behavior still
+needs review; this checkpoint does not claim all private services are hardened.
 
 ### Retailer metadata handoff
 

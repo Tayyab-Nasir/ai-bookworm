@@ -466,6 +466,22 @@ before production tuning.
 - The browser acceptance journey covers successful intake and the 390px layout;
   database tests cover ownership, duplicate-open requests and cancellation.
 
+## Private publishing service boundary
+
+The Python publishing service requires `PUBLISHING_SERVICE_TOKEN` (or the
+`SERVICE_AUTH_TOKEN` fallback) for validation and packaging. Missing/blank
+configuration returns 503; missing/wrong credentials return 401. Configure the
+same token on the calling API/worker before enabling this revision. Health and
+channel capability reads stay public and contain no customer data.
+
+Its legacy `POST /v1/publishing/jobs` returns 410 after authentication and never
+reads or writes the old `.jobs` cache. Existing cache files are not automatically
+deleted or migrated. Operator retention review is required for any old copies.
+Do not redirect that route to the packager: the Fastify API's identically named
+public route remains the supported authenticated durable queue with database
+history. Its worker sends exact saved artifacts to the Python
+`POST /v1/publishing/package` endpoint.
+
 ## Retailer submission boundary
 - The production-safe contract is export-first: generate a versioned preflighted
   private package, then let the author submit it through the retailer's supported

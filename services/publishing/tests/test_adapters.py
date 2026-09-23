@@ -163,6 +163,56 @@ def test_internal_package_endpoint_checks_its_service_token(monkeypatch):
     require_service_token("publishing-secret")
 
 
+@pytest.mark.parametrize("configured", [None, "", "   "])
+def test_private_publishing_routes_fail_closed_without_configuration(monkeypatch, configured):
+    from fastapi.testclient import TestClient
+    monkeypatch.delenv("SERVICE_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("PUBLISHING_SERVICE_TOKEN", raising=False)
+    if configured is not None:
+        monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", configured)
+    with TestClient(_PUBLISHING_MAIN.app) as client:
+        for route in ("validate", "package", "jobs"):
+            result = client.post(f"/v1/publishing/{route}", headers={"x-service-token": "guessed"}, json={})
+            assert result.status_code == 503, result.text
+            assert result.json() == {"detail": "Publishing service authentication is not configured."}
+        assert client.get("/health").status_code == 200
+        assert client.get("/v1/publishing/channels").status_code == 200
+
+
+def test_publishing_token_fallback_and_dedicated_precedence(monkeypatch):
+    from fastapi import HTTPException
+    monkeypatch.delenv("PUBLISHING_SERVICE_TOKEN", raising=False)
+    monkeypatch.setenv("SERVICE_AUTH_TOKEN", "shared-fixture")
+    require_service_token("shared-fixture")
+    monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", "dedicated-fixture")
+    for token in (None, "", "wrong", "shared-fixture", "non-ascii-é"):
+        with pytest.raises(HTTPException) as caught:
+            require_service_token(token)
+        assert caught.value.status_code == 401
+    require_service_token("dedicated-fixture")
+
+
+def test_retired_local_job_never_renders_reads_or_writes_a_job(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", "retirement-fixture")
+    def forbidden(*args, **kwargs):
+        pytest.fail("retired route attempted rendering or local-file work")
+    monkeypatch.setattr(_PUBLISHING_MAIN, "render_epub", forbidden)
+    monkeypatch.setattr(_PUBLISHING_MAIN, "build_package", forbidden)
+    monkeypatch.setattr(Path, "read_text", forbidden)
+    monkeypatch.setattr(Path, "write_text", forbidden)
+    assert not hasattr(_PUBLISHING_MAIN, "_JOBS_DIR")
+    with TestClient(_PUBLISHING_MAIN.app) as client:
+        url = "/v1/publishing/jobs"
+        assert client.post(url, json={}).status_code == 401
+        for payload in ({}, {"idempotencyKey": "../../old", "bookModel": VALID},
+                        {"idempotencyKey": "previously-succeeded"}):
+            response = client.post(url, headers={"x-service-token": "retirement-fixture"}, json=payload)
+            assert response.status_code == 410, response.text
+            assert "durable publishing queue" in response.json()["detail"]
+            assert "dataBase64" not in response.text
+
+
 def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geometry():
     from PIL import Image
     from pypdf import PdfWriter
