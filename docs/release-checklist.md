@@ -1,5 +1,28 @@
 # MVP Release Checklist
 
+## 2026-09-23 durable Google Play audiobook exports
+
+The synchronous archive described below is superseded by a tenant-scoped,
+idempotent queue, private bounded ZIP worker, leased progress/cancellation,
+and refreshed signed download history in Publishing Studio. Snapshots contain
+identity/hash pointers, not manuscript text. Uploaded-file cleanup is performed
+only after a successful database failure transition fences delayed completion.
+
+Local evidence: full `npm run verify` passed during implementation, including
+67 migrations/45 SQL assertion files, 316 service tests, 12 E2E, 30 security,
+load smoke and six deterministic evals; isolated production web build passed.
+The final worker cleanup adjustment passes all 275 API tests and seven focused
+worker cases. Real local Next UI with synthetic Auth/API responses passes the
+Edge browser journey for uncertain-response idempotency, reload recovery,
+cancellation, automatic progress, private download refresh and mobile layout.
+Browser artifact bytes are fixtures and do not prove retailer acceptance.
+
+Both the QC sign-off and export-job migrations remain unapplied live. Required
+native acceptance: RLS/PostgREST isolation, Storage/TUS and size limits, download
+expiry, multiple worker processes, restarts/cancellation and orphan/retention
+operations. Cover DPI remains manual. No deployment, model spend, retailer
+submission, or production-ready claim accompanies these local checks.
+
 ## 2026-09-23 audiobook QC history and author sign-off
 
 Commit `b643083` on `codex/paid-story-blueprint-20260923` adds durable QC

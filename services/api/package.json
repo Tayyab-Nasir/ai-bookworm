@@ -11,6 +11,7 @@
     "worker:document": "tsx ../../workers/document/worker.ts",
     "worker:ai": "tsx ../../workers/ai/worker.ts",
     "worker:audiobook": "tsx ../../workers/audiobook/worker.ts",
+    "worker:audiobook-export": "tsx ../../workers/audiobook/google-play-export-worker.ts",
     "worker:translation": "tsx ../../workers/translation/worker.ts",
     "worker:story-blueprint": "tsx ../../workers/story-blueprint/worker.ts",
     "storage:orphan-report": "tsx ../../workers/maintenance/storage-orphan-report.ts",

@@ -7,17 +7,19 @@ const asset = "b0000000-0000-4000-8000-000000000001";
 const path = `workspaces/${workspace}/assets/${asset}/v1/private.txt`;
 
 test("storage reconciliation only reports old, managed, unreferenced objects", () => {
+  const exportPath = `workspaces/${workspace}/audiobook-exports/${asset}/a0000000-0000-4000-8000-000000000002.zip`;
   const report = classifyStorageObjects({
-    references: [path], graceHours: 168, now: new Date("2026-09-11T12:00:00.000Z"),
+    references: [path, exportPath], graceHours: 168, now: new Date("2026-09-11T12:00:00.000Z"),
     objects: [
       { path, createdAt: "2026-08-01T00:00:00.000Z" },
+      { path: exportPath, createdAt: "2026-08-01T00:00:00.000Z" },
       { path: path.replace("v1/private.txt", "v2/unreferenced.txt"), createdAt: "2026-08-01T00:00:00.000Z" },
       { path: path.replace("v1/private.txt", "v3/new.txt"), createdAt: "2026-09-11T11:59:00.000Z" },
       { path: path.replace("v1/private.txt", "v4/unknown-age.txt"), createdAt: null },
       { path: "unexpected/private.txt", createdAt: "2026-08-01T00:00:00.000Z" },
     ],
   });
-  assert.equal(report.referencedObjects, 1);
+  assert.equal(report.referencedObjects, 2);
   assert.equal(report.candidates.length, 1);
   assert.equal(report.candidates[0].path.endsWith("unreferenced.txt"), true);
   assert.equal(report.youngerUnreferencedObjects, 1);
@@ -31,13 +33,16 @@ test("storage reconciliation rejects a grace period too short for uncertain writ
 
 test("receipt-bound images are retained and unavailable recovery references fail closed", async () => {
   const generatedPath = path.replace("private.txt", "generated.png");
+  const exportPath = `workspaces/${workspace}/audiobook-exports/${asset}/a0000000-0000-4000-8000-000000000002.zip`;
   for (const mode of ["valid", "query-error", "malformed"] as const) {
     const client = {
       from(table: string) {
         const query = {
-          select: () => query, order: () => query,
+          select: () => query, order: () => query, not: () => query,
           range: async () => table === "image_completion_receipts"
             ? { data: [{ completion_json: { p_storage_path: mode === "malformed" ? null : generatedPath } }], error: mode === "query-error" ? { message: "unavailable" } : null }
+            : table === "audiobook_google_play_export_jobs"
+              ? { data: [{ id: "job", output_storage_path: exportPath }], error: null }
             : { data: [], error: null },
         };
         return query;
@@ -48,7 +53,7 @@ test("receipt-bound images are retained and unavailable recovery references fail
       await assert.rejects(inspectPrivateStorageOrphans(client as never), /image_recovery_reference/);
     } else {
       const report = await inspectPrivateStorageOrphans(client as never, { now: new Date("2026-09-12T00:00:00Z") });
-      assert.equal(report.referenceCount, 1);
+      assert.equal(report.referenceCount, 2);
       assert.equal(report.referencedObjects, 1);
       assert.deepEqual(report.candidates, []);
     }

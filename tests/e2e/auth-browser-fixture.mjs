@@ -22,6 +22,9 @@ const publishingPackages = [];
 const publishingRenders = new Map();
 const publishingChecks = new Map();
 const publishingAudioQcReports = [];
+const audioExports = new Map();
+const audioExportKeys = new Map();
+let lostExportReply = false;
 let chapterDownloadAttempts = 0;
 const fixtureFiles = new Map();
 function fixtureDownload(name) {
@@ -75,6 +78,15 @@ const server = createServer(async (req, res) => {
   try { body = raw ? JSON.parse(raw) : {}; } catch { json(400, {}); return; }
   const authorized = tokens.has((req.headers.authorization ?? '').replace(/^Bearer /, ''));
   if (url.pathname === '/health') return json(200, { fixture: true });
+  if (process.env.FIXTURE_PUBLISHING === 'true' && url.pathname === '/fixture-export-state') {
+    if (req.method === 'POST' && ['running', 'succeeded'].includes(body.status)) {
+      for (const job of audioExports.values()) if (['queued', 'running'].includes(job.status)) {
+        job.status = body.status;
+        if (body.status === 'succeeded') Object.assign(job, { progressChapters: 1, archiveSizeBytes: 100, totalDurationSeconds: 30, completedAt: new Date().toISOString() });
+      }
+    }
+    return json(200, { jobs: [...audioExports.values()], keys: [...audioExportKeys.keys()] });
+  }
   if (url.pathname === '/fixture-artifact' && fixtureFiles.has(url.searchParams.get('token'))) {
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="fixture-artifact.txt"', 'cache-control': 'no-store' });
     return res.end(`UI acceptance fixture only: ${fixtureFiles.get(url.searchParams.get('token'))}`);
@@ -103,14 +115,31 @@ const server = createServer(async (req, res) => {
       publishingEditions.set(edition.id, edition); return json(201, edition);
     }
     const edition = publishingEditions.get(url.pathname.split('/')[3]);
+    const exportSummary = (job) => ({ ...job, downloadUrl: job.status === 'succeeded' ? fixtureDownload('Google Play synthesized-voice ZIP').url : null, downloadExpiresIn: job.status === 'succeeded' ? 300 : null });
+    if (edition && req.method === 'GET' && url.pathname.endsWith('/audiobook-google-play-exports')) {
+      return json(200, { jobs: [...audioExports.values()].filter((job) => job.editionId === edition.id).map(exportSummary) });
+    }
+    if (req.method === 'POST' && /^\/v1\/audiobook-google-play-exports\/[^/]+\/cancel$/.test(url.pathname)) {
+      const job = audioExports.get(url.pathname.split('/')[3]);
+      if (!job) return json(404, {});
+      job.status = 'cancelled'; job.completedAt = new Date().toISOString();
+      return json(200, { job: exportSummary(job) });
+    }
     if (edition && req.method === 'POST' && url.pathname.endsWith('/audiobook-google-play-export')) {
       if (edition.type !== 'audiobook' || body.identifier !== '9780306406157' || body.coverAssetId !== memoryImages[0].id
         || !publishingAudioQcReports.some((report) => report.isCurrentSource && report.signoffs.some((signoff) => signoff.reviewerId === user.id))) {
         return json(409, { error: { message: 'Fixture requires the signed-off audiobook and selected cover.' } });
       }
-      res.writeHead(200, { 'content-type': 'application/zip', 'content-disposition': 'attachment; filename="9780306406157.zip"',
-        'cache-control': 'private, no-store', 'x-bookworm-audio-disclosure': 'synthesized-voice-required' });
-      return res.end(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.from('fixture-only-google-play-archive')]));
+      if (!body.idempotencyKey) return json(422, { error: { message: 'Export request key required.' } });
+      let job = audioExports.get(audioExportKeys.get(body.idempotencyKey));
+      if (!job) {
+        job = { id: randomUUID(), editionId: edition.id, status: 'queued', progressChapters: 0, progressTotal: 1,
+          createdAt: new Date().toISOString(), completedAt: null, errorCode: null, archiveSizeBytes: null,
+          totalDurationSeconds: null, synthesizedVoiceDisclosureRequired: true };
+        audioExports.set(job.id, job); audioExportKeys.set(body.idempotencyKey, job.id);
+      }
+      if (!lostExportReply) { lostExportReply = true; return json(503, { error: { message: 'Fixture export reply lost. Retry safely.' } }); }
+      return json(202, { job: exportSummary(job) });
     }
     if (edition && req.method === 'GET' && url.pathname.endsWith('/audiobook-jobs')) {
       return json(200, { projects: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', editionId: edition.id, chapterId: memoryChapters[0].id,

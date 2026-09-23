@@ -68,13 +68,13 @@ export async function loadChapterAudio(sb: SupabaseClient, projectId: string): P
   return { projectId: project.id, workspaceId: project.workspace_id, documentVersionId: project.document_version_id, segments: output, sourceManifestSha256 };
 }
 
-export async function assembleChapterAudio(segments: Buffer[], fetcher: typeof fetch = fetch): Promise<{ bytes: Buffer; quality: AudioQualityReport | null; audioSha256: string }> {
+export async function assembleChapterAudio(segments: Buffer[], fetcher: typeof fetch = fetch, signal?: AbortSignal): Promise<{ bytes: Buffer; quality: AudioQualityReport | null; audioSha256: string }> {
   const base = process.env.RENDERING_SERVICE_URL ?? `http://127.0.0.1:${process.env.RENDERING_SERVICE_PORT ?? "8002"}`;
   const token = process.env.RENDERING_SERVICE_TOKEN || process.env.SERVICE_AUTH_TOKEN;
   const response = await fetcher(`${base.replace(/\/$/, "")}/audio/assemble`, {
     method: "POST", headers: { "content-type": "application/json", ...(token ? { "x-service-token": token } : {}) },
     body: JSON.stringify({ segmentsBase64: segments.map((bytes) => bytes.toString("base64")) }),
-    redirect: "error", signal: AbortSignal.timeout(150_000),
+    redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(150_000)]) : AbortSignal.timeout(150_000),
   }).catch(() => { throw new AppError(503, "Audio assembly is unavailable. Your saved narration is unchanged."); });
   if (response.status === 422) throw new AppError(422, "Narration files cannot be decoded within the chapter assembly limits.");
   if (!response.ok || !response.body) throw new AppError(503, "Audio assembly is unavailable. Your saved narration is unchanged.");

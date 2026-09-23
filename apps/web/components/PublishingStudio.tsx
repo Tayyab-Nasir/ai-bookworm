@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AudiobookProjectResult, AudiobookVoice, EditionConfig, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel } from "@bookworm/api-client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AudiobookGooglePlayExportJob, AudiobookProjectResult, AudiobookVoice, EditionConfig, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel } from "@bookworm/api-client";
 import type { Asset, Book, Chapter, Edition } from "@bookworm/types";
 import { apiClient } from "./api";
 import ChapterAudioDownload from "./ChapterAudioDownload";
@@ -163,6 +163,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [narrationChapterId, setNarrationChapterId] = useState("");
   const [audiobookProjects, setAudiobookProjects] = useState<AudiobookProjectResult[]>([]);
+  const [googlePlayExports, setGooglePlayExports] = useState<AudiobookGooglePlayExportJob[]>([]);
+  const exportRequestKey = useRef<string | null>(null);
   const [googlePlayIdentifier, setGooglePlayIdentifier] = useState("");
   const [googlePlayCoverId, setGooglePlayCoverId] = useState("");
   const [aiDisclosureAccepted, setAiDisclosureAccepted] = useState(false);
@@ -202,9 +204,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
       if (editionResult.editions[0]) {
         setActiveId(editionResult.editions[0].id); setForm(formFromEdition(editionResult.editions[0]));
-        setAudiobookProjects(editionResult.editions[0].type === "audiobook" ? (await api.listAudiobookProjects(editionResult.editions[0].id)).projects : []);
+        if (editionResult.editions[0].type === "audiobook") {
+          const [projects, exports] = await Promise.all([
+            api.listAudiobookProjects(editionResult.editions[0].id), api.listAudiobookGooglePlayExports(editionResult.editions[0].id),
+          ]);
+          setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs);
+        } else { setAudiobookProjects([]); setGooglePlayExports([]); }
       }
-      else { setActiveId(null); setForm({ ...DEFAULT_FORM, language: identity.book.language }); }
+      else { setActiveId(null); setForm({ ...DEFAULT_FORM, language: identity.book.language }); setGooglePlayExports([]); }
       setDirty(false); setError(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load publishing settings."); }
     finally { setBusy(null); }
@@ -215,6 +222,23 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const warn = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
+  const hasActiveGooglePlayExport = googlePlayExports.some((job) => job.status === "queued" || job.status === "running");
+  useEffect(() => {
+    if (!activeId || form.kind !== "audiobook" || !hasActiveGooglePlayExport) return;
+    let active = true;
+    let pending = false;
+    const refresh = async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const result = await api.listAudiobookGooglePlayExports(activeId);
+        if (active) setGooglePlayExports(result.jobs);
+      } catch { /* Keep the last known job state visible; manual refresh remains available. */ }
+      finally { pending = false; }
+    };
+    const timer = window.setInterval(() => void refresh(), 4_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [activeId, api, form.kind, hasActiveGooglePlayExport]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     if (!editable || busy) return;
@@ -224,15 +248,19 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const selectEdition = (edition: Edition) => {
     if (busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
+    exportRequestKey.current = null;
     setActiveId(edition.id); setForm(formFromEdition(edition)); setDirty(false); setRendered(null); setPreflight(null); setError(null); setAiDisclosureAccepted(false);
-    if (edition.type === "audiobook") void api.listAudiobookProjects(edition.id).then((result) => setAudiobookProjects(result.projects)).catch(() => setError("Could not load audiobook history."));
-    else setAudiobookProjects([]);
+    if (edition.type === "audiobook") void Promise.all([api.listAudiobookProjects(edition.id), api.listAudiobookGooglePlayExports(edition.id)])
+      .then(([projects, exports]) => { setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs); })
+      .catch(() => setError("Could not load audiobook history."));
+    else { setAudiobookProjects([]); setGooglePlayExports([]); }
   };
 
   const newEdition = (kind: Kind) => {
     if (!editable || busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
-    setActiveId(null); setForm({ ...DEFAULT_FORM, kind, language: book?.language ?? "en" }); setDirty(true); setRendered(null); setPreflight(null); setError(null); setAudiobookProjects([]); setAiDisclosureAccepted(false);
+    exportRequestKey.current = null;
+    setActiveId(null); setForm({ ...DEFAULT_FORM, kind, language: book?.language ?? "en" }); setDirty(true); setRendered(null); setPreflight(null); setError(null); setAudiobookProjects([]); setGooglePlayExports([]); setAiDisclosureAccepted(false);
   };
 
   const save = async () => {
@@ -244,7 +272,10 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
         : await api.createEdition(bookId, { config: toConfig(form), language: form.language });
       setEditions((current) => [saved, ...current.filter((edition) => edition.id !== saved.id)]);
       setActiveId(saved.id); setForm(formFromEdition(saved)); setDirty(false); setNotice("Edition settings saved.");
-      if (saved.type === "audiobook") setAudiobookProjects((await api.listAudiobookProjects(saved.id)).projects);
+      if (saved.type === "audiobook") {
+        const [projects, exports] = await Promise.all([api.listAudiobookProjects(saved.id), api.listAudiobookGooglePlayExports(saved.id)]);
+        setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs);
+      }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save the edition."); }
     finally { setBusy(null); }
   };
@@ -311,25 +342,32 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     if (!editable || !activeId || form.kind !== "audiobook" || dirty || busy || !googlePlayIdentifier.trim() || !googlePlayCoverId) return;
     setBusy("audiobook"); setError(null); setNotice(null);
     try {
-      const response = await fetch(`/api/backend/v1/editions/${activeId}/audiobook-google-play-export`, {
-        method: "POST", credentials: "include", cache: "no-store",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ identifier: googlePlayIdentifier.trim(), coverAssetId: googlePlayCoverId }),
+      const { job } = await api.createAudiobookGooglePlayExport(activeId, {
+        identifier: googlePlayIdentifier.trim(), coverAssetId: googlePlayCoverId,
+        idempotencyKey: exportRequestKey.current ?? (exportRequestKey.current = crypto.randomUUID()),
       });
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error?.message ?? "Could not create the Google Play audio archive.");
-      }
-      if (!response.headers.get("content-type")?.startsWith("application/zip")
-        || response.headers.get("content-disposition") !== `attachment; filename=\"${googlePlayIdentifier.trim()}.zip\"`) {
-        throw new Error("The export service returned an unexpected file.");
-      }
-      const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement("a"); link.href = url; link.download = `${googlePlayIdentifier.trim()}.zip`;
-      document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setNotice("Private Google Play audio archive downloaded. In Partner Center, label this AI-narrated title “Synthesized voice.” This did not submit or publish it.");
+      exportRequestKey.current = null;
+      setGooglePlayExports((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      setNotice("Export queued. You can leave this page; progress and the private download will remain in export history.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create the Google Play audio archive."); }
     finally { setBusy(null); }
+  };
+
+  const cancelGooglePlayExport = async (jobId: string) => {
+    if (busy) return;
+    setBusy("audiobook"); setError(null);
+    try {
+      const { job } = await api.cancelAudiobookGooglePlayExport(jobId);
+      setGooglePlayExports((current) => current.map((item) => item.id === job.id ? job : item));
+      setNotice(job.status === "cancelled" ? "Export cancelled." : "Cancellation requested. The worker will stop at its next safe checkpoint.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not cancel the export."); }
+    finally { setBusy(null); }
+  };
+
+  const refreshGooglePlayExports = async () => {
+    if (!activeId || form.kind !== "audiobook") return;
+    try { setGooglePlayExports((await api.listAudiobookGooglePlayExports(activeId)).jobs); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh export history."); }
   };
 
   const leave = (event: React.MouseEvent<HTMLAnchorElement>) => { if (dirty && !window.confirm("Leave and discard unsaved edition settings?")) event.preventDefault(); };
@@ -449,11 +487,27 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           <button type="button" onClick={() => void generateAudiobook()} disabled={!editable || !activeId || dirty || Boolean(busy) || !narrationChapterId || !aiDisclosureAccepted} className="glass-solid mt-5 rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{busy === "audiobook" ? "Queuing…" : "Generate chapter narration"}</button>
           {dirty && <p className="mt-3 text-xs text-amber-200">Save the voice settings before generating narration.</p>}
           <div className="mt-7 border-t border-white/10 pt-5"><h3 className="font-medium">Narration history</h3>{audiobookProjects.length ? <ul className="mt-4 space-y-4">{audiobookProjects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/30 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium">{chapters.find((chapter) => chapter.id === project.chapterId)?.title ?? "Saved chapter"}</p><p className="mt-1 text-xs text-white/40">{project.segmentCount} segments · {project.creditUnits} audio credits · {project.voice}</p></div><span className={`rounded-full px-3 py-1 text-xs ${project.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : project.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{project.status}</span></div><ChapterAudioDownload projectId={project.id} ready={project.status === "succeeded"} /><div className="mt-4 grid gap-3 md:grid-cols-2">{project.segments.map((segment) => <div key={segment.index} className="rounded-lg border border-white/10 p-3"><p className="text-xs text-white/45">Part {segment.index + 1} · {segment.status}</p>{segment.download ? <><audio controls preload="none" src={segment.download.url} className="mt-2 w-full" /><a href={segment.download.url} download className="mt-2 inline-block text-xs underline">Download private MP3</a></> : <p className="mt-2 text-xs text-white/35">Audio will appear after the worker completes this segment.</p>}</div>)}</div></li>)}</ul> : <p className="mt-3 text-sm text-white/45">No narration has been queued for this edition.</p>}
-            <div className="mt-6 rounded-xl border border-white/10 bg-black/20 p-4"><h3 className="font-medium">Google Play export · download only</h3><p className="mt-1 text-sm text-white/45">Builds an ordered, private ZIP for manual Partner Center upload. Every current chapter must have narration, a saved QC report, and an approver’s exact-audio listening sign-off.</p>
-              <div className="mt-4 grid gap-3 md:grid-cols-2"><label className="text-sm text-white/65">ISBN-13 or publisher book ID<input value={googlePlayIdentifier} onChange={(event) => setGooglePlayIdentifier(event.target.value)} maxLength={64} autoComplete="off" className={fieldClass} placeholder="978… or your Google book ID" /></label>
-                <label className="text-sm text-white/65">Audiobook cover<select value={googlePlayCoverId} onChange={(event) => setGooglePlayCoverId(event.target.value)} className={fieldClass}><option value="">Choose JPEG or PNG artwork</option>{coverAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label></div>
+            <div className="mt-6 rounded-xl border border-white/10 bg-black/20 p-4"><h3 className="font-medium">Google Play export · private download</h3><p className="mt-1 text-sm text-white/45">Queue a durable, ordered ZIP for manual Partner Center upload. You can leave this page while it builds. Every current chapter must have narration, a saved QC report, and an approver’s exact-audio listening sign-off.</p>
+              <div className="mt-4 grid gap-3 md:grid-cols-2"><label className="text-sm text-white/65">ISBN-13 or publisher book ID<input value={googlePlayIdentifier} onChange={(event) => { setGooglePlayIdentifier(event.target.value); exportRequestKey.current = null; }} maxLength={64} autoComplete="off" className={fieldClass} placeholder="978… or your Google book ID" /></label>
+                <label className="text-sm text-white/65">Audiobook cover<select value={googlePlayCoverId} onChange={(event) => { setGooglePlayCoverId(event.target.value); exportRequestKey.current = null; }} className={fieldClass}><option value="">Choose JPEG or PNG artwork</option>{coverAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label></div>
               <p className="mt-3 text-xs leading-relaxed text-amber-100/75">Google Play requires AI-narrated uploads to be labeled “Synthesized voice.” The package does not submit, publish, register an ISBN, or guarantee Partner Center eligibility. Verify cover resolution and current account/territory rules before upload.</p>
-              <button type="button" onClick={() => void exportGooglePlayAudiobook()} disabled={!editable || !activeId || dirty || Boolean(busy) || !googlePlayIdentifier.trim() || !googlePlayCoverId || audiobookProjects.length === 0} className="glass-solid mt-4 rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{busy === "audiobook" ? "Preparing private archive…" : "Download Google Play archive"}</button>
+              <button type="button" onClick={() => void exportGooglePlayAudiobook()} disabled={!editable || !activeId || dirty || Boolean(busy) || !googlePlayIdentifier.trim() || !googlePlayCoverId || chapters.length === 0} className="glass-solid mt-4 rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{busy === "audiobook" ? "Queuing export…" : "Queue Google Play archive"}</button>
+              <div className="mt-6 border-t border-white/10 pt-4"><div className="flex items-center justify-between gap-3"><h4 className="text-sm font-medium">Export history</h4><button type="button" onClick={() => void refreshGooglePlayExports()} disabled={!activeId || Boolean(busy)} className="text-xs text-white/55 underline disabled:opacity-40">Refresh</button></div>
+                {googlePlayExports.length ? <ul className="mt-3 space-y-3">{googlePlayExports.map((job) => {
+                  const progress = Math.round((job.progressChapters / Math.max(1, job.progressTotal)) * 100);
+                  const running = job.status === "queued" || job.status === "running";
+                  return <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-medium">Google Play · {job.progressTotal} chapters</p><p className="mt-1 text-xs text-white/40">{new Date(job.createdAt).toLocaleString()}{job.archiveSizeBytes ? ` · ${(job.archiveSizeBytes / (1024 * 1024)).toFixed(1)} MiB` : ""}</p></div>
+                      <span className={`rounded-full px-3 py-1 text-xs ${job.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : job.status === "failed" ? "bg-red-400/15 text-red-100" : job.status === "cancelled" ? "bg-white/10 text-white/55" : "bg-amber-300/10 text-amber-100"}`}>{job.status}</span></div>
+                    {running && <div className="mt-3"><div className="flex justify-between text-xs text-white/45"><span>{job.status === "queued" ? "Waiting for an export worker" : "Assembling and verifying private files"}</span><span>{job.progressChapters}/{job.progressTotal} chapters</span></div><div role="progressbar" aria-label="Audiobook export progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-emerald-200 transition-[width]" style={{ width: `${progress}%` }} /></div></div>}
+                    {job.status === "failed" && <p className="mt-3 text-xs text-red-100">Export failed ({job.errorCode ?? "unknown_error"}). Correct the source or cover and queue a new attempt.</p>}
+                    {job.status === "cancelled" && <p className="mt-3 text-xs text-white/45">This export was cancelled before completion.</p>}
+                    <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">{job.downloadUrl && job.synthesizedVoiceDisclosureRequired && <a href={job.downloadUrl} download className="font-medium underline">Download private ZIP</a>}
+                      {job.totalDurationSeconds && <span className="text-xs text-white/45">{Math.floor(job.totalDurationSeconds / 60)} min · disclose “Synthesized voice” on upload</span>}
+                      {running && <button type="button" onClick={() => void cancelGooglePlayExport(job.id)} disabled={Boolean(busy)} className="text-xs text-white/55 underline disabled:opacity-40">Cancel export</button>}</div>
+                  </li>;
+                })}</ul> : <p className="mt-3 text-sm text-white/45">No audiobook archives have been queued.</p>}
+              </div>
             </div></div>
         </section>}
 

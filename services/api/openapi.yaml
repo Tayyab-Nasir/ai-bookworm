@@ -324,6 +324,7 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/imports/{assetId}:
@@ -410,6 +411,7 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/import-jobs/{jobId}/retry:
@@ -2227,17 +2229,16 @@ paths:
     post:
       tags: [v1]
       operationId: exportGooglePlayAudiobook
-      summary: Download a private Google Play Books audiobook ZIP for manual review
+      summary: Queue a durable private Google Play Books audiobook archive
       description: >-
         Requires an audiobook edition, workspace approver access, a current
-        completed narration project for every chapter, and an exact-audio
-        listening sign-off for every current assembled chapter. Accepts a
-        checksum-valid private JPEG/PNG cover between 1,024 and 7,200 pixels
-        per side and a valid ISBN-13 or safe publisher book identifier. The
-        archive is export-only and does not create retailer credentials,
-        submit, publish, or guarantee account eligibility. Authors must select
+        completed narration project and exact-audio listening sign-off for
+        every chapter. The database freezes a text-free source/QC identity
+        snapshot; a fenced worker assembles the archive and stores it privately.
+        This does not call an AI provider, consume generation credits, submit,
+        publish, or guarantee Partner Center eligibility. Authors must select
         Synthesized voice in Google Play Partner Center for this AI narration.
-        Requires migration 20260923040940 for durable QC reports/sign-offs.
+        Requires migrations 20260923040940 and 20260923053015.
       parameters:
         - { in: path, name: editionId, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -2247,23 +2248,87 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [identifier, coverAssetId]
+              required: [identifier, coverAssetId, idempotencyKey]
               properties:
                 identifier: { type: string, minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9][A-Za-z0-9_-]*$' }
                 coverAssetId: { type: string, format: uuid }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
       responses:
-        "200":
-          description: Private, no-store Google Play audiobook ZIP; contains ordered MP3 chapters and one cover image.
+        "202":
+          description: Durable export job accepted; check its status and private download in export history.
           content:
-            application/zip:
-              schema: { type: string, format: binary }
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: "#/components/schemas/AudiobookGooglePlayExportJob" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
-        "413": { $ref: "#/components/responses/Error" }
-        "422": { $ref: "#/components/responses/Error" }
         "429": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/editions/{editionId}/audiobook-google-play-exports:
+    get:
+      tags: [v1]
+      operationId: listGooglePlayAudiobookExports
+      summary: List recent Google Play audiobook export jobs
+      parameters:
+        - { in: path, name: editionId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Workspace-member-scoped private/no-store export summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobs]
+                properties:
+                  jobs: { type: array, items: { $ref: "#/components/schemas/AudiobookGooglePlayExportJob" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/audiobook-google-play-exports/{jobId}:
+    get:
+      tags: [v1]
+      operationId: getGooglePlayAudiobookExport
+      summary: Read export progress and a short-lived private download link
+      parameters:
+        - { in: path, name: jobId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Workspace-member-scoped private/no-store export summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: "#/components/schemas/AudiobookGooglePlayExportJob" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/audiobook-google-play-exports/{jobId}/cancel:
+    post:
+      tags: [v1]
+      operationId: cancelGooglePlayAudiobookExport
+      summary: Cancel a queued export or request a worker checkpoint stop
+      parameters:
+        - { in: path, name: jobId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Cancellation result; a running worker stops at the next safe checkpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job]
+                properties:
+                  job: { $ref: "#/components/schemas/AudiobookGooglePlayExportJob" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
@@ -2281,6 +2346,24 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    AudiobookGooglePlayExportJob:
+      type: object
+      additionalProperties: false
+      required: [id, editionId, status, progressChapters, progressTotal, errorCode, createdAt, completedAt, downloadUrl, downloadExpiresIn, archiveSizeBytes, totalDurationSeconds, synthesizedVoiceDisclosureRequired]
+      properties:
+        id: { type: string, format: uuid }
+        editionId: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+        progressChapters: { type: integer, minimum: 0, maximum: 250 }
+        progressTotal: { type: integer, minimum: 1, maximum: 250 }
+        errorCode: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+        downloadUrl: { type: string, format: uri, nullable: true }
+        downloadExpiresIn: { type: integer, nullable: true }
+        archiveSizeBytes: { type: integer, format: int64, nullable: true }
+        totalDurationSeconds: { type: integer, nullable: true }
+        synthesizedVoiceDisclosureRequired: { type: boolean, enum: [true] }
     RetailerSalesImport:
       type: object
       required: [id, workspace_id, source, file_name, row_count, period_start, period_end, supersedes_import_id, superseded_at, superseded_by, created_by, created_at]

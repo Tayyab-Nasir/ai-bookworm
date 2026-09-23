@@ -41,8 +41,10 @@ function fixture() {
     { id: COVER, workspace_id: WORKSPACE, storage_path: `workspaces/${WORKSPACE}/assets/${COVER}/v1/cover.png`, mime_type: "image/png", size_bytes: png().length, checksum: sha(png()), deleted_at: null }],
     audiobook_qc_reports: [],
     audiobook_qc_signoffs: [],
+    audiobook_google_play_export_jobs: [],
   };
   const reads: string[] = [];
+  const rpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
   const sb = {
     from: (name: string) => {
       const filters: ((row: Record<string, any>) => boolean)[] = [];
@@ -68,8 +70,25 @@ function fixture() {
       const index = path.endsWith("/0.mp3") ? 0 : 1;
       return { data: new Blob([bytes[index]]), error: null };
     } }) },
+    rpc: async (name: string, args: Record<string, unknown>) => {
+      rpcCalls.push({ name, args });
+      if (name === "queue_audiobook_google_play_export") {
+        if (tables.workspace_members[0]?.role === "viewer") return { data: null, error: { code: "42501" } };
+        return { data: { id: "b6000000-0000-4000-8000-000000000011", edition_id: EDITION, status: "queued",
+          progress_chapters: 0, progress_total: 1, error_code: null, created_at: "2026-09-23T00:00:00Z", completed_at: null,
+          output_size_bytes: null, total_duration_seconds: null }, error: null };
+      }
+      if (name === "cancel_audiobook_google_play_export") {
+        const job = tables.audiobook_google_play_export_jobs.find((item) => item.id === args.p_job_id);
+        if (!job) return { data: null, error: { code: "P0002" } };
+        if (job.status === "queued") Object.assign(job, { status: "cancelled", completed_at: "2026-09-23T00:03:00Z" });
+        else if (job.status === "running") Object.assign(job, { cancellation_requested_at: "2026-09-23T00:03:00Z" });
+        return { data: job, error: null };
+      }
+      return { data: null, error: { code: "42883" } };
+    },
   } as never;
-  return { sb, tables, reads };
+  return { sb, tables, reads, rpcCalls };
 }
 
 test("chapter assembly reads exact, ordered, RLS-scoped private segments", async () => {
@@ -83,6 +102,30 @@ test("chapter assembly reads exact, ordered, RLS-scoped private segments", async
   assert.deepEqual(data.reads, data.tables.assets.slice(0, 2).map((asset) => asset.storage_path));
   await assert.rejects(loadChapterAudio(data.sb, USER), /not found/);
   await assert.rejects(loadChapterAudio(data.sb, "invalid"), /not found/);
+});
+
+test("Google Play export progress is member-safe, history refreshes and cancellation is checkpointed", async () => {
+  const data = fixture();
+  const job: Record<string, any> = { id: "b6000000-0000-4000-8000-000000000011", edition_id: EDITION, status: "running",
+    progress_chapters: 2, progress_total: 4, error_code: null, created_at: "2026-09-23T00:00:00Z",
+    completed_at: null, identifier: ISBN, snapshot_json: { secretSource: "never returned" },
+    output_storage_path: "private/path.zip", output_size_bytes: null, total_duration_seconds: null };
+  data.tables.audiobook_google_play_export_jobs.push(job);
+  const app = Fastify(); app.decorate("supabaseFactory", () => data.sb);
+  app.addHook("onRequest", async (req) => { req.userId = USER; req.userToken = "fixture"; });
+  await app.register(errorHandlerPlugin); audiobookRoutes(app);
+  const path = `/audiobook-google-play-exports/${job.id}`;
+  const progress = await app.inject({ method: "GET", url: path });
+  assert.equal(progress.statusCode, 200, progress.body); assert.equal(progress.headers["cache-control"], "private, no-store");
+  assert.equal(progress.json().job.progressChapters, 2); assert.equal(JSON.stringify(progress.json()).includes("private/path.zip"), false);
+  assert.equal(JSON.stringify(progress.json()).includes("never returned"), false);
+  const history = await app.inject({ method: "GET", url: `/editions/${EDITION}/audiobook-google-play-exports` });
+  assert.equal(history.statusCode, 200, history.body); assert.equal(history.json().jobs.length, 1);
+  const cancelled = await app.inject({ method: "POST", url: `${path}/cancel` });
+  assert.equal(cancelled.statusCode, 200, cancelled.body); assert.equal(cancelled.json().job.status, "running");
+  assert.ok(job.cancellation_requested_at, "active export should request cancellation at a worker checkpoint");
+  assert.deepEqual(data.rpcCalls.at(-1), { name: "cancel_audiobook_google_play_export", args: { p_job_id: job.id } });
+  await app.close();
 });
 
 test("chapter assembly refuses unfinished, missing, swapped or corrupt audio", async () => {
@@ -138,42 +181,34 @@ test("download route returns a private attachment and releases its concurrency s
   await app.close();
 });
 
-test("Google Play export requires exact current QC sign-off and returns only a private disclosure-marked ZIP", async () => {
+test("Google Play export queues idempotently without blocking for an archive and requires an approver", async () => {
   const data = fixture();
-  const output = Buffer.from("ID3assembled-chapter-for-export");
-  data.tables.audiobook_qc_reports.push({ id: QC_REPORT, project_id: PROJECT, document_version_id: VERSION,
-    audio_sha256: sha(output), source_manifest_sha256: (await loadChapterAudio(data.sb, PROJECT)).sourceManifestSha256 });
-  const exportQuality = { ...quality, chapterDurationSeconds: 300 };
+  let assemblyCalls = 0;
   const app = Fastify();
   app.decorate("supabaseFactory", () => data.sb);
   app.addHook("onRequest", async (req) => { req.userId = USER; req.userToken = "fixture"; });
   await app.register(errorHandlerPlugin);
-  audiobookRoutes(app, { fetcher: async () => new Response(output, { headers: { "x-artifact-sha256": sha(output), "x-bookworm-audio-qc": JSON.stringify(exportQuality) } }) });
+  audiobookRoutes(app, { fetcher: async () => { assemblyCalls++; return new Response("unused"); } });
   const url = `/editions/${EDITION}/audiobook-google-play-export`;
-  const noSignoff = await app.inject({ method: "POST", url, payload: { identifier: ISBN, coverAssetId: COVER } });
-  assert.equal(noSignoff.statusCode, 409, noSignoff.body);
-  data.tables.audiobook_qc_signoffs.push({ report_id: QC_REPORT, reviewer_id: USER, listened_to_exact_audio: true });
-  data.tables.chapters[0].current_document_version_id = ids[1];
-  const stale = await app.inject({ method: "POST", url, payload: { identifier: ISBN, coverAssetId: COVER } });
-  assert.equal(stale.statusCode, 409, stale.body);
-  data.tables.chapters[0].current_document_version_id = VERSION;
+  const body = { identifier: ISBN, coverAssetId: COVER, idempotencyKey: "google-export-test-1" };
+  const invalid = await app.inject({ method: "POST", url, payload: { ...body, identifier: "9780306406158" } });
+  assert.equal(invalid.statusCode, 422, invalid.body);
+  const missingKey = await app.inject({ method: "POST", url, payload: { identifier: ISBN, coverAssetId: COVER } });
+  assert.equal(missingKey.statusCode, 422, missingKey.body);
   data.tables.workspace_members[0].role = "viewer";
-  const viewer = await app.inject({ method: "POST", url, payload: { identifier: ISBN, coverAssetId: COVER } });
+  const viewer = await app.inject({ method: "POST", url, payload: body });
   assert.equal(viewer.statusCode, 403, viewer.body);
   data.tables.workspace_members[0].role = "reviewer";
-  const invalidIdentifier = await app.inject({ method: "POST", url, payload: { identifier: "9780306406158", coverAssetId: COVER } });
-  assert.equal(invalidIdentifier.statusCode, 422, invalidIdentifier.body);
-  const response = await app.inject({ method: "POST", url, payload: { identifier: ISBN, coverAssetId: COVER } });
-  assert.equal(response.statusCode, 200, response.body.toString());
-  assert.equal(response.headers["content-type"], "application/zip");
-  assert.equal(response.headers["content-disposition"], `attachment; filename=\"${ISBN}.zip\"`);
-  assert.equal(response.headers["x-bookworm-audio-disclosure"], "synthesized-voice-required");
+  const response = await app.inject({ method: "POST", url, payload: body });
+  assert.equal(response.statusCode, 202, response.body);
   assert.equal(response.headers["cache-control"], "private, no-store");
-  const archive = response.rawPayload;
-  assert.equal(archive.readUInt32LE(0), 0x04034b50);
-  const names = archive.toString("utf8");
-  assert.ok(names.includes(`Audio/${ISBN}_ch1.mp3`));
-  assert.ok(names.includes(`Cover/${ISBN}.png`));
+  assert.deepEqual(response.json().job, { id: "b6000000-0000-4000-8000-000000000011", editionId: EDITION, status: "queued",
+    progressChapters: 0, progressTotal: 1, errorCode: null, createdAt: "2026-09-23T00:00:00Z", completedAt: null,
+    downloadUrl: null, downloadExpiresIn: null, archiveSizeBytes: null, totalDurationSeconds: null, synthesizedVoiceDisclosureRequired: true });
+  assert.deepEqual(data.rpcCalls.at(-1), { name: "queue_audiobook_google_play_export", args: {
+    p_edition_id: EDITION, p_identifier: ISBN, p_cover_asset_id: COVER, p_idempotency_key: "google-export-test-1",
+  } });
+  assert.equal(assemblyCalls, 0, "archive assembly must run in the leased worker, not the API request");
   await app.close();
 });
 

@@ -3,6 +3,7 @@ import type { SupabaseClient } from "./supabase.js";
 const PAGE_SIZE = 1000;
 const MAX_OBJECTS = 100_000;
 const managedPath = /^workspaces\/[0-9a-f-]{36}\/assets\/[0-9a-f-]{36}\/v[1-9]\d*\/[^/]+$/iu;
+const managedExportPath = /^workspaces\/[0-9a-f-]{36}\/audiobook-exports\/[0-9a-f-]{36}\/[0-9a-f-]{36}\.zip$/iu;
 
 export type StorageObject = { path: string; createdAt: string | null };
 export type OrphanReport = {
@@ -34,7 +35,7 @@ export function classifyStorageObjects(input: {
   const candidates: StorageObject[] = [];
   for (const object of input.objects) {
     if (references.has(object.path)) { referencedObjects++; continue; }
-    if (!managedPath.test(object.path)) { outOfScopeObjects++; continue; }
+    if (!managedPath.test(object.path) && !managedExportPath.test(object.path)) { outOfScopeObjects++; continue; }
     const createdAt = dateOrNull(object.createdAt);
     if (!createdAt) { unverifiedAgeObjects++; continue; }
     if (createdAt.getTime() > cutoff) { youngerUnreferencedObjects++; continue; }
@@ -73,6 +74,22 @@ async function loadImageReceiptPaths(sb: SupabaseClient) {
   }
 }
 
+async function loadAudiobookExportPaths(sb: SupabaseClient) {
+  const paths = new Set<string>();
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    const { data, error } = await sb.from("audiobook_google_play_export_jobs")
+      .select("id,output_storage_path").not("output_storage_path", "is", null)
+      .order("id").range(offset, offset + PAGE_SIZE - 1);
+    if (error) throw new Error("audiobook_export_reference_query_failed");
+    for (const row of data ?? []) {
+      const path = row.output_storage_path;
+      if (typeof path !== "string" || !managedExportPath.test(path)) throw new Error("audiobook_export_reference_invalid");
+      paths.add(path);
+    }
+    if (!data || data.length < PAGE_SIZE) return paths;
+  }
+}
+
 async function listObjects(sb: SupabaseClient, bucket: string) {
   const storage = sb.storage.from(bucket);
   const objects: StorageObject[] = [];
@@ -98,8 +115,9 @@ async function listObjects(sb: SupabaseClient, bucket: string) {
 export async function inspectPrivateStorageOrphans(sb: SupabaseClient, input: { graceHours?: number; now?: Date } = {}) {
   const graceHours = input.graceHours ?? 168;
   assertGraceHours(graceHours);
-  const [assetPaths, versionPaths, imageReceiptPaths, objects] = await Promise.all([
-    loadPaths(sb, "assets"), loadPaths(sb, "asset_versions"), loadImageReceiptPaths(sb), listObjects(sb, "book-assets"),
+  const [assetPaths, versionPaths, imageReceiptPaths, audiobookExportPaths, objects] = await Promise.all([
+    loadPaths(sb, "assets"), loadPaths(sb, "asset_versions"), loadImageReceiptPaths(sb),
+    loadAudiobookExportPaths(sb), listObjects(sb, "book-assets"),
   ]);
-  return classifyStorageObjects({ references: [...assetPaths, ...versionPaths, ...imageReceiptPaths], objects, graceHours, now: input.now });
+  return classifyStorageObjects({ references: [...assetPaths, ...versionPaths, ...imageReceiptPaths, ...audiobookExportPaths], objects, graceHours, now: input.now });
 }

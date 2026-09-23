@@ -514,23 +514,42 @@ before production tuning.
   cap can be reached before two hours. Native assembly is serialized per
   renderer process; API admission is two operations per process, one per
   user/project. There is no distributed queue/cache for this download yet.
-- The local source also exposes
-  `POST /v1/editions/{editionId}/audiobook-google-play-export`. It is an
-  author-triggered, synchronous download, not a retailer integration. Before
-  assembly it requires every current chapter to have succeeded narration and
-  an exact-audio QC sign-off, plus a private cover and publisher identifier.
-  It reassembles each chapter to match the immutable QC hash, writes an
-  uncompressed ZIP to a mode-0600 temporary file, and streams the result; the
-  ZIP is removed when the response closes. Cap is 3,750 MiB and 250 chapters.
-  A disconnect aborts the author download and causes temporary cleanup; retry
-  may repeat CPU-only assembly but never provider generation or credit usage.
-  This long synchronous work does not yet have durable job recovery and may
-  exceed the BFF/serverless request window for large titles. Do not treat it as
-  a production-scale export queue. Its required QC tables are in
-  `20260923040940_audiobook_qc_review_signoffs.sql`, which remains unapplied
-  live. Cover pixel bounds are checked; dpi metadata is not measured, so the
-  author must verify the retailer's 72-dpi requirement. The download never
-  marks the title as uploaded or published.
+- Google Play audio packaging is now a durable, author-triggered background
+  job, not a retailer integration. `POST /v1/editions/{editionId}/audiobook-google-play-export`
+  freezes a text-free
+  snapshot of current chapter/version IDs, narration project IDs, QC hashes and
+  sign-offs; `GET /v1/editions/{editionId}/audiobook-google-play-exports` and
+  `GET /v1/audiobook-google-play-exports/{jobId}` return member-scoped progress. An
+  approver can cancel queued work or request a safe checkpoint stop. The worker
+  rechecks all source/QC/cover identities, assembles each chapter, writes a
+  3,750 MiB maximum ZIP to a mode-0600 temp file, then uploads it to private
+  `book-assets` with Supabase TUS chunks. The API returns a five-minute signed
+  download link only after durable completion. No content/image/speech model
+  call or generation credit is used.
+- Run a supervised worker separately from the Vercel web app with
+  `npm run worker:audiobook-export`; use `npm run worker:audiobook-export -- --once`
+  for a single claim. It needs the server-only Supabase URL/service-role
+  key and the private Rendering service URL/token. The temp volume must have
+  enough encrypted scratch capacity for an archive up to 3.75 GiB plus assembly
+  overhead. Configure the Supabase Storage global file-size limit to allow the
+  required archive size (subject to the project's plan limit) before accepting
+  large titles. TUS uses the documented fixed 6 MiB chunk size and the direct
+  Storage hostname for hosted Supabase; see [Supabase resumable uploads](https://supabase.com/docs/guides/storage/uploads/resumable-uploads).
+  A crashed worker retries under a fresh lease/object path; an interrupted TUS
+  session expires after the provider's documented 24-hour upload-URL lifetime.
+  Finished ZIPs remain private and referenced by their job; retention/deletion
+  automation is not yet enabled. A worker must fence the lease with the failure
+  RPC before deleting an uploaded file: a lost completion reply can otherwise
+  race cleanup. Unknown completion/lease outcomes retain the object for the
+  orphan report and operator reconciliation. Verify native Storage HTTP, limits, signed
+  link expiry, RLS, worker supervision, temp-volume capacity and recovery before
+  production activation.
+- Migration `20260923040940_audiobook_qc_review_signoffs.sql` and
+  `20260923053015_audiobook_google_play_export_jobs.sql` must both be reviewed
+  and installed before the new routes can work on a native project. These local
+  migrations are not evidence of live behavior. Cover pixel bounds are checked;
+  DPI metadata is not measured, so the author must verify retailer requirements.
+  The archive never marks a title as uploaded or published.
 - Install rendering requirements, including pinned `imageio-ffmpeg==0.6.0`.
   Its Windows wheel supplies FFmpeg 7.1; `IMAGEIO_FFMPEG_EXE` may point to a
   reviewed operator-managed executable. No shell/network protocols or caller

@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-google-play-audio-export.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-async-audio-export.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,26 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Durable audiobook archive queue (supersedes synchronous export below)
+
+Google Play export now queues an idempotent, approval-gated job with an immutable
+source/QC snapshot. A leased worker assembles a bounded private archive and
+uploads it in 6 MiB TUS chunks. Publishing Studio retains history, polls progress,
+cancels work and supplies refreshed five-minute download links. Completion and
+failure are fenced in PostgreSQL before any uploaded-file cleanup, preventing a
+delayed completion reply from causing deletion of a successful archive.
+
+Full local verification and an isolated production web build passed during
+implementation. Final follow-up passes 275 API tests, seven targeted worker
+cases, and the signed-in Microsoft Edge browser journey with synthetic backend
+responses: lost queue reply/retry identity, reload recovery, cancellation,
+polled progress, download-link refresh, disclosure and 390px containment.
+The migration `20260923053015_audiobook_google_play_export_jobs.sql` remains
+unapplied live, as does the earlier QC sign-off migration. Native Supabase RLS,
+Storage/TUS, restart/recovery and retention acceptance remain open. See the
+latest shared note for exact paths and verification boundaries; keep the full
+product goal and the remaining release checklist active.
 
 ### Google OAuth recovery UX (local code, provider setup still pending)
 

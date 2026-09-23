@@ -359,6 +359,22 @@ export interface AudiobookProjectResult {
   segments: AudiobookSegmentResult[];
 }
 
+export interface AudiobookGooglePlayExportJob {
+  id: string;
+  editionId: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | string;
+  progressChapters: number;
+  progressTotal: number;
+  errorCode: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  downloadUrl: string | null;
+  downloadExpiresIn: number | null;
+  archiveSizeBytes: number | null;
+  totalDurationSeconds: number | null;
+  synthesizedVoiceDisclosureRequired: true;
+}
+
 export interface AudiobookQcSignoff {
   reviewerId: string;
   signedAt: string;
@@ -826,6 +842,12 @@ export function createClient(opts: ClientOptions) {
       call<AudiobookProjectResult>("GET", `/v1/audiobook-jobs/${projectId}`),
     createAudiobookProject: (editionId: string, body: { chapterId: string; idempotencyKey: string; aiDisclosureAccepted: true }) =>
       call<AudiobookProjectResult>("POST", `/v1/editions/${editionId}/audiobook-jobs`, body),
+    listAudiobookGooglePlayExports: (editionId: string) =>
+      call<{ jobs: AudiobookGooglePlayExportJob[] }>("GET", `/v1/editions/${editionId}/audiobook-google-play-exports`),
+    createAudiobookGooglePlayExport: (editionId: string, body: { identifier: string; coverAssetId: string; idempotencyKey: string }) =>
+      call<{ job: AudiobookGooglePlayExportJob }>("POST", `/v1/editions/${editionId}/audiobook-google-play-export`, body),
+    cancelAudiobookGooglePlayExport: (jobId: string) =>
+      call<{ job: AudiobookGooglePlayExportJob }>("POST", `/v1/audiobook-google-play-exports/${jobId}/cancel`, {}),
     listTranslationProjects: (bookId: string) =>
       call<{ projects: TranslationProjectResult[] }>("GET", `/v1/books/${bookId}/translations`),
     getTranslationProject: (projectId: string, includeText = false) =>

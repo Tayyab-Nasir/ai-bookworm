@@ -153,4 +153,108 @@ begin
   end;
 end $$;
 
+reset role;
+set local role service_role;
+insert into public.assets(id,workspace_id,type,name,storage_path,mime_type,size_bytes,checksum,status,created_by)
+  values('a6000000-0000-4000-8000-000000000013','a6000000-0000-4000-8000-000000000003','cover','Test cover',
+    'workspaces/a6000000-0000-4000-8000-000000000003/assets/test-cover/v1/cover.jpg','image/jpeg',1024,repeat('c',64),'draft',
+    'a6000000-0000-4000-8000-000000000001');
+reset role;
+set local role authenticated;
+set local request.jwt.claims='{"sub":"a6000000-0000-4000-8000-000000000001","role":"authenticated"}';
+do $$
+declare v_job public.audiobook_google_play_export_jobs; v_extra public.audiobook_google_play_export_jobs;
+begin
+  assert has_function_privilege('authenticated','public.queue_audiobook_google_play_export(uuid,text,uuid,text)','execute');
+  assert not has_function_privilege('anon','public.queue_audiobook_google_play_export(uuid,text,uuid,text)','execute');
+  assert not has_function_privilege('authenticated','public.claim_audiobook_google_play_export(integer)','execute');
+  select * into v_job from public.queue_audiobook_google_play_export(
+    'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-paid-1');
+  assert v_job.status='queued' and v_job.progress_total=1 and v_job.progress_chapters=0;
+  assert v_job.snapshot_json->>'title'='Audio Book' and jsonb_array_length(v_job.snapshot_json->'chapters')=1;
+  assert v_job.snapshot_json::text not like '%Narrate this saved chapter%', 'export queue leaked manuscript text';
+  assert (select id from public.queue_audiobook_google_play_export(
+    'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-paid-1'))=v_job.id,
+    'export idempotency replay created a duplicate job';
+  select * into v_extra from public.queue_audiobook_google_play_export(
+    'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-cap-2');
+  begin
+    perform public.queue_audiobook_google_play_export(
+      'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-cap-3');
+    raise exception 'workspace export concurrency cap was not enforced';
+  exception when program_limit_exceeded then null;
+  end;
+  select * into v_extra from public.cancel_audiobook_google_play_export(v_extra.id);
+  assert v_extra.status='cancelled';
+  begin
+    perform public.queue_audiobook_google_play_export(
+      'a6000000-0000-4000-8000-000000000007','9780306406158','a6000000-0000-4000-8000-000000000013','google-export-different');
+    raise exception 'ISBN checksum validation failed';
+  exception when invalid_parameter_value then null;
+  end;
+  assert has_table_privilege('authenticated','public.audiobook_google_play_export_jobs','select');
+  assert not has_table_privilege('authenticated','public.audiobook_google_play_export_jobs','update');
+end $$;
+set local request.jwt.claims='{"sub":"a6000000-0000-4000-8000-000000000012","role":"authenticated"}';
+do $$
+begin
+  assert (select count(*)=0 from public.audiobook_google_play_export_jobs), 'non-member read an export job';
+end $$;
+reset role;
+set local role service_role;
+do $$
+declare v_job public.audiobook_google_play_export_jobs; v_claim public.audiobook_google_play_export_jobs;
+  v_path text; v_done public.audiobook_google_play_export_jobs; v_heartbeat jsonb;
+begin
+  select * into v_claim from public.claim_audiobook_google_play_export(300);
+  assert v_claim.status='running' and v_claim.lease_token is not null;
+  assert public.progress_audiobook_google_play_export(v_claim.id,v_claim.lease_token,1);
+  v_path:=format('workspaces/%s/audiobook-exports/%s/%s.zip',v_claim.workspace_id,v_claim.id,v_claim.lease_token);
+  select * into v_done from public.complete_audiobook_google_play_export(
+    v_claim.id,v_claim.lease_token,v_path,1024,repeat('d',64),300);
+  assert v_done.status='succeeded' and v_done.output_storage_path=v_path and v_done.total_duration_seconds=300;
+  assert (select count(*)=1 from public.audiobook_google_play_export_jobs where id=v_claim.id);
+end $$;
+reset role;
+set local role authenticated;
+set local request.jwt.claims='{"sub":"a6000000-0000-4000-8000-000000000001","role":"authenticated"}';
+do $$
+declare v_queued public.audiobook_google_play_export_jobs; v_running public.audiobook_google_play_export_jobs;
+begin
+  select * into v_queued from public.queue_audiobook_google_play_export(
+    'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-cancel-queued');
+  select * into v_queued from public.cancel_audiobook_google_play_export(v_queued.id);
+  assert v_queued.status='cancelled';
+  select * into v_running from public.queue_audiobook_google_play_export(
+    'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-cancel-running');
+end $$;
+reset role;
+set local role service_role;
+update public.audiobook_google_play_export_jobs set status='running',attempts=1,
+  lease_token='a6000000-0000-4000-8000-000000000014',lease_expires_at=clock_timestamp()+interval '5 minutes'
+  where idempotency_key='google-export-cancel-running';
+reset role;
+set local role authenticated;
+set local request.jwt.claims='{"sub":"a6000000-0000-4000-8000-000000000001","role":"authenticated"}';
+do $$
+declare v_job public.audiobook_google_play_export_jobs;
+begin
+  select * into v_job from public.cancel_audiobook_google_play_export(
+    (select id from public.audiobook_google_play_export_jobs where idempotency_key='google-export-cancel-running'));
+  assert v_job.status='running' and v_job.cancellation_requested_at is not null;
+end $$;
+reset role;
+set local role service_role;
+do $$
+declare v_id uuid; v_state jsonb; v_claim public.audiobook_google_play_export_jobs;
+begin
+  select id into strict v_id from public.audiobook_google_play_export_jobs where idempotency_key='google-export-cancel-running';
+  v_state:=public.heartbeat_audiobook_google_play_export(v_id,'a6000000-0000-4000-8000-000000000014',300);
+  assert v_state->>'leased'='true' and v_state->>'cancelled'='true';
+  update public.audiobook_google_play_export_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=v_id;
+  select * into v_claim from public.claim_audiobook_google_play_export(300);
+  assert v_claim.id is null;
+  assert (select status from public.audiobook_google_play_export_jobs where id=v_id)='cancelled';
+end $$;
+
 rollback;
