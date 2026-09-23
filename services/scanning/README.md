@@ -47,3 +47,26 @@ Run locally with:
 ```sh
 uvicorn scanning_service.main:app --host 127.0.0.1 --port 8004
 ```
+
+## Native container acceptance
+
+`.github/workflows/scanner-runtime.yml` builds this service and a **test-only**
+ClamAV image from `ops/scanner-test`. The engine uses the official preloaded
+signature databases plus an exact-byte signature for a harmless binary fixture.
+The fixture is not malware; the test proves the real INSTREAM detection path,
+not protection against all malware or freshness of production signatures.
+
+Run `python3 scripts/test-scanner-containers.py` after building images named
+`bookworm-ci-scanner` and `bookworm-ci-clamd` from those two contexts. The script
+uses an internal Docker network with no published ports or host data mounts,
+checks clean/infected verdicts and integrity/size/auth rejection, stops the engine
+to prove readiness/scan fail closed, then restarts it and checks recovery. It
+removes only its own temporary containers, anonymous volumes and network.
+The engine has a 4 GiB limit; the service has a 256 MiB limit for small fixtures.
+
+Do not deploy the test image/signature. Production requires approved image
+digests, current official database updates, refresh/reload monitoring and
+capacity testing. This CI does not run FreshClam or validate update freshness.
+References: [official container guidance](https://docs.clamav.net/manual/Installing/Docker.html),
+[hash signature format](https://docs.clamav.net/manual/Signatures/HashSignatures.html),
+[signature update management](https://docs.clamav.net/manual/Usage/SignatureManagement.html).

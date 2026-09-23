@@ -1,0 +1,19 @@
+name: Native scanner acceptance
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['services/scanning/**', 'ops/scanner-test/**', 'scripts/test-scanner-containers.py', '.github/workflows/scanner-runtime.yml']
+  push:
+    branches: [main, master, 'codex/**']
+    paths: ['services/scanning/**', 'ops/scanner-test/**', 'scripts/test-scanner-containers.py', '.github/workflows/scanner-runtime.yml']
+permissions:
+  contents: read
+jobs:
+  scanner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t bookworm-ci-scanner services/scanning
+      - run: docker build -t bookworm-ci-clamd ops/scanner-test
+      - run: python3 scripts/test-scanner-containers.py

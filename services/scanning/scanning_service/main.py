@@ -103,7 +103,7 @@ def _authorized(request: Request, config: ScannerConfig) -> bool:
     if len(authorization) > 1024 or not authorization.startswith("Bearer "):
         return False
     supplied = authorization[7:]
-    return bool(supplied) and hmac.compare_digest(supplied, config.service_token)
+    return bool(supplied) and hmac.compare_digest(supplied.encode("utf-8"), config.service_token.encode("utf-8"))
 
 
 async def _payload(request: Request, config: ScannerConfig) -> ScanPayload:

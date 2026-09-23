@@ -254,6 +254,15 @@ def test_unauthenticated_requests_never_reach_scanner() -> None:
     assert scanner.scan_calls == []
 
 
+def test_non_ascii_authorization_is_denied_without_scanning() -> None:
+    scanner = FakeScanner()
+    with TestClient(create_app(config(), scanner)) as client:
+        response = client.post("/v1/scan", content=b"fixture",
+                               headers={b"authorization": b"Bearer wrong-\xe9"})
+    assert response.status_code == 401
+    assert scanner.scan_calls == []
+
+
 def test_raw_clean_scan_verifies_hash_mime_and_returns_engine_metadata() -> None:
     scanner = FakeScanner()
     content = b"%PDF-safe-fixture"

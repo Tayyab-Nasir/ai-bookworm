@@ -1,4 +1,4 @@
-__pycache__/
-.pytest_cache/
-tests/
-*.pyc
+**
+!requirements.txt
+!scanning_service/
+!scanning_service/*.py
