@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-12-bookworm-atomic-community.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-google-play-audio-export.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -55,10 +55,45 @@ recheck retailer policy before adding any audio retailer submission/package.
 No production service, live provider, customer audio, or retailer endpoint was
 used.
 
-Next: perform signed-in browser acceptance using synthetic audio only;
-implement durable QC history/author sign-off if required; then investigate a
-package/workflow for retailers whose current rules explicitly permit AI
-narration. Do not enable ACX submission without verified authorization.
+The formerly pending signed-in synthetic browser acceptance and durable QC
+history/author sign-off are now complete. The current local follow-up adds the
+export-only Google Play archive below. Do not enable ACX submission without
+separate verified authorization.
+
+### 2026-09-23 export-only Google Play audiobook archive (local source)
+
+Commit `f108b5f831d9d9e4aee920a8bfc2636fee2c1786` is pushed to
+`origin/codex/paid-story-blueprint-20260923`. It adds a private, synchronous
+ZIP32 archive download for manual author review: current succeeded narration
+for every saved chapter, exact-current QC hash/source identity, approver
+listening sign-off, same-workspace private checksum-verified JPEG/PNG cover,
+safe ISBN/publisher ID, duration and bitrate checks, and an explicit
+Synthesized voice reminder. It does not call a provider, spend credits, submit
+to a retailer, or guarantee Partner Center eligibility. Google policy research
+is in `docs/AUDIOBOOK_TECHNICAL_QC.md`.
+
+Verification on this local source: full `npm run verify` passes (267 API/unit,
+81 web, 66 migrations/45 SQL assertions in disposable PostgreSQL, 316 service,
+12 E2E, 30 security; load smoke and six deterministic evals). Signed-in Edge
+acceptance covers QC sign-off then synthetic ZIP download, AI-voice notice,
+390px layout and no runtime errors. An isolated Next production build passes
+with 30 app routes. Thirty focused API/BFF tests also pass after a malformed
+JPEG guard. Graphify refreshed to 4,290 nodes / 7,991 edges / 366 communities;
+it still reports two pre-existing Android Gradle parse errors.
+
+The QC migration `20260923040940_audiobook_qc_review_signoffs.sql` remains
+unapplied live, so the archive route is not active on production data. The
+export is synchronous and bounded below ZIP32 limits, not a durable large-book
+job; cover DPI is a manual author check. No live migration, retailer, provider,
+payment, customer data, or deployment action occurred. Preserve separate
+generated dirt in `apps/web/next-env.d.ts`, `apps/web/tsconfig.json`, and
+`graphify-out/`; do not stage it with application changes.
+
+Next: separately review/approve the QC schema migration and native Supabase
+RLS/PostgREST acceptance before activating history/sign-off; design durable
+asynchronous large-title export before claiming production-scale delivery;
+continue the broader pending infrastructure, provider, OAuth, operations,
+legal/support and beta-author gates in `docs/release-checklist.md`.
 
 ### 2026-09-23 local release-gate rerun
 
