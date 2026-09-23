@@ -38,6 +38,8 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   const [structureOpen, setStructureOpen] = useState(false);
   const loadSequence = useRef(0);
   const pendingSave = useRef<{ operationId: string; nodes: BookNode[]; expectedVersion: number } | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<{ chapterId: string; versionId: string; body: { operationId: string; expectedVersion: number } } | null>(null);
+  const restoring = useRef(false);
 
   const loadChapter = useCallback(async (chapterId: string) => {
     const sequence = ++loadSequence.current;
@@ -46,7 +48,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       const [content, history] = await Promise.all([api.getChapterDocument(chapterId), api.listDocumentVersions(chapterId)]);
       if (sequence !== loadSequence.current) return;
       setDocument(content.document); setDraft(content.document.nodes); setRole(content.role); setVersions(history.versions);
-      setDirty(false); setConflict(false); setError(null); pendingSave.current = null; setReloadKey((v) => v + 1);
+      setDirty(false); setConflict(false); setError(null); setPendingRestore(null); pendingSave.current = null; setReloadKey((v) => v + 1);
     } catch (reason) {
       if (sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : "Could not load manuscript");
     } finally { if (sequence === loadSequence.current) setLoading(false); }
@@ -64,9 +66,9 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   }, [api, bookId, initialChapterId, loadChapter]);
 
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
+    const warn = (event: BeforeUnloadEvent) => { if (dirty || pendingRestore) { event.preventDefault(); event.returnValue = ""; } };
     const guardNavigation = (event: globalThis.MouseEvent) => {
-      if (!dirty || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      if ((!dirty && !pendingRestore) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
       if (!(anchor instanceof HTMLAnchorElement) || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
       const destination = new URL(anchor.href, window.location.href);
@@ -76,10 +78,10 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
     window.addEventListener("beforeunload", warn);
     window.document.addEventListener("click", guardNavigation, true);
     return () => { window.removeEventListener("beforeunload", warn); window.document.removeEventListener("click", guardNavigation, true); };
-  }, [dirty]);
+  }, [dirty, pendingRestore]);
 
   const save = useCallback(async () => {
-    if (!document || saving || conflict || !dirty) return;
+    if (!document || saving || conflict || !dirty || pendingRestore) return;
     setSaving(true); setError(null); setNotice(null);
     const request = pendingSave.current ?? { operationId: crypto.randomUUID(), nodes: draft, expectedVersion: document.version };
     pendingSave.current = request;
@@ -92,7 +94,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       if (reason instanceof ApiClientError && reason.status === 409) setConflict(true);
       setError(reason instanceof Error ? reason.message : "Save failed. Your draft remains in this editor.");
     } finally { setSaving(false); }
-  }, [api, document, draft, saving, conflict, dirty]);
+  }, [api, document, draft, saving, conflict, dirty, pendingRestore]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } };
@@ -101,7 +103,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
 
   const selectChapter = (id: string) => {
     if (saving || loading || id === document?.chapterId) return;
-    if (dirty && !window.confirm("This chapter has unsaved changes. Discard them and open another chapter?")) return;
+    if ((dirty || pendingRestore) && !window.confirm("This chapter has unsaved changes or an unresolved restore. Leave it and open another chapter?")) return;
     setActiveAiJobId(undefined);
     void loadChapter(id);
   };
@@ -156,7 +158,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   };
 
   const reorder = async (orderedIds: string[]) => {
-    if (saving) return;
+    if (saving || pendingRestore) return;
     setSaving(true); setError(null);
     try { const result = await api.reorderChapters(bookId, { orderedIds, expectedIds: chapters.map((c) => c.id) }); setChapters(result.chapters); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Could not reorder chapters"); }
@@ -164,22 +166,34 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   };
 
   const restore = async (versionId: string) => {
-    if (!document || saving || !EDIT_ROLES.has(role)) return;
-    if (!window.confirm("Restore this version as a new saved version? Current saved history will remain available.")) return;
-    if (dirty && !window.confirm("Your unsaved draft will be replaced. Continue?")) return;
-    setSaving(true); setError(null);
+    if (!document || saving || loading || restoring.current || !EDIT_ROLES.has(role)) return;
+    if (pendingRestore && (pendingRestore.versionId !== versionId || pendingRestore.chapterId !== document.chapterId)) return;
+    if (!pendingRestore && !window.confirm("Restore this version as a new saved version? Current saved history will remain available.")) return;
+    if (!pendingRestore && dirty && !window.confirm("Your unsaved draft will be replaced. Continue?")) return;
+    const request = pendingRestore ?? { chapterId: document.chapterId, versionId, body: { expectedVersion: document.version, operationId: crypto.randomUUID() } };
+    restoring.current = true;
+    setPendingRestore(request); setSaving(true); setError(null); setNotice(null);
     try {
-      const result = await api.restoreDocumentVersion(document.chapterId, versionId, { expectedVersion: document.version, operationId: crypto.randomUUID() });
-      await loadChapter(document.chapterId); setNotice(`Restored as version ${result.version}.`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not restore version"); }
-    finally { setSaving(false); }
+      const result = await api.restoreDocumentVersion(request.chapterId, request.versionId, request.body);
+      // Adopt the confirmed receipt before refreshing history. A failed history
+      // request must not leave the old draft marked as the restored manuscript.
+      setDocument(result.document); setDraft(result.document.nodes); setDirty(false);
+      setPendingRestore(null); setConflict(false); pendingSave.current = null; setReloadKey((v) => v + 1);
+      setNotice(`Restored as version ${result.version}.`);
+      try { const history = await api.listDocumentVersions(request.chapterId); setVersions(history.versions); }
+      catch { setError("Restore succeeded, but version history could not refresh. Reload the chapter to refresh history."); }
+    } catch (reason) {
+      if (reason instanceof ApiClientError && reason.status === 409) { setPendingRestore(null); setConflict(true); }
+      setError(reason instanceof Error ? reason.message : "Could not confirm restore. Retry the original request or reload saved content.");
+    }
+    finally { restoring.current = false; setSaving(false); }
   };
 
   const downloadDraft = () => {
     const blob = new Blob([draft.map((n) => n.text ?? "").join("\n\n")], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob); const link = window.document.createElement("a"); link.href = url; link.download = "unsaved-manuscript.txt"; link.click(); URL.revokeObjectURL(url);
   };
-  const editable = EDIT_ROLES.has(role);
+  const editable = EDIT_ROLES.has(role) && !pendingRestore;
   return <main className="mx-auto min-h-[calc(100dvh-84px)] max-w-[1680px] bg-black p-4 text-white sm:p-6">
     <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
       <div><Link href="/dashboard" className="text-xs text-white/50 hover:text-white">← Library</Link><h1 className="mt-2 text-2xl font-medium">{book?.title ?? "Manuscript"}</h1></div>
@@ -189,6 +203,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
     </div>
     {error && <div role="alert" className="mb-4 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}</div>}
     {notice && <p role="status" className="mb-4 text-sm text-emerald-200">{notice}</p>}
+    {pendingRestore && !saving && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Restore outcome is not confirmed. Your current draft remains here; editing is paused until you recover the request or reload saved content.</p><div className="mt-3 flex flex-wrap gap-4"><button type="button" disabled={loading} className="underline" onClick={() => void restore(pendingRestore.versionId)}>Retry original restore</button><button type="button" className="underline" onClick={downloadDraft}>Download my draft</button><button type="button" disabled={loading} className="underline" onClick={() => { if (window.confirm("Reload saved content and replace this draft? Download it first if needed.")) void loadChapter(pendingRestore.chapterId); }}>Reload saved content</button></div></div>}
     {pendingDraft && !saving && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Your chapter is saved. Resolve its pending AI request before adding another chapter. The original brief is retained in this tab.</p><button type="button" disabled={loading || dirty || !editable} onClick={() => void retryDraft()} className="mt-3 rounded-lg border border-white/25 px-4 py-2 disabled:opacity-40">Retry original AI request</button>{dirty && <p className="mt-2 text-xs">Save your current edits before recovering the review.</p>}</div>}
     {conflict && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Another save changed this chapter. Your unsaved draft is still here. Download it before reloading if you need to merge changes.</p><button className="mr-4 mt-3 underline" onClick={downloadDraft}>Download my draft</button><button className="underline" onClick={() => { if (document && window.confirm("Reload saved content and replace this unsaved draft?")) void loadChapter(document.chapterId); }}>Reload saved version</button></div>}
     <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_260px]">
