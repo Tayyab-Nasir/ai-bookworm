@@ -271,7 +271,10 @@ export default function StoryBlueprintProposalPanel({
       throw new Error("Review the current quote before preparing another one. No additional token count was started.");
     }
     const signature = storyBlueprintQuoteIntentKey(bookId, blueprint.revision, modelId);
-    if (intent.current?.signature !== signature) intent.current = { signature, key: crypto.randomUUID() };
+    const renewExpiredQuote = Boolean(quote && currentQuote && isExpired(quote));
+    if (intent.current?.signature !== signature || renewExpiredQuote) {
+      intent.current = { signature, key: crypto.randomUUID() };
+    }
     const result = await api.requestStoryBlueprintQuote(bookId, {
       modelId,
       idempotencyKey: intent.current.key,
