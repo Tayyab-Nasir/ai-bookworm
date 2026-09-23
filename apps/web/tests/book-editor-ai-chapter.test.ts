@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chapterDraftIdempotencyKey } from "../components/BookEditorClient";
+import { chapterDraftIdempotencyKey } from "../lib/ai-draft-request";
 
 test("new chapter drafts use a stable pointer-only idempotency key", () => {
   const bookId = "11111111-1111-4111-8111-111111111111";

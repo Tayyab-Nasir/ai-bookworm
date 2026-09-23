@@ -10,13 +10,9 @@ import BookTree from "./BookTree";
 import RichBookEditor, { type EditorDocument } from "./RichBookEditor";
 import VersionTimeline from "./VersionTimeline";
 import AiAssistantPanel from "./AiAssistantPanel";
-import { retryableAiDraft } from "../lib/ai-draft-request";
+import { retryableAiDraft, chapterDraftIdempotencyKey } from "../lib/ai-draft-request";
 
 const EDIT_ROLES = new Set(["owner","admin","editor","writer","illustrator","designer"]);
-
-// The chapter ID is server-assigned, so this remains stable if the enqueue
-// response is lost and the author retries the original request.
-export const chapterDraftIdempotencyKey = (bookId: string, chapterId: string) => `chapter-draft:${bookId}:${chapterId}`;
 
 export default function BookEditorClient({ bookId, initialChapterId, initialAiJobId }: { bookId: string; initialChapterId?: string; initialAiJobId?: string }) {
   const api = apiClient();
@@ -216,7 +212,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       </section>
       <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">
         <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} initialJobId={activeAiJobId} dirty={dirty} editable={editable && !saving && !loading && !pendingDraft} onApplied={async () => { if (document) await loadChapter(document.chapterId); }} />
-        <div className="rounded-2xl border border-white/10 p-2"><VersionTimeline versions={versions} onCompare={() => {}} onRestore={(id) => void restore(id)} readOnly={!editable || saving || loading} /></div>
+        <div className="rounded-2xl border border-white/10 p-2"><VersionTimeline key={document?.chapterId ?? "empty"} versions={versions} onRestore={(id) => void restore(id)} readOnly={!editable || saving || loading} /></div>
       </div>
     </div>
   </main>;

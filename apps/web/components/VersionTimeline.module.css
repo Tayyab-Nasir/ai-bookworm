@@ -1,0 +1,25 @@
+.ledger { --ink: #ece8df; --muted: #aba89f; --line: #343431; --paper: #131413; --selected: #242620; --added: #c7e5b3; --removed: #efc2b4; color: var(--ink); padding: 12px; min-width: 0; }
+.header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.eyebrow { color: var(--muted); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; margin: 0 0 5px; }
+.header h3 { font-family: var(--font-instrument-serif), Georgia, serif; font-size: 26px; font-weight: 400; margin: 0; }
+.count { border: 1px solid var(--line); border-radius: 50%; min-width: 30px; height: 30px; display: grid; place-items: center; font-size: 11px; font-variant-numeric: tabular-nums; }
+.hint { font-size: 11px; line-height: 1.6; color: var(--muted); margin: 12px 0; }
+.list { list-style: none; padding: 0; margin: 16px 0; max-height: 320px; overflow-y: auto; }
+.row { border-top: 1px solid var(--line); padding: 12px 8px; border-radius: 4px; }
+.row[data-selected="true"] { background: var(--selected); }
+.row label { display: flex; gap: 10px; cursor: pointer; align-items: baseline; }
+.row input { accent-color: var(--added); flex-shrink: 0; }
+.entry { display: grid; gap: 5px; min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.entry strong { font-variant-numeric: tabular-nums; font-size: 13px; }
+.entry time { color: var(--muted); font-size: 10px; }
+.restore { background: transparent; color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 11px; margin-top: 9px; cursor: pointer; }
+.compare { width: 100%; border: 1px solid var(--line); background: var(--paper); color: var(--ink); border-radius: 9px; padding: 10px; font-size: 12px; cursor: pointer; }
+.compare:disabled { opacity: .45; cursor: not-allowed; }
+.ledger button:focus-visible, .ledger input:focus-visible { outline: 2px solid var(--added); outline-offset: 3px; }
+.ledger button:hover:not(:disabled) { background: var(--selected); }
+.empty { padding: 16px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.result { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 12px; font-size: 12px; line-height: 1.7; }
+.result h4 { font-variant-numeric: tabular-nums; margin: 0; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow-y: auto; }
+.text del { color: var(--removed); text-decoration: line-through; }
+.text ins { color: var(--added); text-decoration: underline; text-underline-offset: 3px; }

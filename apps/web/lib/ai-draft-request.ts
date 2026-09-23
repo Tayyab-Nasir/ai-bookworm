@@ -1,5 +1,8 @@
 import type { CreateAiJobRequest, AiJobWithSuggestions } from "@bookworm/api-client";
 
+// Server-assigned chapter identity remains stable after an uncertain enqueue reply.
+export const chapterDraftIdempotencyKey = (bookId: string, chapterId: string) => `chapter-draft:${bookId}:${chapterId}`;
+
 // Keep the accepted request unchanged until its response is known. This object
 // lives only in the editor tab; private instructions never enter web storage.
 export function retryableAiDraft(send: (body: CreateAiJobRequest) => Promise<AiJobWithSuggestions>, body: CreateAiJobRequest) {

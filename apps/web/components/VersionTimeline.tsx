@@ -1,102 +1,46 @@
 "use client";
-
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { compareRevisionText } from "../lib/version-comparison";
+import styles from "./VersionTimeline.module.css";
 
 export interface VersionSummary {
-  id: string;
-  version_number: number;
-  created_by: string;
-  change_summary?: string | null;
-  created_at: string;
-  /** present when loaded for diffing */
-  plain_text?: string;
+  id: string; version_number: number; created_by?: string;
+  change_summary?: string | null; created_at: string; plain_text?: string | null;
 }
+export interface VersionTimelineProps { versions: VersionSummary[]; onRestore: (versionId: string) => void; readOnly?: boolean }
 
-export interface VersionTimelineProps {
-  versions: VersionSummary[];
-  onCompare: (aId: string, bId: string) => void;
-  onRestore: (versionId: string) => void;
-  readOnly?: boolean;
-}
-
-// ponytail: LCS word diff, O(n*m). Fine for chapter-sized texts; swap in the
-// `diff` package if large docs get slow.
-function wordDiff(a: string, b: string) {
-  const wa = a.split(/\s+/).filter(Boolean);
-  const wb = b.split(/\s+/).filter(Boolean);
-  // Never allocate a chapter-size quadratic matrix for a full novel.
-  if (wa.length * wb.length > 2_000_000) return [
-    { kind: "del", word: a }, { kind: "add", word: b },
-  ];
-  const dp: number[][] = Array.from({ length: wa.length + 1 }, () => new Array(wb.length + 1).fill(0));
-  for (let i = wa.length - 1; i >= 0; i--)
-    for (let j = wb.length - 1; j >= 0; j--)
-      dp[i][j] = wa[i] === wb[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-  const out: { kind: "same" | "add" | "del"; word: string }[] = [];
-  let i = 0, j = 0;
-  while (i < wa.length && j < wb.length) {
-    if (wa[i] === wb[j]) { out.push({ kind: "same", word: wa[i] }); i++; j++; }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ kind: "del", word: wa[i] }); i++; }
-    else { out.push({ kind: "add", word: wb[j] }); j++; }
-  }
-  while (i < wa.length) out.push({ kind: "del", word: wa[i++] });
-  while (j < wb.length) out.push({ kind: "add", word: wb[j++] });
-  return out;
-}
-
-export default function VersionTimeline({ versions, onCompare, onRestore, readOnly }: VersionTimelineProps) {
+export default function VersionTimeline({ versions, onRestore, readOnly }: VersionTimelineProps) {
   const [selected, setSelected] = useState<string[]>([]);
-  const [diff, setDiff] = useState<ReturnType<typeof wordDiff> | null>(null);
-
-  const toggle = (id: string) =>
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s.slice(-1), id]));
-
-  const compare = () => {
-    const [a, b] = selected.map((id) => versions.find((v) => v.id === id));
-    if (!a || !b) return;
-    onCompare(a.id, b.id);
-    setDiff(wordDiff(a.plain_text ?? "", b.plain_text ?? ""));
+  const [compared, setCompared] = useState<string[] | null>(null);
+  const available = selected.filter((id) => versions.some((v) => v.id === id));
+  const comparison = useMemo(() => {
+    const pair = compared?.map((id) => versions.find((v) => v.id === id));
+    return pair?.[0] && pair[1] ? compareRevisionText(pair[0], pair[1]) : null;
+  }, [compared, versions]);
+  const toggle = (id: string) => {
+    setSelected(available.includes(id) ? available.filter((value) => value !== id) : [...available.slice(-1), id]);
+    setCompared(null);
   };
-
-  return (
-    <aside aria-label="Versions" style={{ padding: 8 }}>
-      <h3 style={{ margin: "4px 8px" }}>Versions</h3>
-      <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-        {[...versions].sort((x, y) => y.version_number - x.version_number).map((v) => (
-          <li key={v.id} style={{ padding: "6px 8px", borderBottom: "1px solid #eee" }}>
-            <label style={{ display: "flex", gap: 6, alignItems: "baseline" }}>
-              <input type="checkbox" checked={selected.includes(v.id)} onChange={() => toggle(v.id)} />
-              <span>
-                <strong>v{v.version_number}</strong> — {new Date(v.created_at).toLocaleString()}
-                <br />
-                <small>{v.created_by}{v.change_summary ? ` · ${v.change_summary}` : ""}</small>
-              </span>
-            </label>
-            {!readOnly && <button style={{ marginLeft: 22 }} onClick={() => onRestore(v.id)}>Restore</button>}
-          </li>
-        ))}
-      </ul>
-      <button disabled={selected.length !== 2} onClick={compare} style={{ margin: 8 }}>
-        Compare selected
-      </button>
-      {diff && (
-        <div style={{ margin: 8, padding: 8, border: "1px solid #ddd", borderRadius: 4, fontSize: 14, lineHeight: 1.6 }}>
-          {diff.map((d, i) => (
-            <span
-              key={i}
-              style={
-                d.kind === "add"
-                  ? { background: "#143a26", textDecoration: "none" }
-                  : d.kind === "del"
-                    ? { background: "#4a2323", textDecoration: "line-through" }
-                    : undefined
-              }
-            >
-              {d.word}{" "}
-            </span>
-          ))}
-        </div>
-      )}
-    </aside>
-  );
+  return <aside aria-label="Versions" className={styles.ledger}>
+    <header className={styles.header}><div><p className={styles.eyebrow}>Revision ledger</p><h3>Version history</h3></div><span className={styles.count}>{versions.length}</span></header>
+    <p className={styles.hint}>Select two saved versions to compare their text. Newest first · up to 100 versions.</p>
+    {versions.length === 0 && <p className={styles.empty}>No saved revisions yet. Save your chapter to begin its history.</p>}
+    <ul className={styles.list}>{[...versions].sort((a, b) => b.version_number - a.version_number).map((v) => <li key={v.id} className={styles.row} data-selected={available.includes(v.id)}>
+      <label><input type="checkbox" aria-label={`Select version ${v.version_number}`} checked={available.includes(v.id)} onChange={() => toggle(v.id)} />
+        <span className={styles.entry}><strong>v{v.version_number}</strong><span>{v.change_summary || "Saved manuscript"}</span><time dateTime={v.created_at}>{new Date(v.created_at).toLocaleString()}</time></span>
+      </label>
+      {!readOnly && <button type="button" className={styles.restore} aria-label={`Restore version ${v.version_number}`} onClick={() => onRestore(v.id)}>Restore</button>}
+    </li>)}</ul>
+    <button type="button" className={styles.compare} disabled={available.length !== 2} onClick={() => setCompared([...available])}>Compare selected</button>
+    <p className={styles.hint}>Saved text only. Formatting, images and unsaved edits are not compared. Restoring creates a new revision.</p>
+    {compared && <section aria-label="Version comparison" className={styles.result} aria-live="polite">
+      {comparison ? <><h4>v{comparison.before.version_number} → v{comparison.after.version_number}</h4>
+        {comparison.identical ? <p>No text changes between these saved versions.</p> : <>
+          <p className={styles.hint}>{comparison.mode === "full" ? "Large comparison: complete earlier and later text shown below." : "Removed text is struck through; added text is underlined."}</p>
+          <div className={styles.text}>{comparison.changes.map((change, index) => change.kind === "del" ? <del key={index}>{change.text}</del> : change.kind === "add" ? <ins key={index}>{change.text}</ins> : <span key={index}>{change.text}</span>)}</div>
+        </>}
+      </> : <p>Text for a selected revision is unavailable. Reload its history before comparing.</p>}
+      <button type="button" className={styles.restore} onClick={() => setCompared(null)}>Close comparison</button>
+    </section>}
+  </aside>;
 }
