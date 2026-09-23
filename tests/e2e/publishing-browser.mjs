@@ -6,13 +6,19 @@ const browser = await chromium.launch({ headless: true, ...(process.env.BROWSER_
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.setDefaultTimeout(25000);
+  page.setDefaultNavigationTimeout(60000);
   const errors = []; page.on('pageerror', (error) => errors.push(error.message));
+  const audioResponses = [];
+  page.on('response', async (response) => {
+    if (response.url().includes('/audio-download')) audioResponses.push(await response.allHeaders());
+  });
   page.on('dialog', (dialog) => dialog.dismiss());
-  const url = 'http://localhost:4398/books/88888888-8888-4888-8888-888888888888/publish';
+  const url = 'http://127.0.0.1:4398/books/88888888-8888-4888-8888-888888888888/publish';
   await page.goto(url);
   await page.getByLabel('Email').fill('author@example.test');
   await page.getByLabel('Password', { exact: true }).fill('fixture-password');
   await page.getByRole('button', { name: /sign in/i }).click();
+  await page.waitForURL(/\/books\/88888888-8888-4888-8888-888888888888\/publish(?:\?|$)/, { timeout: 60000 });
   await page.getByRole('button', { name: 'New EPUB', exact: true }).click();
   await page.getByLabel('Include EPUB title page', { exact: false }).check();
   await page.getByLabel('Publisher or imprint', { exact: true }).fill('Finch & Fox');
@@ -24,8 +30,9 @@ try {
   await page.getByText('Edition settings saved.', { exact: true }).waitFor();
   await page.reload();
   await page.waitForFunction(() => [...document.querySelectorAll('input')].some((e) => e.value === 'https://author.example/harbor'));
+  await page.waitForFunction(() => [...document.querySelectorAll('textarea')].some((e) => e.value === 'Copyright Ada\nPermission required.'));
   assert.equal(await page.getByLabel('Publisher or imprint', { exact: true }).inputValue(), 'Finch & Fox');
-  assert.equal(await page.getByLabel('Copyright notice', { exact: true }).inputValue(), 'Copyright Ada\nPermission required.');
+  assert.equal(await page.getByRole('textbox', { name: 'Copyright notice', exact: true }).inputValue(), 'Copyright Ada\nPermission required.');
   assert.equal(await page.getByLabel('Include EPUB title page', { exact: false }).isChecked(), true);
   const packageButton = page.getByRole('button', { name: 'Create retailer package', exact: true });
   assert.equal(await packageButton.isEnabled(), false);
@@ -62,7 +69,7 @@ try {
   await page.getByRole('button', { name: /^print /i }).click();
   assert.equal(await page.getByLabel('Include chapter contents', { exact: false }).isChecked(), true);
   assert.equal(await page.getByLabel('Publisher or imprint', { exact: true }).inputValue(), 'Print Imprint');
-  assert.equal(await page.getByLabel('Copyright notice', { exact: true }).inputValue(), 'Print permission notice.');
+  assert.equal(await page.getByRole('textbox', { name: 'Copyright notice', exact: true }).inputValue(), 'Print permission notice.');
   assert.equal(await page.getByLabel('Create full cover PDF', { exact: true }).isChecked(), true);
   assert.equal(await page.getByLabel('Template spine width (in)', { exact: true }).inputValue(), '0.415');
   assert.equal(await page.getByLabel('Template page count', { exact: true }).inputValue(), '184');
@@ -74,7 +81,7 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'publishing mobile overflow');
   await page.getByRole('button', { name: 'New audio', exact: true }).click();
   await page.getByRole('button', { name: 'Save edition', exact: true }).click();
-  const audioButton = page.getByRole('button', { name: 'Download assembled chapter', exact: true });
+  const audioButton = page.getByRole('button', { name: 'Download chapter + QC report', exact: true });
   await audioButton.click();
   await page.getByRole('alert').filter({ hasText: 'Fixture assembly busy. Try again.' }).waitFor();
   const audioTransfer = page.waitForEvent('download');
@@ -82,7 +89,14 @@ try {
   const audioFile = await audioTransfer;
   assert.equal(await audioFile.failure(), null);
   assert.match(audioFile.suggestedFilename(), /^chapter-.*\.mp3$/);
+  await page.getByRole('region', { name: 'Audiobook audio quality report' }).waitFor();
+  await page.getByText(/-20\.0 dB RMS/).waitFor();
+  await page.getByText(/noise Floor: manual review — listening required/i).waitFor();
+  await page.getByText(/not marked ACX-eligible/i).waitFor();
+  assert.equal(audioResponses.length, 2, 'audio retry sequence changed');
+  assert.equal(audioResponses[1]['content-disposition'], 'attachment; filename="chapter.mp3"');
+  assert.match(audioResponses[1]['x-bookworm-audio-qc'] ?? '', /"acxNarrationPolicy":"explicit_authorization_required_for_ai_voice"/);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'audiobook mobile overflow');
   assert.deepEqual(errors, []);
-  console.log('PASS publishing browser: saved paperback settings, font choice, render/preflight/package, audio assembly failure/retry/download, retailer compatibility and mobile. Artifact bytes remain fixtures.');
+  console.log('PASS publishing browser: saved paperback settings, font choice, render/preflight/package, audio assembly failure/retry/download, QC header/UI, ACX policy warning and mobile. Artifact bytes remain fixtures.');
 } finally { await browser.close(); }

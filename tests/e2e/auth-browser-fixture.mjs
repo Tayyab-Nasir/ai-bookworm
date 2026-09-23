@@ -109,7 +109,13 @@ const server = createServer(async (req, res) => {
     }
     if (url.pathname === '/v1/audiobook-jobs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/audio-download') {
       if (++chapterDownloadAttempts === 1) return json(503, { error: { message: 'Fixture assembly busy. Try again.' } });
-      res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-disposition': 'attachment; filename="chapter.mp3"', 'cache-control': 'private, no-store' });
+      const quality = { schemaVersion: 1, profile: 'ACX technical preflight; not retailer approval', chapterDurationSeconds: 30,
+        sampleRateHz: 44100, channels: 1, bitRateKbps: 192, bitRateMode: 'cbr', rmsDbfs: -20, samplePeakDbfs: -4,
+        technicalChecks: { rms: { status: 'pass', value: -20, unit: 'dBFS', limit: '-23 to -18 dB RMS' },
+          noiseFloor: { status: 'manual_review', value: null, limit: 'listening required' } }, reviewRequired: true,
+        acxNarrationPolicy: 'explicit_authorization_required_for_ai_voice' };
+      res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-disposition': 'attachment; filename="chapter.mp3"', 'cache-control': 'private, no-store',
+        'x-bookworm-audio-qc': JSON.stringify(quality) });
       return res.end(Buffer.from('ID3browser-audio-fixture'));
     }
     if (edition && req.method === 'PATCH') {
