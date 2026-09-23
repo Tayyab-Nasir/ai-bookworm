@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-revision-ledger.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-local-origin.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,19 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Local login origin recovery
+
+`d155dc4` resolves the IP login issue recorded below: installed NextURL replaces
+loopback IPs with localhost even when normalization is disabled. In development,
+appOrigin recovers only localhost/127.0.0.1/[::1] Host on the same port; it never
+uses Origin or forwarded headers as authority. Production remains pinned to
+APP_URL. Native Edge with synthetic Auth/API passes redirects, login, session,
+cross-origin/port/site rejection and logout separately on localhost and
+127.0.0.1. IPv6 has unit coverage only. 86 web tests, web TypeScript and 30
+security tests pass. No production build rerun for this slice and no live
+Google/Supabase changes. Google OAuth setup remains a separate operator gate.
+Graphify refreshed; generated dirt and existing Gradle parse warnings preserved.
 
 ### Author revision ledger
 
