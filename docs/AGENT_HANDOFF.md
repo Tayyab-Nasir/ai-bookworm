@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-render-document-auth.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-processing-containers.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,16 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Native processing containers
+
+`f489e70` adds Docker targets for document, rendering and publishing, including
+Poppler, bundled FFmpeg and fonts. Linux CI `35845401795` passes all builds and
+six credential/processing scenarios in unprivileged, read-only containers with
+no external network or host mounts. Actual parse, reflowable/fixed EPUB, audio
+assembly and exact-artifact packaging work. See `docs/PROCESSING_CONTAINERS.md`.
+This is fixture runtime acceptance, not deployment, capacity or crash recovery.
+Release dependency locks/digests, SBOM/license review and host setup remain open.
 
 ### Rendering/document authentication
 

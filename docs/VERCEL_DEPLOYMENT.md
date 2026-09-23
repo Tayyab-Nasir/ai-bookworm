@@ -1,6 +1,8 @@
 # Hosting AI Bookworm on Vercel
 
 Persistent worker launcher and Linux supervision setup: [Worker runtime](WORKER_RUNTIME.md).
+Document/rendering/publishing image builds and isolated runtime acceptance:
+[Processing containers](PROCESSING_CONTAINERS.md).
 
 Vercel is an appropriate host for the Next.js author application in
 `apps/web`. It is not, by itself, the production host for Bookworm's durable
