@@ -21,7 +21,42 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Read git status before edits. Preserve shared uncommitted work. Saved
   completion claims require current code and behavioral verification.
 
-## Current checkpoint: 2026-09-19
+## Current checkpoint: 2026-09-23
+
+### 2026-09-23 local release-gate rerun
+
+On branch `codex/paid-story-blueprint-20260923` at
+`968f7ccefb2d67438ed375d2e0dffdda03aa10ba`, `npm run verify` passes in the
+current local worktree: workspace TypeScript, unit/API tests, 76 web tests, 65
+migrations + 45 SQL assertion files in disposable PostgreSQL, 315 Python
+service tests, 12 E2E, 30 security tests, load smoke (50 concurrent; no 5xx),
+and six deterministic AI eval cases (no provider key/live run). An isolated
+`BOOKWORM_DIST_DIR=.next-release` production build also passes and enumerates 30
+routes, including dashboards, authoring, book memory, paid blueprint planning,
+translation, publishing, analytics, billing and team operations. These are
+local checks, not live Supabase/Storage/provider/retailer acceptance, and do
+not establish that the product is complete or production-ready. No app source
+was changed in this verification pass. The worktree contains the pre-existing
+generated Graphify changes. Git reports `apps/web/next-env.d.ts` modified, but
+its content matches `HEAD` (CRLF/autocrlf status artifact); leave it untouched.
+
+Remaining launch gates are still substantial: native Supabase/Storage and
+multi-process worker acceptance, operator-approved production pricing and
+secret configuration, Google OAuth provider setup, provider quality/cost,
+renderer/retailer acceptance and proof, monitoring/backups/restore, legal and
+support fulfillment, and beta-author journeys. See `docs/release-checklist.md`.
+No live migration, deployment, payment, provider request or retailer
+publication was performed.
+
+### 2026-09-23 paid Story Blueprint continuation
+
+The paid, review-only AI Blueprint proposal and quoted translation slices are
+in this branch and pushed to origin. Browser acceptance documented in the
+shared session note proves synthetic consent/queue/recovery/review behavior;
+it does not call OpenAI or establish native credit settlement. Preserve that
+distinction when continuing.
+
+## Historical checkpoint: 2026-09-19
 
 ### 2026-09-19 Story Blueprint authoring (local only)
 

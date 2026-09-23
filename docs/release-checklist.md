@@ -1,5 +1,19 @@
 # MVP Release Checklist
 
+## 2026-09-23 local verification refresh
+
+On branch `codex/paid-story-blueprint-20260923` at `968f7cce`, the full
+`npm run verify` command passes: workspace TypeScript, unit/API and 76 web
+tests, 65 migrations + 45 SQL assertion files in disposable PostgreSQL, 315
+Python service tests, 12 E2E, 30 security tests, load smoke (50 concurrent,
+no 5xx), and six deterministic AI evaluations (provider run skipped because no
+API key is configured). An isolated `.next-release` production build passes
+with 30 app routes. This does not change any PARTIAL/PENDING-INFRA status below:
+live Supabase/Auth/Storage, worker orchestration, paid provider quality/cost,
+retailer acceptance, observability/backups, legal/support operations and
+beta-author acceptance are not proven by this local gate. No live migration,
+provider request, payment, retailer submission, or deployment was done.
+
 ## 2026-09-18 refreshed cross-service evidence
 
 The broad journey rerun initially found three failing print fixtures: they
