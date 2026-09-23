@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-local-origin.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-restore-recovery.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Chapter restore recovery
+
+`80043c8` retains the original restore operation ID and expected version after
+an uncertain reply. Editing pauses with explicit retry/download/reload controls;
+the current draft stays visible. A confirmed receipt updates the editor before
+history refresh; history failure cannot misrepresent the old draft as restored.
+409 conflicts retain the draft and expose download/reload recovery. Native Edge
+synthetic transport tests pass lost response, exact retry identity, one accepted
+revision, history outage and conflict preservation. 86 web tests and web TS pass.
+This verifies browser recovery, not live Supabase restore integration; backend
+append/restore semantics are unchanged. No build rerun or live action this slice.
 
 ### Local login origin recovery
 
