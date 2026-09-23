@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-export-native-races.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-upload-recovery.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,17 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Upload HTTP recovery
+
+The audiobook uploader now bounds requests to 120 seconds, rejects redirects
+for all authenticated upload/cleanup calls, and uses validated TUS HEAD offsets
+to recover ambiguous PATCH replies with at most three attempts per chunk.
+Fifteen focused tests pass, including a real loopback HTTP server that drops
+sockets before/after storing bytes, redirects, stalls and receives cancellation.
+Archive bytes match after recovery; no redirect destination receives credentials.
+This is HTTP-client acceptance, not live Supabase Storage/TUS acceptance.
+API TypeScript and all 283 API tests pass after this transport change.
 
 ### Native audiobook export concurrency acceptance
 

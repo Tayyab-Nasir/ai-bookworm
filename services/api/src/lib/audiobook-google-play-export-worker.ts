@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { open, stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 import { loadEnv } from "@bookworm/config";
@@ -53,8 +54,17 @@ function storageEndpoint(projectUrl: string) {
   return url;
 }
 
-export async function uploadTusArchive(path: string, objectPath: string, options: { projectUrl: string; serviceKey: string; signal: AbortSignal; fetcher?: typeof fetch }) {
+export async function uploadTusArchive(path: string, objectPath: string, options: { projectUrl: string; serviceKey: string; signal: AbortSignal; fetcher?: typeof fetch; requestTimeoutMs?: number }) {
   const fetcher = options.fetcher ?? fetch;
+  const requestTimeoutMs = options.requestTimeoutMs ?? 120_000;
+  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 120_000) throw new AudioExportFailure("export_invalid_timeout", false);
+  const request = (url: URL, init: RequestInit) => fetcher(url, {
+    ...init, redirect: "error", signal: AbortSignal.any([options.signal, AbortSignal.timeout(requestTimeoutMs)]),
+  });
+  const offsetHeader = (response: Response, name: string) => {
+    const value = response.headers.get(name);
+    return value !== null && /^\d+$/u.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : -1;
+  };
   const endpoint = storageEndpoint(options.projectUrl);
   const size = (await stat(path)).size;
   if (!size || size > MAX_ARCHIVE_BYTES) throw new AudioExportFailure("export_archive_too_large", false);
@@ -64,7 +74,7 @@ export async function uploadTusArchive(path: string, objectPath: string, options
   const encoded = Object.entries(metadata).map(([key, value]) => `${key} ${Buffer.from(value).toString("base64")}`).join(",");
   let uploadUrl: URL | undefined;
   try {
-    const created = await fetcher(endpoint, {
+    const created = await request(endpoint, {
       method: "POST", headers: {
         authorization: `Bearer ${options.serviceKey}`, apikey: options.serviceKey,
         "tus-resumable": "1.0.0", "upload-length": String(size), "upload-metadata": encoded,
@@ -75,7 +85,8 @@ export async function uploadTusArchive(path: string, objectPath: string, options
     const location = created.headers.get("location");
     if (!location) throw new AudioExportFailure("export_storage_invalid_response", true);
     const candidateUrl = new URL(location, endpoint);
-    if (candidateUrl.origin !== endpoint.origin || !candidateUrl.pathname.startsWith("/storage/v1/upload/resumable/")) {
+    if (candidateUrl.origin !== endpoint.origin || candidateUrl.username || candidateUrl.password || candidateUrl.hash
+      || !candidateUrl.pathname.startsWith("/storage/v1/upload/resumable/")) {
       throw new AudioExportFailure("export_storage_invalid_response", false);
     }
     uploadUrl = candidateUrl;
@@ -88,21 +99,42 @@ export async function uploadTusArchive(path: string, objectPath: string, options
         const bytes = Buffer.allocUnsafe(length);
         const read = await handle.read(bytes, 0, length, offset);
         if (read.bytesRead !== length) throw new AudioExportFailure("export_archive_read_failed", true);
-        const response = await fetcher(uploadUrl, {
-          method: "PATCH", headers: {
+        const endOffset = offset + length;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          let response: Response | undefined;
+          try {
+            response = await request(uploadUrl, {
+              method: "PATCH", headers: {
+                authorization: `Bearer ${options.serviceKey}`, apikey: options.serviceKey,
+                "tus-resumable": "1.0.0", "upload-offset": String(offset),
+                "content-type": "application/offset+octet-stream", "content-length": String(length),
+              }, body: bytes,
+            });
+          } catch { options.signal.throwIfAborted(); }
+          if (response?.status === 204 && offsetHeader(response, "upload-offset") === endOffset) {
+            offset = endOffset; break;
+          }
+          const retryable = !response || [408, 409, 429].includes(response.status) || response.status >= 500;
+          await response?.body?.cancel();
+          if (!retryable) throw new AudioExportFailure("export_storage_upload_failed", true);
+          // The server may have stored the entire chunk before its reply was
+          // lost. Query its offset before sending any private bytes again.
+          const head = await request(uploadUrl, { method: "HEAD", headers: {
             authorization: `Bearer ${options.serviceKey}`, apikey: options.serviceKey,
-            "tus-resumable": "1.0.0", "upload-offset": String(offset),
-            "content-type": "application/offset+octet-stream", "content-length": String(length),
-          }, body: bytes, signal: options.signal,
-        });
-        const nextOffset = Number(response.headers.get("upload-offset"));
-        if (response.status !== 204 || nextOffset !== offset + length) throw new AudioExportFailure("export_storage_upload_failed", true);
-        offset = nextOffset;
+            "tus-resumable": "1.0.0", "cache-control": "no-store",
+          } });
+          const confirmed = offsetHeader(head, "upload-offset");
+          if (![200, 204].includes(head.status) || offsetHeader(head, "upload-length") !== size
+            || (confirmed !== offset && confirmed !== endOffset)) throw new AudioExportFailure("export_storage_invalid_response", true);
+          if (confirmed === endOffset) { offset = endOffset; break; }
+          if (attempt === 2) throw new AudioExportFailure("export_storage_upload_failed", true);
+          await delay(250 * (attempt + 1), undefined, { signal: options.signal });
+        }
       }
     } finally { await handle.close(); }
   } catch (error) {
     if (uploadUrl) {
-      try { await fetcher(uploadUrl, { method: "DELETE", headers: { authorization: `Bearer ${options.serviceKey}`, apikey: options.serviceKey, "tus-resumable": "1.0.0" }, signal: AbortSignal.timeout(10_000) }); }
+      try { await fetcher(uploadUrl, { method: "DELETE", redirect: "error", headers: { authorization: `Bearer ${options.serviceKey}`, apikey: options.serviceKey, "tus-resumable": "1.0.0" }, signal: AbortSignal.timeout(Math.min(10_000, requestTimeoutMs)) }); }
       catch { /* Supabase expires abandoned resumable URLs; never leak upload URLs into logs. */ }
     }
     if (error instanceof AudioExportFailure) throw error;

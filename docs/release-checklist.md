@@ -2,6 +2,12 @@
 
 ## 2026-09-23 durable Google Play audiobook exports
 
+Transport follow-up: real loopback HTTP tests cover stored/unstored lost PATCH
+replies, redirect refusal, malformed offsets, deadlines and cancellation.
+The uploader uses bounded TUS HEAD recovery without resending committed chunks.
+All 15 focused export worker/transport tests pass. Production Supabase Storage
+limits and server integration remain a separate acceptance gate.
+
 Follow-up source `4153f52` passes native PostgreSQL 16 acceptance:
 [run 35828807252](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/35828807252).
 All 67 migrations and 45 SQL suites pass, including viewer cancellation denial,

@@ -535,6 +535,15 @@ before production tuning.
   required archive size (subject to the project's plan limit) before accepting
   large titles. TUS uses the documented fixed 6 MiB chunk size and the direct
   Storage hostname for hosted Supabase; see [Supabase resumable uploads](https://supabase.com/docs/guides/storage/uploads/resumable-uploads).
+  Each upload request has a 120-second deadline and refuses redirects, including
+  cleanup, to keep custom service authentication headers on the validated
+  endpoint. After an ambiguous PATCH response, HEAD verifies the saved offset
+  and total length before retrying a chunk (at most three PATCH attempts).
+  A fully saved chunk is not resent. Unexpected partial/misaligned offsets fail
+  the attempt; the next worker lease starts a new archive/upload. This bounded
+  recovery follows the [TUS HEAD/offset protocol](https://tus.io/protocols/resumable-upload)
+  while retaining Supabase's fixed chunk sizing. It is not persisted upload
+  resume across process restarts.
   A crashed worker retries under a fresh lease/object path and resets chapter
   progress because each attempt assembles a new archive.
   Direct cancellation and request replay both enforce current approver access
