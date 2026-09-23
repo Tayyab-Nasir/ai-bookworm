@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import ipaddress
 import os
 import re
+from pathlib import Path
 from collections.abc import Mapping
 
 
@@ -74,6 +75,21 @@ class ScannerConfig:
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ScannerConfig":
         values = os.environ if env is None else env
         token = values.get("SCANNING_SERVICE_TOKEN", "")
+        token_file = values.get("SCANNING_SERVICE_TOKEN_FILE", "")
+        if token_file:
+            if token:
+                raise ConfigurationError("Configure only one scanner token source")
+            try:
+                path = Path(token_file)
+                if not path.is_file():
+                    raise OSError("not a regular file")
+                with path.open("rb") as source:
+                    raw = source.read(2049)
+                if len(raw) > 2048:
+                    raise ValueError("oversized secret")
+                token = raw.decode("utf-8").removesuffix("\n").removesuffix("\r")
+            except (OSError, ValueError) as exc:
+                raise ConfigurationError("Scanner token file could not be read safely") from exc
         if not 32 <= len(token) <= 512 or token != token.strip() or any(
             char in token for char in "\r\n"
         ):

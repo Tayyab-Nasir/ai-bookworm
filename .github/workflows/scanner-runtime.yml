@@ -2,10 +2,10 @@ name: Native scanner acceptance
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['services/scanning/**', 'ops/scanner-test/**', 'scripts/test-scanner-containers.py', '.github/workflows/scanner-runtime.yml']
+    paths: ['services/scanning/**', 'ops/scanner-test/**', 'ops/scanning/**', 'scripts/test-scanner*.py', '.github/workflows/scanner-runtime.yml']
   push:
     branches: [main, master, 'codex/**']
-    paths: ['services/scanning/**', 'ops/scanner-test/**', 'scripts/test-scanner-containers.py', '.github/workflows/scanner-runtime.yml']
+    paths: ['services/scanning/**', 'ops/scanner-test/**', 'ops/scanning/**', 'scripts/test-scanner*.py', '.github/workflows/scanner-runtime.yml']
 permissions:
   contents: read
 jobs:
@@ -17,3 +17,13 @@ jobs:
       - run: docker build -t bookworm-ci-scanner services/scanning
       - run: docker build -t bookworm-ci-clamd ops/scanner-test
       - run: python3 scripts/test-scanner-containers.py
+  scanner-topology:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLAMAV_IMAGE: clamav/clamav:stable
+      SCANNER_IMAGE: bookworm-ci-scanner
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t bookworm-ci-scanner services/scanning
+      - run: python3 scripts/test-scanner-compose.py

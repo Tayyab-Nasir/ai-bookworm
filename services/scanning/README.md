@@ -9,7 +9,9 @@ filesystem and does not execute a shell or scanner subprocess.
 The clamd destination is fixed by environment configuration and is never read
 from a request:
 
-- `SCANNING_SERVICE_TOKEN` (required, 32-512 characters)
+- `SCANNING_SERVICE_TOKEN` (32-512 characters), or `SCANNING_SERVICE_TOKEN_FILE`
+  pointing to a readable secret file; configuring both refuses startup. A single
+  trailing newline is accepted in the file. Secrets are never returned by HTTP.
 - `CLAMD_HOST` (default `clamd`)
 - `CLAMD_PORT` (default `3310`)
 - `CLAMD_CONNECT_TIMEOUT_SECONDS` (default `2`)
@@ -84,7 +86,9 @@ The engine has a 4 GiB limit; the service has a 256 MiB limit for small fixtures
 
 Do not deploy the test image/signature. Production requires approved image
 digests, current official database updates, refresh/reload monitoring and
-capacity testing. This CI does not run FreshClam or validate update freshness.
+capacity testing. CI runs FreshClam during image preparation and checks the
+loaded database age; it does not prove production periodic updates.
+See `docs/SCANNER_RUNTIME.md` for the separate persistent-volume runtime template.
 References: [official container guidance](https://docs.clamav.net/manual/Installing/Docker.html),
 [hash signature format](https://docs.clamav.net/manual/Signatures/HashSignatures.html),
 [signature update management](https://docs.clamav.net/manual/Usage/SignatureManagement.html).

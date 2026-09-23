@@ -70,6 +70,21 @@ def test_database_age_configuration_has_no_disabled_or_unbounded_mode(value):
         ScannerConfig.from_env({"SCANNING_SERVICE_TOKEN": TOKEN, "SCANNING_MAX_DATABASE_AGE_HOURS": value})
 
 
+def test_secret_file_configuration(tmp_path):
+    secret = tmp_path / "scanner-token"
+    secret.write_text(TOKEN + "\n", encoding="utf-8")
+    assert ScannerConfig.from_env({"SCANNING_SERVICE_TOKEN_FILE": str(secret)}).service_token == TOKEN
+    with pytest.raises(ConfigurationError, match="only one"):
+        ScannerConfig.from_env({"SCANNING_SERVICE_TOKEN_FILE": str(secret), "SCANNING_SERVICE_TOKEN": TOKEN})
+    for content in (b"", b"short", b"x" * 2049, b"\xff" * 40, (TOKEN + "\n\n").encode()):
+        secret.write_bytes(content)
+        with pytest.raises(ConfigurationError):
+            ScannerConfig.from_env({"SCANNING_SERVICE_TOKEN_FILE": str(secret)})
+    for path in (tmp_path, tmp_path / "missing"):
+        with pytest.raises(ConfigurationError, match="could not be read safely"):
+            ScannerConfig.from_env({"SCANNING_SERVICE_TOKEN_FILE": str(path)})
+
+
 def config(**overrides: object) -> ScannerConfig:
     values = {
         "service_token": TOKEN,

@@ -1,0 +1,78 @@
+# Private Linux deployment template. No service publishes a host port.
+services:
+  updater:
+    image: ${CLAMAV_IMAGE:?Set an approved ClamAV image digest}
+    user: clamav
+    entrypoint: [freshclam, --config-file=/etc/clamav/bookworm-freshclam.conf]
+    command: [--daemon, --foreground]
+    environment: {TZ: UTC}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 2g
+    pids_limit: 128
+    tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+    configs:
+      - source: freshclam_config
+        target: /etc/clamav/bookworm-freshclam.conf
+    volumes: [signatures:/var/lib/clamav]
+    networks: [updates]
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+  clamd:
+    image: ${CLAMAV_IMAGE:?Set an approved ClamAV image digest}
+    user: clamav
+    entrypoint: [clamd, --foreground=true, --config-file=/etc/clamav/bookworm.conf]
+    environment: {TZ: UTC}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 4g
+    pids_limit: 128
+    tmpfs: [/tmp:rw,noexec,nosuid,size=256m]
+    configs:
+      - source: clamd_config
+        target: /etc/clamav/bookworm.conf
+    volumes: [signatures:/var/lib/clamav:ro]
+    networks: [engine]
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+  scanner:
+    image: ${SCANNER_IMAGE:?Set the reviewed Bookworm scanner image}
+    user: "65532:65532"
+    environment:
+      SCANNING_SERVICE_TOKEN_FILE: /run/secrets/scanner_token
+      CLAMD_HOST: clamd
+      SCANNING_MAX_CONCURRENCY: "2"
+      SCANNING_MAX_DATABASE_AGE_HOURS: "72"
+    secrets: [scanner_token]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    pids_limit: 64
+    tmpfs: [/tmp:rw,noexec,nosuid,size=32m]
+    networks: [engine, callers]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/ready', timeout=20).read()"]
+      interval: 30s
+      timeout: 25s
+      start_period: 180s
+      retries: 3
+    logging: {driver: json-file, options: {max-size: 10m, max-file: "3"}}
+
+volumes:
+  signatures:
+networks:
+  engine: {internal: true}
+  callers: {internal: true}
+  updates: {}
+configs:
+  clamd_config: {file: ./clamd.conf}
+  freshclam_config: {file: ./freshclam.conf}
+secrets:
+  scanner_token:
+    file: ${SCANNER_TOKEN_FILE:?Set the absolute scanner secret file path}
