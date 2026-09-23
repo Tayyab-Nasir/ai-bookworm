@@ -535,7 +535,11 @@ before production tuning.
   required archive size (subject to the project's plan limit) before accepting
   large titles. TUS uses the documented fixed 6 MiB chunk size and the direct
   Storage hostname for hosted Supabase; see [Supabase resumable uploads](https://supabase.com/docs/guides/storage/uploads/resumable-uploads).
-  A crashed worker retries under a fresh lease/object path; an interrupted TUS
+  A crashed worker retries under a fresh lease/object path and resets chapter
+  progress because each attempt assembles a new archive.
+  Direct cancellation and request replay both enforce current approver access
+  in PostgreSQL, and concurrent identical queue keys serialize to one job.
+  An interrupted TUS
   session expires after the provider's documented 24-hour upload-URL lifetime.
   Finished ZIPs remain private and referenced by their job; retention/deletion
   automation is not yet enabled. A worker must fence the lease with the failure

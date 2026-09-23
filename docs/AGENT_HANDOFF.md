@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-async-audio-export.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-export-native-races.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,20 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Native audiobook export concurrency acceptance
+
+Source `4153f52` hardens the unapplied export migration: request-key advisory
+locking serializes concurrent replay, replay rechecks current approver access,
+cancellation requires approver access inside SQL, and every new worker lease
+resets chapter progress for a fresh archive. Local 67 migrations/45 SQL suites
+pass. Native PostgreSQL 16 CI run `35828807252` passes those suites plus five
+export races: simultaneous queue replay, worker claims with SKIP LOCKED,
+cancel-first, complete-first and failure-first completion. Actual lock waits
+are observed for the conflicting transactions. Storage/TUS, real Supabase
+Auth/PostgREST and renderer-worker restart integration remain unverified.
+See [[Codex Sessions/2026-09/2026-09-23-bookworm-export-native-races]] in the
+shared vault. No production migration or deployment occurred.
 
 ### Durable audiobook archive queue (supersedes synchronous export below)
 

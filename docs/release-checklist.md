@@ -2,6 +2,16 @@
 
 ## 2026-09-23 durable Google Play audiobook exports
 
+Follow-up source `4153f52` passes native PostgreSQL 16 acceptance:
+[run 35828807252](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/35828807252).
+All 67 migrations and 45 SQL suites pass, including viewer cancellation denial,
+revoked-approver replay denial, reset progress on renewed leases and rejection
+of the old worker token. Five added multi-connection tests prove simultaneous
+request replay, disjoint worker claims and both orders of cancellation versus
+completion, plus failure fencing before a delayed completion. These use real
+PostgreSQL lock waits in a disposable CI database with synthetic Auth/Storage
+schema; they do not prove native Supabase HTTP or actual storage uploads.
+
 The synchronous archive described below is superseded by a tenant-scoped,
 idempotent queue, private bounded ZIP worker, leased progress/cancellation,
 and refreshed signed download history in Publishing Studio. Snapshots contain
