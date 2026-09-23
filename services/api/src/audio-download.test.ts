@@ -12,6 +12,11 @@ const USER = "b6000000-0000-4000-8000-000000000003";
 const ids = ["b6000000-0000-4000-8000-000000000004", "b6000000-0000-4000-8000-000000000005"];
 const bytes = [Buffer.from("ID3fixture-one"), Buffer.from("ID3fixture-two")];
 const sha = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+const quality = { schemaVersion: 1, profile: "ACX technical preflight; not retailer approval", chapterDurationSeconds: 30,
+  sampleRateHz: 44100, channels: 1, bitRateKbps: 192, bitRateMode: "cbr", rmsDbfs: -20, samplePeakDbfs: -4,
+  technicalChecks: { rms: { status: "pass", value: -20, unit: "dBFS", limit: "-23 to -18 dB RMS" },
+    noiseFloor: { status: "manual_review", value: null, limit: "listening required" } }, reviewRequired: true,
+  acxNarrationPolicy: "explicit_authorization_required_for_ai_voice" };
 function fixture() {
   const tables: Record<string, Record<string, any>[]> = {
     audiobook_projects: [{ id: PROJECT, workspace_id: WORKSPACE, status: "succeeded", segment_count: 2 }],
@@ -66,10 +71,12 @@ test("assembled audio transport bounds and validates the binary response", async
   const output = Buffer.from("ID3assembled-chapter");
   const fetcher: typeof fetch = async (_url, init) => {
     assert.deepEqual(JSON.parse(String(init?.body)), { segmentsBase64: bytes.map((part) => part.toString("base64")) });
-    return new Response(output, { headers: { "content-type": "audio/mpeg", "x-artifact-sha256": sha(output) } });
+    return new Response(output, { headers: { "content-type": "audio/mpeg", "x-artifact-sha256": sha(output), "x-bookworm-audio-qc": JSON.stringify(quality) } });
   };
-  assert.deepEqual(await assembleChapterAudio(bytes, fetcher), output);
+  assert.deepEqual(await assembleChapterAudio(bytes, fetcher), { bytes: output, quality });
+  assert.deepEqual(await assembleChapterAudio(bytes, async () => new Response(output, { headers: { "x-artifact-sha256": sha(output) } })), { bytes: output, quality: null });
   await assert.rejects(assembleChapterAudio(bytes, async () => new Response(output)), /integrity/);
+  await assert.rejects(assembleChapterAudio(bytes, async () => new Response(output, { headers: { "x-artifact-sha256": sha(output), "x-bookworm-audio-qc": "{}" } })), /quality report/);
   await assert.rejects(assembleChapterAudio(bytes, async () => new Response(output, { headers: { "content-length": String(151 * 1024 * 1024) } })), /limit/);
   await assert.rejects(assembleChapterAudio(bytes, async () => new Response(null, { status: 422 })), /cannot be decoded/);
   await assert.rejects(assembleChapterAudio(bytes, async () => { throw new Error("private network detail"); }), /assembly is unavailable/);
@@ -82,13 +89,14 @@ test("download route returns a private attachment and releases its concurrency s
   app.decorate("supabaseFactory", () => data.sb);
   app.addHook("onRequest", async (req) => { req.userId = USER; req.userToken = "fixture"; });
   await app.register(errorHandlerPlugin);
-  audiobookRoutes(app, { fetcher: async () => new Response(output, { headers: { "x-artifact-sha256": sha(output) } }) });
+  audiobookRoutes(app, { fetcher: async () => new Response(output, { headers: { "x-artifact-sha256": sha(output), "x-bookworm-audio-qc": JSON.stringify(quality) } }) });
   for (let index = 0; index < 2; index++) {
     const response = await app.inject({ method: "GET", url: `/audiobook-jobs/${PROJECT}/audio-download` });
     assert.equal(response.statusCode, 200, response.body);
     assert.equal(response.headers["content-type"], "audio/mpeg");
     assert.equal(response.headers["content-disposition"], 'attachment; filename="chapter.mp3"');
     assert.equal(response.headers["cache-control"], "private, no-store");
+    assert.deepEqual(JSON.parse(String(response.headers["x-bookworm-audio-qc"])), quality);
     assert.deepEqual(response.rawPayload, output);
   }
   await app.close();

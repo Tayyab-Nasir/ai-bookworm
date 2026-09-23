@@ -69,8 +69,9 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
     assembling.add(key);
     try {
       const segments = await loadChapterAudio(app.supabaseFactory(req.userToken), projectId);
-      const bytes = await assembleChapterAudio(segments, options.fetcher);
-      return reply.header("cache-control", "private, no-store").header("content-disposition", 'attachment; filename="chapter.mp3"').type("audio/mpeg").send(bytes);
+      const result = await assembleChapterAudio(segments, options.fetcher);
+      if (result.quality) reply.header("x-bookworm-audio-qc", JSON.stringify(result.quality));
+      return reply.header("cache-control", "private, no-store").header("content-disposition", 'attachment; filename="chapter.mp3"').type("audio/mpeg").send(result.bytes);
     } finally { assembling.delete(key); }
   });
   app.get("/editions/:editionId/audiobook-jobs", async (req) => {

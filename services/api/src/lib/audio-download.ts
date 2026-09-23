@@ -8,6 +8,15 @@ const MAX_OUTPUT = 150 * 1024 * 1024;
 const projectSchema = z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), status: z.literal("succeeded"), segment_count: z.number().int().min(1).max(250) }).passthrough();
 const assetSchema = z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), storage_path: z.string(), mime_type: z.literal("audio/mpeg"),
   type: z.literal("audiobook_segment"), size_bytes: z.number().int().positive().max(50 * 1024 * 1024), checksum: z.string().regex(/^[a-f0-9]{64}$/i), deleted_at: z.null().optional() }).passthrough();
+const audioQualitySchema = z.object({
+  schemaVersion: z.literal(1), profile: z.string().max(120), chapterDurationSeconds: z.number().finite().nonnegative().max(7200),
+  sampleRateHz: z.number().int().positive(), channels: z.number().int().positive().max(2), bitRateKbps: z.number().int().positive(),
+  bitRateMode: z.enum(["cbr", "vbr", "unknown"]), rmsDbfs: z.number().finite().min(-200).max(0), samplePeakDbfs: z.number().finite().min(-200).max(0),
+  technicalChecks: z.record(z.string().max(60), z.object({ status: z.enum(["pass", "attention", "fail", "manual_review"]),
+    value: z.union([z.number().finite(), z.string().max(120)]).nullable(), unit: z.string().max(30).optional(), limit: z.string().max(200) }).strict()),
+  reviewRequired: z.boolean(), acxNarrationPolicy: z.literal("explicit_authorization_required_for_ai_voice"),
+}).strict();
+export type AudioQualityReport = z.infer<typeof audioQualitySchema>;
 
 /** Uses the caller's RLS-scoped client; never accepts URLs or source paths from a request. */
 export async function loadChapterAudio(sb: SupabaseClient, projectId: string): Promise<Buffer[]> {
@@ -47,7 +56,7 @@ export async function loadChapterAudio(sb: SupabaseClient, projectId: string): P
   return output;
 }
 
-export async function assembleChapterAudio(segments: Buffer[], fetcher: typeof fetch = fetch): Promise<Buffer> {
+export async function assembleChapterAudio(segments: Buffer[], fetcher: typeof fetch = fetch): Promise<{ bytes: Buffer; quality: AudioQualityReport | null }> {
   const base = process.env.RENDERING_SERVICE_URL ?? `http://127.0.0.1:${process.env.RENDERING_SERVICE_PORT ?? "8002"}`;
   const token = process.env.RENDERING_SERVICE_TOKEN || process.env.SERVICE_AUTH_TOKEN;
   const response = await fetcher(`${base.replace(/\/$/, "")}/audio/assemble`, {
@@ -73,5 +82,12 @@ export async function assembleChapterAudio(segments: Buffer[], fetcher: typeof f
   const bytes = Buffer.concat(chunks);
   const mp3 = bytes.subarray(0, 3).toString() === "ID3" || (bytes.length > 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);
   if (!mp3 || createHash("sha256").update(bytes).digest("hex") !== response.headers.get("x-artifact-sha256")) throw new AppError(503, "Assembled chapter integrity check failed.");
-  return bytes;
+  const qualityHeader = response.headers.get("x-bookworm-audio-qc");
+  let qualityResult: ReturnType<typeof audioQualitySchema.safeParse> | null = null;
+  if (qualityHeader) {
+    try { qualityResult = qualityHeader.length <= 8192 ? audioQualitySchema.safeParse(JSON.parse(qualityHeader)) : null; }
+    catch { qualityResult = null; }
+  }
+  if (qualityHeader && !qualityResult?.success) throw new AppError(503, "Audio quality report could not be verified.");
+  return { bytes, quality: qualityResult?.success ? qualityResult.data : null };
 }

@@ -59,6 +59,16 @@ an operational process. Saved agent claims are not evidence by themselves.
 
 ## Current local verification snapshot
 
+**2026-09-23 audiobook technical preflight:** the exact assembled private MP3
+now carries decoded RMS/sample-peak measurements and its rendered 44.1 kHz
+mono/192 kbps CBR profile. Noise floor, room tone, edits, spoken headings and
+pronunciation remain listening-only checks. ACX currently requires human
+narration unless AI/TTS is separately authorized; Bookworm AI voice must not be
+represented as ACX eligible or sent through an ACX package. Full `npm run
+verify` and an isolated 30-route Next production build pass after this slice.
+That does not establish retailer approval or live renderer deployment. See
+[`AUDIOBOOK_TECHNICAL_QC.md`](AUDIOBOOK_TECHNICAL_QC.md).
+
 **2026-09-18 pagination layout:** PDF `1.9.0` and core `1.0.6` prevent page
 numbers from overlapping the manuscript or extending beyond their margin
 boundary. Number font boxes clear trim by 0.5in and body by 6pt. Small margins

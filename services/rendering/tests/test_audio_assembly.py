@@ -24,7 +24,7 @@ def tones(tmp_path_factory):
     clips = []
     for index, (frequency, rate, channels) in enumerate(((440, 24000, 1), (880, 48000, 2))):
         output = root / f"tone-{index}.mp3"
-        ffmpeg("-f", "lavfi", "-i", f"sine=frequency={frequency}:duration=0.4:sample_rate={rate}",
+        ffmpeg("-f", "lavfi", "-i", f"sine=frequency={frequency}:duration=0.4:sample_rate={rate}", "-af", "volume=1.5",
             "-ac", str(channels), "-c:a", "libmp3lame", "-b:a", "96k", str(output))
         clips.append(output.read_bytes())
     return clips
@@ -59,6 +59,24 @@ def test_native_assembly_preserves_order_duration_format_and_determinism(tones, 
     assert (header >> 10) & 3 == 0  # 44.1 kHz
     assert (header >> 6) & 3 == 3  # Mono
     assert (header >> 12) & 15 == 11  # 192 kbps
+
+
+def test_quality_report_measures_output_and_keeps_listening_and_ai_policy_gates(tones):
+    artifact, checksum, quality = audio.assemble_audio_with_quality(tones)
+    assert checksum == hashlib.sha256(artifact).hexdigest()
+    assert quality["schemaVersion"] == 1
+    assert quality["chapterDurationSeconds"] == pytest.approx(0.8, abs=0.01)
+    assert quality["sampleRateHz"] == 44100
+    assert quality["channels"] == 1
+    assert quality["bitRateKbps"] == 192
+    assert quality["bitRateMode"] == "cbr"
+    assert quality["rmsDbfs"] == pytest.approx(-19.5, abs=1)
+    assert quality["samplePeakDbfs"] <= -3
+    assert quality["technicalChecks"]["rms"]["status"] == "pass"
+    assert quality["technicalChecks"]["noiseFloor"]["status"] == "manual_review"
+    assert quality["technicalChecks"]["roomTone"]["status"] == "manual_review"
+    assert quality["reviewRequired"] is True
+    assert quality["acxNarrationPolicy"] == "explicit_authorization_required_for_ai_voice"
 
 
 @pytest.mark.parametrize("data", [b"", b"ID3", b"http://example.test/source.mp3", b"RIFF" + b"x" * 100, b"\xff\xff\xff\xff"])
@@ -151,12 +169,12 @@ def test_subprocess_boundary_has_no_network_or_visible_window(tones, monkeypatch
         return original(arguments, **kwargs)
     monkeypatch.setattr(audio.subprocess, "run", capture)
     audio.assemble_audio(tones)
-    assert len(calls) == 3
-    for arguments, kwargs in calls:
+    assert len(calls) == 4
+    for index, (arguments, kwargs) in enumerate(calls):
         assert arguments[arguments.index("-protocol_whitelist") + 1] == "file"
         assert 0 < kwargs["timeout"] <= 120
         assert kwargs["stdin"] == subprocess.DEVNULL
-        assert kwargs["stderr"] == subprocess.DEVNULL
+        assert kwargs["stderr"] == (subprocess.PIPE if index == 3 else subprocess.DEVNULL)
         assert kwargs["creationflags"] == (subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
 
 

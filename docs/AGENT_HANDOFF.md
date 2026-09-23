@@ -36,6 +36,30 @@ or external login was touched. The live Google provider remains disabled until
 the app owner configures the client as documented in `docs/GOOGLE_OAUTH_SETUP.md`;
 Supabase may show an error before it ever redirects to this callback.
 
+### 2026-09-23 audiobook technical preflight (local source; not deployed)
+
+Chapter assembly now measures RMS and sample peak on the final MP3 and reports
+duration plus its 44.1 kHz mono/192 kbps CBR output profile with the private
+download. The Publishing Studio presents objective checks separately from
+manual listening checks for noise floor, room tone, pronunciation, edits, and
+spoken headings. No generation credits or persistent QC rows are added. Full
+`npm run verify` passes (260 API, 79 web, 65 migrations/45 SQL suites, 316
+services, 12 E2E, 30 security, load smoke, six deterministic evals); an
+isolated production web build passes with 30 routes. These are local checks,
+not live renderer deployment or retailer acceptance.
+
+ACX's current rules require a human narrator unless AI/TTS is separately
+authorized. This AI voice is therefore not marked ACX-eligible; the technical
+preflight is not retailer approval. Read `docs/AUDIOBOOK_TECHNICAL_QC.md` and
+recheck retailer policy before adding any audio retailer submission/package.
+No production service, live provider, customer audio, or retailer endpoint was
+used.
+
+Next: perform signed-in browser acceptance using synthetic audio only;
+implement durable QC history/author sign-off if required; then investigate a
+package/workflow for retailers whose current rules explicitly permit AI
+narration. Do not enable ACX submission without verified authorization.
+
 ### 2026-09-23 local release-gate rerun
 
 On branch `codex/paid-story-blueprint-20260923` at

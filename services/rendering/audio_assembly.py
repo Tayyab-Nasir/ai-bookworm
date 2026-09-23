@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -116,7 +117,56 @@ def _run(executable: str, arguments: list[str], deadline: float, *, decoding: bo
         raise RuntimeError("Audio assembly encoding failed.")
 
 
-def assemble_audio(segments: list[bytes]) -> tuple[bytes, str]:
+def _quality_report(executable: str, audio_path: Path, duration: float, deadline: float) -> dict[str, object]:
+    """Measure the final MP3. Noise, edits, and narration policy need human review."""
+    try:
+        result = subprocess.run(
+            [executable, "-hide_banner", "-loglevel", "info", "-nostdin", "-xerror",
+             "-protocol_whitelist", "file", "-i", str(audio_path), "-map", "0:a:0",
+             "-af", "astats=metadata=0:reset=0:measure_perchannel=none:measure_overall=RMS_level+Peak_level",
+             "-f", "null", "-"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            timeout=_remaining(deadline), check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("Audio quality analysis exceeded its time limit.") from error
+    except OSError as error:
+        raise RuntimeError("Audio quality analysis runtime is unavailable.") from error
+    if result.returncode:
+        raise RuntimeError("Audio quality analysis failed.")
+    details = result.stderr.decode("utf-8", errors="replace")
+    rms_values = re.findall(r"RMS level dB:\s*([-+]?\d+(?:\.\d+)?)", details)
+    peak_values = re.findall(r"Peak level dB:\s*([-+]?\d+(?:\.\d+)?)", details)
+    if not rms_values or not peak_values:
+        raise RuntimeError("Audio quality measurements were unavailable.")
+    rms_dbfs, peak_dbfs = float(rms_values[-1]), float(peak_values[-1])
+    checks: dict[str, dict[str, object]] = {
+        "chapterDuration": {"status": "pass" if 0 < duration <= 7200 else "fail", "value": round(duration, 3), "unit": "seconds", "limit": "no longer than 120 minutes"},
+        "rms": {"status": "pass" if -23 <= rms_dbfs <= -18 else "attention", "value": round(rms_dbfs, 2), "unit": "dBFS", "limit": "-23 to -18 dB RMS"},
+        "samplePeak": {"status": "pass" if peak_dbfs <= -3 else "attention", "value": round(peak_dbfs, 2), "unit": "dBFS", "limit": "no higher than -3 dBFS"},
+        "fileProfile": {"status": "pass", "value": "MP3, mono, 44.1 kHz, 192 kbps CBR", "limit": "at least 192 kbps CBR, 44.1 kHz, mono or stereo"},
+        "noiseFloor": {"status": "manual_review", "value": None, "limit": "no higher than -60 dB RMS; requires quiet-room listening"},
+        "roomTone": {"status": "manual_review", "value": None, "limit": "1 to 5 seconds at head and tail; requires listening"},
+        "pronunciationAndEdits": {"status": "manual_review", "value": None, "limit": "review names, artifacts, outtakes, mouth noise, and chapter heading"},
+    }
+    return {
+        "schemaVersion": 1,
+        "profile": "ACX technical preflight; not retailer approval",
+        "chapterDurationSeconds": round(duration, 3),
+        "sampleRateHz": SAMPLE_RATE,
+        "channels": 1,
+        "bitRateKbps": 192,
+        "bitRateMode": "cbr",
+        "rmsDbfs": round(rms_dbfs, 2),
+        "samplePeakDbfs": round(peak_dbfs, 2),
+        "technicalChecks": checks,
+        "reviewRequired": any(item["status"] != "pass" for item in checks.values()),
+        "acxNarrationPolicy": "explicit_authorization_required_for_ai_voice",
+    }
+
+
+def assemble_audio_with_quality(segments: list[bytes]) -> tuple[bytes, str, dict[str, object]]:
     """Decode segments in order, concatenate PCM, then encode one 192 kbps MP3.
 
     Reject rather than truncate input, decoded duration, output size or timeout.
@@ -171,9 +221,16 @@ def assemble_audio(segments: list[bytes]) -> tuple[bytes, str]:
                 raise ValueError("Assembled audio exceeds the 150 MiB output limit.")
             artifact = output.read_bytes()
             _validate_mp3(artifact, deadline)
+            quality = _quality_report(executable, output, pcm_size / PCM_BYTES_PER_SECOND, deadline)
             _remaining(deadline)
-            return artifact, hashlib.sha256(artifact).hexdigest()
+            return artifact, hashlib.sha256(artifact).hexdigest(), quality
     except OSError as error:
         raise RuntimeError("Audio assembly temporary storage is unavailable.") from error
     finally:
         _ASSEMBLY_LOCK.release()
+
+
+def assemble_audio(segments: list[bytes]) -> tuple[bytes, str]:
+    """Compatibility wrapper for existing internal callers that need no QC payload."""
+    artifact, checksum, _quality = assemble_audio_with_quality(segments)
+    return artifact, checksum

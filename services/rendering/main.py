@@ -1,6 +1,7 @@
 """EPUB/PDF rendering service. Deterministic artifacts + preflight."""
 import base64
 import hmac
+import json
 import os
 import sys
 from math import ceil
@@ -27,7 +28,7 @@ from rules import load_ruleset  # noqa: E402
 from print_fonts import print_font_issues  # noqa: E402
 from wrap_cover import VERSION as WRAP_VERSION, render_wrap_cover  # noqa: E402
 from preflight import Finding  # noqa: E402
-from audio_assembly import assemble_audio  # noqa: E402
+from audio_assembly import assemble_audio_with_quality  # noqa: E402
 
 app = FastAPI(title="bookworm-rendering")
 
@@ -87,12 +88,13 @@ def assemble_chapter(req: AudioAssemblyRequest):
         raise HTTPException(422, "chapter audio exceeds input limit")
     try:
         segments = [base64.b64decode(value, validate=True) for value in req.segmentsBase64]
-        audio, checksum = assemble_audio(segments)
+        audio, checksum, quality = assemble_audio_with_quality(segments)
     except ValueError as error:
         raise HTTPException(422, "invalid or oversized chapter audio") from error
     except RuntimeError as error:
         raise HTTPException(503, "audio assembly is unavailable or busy") from error
-    return Response(audio, media_type="audio/mpeg", headers={"x-artifact-sha256": checksum, "cache-control": "no-store"})
+    return Response(audio, media_type="audio/mpeg", headers={"x-artifact-sha256": checksum,
+        "x-bookworm-audio-qc": json.dumps(quality, separators=(",", ":")), "cache-control": "no-store"})
 
 
 def _composed_cover(req, edition) -> tuple[bytes | None, str | None]:

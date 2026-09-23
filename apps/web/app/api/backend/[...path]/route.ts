@@ -46,7 +46,11 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     const upstream = await fetch(target, { method: request.method, headers, body: body as BodyInit | undefined, cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(180_000) });
     if (upstream.status >= 300 && upstream.status < 400) return auth.finish(authError(502, "Unexpected API redirect."));
     const response = new NextResponse(upstream.body, { status: upstream.status, headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" } });
-    if (upstream.headers.get("content-disposition") === 'attachment; filename="chapter.mp3"') response.headers.set("content-disposition", 'attachment; filename="chapter.mp3"');
+    if (upstream.headers.get("content-disposition") === 'attachment; filename="chapter.mp3"') {
+      response.headers.set("content-disposition", 'attachment; filename="chapter.mp3"');
+      const audioQc = upstream.headers.get("x-bookworm-audio-qc");
+      if (audioQc && audioQc.length <= 8192) response.headers.set("x-bookworm-audio-qc", audioQc);
+    }
     return auth.finish(response);
   } catch (error) {
     const response = authError(503, error instanceof AuthConfigurationError ? error.message : "The workspace service is unavailable. Your changes have not been confirmed saved.", "dependency_unavailable");
