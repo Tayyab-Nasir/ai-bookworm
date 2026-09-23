@@ -196,6 +196,56 @@ export interface MaterializeStoryBlueprintChapterRequest {
   idempotencyKey: string;
 }
 
+/** A server-approved model option for one paid, review-only Story Blueprint proposal. */
+export interface StoryBlueprintModelChoice {
+  id: string;
+  label: string;
+  model: string;
+  priceVersion: string;
+  policyVersion: string;
+}
+
+/** A fixed maximum-credit offer. It never contains the private source snapshot. */
+export interface StoryBlueprintQuote {
+  id: string;
+  requestId: string;
+  sourceRevision: number;
+  model: string;
+  reservedCredits: number;
+  expiresAt: string;
+  acceptedJobId: string | null;
+  status: "ready" | "expired" | "accepted";
+}
+
+/** A private, saved request awaiting exact provider token counting. */
+export interface StoryBlueprintQuoteRequest {
+  id: string;
+  status: "queued" | "counting" | "ready" | "failed";
+}
+
+/** No source snapshot, provider payload, price, or credit hold is exposed here. */
+export interface StoryBlueprintQuotePreparation {
+  request: StoryBlueprintQuoteRequest;
+  proposal: StoryBlueprintQuote | null;
+}
+
+/** Review-only structured output. Applying it remains a separate, explicit action. */
+export interface StoryBlueprintCandidate {
+  suggestionKind: "story_blueprint_candidate";
+  status: "pending";
+  story: StoryBlueprintStory;
+  chapterPlan: StoryBlueprintPlanItem[];
+  rationale: string;
+  confidence: number;
+}
+
+export interface StoryBlueprintProposalResult {
+  proposal: StoryBlueprintQuote;
+  candidate: StoryBlueprintCandidate | null;
+  /** Pending work is private; financial review/failed work requires operator action. */
+  reviewStatus?: "pending" | "ready" | "requires_review" | "failed";
+}
+
 export interface GenerateImageRequest {
   referenceAssetIds?: string[];
   workspaceId: string;
@@ -618,6 +668,20 @@ export function createClient(opts: ClientOptions) {
       call<{ blueprint: StoryBlueprint; role: string }>("PUT", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint`, body),
     materializeStoryBlueprintChapter: (bookId: string, planItemId: string, body: MaterializeStoryBlueprintChapterRequest) =>
       call<{ chapter: Chapter }>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/chapters/${encodeURIComponent(planItemId)}/materialize`, body),
+    listStoryBlueprintModels: (bookId: string) =>
+      call<{ catalogVersion: string; models: StoryBlueprintModelChoice[] }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/models`),
+    requestStoryBlueprintQuote: (bookId: string, body: { modelId: string; idempotencyKey: string; allowProviderTokenCounting: true }) =>
+      call<StoryBlueprintQuotePreparation>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quotes`, body),
+    getStoryBlueprintQuoteRequest: (bookId: string, requestId: string) =>
+      call<StoryBlueprintQuotePreparation>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quote-requests/${encodeURIComponent(requestId)}`),
+    getStoryBlueprintQuote: (bookId: string, proposalId: string) =>
+      call<{ proposal: StoryBlueprintQuote }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quotes/${encodeURIComponent(proposalId)}`),
+    acceptStoryBlueprintQuote: (bookId: string, proposalId: string, expectedCredits: number) =>
+      call<{ jobId: string; status: "queued" | "running" | "succeeded" | "failed" }>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quotes/${encodeURIComponent(proposalId)}/accept`, { expectedCredits }),
+    getStoryBlueprintProposal: (bookId: string, proposalId: string) =>
+      call<StoryBlueprintProposalResult>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/proposals/${encodeURIComponent(proposalId)}`),
+    applyStoryBlueprintProposal: (bookId: string, proposalId: string, expectedRevision: number) =>
+      call<{ applied: true; revision: number }>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/proposals/${encodeURIComponent(proposalId)}/apply`, { expectedRevision }),
     listChapters: (bookId: string) => call<{ chapters: Chapter[] }>("GET", `/v1/books/${bookId}/chapters`),
     createChapter: (bookId: string, body: { title: string; nodes?: BookNode[]; idempotencyKey?: string }) =>
       call<{ chapter: Chapter }>("POST", `/v1/books/${bookId}/chapters`, body),

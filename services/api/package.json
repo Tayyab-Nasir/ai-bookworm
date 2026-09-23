@@ -12,6 +12,7 @@
     "worker:ai": "tsx ../../workers/ai/worker.ts",
     "worker:audiobook": "tsx ../../workers/audiobook/worker.ts",
     "worker:translation": "tsx ../../workers/translation/worker.ts",
+    "worker:story-blueprint": "tsx ../../workers/story-blueprint/worker.ts",
     "storage:orphan-report": "tsx ../../workers/maintenance/storage-orphan-report.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts"

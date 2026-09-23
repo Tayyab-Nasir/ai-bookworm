@@ -99,6 +99,7 @@
 | REDIS_URL | api (/ready) | current config | Readiness compatibility only; the publishing queue is PostgreSQL-backed. |
 | QDRANT_URL / QDRANT_API_KEY | optional retrieval experiments | no | The author-facing book search uses PostgreSQL full-text retrieval. |
 | OPENAI_API_KEY / DEFAULT_AI_PROVIDER / DEFAULT_AI_MODEL | AI text and translation | yes | Keep the key server-only. Production defaults to OpenAI and fails closed without a key. |
+| STORY_BLUEPRINT_PRICING_CATALOG_JSON | Paid Story Blueprint proposal quote catalog | no | Server-only approved model/rate/policy snapshot. Blank or invalid disables the paid Blueprint proposal UI; do not use `NEXT_PUBLIC_*`. |
 | OPENAI_TRANSLATION_MODEL | translation worker | no | Defaults to `DEFAULT_AI_MODEL`, then `gpt-6-astra`; never expose it or the API key to the browser. |
 | OPENAI_IMAGE_MODEL | API image generation | no | Defaults to `gpt-image-2.5-sunburst`. |
 | OPENAI_TTS_MODEL | audiobook speech generation | no | Defaults to `gpt-4o-mini-tts`; the audiobook worker remains a release gap. |
@@ -119,6 +120,33 @@ Publishing worker pool selection is a command-line setting, not an environment
 variable: `--actions=render,validate,export_package`. Lease duration and poll
 interval currently use conservative code defaults; make them explicit settings
 before production tuning.
+
+## Paid Story Blueprint proposal workers
+
+- Run at least one separately supervised `npm run worker:story-blueprint -- --prepare-quotes`
+  process to count exact frozen quote inputs. Run
+  `npm run worker:story-blueprint -- --quoted` for proposals that customers
+  explicitly accepted and funded. These are separate queue modes; never start
+  proposal generation from quote preparation.
+- Both modes require server-only Supabase service credentials and the private
+  AI service URL/token. Configure an approved, dated
+  `STORY_BLUEPRINT_PRICING_CATALOG_JSON`; an empty or invalid catalog disables
+  quote models. Do not place this catalog or OpenAI credentials in browser
+  environment variables.
+- Quote counting leases have bounded retries. If a count may have reached
+  OpenAI and the worker loses the result, the request becomes
+  `counting_outcome_unknown`; it is not automatically recounted. The author must
+  explicitly prepare another quote. This request never reserves credits.
+- After explicit credit confirmation, the generation worker performs a
+  hash-bound provider call, saves a private measured receipt and candidate,
+  then settles the hold. Unknown dispatch outcomes retain the full hold for
+  financial review and cannot be redispatched automatically. Only settled
+  completed candidates are visible; applying one requires a separate revision
+  check and author action.
+- The migration and local PostgreSQL tests do not configure or supervise these
+  production processes. Confirm queue age, failed quote counts, held credits,
+  and `requires_review` outcomes in deployment monitoring before enabling the
+  commercial workflow.
 
 ## Admin console
 - The web console is available at `/admin`; both the page and `/v1/admin/*`

@@ -9,6 +9,7 @@ import { bookRoutes } from "./routes/books.js";
 import { chapterRoutes } from "./routes/chapters.js";
 import { bookMemoryRoutes } from "./routes/book-memory.js";
 import { storyBlueprintRoutes } from "./routes/story-blueprints.js";
+import { storyBlueprintProposalRoutes } from "./routes/story-blueprint-proposals.js";
 import { assetRoutes } from "./routes/assets.js";
 import { folderRoutes } from "./routes/folders.js";
 import { collabRoutes } from "./routes/collab.js";
@@ -60,6 +61,7 @@ export async function buildApp(
     chapterRoutes(v1);
     bookMemoryRoutes(v1);
     storyBlueprintRoutes(v1);
+    storyBlueprintProposalRoutes(v1);
     metadataGenerationRoutes(v1, { fetcher: opts.aiFetch });
     aiRoutes(v1, { fetcher: opts.aiFetch });
     audiobookRoutes(v1, { fetcher: opts.renderFetch });

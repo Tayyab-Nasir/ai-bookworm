@@ -58,6 +58,39 @@ Approval flags/references are operator audit metadata, not evidence that the
 owner actually approved a price. Verify official model/rate data and obtain the
 commercial decision before configuring this on a deployed system.
 
+### Server-owned Story Blueprint proposal catalog
+
+`STORY_BLUEPRINT_PRICING_CATALOG_JSON` is a separate, optional server-only
+catalog for the paid, review-only Story Blueprint proposal flow. When it is
+absent, invalid, not yet effective, or expired, the model-list endpoint fails
+closed and the product offers no paid Blueprint generation. It must never be
+sent to a browser or stored as a `NEXT_PUBLIC_*` variable.
+
+Each selected entry pins the OpenAI model, uncached/cached input and output
+rates, customer-credit policy, maximum input/output token bounds, catalog
+approval reference, and quote lifetime. After explicit consent, the API stores
+one immutable source snapshot and queues a leased `--prepare-quotes` worker to
+count the exact saved Blueprint input and output cap. A payer-scoped status
+endpoint recovers the queue. One active count is allowed per author/book, with
+a five-per-hour ceiling. An expired count lease is terminalized as unknown and
+never automatically re-counted. Counting produces one immutable maximum-credit
+quote; it does not generate content or hold a credit balance.
+
+After the author explicitly confirms the exact credit hold, the separate
+`--quoted` leased worker
+can make one hash-bound OpenAI request. It saves the provider request ID,
+measured token split, and private candidate before settling credits. The
+candidate becomes reviewable only after the hold has settled and the job has
+completed. Applying it is a separate revision-checked author action; it never
+automatically changes a manuscript chapter, materializes a chapter, or
+publishes a book.
+
+Do not seed an offer from an example or stale rate table. Verify the model
+availability and current official rate data, decide the credit conversion and
+margin, set a dated catalog version/expiry, then run the local quote, worker,
+and reconciliation tests before setting this environment variable in an
+operator-controlled secret store.
+
 ### Versioned calculation component
 
 `services/api/src/lib/usage-pricing.ts` provides pure quote/reconciliation math.

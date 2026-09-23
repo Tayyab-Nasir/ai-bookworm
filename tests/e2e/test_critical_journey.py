@@ -16,6 +16,7 @@ import base64
 import hashlib
 import importlib
 import json
+import os
 import sys
 import zipfile
 import shutil
@@ -50,6 +51,12 @@ def _client(name: str) -> TestClient:
             sys.path.pop(0)
             sys.modules[f"{n}_main"] = sys.modules.pop("main")
             _apps[n] = mod.app
+    if name == "ai":
+        # Internal AI endpoints fail closed unless their private service token
+        # is configured. Keep E2E provider-free with the deterministic mock.
+        os.environ.setdefault("AI_SERVICE_TOKEN", "e2e-private-service-token")
+        os.environ.setdefault("DEFAULT_AI_PROVIDER", "mock")
+        return TestClient(_apps[name], headers={"x-service-token": os.environ["AI_SERVICE_TOKEN"]})
     return TestClient(_apps[name])
 
 

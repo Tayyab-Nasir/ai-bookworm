@@ -4,11 +4,13 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { ApiClientError, type StoryBlueprint, type StoryBlueprintPlanItem, type StoryBlueprintStory } from "@bookworm/api-client";
 import { apiClient } from "./api";
+import StoryBlueprintProposalPanel from "./StoryBlueprintProposalPanel";
 
 type StoryBlueprintResult = { blueprint: StoryBlueprint | null; role: string };
 type StoryBlueprintDraft = Pick<StoryBlueprint, "story" | "chapterPlan">;
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
+const PAID_PROPOSAL_ROLES = new Set(["owner", "admin", "editor", "writer"]);
 const panel = "rounded-2xl border border-white/10 bg-white/[0.025] p-5 sm:p-6";
 const input = "mt-2 min-h-11 w-full rounded-xl border border-white/15 bg-black/35 px-3.5 py-2.5 text-sm text-white outline-none transition duration-200 placeholder:text-white/30 focus:border-white/50 focus:ring-2 focus:ring-white/15 disabled:cursor-not-allowed disabled:opacity-55";
 const primary = "inline-flex min-h-11 items-center justify-center rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black outline-none transition duration-200 hover:bg-white/90 focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black disabled:cursor-not-allowed disabled:opacity-45";
@@ -128,6 +130,7 @@ export default function StoryBlueprintClient({ bookId }: { bookId: string }) {
   const savedDraft = useMemo(() => cloneDraft(blueprint), [blueprint]);
   const dirty = serializedDraft(draft) !== serializedDraft(savedDraft);
   const editable = EDIT_ROLES.has(role);
+  const paidProposalEditable = PAID_PROPOSAL_ROLES.has(role);
   const busy = loading || saving || materializing !== null;
   const materialized = useMemo(() => new Map((blueprint?.materializations ?? []).map((item) => [item.planItemId, item.chapterId])), [blueprint]);
 
@@ -358,5 +361,12 @@ export default function StoryBlueprintClient({ bookId }: { bookId: string }) {
         </aside>
       </div>
     </form>
+    <StoryBlueprintProposalPanel
+      bookId={bookId}
+      blueprint={blueprint}
+      editable={paidProposalEditable}
+      blocked={busy || conflict || dirty}
+      onApplied={load}
+    />
   </main>;
 }

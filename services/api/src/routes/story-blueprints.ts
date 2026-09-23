@@ -38,6 +38,8 @@ const chapterPlanSchema = z.array(chapterPlanItemSchema).max(200).superRefine((i
   }
 });
 
+export { storySchema as storyBlueprintStorySchema, chapterPlanSchema as storyBlueprintChapterPlanSchema };
+
 const saveSchema = z.object({
   expectedRevision: z.number().int().min(0),
   story: storySchema,
@@ -83,7 +85,7 @@ function currentRevision(details: unknown) {
   return Number.isSafeInteger(revision) ? revision : undefined;
 }
 
-function storyBlueprintRpcError(error: { code?: string; message?: string; details?: string | null }): never {
+export function storyBlueprintRpcError(error: { code?: string; message?: string; details?: string | null }): never {
   if (error.code === "40001") {
     const revision = currentRevision(error.details);
     throw new AppError(409, "Story blueprint changed. Reload before saving.", revision === undefined ? undefined : { currentRevision: revision });

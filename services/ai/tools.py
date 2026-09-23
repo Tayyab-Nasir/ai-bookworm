@@ -23,6 +23,50 @@ METADATA_SOURCE_REF_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+STORY_BLUEPRINT_DETAILS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": [
+        "workingTitle",
+        "premise",
+        "readerPromise",
+        "genre",
+        "tone",
+        "pointOfView",
+        "tense",
+        "targetWordCount",
+        "synopsis",
+        "theme",
+        "notes",
+    ],
+    "properties": {
+        "workingTitle": {"type": "string", "minLength": 1, "maxLength": 500},
+        "premise": {"type": "string", "maxLength": 12000},
+        "readerPromise": {"type": "string", "maxLength": 4000},
+        "genre": {"type": "string", "maxLength": 240},
+        "tone": {"type": "string", "maxLength": 240},
+        "pointOfView": {"type": "string", "maxLength": 120},
+        "tense": {"type": "string", "maxLength": 120},
+        "targetWordCount": {"type": ["integer", "null"], "minimum": 100, "maximum": 2000000},
+        "synopsis": {"type": "string", "maxLength": 24000},
+        "theme": {"type": "string", "maxLength": 4000},
+        "notes": {"type": "string", "maxLength": 12000},
+    },
+    "additionalProperties": False,
+}
+
+STORY_BLUEPRINT_CHAPTER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["id", "title", "purpose", "summary", "targetWords"],
+    "properties": {
+        "id": UUID,
+        "title": {"type": "string", "minLength": 1, "maxLength": 500},
+        "purpose": {"type": "string", "maxLength": 4000},
+        "summary": {"type": "string", "maxLength": 16000},
+        "targetWords": {"type": ["integer", "null"], "minimum": 10, "maximum": 200000},
+    },
+    "additionalProperties": False,
+}
+
 PROPOSE_EDIT_OPERATION_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["operationId", "type", "target", "payload", "expectedVersion"],
@@ -181,6 +225,30 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "uniqueItems": True,
                     "items": METADATA_SOURCE_REF_SCHEMA,
                 },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "propose_story_blueprint",
+        "description": (
+            "Propose one complete, review-only story blueprint. This tool never "
+            "saves, materializes chapters, spends credits, or publishes a book."
+        ),
+        "input_schema": {
+            "type": "object",
+            "required": ["story", "chapterPlan", "rationale", "confidence"],
+            "properties": {
+                "story": STORY_BLUEPRINT_DETAILS_SCHEMA,
+                "chapterPlan": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 200,
+                    "uniqueItems": True,
+                    "items": STORY_BLUEPRINT_CHAPTER_SCHEMA,
+                },
+                "rationale": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             },
             "additionalProperties": False,
         },

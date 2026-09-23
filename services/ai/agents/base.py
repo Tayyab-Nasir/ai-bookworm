@@ -54,6 +54,9 @@ class AgentResult:
     diagnostics: list[dict] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     error: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    requestId: str | None = None
 
     def to_dict(self) -> dict:
         d: dict[str, Any] = {
@@ -65,6 +68,12 @@ class AgentResult:
         }
         if self.error:
             d["error"] = self.error
+        if self.provider:
+            d["provider"] = self.provider
+        if self.model:
+            d["model"] = self.model
+        if self.requestId:
+            d["requestId"] = self.requestId
         return d
 
 
@@ -181,14 +190,7 @@ class BaseAgent:
         return result
 
     def _run(self, request: dict, job_id: str) -> AgentResult:
-        from prompts import load_prompt
-
-        system = load_prompt(self.agent_type, self.prompt_version) + "\n\n" + INJECTION_GUARDRAIL
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": self.build_user_message(request)},
-        ]
-        tools = self.tool_schemas()
+        messages, tools, tool_choice = self.provider_request(request)
         usage = Usage()
         suggestions: list[dict] = []
         diagnostics: list[dict] = []
@@ -197,10 +199,20 @@ class BaseAgent:
 
         # Read context is preloaded by the authorized API and bounded above.
         # Only result-producing tools are advertised; no ignored read-tool calls.
-        completion: Completion = self.provider.complete(messages, tools, self.model)
+        completion: Completion = self.provider.complete(
+            messages,
+            tools,
+            self.model,
+            max_output_tokens=getattr(self, "max_output_tokens", None),
+            tool_choice=tool_choice,
+        )
         usage.inputTokens += completion.usage.inputTokens
         usage.outputTokens += completion.usage.outputTokens
         usage.estimatedCostUsd += completion.usage.estimatedCostUsd
+        # This service makes one provider call per agent run. Preserve the
+        # provider-measured split exactly; a paid worker must fail closed when
+        # it is absent rather than treating it as zero usage.
+        usage.measuredTokens = completion.usage.measuredTokens
 
         if not completion.tool_calls and completion.text.strip():
             raise AgentValidationError(
@@ -217,7 +229,22 @@ class BaseAgent:
             suggestions=suggestions,
             diagnostics=diagnostics,
             usage=usage,
+            provider=getattr(self.provider, "name", None),
+            model=completion.model or self.model,
+            requestId=completion.request_id,
         )
+
+    def provider_request(self, request: dict) -> tuple[list[dict], list[dict], dict | str | None]:
+        from prompts import load_prompt
+
+        system = load_prompt(self.agent_type, self.prompt_version) + "\n\n" + INJECTION_GUARDRAIL
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": self.build_user_message(request)},
+        ], self.tool_schemas(), self.tool_choice()
+
+    def tool_choice(self) -> dict | str | None:
+        return None
 
     def handle_tool_payload(self, name: str, payload: dict, suggestions: list, diagnostics: list) -> None:
         """Route a validated tool payload into the result. Read tools are ignored

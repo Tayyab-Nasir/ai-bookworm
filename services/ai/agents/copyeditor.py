@@ -20,6 +20,7 @@ def _register():
     from agents.consistency import ConsistencyAgent as _C
     from agents.metadata import MetadataAgent as _M
     from agents.proofreader import ProofreaderAgent as _P
+    from agents.story_blueprint import StoryBlueprintAgent as _SB
     from agents.writer import WriterAgent as _W
 
     AGENTS[_P.agent_type] = _P
@@ -28,6 +29,7 @@ def _register():
     AGENTS[_C.agent_type] = _C
     AGENTS[_W.agent_type] = _W
     AGENTS[_M.agent_type] = _M
+    AGENTS[_SB.agent_type] = _SB
 
 
 _register()

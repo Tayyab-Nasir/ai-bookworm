@@ -13,13 +13,17 @@ class Usage:
     inputTokens: int = 0
     outputTokens: int = 0
     estimatedCostUsd: float = 0.0
+    measuredTokens: list[dict[str, str]] | None = None
 
     def to_dict(self) -> dict:
-        return {
+        value = {
             "inputTokens": self.inputTokens,
             "outputTokens": self.outputTokens,
             "estimatedCostUsd": self.estimatedCostUsd,
         }
+        if self.measuredTokens is not None:
+            value["measuredTokens"] = self.measuredTokens
+        return value
 
 
 @dataclass
@@ -27,12 +31,17 @@ class Completion:
     text: str = ""
     tool_calls: list[dict] = field(default_factory=list)  # [{"name":..., "input":{...}}]
     usage: Usage = field(default_factory=Usage)
+    model: str | None = None
+    # OpenAI's request identifier is the only provider receipt identifier the
+    # paid worker may persist. Never substitute an internal job ID for it.
+    request_id: str | None = None
 
 
 class Provider(Protocol):
     name: str
 
-    def complete(self, messages: list[dict], tools: list[dict], model: str) -> Completion:
+    def complete(self, messages: list[dict], tools: list[dict], model: str, *,
+                 max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> Completion:
         ...
 
 
@@ -64,22 +73,31 @@ class OpenAIProvider:
 
         self._client = openai.OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
 
-    def complete(self, messages: list[dict], tools: list[dict], model: str) -> Completion:
-        resp = self._client.responses.create(
-            model=model,
-            input=messages,
-            tools=[
-                {"type": "function", "name": t["name"], "description": t.get("description", ""), "parameters": t["input_schema"]}
-                for t in tools
-            ],
-        )
+    def complete(self, messages: list[dict], tools: list[dict], model: str, *,
+                 max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> Completion:
+        payload = {"model": model, "input": messages, "tools": openai_tools(tools)}
+        if max_output_tokens is not None:
+            payload["max_output_tokens"] = max_output_tokens
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        resp = self._client.responses.create(**payload)
         calls = []
         for item in resp.output:
             if item.type == "function_call":
                 calls.append({"name": item.name, "input": json.loads(item.arguments or "{}")})
         ti = resp.usage.input_tokens if resp.usage else 0
         to = resp.usage.output_tokens if resp.usage else 0
-        return Completion(resp.output_text or "", calls, Usage(ti, to, _cost(model, ti, to)))
+        details = getattr(resp.usage, "input_tokens_details", None) if resp.usage else None
+        cached = getattr(details, "cached_tokens", 0)
+        measured = None
+        if all(isinstance(value, int) and value >= 0 for value in (ti, to, cached)) and cached <= ti:
+            measured = [
+                {"dimension": "text_input", "tokens": str(ti - cached)},
+                {"dimension": "text_cached_input", "tokens": str(cached)},
+                {"dimension": "text_output", "tokens": str(to)},
+            ]
+        return Completion(resp.output_text or "", calls, Usage(ti, to, _cost(model, ti, to), measured),
+                          getattr(resp, "model", model), getattr(resp, "_request_id", None))
 
 
 class MockProvider:
@@ -98,8 +116,10 @@ class MockProvider:
         responses = data if isinstance(data, list) else [data]
         return cls(responses)
 
-    def complete(self, messages: list[dict], tools: list[dict], model: str) -> Completion:
-        self.calls.append({"messages": messages, "tools": tools, "model": model})
+    def complete(self, messages: list[dict], tools: list[dict], model: str, *,
+                 max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> Completion:
+        self.calls.append({"messages": messages, "tools": tools, "model": model,
+                           "maxOutputTokens": max_output_tokens, "toolChoice": tool_choice})
         c = self.responses[self._i % len(self.responses)]
         self._i += 1
         return completion_from_dict(c) if isinstance(c, dict) else c
@@ -110,7 +130,17 @@ def completion_from_dict(d: dict) -> Completion:
         text=d.get("text", ""),
         tool_calls=d.get("toolCalls", d.get("tool_calls", [])),
         usage=Usage(**d.get("usage", {})),
+        model=d.get("model"),
+        request_id=d.get("requestId", d.get("request_id")),
     )
+
+
+def openai_tools(tools: list[dict]) -> list[dict]:
+    """Use identical function definitions for token counting and generation."""
+    return [
+        {"type": "function", "name": tool["name"], "description": tool.get("description", ""), "parameters": tool["input_schema"]}
+        for tool in tools
+    ]
 
 
 _REGISTRY = {"openai": OpenAIProvider, "mock": MockProvider}

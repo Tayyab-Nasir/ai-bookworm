@@ -159,6 +159,7 @@ def test_metadata_candidate_round_trips_through_private_http_job(monkeypatch):
     main._JOBS.clear()
     main._JOBS_BY_IDEMPOTENCY.clear()
     main._SUGGESTIONS.clear()
+    monkeypatch.setenv("DEFAULT_AI_PROVIDER", "mock")
     monkeypatch.delenv("AI_SERVICE_TOKEN", raising=False)
     provider = MockProvider([tool_call()])
     monkeypatch.setattr(main, "get_provider", lambda: provider)

@@ -598,6 +598,194 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/models:
+    get:
+      tags: [v1]
+      operationId: listStoryBlueprintProposalModels
+      summary: List server-approved paid Story Blueprint proposal models
+      description: >-
+        Requires book membership. Returns only approved, current model choices;
+        it does not expose pricing internals, send source text to a provider,
+        create a quote, hold credits, or start generation.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Current server-approved model catalog
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintModelsResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/quotes:
+    post:
+      tags: [v1]
+      operationId: requestStoryBlueprintQuote
+      summary: Queue or recover exact token counting for a fixed paid AI proposal quote
+      description: >-
+        Requires writing access and explicit consent. The API saves a private,
+        immutable source snapshot and returns 202 while the separately
+        supervised --prepare-quotes worker asks OpenAI only to count input
+        tokens. The payer can poll the quote-request endpoint. This does not
+        generate a proposal, reserve or charge credits, update the Story
+        Blueprint, change manuscript chapters, or publish anything. An existing
+        ready quote is returned as an idempotent replay. The quote must be
+        explicitly accepted before the --quoted worker can generate.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoryBlueprintQuotePreparationRequest" }
+      responses:
+        "200":
+          description: Existing idempotency key recovered with its safe current state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintQuotePreparationResponse" }
+        "202":
+          description: Durable quote count queued or already in progress; no hold or generation exists
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintQuotePreparationResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/quote-requests/{requestId}:
+    get:
+      tags: [v1]
+      operationId: getStoryBlueprintQuoteRequest
+      summary: Recover the caller's queued Story Blueprint quote count
+      description: >-
+        Requires book membership and quote-request ownership. Returns only the
+        request ID, safe status, and a safe quote projection when ready. Expired
+        counting leases are reported as failed with an unknown count outcome;
+        they are never counted again automatically.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Safe status and optional ready quote
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintQuotePreparationResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/quotes/{proposalId}:
+    get:
+      tags: [v1]
+      operationId: getStoryBlueprintQuote
+      summary: Read the caller's safe fixed Story Blueprint proposal quote
+      description: >-
+        Requires book membership and quote ownership. The response omits the
+        saved source snapshot, input hash, provider payload, and billing receipt.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Safe fixed quote projection
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintQuoteResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/quotes/{proposalId}/accept:
+    post:
+      tags: [v1]
+      operationId: acceptStoryBlueprintQuote
+      summary: Explicitly fund one fixed Story Blueprint AI proposal quote
+      description: >-
+        Requires writing access, quote ownership, an unexpired quote, and the
+        exact maximum credit total returned by the quote. It creates one queued
+        review-only AI job and holds the maximum credits. It never applies an AI
+        result to the Story Blueprint or changes manuscript chapters.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoryBlueprintQuoteAcceptanceRequest" }
+      responses:
+        "202":
+          description: Credit hold confirmed and one review-only proposal job queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintQuoteAcceptanceResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/proposals/{proposalId}:
+    get:
+      tags: [v1]
+      operationId: getStoryBlueprintProposal
+      summary: Read the caller's paid Story Blueprint review candidate when settled
+      description: >-
+        Requires book membership and quote ownership. candidate is null while
+        no valid result is available or the funded quote is not settled. The
+        reviewStatus distinguishes pending work from a financial-review hold or
+        terminal safe failure. The response never includes the immutable source snapshot, provider request,
+        provider receipt, or any action that changes the saved blueprint.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Safe quote and nullable review-only candidate
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintProposalResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/proposals/{proposalId}/apply:
+    post:
+      tags: [v1]
+      operationId: applyStoryBlueprintProposal
+      summary: Explicitly revision-apply a settled AI proposal to the Story Blueprint
+      description: >-
+        Requires writing access, quote ownership, a settled candidate, and the
+        exact source revision. The operation is optimistic and fails rather than
+        overwriting a newer plan. It replaces only the saved Story Blueprint's
+        story direction and chapter plan; it never alters manuscript chapters,
+        publishes, or invokes a provider.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoryBlueprintProposalApplyRequest" }
+      responses:
+        "200":
+          description: Candidate explicitly applied to the Story Blueprint
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintProposalApplyResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/chapters/{chapterId}/operations:
     post:
       tags: [v1]
@@ -2361,6 +2549,124 @@ components:
       properties:
         expectedRevision: { type: integer, minimum: 0 }
         idempotencyKey: { type: string, minLength: 8, maxLength: 160 }
+    StoryBlueprintModelChoice:
+      type: object
+      additionalProperties: false
+      required: [id, label, model, priceVersion, policyVersion]
+      properties:
+        id: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" }
+        label: { type: string }
+        model: { type: string }
+        priceVersion: { type: string }
+        policyVersion: { type: string }
+    StoryBlueprintModelsResponse:
+      type: object
+      additionalProperties: false
+      required: [catalogVersion, models]
+      properties:
+        catalogVersion: { type: string }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/StoryBlueprintModelChoice" }
+    StoryBlueprintQuotePreparationRequest:
+      type: object
+      additionalProperties: false
+      required: [modelId, idempotencyKey, allowProviderTokenCounting]
+      properties:
+        modelId: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" }
+        idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+        allowProviderTokenCounting:
+          type: boolean
+          const: true
+          description: Explicit consent to send the saved Story Blueprint to OpenAI only for exact input-token counting.
+    StoryBlueprintQuote:
+      type: object
+      additionalProperties: false
+      required: [id, requestId, sourceRevision, model, reservedCredits, expiresAt, acceptedJobId, status]
+      properties:
+        id: { type: string, format: uuid }
+        requestId: { type: string, format: uuid }
+        sourceRevision: { type: integer, minimum: 1 }
+        model: { type: string }
+        reservedCredits: { type: integer, minimum: 1, maximum: 2147483647 }
+        expiresAt: { type: string, format: date-time }
+        acceptedJobId: { type: [string, "null"], format: uuid }
+        status: { type: string, enum: [ready, expired, accepted] }
+    StoryBlueprintQuoteRequest:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, counting, ready, failed] }
+    StoryBlueprintQuotePreparationResponse:
+      type: object
+      additionalProperties: false
+      required: [request, proposal]
+      properties:
+        request: { $ref: "#/components/schemas/StoryBlueprintQuoteRequest" }
+        proposal:
+          oneOf:
+            - { $ref: "#/components/schemas/StoryBlueprintQuote" }
+            - { type: "null" }
+    StoryBlueprintQuoteResponse:
+      type: object
+      additionalProperties: false
+      required: [proposal]
+      properties:
+        proposal: { $ref: "#/components/schemas/StoryBlueprintQuote" }
+    StoryBlueprintQuoteAcceptanceRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedCredits]
+      properties:
+        expectedCredits: { type: integer, minimum: 1, maximum: 2147483647 }
+    StoryBlueprintQuoteAcceptanceResponse:
+      type: object
+      additionalProperties: false
+      required: [jobId, status]
+      properties:
+        jobId: { type: string, format: uuid }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+    StoryBlueprintCandidate:
+      type: object
+      additionalProperties: false
+      required: [suggestionKind, status, story, chapterPlan, rationale, confidence]
+      properties:
+        suggestionKind: { type: string, const: story_blueprint_candidate }
+        status: { type: string, const: pending }
+        story: { $ref: "#/components/schemas/StoryBlueprintStory" }
+        chapterPlan:
+          type: array
+          minItems: 1
+          maxItems: 200
+          items: { $ref: "#/components/schemas/StoryBlueprintPlanItem" }
+        rationale: { type: string, minLength: 1, maxLength: 4000 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+    StoryBlueprintProposalResponse:
+      type: object
+      additionalProperties: false
+      required: [proposal, candidate, reviewStatus]
+      properties:
+        proposal: { $ref: "#/components/schemas/StoryBlueprintQuote" }
+        candidate:
+          oneOf:
+            - { $ref: "#/components/schemas/StoryBlueprintCandidate" }
+            - { type: "null" }
+        reviewStatus: { type: string, enum: [pending, ready, requires_review, failed] }
+    StoryBlueprintProposalApplyRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision]
+      properties:
+        expectedRevision: { type: integer, minimum: 1 }
+    StoryBlueprintProposalApplyResponse:
+      type: object
+      additionalProperties: false
+      required: [applied, revision]
+      properties:
+        applied: { type: boolean, const: true }
+        revision: { type: integer, minimum: 1 }
     BookSearchRequest:
       type: object
       additionalProperties: false
