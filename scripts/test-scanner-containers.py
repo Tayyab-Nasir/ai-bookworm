@@ -48,16 +48,23 @@ def main():
                 data=json.dumps({"path": path, "body": body, "token": token})))
 
         def wait_ready():
+            result = None
             for _ in range(120):
                 try:
                     result = request("/ready")
                     if result["status"] == 200:
                         assert result["body"]["engine"]["databaseVersion"].isdigit()
                         return result["body"]["engine"]
+                    if result["body"].get("error", {}).get("code") == "scanner_database_stale":
+                        version = docker("exec", scanner, "python", "-c",
+                            "import socket; s=socket.create_connection(('clamd',3310),timeout=5); "
+                            "s.sendall(b'zVERSION\\0'); print(repr(s.recv(512)))")
+                        raise AssertionError("Signature freshness refused: " + version)
                 except (RuntimeError, ValueError):
                     pass
                 time.sleep(1)
-            raise AssertionError("ClamAV readiness failed: " + docker("logs", engine)[-2000:])
+            raise AssertionError("ClamAV readiness failed: " + json.dumps(result)
+                + " engine logs: " + docker("logs", engine)[-2000:])
 
         print("PASS real engine ready: " + json.dumps(wait_ready()), flush=True)
         clean = b"A harmless Bookworm manuscript fixture."
