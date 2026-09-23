@@ -55,7 +55,20 @@ test("redirects stay inside author routes and same-origin is required", () => {
 });
 
 test("local auth keeps the active development origin instead of a stale APP_URL port", () => {
-  assert.equal(appOrigin(new NextRequest("http://127.0.0.1:3001/books/new")), "http://localhost:3001");
+  for (const host of ["localhost:3001", "127.0.0.1:3001", "[::1]:3001"]) {
+    assert.equal(appOrigin(new NextRequest(`http://${host}/books/new`, { headers: { host } })), `http://${host}`);
+  }
+});
+
+test("development origin recovery ignores untrusted hosts, forwarded hosts and port changes", () => {
+  for (const host of ["evil.test:3001", "localhost.evil.test:3001", "127.0.0.1:9999", "localhost:3001@evil.test", "localhost:3001,evil.test"]) {
+    assert.equal(appOrigin(new NextRequest("http://localhost:3001/books/new", { headers: { host, "x-forwarded-host": "evil.test:3001" } })), "http://localhost:3001");
+  }
+});
+
+test("production ignores loopback Host and uses the configured application origin", () => {
+  Object.assign(process.env, { NODE_ENV: "production", APP_URL: "https://books.example.test" });
+  assert.equal(appOrigin(new NextRequest("http://localhost:3001/", { headers: { host: "127.0.0.1:3001" } })), "https://books.example.test");
 });
 
 test("login returns minimal identity, HttpOnly cookies, no tokens in JSON, no caching", async () => {

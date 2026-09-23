@@ -4,7 +4,18 @@ import { NextResponse, type NextRequest } from "next/server";
 export class AuthConfigurationError extends Error {}
 
 export function appOrigin(request: NextRequest) {
-  if (process.env.NODE_ENV !== "production") return request.nextUrl.origin;
+  if (process.env.NODE_ENV !== "production") {
+    // NextURL canonicalizes loopback IPs to localhost, unlike the browser's
+    // Origin header. Recover only a known loopback Host on the same port;
+    // never trust Origin or X-Forwarded-Host as the application authority.
+    const host = request.headers.get("host");
+    if (request.nextUrl.hostname === "localhost" && host &&
+        /^(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?$/.test(host)) {
+      const local = new URL(`${request.nextUrl.protocol}//${host}`);
+      if (local.port === request.nextUrl.port) return local.origin;
+    }
+    return request.nextUrl.origin;
+  }
   const configured = process.env.APP_URL;
   if (!configured) throw new AuthConfigurationError("Set APP_URL before deploying authentication.");
   const url = new URL(configured);
