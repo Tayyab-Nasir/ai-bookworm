@@ -1,6 +1,7 @@
 """EPUB/PDF rendering service. Deterministic artifacts + preflight."""
 import base64
 import hmac
+import hashlib
 import json
 import os
 import sys
@@ -8,6 +9,8 @@ from math import ceil
 from io import BytesIO
 from pathlib import Path
 from uuid import UUID
+from threading import BoundedSemaphore
+import warnings
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from PIL import Image, UnidentifiedImageError
@@ -64,6 +67,14 @@ class AudioAssemblyRequest(BaseModel):
     segmentsBase64: list[str] = Field(min_length=1, max_length=250)
 
 
+class ImageInspectionRequest(BaseModel):
+    imageBase64: str = Field(min_length=1, max_length=34952536)
+    mimeType: str
+
+
+_image_inspection_slot = BoundedSemaphore(1)
+
+
 def require_service_token(x_service_token: str | None = Header(default=None)) -> None:
     configured = os.getenv("RENDERING_SERVICE_TOKEN") or os.getenv("SERVICE_AUTH_TOKEN")
     if configured and (not x_service_token or not hmac.compare_digest(x_service_token, configured)):
@@ -95,6 +106,35 @@ def assemble_chapter(req: AudioAssemblyRequest):
         raise HTTPException(503, "audio assembly is unavailable or busy") from error
     return Response(audio, media_type="audio/mpeg", headers={"x-artifact-sha256": checksum,
         "x-bookworm-audio-qc": json.dumps(quality, separators=(",", ":")), "cache-control": "no-store"})
+
+
+@app.post("/images/inspect-cover", dependencies=[Depends(require_service_token)])
+def inspect_cover(req: ImageInspectionRequest):
+    if not _image_inspection_slot.acquire(blocking=False):
+        raise HTTPException(503, "cover inspection is busy")
+    try:
+        data = _cover_bytes(req.imageBase64)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data)) as source:
+                mime = {"JPEG": "image/jpeg", "PNG": "image/png"}.get(source.format)
+                width, height = source.size
+                if mime != req.mimeType or mime is None or getattr(source, "n_frames", 1) != 1:
+                    raise ValueError("unsupported image")
+                if not (1024 <= width <= 7200 and 1024 <= height <= 7200):
+                    raise ValueError("invalid dimensions")
+                source.verify()
+            # verify() checks structure; reopening and loading also proves that
+            # the compressed pixels can be decoded within the checked bounds.
+            with Image.open(BytesIO(data)) as decoded:
+                decoded.load()
+        return Response(json.dumps({"mimeType": mime, "width": width, "height": height,
+            "sha256": hashlib.sha256(data).hexdigest()}), media_type="application/json",
+            headers={"cache-control": "no-store"})
+    except (ValueError, OSError, SyntaxError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+        raise HTTPException(422, "cover must be a complete single-frame JPEG or PNG, 1024 to 7200 pixels per side") from error
+    finally:
+        _image_inspection_slot.release()
 
 
 def _composed_cover(req, edition) -> tuple[bytes | None, str | None]:

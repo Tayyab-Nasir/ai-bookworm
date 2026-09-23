@@ -15,7 +15,7 @@ function png() {
 }
 
 test("leased export preserves uploaded archives across uncertain completion and fences cleanup", async (t) => {
-  for (const completion of ["success", "lost-reply", "late-commit", "rejected"] as const) await t.test(completion, async () => {
+  for (const completion of ["success", "lost-reply", "late-commit", "rejected", "cover-invalid", "cover-receipt-mismatch", "cover-quarantined"] as const) await t.test(completion, async () => {
   const id = (n: string) => `e7000000-0000-4000-8000-${n.padStart(12, "0")}`;
   const jobId = id("1"); const workspace = id("2"); const book = id("3"); const edition = id("4");
   const chapter = id("5"); const version = id("6"); const project = id("7"); const report = id("8");
@@ -33,6 +33,8 @@ test("leased export preserves uploaded archives across uncertain completion and 
       documentVersionId:version, projectId:project, reportId, sourceManifestSha256:manifest, audioSha256:sha(assembled) }] };
   const tables: Record<string, Record<string, unknown>[]> = {
     audiobook_google_play_export_jobs:[{id:jobId,status:"running",output_storage_path:null,output_sha256:null}],
+    asset_versions:[{asset_id:coverId,storage_path:snapshot.coverStoragePath,checksum:snapshot.coverSha256,
+      mime_type:"image/png",size_bytes:coverBytes.length,scan_status:completion === "cover-quarantined" ? "pending" : "clean"}],
     editions:[{id:edition,book_id:book,type:"audiobook"}], books:[{id:book,workspace_id:workspace,title:snapshot.title,author_name:snapshot.author}],
     chapters:[{id:chapter,book_id:book,order_index:0,title:"Chapter 1",current_document_version_id:version}],
     audiobook_projects:[{id:project,workspace_id:workspace,book_id:book,edition_id:edition,chapter_id:chapter,document_version_id:version,status:"succeeded",segment_count:1}],
@@ -82,13 +84,20 @@ test("leased export preserves uploaded archives across uncertain completion and 
       }
       if (name === "fail_audiobook_google_play_export") {
         if (completion === "late-commit") return {data:null,error:{code:"40001"}};
-        return {data:{id:jobId,status:"queued"},error:null};
+        return {data:{id:jobId,status:args.p_retryable ? "queued" : "failed"},error:null};
       }
       return { data:null,error:{code:"unknown_rpc"} };
     },
   } as never;
   const fetcher: typeof fetch = async (input, init) => {
     const url = String(input);
+    if (url.endsWith("/images/inspect-cover")) {
+      assert.notEqual(completion, "cover-quarantined", "quarantined cover reached the decoder");
+      if (completion === "cover-invalid") return new Response(null, {status:422});
+      return Response.json({width:1024,height:1024,mimeType:"image/png",
+        sha256:completion === "cover-receipt-mismatch" ? "0".repeat(64) : sha(coverBytes)});
+    }
+    assert(!completion.startsWith("cover-"), "invalid cover reached audio assembly or storage upload");
     if (url.endsWith("/audio/assemble")) return new Response(assembled, {
       headers:{ "x-artifact-sha256":sha(assembled), "x-bookworm-audio-qc":JSON.stringify(quality) },
     });
@@ -101,8 +110,8 @@ test("leased export preserves uploaded archives across uncertain completion and 
     throw new Error("unexpected worker fetch");
   };
   const result = await runOneGooglePlayAudioExport(sb,{ fetcher, storage:{projectUrl:"https://project-ref.supabase.co",serviceKey:"service-role-fixture"} });
-  assert.deepEqual(result,{status:completion === "late-commit" ? "lease_lost" : completion === "rejected" ? "queued" : "succeeded",jobId});
-  assert.deepEqual(calls,["claim_audiobook_google_play_export","progress_audiobook_google_play_export","complete_audiobook_google_play_export",
+  assert.deepEqual(result,{status:["cover-invalid","cover-quarantined"].includes(completion) ? "failed" : completion === "cover-receipt-mismatch" ? "queued" : completion === "late-commit" ? "lease_lost" : completion === "rejected" ? "queued" : "succeeded",jobId});
+  assert.deepEqual(calls,completion.startsWith("cover-") ? ["claim_audiobook_google_play_export","fail_audiobook_google_play_export"] : ["claim_audiobook_google_play_export","progress_audiobook_google_play_export","complete_audiobook_google_play_export",
     ...(["late-commit","rejected"].includes(completion) ? ["fail_audiobook_google_play_export"] : []),
     ...(completion === "rejected" ? ["storage_remove"] : [])]);
   });

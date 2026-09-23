@@ -152,7 +152,7 @@ async function sha256File(path: string, signal: AbortSignal) {
   return hash.digest("hex");
 }
 
-async function assertSnapshotCurrent(sb: SupabaseClient, job: ReturnType<typeof jobSchema.parse>) {
+async function assertSnapshotCurrent(sb: SupabaseClient, job: ReturnType<typeof jobSchema.parse>, fetcher: typeof fetch, signal: AbortSignal) {
   const [{ data: edition, error: editionError }, { data: book, error: bookError }, { data: chapters, error: chaptersError }] = await Promise.all([
     sb.from("editions").select("id,book_id,type").eq("id", job.edition_id).maybeSingle(),
     sb.from("books").select("id,workspace_id,title,author_name").eq("id", job.book_id).maybeSingle(),
@@ -176,18 +176,53 @@ async function assertSnapshotCurrent(sb: SupabaseClient, job: ReturnType<typeof 
     || cover.mime_type !== snap.coverMimeType || cover.size_bytes !== snap.coverSizeBytes || String(cover.checksum).toLowerCase() !== snap.coverSha256) {
     throw new AudioExportFailure("export_cover_changed", false);
   }
+  const { data: coverVersion, error: scanError } = await sb.from("asset_versions")
+    .select("scan_status,checksum,mime_type,size_bytes").eq("asset_id", job.cover_asset_id)
+    .eq("storage_path", cover.storage_path).maybeSingle();
+  if (scanError) throw new AudioExportFailure("export_database_unavailable", true);
+  if (!coverVersion || !["clean", "trusted_generated"].includes(coverVersion.scan_status)
+    || coverVersion.checksum !== snap.coverSha256 || coverVersion.mime_type !== snap.coverMimeType
+    || coverVersion.size_bytes !== snap.coverSizeBytes) throw new AudioExportFailure("export_cover_quarantined", false);
   const downloaded = await sb.storage.from(BUCKET).download(cover.storage_path);
   if (downloaded.error || !downloaded.data) throw new AudioExportFailure("export_cover_unavailable", true);
   if (downloaded.data.size !== snap.coverSizeBytes || downloaded.data.size > 25 * 1024 * 1024) throw new AudioExportFailure("export_cover_changed", false);
   const bytes = Buffer.from(await downloaded.data.arrayBuffer());
   if (createHash("sha256").update(bytes).digest("hex") !== snap.coverSha256) throw new AudioExportFailure("export_cover_integrity_failed", false);
-  const dimensions = googlePlayCoverDimensions(bytes, snap.coverMimeType);
+  let dimensions: ReturnType<typeof googlePlayCoverDimensions>;
+  try { dimensions = googlePlayCoverDimensions(bytes, snap.coverMimeType); }
+  catch (error) {
+    if (error instanceof AppError) throw new AudioExportFailure("export_cover_dimensions_invalid", false);
+    throw error;
+  }
+  const base = process.env.RENDERING_SERVICE_URL ?? `http://127.0.0.1:${process.env.RENDERING_SERVICE_PORT ?? "8002"}`;
+  const token = process.env.RENDERING_SERVICE_TOKEN || process.env.SERVICE_AUTH_TOKEN;
+  const inspection = await fetcher(`${base.replace(/\/$/u, "")}/images/inspect-cover`, {
+    method: "POST", headers: { "content-type": "application/json", ...(token ? { "x-service-token": token } : {}) },
+    body: JSON.stringify({ imageBase64: bytes.toString("base64"), mimeType: snap.coverMimeType }),
+    redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+  });
+  if (inspection.status === 422) throw new AudioExportFailure("export_cover_decode_failed", false);
+  if (!inspection.ok || !inspection.body) throw new AudioExportFailure("export_cover_inspection_unavailable", true);
+  const reader = inspection.body.getReader(); let receipt = "";
+  try {
+    while (true) {
+      const chunk = await reader.read(); if (chunk.done) break;
+      receipt += Buffer.from(chunk.value).toString("utf8");
+      if (receipt.length > 4096) { await reader.cancel(); throw new AudioExportFailure("export_cover_inspection_invalid", true); }
+    }
+  } finally { reader.releaseLock(); }
+  let decoded;
+  try { decoded = JSON.parse(receipt); } catch { throw new AudioExportFailure("export_cover_inspection_invalid", true); }
+  if (decoded?.sha256 !== snap.coverSha256 || decoded?.mimeType !== snap.coverMimeType
+    || decoded?.width !== dimensions.width || decoded?.height !== dimensions.height) {
+    throw new AudioExportFailure("export_cover_inspection_invalid", true);
+  }
   return { book, coverBytes: bytes, coverExtension: dimensions.extension };
 }
 
 async function createArchive(sb: SupabaseClient, job: ReturnType<typeof jobSchema.parse>, signal: AbortSignal,
   fetcher: typeof fetch, progress: (completed: number) => Promise<boolean>) {
-  const source = await assertSnapshotCurrent(sb, job);
+  const source = await assertSnapshotCurrent(sb, job, fetcher, signal);
   const archive = await GooglePlayAudioZip.create();
   let duration = 0;
   try {

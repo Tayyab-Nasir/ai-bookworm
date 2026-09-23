@@ -2,6 +2,13 @@
 
 ## 2026-09-23 durable Google Play audiobook exports
 
+Cover validation now verifies a clean/trusted exact asset version, followed by
+full image decoding in the private renderer and checksum-bound receipt checks
+in the export worker. Header-only, truncated, animated and MIME-mismatched
+covers are rejected before audio assembly/upload. Renderer tests: 168 passed;
+focused worker cases: 10 passed; API TypeScript passes. Runtime deployment of
+`/images/inspect-cover`, DPI checks and actual retailer acceptance remain open.
+
 Transport follow-up: real loopback HTTP tests cover stored/unstored lost PATCH
 replies, redirect refusal, malformed offsets, deadlines and cancellation.
 The uploader uses bounded TUS HEAD recovery without resending committed chunks.

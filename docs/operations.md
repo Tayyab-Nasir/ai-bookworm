@@ -562,6 +562,16 @@ before production tuning.
   and installed before the new routes can work on a native project. These local
   migrations are not evidence of live behavior. Cover pixel bounds are checked;
   DPI metadata is not measured, so the author must verify retailer requirements.
+  The export worker requires `/images/inspect-cover` on the Rendering service.
+  It verifies a clean/trusted current asset version before downloading the
+  cover, then checks a checksum-bound inspection receipt before assembling any
+  audio. The authenticated endpoint verifies and fully decodes one static JPEG
+  or PNG with 25 MiB encoded-byte and 1,024–7,200-pixel per-side limits. One
+  inspection may run per renderer process; busy inspections return 503 for
+  worker retry. Corrupt, truncated, animated or MIME-mismatched images fail.
+  Deploy the renderer endpoint before enabling this worker revision. Image
+  decoding is separate from malware scanning and does not measure DPI or
+  constitute retailer acceptance.
   The archive never marks a title as uploaded or published.
 - Install rendering requirements, including pinned `imageio-ffmpeg==0.6.0`.
   Its Windows wheel supplies FFmpeg 7.1; `IMAGEIO_FFMPEG_EXE` may point to a

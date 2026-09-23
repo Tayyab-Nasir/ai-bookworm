@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-upload-recovery.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-cover-inspection.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Full cover decoding before audiobook export
+
+The worker now requires a clean/trusted asset version matching the selected
+cover's exact path, MIME, size and checksum. A private Rendering service
+`/images/inspect-cover` endpoint verifies and decodes complete static JPEG/PNG
+bytes within size/pixel bounds and single-process admission. The worker verifies
+the inspection checksum/dimensions before audio assembly. Invalid/quarantined
+covers fail without upload; corrupt inspection receipts are retryable failures.
+All 168 rendering tests and the 10 focused export worker tests pass, as does
+API TypeScript and all 286 API tests. This endpoint must be deployed before enabling the worker;
+DPI and retailer acceptance remain separate gates.
 
 ### Upload HTTP recovery
 
