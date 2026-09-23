@@ -20,6 +20,12 @@ jobs:
           cache: npm
       - run: npm ci --include=dev
       - run: npm run test:worker-launcher
+      - name: Provide the template's documented Node executable path
+        run: |
+          if [ ! -e /usr/bin/node ]; then
+            sudo ln -s "$(command -v node)" /usr/bin/node
+          fi
+          /usr/bin/node --version
       - name: Validate service templates without starting workers
         run: systemd-analyze verify --man=no ops/systemd/bookworm-worker@.service ops/systemd/bookworm-workers.target
         env:
