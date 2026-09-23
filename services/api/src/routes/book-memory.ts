@@ -71,11 +71,11 @@ async function scopedBook(app: FastifyInstance, req: FastifyRequest, edit = fals
 async function validateReferences(sb: SupabaseClient, bookId: string, workspaceId: string, body: z.infer<typeof bibleSchema>) {
   const imageIds = [...new Set(body.imageAssetIds)];
   if (imageIds.length) {
-    const { data, error } = await sb.from("assets").select("id,mime_type,checksum")
+    const { data, error } = await sb.from("assets").select("id,mime_type,checksum,storage_path,size_bytes")
       .in("id", imageIds).eq("workspace_id", workspaceId).is("deleted_at", null);
     if (error) throw new AppError(500, "Could not verify linked images.");
-    if (data?.length !== imageIds.length || data.some((asset) => !asset.mime_type?.startsWith("image/") || !asset.checksum || asset.checksum === "pending")) {
-      throw new AppError(422, "Linked images must be completed image uploads in this workspace.");
+    if (data?.length !== imageIds.length || (await clearedImages(sb, data)).length !== imageIds.length) {
+      throw new AppError(422, "Linked images must be scan-cleared current images in this workspace. Reload and remove unavailable links.");
     }
   }
   const chapterIds = [...new Set(body.sourceRefs.map((ref) => ref.chapterId))];
@@ -92,6 +92,23 @@ async function validateReferences(sb: SupabaseClient, bookId: string, workspaceI
       throw new AppError(422, "Each source version must belong to its referenced chapter.");
     }
   }
+}
+
+type MemoryImage = { id: string; mime_type: string; checksum: string; storage_path: string; size_bytes: number };
+
+// Asset completion is not scan clearance. Match the exact current version;
+// an older clean version must never bless replaced or quarantined bytes.
+async function clearedImages<T extends MemoryImage>(sb: SupabaseClient, assets: T[]): Promise<T[]> {
+  const candidates = assets.filter((asset) => asset.mime_type?.startsWith("image/")
+    && /^[a-f0-9]{64}$/.test(asset.checksum) && Number.isSafeInteger(asset.size_bytes) && asset.size_bytes > 0);
+  if (!candidates.length) return [];
+  const { data: versions, error } = await sb.from("asset_versions")
+    .select("asset_id,storage_path,checksum,mime_type,size_bytes,scan_status").in("asset_id", candidates.map((asset) => asset.id));
+  if (error) throw new AppError(500, "Could not verify image scan clearance. Try again.");
+  return candidates.filter((asset) => versions?.some((version) => version.asset_id === asset.id
+    && version.storage_path === asset.storage_path && version.checksum === asset.checksum
+    && version.mime_type === asset.mime_type && version.size_bytes === asset.size_bytes
+    && ["clean", "trusted_generated"].includes(String(version.scan_status))));
 }
 
 function bibleRow(body: z.infer<typeof bibleSchema>) {
@@ -120,12 +137,12 @@ export function bookMemoryRoutes(app: FastifyInstance) {
       sb.from("book_metadata").select("*").eq("book_id", bookId).maybeSingle(),
       sb.from("book_bible_items").select("*").eq("book_id", bookId).order("created_at"),
       sb.from("chapters").select("id,title,current_document_version_id").eq("book_id", bookId).order("order_index"),
-      sb.from("assets").select("id,name,mime_type,checksum,status").eq("workspace_id", book.workspace_id).is("deleted_at", null).order("created_at"),
+      sb.from("assets").select("id,name,mime_type,checksum,status,storage_path,size_bytes").eq("workspace_id", book.workspace_id).is("deleted_at", null).order("created_at"),
     ]);
     if ([metadata, items, chapters, assets].some((result) => result.error)) throw new AppError(500, "Could not load book memory. Try again.");
     return {
       book, metadata: metadata.data, items: items.data ?? [], chapters: chapters.data ?? [],
-      imageAssets: (assets.data ?? []).filter((asset) => asset.mime_type?.startsWith("image/") && asset.checksum && asset.checksum !== "pending"),
+      imageAssets: (await clearedImages(sb, assets.data ?? [])).map(({ id, name, mime_type, checksum, status }) => ({ id, name, mime_type, checksum, status })),
       canEdit: editableRoles.has(role),
     };
   });

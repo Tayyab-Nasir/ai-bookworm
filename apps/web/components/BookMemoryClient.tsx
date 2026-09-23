@@ -377,10 +377,10 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
                 </div>)}
                 {memory.canEdit && <button type="button" disabled={draft.attributes.length >= 40} onClick={() => changeDraft({ attributes: [...draft.attributes, { key: "", value: "" }] })} className="mt-3 text-sm text-[#ddd] underline underline-offset-4">+ Add attribute</button>}
               </div>
-              <div><h4 className="text-sm font-medium">Reference images</h4><p className="mt-1 text-xs leading-5 text-[#999]">Link completed image uploads from this workspace. Files stay in your asset library.</p>
+              <div><h4 className="text-sm font-medium">Reference images</h4><p className="mt-1 text-xs leading-5 text-[#999]">Link scan-cleared images from this workspace. Pending or quarantined versions are unavailable. Files stay in your asset library.</p>
                 <div className="mt-3 max-h-44 space-y-2 overflow-y-auto">
                   {memory.imageAssets.map((asset) => <label key={asset.id} className="flex items-start gap-3 rounded-lg border border-white/10 p-3 text-sm text-[#bbb]"><input type="checkbox" checked={draft.imageAssetIds.includes(asset.id)} onChange={(event) => changeDraft({ imageAssetIds: event.target.checked ? [...draft.imageAssetIds, asset.id] : draft.imageAssetIds.filter((imageId) => imageId !== asset.id) })} className="mt-0.5 accent-white" /><span className="break-all">{asset.name}</span></label>)}
-                  {!memory.imageAssets.length && <p className="text-sm text-[#888]">No completed image uploads yet.</p>}
+                  {!memory.imageAssets.length && <p className="text-sm text-[#888]">No scan-cleared images available yet.</p>}
                   {draft.imageAssetIds.filter((assetId) => !memory.imageAssets.some((asset) => asset.id === assetId)).map((assetId) => <label key={assetId} className="flex gap-3 text-sm text-amber-200"><input type="checkbox" checked onChange={() => changeDraft({ imageAssetIds: draft.imageAssetIds.filter((value) => value !== assetId) })} />Unavailable image — uncheck to remove its link</label>)}
                 </div>
               </div>

@@ -72,7 +72,8 @@ function initialStore(role = "editor"): Store {
     workspace_members: [{ user_id: USER, workspace_id: WORKSPACE, role, status: "active" }],
     chapters: [{ id: CHAPTER, book_id: BOOK, title: "Arrival", current_document_version_id: VERSION }],
     document_versions: [{ id: VERSION, chapter_id: CHAPTER }],
-    assets: [{ id: IMAGE, workspace_id: WORKSPACE, name: "Elara.png", mime_type: "image/png", checksum: "abc", deleted_at: null }],
+    assets: [{ id: IMAGE, workspace_id: WORKSPACE, name: "Elara.png", mime_type: "image/png", checksum: "a".repeat(64), storage_path: "private/image.png", size_bytes: 100, deleted_at: null }],
+    asset_versions: [{ asset_id: IMAGE, mime_type: "image/png", checksum: "a".repeat(64), storage_path: "private/image.png", size_bytes: 100, scan_status: "clean" }],
   };
 }
 
@@ -200,6 +201,58 @@ test("Bible rejects foreign chapter and mismatched document-version citations", 
     const res = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
     assert.equal(res.statusCode, 422, res.body);
   }
+});
+
+test("memory picker and writes reject quarantined or mismatched current image versions", async (t) => {
+  for (const patch of [{ scan_status: "pending" }, { scan_status: "infected" }, { scan_status: "error" },
+    { scan_status: null }, { checksum: "b".repeat(64) }, { storage_path: "private/old.png" },
+    { size_bytes: 101 }, { mime_type: "image/jpeg" }, { asset_id: OTHER_BOOK }]) {
+    const store = initialStore(); Object.assign(store.asset_versions[0], patch);
+    const app = await appWith(store); t.after(() => app.close());
+    const loaded = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth });
+    assert.equal(loaded.statusCode, 200, loaded.body);
+    assert.deepEqual(loaded.json().imageAssets, [], JSON.stringify(patch));
+    const save = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
+    assert.equal(save.statusCode, 422, save.body);
+    assert.equal(store.book_bible_items?.length ?? 0, 0);
+  }
+});
+
+test("reference clearance is rechecked on save without deleting historical memory links", async (t) => {
+  const store = initialStore(); store.asset_versions[0].scan_status = "trusted_generated";
+  const app = await appWith(store); t.after(() => app.close());
+  const read = () => app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth });
+  const initial = await read();
+  assert.equal(initial.json().imageAssets.length, 1);
+  assert.equal(initial.body.includes("private/image.png"), false);
+  const saved = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
+  assert.equal(saved.statusCode, 201, saved.body);
+  const item = saved.json().item;
+  store.asset_versions[0].scan_status = "infected";
+  const changed = await read();
+  assert.deepEqual(changed.json().imageAssets, []);
+  assert.deepEqual(changed.json().items[0].attributes_json.imageAssetIds, [IMAGE]);
+  const url = `/v1/books/${BOOK}/bible/${item.id}`;
+  const payload = { ...entry, expectedUpdatedAt: item.updated_at };
+  assert.equal((await app.inject({ method: "PUT", url, headers: auth, payload })).statusCode, 422);
+  assert.equal((await app.inject({ method: "PUT", url, headers: auth, payload: { ...payload, imageAssetIds: [] } })).statusCode, 200);
+  assert.equal(store.assets.length, 1);
+});
+
+test("missing versions hide images and clearance lookup errors fail closed", async (t) => {
+  const store = initialStore(); store.asset_versions = [];
+  const app = await appWith(store); t.after(() => app.close());
+  assert.deepEqual((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth })).json().imageAssets, []);
+  assert.equal((await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry })).statusCode, 422);
+  const failedStore = initialStore();
+  const failed = await appWith(failedStore, "asset_versions"); t.after(() => failed.close());
+  for (const call of [{ method: "GET" as const, url: `/v1/books/${BOOK}/memory` },
+    { method: "POST" as const, url: `/v1/books/${BOOK}/bible`, payload: entry }]) {
+    const result = await failed.inject({ ...call, headers: auth });
+    assert.equal(result.statusCode, 500, result.body);
+    assert.equal(result.body.includes("deliberate database failure"), false);
+  }
+  assert.equal(failedStore.book_bible_items?.length ?? 0, 0);
 });
 
 test("Bible update and delete scope by book and prevent stale overwrites", async (t) => {

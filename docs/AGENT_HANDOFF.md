@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-worker-runtime.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-memory-image-clearance.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,17 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Book Bible image clearance
+
+Memory image selection and create/update now require an exact current asset
+version with clean/trusted-generated scan status, matching path, checksum,
+MIME and size. Existing unavailable links remain in the saved entry until the
+author explicitly removes them; no assets are deleted. The picker omits unsafe
+images and never exposes storage paths. Scan lookup errors fail closed.
+All 289 API tests, 81 web tests and workspace TypeScript pass. This is API
+validation, not a database constraint or permission to skip consumption-time
+checks. No live scanner/Storage acceptance or deployment occurred.
 
 ### Worker runtime checkpoint
 
