@@ -8,7 +8,7 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:
-  `Codex Sessions/2026-09/2026-09-23-bookworm-scanner-freshness.md`.
+  `Codex Sessions/2026-09/2026-09-23-bookworm-scanner-runtime.md`.
 - Latest live/Git checkpoint:
   `Codex Sessions/2026-09/2026-09-12-bookworm-live-rollout.md`.
 - Claude handoff:
@@ -22,6 +22,22 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
   completion claims require current code and behavioral verification.
 
 ## Current checkpoint: 2026-09-23
+
+### Persistent private scanner runtime
+
+`a0e2168`/`2ce67ce` add `ops/scanning/compose.yaml`: separate unprivileged
+FreshClam updater, network-isolated engine with read-only persistent signatures,
+and authenticated scanner with mounted secret-file configuration. No host ports
+are published; resources/logs are bounded. See `docs/SCANNER_RUNTIME.md`.
+Native Linux run `35847866748` passes both jobs: actual clean/detection and
+outage/restart in the fixture stack, plus secret-file auth, updater startup,
+engine-outage refusal and container recreation preserving database 28132 in the
+deployment-shaped stack. First run caught a YAML tmpfs split, fixed before the
+passing run. All 348 service tests (34 scanner) and 30 security tests pass.
+No host deployment occurred. Periodic updater/reload acceptance, configured
+alert delivery, approved image digests, hosted Storage/quarantine, host reboot,
+capacity and remaining full-product release gates remain open. Preserve
+generated Next/Graphify dirt; the graph retains existing Gradle parser warnings.
 
 ### Scanner signature freshness
 
