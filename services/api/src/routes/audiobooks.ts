@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
+import { requireWorkspaceApprover, requireWorkspaceMember } from "../lib/authorize.js";
 import { segmentSpeechText } from "../lib/speech-generation.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { assembleChapterAudio, loadChapterAudio } from "../lib/audio-download.js";
@@ -17,6 +18,7 @@ const configSchema = z.object({
   instructions: z.string().trim().min(1).max(2_000).nullable().default(null),
   speed: z.number().min(0.25).max(4).default(1),
 }).passthrough();
+const signoffSchema = z.object({ reportId: z.string().uuid(), listenedToExactAudio: z.literal(true) }).strict();
 
 async function hydrateProject(sb: SupabaseClient, project: Record<string, unknown>) {
   const { data: segments, error } = await sb.from("audiobook_segments").select("*")
@@ -68,11 +70,117 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
     if (assembling.has(key) || assembling.size >= 2) throw new AppError(429, "Audio assembly is busy. Try again shortly.");
     assembling.add(key);
     try {
-      const segments = await loadChapterAudio(app.supabaseFactory(req.userToken), projectId);
-      const result = await assembleChapterAudio(segments, options.fetcher);
-      if (result.quality) reply.header("x-bookworm-audio-qc", JSON.stringify(result.quality));
+      const caller = app.supabaseFactory(req.userToken);
+      const loaded = await loadChapterAudio(caller, projectId);
+      const result = await assembleChapterAudio(loaded.segments, options.fetcher);
+      reply.header("x-bookworm-audio-sha256", result.audioSha256);
+      if (result.quality) {
+        reply.header("x-bookworm-audio-qc", JSON.stringify(result.quality));
+        try {
+          const service = app.supabaseFactory();
+          const report = {
+            project_id: loaded.projectId,
+            document_version_id: loaded.documentVersionId,
+            audio_sha256: result.audioSha256,
+            source_manifest_sha256: loaded.sourceManifestSha256,
+            quality_report: result.quality,
+            created_by: req.userId,
+          };
+          const inserted = await service.from("audiobook_qc_reports").insert(report)
+            .select("id,document_version_id,source_manifest_sha256").maybeSingle();
+          let reportId = inserted.data?.id as string | undefined;
+          if (inserted.error?.code === "23505") {
+            const existing = await service.from("audiobook_qc_reports").select("id,document_version_id,source_manifest_sha256")
+              .eq("project_id", loaded.projectId).eq("audio_sha256", result.audioSha256).maybeSingle();
+            if (existing.error || !existing.data || existing.data.document_version_id !== loaded.documentVersionId
+              || existing.data.source_manifest_sha256 !== loaded.sourceManifestSha256) {
+              throw new Error("QC report replay identity mismatch");
+            }
+            reportId = existing.data.id as string;
+          } else if (inserted.error || !reportId) {
+            throw new Error("QC report insert failed");
+          }
+          reply.header("x-bookworm-audio-qc-report-id", reportId);
+        } catch {
+          req.log.warn({ projectId }, "Audiobook QC report history could not be persisted");
+          reply.header("x-bookworm-audio-qc-history", "unavailable");
+        }
+      }
       return reply.header("cache-control", "private, no-store").header("content-disposition", 'attachment; filename="chapter.mp3"').type("audio/mpeg").send(result.bytes);
     } finally { assembling.delete(key); }
+  });
+  app.get("/audiobook-jobs/:projectId/qc-reports", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    const sb = app.supabaseFactory(req.userToken);
+    const { data: project, error: projectError } = await sb.from("audiobook_projects")
+      .select("id,workspace_id,chapter_id,document_version_id").eq("id", projectId).maybeSingle();
+    if (projectError) throw new AppError(503, "Could not load audiobook QC history.");
+    if (!project) throw new AppError(404, "Audiobook job not found.");
+    await requireWorkspaceMember(sb, project.workspace_id, req.userId);
+    const [{ data: reports, error: reportsError }, { data: chapter, error: chapterError }] = await Promise.all([
+      sb.from("audiobook_qc_reports").select("id,document_version_id,audio_sha256,source_manifest_sha256,quality_report,created_by,created_at")
+        .eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
+      sb.from("chapters").select("current_document_version_id").eq("id", project.chapter_id).maybeSingle(),
+    ]);
+    if (reportsError || chapterError) throw new AppError(503, "Could not load audiobook QC history.");
+    const reportIds = (reports ?? []).map((report) => report.id);
+    const { data: signoffs, error: signoffsError } = reportIds.length
+      ? await sb.from("audiobook_qc_signoffs").select("report_id,reviewer_id,signed_at").in("report_id", reportIds)
+      : { data: [], error: null };
+    if (signoffsError) throw new AppError(503, "Could not load audiobook QC sign-offs.");
+    const byReport = new Map<string, Array<{ reviewerId: string; signedAt: string }>>();
+    for (const signoff of signoffs ?? []) {
+      const list = byReport.get(signoff.report_id) ?? [];
+      list.push({ reviewerId: signoff.reviewer_id, signedAt: signoff.signed_at });
+      byReport.set(signoff.report_id, list);
+    }
+    reply.header("cache-control", "private, no-store");
+    return { reports: (reports ?? []).map((report) => ({
+      id: report.id,
+      documentVersionId: report.document_version_id,
+      audioSha256: report.audio_sha256,
+      sourceManifestSha256: report.source_manifest_sha256,
+      qualityReport: report.quality_report,
+      createdBy: report.created_by,
+      createdAt: report.created_at,
+      isCurrentSource: report.document_version_id === chapter?.current_document_version_id,
+      signoffs: byReport.get(report.id) ?? [],
+      signedByMe: (byReport.get(report.id) ?? []).some((signoff) => signoff.reviewerId === req.userId),
+    })) };
+  });
+  app.post("/audiobook-jobs/:projectId/qc-signoffs", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    const parsed = signoffSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "Confirm that you listened to this exact audiobook file.", { issues: parsed.error.issues });
+    const sb = app.supabaseFactory(req.userToken);
+    const { data: project, error: projectError } = await sb.from("audiobook_projects")
+      .select("id,workspace_id,chapter_id,status").eq("id", projectId).maybeSingle();
+    if (projectError) throw new AppError(503, "Could not verify the audiobook source.");
+    if (!project || project.status !== "succeeded") throw new AppError(404, "Completed audiobook not found.");
+    await requireWorkspaceApprover(sb, project.workspace_id, req.userId);
+    const [{ data: report, error: reportError }, { data: chapter, error: chapterError }] = await Promise.all([
+      sb.from("audiobook_qc_reports").select("id,document_version_id")
+        .eq("id", parsed.data.reportId).eq("project_id", projectId).maybeSingle(),
+      sb.from("chapters").select("current_document_version_id").eq("id", project.chapter_id).maybeSingle(),
+    ]);
+    if (reportError || chapterError) throw new AppError(503, "Could not verify this audio quality report.");
+    if (!report) throw new AppError(404, "Audio quality report not found.");
+    if (!chapter || report.document_version_id !== chapter.current_document_version_id) {
+      throw new AppError(409, "This report belongs to an older manuscript version. Assemble the current narration before signing it off.");
+    }
+    const input = { report_id: report.id, reviewer_id: req.userId, listened_to_exact_audio: true };
+    const inserted = await sb.from("audiobook_qc_signoffs").insert(input).select("signed_at").maybeSingle();
+    let signedAt = inserted.data?.signed_at as string | undefined;
+    if (inserted.error?.code === "23505") {
+      const existing = await sb.from("audiobook_qc_signoffs").select("signed_at")
+        .eq("report_id", report.id).eq("reviewer_id", req.userId).maybeSingle();
+      if (existing.error || !existing.data) throw new AppError(503, "Could not confirm the saved sign-off.");
+      signedAt = existing.data.signed_at as string;
+    } else if (inserted.error || !signedAt) {
+      throw new AppError(403, "Only a workspace reviewer with approval access can record this sign-off.");
+    }
+    reply.header("cache-control", "private, no-store");
+    return reply.status(201).send({ reportId: report.id, signedAt, listenedToExactAudio: true });
   });
   app.get("/editions/:editionId/audiobook-jobs", async (req) => {
     const { editionId } = req.params as { editionId: string };

@@ -89,14 +89,22 @@ try {
   const audioFile = await audioTransfer;
   assert.equal(await audioFile.failure(), null);
   assert.match(audioFile.suggestedFilename(), /^chapter-.*\.mp3$/);
-  await page.getByRole('region', { name: 'Audiobook audio quality report' }).waitFor();
-  await page.getByText(/-20\.0 dB RMS/).waitFor();
-  await page.getByText(/noise Floor: manual review — listening required/i).waitFor();
-  await page.getByText(/not marked ACX-eligible/i).waitFor();
+  const qcReport = page.getByRole('region', { name: 'Audiobook audio quality report' });
+  await qcReport.waitFor();
+  await qcReport.getByText(/-20\.0 dB RMS/).waitFor();
+  await qcReport.getByText(/noise Floor: manual review — listening required/i).waitFor();
+  await qcReport.getByText(/not marked ACX-eligible/i).waitFor();
   assert.equal(audioResponses.length, 2, 'audio retry sequence changed');
   assert.equal(audioResponses[1]['content-disposition'], 'attachment; filename="chapter.mp3"');
   assert.match(audioResponses[1]['x-bookworm-audio-qc'] ?? '', /"acxNarrationPolicy":"explicit_authorization_required_for_ai_voice"/);
+  assert.equal(audioResponses[1]['x-bookworm-audio-qc-report-id'], 'cccccccc-cccc-4ccc-8ccc-cccccccccccc');
+  const listeningAttestation = page.getByLabel('I listened through this exact downloaded chapter and reviewed its narration, edits, room tone, and pronunciation.');
+  await listeningAttestation.waitFor();
+  await listeningAttestation.check();
+  await page.getByRole('button', { name: 'Save listening sign-off', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Listening sign-off saved for this exact audio file.' }).waitFor();
+  await page.getByText(/signed by you/i).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'audiobook mobile overflow');
   assert.deepEqual(errors, []);
-  console.log('PASS publishing browser: saved paperback settings, font choice, render/preflight/package, audio assembly failure/retry/download, QC header/UI, ACX policy warning and mobile. Artifact bytes remain fixtures.');
+  console.log('PASS publishing browser: saved paperback settings, font choice, render/preflight/package, audio assembly failure/retry/download, QC report, exact-audio listening sign-off/history, ACX policy warning and mobile. Artifact bytes remain fixtures.');
 } finally { await browser.close(); }

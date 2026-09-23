@@ -359,6 +359,24 @@ export interface AudiobookProjectResult {
   segments: AudiobookSegmentResult[];
 }
 
+export interface AudiobookQcSignoff {
+  reviewerId: string;
+  signedAt: string;
+}
+
+export interface AudiobookQcReport {
+  id: string;
+  documentVersionId: string;
+  audioSha256: string;
+  sourceManifestSha256: string;
+  qualityReport: Record<string, unknown>;
+  createdBy: string;
+  createdAt: string;
+  isCurrentSource: boolean;
+  signoffs: AudiobookQcSignoff[];
+  signedByMe: boolean;
+}
+
 export interface TranslationChapterResult {
   id: string;
   chapterId: string;
@@ -800,6 +818,10 @@ export function createClient(opts: ClientOptions) {
       call<RenderedEditionResult>("POST", `/v1/editions/${editionId}/render`, body),
     listAudiobookProjects: (editionId: string) =>
       call<{ projects: AudiobookProjectResult[] }>("GET", `/v1/editions/${editionId}/audiobook-jobs`),
+    listAudiobookQcReports: (projectId: string) =>
+      call<{ reports: AudiobookQcReport[] }>("GET", `/v1/audiobook-jobs/${projectId}/qc-reports`),
+    createAudiobookQcSignoff: (projectId: string, reportId: string) =>
+      call<{ reportId: string; signedAt: string; listenedToExactAudio: true }>("POST", `/v1/audiobook-jobs/${projectId}/qc-signoffs`, { reportId, listenedToExactAudio: true }),
     getAudiobookProject: (projectId: string) =>
       call<AudiobookProjectResult>("GET", `/v1/audiobook-jobs/${projectId}`),
     createAudiobookProject: (editionId: string, body: { chapterId: string; idempotencyKey: string; aiDisclosureAccepted: true }) =>

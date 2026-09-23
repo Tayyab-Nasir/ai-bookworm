@@ -89,4 +89,68 @@ begin
   assert (select scan_status from public.asset_versions where asset_id='a6000000-0000-4000-8000-000000000010')='trusted_generated';
 end $$;
 
+-- Persist measured QC metadata, scoped to workspace members, and accept only
+-- immutable listen-confirmation receipts from workspace approvers.
+do $$
+declare v_project uuid;
+begin
+  select id into strict v_project from public.audiobook_projects
+    where edition_id='a6000000-0000-4000-8000-000000000007' and status='succeeded';
+  insert into public.audiobook_qc_reports(
+    id,project_id,document_version_id,audio_sha256,source_manifest_sha256,
+    quality_report,created_by
+  ) values (
+    'a6000000-0000-4000-8000-000000000011',v_project,'a6000000-0000-4000-8000-000000000006',repeat('a',64),repeat('b',64),
+    '{"schemaVersion":1,"rmsDbfs":-20,"reviewRequired":true}',
+    'a6000000-0000-4000-8000-000000000001'
+  );
+  assert not has_table_privilege('authenticated','public.audiobook_qc_reports','insert');
+  assert not has_table_privilege('authenticated','public.audiobook_qc_reports','update');
+  assert not has_table_privilege('authenticated','public.audiobook_qc_signoffs','update');
+end $$;
+
+set local role authenticated;
+set local request.jwt.claims='{"sub":"a6000000-0000-4000-8000-000000000001","role":"authenticated"}';
+do $$
+declare v_report uuid;
+begin
+  select id into strict v_report from public.audiobook_qc_reports
+    where audio_sha256=repeat('a',64);
+  insert into public.audiobook_qc_signoffs(report_id,reviewer_id,listened_to_exact_audio)
+    values(v_report,auth.uid(),true);
+  assert (select count(*)=1 from public.audiobook_qc_signoffs where report_id=v_report);
+  begin
+    insert into public.audiobook_qc_signoffs(report_id,reviewer_id,listened_to_exact_audio)
+      values(v_report,auth.uid(),true);
+    raise exception 'duplicate author sign-off was accepted';
+  exception when unique_violation then null;
+  end;
+  begin
+    insert into public.audiobook_qc_signoffs(report_id,reviewer_id,listened_to_exact_audio)
+      values(v_report,'a6000000-0000-4000-8000-000000000001',false);
+    raise exception 'sign-off without explicit listening confirmation was accepted';
+  exception when check_violation or insufficient_privilege then null;
+  end;
+  assert has_table_privilege('authenticated','public.audiobook_qc_reports','select');
+  assert has_table_privilege('authenticated','public.audiobook_qc_signoffs','insert');
+end $$;
+
+reset role;
+insert into auth.users(id,email) values('a6000000-0000-4000-8000-000000000012','audio-outsider@local.test');
+set local role authenticated;
+set local request.jwt.claims='{"sub":"a6000000-0000-4000-8000-000000000012","role":"authenticated"}';
+do $$
+begin
+  assert (select count(*)=0 from public.audiobook_qc_reports where id='a6000000-0000-4000-8000-000000000011'),
+    'non-member read a QC report';
+  assert (select count(*)=0 from public.audiobook_qc_signoffs where report_id='a6000000-0000-4000-8000-000000000011'),
+    'non-member read an author sign-off';
+  begin
+    insert into public.audiobook_qc_signoffs(report_id,reviewer_id,listened_to_exact_audio)
+      values('a6000000-0000-4000-8000-000000000011',auth.uid(),true);
+    raise exception 'non-member recorded an audio sign-off';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+
 rollback;

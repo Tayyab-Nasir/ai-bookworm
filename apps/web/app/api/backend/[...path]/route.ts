@@ -45,11 +45,21 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     }
     const upstream = await fetch(target, { method: request.method, headers, body: body as BodyInit | undefined, cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(180_000) });
     if (upstream.status >= 300 && upstream.status < 400) return auth.finish(authError(502, "Unexpected API redirect."));
-    const response = new NextResponse(upstream.body, { status: upstream.status, headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" } });
-    if (upstream.headers.get("content-disposition") === 'attachment; filename="chapter.mp3"') {
+    const contentType = upstream.headers.get("content-type") ?? "application/json";
+    const response = new NextResponse(upstream.body, { status: upstream.status, headers: { "content-type": contentType } });
+    if (contentType.split(";", 1)[0].trim().toLowerCase() === "audio/mpeg" && upstream.headers.get("content-disposition") === 'attachment; filename="chapter.mp3"') {
       response.headers.set("content-disposition", 'attachment; filename="chapter.mp3"');
       const audioQc = upstream.headers.get("x-bookworm-audio-qc");
       if (audioQc && audioQc.length <= 8192) response.headers.set("x-bookworm-audio-qc", audioQc);
+      const audioSha256 = upstream.headers.get("x-bookworm-audio-sha256");
+      if (audioSha256 && /^[a-f0-9]{64}$/.test(audioSha256)) response.headers.set("x-bookworm-audio-sha256", audioSha256);
+      const qcReportId = upstream.headers.get("x-bookworm-audio-qc-report-id");
+      if (qcReportId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(qcReportId)) {
+        response.headers.set("x-bookworm-audio-qc-report-id", qcReportId);
+      }
+      if (upstream.headers.get("x-bookworm-audio-qc-history") === "unavailable") {
+        response.headers.set("x-bookworm-audio-qc-history", "unavailable");
+      }
     }
     return auth.finish(response);
   } catch (error) {

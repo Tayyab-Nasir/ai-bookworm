@@ -121,6 +121,31 @@ test("BFF forwards only the verified session token, not caller authorization or 
   assert.match(response.headers.get("cache-control")!, /no-store/);
 });
 
+test("BFF forwards only validated audiobook QC metadata with the private MP3", async () => {
+  const signedIn = await login();
+  const reportId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const audioHash = "a".repeat(64);
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    return new Response("ID3fixture", { status: 200, headers: {
+      "content-type": "audio/mpeg", "content-disposition": 'attachment; filename="chapter.mp3"',
+      "x-bookworm-audio-qc": '{"schemaVersion":1}', "x-bookworm-audio-sha256": audioHash,
+      "x-bookworm-audio-qc-report-id": reportId, "x-bookworm-audio-qc-history": "unavailable",
+      "x-internal-secret": "must-not-cross-the-proxy",
+    } });
+  };
+  const response = await backendGet(new NextRequest("http://localhost:3000/api/backend/v1/audiobook-jobs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/audio-download", {
+    headers: { cookie: cookies(signedIn) },
+  }), { params: Promise.resolve({ path: ["v1", "audiobook-jobs", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "audio-download"] }) });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="chapter.mp3"');
+  assert.equal(response.headers.get("x-bookworm-audio-qc"), '{"schemaVersion":1}');
+  assert.equal(response.headers.get("x-bookworm-audio-sha256"), audioHash);
+  assert.equal(response.headers.get("x-bookworm-audio-qc-report-id"), reportId);
+  assert.equal(response.headers.get("x-bookworm-audio-qc-history"), "unavailable");
+  assert.equal(response.headers.get("x-internal-secret"), null);
+});
+
 test("BFF rejects anonymous writes, cross-site writes and service-only routes", async () => {
   const context = { params: Promise.resolve({ path: ["v1", "books"] }) };
   assert.equal((await backendPost(request("x", {}), context)).status, 401);
