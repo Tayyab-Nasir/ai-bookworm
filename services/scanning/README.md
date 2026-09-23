@@ -30,6 +30,12 @@ disabling the gate. This age policy is Bookworm's operator-configurable policy,
 not a ClamAV certification of coverage or a guarantee that every signature set
 is up to date. Keep daemon/scanner clocks synchronized.
 
+The native acceptance image runs FreshClam during image preparation to update
+its preloaded official databases. Preparation requires the official signature
+distribution network; update failure fails the build. Runtime tests remain on
+an internal Docker network. This one-shot CI update is not a production updater:
+production needs persistent databases, supervised updates/reloads and alerts.
+
 Set clamd's `StreamMaxLength` to at least `SCANNING_MAX_FILE_BYTES`. Restrict
 clamd TCP access to the scanner service network; clamd has no authentication.
 Run the application container with a read-only root filesystem and no added
