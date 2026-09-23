@@ -459,6 +459,83 @@ async function storyBlueprintMaterializationRace() {
   console.log('PASS native concurrent story blueprint materialization replay');
 }
 
+const audioOwner = `set role authenticated;
+  set request.jwt.claims='{"sub":"a6000000-0000-4000-8000-000000000001","role":"authenticated"}';`;
+const audioService = `set request.jwt.claim.role='service_role';`;
+const queueAudio = (key) => `${audioOwner} select id from public.queue_audiobook_google_play_export(
+  'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','${key}');`;
+const claimAudio = `${audioService} select row_to_json(j) from public.claim_audiobook_google_play_export(300) j;`;
+
+async function audioExportRaces() {
+  // Retain the fully asserted synthetic audiobook fixture ONLY in this runner's
+  // fresh disposable database, so races use real source/QC/sign-off prerequisites.
+  const source = await readFile(join(root, 'tests/security/audiobook-workflow.test.sql'), 'utf8');
+  assert.match(source, /rollback;\s*$/);
+  await sql(source.replace(/rollback;\s*$/, 'commit;'));
+
+  const key = `native-export-${randomUUID()}`;
+  const held = session();
+  held.child.stdin.write(`begin; ${queueAudio(key)} select 'BOOKWORM_READY';\n`);
+  await until(() => { assert.equal(held.ended, false, held.stderr); return held.stdout.includes('BOOKWORM_READY'); }, 'Audio queue holder not ready');
+  const name = `audio_queue_${randomUUID().replaceAll('-', '')}`;
+  const contender = session(database, name); contender.child.stdin.end(queueAudio(key));
+  await until(async () => {
+    assert.equal(contender.ended, false, contender.stderr);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${name}' and wait_event_type='Lock';`) === '1';
+  }, 'Audio replay did not wait for request lock');
+  const queuedId = held.stdout.trim().split('\n')[0];
+  held.child.stdin.end('commit;\n'); assert.equal((await held.done).code, 0, held.stderr);
+  const replay = await contender.done; assert.equal(replay.code, 0, replay.stderr);
+  assert.equal(replay.stdout.trim(), queuedId);
+  assert.equal(await sql(`select count(*) from audiobook_google_play_export_jobs where idempotency_key='${key}';`), '1');
+  console.log('PASS native audiobook export simultaneous queue replay');
+
+  // While the first worker holds a claim open, the next must claim the second
+  // job without waiting for or stealing the first lease.
+  const secondId = await sql(queueAudio(`native-export-${randomUUID()}`));
+  const firstWorker = session();
+  firstWorker.child.stdin.write(`begin; ${claimAudio} select 'BOOKWORM_READY';\n`);
+  await until(() => { assert.equal(firstWorker.ended, false, firstWorker.stderr); return firstWorker.stdout.includes('BOOKWORM_READY'); }, 'Audio worker not ready');
+  const first = JSON.parse(firstWorker.stdout.trim().split('\n')[0]);
+  const second = JSON.parse(await sql(claimAudio));
+  assert.notEqual(first.id, second.id);
+  assert.deepEqual(new Set([first.id, second.id]), new Set([queuedId, secondId]));
+  firstWorker.child.stdin.end('commit;\n'); assert.equal((await firstWorker.done).code, 0, firstWorker.stderr);
+  for (const job of [first, second]) await sql(`${audioService} select public.fail_audiobook_google_play_export('${job.id}','${job.lease_token}','fixture_done',false);`);
+  console.log('PASS native audiobook export worker claim skip locked');
+
+  for (const mode of ['cancel-first', 'complete-first', 'failure-first']) {
+    const id = await sql(queueAudio(`native-export-${randomUUID()}`));
+    const job = JSON.parse(await sql(claimAudio)); assert.equal(job.id, id);
+    await sql(`${audioService} select public.progress_audiobook_google_play_export('${id}','${job.lease_token}',1);`);
+    const cancel = `${audioOwner} select status from public.cancel_audiobook_google_play_export('${id}');`;
+    const complete = `${audioService} select status from public.complete_audiobook_google_play_export(
+      '${id}','${job.lease_token}','workspaces/${job.workspace_id}/audiobook-exports/${id}/${job.lease_token}.zip',1024,repeat('f',64),300);`;
+    const fail = `${audioService} select status from public.fail_audiobook_google_play_export('${id}','${job.lease_token}','fixture_done',false);`;
+    const holder = session();
+    holder.child.stdin.write(`begin; ${mode === 'cancel-first' ? cancel : mode === 'complete-first' ? complete : fail} select 'BOOKWORM_READY';\n`);
+    await until(() => { assert.equal(holder.ended, false, holder.stderr); return holder.stdout.includes('BOOKWORM_READY'); }, `Audio ${mode} holder not ready`);
+    const raceName = `audio_finish_${randomUUID().replaceAll('-', '')}`;
+    const waiting = session(database, raceName); waiting.child.stdin.end(mode === 'complete-first' ? cancel : complete);
+    await until(async () => {
+      assert.equal(waiting.ended, false, waiting.stderr);
+      return await sql(`select count(*) from pg_stat_activity where application_name='${raceName}' and wait_event_type='Lock';`) === '1';
+    }, `Audio ${mode} contender did not wait`);
+    holder.child.stdin.end('commit;\n'); assert.equal((await holder.done).code, 0, holder.stderr);
+    const result = await waiting.done;
+    if (mode === 'complete-first') {
+      assert.equal(result.code, 0, result.stderr); assert.equal(result.stdout.trim(), 'succeeded');
+      assert.equal(await sql(`select count(*) from audiobook_google_play_export_jobs where id='${id}' and output_storage_path is not null and cancellation_requested_at is null;`), '1');
+    } else {
+      assert.notEqual(result.code, 0);
+      assert.match(result.stderr, mode === 'cancel-first' ? /57014.*export cancelled/s : /40001.*worker lease lost/s);
+      assert.equal(await sql(`select count(*) from audiobook_google_play_export_jobs where id='${id}' and output_storage_path is null;`), '1');
+      if (mode === 'cancel-first') assert.equal(await sql(fail), 'cancelled');
+    }
+    console.log(`PASS native audiobook export ${mode} completion race`);
+  }
+}
+
 let created = false;
 try {
   assert.equal(await sql("select count(*) from pg_roles where rolname in ('anon','authenticated','service_role');", 'postgres'), '0', 'Refusing a reused/shared server: Supabase roles already exist');
@@ -489,6 +566,7 @@ try {
   await quoteCompletionRace();
   await cancellationDispatchRace();
   await storyBlueprintMaterializationRace();
+  await audioExportRaces();
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');

@@ -75,9 +75,13 @@ begin
       raise exception 'invalid audiobook identifier' using errcode='22023';
     end if;
   end if;
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('bookworm-audio-export:'||v_actor::text||':'||p_idempotency_key,0));
   select * into v_job from public.audiobook_google_play_export_jobs
     where created_by=v_actor and idempotency_key=p_idempotency_key for update;
   if found then
+    if not private.can_approve_workspace(v_job.workspace_id) then
+      raise exception 'workspace approver required' using errcode='42501';
+    end if;
     if v_job.edition_id<>p_edition_id or v_job.identifier<>p_identifier or v_job.cover_asset_id<>p_cover_asset_id then
       raise exception 'audiobook export idempotency conflict' using errcode='23505';
     end if;
@@ -159,7 +163,7 @@ begin
   loop
     update public.audiobook_google_play_export_jobs set status='running',attempts=attempts+1,
       lease_token=gen_random_uuid(),lease_expires_at=clock_timestamp()+make_interval(secs=>p_lease_seconds),
-      started_at=coalesce(started_at,clock_timestamp()),completed_at=null,error_code=null
+      started_at=coalesce(started_at,clock_timestamp()),completed_at=null,error_code=null,progress_chapters=0
       where id=v_job.id returning * into v_job;
     return next v_job; return;
   end loop;
@@ -206,6 +210,9 @@ begin
   if v_actor is null then raise exception 'authentication required' using errcode='42501'; end if;
   select * into v_job from public.audiobook_google_play_export_jobs where id=p_job_id for update;
   if not found or not private.is_workspace_member(v_job.workspace_id) then raise exception 'export job not found' using errcode='P0002'; end if;
+  if not private.can_approve_workspace(v_job.workspace_id) then
+    raise exception 'workspace approver required' using errcode='42501';
+  end if;
   if v_job.status='queued' then
     update public.audiobook_google_play_export_jobs set status='cancelled',completed_at=clock_timestamp(),
       error_code=null where id=p_job_id returning * into v_job;

@@ -257,4 +257,52 @@ begin
   assert (select status from public.audiobook_google_play_export_jobs where id=v_id)='cancelled';
 end $$;
 
+-- A restarted archive starts assembly from chapter zero under its new lease.
+reset role;
+insert into public.audiobook_google_play_export_jobs(
+  id,workspace_id,book_id,edition_id,created_by,idempotency_key,identifier,cover_asset_id,
+  snapshot_json,status,attempts,lease_token,lease_expires_at,progress_chapters,progress_total
+)
+select 'a6000000-0000-4000-8000-000000000015',workspace_id,book_id,edition_id,created_by,
+  'google-export-recovery',identifier,cover_asset_id,snapshot_json,'running',1,
+  'a6000000-0000-4000-8000-000000000016',clock_timestamp()-interval '1 second',2,3
+from public.audiobook_google_play_export_jobs where idempotency_key='google-export-paid-1';
+set local role service_role;
+do $$
+declare v_job public.audiobook_google_play_export_jobs;
+begin
+  select * into strict v_job from public.claim_audiobook_google_play_export(300);
+  assert v_job.id='a6000000-0000-4000-8000-000000000015' and v_job.progress_chapters=0;
+  assert v_job.lease_token<>'a6000000-0000-4000-8000-000000000016' and v_job.attempts=2;
+  assert public.progress_audiobook_google_play_export(v_job.id,v_job.lease_token,1);
+  begin
+    perform public.progress_audiobook_google_play_export(v_job.id,'a6000000-0000-4000-8000-000000000016',3);
+    raise exception 'expired worker changed progress';
+  exception when serialization_failure then null;
+  end;
+  perform public.fail_audiobook_google_play_export(v_job.id,v_job.lease_token,'fixture_done',false);
+end $$;
+reset role;
+update public.workspace_members set role='viewer'
+  where workspace_id='a6000000-0000-4000-8000-000000000003' and user_id='a6000000-0000-4000-8000-000000000001';
+set local role authenticated;
+set local request.jwt.claims='{"sub":"a6000000-0000-4000-8000-000000000001","role":"authenticated"}';
+do $$
+begin
+  begin
+    perform public.cancel_audiobook_google_play_export('a6000000-0000-4000-8000-000000000015');
+    raise exception 'viewer cancelled an export through direct RPC';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.queue_audiobook_google_play_export(
+      'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-paid-1');
+    raise exception 'downgraded creator replayed privileged export snapshot';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+update public.workspace_members set role='editor'
+  where workspace_id='a6000000-0000-4000-8000-000000000003' and user_id='a6000000-0000-4000-8000-000000000001';
+
 rollback;
