@@ -21,6 +21,13 @@ production build was run for this slice. Migration
 migration and was not applied live. No live provider, payment, deployment,
 retailer submission, or customer audio was used.
 
+First-party audio policy review is recorded in `docs/AUDIOBOOK_TECHNICAL_QC.md`:
+ACX remains blocked for this AI voice absent authorization; Google Play is a
+possible export-only target with Synthesized voice disclosure and partner /
+territory constraints; Apple Books' digital-narration path is partner-based,
+and acceptance of externally generated GPT narration remains unverified. No
+retailer-specific audio archive has been implemented or submitted.
+
 ## 2026-09-23 local verification refresh
 
 On branch `codex/paid-story-blueprint-20260923` at `968f7cce`, the full
