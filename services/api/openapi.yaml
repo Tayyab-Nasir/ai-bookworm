@@ -340,6 +340,35 @@ paths:
                 $ref: "#/components/schemas/ManuscriptImportResult"
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/jobs/ai/{id}/release-bible-hold:
+    post:
+      summary: Release a reviewed aged Book Bible request with no saved result (platform admin)
+      description: Requires receipt and provider review. No generation, customer debit or canonical write. Saved receipts, output, AI runs, suggestions, usage, active leases and recent requests prevent release. May still incur provider cost. Atomic audit and terminal failure prevent late completion from charging this job.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [incidentRef, receiptReviewed, providerReviewed]
+              properties:
+                incidentRef: { type: string, pattern: '^[A-Z0-9][A-Z0-9-]{5,63}$' }
+                receiptReviewed: { type: boolean, enum: [true] }
+                providerReviewed: { type: boolean, enum: [true] }
+      responses:
+        '200': { description: Failed job and incident reference; private receipt and manuscript never returned }
+        '401': { description: Authentication required }
+        '403': { description: Platform admin required }
+        '404': { description: Job not found }
+        '409': { description: Job not eligible for release }
+        '422': { description: Invalid incident or missing review attestation }
+        '503': { description: Migration unavailable or outcome unconfirmed; inspect job and audit before retry }
   /v1/admin/jobs/document/health:
     get:
       operationId: adminDocumentJobHealth

@@ -162,6 +162,26 @@ export function adminRoutes(app: FastifyInstance) {
       return { jobId: id.data, status: "failed" as const, incidentRef: body.data.incidentRef };
     });
 
+    a.post("/admin/jobs/ai/:id/release-bible-hold", async (req, reply) => {
+      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const body = z.object({ incidentRef: z.string().regex(/^[A-Z0-9][A-Z0-9-]{5,63}$/),
+        receiptReviewed: z.literal(true), providerReviewed: z.literal(true) }).strict().safeParse(req.body);
+      if (!id.success || !body.success) throw new AppError(422, "Provide an incident reference and confirm receipt and provider review.");
+      const { data, error } = await app.supabaseFactory().rpc("release_unconfirmed_book_bible_job", {
+        p_job_id: id.data, p_actor_id: req.userId, p_incident_ref: body.data.incidentRef,
+        p_receipt_reviewed: true, p_provider_reviewed: true,
+      });
+      if (error?.code === "P0002") throw new AppError(404, "Book Bible request not found.");
+      if (error?.code === "22023") throw new AppError(409, "This Book Bible request cannot be released. Recheck its receipt, age, output and debit.");
+      if (error?.code === "PGRST202" || error?.code === "42883") throw new AppError(503, "Book Bible hold release migration is not installed.");
+      if (error || !z.object({ id: z.literal(id.data), status: z.literal("failed"),
+        error_code: z.literal("book_bible_hold_released") }).passthrough().safeParse(data).success) {
+        throw new AppError(503, "Book Bible hold release was not confirmed. Refresh the job and audit record before retrying.");
+      }
+      reply.header("cache-control", "private, no-store");
+      return { jobId: id.data, status: "failed" as const, incidentRef: body.data.incidentRef };
+    });
+
     a.post("/admin/jobs/ai/:id/settle-review-receipt", async (req, reply) => {
       const id = z.string().uuid().safeParse((req.params as { id: string }).id);
       const body = z.object({ incidentRef: z.string().regex(/^[A-Z0-9][A-Z0-9-]{5,63}$/),

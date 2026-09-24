@@ -79,6 +79,32 @@ each response still contains at most ten candidates, and rich content without
 a text field is outside this extractor. Long chapters still need smaller
 selections or an eventual resumable extraction workflow.
 
+## Reviewed no-result hold release — source checkpoint
+
+The admin console and `POST /v1/admin/jobs/ai/{id}/release-bible-hold` now
+call a service-only atomic release function. A platform admin supplies an
+incident reference and explicit private-receipt/provider-review attestations.
+Only a running Book Bible request at least 15 minutes old is eligible; a
+recent receipt reservation, active lease, any saved receipt result (including
+malformed output), canonical job output, suggestion, AI run or usage event
+blocks release. An absent receipt is allowed after operator review. Age is
+only a guard, not proof that the provider failed or cost nothing.
+
+Release records the incident and actor in the audit log, ends the job as
+`book_bible_hold_released`, makes no canonical writes and adds no customer
+debit. The existing completion function rejects late completion of that
+failed job. A late private receipt may still be retained for investigation.
+The original idempotency key remains terminal; any author-requested future
+generation is a separate paid request. Saved valid results use author
+recovery; malformed saved results still require a separate reviewed
+disposition workflow and cannot be discarded with this action.
+
+Migration `20260924232000_book_bible_manual_hold_release.sql` is tested only
+in disposable PostgreSQL, not installed hosted. All 79 migrations and 57 SQL
+suites pass; 21 focused admin API tests, API/web TypeScript, the 102-test web
+suite and the added client transport test pass. Native admin-form acceptance
+and multi-connection races remain unverified.
+
 ## Native browser checkpoint — 2026-09-24
 
 `node tests/e2e/book-bible-browser.mjs` passes in headless Microsoft Edge

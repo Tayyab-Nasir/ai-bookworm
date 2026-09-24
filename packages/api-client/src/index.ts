@@ -957,6 +957,8 @@ export function createClient(opts: ClientOptions) {
       call<{ jobId: string; status: "failed"; incidentRef: string }>("POST", `/v1/admin/jobs/ai/${encodeURIComponent(jobId)}/release-review-hold`, body),
     adminSettleReviewReceipt: (jobId: string, body: { incidentRef: string; receiptReviewed: true; providerReviewed: true }) =>
       call<{ jobId: string; status: "succeeded"; incidentRef: string }>("POST", `/v1/admin/jobs/ai/${encodeURIComponent(jobId)}/settle-review-receipt`, body),
+    adminReleaseBibleHold: (jobId: string, body: { incidentRef: string; receiptReviewed: true; providerReviewed: true }) =>
+      call<{ jobId: string; status: "failed"; incidentRef: string }>("POST", `/v1/admin/jobs/ai/${encodeURIComponent(jobId)}/release-bible-hold`, body),
     adminToggleFlag: (key: string, enabled: boolean, scope: { scopeType: string; scopeId: string | null; config?: Record<string, unknown> } = { scopeType: "global", scopeId: null }) =>
       call<{ flag: unknown }>("PUT", `/v1/admin/flags/${encodeURIComponent(key)}`, { enabled, ...scope }),
     adminUpdateTicket: (ticketId: string, status: "open" | "pending" | "resolved" | "closed", priority?: "low" | "normal" | "high" | "urgent") =>

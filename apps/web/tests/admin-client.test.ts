@@ -89,6 +89,21 @@ test("admin UI: AdminConsole.tsx does not expose a global Retry/Reprocess action
   );
 });
 
+test("Book Bible hold release transports explicit review attestations with cookie auth", async () => {
+  const original = globalThis.fetch;
+  let call: { url: string; init?: RequestInit } | undefined;
+  globalThis.fetch = async (input, init) => { call = { url: String(input), init }; return Response.json({ status: "failed" }); };
+  try {
+    const body = { incidentRef: "INC-BIBLE-123", receiptReviewed: true, providerReviewed: true } as const;
+    await createClient({ baseUrl: "/api/backend" }).adminReleaseBibleHold("job/id", body);
+    assert.equal(call?.url, "/api/backend/v1/admin/jobs/ai/job%2Fid/release-bible-hold");
+    assert.equal(call?.init?.method, "POST");
+    assert.equal(call?.init?.credentials, "same-origin");
+    assert.deepEqual(JSON.parse(String(call?.init?.body)), body);
+    assert.equal(new Headers(call?.init?.headers).has("authorization"), false);
+  } finally { globalThis.fetch = original; }
+});
+
 test("account client: data requests + support tickets use same-origin transport", async () => {
   const original = globalThis.fetch;
   const calls: { url: string; init?: RequestInit }[] = [];

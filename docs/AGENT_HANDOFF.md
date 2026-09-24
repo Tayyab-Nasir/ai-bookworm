@@ -23,6 +23,17 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Book Bible reviewed no-result hold release
+
+Admin UI/API and a source-only migration provide an audited release of an
+aged running Book Bible request with no saved result/output/debit. Incident,
+receipt review and provider review are required; saved malformed receipts
+also block release. Terminal failure prevents late customer debit. Local
+79 migrations/57 SQL suites, 21 admin API tests, API/web types, 102 web tests
+and an additional client transport test pass. Native admin-form and hosted
+acceptance remain open; no migration applied hosted. Next: malformed-result
+disposition, resumable long-chapter extraction and wider release gates.
+
 ### Book Bible native browser acceptance (local fixtures)
 
 The new `tests/e2e/book-bible-browser.mjs` passes in native headless Edge:
