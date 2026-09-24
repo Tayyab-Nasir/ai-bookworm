@@ -60,3 +60,14 @@ These migrations are **not installed hosted**; this source workflow is not
 live production acceptance or an approved retail token-pricing catalog.
 The citation validates source identity, not semantic truth; author review
 remains required before any generated detail becomes canon.
+
+Authors can select up to three saved chapters from anywhere in the book.
+The API includes every nonempty text node in that selection or rejects it
+before a paid job is reserved. Missing saved versions, more than 100 text
+nodes, or a selection exceeding the bounded prompt budget return a corrective
+error. Large nodes that fit are included whole; the previous silent 8 KB
+node skip is removed. Prompt budgeting includes citation/wrapper overhead.
+This is complete selected text coverage, not exhaustive entity discovery:
+each response still contains at most ten candidates, and rich content without
+a text field is outside this extractor. Long chapters still need smaller
+selections or an eventual resumable extraction workflow.

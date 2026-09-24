@@ -214,17 +214,21 @@ export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetch
     const chapterInput: Record<string, unknown> = {};
     let remaining = Math.min(24000, Math.floor(body.maxTokens * 1.7));
     for (const chapter of chapters) {
-      if (!chapter.current_document_version_id) continue;
+      if (!chapter.current_document_version_id) throw new AppError(422, "Save every selected chapter before extracting candidates.");
       const { data: version, error } = await user.from("document_versions").select("*")
         .eq("id", chapter.current_document_version_id).eq("chapter_id", chapter.id).maybeSingle();
       if (error) throw new AppError(500, "Could not load the current saved manuscript version.");
-      if (!version) continue;
+      if (!version) throw new AppError(422, "A selected chapter's saved version is unavailable. Reload the manuscript and try again.");
       const nodes = [];
       for (const node of parseNodes(version.content_json)) {
-        if (evidence.length >= 100 || remaining <= 0) break;
         const text = typeof node.text === "string" ? node.text : "";
-        const size = Buffer.byteLength(text);
-        if (!text.trim() || size > 8000 || size > remaining) continue;
+        // Budget provenance labels and the untrusted-text wrapper as well as
+        // manuscript bytes so many short nodes still fit the service prompt.
+        const size = Buffer.byteLength(text) + 512;
+        if (!text.trim()) continue;
+        if (evidence.length >= 100 || size > remaining) {
+          throw new AppError(422, "The selected chapters exceed this extraction's reading limit. Select fewer chapters or divide a long chapter before generating. No extraction was started.");
+        }
         remaining -= size;
         const textHash = createHash("sha256").update(text).digest("hex");
         nodes.push({ ...node, textHash });

@@ -104,6 +104,49 @@ async function appWith(store: Store, failTable?: string, aiFetch?: typeof fetch)
 
 const entry = { type: "character", name: "Elara", description: "A mapmaker", attributes: { appearance: "Silver hair" }, imageAssetIds: [IMAGE], sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, note: "Opening scene" }] };
 
+test("Book Bible extraction rejects incomplete reading before reserving credits", async (t) => {
+  for (const mode of ["large-text", "many-nodes", "missing-version"] as const) {
+    const store = initialStore();
+    store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];
+    store.subscriptions = [{ organization_id: store.workspaces[0].organization_id, status: "active", plan_id: "paid" }];
+    store.plans = [{ id: "paid", entitlements_json: { ai_credits_monthly: 2 } }];
+    if (mode === "missing-version") store.document_versions = [];
+    else store.document_versions[0].content_json = { nodes: mode === "large-text"
+      ? [{ id: "n1", type: "paragraph", text: "a".repeat(25000) }]
+      : Array.from({ length: 101 }, (_, index) => ({ id: `n${index}`, type: "paragraph", text: "A fact." })) };
+    const app = await appWith(store); t.after(() => app.close());
+    const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/generate`, headers: auth,
+      payload: { idempotencyKey: randomUUID(), chapterIds: [CHAPTER] } });
+    assert.equal(response.statusCode, 422, `${mode}: ${response.body}`);
+    assert.equal(store.ai_jobs?.length ?? 0, 0);
+    assert.equal(store.usage_events?.length ?? 0, 0);
+  }
+});
+
+test("Book Bible extraction can select a later chapter and includes its complete large node", async (t) => {
+  const store = initialStore();
+  store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];
+  store.subscriptions = [{ organization_id: store.workspaces[0].organization_id, status: "active", plan_id: "paid" }];
+  store.plans = [{ id: "paid", entitlements_json: { ai_credits_monthly: 2 } }];
+  const laterId = randomUUID(); const laterVersion = randomUUID(); const fullText = "a".repeat(9000);
+  store.chapters.push(...Array.from({ length: 2 }, (_, index) => ({ id: randomUUID(), book_id: BOOK, order_index: index + 1 })),
+    { id: laterId, book_id: BOOK, order_index: 3, title: "Fourth chapter", current_document_version_id: laterVersion });
+  store.document_versions.push({ id: laterVersion, chapter_id: laterId,
+    content_json: { nodes: [{ id: "later-node", type: "paragraph", text: fullText }] } });
+  const aiFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    const input = JSON.parse(String(init?.body));
+    assert.deepEqual(input.input.chapterIds, [laterId]);
+    assert.equal(input.input.chapters[laterId].nodes[0].text, fullText);
+    return Response.json({ jobId: input.jobId, workspaceId: WORKSPACE, bookId: BOOK, agentType: "bookbible",
+      status: "succeeded", provider: "mock", model: "mock-1", suggestions: [], diagnostics: [],
+      usage: { inputTokens: 2000, outputTokens: 10, estimatedCostUsd: 0 } });
+  };
+  const app = await appWith(store, undefined, aiFetch); t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/generate`, headers: auth,
+    payload: { idempotencyKey: randomUUID(), chapterIds: [laterId] } });
+  assert.equal(response.statusCode, 201, response.body);
+});
+
 test("Book Bible draft history is book-scoped, review-only, and redacts job input", async (t) => {
   const store = initialStore();
   const candidate = { suggestionKind: "book_bible_candidate", status: "pending", type: "character",

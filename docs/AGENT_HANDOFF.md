@@ -23,6 +23,17 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Book Bible chapter selection and reading limits
+
+The review shelf now selects up to three saved chapters from anywhere in
+the book. The API rejects unavailable versions and oversized selections
+before reserving a paid request, instead of silently skipping large passages
+or later nodes. Full text nodes that fit are preserved with canonical hashes;
+the budget includes provenance overhead. API/web TypeScript, 27 focused
+Book Memory route tests and 102 web tests pass. Native browser acceptance
+is still pending; no hosted/provider action. Next: resumable long-chapter
+extraction, audited unresolved-hold disposition and wider release gates.
+
 ### Author-facing Book Bible AI candidate flow (source-only)
 
 `cfb5a64` is pushed on `codex/paid-story-blueprint-20260923`. The API now
