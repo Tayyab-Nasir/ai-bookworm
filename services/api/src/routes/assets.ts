@@ -415,6 +415,10 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
       }
       // A timeout, transport error, or lost response is not proof that OpenAI
       // rejected the work. Keep the reserved job visible and never redispatch.
+      const { error: markError } = await service.from("ai_jobs").update({ error_code: "image_provider_outcome_unconfirmed",
+        error_message: "Provider outcome requires operator review." }).eq("id", jobId).eq("status", "running");
+      if (markError) throw new AppError(503, "Image provider outcome and job status are unconfirmed. Contact support before another request.",
+        undefined, "image_provider_outcome_unconfirmed");
       throw new AppError(503, "Image provider outcome is unconfirmed. Check image history before starting another request; support may need to review this hold.",
         undefined, "image_provider_outcome_unconfirmed");
     }

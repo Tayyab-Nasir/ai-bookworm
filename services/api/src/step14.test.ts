@@ -220,6 +220,46 @@ test("AI retry remains unavailable to the admin console while author reviews use
   await app.close();
 });
 
+test("only platform admin can request audited image hold release with explicit review evidence", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000241";
+  const calls: Row[] = [];
+  const store: Store = { tables: {}, rpc(name, args) {
+    assert.equal(name, "release_unconfirmed_image_job"); calls.push(args);
+    return { data: { id: jobId, status: "failed", input_ref: { privatePrompt: "never return" } }, error: null };
+  } };
+  const app = await appWith(store);
+  const url = `/v1/admin/jobs/ai/${jobId}/release-image-hold`;
+  const body = { incidentRef: "INC-123456", storageChecked: true, providerReviewed: true };
+  try {
+    assert.equal((await app.inject({ method: "POST", url, payload: body })).statusCode, 401);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("good"), payload: body })).statusCode, 403);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("admin"), payload: { ...body, storageChecked: false } })).statusCode, 422);
+    assert.equal(calls.length, 0);
+    const released = await app.inject({ method: "POST", url, headers: as("admin"), payload: body });
+    assert.equal(released.statusCode, 200, released.body);
+    assert.deepEqual(released.json(), { jobId, status: "failed", incidentRef: "INC-123456" });
+    assert.equal(released.headers["cache-control"], "private, no-store");
+    assert.deepEqual(calls, [{ p_job_id: jobId, p_actor_id: "admin-1", p_incident_ref: "INC-123456",
+      p_storage_checked: true, p_provider_reviewed: true }]);
+    assert.doesNotMatch(released.body, /privatePrompt|never return/);
+  } finally { await app.close(); }
+});
+
+test("image hold release refuses stale eligibility and unavailable migration without claiming success", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000242";
+  const body = { incidentRef: "INC-123456", storageChecked: true, providerReviewed: true };
+  for (const [code, expected] of [["22023", 409], ["PGRST202", 503], ["P0002", 404]] as const) {
+    const store: Store = { tables: {}, rpc() { return { data: null, error: { code } }; } };
+    const app = await appWith(store);
+    try {
+      const response = await app.inject({ method: "POST", url: `/v1/admin/jobs/ai/${jobId}/release-image-hold`,
+        headers: as("admin"), payload: body });
+      assert.equal(response.statusCode, expected, response.body);
+      assert.doesNotMatch(response.body, /"status":"failed"/);
+    } finally { await app.close(); }
+  }
+});
+
 test("publishing retry delegates atomic reset and audit to the queue RPC", async () => {
   const jobId = "a9000000-0000-4000-8000-000000000001";
   const store: Store = {

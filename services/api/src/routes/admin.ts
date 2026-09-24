@@ -118,6 +118,27 @@ export function adminRoutes(app: FastifyInstance) {
       return { job: Array.isArray(data) ? data[0] : data };
     });
 
+    a.post("/admin/jobs/ai/:id/release-image-hold", async (req, reply) => {
+      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const body = z.object({ incidentRef: z.string().regex(/^[A-Z0-9][A-Z0-9-]{5,63}$/),
+        storageChecked: z.literal(true), providerReviewed: z.literal(true) }).strict().safeParse(req.body);
+      if (!id.success || !body.success) throw new AppError(422, "Provide an incident reference and confirm both review checks.");
+      const svc = app.supabaseFactory();
+      const { data, error } = await svc.rpc("release_unconfirmed_image_job", {
+        p_job_id: id.data, p_actor_id: req.userId, p_incident_ref: body.data.incidentRef,
+        p_storage_checked: true, p_provider_reviewed: true,
+      });
+      if (error?.code === "P0002") throw new AppError(404, "Image request not found.");
+      if (error?.code === "22023") throw new AppError(409, "This image request cannot be released. Review its age, output, receipt and debit again.");
+      if (error?.code === "PGRST202" || error?.code === "42883") throw new AppError(503, "Image hold release migration is not installed.");
+      if (error) throw new AppError(503, "Image hold release was not confirmed. Refresh the job and audit record before retrying.");
+      if (!z.object({ id: z.literal(id.data), status: z.literal("failed") }).passthrough().safeParse(data).success) {
+        throw new AppError(503, "Image hold release reply was invalid. Refresh the job and audit record before retrying.");
+      }
+      reply.header("cache-control", "private, no-store");
+      return { jobId: id.data, status: "failed" as const, incidentRef: body.data.incidentRef };
+    });
+
     // ---- audit ---------------------------------------------------------------
     a.get("/admin/audit", async (req) => {
       const q = pagination.extend({

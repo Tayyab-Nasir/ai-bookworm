@@ -23,6 +23,19 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Operator resolution for unconfirmed image holds
+
+An additive migration and admin-only API/UI now provide a reviewed release
+path for aged, unresolved image jobs without a deliverable. The database
+locks the job, checks that it is still running with no receipt, usage debit,
+AI run or output reference, and atomically marks it failed with an incident
+audit. The operator must attest to private-storage and provider-usage review;
+the platform absorbs any uncertain provider cost. A late completion cannot
+charge the released job. This is **not live**: the migration was not applied,
+and hosted storage/provider/admin acceptance remains open. See
+`docs/IMAGE_HOLD_RELEASE.md` and the vault checkpoint
+`Codex Sessions/2026-09/2026-09-24-bookworm-image-hold-resolution.md`.
+
 ### Ambiguous paid image response guard
 
 The OpenAI image adapter no longer silently retries an uncertain provider

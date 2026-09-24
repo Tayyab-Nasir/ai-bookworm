@@ -249,6 +249,33 @@ paths:
         "201": { description: Created or recovered chapter; same actor/book/key replays identical input }
         "409": { description: Request key reused with different input }
         "403": { $ref: "#/components/responses/Error" }
+  /v1/admin/jobs/ai/{id}/release-image-hold:
+    post:
+      operationId: adminReleaseUnconfirmedImageHold
+      summary: Release an aged image hold with no delivered asset (platform admin only)
+      description: Requires a reviewed incident, storage inventory check and provider-cost review. Database checks age, running image status, and absence of completion receipt, usage debit and recorded output; job failure and audit entry are atomic. This does not assert the provider was not billed.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [incidentRef, storageChecked, providerReviewed]
+              additionalProperties: false
+              properties:
+                incidentRef: { type: string, pattern: '^[A-Z0-9][A-Z0-9-]{5,63}$' }
+                storageChecked: { type: boolean, const: true }
+                providerReviewed: { type: boolean, const: true }
+      responses:
+        "200": { description: Image hold released with immutable incident audit }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
     get:
       tags: [v1]

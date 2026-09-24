@@ -360,6 +360,7 @@ test("provider transport failure retains an unresolved job without exposing prov
   assert.equal(response.statusCode, 503);
   assert.equal(response.json().error.code, "image_provider_outcome_unconfirmed");
   assert.equal(store.tables.ai_jobs[0].status, "running");
+  assert.equal(store.tables.ai_jobs[0].error_code, "image_provider_outcome_unconfirmed");
   assert.equal(store.tables.assets.length, 0);
   assert.equal(store.tables.usage_events.length, 0);
   assert.equal(store.objects.size, 0);
@@ -440,6 +441,7 @@ test("uncertain image provider reply retains its reservation and blocks a second
     assert.equal(first.json().error.code, "image_provider_outcome_unconfirmed");
     assert.doesNotMatch(first.body, /No credits were used/);
     assert.equal(store.tables.ai_jobs[0].status, "running");
+    assert.equal(store.tables.ai_jobs[0].error_code, "image_provider_outcome_unconfirmed");
     const sameKey = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth, payload });
     assert.equal(sameKey.statusCode, 409);
     const freshKey = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth,

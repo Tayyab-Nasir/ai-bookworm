@@ -951,6 +951,8 @@ export function createClient(opts: ClientOptions) {
       call<{ userId: string; suspended: boolean }>("POST", `/v1/admin/users/${userId}/suspend`),
     adminRetryJob: (type: "ai" | "publishing", jobId: string) =>
       call<{ job: unknown }>("POST", `/v1/admin/jobs/${type}/${jobId}/retry`),
+    adminReleaseImageHold: (jobId: string, body: { incidentRef: string; storageChecked: true; providerReviewed: true }) =>
+      call<{ jobId: string; status: "failed"; incidentRef: string }>("POST", `/v1/admin/jobs/ai/${encodeURIComponent(jobId)}/release-image-hold`, body),
     adminToggleFlag: (key: string, enabled: boolean, scope: { scopeType: string; scopeId: string | null; config?: Record<string, unknown> } = { scopeType: "global", scopeId: null }) =>
       call<{ flag: unknown }>("PUT", `/v1/admin/flags/${encodeURIComponent(key)}`, { enabled, ...scope }),
     adminUpdateTicket: (ticketId: string, status: "open" | "pending" | "resolved" | "closed", priority?: "low" | "normal" | "high" | "urgent") =>

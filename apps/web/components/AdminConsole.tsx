@@ -29,6 +29,10 @@ export default function AdminConsole() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [holdJobId, setHoldJobId] = useState<string | null>(null);
+  const [incidentRef, setIncidentRef] = useState("");
+  const [storageChecked, setStorageChecked] = useState(false);
+  const [providerReviewed, setProviderReviewed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [forbidden, setForbidden] = useState(false);
@@ -75,7 +79,7 @@ export default function AdminConsole() {
 
   function changeTab(next: Tab) {
     if (busy) return;
-    setTab(next); setOffset(0); setStatus(""); setSearch(""); setSearchDraft(""); setNotice(null);
+    setTab(next); setOffset(0); setStatus(""); setSearch(""); setSearchDraft(""); setNotice(null); setHoldJobId(null);
   }
 
   if (forbidden) return <main className="mx-auto max-w-3xl px-6 py-20">
@@ -120,7 +124,27 @@ export default function AdminConsole() {
           const stamp = date(row.created_at);
           return <article key={id} className="p-5 sm:p-6">
             {tab === "users" && <div><h3 className="font-medium">{value(row, "display_name", "Unnamed author")}</h3><p className="mt-2 break-all font-mono text-xs text-white/45">{id}</p><p className="mt-2 text-xs text-white/40">Joined {stamp}</p></div>}
-            {tab === "jobs" && <div className="flex flex-wrap justify-between gap-4"><div><h3 className="text-sm font-medium">{value(row, "job_type", value(row, "channel", jobType === "ai" ? "AI generation" : "Publishing package"))}</h3><p className="mt-2 break-all font-mono text-xs text-white/40">{id}</p><p className="mt-2 text-xs text-white/40">{stamp} · Attempts: {value(row, "attempts", "0")}</p></div><span className="h-fit rounded-full border border-white/15 px-3 py-1.5 text-xs capitalize text-white/70">{value(row, "status")}</span></div>}
+            {tab === "jobs" && <div><div className="flex flex-wrap justify-between gap-4"><div><h3 className="text-sm font-medium">{value(row, "job_type", value(row, "channel", jobType === "ai" ? value(row, "agent_type", "AI generation") : "Publishing package"))}</h3><p className="mt-2 break-all font-mono text-xs text-white/40">{id}</p><p className="mt-2 text-xs text-white/40">{stamp} · Attempts: {value(row, "attempts", "0")}</p>{typeof row.error_code === "string" && row.error_code && <p className="mt-2 text-xs text-amber-200">{row.error_code}</p>}</div><span className="h-fit rounded-full border border-white/15 px-3 py-1.5 text-xs capitalize text-white/70">{value(row, "status")}</span></div>
+              {jobType === "ai" && row.status === "running" && ["illustrator", "cover_designer"].includes(String(row.agent_type)) && <div className="mt-4">
+                <button type="button" className={button} disabled={!!busy} onClick={() => {
+                  setHoldJobId(holdJobId === id ? null : id); setIncidentRef(""); setStorageChecked(false); setProviderReviewed(false);
+                }}>{holdJobId === id ? "Close hold review" : "Review unresolved image hold"}</button>
+                {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4" onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!storageChecked || !providerReviewed) return;
+                  void update(id, () => api.adminReleaseImageHold(id, { incidentRef, storageChecked: true, providerReviewed: true }),
+                    "Unresolved image hold released without a customer debit. Audit the incident record.");
+                }}>
+                  <p className="text-sm text-amber-100">Only release an aged job with no saved output after reviewing provider usage and private storage. Bookworm may still have been billed; this action never charges the author.</p>
+                  <label className="block text-xs text-white/70">Incident reference
+                    <input required pattern="[A-Z0-9][A-Z0-9-]{5,63}" maxLength={64} value={incidentRef} onChange={(event) => setIncidentRef(event.target.value.toUpperCase())} placeholder="INC-123456" className={`${input} mt-2 block w-full`} />
+                  </label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={storageChecked} onChange={(event) => setStorageChecked(event.target.checked)} className="mt-0.5" />I checked private storage and found no delivered asset or recoverable completion receipt.</label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={providerReviewed} onChange={(event) => setProviderReviewed(event.target.checked)} className="mt-0.5" />I reviewed provider usage or support evidence and recorded this incident; I am not asserting zero provider cost.</label>
+                  <button type="submit" disabled={!!busy || !storageChecked || !providerReviewed || !/^[A-Z0-9][A-Z0-9-]{5,63}$/.test(incidentRef)} className={button}>{busy === id ? "Releasing…" : "Release held image credit"}</button>
+                </form>}
+              </div>}
+            </div>}
             {tab === "flags" && <div className="flex flex-wrap items-center justify-between gap-4"><div><h3 className="font-medium">{value(row, "key")}</h3><p className="mt-2 break-all text-xs text-white/45">{value(row, "scope_type", "global")} {row.scope_id ? `· ${value(row, "scope_id")}` : ""}</p></div><button type="button" role="switch" aria-checked={row.enabled === true} aria-label={`Enable ${value(row, "key")} for ${value(row, "scope_type", "global")} ${value(row, "scope_id", "")}`} disabled={loading || !!busy} onClick={() => void update(id, () => api.adminToggleFlag(String(row.key), row.enabled !== true, { scopeType: value(row, "scope_type", "global"), scopeId: typeof row.scope_id === "string" ? row.scope_id : null }), "Feature flag saved.")} className={button}>{busy === id ? "Saving…" : row.enabled === true ? "Enabled" : "Disabled"}</button></div>}
             {tab === "support" && <div><div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-medium">{value(row, "subject", "Support request")}</h3><p className="mt-2 text-xs capitalize text-white/45">{value(row, "category", "general")} · {value(row, "priority", "normal")} priority · {stamp}</p><p className="mt-2 break-all text-xs text-white/35">User {value(row, "user_id")}</p></div><label className="text-xs text-white/50">Ticket status<select value={value(row, "status", "open")} disabled={loading || !!busy} onChange={(event) => void update(id, () => api.adminUpdateTicket(id, event.target.value as TicketStatus), "Ticket status saved.")} className={`${input} mt-2 block`}>{ticketStatuses.map((item) => <option key={item} value={item}>{item}</option>)}</select></label></div><details className="mt-4 text-sm text-white/60"><summary className="w-fit cursor-pointer rounded focus-visible:outline focus-visible:outline-white">Read request</summary><p className="mt-3 whitespace-pre-wrap break-words leading-6">{value(row, "body", "No message supplied.")}</p></details></div>}
             {tab === "audit" && <div><h3 className="text-sm font-medium">{value(row, "action")}</h3><p className="mt-2 break-all text-xs text-white/45">{value(row, "entity_type")} · {value(row, "entity_id")}</p><p className="mt-2 break-all text-xs text-white/35">Actor {value(row, "actor_id", "System")} · {stamp}</p></div>}
