@@ -4,8 +4,11 @@
 
 Google Play Books now has a local, entitlement-gated, EPUB-only preflight and
 private manual-handoff package. It checks saved metadata and a readable front
-cover embedded in the exact EPUB, and explicitly requires the author to run
-EpubCheck and complete Google Partner Center review/pricing/publishing. The
+cover embedded in the exact EPUB, and automatically runs W3C EPUBCheck 5.4.0
+on those exact bytes during rendering preflight and packaging. If the checker
+is unavailable or reports errors, export is blocked.
+The author must still review warnings and complete Google Partner Center
+review/pricing/publishing. The
 additive database migration is local-only. No Google account was connected,
 file uploaded, sale recorded or title published. See
 [`GOOGLE_PLAY_EBOOK_EXPORT.md`](GOOGLE_PLAY_EBOOK_EXPORT.md). This adds a

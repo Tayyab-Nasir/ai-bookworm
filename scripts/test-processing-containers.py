@@ -96,6 +96,18 @@ def main():
         fixed = check_json(container, "/render", {"bookModel": book, "editionConfig": {"kind": "ebook", "flow": "fixed"}})
         assert base64.b64decode(fixed["artifactBase64"]).startswith(b"PK")
         check_json(container, "/preflight", {"bookModel": book, "editionConfig": {"kind": "ebook"}, "channel": "kdp"})
+        artwork = docker("exec", container, "python", "-c",
+            "import base64,io; from PIL import Image; "
+            "image=Image.new('RGB',(1200,1800),'#43536a'); data=io.BytesIO(); "
+            "image.save(data,'PNG'); print(base64.b64encode(data.getvalue()).decode())")
+        google_edition = {"kind": "ebook", "cover": {"asset_id": "44444444-4444-4444-8444-444444444444"}}
+        google_request = {"bookModel": book, "editionConfig": google_edition, "coverBase64": artwork}
+        google = check_json(container, "/render", google_request)
+        google_epub = base64.b64decode(google["artifactBase64"])
+        assert hashlib.sha256(google_epub).hexdigest() == google["sha256"]
+        preflight = check_json(container, "/preflight", {**google_request, "channel": "googleplay"})
+        assert preflight["errors"] == 0, preflight["findings"]
+        assert preflight["ruleVersion"] == "core-1.0.8+google-play-1.1.0"
         mp3 = docker("exec", container, "python", "-c",
             "import base64,subprocess; from audio_assembly import ffmpeg_executable; "
             "r=subprocess.run([ffmpeg_executable(),'-v','error','-f','lavfi','-i','sine=frequency=440:duration=1',"
@@ -104,15 +116,21 @@ def main():
         status, audio = request(container, "/audio/assemble", {"segmentsBase64": [mp3]})
         assert status == 200, (status, audio[:1000])
         assert len(audio) > 1000
-        return result["artifactBase64"]
+        return result["artifactBase64"], google["artifactBase64"], google_edition
     rendered = run_service("rendering", True, render)
 
     def package(container):
         result = check_json(container, "/v1/publishing/package", {"bookModel": book, "editionConfig": {"kind": "ebook"},
-            "channel": "kdp", "artifactsBase64": {"book.epub": rendered}})
+            "channel": "kdp", "artifactsBase64": {"book.epub": rendered[0]}})
         with zipfile.ZipFile(io.BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
-            assert archive.read("book.epub") == base64.b64decode(rendered)
+            assert archive.read("book.epub") == base64.b64decode(rendered[0])
             assert json.loads(archive.read("metadata.json"))["metadata"]["title"] == book["metadata"]["title"]
+        google = check_json(container, "/v1/publishing/package", {"bookModel": book,
+            "editionConfig": rendered[2], "channel": "googleplay",
+            "artifactsBase64": {"book.epub": rendered[1]}})
+        assert google["errors"] == 0
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(google["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.epub") == base64.b64decode(rendered[1])
         assert request(container, "/v1/publishing/jobs", {})[0] == 410
     run_service("publishing", True, package)
 

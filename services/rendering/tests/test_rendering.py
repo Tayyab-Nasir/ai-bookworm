@@ -166,6 +166,7 @@ def test_rtl_epub_declares_direction_and_keeps_the_output_deterministic():
     assert 'lang="ar" dir="rtl"' in chapter
     assert 'lang="ar" dir="rtl"' in nav
     assert 'html[dir="rtl"] body' in css
+    assert 'direction:rtl' not in css and 'unicode-bidi' not in css
 
 
 def _artwork() -> bytes:
@@ -192,6 +193,7 @@ def test_cover_typography_qr_and_epub_manifest_are_deterministic():
     opf = zf.read("OEBPS/content.opf")
     assert b'properties="cover-image"' in opf
     assert b'<meta name="cover" content="cover-image"/>' in opf
+    assert b'<itemref idref="cover-page"/>' in opf
     assert "OEBPS/cover.xhtml" in zf.namelist()
     assert "OEBPS/images/11111111-1111-1111-1111-111111111111.png" in zf.namelist()
 

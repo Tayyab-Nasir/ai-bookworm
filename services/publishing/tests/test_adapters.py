@@ -65,8 +65,11 @@ def test_kdp_validate_flags_missing_description():
     assert any(f["rule_id"] == "KDP-META-001" for f in result["findings"])
 
 
-def test_google_play_requires_embedded_front_cover_and_builds_single_title_handoff():
+def test_google_play_requires_embedded_front_cover_and_builds_single_title_handoff(monkeypatch):
     from PIL import Image
+    from epubcheck_runner import EpubCheckResult
+    import rules.google_play_v1 as google_rules
+    monkeypatch.setattr(google_rules, "run_epubcheck", lambda _epub: EpubCheckResult("valid"))
     adapter = get_adapter("googleplay")
     assert adapter.capabilities().formats == ("epub",)
     assert adapter.capabilities().can_submit is False
@@ -82,7 +85,7 @@ def test_google_play_requires_embedded_front_cover_and_builds_single_title_hando
            "cover_bytes": cover.getvalue()}
     result = adapter.validate(ctx)
     assert result["errors"] == 0, result["findings"]
-    assert result["ruleVersion"] == "core-1.0.8+google-play-1.0.0"
+    assert result["ruleVersion"] == "core-1.0.8+google-play-1.1.0"
     exported = adapter.build_package(ctx, {"book.epub": epub})[0]
     assert exported.path == "googleplay-export.zip"
     with zipfile.ZipFile(BytesIO(exported.data)) as archive:
@@ -97,6 +100,14 @@ def test_google_play_requires_embedded_front_cover_and_builds_single_title_hando
     assert any(item["code"] == "GOOGLE-EPUB-COVER" for item in small["findings"])
     print_only = adapter.validate({**ctx, "edition": {"kind": "print"}})
     assert any(item["code"] == "GOOGLE-EPUB-ONLY" for item in print_only["findings"])
+
+
+def test_google_play_fails_closed_when_epubcheck_is_unavailable(monkeypatch):
+    import rules.google_play_v1 as google_rules
+    from epubcheck_runner import EpubCheckResult
+    monkeypatch.setattr(google_rules, "run_epubcheck", lambda _epub: EpubCheckResult("unavailable"))
+    result = get_adapter("googleplay").validate({**_ctx(), "channel": "googleplay"})
+    assert any(item["code"] == "GOOGLE-EPUBCHECK-UNAVAILABLE" for item in result["findings"])
 
 
 def test_build_package_deterministic_export_zip():

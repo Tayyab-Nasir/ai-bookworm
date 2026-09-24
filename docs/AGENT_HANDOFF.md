@@ -30,12 +30,17 @@ rendering preflight, package service and a source-only additive SQL migration.
 The channel checks a readable 640–7200px front cover embedded in the exact
 EPUB, requires the `google_play` paid publishing entitlement, and produces a
 private deterministic ZIP for manual single-title Partner Center upload.
-It does **not** submit, publish, run EpubCheck, verify Google processing or
-create a sale. Full local `npm run verify` and isolated production web build
-pass (71 disposable migrations/49 SQL assertions, 304 API, 349 services,
-12 E2E, 30 security, load/evals). No hosted migration or retailer action.
-See `docs/GOOGLE_PLAY_EBOOK_EXPORT.md`. Next: EpubCheck integration and
-native Partner Center/hosted acceptance, then wider release gates.
+It does **not** submit, publish, verify Google processing or create a sale.
+The exact EPUB now passes a fail-closed W3C EPUBCheck 5.4.0 in rendering
+preflight and package assembly. A pinned checker is installed in the private
+rendering/publishing container stages; native container CI is pending. Full
+local `npm run verify` passes (71 disposable migrations/49 SQL assertions,
+304 API, 353 services, 12 E2E, 30 security, load/evals). A cover-bearing
+EPUB passed direct local preflight and package assembly with the actual JAR;
+the resulting ZIP preserved identical EPUB bytes. No hosted migration or
+retailer action. See `docs/GOOGLE_PLAY_EBOOK_EXPORT.md`. Next: inspect native
+container CI, then separately approved Partner Center/hosted acceptance and
+wider release gates.
 
 ### Image usage measurement provenance
 

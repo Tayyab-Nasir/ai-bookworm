@@ -25,7 +25,7 @@ _CONTAINER_XML = """<?xml version="1.0" encoding="UTF-8"?>
 
 _CSS = "body{font-family:serif;line-height:1.5}h1,h2,h3,h4,h5,h6{break-after:avoid}figure{text-align:center;margin:1.5em 0;break-inside:avoid}img{height:auto;max-width:100%}figcaption,.caption{font-size:.9em;font-style:italic}blockquote{margin:1em 2em}.page-break{break-before:page;border:0}code{font-family:monospace}.cover{margin:0;text-align:center}"
 _CSS += "table{border-collapse:collapse;width:100%;margin:1em 0}td{border:1px solid #777;padding:.4em;vertical-align:top;overflow-wrap:anywhere}"
-_CSS += 'html[dir="rtl"] body{direction:rtl;text-align:right;unicode-bidi:plaintext}html[dir="rtl"] .cover{text-align:center}'
+_CSS += 'html[dir="rtl"] body{text-align:right}html[dir="rtl"] .cover{text-align:center}'
 
 
 def _slug(chapter_id: str, index: int) -> str:
@@ -152,7 +152,7 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
         f'<item href="images/{escape(asset_id)}.png" id="image-{escape(asset_id)}" media-type="image/png"/>'
         for asset_id in image_asset_ids if asset_id != cover_asset_id
     ]
-    spine = ('<itemref idref="cover-page" linear="no"/>' if cover_asset_id else "") + "".join(
+    spine = ('<itemref idref="cover-page"/>' if cover_asset_id else "") + "".join(
         f'<itemref idref="{slug}"/>' for slug, _ in _front_pages(book, edition)) + (
         '<itemref idref="nav"/>' if edition.navigation != "none" else "") + "".join(
         f'<itemref idref="{slug}"/>' for slug, _ in chapters)
