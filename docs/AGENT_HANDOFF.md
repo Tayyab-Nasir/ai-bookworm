@@ -31,8 +31,10 @@ cannot be established, blocks another sequential image dispatch by that
 author/workspace, and never claims that provider spend or credit outcome is
 known. A definitely missing API key fails and releases the hold. The Assets
 UI waits for image history before allowing generation and pauses while a
-request is pending or history is unavailable. API TypeScript, 300 API tests,
-web TypeScript, 98 web tests and isolated production build pass. There is no
+request is pending or history is unavailable. Full local `npm run verify`
+passes (68 disposable migrations/46 SQL assertions, 300 API, 98 web, 348
+services, 12 Python E2E, 30 security, load smoke and mock evals); isolated
+production web build passes. There is no
 provider receipt for a lost reply: operator reconciliation/release and native
 multi-connection race testing remain open. No live provider call, migration or
 deployment. See the shared vault note
