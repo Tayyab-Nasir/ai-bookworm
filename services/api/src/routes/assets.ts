@@ -27,6 +27,7 @@ const MAX_GENERATED_IMAGE_BYTES = 25 * 1024 * 1024;
 
 const uploadUrlSchema = z.object({
   workspaceId: z.string().uuid(),
+  requestId: z.string().uuid().optional(),
   filename: z.string().trim().min(1).max(256),
   mimeType: z.enum(USER_ASSET_MIME_TYPES),
   sizeBytes: z.number().int().min(1).max(MAX_UPLOAD_BYTES),
@@ -462,7 +463,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
   app.post("/assets/upload-url", async (req) => {
     const parsed = uploadUrlSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid upload request", { issues: parsed.error.issues });
-    const { workspaceId, filename, mimeType, sizeBytes, folderId, type } = parsed.data;
+    const { workspaceId, requestId, filename, mimeType, sizeBytes, folderId, type } = parsed.data;
     try {
       validateAssetUploadDeclaration(filename, mimeType);
     } catch (error) {
@@ -471,7 +472,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     }
     const sb = app.supabaseFactory(req.userToken);
     await requireWorkspaceEditor(sb, workspaceId, req.userId);
-    const assetId = randomUUID();
+    const assetId = requestId ?? randomUUID();
     const path = `workspaces/${workspaceId}/assets/${assetId}/v1/${safeFilename(filename)}`;
 
     const { data: asset, error } = await sb
@@ -491,28 +492,57 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
       })
       .select("id")
       .single();
-    if (error || !asset) throw new AppError(500, error?.message ?? "asset insert failed");
+    const created = !error && !!asset;
+    if (error?.code === "23505" && requestId) {
+      const existing = await sb.from("assets").select("*").eq("id", assetId).eq("workspace_id", workspaceId).maybeSingle();
+      if (existing.error) throw new AppError(503, "Upload recovery is temporarily unavailable");
+      const row = existing.data;
+      if (!row || row.created_by !== req.userId || row.folder_id !== (folderId ?? null)
+        || row.type !== (type ?? "source_document") || row.name !== filename || row.storage_path !== path
+        || row.mime_type !== mimeType || Number(row.size_bytes) !== sizeBytes || row.checksum !== "pending"
+        || row.status !== "draft" || row.deleted_at) {
+        throw new AppError(409, "This upload request was already used with different or finalized asset details.");
+      }
+    } else if (error || !asset) throw new AppError(500, error?.message ?? "asset insert failed");
 
-    const { error: versionError } = await sb.from("asset_versions").insert({
-      asset_id: asset.id,
-      version_number: 1,
-      storage_path: path,
-      checksum: "pending",
-      mime_type: mimeType,
-      size_bytes: sizeBytes,
-      scan_status: "pending",
-      created_by: req.userId,
-    });
-    if (versionError) {
-      await sb.from("assets").delete().eq("id", asset.id);
-      throw new AppError(500, "asset version insert failed");
+    const readVersion = () => sb.from("asset_versions").select("*").eq("asset_id", assetId).eq("version_number", 1).maybeSingle();
+    let { data: version, error: versionReadError } = await readVersion();
+    if (versionReadError) throw new AppError(503, "Upload version recovery is temporarily unavailable");
+    if (!version) {
+      const { error: versionError } = await sb.from("asset_versions").insert({
+        asset_id: assetId,
+        version_number: 1,
+        storage_path: path,
+        checksum: "pending",
+        mime_type: mimeType,
+        size_bytes: sizeBytes,
+        scan_status: "pending",
+        created_by: req.userId,
+      });
+      if (versionError?.code === "23505" && requestId) {
+        ({ data: version, error: versionReadError } = await readVersion());
+        if (versionReadError) throw new AppError(503, "Upload version recovery is temporarily unavailable");
+      } else if (versionError) {
+        if (!requestId && created) await sb.from("assets").delete().eq("id", assetId);
+        throw new AppError(503, "Upload version allocation failed; retry the same request.");
+      } else version = { asset_id: assetId, version_number: 1, storage_path: path, checksum: "pending",
+        mime_type: mimeType, size_bytes: sizeBytes, scan_status: "pending", created_by: req.userId };
     }
-    await logActivity(sb, { workspaceId, actorId: req.userId, eventType: "asset_created", entityType: "asset", entityId: asset.id, payload: { name: filename } });
+    if (!version || version.storage_path !== path || version.checksum !== "pending"
+      || version.mime_type !== mimeType || Number(version.size_bytes) !== sizeBytes
+      || version.scan_status !== "pending" || version.created_by !== req.userId) {
+      throw new AppError(409, "The upload source has changed. Review it in Assets before continuing.");
+    }
+    const latest = await sb.from("asset_versions").select("version_number").eq("asset_id", assetId)
+      .order("version_number", { ascending: false }).limit(1).maybeSingle();
+    if (latest.error) throw new AppError(503, "Upload versions are temporarily unavailable");
+    if (latest.data?.version_number !== 1) throw new AppError(409, "The upload has newer versions; review it in Assets.");
+    if (created) await logActivity(sb, { workspaceId, actorId: req.userId, eventType: "asset_created", entityType: "asset", entityId: assetId, payload: { name: filename } });
 
     const { data: signed, error: signErr } = await sb.storage.from(BUCKET).createSignedUploadUrl(path);
     if (signErr || !signed) throw new AppError(500, signErr?.message ?? "signed url failed");
 
-    return { assetId: asset.id, uploadUrl: signed.signedUrl, path };
+    return { assetId, uploadUrl: signed.signedUrl, path };
   });
 
   app.post("/assets/:assetId/confirm", async (req) => {

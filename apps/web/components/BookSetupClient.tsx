@@ -82,7 +82,7 @@ export default function BookSetupClient() {
   useEffect(() => { if (checkpoint?.completed) reportHeading.current?.focus(); }, [checkpoint?.completed]);
 
   useEffect(() => {
-    if (!ready || saving || checkpoint?.completed || !checkpoint?.source) return;
+    if (!ready || saving || checkpoint?.completed || !checkpoint?.source || checkpoint.source.uploaded === false) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const bookId = checkpoint.bookId;
@@ -126,7 +126,9 @@ export default function BookSetupClient() {
     current.current = saved; setCheckpoint(saved);
     try { window.sessionStorage.setItem(setupKey(userId, workspaceId), JSON.stringify(saved)); }
     catch {
-      if (saved.bookCreated === false) throw new Error("Browser recovery storage is unavailable. Enable session storage before creating a book; no new request was sent.");
+      if (saved.bookCreated === false || saved.source?.uploaded === false) {
+        throw new Error("Browser recovery storage is unavailable. Enable session storage before creating a book or allocating its source; no new request was sent.");
+      }
       setNotice("Your server changes are saved, but browser recovery storage is unavailable. Keep this tab open.");
     }
   };
@@ -256,10 +258,10 @@ export default function BookSetupClient() {
               </label>
             </fieldset>
 
-            {mode === "import" && !checkpoint?.source && !checkpoint?.completed && (
+            {mode === "import" && (!checkpoint?.source || checkpoint.source.uploaded === false) && !checkpoint?.completed && (
               <label className="mt-5 block rounded-2xl border border-dashed border-white/[0.18] bg-black/20 p-5 transition hover:border-white/[0.32]">
                 <span className="text-sm font-medium text-white">Source manuscript</span>
-                <span className="mt-1 block text-[13px] leading-5 text-[#909090]">TXT, DOCX, EPUB and text-based PDF, up to 20 MB. Scanned PDFs need OCR first. Uploads remain quarantined until screening passes.</span>
+                <span className="mt-1 block text-[13px] leading-5 text-[#909090]">{checkpoint?.source?.uploaded === false ? "If the original upload did not finish, choose the same file to resume. Bookworm will first check whether it already arrived." : "TXT, DOCX, EPUB and text-based PDF, up to 20 MB. Scanned PDFs need OCR first. Uploads remain quarantined until screening passes."}</span>
                 <input type="file" disabled={!ready || saving} accept=".txt,.docx,.pdf,.epub,text/plain,application/pdf,application/epub+zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setSourceFile(event.target.files?.[0] ?? null)} className="mt-4 block w-full text-sm text-[#bdbdbd] file:mr-4 file:rounded-full file:border-0 file:bg-white file:px-3 file:py-2 file:text-xs file:font-semibold file:text-black hover:file:bg-[#dedede]" />
                 {sourceFile && <span className="mt-3 block text-sm text-[#d6d6d6]">Selected: {sourceFile.name} · {(sourceFile.size / 1024 / 1024).toFixed(1)} MB</span>}
               </label>
@@ -273,7 +275,7 @@ export default function BookSetupClient() {
               </label>
             )}
 
-            {checkpoint?.source && !checkpoint.completed && <p className="mt-5 text-sm leading-6 text-[#bdbdbd]">Your original upload is saved. Import uses this existing book and source. Background processing requires the document worker to be running.</p>}
+            {checkpoint?.source?.uploaded !== false && checkpoint?.source && !checkpoint.completed && <p className="mt-5 text-sm leading-6 text-[#bdbdbd]">Your original upload is saved. Import uses this existing book and source. Background processing requires the document worker to be running.</p>}
             {importJob && !checkpoint?.completed && <div role="status" className="mt-5 rounded-xl border border-white/15 px-4 py-3 text-sm leading-6 text-[#bdbdbd]">
               <p className="font-medium text-white">Import {importJob.status} · Attempt {importJob.attempts} of 5</p>
               <p>{importJob.status === "failed" ? "Import stopped. Your original is preserved. Check the source or service configuration, then retry."

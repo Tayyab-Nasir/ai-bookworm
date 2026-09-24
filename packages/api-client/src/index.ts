@@ -742,7 +742,7 @@ export function createClient(opts: ClientOptions) {
       call<{ version: number; versionId: string; document: ChapterDocument }>("POST", `/v1/chapters/${chapterId}/versions/${versionId}/restore`, body),
     applyOperation: (chapterId: string, op: DocumentOperation) =>
       call<{ version: number }>("POST", `/v1/chapters/${chapterId}/operations`, op),
-    createAssetUploadUrl: (body: { workspaceId: string; filename: string; mimeType: string; sizeBytes: number; folderId?: string | null; type?: string }) =>
+    createAssetUploadUrl: (body: { workspaceId: string; requestId?: string; filename: string; mimeType: string; sizeBytes: number; folderId?: string | null; type?: string }) =>
       call<{ uploadUrl: string; assetId: string; path: string }>("POST", "/v1/assets/upload-url", body),
     confirmAssetUpload: (assetId: string, body: { checksumSha256: string; sizeBytes: number }) =>
       call<{ assetId: string; status: string; scanStatus: "clean"; detectedMimeType: string; confirmed: true }>("POST", `/v1/assets/${assetId}/confirm`, body),

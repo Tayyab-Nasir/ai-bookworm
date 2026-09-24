@@ -17,21 +17,24 @@ function fixture() {
   let confirmError: Error | null = null;
   let importError: Error | null = null;
   let clean = true;
+  let stored = false;
   let replaced = false;
   let linkedBook = bookId;
   const api = {
     createBook: async () => { calls.push("create"); return { id: bookId }; },
-    createAssetUploadUrl: async () => { calls.push("allocate"); return { assetId, uploadUrl: "https://storage.invalid/private?token=never-save", path: "private" }; },
-    confirmAssetUpload: async () => { calls.push("confirm"); if (confirmError) throw confirmError; return {}; },
-    listAssetVersions: async () => { calls.push("versions"); return { versions: [{ version_number: 1, checksum: saved!.source!.checksumSha256, scan_status: clean ? "clean" : "infected" }, ...(replaced ? [{ version_number: 2, checksum: "replacement", scan_status: "clean" }] : [])] }; },
+    createAssetUploadUrl: async (body: { requestId?: string }) => { calls.push("allocate"); assert.equal(body.requestId, assetId); return { assetId, uploadUrl: "https://storage.invalid/private?token=never-save", path: "private" }; },
+    confirmAssetUpload: async () => { calls.push("confirm"); if (confirmError) throw confirmError; if (!stored) throw conflict(); return {}; },
+    listAssetVersions: async () => { calls.push("versions"); return { versions: [{ version_number: 1,
+      checksum: stored ? saved!.source!.checksumSha256 : "pending", scan_status: stored ? clean ? "clean" : "infected" : "pending" },
+      ...(replaced ? [{ version_number: 2, checksum: "replacement", scan_status: "clean" }] : [])] }; },
     importManuscript: async () => { calls.push("import"); if (importError) throw importError; return { report: { chapterCount: 1, imageCount: 0, warnings: ["Review headings"] } }; },
     getAssetUsage: async () => { calls.push("usage"); return { links: [{ entity_type: "book", entity_id: linkedBook, usage_role: "manuscript_source" }] }; },
   } as unknown as Parameters<typeof runManuscriptSetup>[0]["api"];
   const run = (changes: Partial<Parameters<typeof runManuscriptSetup>[0]> = {}) => runManuscriptSetup({ api, userId,
     details: { workspaceId, title: "Harbor", authorName: "Author" }, importing: true, file,
-    checkpoint: saved, save: (value) => { saved = structuredClone(value); }, stage: () => {}, newBookId: () => bookId,
-    upload: async () => { calls.push("upload"); return new Response(null, { status: 200 }); }, ...changes });
-  return { run, calls, saved: () => saved, scanError: (error: Error | null) => { confirmError = error; },
+    checkpoint: saved, save: (value) => { saved = structuredClone(value); }, stage: () => {}, newBookId: () => bookId, newAssetId: () => assetId,
+    upload: async () => { calls.push("upload"); stored = true; return new Response(null, { status: 200 }); }, ...changes });
+  return { run, api, calls, saved: () => saved, stored: (value: boolean) => { stored = value; }, scanError: (error: Error | null) => { confirmError = error; },
     parserError: (error: Error | null) => { importError = error; }, clean: (value: boolean) => { clean = value; }, replaced: () => { replaced = true; }, linkedBook: (value: string) => { linkedBook = value; } };
 }
 
@@ -108,8 +111,58 @@ test("AI setup saves only recovery IDs until its reviewable first draft is queue
 
 test("upload failure retains the created book and retry does not recreate it", async () => {
   const f = fixture(); await assert.rejects(f.run({ upload: async () => new Response(null, { status: 503 }) }), /upload failed/);
-  assert.equal(f.saved()?.bookId, bookId); assert.equal(f.saved()?.source, undefined);
+  assert.equal(f.saved()?.bookId, bookId); assert.equal(f.saved()?.source?.assetId, assetId);
+  assert.equal(f.saved()?.source?.uploaded, false);
   await f.run(); assert.equal(f.calls.filter((call) => call === "create").length, 1);
+});
+
+test("lost allocation reply reuses the saved source ID and allocates no second asset", async () => {
+  const f = fixture();
+  let allocations = 0;
+  const api = { ...f.api, createAssetUploadUrl: async (body: Parameters<typeof f.api.createAssetUploadUrl>[0]) => {
+    allocations++;
+    assert.equal(body.requestId, assetId);
+    if (allocations === 1) throw unavailable();
+    return f.api.createAssetUploadUrl(body);
+  } } as typeof f.api;
+  await assert.rejects(f.run({ api }), /Service unavailable/);
+  const pending = readSetupCheckpoint(JSON.stringify(f.saved()), userId, workspaceId);
+  assert.equal(pending?.source?.assetId, assetId);
+  assert.equal(pending?.source?.uploaded, false);
+  assert.doesNotMatch(JSON.stringify(pending), /manuscript.txt|storage.invalid|token=/);
+  await f.run({ api, checkpoint: pending });
+  assert.equal(allocations, 2);
+  assert.equal(f.saved()?.source?.uploaded, true);
+  assert.equal(f.calls.filter((call) => call === "create").length, 1);
+});
+
+test("lost PUT reply confirms existing bytes before issuing another signed upload", async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ upload: async () => { f.stored(true); throw unavailable(); } }), /Service unavailable/);
+  const pending = readSetupCheckpoint(JSON.stringify(f.saved()), userId, workspaceId);
+  assert.equal(pending?.source?.uploaded, false);
+  await f.run({ checkpoint: pending, file: null });
+  assert.equal(f.calls.filter((call) => call === "allocate").length, 1);
+  assert.equal(f.calls.filter((call) => call === "upload").length, 0);
+  assert.equal(f.saved()?.source?.uploaded, true);
+  assert.equal(f.saved()?.completed, true);
+});
+
+test("a different file cannot replace an interrupted original upload", async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ upload: async () => new Response(null, { status: 503 }) }), /upload failed/);
+  const pending = readSetupCheckpoint(JSON.stringify(f.saved()), userId, workspaceId);
+  await assert.rejects(f.run({ checkpoint: pending, file: new File(["different"], "manuscript.txt", { type: "text/plain" }) }), /differs from the saved upload/);
+  assert.equal(f.calls.filter((call) => call === "allocate").length, 1);
+  assert.equal(f.saved()?.source?.assetId, assetId);
+});
+
+test("source allocation never starts when its recovery ID cannot be saved", async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ save: (checkpoint) => {
+    if (checkpoint.source?.uploaded === false) throw new Error("Browser recovery storage is unavailable");
+  } }), /storage is unavailable/);
+  assert.deepEqual(f.calls, ["create"]);
 });
 
 test("lost create reply keeps the same request ID and cannot create a second book", async () => {

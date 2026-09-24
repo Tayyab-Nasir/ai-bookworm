@@ -10,7 +10,7 @@ const tokens = new Set();
 const workspaces = [];
 const setupBooks = [];
 const setupUploads = new Map();
-const setupCounts = { books: 0, uploads: 0, confirmations: 0, imports: 0, reportReads: 0, jobReads: 0, jobRetries: 0 };
+const setupCounts = { books: 0, assets: 0, allocationRequests: 0, uploads: 0, confirmations: 0, imports: 0, reportReads: 0, jobReads: 0, jobRetries: 0 };
 const setupReceipts = new Map();
 const setupJobs = new Map();
 const draftChapters = new Map();
@@ -34,6 +34,8 @@ function fixtureDownload(name) {
 let lostChapterReply = false;
 let lostBookReply = false;
 let refusedBookBeforeAcceptance = false;
+let lostUploadAllocationReply = false;
+let lostUploadPutReply = false;
 let lostAiReply = false;
 const memoryBookId = '88888888-8888-4888-8888-888888888888';
 const memoryBook = { id: memoryBookId, workspace_id: '33333333-3333-4333-8333-333333333333', title: 'The Long Way Home', subtitle: null, author_name: 'Fixture author', language: 'en', genre: 'Fantasy', status: 'draft', updated_at: '2026-08-31T08:00:00.000Z' };
@@ -63,7 +65,8 @@ const server = createServer(async (req, res) => {
   function json(status, body) { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); }
   const url = new URL(req.url, 'http://127.0.0.1:4399');
   if (url.pathname.startsWith('/fixture-upload/')) {
-    res.setHeader('access-control-allow-origin', 'http://127.0.0.1:4398');
+    const uploadOrigin = req.headers.origin;
+    if (uploadOrigin === 'http://127.0.0.1:4398' || uploadOrigin === 'http://localhost:4398') res.setHeader('access-control-allow-origin', uploadOrigin);
     res.setHeader('access-control-allow-methods', 'PUT, OPTIONS');
     res.setHeader('access-control-allow-headers', 'content-type');
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
@@ -72,6 +75,10 @@ const server = createServer(async (req, res) => {
     let length = 0;
     for await (const chunk of req) { length += chunk.length; if (length > 16384) return json(413, {}); }
     entry.uploaded = length === entry.sizeBytes; setupCounts.uploads++;
+    if (entry.uploaded && process.env.FIXTURE_LOST_UPLOAD_PUT_REPLY === 'true' && !lostUploadPutReply) {
+      lostUploadPutReply = true;
+      return json(503, { error: { message: 'Fixture lost PUT reply after storing bytes' } });
+    }
     return json(entry.uploaded ? 200 : 422, {});
   }
   let raw = '';
@@ -338,8 +345,23 @@ const server = createServer(async (req, res) => {
     }
   }
   if (url.pathname === '/v1/assets/upload-url' && req.method === 'POST') {
-    const id = randomUUID(); const token = randomUUID();
-    setupUploads.set(id, { token, sizeBytes: body.sizeBytes, uploaded: false, clean: false, checksum: null });
+    setupCounts.allocationRequests++;
+    const id = body.requestId ?? randomUUID(); const token = randomUUID();
+    const existing = setupUploads.get(id);
+    if (existing && (existing.filename !== body.filename || existing.mimeType !== body.mimeType
+      || existing.sizeBytes !== body.sizeBytes || existing.workspaceId !== body.workspaceId || existing.type !== body.type || existing.clean)) {
+      return json(409, { error: { message: 'Upload request changed or finished' } });
+    }
+    if (existing) existing.token = token;
+    else {
+      setupUploads.set(id, { token, filename: body.filename, mimeType: body.mimeType, workspaceId: body.workspaceId,
+        type: body.type, sizeBytes: body.sizeBytes, uploaded: false, clean: false, checksum: null });
+      setupCounts.assets++;
+    }
+    if (process.env.FIXTURE_LOST_UPLOAD_ALLOCATION_REPLY === 'true' && !lostUploadAllocationReply) {
+      lostUploadAllocationReply = true;
+      return json(503, { error: { message: 'Fixture lost allocation reply after acceptance' } });
+    }
     return json(200, { assetId: id, uploadUrl: `http://127.0.0.1:4399/fixture-upload/${id}?token=${token}`, path: 'fixture-only' });
   }
   const setupAssetId = url.pathname.split('/')[3];
@@ -347,12 +369,12 @@ const server = createServer(async (req, res) => {
   if (setupAsset && url.pathname === `/v1/assets/${setupAssetId}/confirm` && req.method === 'POST') {
     setupCounts.confirmations++;
     if (setupAsset.clean) return json(409, { error: { message: 'asset already confirmed' } });
-    if (!setupAsset.uploaded || body.sizeBytes !== setupAsset.sizeBytes) return json(422, { error: { message: 'Upload incomplete' } });
+    if (!setupAsset.uploaded || body.sizeBytes !== setupAsset.sizeBytes) return json(409, { error: { message: 'Upload incomplete' } });
     setupAsset.clean = true; setupAsset.checksum = body.checksumSha256;
     return json(503, { error: { message: 'Fixture lost scan response. Retry to check its saved result.' } });
   }
   if (setupAsset && url.pathname === `/v1/assets/${setupAssetId}/versions`) return json(200, { versions: [{
-    id: setupAssetId, version_number: 1, checksum: setupAsset.checksum, scan_status: setupAsset.clean ? 'clean' : 'pending',
+    id: setupAssetId, version_number: 1, checksum: setupAsset.checksum ?? 'pending', scan_status: setupAsset.clean ? 'clean' : 'pending',
   }] });
   if (url.pathname === '/v1/usage') return json(200, { entitlements: {}, usage: {}, creditBalance: 120 });
   if (process.env.FIXTURE_AI_DRAFT === 'true') {
