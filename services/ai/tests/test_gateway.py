@@ -1,6 +1,13 @@
 from types import SimpleNamespace
+from pathlib import Path
+import sys
 
-from gateway import OpenAIProvider, _cost, default_model
+import httpx
+import openai
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from gateway import OpenAIProvider, ProviderOutcomeUnknown, _cost, default_model
 
 
 def test_openai_provider_uses_responses_api_and_maps_function_calls():
@@ -35,3 +42,19 @@ def test_astra_cost_uses_published_long_context_multiplier():
     assert _cost("gpt-6-astra-2026-09-03", 300_000, 100) == 6.0075
     assert _cost("unknown-model", 100, 20) == 0
     assert default_model("openai") == "gpt-6-astra"
+
+
+def test_paid_openai_provider_disables_sdk_retries_and_preserves_unknown_outcome(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(openai, "OpenAI", lambda **kwargs: captured.update(kwargs) or SimpleNamespace())
+    OpenAIProvider(api_key="fixture-no-network")
+    assert captured["max_retries"] == 0
+
+    class Responses:
+        def create(self, **kwargs):
+            raise openai.APIConnectionError(request=httpx.Request("POST", "https://api.openai.com/v1/responses"))
+
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    provider._client = SimpleNamespace(responses=Responses())
+    with pytest.raises(ProviderOutcomeUnknown, match="unconfirmed"):
+        provider.complete([], [], "gpt-6-astra")

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from agents.base import AgentValidationError
 from agents.copyeditor import get_agent
-from gateway import default_model, get_provider, openai_tools
+from gateway import ProviderOutcomeUnknown, default_model, get_provider, openai_tools
 from tools import InMemoryExecutor
 from result_store import MetadataResultStore, ReceiptUnavailable, ReceiptConflict
 
@@ -166,6 +166,10 @@ def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(def
             if not compare_digest(actual_hash, req.expectedInputSha256):
                 raise HTTPException(status_code=409, detail="Story Blueprint request no longer matches its funded quote.")
         result = agent.run(agent_request, job_id=job_id)
+    except ProviderOutcomeUnknown as e:
+        # Leave the durable reservation unresolved. A 503 is not proof the
+        # provider did no work and must not become a failed/free result.
+        raise HTTPException(status_code=503, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 

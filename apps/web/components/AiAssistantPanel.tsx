@@ -40,6 +40,7 @@ export default function AiAssistantPanel({
   const [lastAppliedVersion, setLastAppliedVersion] = useState<number | null>(null);
   const requestInFlight = useRef(false);
   const suggestions = useMemo(() => job?.suggestions ?? [], [job]);
+  const unconfirmed = job?.error_code === "ai_provider_outcome_unconfirmed";
   const processing = busy || job?.status === "queued" || job?.status === "running";
 
   const loadRecent = useCallback(async () => {
@@ -111,13 +112,14 @@ export default function AiAssistantPanel({
     return () => { cancelled = true; };
   }, [api, chapterId, initialJobId, remember]);
   useEffect(() => {
-    if (!job || !["queued", "running"].includes(job.status)) return;
+    if (!job || !["queued", "running"].includes(job.status) || unconfirmed) return;
     let cancelled = false;
     const refresh = async () => {
       try {
         const next = await api.getAiJob(job.id);
         if (cancelled) return;
         setJob(next); remember(next);
+        if (next.error_code === "ai_provider_outcome_unconfirmed") setNotice(null);
         if (next.status === "succeeded") setNotice(next.suggestions.length ? "Review complete. Inspect each suggestion before applying it." : "Review completed with no suggestions.");
         if (next.status === "failed") setError(next.error_message ?? "This AI review did not finish. Start a fresh review.");
       } catch { /* A transient poll failure must not erase a durable queued job. */ }
@@ -125,7 +127,7 @@ export default function AiAssistantPanel({
     const timer = window.setInterval(() => { void refresh(); }, 1_500);
     void refresh();
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [api, job?.id, job?.status, remember]);
+  }, [api, job?.id, job?.status, unconfirmed, remember]);
 
   const run = async () => {
     if (!chapterId || !userId || !recoveryReady || requestInFlight.current || processing || dirty || !editable || (mode === "writer" && !instruction.trim())) return;
@@ -246,6 +248,7 @@ export default function AiAssistantPanel({
     {pendingRequest && <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100"><p>A previous paid request has an uncertain outcome. Its request key and settings are saved; no manuscript text is stored here. Check its server status or retry the exact original request. A new request key will not be created.</p><button type="button" disabled={busy} onClick={() => void checkPending()} className="mt-2 underline underline-offset-4 disabled:opacity-40">Check saved request · no credits</button></div>}
     {dirty && <p className="mt-2 text-xs text-amber-200">Save the chapter before running or applying AI suggestions.</p>}
     {error && <p role="alert" className="mt-3 text-xs leading-5 text-red-200">{error}</p>}
+    {unconfirmed && <p role="alert" className="mt-3 rounded-lg border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">The paid provider response for request {job?.id} is unconfirmed. No second generation will start automatically. Your credit remains reserved while support checks the provider result; do not start a new review for this book yet.</p>}
     {notice && <p role="status" className="mt-3 text-xs leading-5 text-emerald-200">{notice}</p>}
     {job && <p className="mt-3 text-[11px] text-white/35">{job.model ?? "provider"} · {Number((job.usage_json as { inputTokens?: number })?.inputTokens ?? 0) + Number((job.usage_json as { outputTokens?: number })?.outputTokens ?? 0)} tokens</p>}
     {recent.filter((review) => review.id !== job?.id).length > 0 && <details className="mt-4 rounded-xl border border-white/10 bg-white/[0.025] p-3">

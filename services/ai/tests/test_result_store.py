@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 import result_store
+from gateway import ProviderOutcomeUnknown
 
 
 @pytest.fixture
@@ -81,6 +82,17 @@ def test_unknown_reserved_result_never_regenerates(durable_service):
     assert client.post("/v1/ai/jobs", json=payload).status_code == 409
     assert client.get("/v1/ai/jobs/" + payload["jobId"]).status_code == 404
     assert len(calls) == 1
+
+
+def test_uncertain_paid_provider_result_leaves_metadata_receipt_reserved(durable_service, monkeypatch):
+    client, payload, rows, calls = durable_service
+    def uncertain(*args, **kwargs):
+        raise ProviderOutcomeUnknown("Paid provider outcome is unconfirmed.")
+    monkeypatch.setattr(main, "get_agent", lambda *args: SimpleNamespace(run=uncertain))
+    assert client.post("/v1/ai/jobs", json=payload).status_code == 503
+    assert rows[payload["jobId"]]["result_json"] is None
+    assert client.post("/v1/ai/jobs", json=payload).status_code == 409
+    assert calls == []
 
 
 def test_missing_receipt_configuration_stops_before_generation(durable_service, monkeypatch):

@@ -23,6 +23,19 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Paid AI review uncertain-response hold
+
+OpenAI text SDK retries are disabled. The paid review worker writes a durable
+dispatch marker before contacting the AI service; expired leases cannot
+redispatch marked jobs. Lost/invalid service replies or uncertain completion
+hold the running job with `ai_provider_outcome_unconfirmed`, preserve the
+operational credit reservation, and create a private incident without charging
+the author. The AI panel shows this state. The additive migration is
+source-only, not live. Operator receipt recovery/release and provider-usage
+reconciliation remain open; do not clear holds by age. This is a prerequisite
+for exposing the existing Book Bible candidate agent through paid jobs, not
+the candidate workflow itself. See `docs/AI_REVIEW_UNCERTAINTY.md`.
+
 ### Book Bible manuscript evidence
 
 Book Bible node citations are now checked against an actual saved document

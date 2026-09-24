@@ -65,13 +65,18 @@ def _cost(model: str, tokens_in: int, tokens_out: int) -> float:
     return 0.0
 
 
+class ProviderOutcomeUnknown(RuntimeError):
+    """The paid request may have run; never silently dispatch it again."""
+
+
 class OpenAIProvider:
     name = "openai"
 
     def __init__(self, api_key: str | None = None):
         import openai
 
-        self._client = openai.OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
+        # An automatic retry after a lost paid response can generate twice.
+        self._client = openai.OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"], max_retries=0)
 
     def complete(self, messages: list[dict], tools: list[dict], model: str, *,
                  max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> Completion:
@@ -80,7 +85,13 @@ class OpenAIProvider:
             payload["max_output_tokens"] = max_output_tokens
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
-        resp = self._client.responses.create(**payload)
+        try:
+            resp = self._client.responses.create(**payload)
+        except Exception as exc:
+            import openai
+            if isinstance(exc, openai.APIError):
+                raise ProviderOutcomeUnknown("Paid provider outcome is unconfirmed.") from exc
+            raise
         calls = []
         for item in resp.output:
             if item.type == "function_call":

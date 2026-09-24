@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agents.base import DELIM_BEGIN, sanitize, wrap_manuscript
 from agents.copyeditor import get_agent
 from agents.proofreader import ProofreaderAgent
-from gateway import Completion, MockProvider, Usage
+from gateway import Completion, MockProvider, ProviderOutcomeUnknown, Usage
 from main import _JOBS, _JOBS_BY_IDEMPOTENCY, _SUGGESTIONS, app
 from tools import InMemoryExecutor, validate_tool_input, ToolValidationError
 
@@ -43,6 +43,15 @@ def make_request(**over):
     req = {"chapterIds": [CHAPTER_ID], "contextPolicy": {"includeStyleGuide": True}}
     req.update(over)
     return req
+
+
+def test_uncertain_paid_provider_error_is_not_converted_to_a_failed_result():
+    agent = make_agent({})
+    def uncertain(*args, **kwargs):
+        raise ProviderOutcomeUnknown("Paid provider outcome is unconfirmed.")
+    agent.provider.complete = uncertain
+    with pytest.raises(ProviderOutcomeUnknown):
+        agent.run(make_request())
 
 
 # ---- schema validation ----

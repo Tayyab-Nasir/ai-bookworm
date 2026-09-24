@@ -18,7 +18,7 @@ const resultSchema = z.object({ status: z.enum(["succeeded","failed"]), provider
 const editSchema = z.object({ chapterId: z.string().uuid(), nodeId: z.string().min(1).max(200), operation: z.unknown(), rationale: z.string().trim().min(1).max(2_000), confidence: z.number().min(0).max(1).nullable().optional() }).passthrough();
 type Snapshot = { title: string; order: number; version: number; nodes: BookNode[] };
 const row = (value: unknown): Record<string, unknown> | null => { const candidate = Array.isArray(value) ? value[0] : value; return candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : null; };
-export type AiReviewWorkerOutcome = { status: "idle" | "succeeded" | "queued" | "failed" | "lease_lost" | "completion_unknown"; jobId?: string };
+export type AiReviewWorkerOutcome = { status: "idle" | "succeeded" | "queued" | "failed" | "lease_lost" | "completion_unknown" | "requires_review"; jobId?: string };
 class AiReviewFailure extends Error { constructor(readonly code: string, readonly retryable: boolean, message = code) { super(message); } }
 
 function normalize(result: z.infer<typeof resultSchema>, book: Record<string, unknown>, snapshots: Map<string, Snapshot>) {
@@ -58,18 +58,30 @@ export async function runOneAiReviewJob(sb: SupabaseClient, options: { leaseSeco
   const leaseSeconds = options.leaseSeconds ?? 180; const claim = await sb.rpc("claim_ai_review_job", { p_lease_seconds: leaseSeconds });
   if (claim.error) throw new AiReviewFailure("ai_claim_failed", true); const raw = row(claim.data); if (!raw) return { status: "idle" };
   const parsed = claimedSchema.safeParse(raw); const jobId = String(raw.id); const token = String(raw.lease_token); if (!parsed.success) { await sb.rpc("fail_ai_review_job", { p_job_id: jobId, p_lease_token: token, p_error_code: "ai_invalid_input", p_error_message: "Invalid queued AI job", p_retryable: false }); return { status: "failed", jobId }; }
-  const abort = new AbortController(); let renewal: Promise<void> | undefined; const heartbeat = setInterval(() => { if (renewal) return; renewal = Promise.resolve(sb.rpc("renew_ai_review_lease", { p_job_id: jobId, p_lease_token: token, p_lease_seconds: leaseSeconds })).then((renewed) => { if (renewed.error || renewed.data !== true) abort.abort(); }).catch(() => abort.abort()).finally(() => { renewal = undefined; }); }, Math.floor(leaseSeconds * 1000 / 3)); heartbeat.unref(); let completionAttempted = false;
+  const abort = new AbortController(); let renewal: Promise<void> | undefined; const heartbeat = setInterval(() => { if (renewal) return; renewal = Promise.resolve(sb.rpc("renew_ai_review_lease", { p_job_id: jobId, p_lease_token: token, p_lease_seconds: leaseSeconds })).then((renewed) => { if (renewed.error || renewed.data !== true) abort.abort(); }).catch(() => abort.abort()).finally(() => { renewal = undefined; }); }, Math.floor(leaseSeconds * 1000 / 3)); heartbeat.unref(); let completionAttempted = false; let dispatched = false;
   try {
     const context = await contextForJob(sb, parsed.data); abort.signal.throwIfAborted();
     const base = process.env.AI_SERVICE_URL ?? `http://127.0.0.1:${process.env.AI_SERVICE_PORT ?? "8000"}`;
+    // This durable marker is written before HTTP. Once set, an expired lease
+    // cannot cause another worker to send the paid request again.
+    const marked = await sb.rpc("mark_ai_review_dispatched", { p_job_id: jobId, p_lease_token: token });
+    // A lost marker reply is ambiguous. No provider call has been made, but
+    // requeueing could clear a successfully written marker.
+    if (marked.error || marked.data !== true) return { status: "completion_unknown", jobId };
+    dispatched = true;
     const response = await (options.fetcher ?? fetch)(`${base.replace(/\/$/u, "")}/v1/ai/jobs`, { method: "POST", redirect: "error", signal: AbortSignal.any([abort.signal, AbortSignal.timeout(90_000)]), headers: { "content-type": "application/json", ...(process.env.AI_SERVICE_TOKEN ? { "x-service-token": process.env.AI_SERVICE_TOKEN } : {}) }, body: JSON.stringify(context.body) });
     const text = await response.text(); if (!response.ok || Buffer.byteLength(text) > 5_000_000) throw new AiReviewFailure("ai_service_unavailable", true, "AI service unavailable");
-    const result = resultSchema.safeParse(JSON.parse(text)); if (!result.success || result.data.status === "failed") throw new AiReviewFailure("ai_provider_failed", true, result.success ? result.data.error ?? "AI provider failed" : "Invalid AI service response");
+    const result = resultSchema.safeParse(JSON.parse(text)); if (!result.success || result.data.status === "failed") throw new AiReviewFailure("ai_provider_failed", false, result.success ? result.data.error ?? "AI provider failed" : "Invalid AI service response");
     const suggestions = normalize(result.data, context.book, context.snapshots); abort.signal.throwIfAborted(); completionAttempted = true;
     const complete = await sb.rpc("complete_leased_ai_review_job", { p_job_id: jobId, p_lease_token: token, p_provider: result.data.provider, p_model: result.data.model, p_usage: result.data.usage, p_diagnostics: result.data.diagnostics, p_suggestions: suggestions, p_credit_quantity: result.data.provider === "mock" ? 0 : 1 });
     if (complete.error || !row(complete.data)) throw new AiReviewFailure(complete.error?.code === "40001" ? "ai_lease_lost" : "ai_completion_failed", true); return { status: "succeeded", jobId };
   } catch (error) {
-    if (completionAttempted) { try { const recovered = await sb.from("ai_jobs").select("status,lease_token").eq("id", jobId).maybeSingle(); if (recovered.data?.status === "succeeded") return { status: "succeeded", jobId }; } catch { return { status: "completion_unknown", jobId }; } }
+    if (completionAttempted) { try { const recovered = await sb.from("ai_jobs").select("status,lease_token").eq("id", jobId).maybeSingle(); if (recovered.data?.status === "succeeded") return { status: "succeeded", jobId }; } catch { /* Try to hold the marked dispatch below; never retry it. */ } }
+    if (dispatched) {
+      const held = await sb.rpc("mark_ai_review_outcome_unconfirmed", { p_job_id: jobId, p_lease_token: token });
+      if (!held.error && row(held.data)?.error_code === "ai_provider_outcome_unconfirmed") return { status: "requires_review", jobId };
+      return { status: "completion_unknown", jobId };
+    }
     if (abort.signal.aborted) return { status: "lease_lost", jobId };
     const failure = error instanceof AiReviewFailure ? error : error instanceof AppError ? new AiReviewFailure(error.status >= 500 ? "ai_dependency_unavailable" : "ai_source_rejected", error.status >= 500, error.message) : new AiReviewFailure("ai_execution_failed", true, "AI review execution failed");
     const failed = await sb.rpc("fail_ai_review_job", { p_job_id: jobId, p_lease_token: token, p_error_code: failure.code, p_error_message: failure.message.slice(0, 2_000), p_retryable: failure.retryable });

@@ -454,6 +454,19 @@ before production tuning.
   native-service acceptance remain staging work; deterministic mocks do not
   prove live generation quality.
 
+## Unconfirmed paid AI reviews
+- Writer/proofreader/copyeditor/consistency workers must run only after
+  `20260924190000_ai_review_uncertain_hold.sql` is installed and verified.
+  The worker marks dispatch before HTTP; a marked expired lease is never
+  reclaimed for another paid call. OpenAI SDK retries are disabled.
+- Alert on `ai_provider_outcome_unconfirmed` and inspect the private
+  `ai_review_unconfirmed` dead-letter incident. The job remains running with
+  its operational credit reserved; no customer usage event is written.
+- Do not manually reset the job or dispatch marker based on age. Review AI
+  service receipts and provider organization usage. There is not yet an
+  operator recovery/release RPC for this path; see
+  `docs/AI_REVIEW_UNCERTAINTY.md` before enabling unattended operation.
+
 ## Account support and data rights
 - `/settings/data-rights` provides authenticated intake for support tickets and
   account-data export/deletion requests. The matching API routes scope reads and

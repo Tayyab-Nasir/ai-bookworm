@@ -10,7 +10,7 @@ const JOB = "a0000000-0000-4000-8000-000000000009";
 const LEASE = "a0000000-0000-4000-8000-000000000010";
 type Row = Record<string, unknown>;
 
-function workerSupabase() {
+function workerSupabase(options: { markerReplyLost?: boolean } = {}) {
   const tables: Record<string, Row[]> = {
     books: [{ id: BOOK, workspace_id: WORKSPACE, title: "Novel", author_name: "Author", language: "en" }],
     chapters: [{ id: CHAPTER, book_id: BOOK, title: "One", order_index: 0 }],
@@ -33,6 +33,9 @@ function workerSupabase() {
     rpc: async (name: string, args: Row) => {
       calls.push({ name, args });
       if (name === "claim_ai_review_job") return { data: [claim], error: null };
+      if (name === "mark_ai_review_dispatched") return options.markerReplyLost
+        ? { data: null, error: { message: "lost reply" } } : { data: true, error: null };
+      if (name === "mark_ai_review_outcome_unconfirmed") return { data: { ...claim, status: "running", error_code: "ai_provider_outcome_unconfirmed" }, error: null };
       if (name === "complete_leased_ai_review_job") return { data: { ...claim, status: "succeeded" }, error: null };
       if (name === "fail_ai_review_job") return { data: { ...claim, status: "queued" }, error: null };
       if (name === "renew_ai_review_lease") return { data: true, error: null };
@@ -51,16 +54,31 @@ test("AI review worker rehydrates saved chapter versions only after a fenced cla
   assert.deepEqual(outcome, { status: "succeeded", jobId: JOB });
   assert.equal(JSON.stringify(request).includes("Old text"), true);
   const completed = calls.find((call) => call.name === "complete_leased_ai_review_job")!;
+  assert.ok(calls.findIndex((call) => call.name === "mark_ai_review_dispatched") < calls.findIndex((call) => call.name === "complete_leased_ai_review_job"));
   assert.equal(completed.args.p_lease_token, LEASE);
   assert.equal((completed.args.p_suggestions as Row[]).length, 1);
 });
 
-test("AI review worker keeps retryable provider outages queued without exposing provider text", async () => {
+test("AI review worker holds an uncertain paid service reply without redispatch or leaking provider text", async () => {
   const { sb, calls } = workerSupabase();
   const outcome = await runOneAiReviewJob(sb, { fetcher: async () => new Response("provider details", { status: 503 }) });
-  assert.deepEqual(outcome, { status: "queued", jobId: JOB });
-  const failed = calls.find((call) => call.name === "fail_ai_review_job")!;
-  assert.equal(failed.args.p_error_code, "ai_service_unavailable");
-  assert.equal(failed.args.p_error_message, "AI service unavailable");
-  assert.equal(failed.args.p_retryable, true);
+  assert.deepEqual(outcome, { status: "requires_review", jobId: JOB });
+  assert.equal(calls.filter((call) => call.name === "mark_ai_review_outcome_unconfirmed").length, 1);
+  assert.equal(calls.some((call) => call.name === "fail_ai_review_job"), false);
+});
+
+test("AI review worker does not call the provider when the durable dispatch marker reply is lost", async () => {
+  const { sb, calls } = workerSupabase({ markerReplyLost: true }); let providerCalls = 0;
+  const outcome = await runOneAiReviewJob(sb, { fetcher: async () => { providerCalls++; return new Response("unexpected"); } });
+  assert.deepEqual(outcome, { status: "completion_unknown", jobId: JOB });
+  assert.equal(providerCalls, 0);
+  assert.equal(calls.some((call) => call.name === "fail_ai_review_job"), false);
+});
+
+test("AI review worker freezes a lost network reply instead of retrying the provider", async () => {
+  const { sb, calls } = workerSupabase(); let providerCalls = 0;
+  const outcome = await runOneAiReviewJob(sb, { fetcher: async () => { providerCalls++; throw new Error("socket closed"); } });
+  assert.deepEqual(outcome, { status: "requires_review", jobId: JOB });
+  assert.equal(providerCalls, 1);
+  assert.equal(calls.some((call) => call.name === "fail_ai_review_job"), false);
 });
