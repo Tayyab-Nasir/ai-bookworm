@@ -146,18 +146,20 @@ def test_embedder_deterministic_unit_vectors(embedder):
 # ---- Book Bible agent ----
 
 CID = "00000000-0000-0000-0000-000000000001"
+VID = "00000000-0000-0000-0000-000000000002"
+NODE_HASH = "a" * 64
 CANDIDATE = {
     "type": "character",
     "name": "Mara",
     "description": "protagonist",
     "attributes": {"eyes": "blue"},
-    "sourceRefs": [{"chapterId": CID, "nodeId": "n1"}],
+    "sourceRefs": [{"chapterId": CID, "documentVersionId": VID, "nodeId": "n1", "textHash": NODE_HASH}],
     "confidence": 0.8,
 }
 
 
 def make_bookbible_agent(response: dict) -> BookBibleAgent:
-    executor = InMemoryExecutor(chapters={CID: {"id": CID, "nodes": [{"id": "n1", "text": "Mara had blue eyes."}]}})
+    executor = InMemoryExecutor(chapters={CID: {"id": CID, "documentVersionId": VID, "nodes": [{"id": "n1", "text": "Mara had blue eyes.", "textHash": NODE_HASH}]}})
     return BookBibleAgent(MockProvider([response]), executor, "mock-1")
 
 
@@ -176,6 +178,12 @@ def test_bookbible_emits_candidates_as_suggestions():
     lambda c: c.update(sourceRefs=[]),
     lambda c: c.update(name=""),
     lambda c: c.update(extra=1),
+    lambda c: c["sourceRefs"][0].update(nodeId="invented"),
+    lambda c: c["sourceRefs"][0].update(documentVersionId="00000000-0000-0000-0000-000000000003"),
+    lambda c: c["sourceRefs"][0].update(textHash="b" * 64),
+    lambda c: c.update(name="Mara "),
+    lambda c: c.update(attributes={"__proto__": {"admin": True}}),
+    lambda c: c.update(attributes={"backstory": "x" * 24001}),
 ])
 def test_bookbible_malformed_candidate_rejected(mutate):
     import copy
@@ -186,6 +194,26 @@ def test_bookbible_malformed_candidate_rejected(mutate):
     result = agent.run({"chapterIds": [CID]})
     assert result.status == "failed" and "validation" in result.error
     assert result.suggestions == []  # no partial writes
+
+
+def test_bookbible_rejects_unversioned_manuscript_before_provider_call():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": [CANDIDATE]}}]})
+    del agent.executor.chapters[CID]["documentVersionId"]
+    result = agent.run({"chapterIds": [CID]})
+    assert result.status == "failed" and "versioned" in result.error
+    assert agent.provider.calls == []
+
+
+def test_bookbible_rejects_unbounded_candidate_batch():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": [CANDIDATE] * 11}}]})
+    result = agent.run({"chapterIds": [CID]})
+    assert result.status == "failed" and result.suggestions == []
+
+
+def test_bookbible_can_report_no_supported_candidates():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": []}}]})
+    result = agent.run({"chapterIds": [CID]})
+    assert result.status == "succeeded" and result.suggestions == []
 
 
 # ---- consistency agent ----

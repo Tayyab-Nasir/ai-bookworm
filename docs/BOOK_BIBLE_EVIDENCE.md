@@ -31,3 +31,21 @@ the full canonical text hash. Its disposable database test covers direct
 insert/update bypass attempts. The migration is **source-only**, not applied
 to the hosted Supabase project. Existing Book Bible rows are not rewritten or
 retroactively certified; audit them before any claim of universal provenance.
+
+## AI extraction boundary (source checkpoint)
+
+The `book_bible` agent's v2 prompt and structured output now require each
+candidate to cite a selected manuscript node with exact chapter ID, saved
+document-version ID, node ID, and full-node text hash. Unknown, stale, or
+unversioned references fail the whole response. Candidates are bounded to ten
+per call, and their fields match the canonical Book Bible's storage limits.
+An empty candidate list is valid when the manuscript supports no entity.
+Related search and existing Book Bible context cannot be cited as new
+manuscript evidence. The agent returns suggestions only; it cannot write to
+`book_bible_items`.
+
+This is **not yet a paid author-facing candidate workflow**. It still needs a
+funded queue, durable private result receipt and uncertainty recovery, a
+review/apply UI, and explicit author save through the citation-checking API.
+The citation validates source identity, not semantic truth; author review
+remains required before any generated detail becomes canon.
