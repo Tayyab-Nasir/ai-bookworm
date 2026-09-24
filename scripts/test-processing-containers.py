@@ -81,11 +81,24 @@ def main():
         result = check_json(container, "/parse", {"assetId": "fixture", "format": "txt",
             "contentBase64": base64.b64encode(b"A private fixture manuscript.").decode()})
         assert "A private fixture manuscript." in json.dumps(result)
-    run_service("document", True, parse)
+        docx = docker("exec", container, "python", "-c",
+            "import base64,io; from docx import Document; from docx.oxml import OxmlElement; "
+            "doc=Document(); table=doc.add_table(rows=2,cols=2); "
+            "table.cell(0,0).text='Name'; table.cell(0,1).text='Role'; "
+            "table.cell(1,0).text='Mira'; table.cell(1,1).text='Navigator'; "
+            "table.rows[0]._tr.get_or_add_trPr().append(OxmlElement('w:tblHeader')); "
+            "data=io.BytesIO(); doc.save(data); print(base64.b64encode(data.getvalue()).decode())")
+        imported = check_json(container, "/parse", {"assetId": "header-fixture", "format": "docx",
+            "contentBase64": docx})
+        table_node = imported["bookModel"]["chapters"][0]["nodes"][0]
+        assert table_node["attributes"]["tableHeaderRows"] == 1
+        return table_node
+    imported_header_table = run_service("document", True, parse)
     book = json.loads((Path(__file__).resolve().parents[1] / "tests/fixtures/books/valid_book.json").read_text())
     book["assets"] = []
     for chapter in book["chapters"]:
         chapter["nodes"] = [node for node in chapter["nodes"] if node["type"] != "image"]
+    book["chapters"][0]["nodes"].append(imported_header_table)
 
     def render(container):
         result = check_json(container, "/render", {"bookModel": book, "editionConfig": {"kind": "ebook"}})
@@ -93,6 +106,7 @@ def main():
         assert hashlib.sha256(artifact).hexdigest() == result["sha256"]
         with zipfile.ZipFile(io.BytesIO(artifact)) as archive:
             assert archive.read("mimetype") == b"application/epub+zip"
+            assert b'<thead><tr><th scope="col">Name</th>' in archive.read("OEBPS/ch0000.xhtml")
         fixed = check_json(container, "/render", {"bookModel": book, "editionConfig": {"kind": "ebook", "flow": "fixed"}})
         assert base64.b64decode(fixed["artifactBase64"]).startswith(b"PK")
         check_json(container, "/preflight", {"bookModel": book, "editionConfig": {"kind": "ebook"}, "channel": "kdp"})

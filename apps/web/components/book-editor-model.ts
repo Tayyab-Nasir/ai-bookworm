@@ -12,6 +12,12 @@ export function manuscriptTableRows(node: BookNode): string[][] | null {
   return node.text === undefined || node.text === rows.map((row) => row.join("\t")).join("\n") ? rows : null;
 }
 
+export function manuscriptTableHeaderRows(node: BookNode): number {
+  const rows = manuscriptTableRows(node);
+  const count = node.attributes?.tableHeaderRows;
+  return rows && typeof count === "number" && Number.isInteger(count) && count >= 0 && count <= rows.length ? count : 0;
+}
+
 export function withTableRows(node: BookNode, rows: string[][]): BookNode {
   const { richText: _stale, ...attributes } = node.attributes ?? {};
   return { ...node, rows, text: rows.map((row) => row.join("\t")).join("\n"), attributes };

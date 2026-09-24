@@ -86,21 +86,27 @@ def test_render_service_returns_rtl_preflight_findings_before_attempting_print_o
 
 
 def test_tables_paginate_and_canonical_edits_never_hide_behind_stale_rows():
-    from manuscript import table_rows
+    from manuscript import table_header_rows, table_rows
     from pypdf import PdfReader
     book = copy.deepcopy(VALID)
     rows = [[f"Row {i}", "Detail " * 12] for i in range(140)]
     table = {"id": "table-1", "type": "table", "rows": rows,
-             "text": "\n".join("\t".join(r) for r in rows)}
+             "text": "\n".join("\t".join(r) for r in rows), "attributes": {"tableHeaderRows": 1}}
     book["chapters"] = [{"id": "chapter", "order": 0, "title": "Tables", "nodes": [table]}]
     pdf, sha = render_pdf(book, PrintEdition())
     reader = PdfReader(io.BytesIO(pdf))
     text = "\n".join(p.extract_text() for p in reader.pages)
     assert len(reader.pages) > 3
     assert "Row 0" in text and "Row 139" in text
+    assert "Row 0" in reader.pages[1].extract_text()  # repeated print header
     assert render_pdf(book, PrintEdition())[1] == sha
+    headed_epub, _ = render_epub(book, EbookEdition())
+    with zipfile.ZipFile(io.BytesIO(headed_epub)) as z:
+        assert b'<thead><tr><th scope="col">Row 0</th>' in z.read("OEBPS/ch0000.xhtml")
     table["text"] = "Author corrected the table."
     assert table_rows(table) == []
+    assert table_header_rows({"attributes": {"tableHeaderRows": True}}, [["Header"]]) == 0
+    assert table_header_rows({"attributes": {"tableHeaderRows": 2}}, [["Header"]]) == 0
     assert table_rows({"rows": [{"unexpected": True}]}) == []
     pdf, _ = render_pdf(book, PrintEdition())
     assert "Author corrected the table." in "".join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages)

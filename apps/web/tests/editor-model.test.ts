@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { editorToNodes, nodesToEditor, manuscriptTableRows, withTableRows } from "../components/book-editor-model";
+import { editorToNodes, nodesToEditor, manuscriptTableHeaderRows, manuscriptTableRows, withTableRows } from "../components/book-editor-model";
 import type { BookNode } from "@bookworm/book-model";
 
 test("table editing keeps canonical text, safe cells and stable roundtrip without stale formatting", () => {
@@ -14,6 +14,16 @@ test("table editing keeps canonical text, safe cells and stable roundtrip withou
   assert.deepEqual(editorToNodes(nodesToEditor([changed]), () => "unused"), [changed]);
   assert.equal(manuscriptTableRows({ ...changed, text: "Accepted AI correction" }), null);
   assert.equal(original.text, "old");
+});
+
+test("table header designation survives cell edits and rejects stale or invalid metadata", () => {
+  const table: BookNode = { id: "table", type: "table", rows: [["Name", "Role"], ["Mira", "Navigator"]],
+    text: "Name\tRole\nMira\tNavigator", attributes: { tableHeaderRows: 1 } };
+  assert.equal(manuscriptTableHeaderRows(table), 1);
+  assert.equal(manuscriptTableHeaderRows(withTableRows(table, [["Name", "Role"], ["Mira", "Captain"]])), 1);
+  assert.equal(manuscriptTableHeaderRows({ ...table, text: "Replaced text" }), 0);
+  assert.equal(manuscriptTableHeaderRows({ ...table, attributes: { tableHeaderRows: 3 } }), 0);
+  assert.equal(manuscriptTableHeaderRows({ ...table, attributes: { tableHeaderRows: true } }), 0);
 });
 
 test("chapter roundtrip retains artwork, formatting, stable IDs and structural breaks", () => {

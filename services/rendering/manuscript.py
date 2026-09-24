@@ -14,6 +14,13 @@ def table_rows(node: dict) -> list[list[str]]:
     return rows if node.get("text") in (None, text) else []
 
 
+def table_header_rows(node: dict, rows: list[list[str]]) -> int:
+    """Ignore invalid header metadata rather than inventing table semantics."""
+    attrs = node.get("attributes")
+    count = attrs.get("tableHeaderRows") if isinstance(attrs, dict) else None
+    return count if type(count) is int and 0 <= count <= len(rows) else 0
+
+
 def inline_runs(node: dict) -> list[dict]:
     text = node.get("text") or ""
     attrs = node.get("attributes")

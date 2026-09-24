@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { BookNode } from "@bookworm/book-model";
 import type { Asset } from "@bookworm/types";
 import { apiClient } from "./api";
-import { manuscriptTableRows, withTableRows } from "./book-editor-model";
+import { manuscriptTableHeaderRows, manuscriptTableRows, withTableRows } from "./book-editor-model";
 
 const field = "mt-1 block min-h-11 w-full rounded-lg border border-black/20 bg-white px-3 py-2 text-sm text-black outline-none focus-visible:ring-2 focus-visible:ring-black";
 const action = "min-h-11 rounded-lg border border-black/20 px-3 py-2 text-sm text-black outline-none hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-black disabled:opacity-40";
@@ -84,21 +84,24 @@ function ManuscriptTable({ node, editable, onChange, onRemove }: {
 }) {
   const [editing, setEditing] = useState(false);
   const rows = manuscriptTableRows(node);
+  const headerRows = manuscriptTableHeaderRows(node);
   const columns = Math.max(1, ...(rows ?? []).map((row) => row.length));
   const changeRows = (next: string[][]) => { if (editable) onChange(withTableRows(node, next)); };
   return <section aria-label="Manuscript table" className="min-w-0 rounded-lg border border-black/20 bg-white/30 p-3">
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2 font-sans text-xs">
-      <span className="text-black/60">Table · {rows?.length ?? 0} rows</span>
+      <span className="text-black/60">Table · {rows?.length ?? 0} rows{headerRows ? ` · ${headerRows} header ${headerRows === 1 ? "row" : "rows"}` : ""}</span>
       {editable && <div className="flex flex-wrap gap-2">
         {rows && <button type="button" className={action} aria-pressed={editing} onClick={() => setEditing((value) => !value)}>{editing ? "Preview table" : "Edit table"}</button>}
+        {rows && rows.length > 0 && <button type="button" className={action} aria-pressed={headerRows > 0} onClick={() => onChange({ ...node, attributes: { ...node.attributes, tableHeaderRows: headerRows ? 0 : 1 } })}>{headerRows ? "Remove header marking" : "Use first row as headers"}</button>}
         <button type="button" className={action} onClick={onRemove}>Remove table</button>
       </div>}
     </div>
     {rows ? <div className="max-h-[32rem] overflow-auto" tabIndex={0} role="region" aria-label="Scrollable table cells">
       <table className="w-full border-collapse text-sm"><caption className="sr-only">Manuscript table content</caption><tbody>
-        {rows.map((row, r) => <tr key={r}>{Array.from({ length: columns }, (_, c) => <td key={c} className="min-w-24 border border-black/20 p-2 align-top">
-          {editing && editable ? <textarea aria-label={`Row ${r + 1}, column ${c + 1}`} value={row[c] ?? ""} maxLength={100000} rows={2} className="min-h-11 w-full min-w-28 rounded border border-black/25 bg-white px-2 py-1 font-sans text-sm text-black outline-none focus-visible:ring-2 focus-visible:ring-black" onChange={(event) => changeRows(rows.map((cells, index) => index === r ? Array.from({ length: columns }, (_, col) => col === c ? event.target.value : cells[col] ?? "") : cells))} /> : <span className="whitespace-pre-wrap break-words">{row[c] || "\u00a0"}</span>}
-        </td>)}</tr>)}
+        {rows.map((row, r) => <tr key={r}>{Array.from({ length: columns }, (_, c) => {
+          const content = editing && editable ? <textarea aria-label={`Row ${r + 1}, column ${c + 1}`} value={row[c] ?? ""} maxLength={100000} rows={2} className="min-h-11 w-full min-w-28 rounded border border-black/25 bg-white px-2 py-1 font-sans text-sm text-black outline-none focus-visible:ring-2 focus-visible:ring-black" onChange={(event) => changeRows(rows.map((cells, index) => index === r ? Array.from({ length: columns }, (_, col) => col === c ? event.target.value : cells[col] ?? "") : cells))} /> : <span className="whitespace-pre-wrap break-words">{row[c] || "\u00a0"}</span>;
+          return r < headerRows ? <th key={c} scope="col" className="min-w-24 border border-black/20 bg-stone-200/65 p-2 text-left font-semibold align-top">{content}</th> : <td key={c} className="min-w-24 border border-black/20 p-2 align-top">{content}</td>;
+        })}</tr>)}
       </tbody></table>
     </div> : <div><p role="status" className="mb-3 font-sans text-xs text-black/65">Table text was changed outside the grid. Your latest text is preserved below; the old grid is not shown.</p><p className="whitespace-pre-wrap">{node.text}</p></div>}
     {editing && editable && rows && <div className="mt-3 flex flex-wrap gap-2 font-sans">

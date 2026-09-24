@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Imported table header fidelity
+
+DOCX explicitly repeating header rows and EPUB `<thead>`/leading `<th>` rows
+now retain `tableHeaderRows` through the canonical grid, table editor, EPUB
+and print PDF. EPUB gets scoped column headers; PDF repeats styled headers on
+later pages. Merged cells, row-header associations and complex table styling
+remain unsupported. Full local `npm run verify` passes (71 disposable
+migrations/49 SQL files, 355 services, 99 web, 12 E2E, 30 security, plus
+API/type/load/evals); isolated production web build and real EPUBCheck 5.4.0
+on a header-bearing EPUB pass. See `docs/TABLE_HEADER_FIDELITY.md`. Native
+processing-container CI and hosted import acceptance remain open.
+
 ### Google Play Books ebook handoff
 
 An EPUB-only `googleplay` target now spans Publishing Studio, the client/API,

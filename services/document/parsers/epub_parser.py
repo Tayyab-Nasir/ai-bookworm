@@ -109,18 +109,24 @@ def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None) -> list
                 if caption:
                     walk(caption, "caption", nesting=nesting + level + 1)
                 rows = []
+                header_rows = 0
                 for row in child.find_all("tr"):
                     if row.find_parent("table") is not child:
                         continue
                     cells = []
-                    for cell in row.find_all(["td", "th"], recursive=False):
+                    source_cells = row.find_all(["td", "th"], recursive=False)
+                    for cell in source_cells:
                         # Reuse the same safe walker; no scripts, links or source HTML.
                         cell_nodes = _xhtml_to_nodes(cell, _nesting=nesting + level + 1, image_node=image_node)
                         cells.append("\n".join(n.get("text", "") for n in cell_nodes))
                     if cells:
+                        head = row.find_parent("thead")
+                        if header_rows == len(rows) and ((head is not None and head.find_parent("table") is child) or all(cell.name == "th" and cell.get("scope") != "row" for cell in source_cells)):
+                            header_rows += 1
                         rows.append(cells)
                 if rows:
-                    nodes.append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows))
+                    nodes.append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows,
+                                      **({"attributes": {"tableHeaderRows": header_rows}} if header_rows else {})))
             elif tag in _TAG_BLOCK or tag in containers or tag == "figcaption":
                 # Paragraphs within a list item are its own text, not new bullets.
                 if tag == "p" and kind == "listItem":
@@ -213,7 +219,7 @@ def parse_epub(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
 
             nodes = _xhtml_to_nodes(soup, image_node=image_node)
             if soup.find("table"):
-                warnings.append(f"Table text and row order in {href} were preserved; merged-cell layout and cell formatting require review against the original.")
+                warnings.append(f"Table text, row order and any explicit header rows in {href} were preserved; merged-cell layout and cell formatting require review against the original.")
             if not nodes:
                 continue
             # chapter title from first h1/h2, else filename

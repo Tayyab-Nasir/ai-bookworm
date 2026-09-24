@@ -10,9 +10,9 @@ from io import BytesIO
 from html import escape
 
 from editions import EbookEdition, resolve_text_direction
-from manuscript import block_tree, image_width, inline_markup, table_rows
+from manuscript import block_tree, image_width, inline_markup, table_header_rows, table_rows
 
-RENDERER_VERSION = "epub-1.8.0"
+RENDERER_VERSION = "epub-1.9.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"
@@ -24,7 +24,7 @@ _CONTAINER_XML = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 _CSS = "body{font-family:serif;line-height:1.5}h1,h2,h3,h4,h5,h6{break-after:avoid}figure{text-align:center;margin:1.5em 0;break-inside:avoid}img{height:auto;max-width:100%}figcaption,.caption{font-size:.9em;font-style:italic}blockquote{margin:1em 2em}.page-break{break-before:page;border:0}code{font-family:monospace}.cover{margin:0;text-align:center}"
-_CSS += "table{border-collapse:collapse;width:100%;margin:1em 0}td{border:1px solid #777;padding:.4em;vertical-align:top;overflow-wrap:anywhere}"
+_CSS += "table{border-collapse:collapse;width:100%;margin:1em 0}td,th{border:1px solid #777;padding:.4em;vertical-align:top;overflow-wrap:anywhere}th{font-weight:bold;background:#e7e2d8}"
 _CSS += 'html[dir="rtl"] body{text-align:right}html[dir="rtl"] .cover{text-align:center}'
 
 
@@ -63,10 +63,19 @@ def _node_html(node: dict, image_ids: set[str] | None = None) -> str:
     if t == "footnote":
         return f'<aside epub:type="footnote"><p>{text}</p></aside>'
     if t == "table":
-        rows = "".join(
-            "<tr>" + "".join("<td>" + escape(str(c)).replace("\n", "<br/>") + "</td>" for c in r) + "</tr>"
-            for r in table_rows(node))
-        return f"<table>{rows}</table>" if rows else f"<p>{text}</p>"
+        grid = table_rows(node)
+        if not grid:
+            return f"<p>{text}</p>"
+        header_count = table_header_rows(node, grid)
+        def row_html(row, header=False):
+            tag = "th" if header else "td"
+            scope = ' scope="col"' if header else ""
+            return "<tr>" + "".join(f"<{tag}{scope}>" + escape(cell).replace("\n", "<br/>") + f"</{tag}>" for cell in row) + "</tr>"
+        if header_count:
+            head = "".join(row_html(row, True) for row in grid[:header_count])
+            body = "".join(row_html(row) for row in grid[header_count:])
+            return f"<table><thead>{head}</thead><tbody>{body}</tbody></table>"
+        return "<table>" + "".join(row_html(row) for row in grid) + "</table>"
     return f"<p>{text}</p>" if text else ""
 
 

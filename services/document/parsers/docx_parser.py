@@ -4,6 +4,7 @@ import io
 import zipfile
 
 from docx import Document
+from docx.oxml.ns import qn
 from docx.text.run import Run
 from docx.table import Table
 
@@ -12,6 +13,13 @@ from . import (ParseError, check_size, make_book, make_report, new_chapter,
 from .embedded_images import EmbeddedImages
 
 _HEADING_LEVELS = {f"Heading {i}": i for i in range(1, 7)}
+
+
+def _is_marked_header(row) -> bool:
+    """Only an explicit Word repeating-header flag supplies table semantics."""
+    properties = row._tr.trPr
+    flag = properties.find(qn("w:tblHeader")) if properties is not None else None
+    return flag is not None and flag.get(qn("w:val"), "1").lower() not in {"0", "false", "off"}
 
 
 def _paragraph_runs(para) -> list[dict]:
@@ -86,8 +94,11 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
                 current = new_chapter(title, 0)
                 chapters.append(current)
             rows = []
+            header_rows = 0
             seen_cells = set()
             for row in para.rows:
+                if header_rows == len(rows) and _is_marked_header(row):
+                    header_rows += 1
                 cells = []
                 for cell in row.cells:
                     # Word exposes a merged cell multiple times in its grid.
@@ -98,8 +109,9 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
                         seen_cells.add(cell._tc)
                         cells.append(cell.text)
                 rows.append(cells)
-            current["nodes"].append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows))
-            warnings.append("DOCX table text and row order were preserved; merged-cell layout, cell formatting and nested tables require review against the original.")
+            current["nodes"].append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows,
+                                         **({"attributes": {"tableHeaderRows": header_rows}} if header_rows else {})))
+            warnings.append("DOCX table text, row order and any explicitly marked header rows were preserved; merged-cell layout, cell formatting and nested tables require review against the original.")
             continue
         style = para.style.name if para.style else ""
         level = _HEADING_LEVELS.get(style)

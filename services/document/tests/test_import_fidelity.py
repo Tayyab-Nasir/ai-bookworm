@@ -139,3 +139,46 @@ def test_docx_merged_cells_do_not_duplicate_source_text():
     doc.save(buf)
     book, _ = parse_docx(buf.getvalue())
     assert book["chapters"][0]["nodes"][0]["text"].count("Only once") == 1
+
+
+def test_explicit_docx_table_header_survives_ebook_round_trip_and_print():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rendering"))
+    from editions import EbookEdition, PrintEdition
+    from epub_renderer import render_epub
+    from pdf_renderer import render_pdf
+    from pypdf import PdfReader
+    from zipfile import ZipFile
+
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Name"
+    table.cell(0, 1).text = "Role"
+    table.cell(1, 0).text = "Mira"
+    table.cell(1, 1).text = "Navigator"
+    header = OxmlElement("w:tblHeader")
+    header.set(qn("w:val"), "1")
+    table.rows[0]._tr.get_or_add_trPr().append(header)
+    source = io.BytesIO()
+    doc.save(source)
+
+    book, report = parse_docx(source.getvalue())
+    table_node = book["chapters"][0]["nodes"][0]
+    assert table_node["attributes"]["tableHeaderRows"] == 1
+    assert "any explicitly marked header rows" in " ".join(report["warnings"])
+    epub, _ = render_epub(book, EbookEdition())
+    with ZipFile(io.BytesIO(epub)) as archive:
+        pages = b"".join(archive.read(name) for name in archive.namelist() if name.endswith(".xhtml"))
+    assert b'<thead><tr><th scope="col">Name</th><th scope="col">Role</th></tr></thead>' in pages
+    assert b"<tbody><tr><td>Mira</td><td>Navigator</td></tr></tbody>" in pages
+    imported, _ = parse_epub(epub)
+    assert imported["chapters"][0]["nodes"][0]["attributes"]["tableHeaderRows"] == 1
+    pdf, _ = render_pdf(book, PrintEdition())
+    text = "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf)).pages)
+    assert all(value in text for value in ("Name", "Role", "Mira", "Navigator"))
+
+
+def test_epub_th_cells_without_thead_remain_header_rows():
+    nodes = _xhtml_to_nodes(BeautifulSoup(
+        "<table><tr><th>Character</th><th>Role</th></tr><tr><td>Mira</td><td>Navigator</td></tr></table>", "lxml"))
+    assert nodes[0]["attributes"]["tableHeaderRows"] == 1
+    assert nodes[0]["rows"] == [["Character", "Role"], ["Mira", "Navigator"]]
