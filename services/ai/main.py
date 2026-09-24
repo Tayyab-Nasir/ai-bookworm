@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from agents.base import AgentValidationError
 from agents.copyeditor import get_agent
-from gateway import ProviderOutcomeUnknown, default_model, get_provider, openai_tools
+from gateway import ProviderOutcomeUnknown, default_model, get_provider, openai_request
 from tools import InMemoryExecutor
 from result_store import AiReviewResultStore, BookBibleResultStore, MetadataResultStore, ReceiptUnavailable, ReceiptConflict
 
@@ -53,7 +53,7 @@ class CreateAiJobRequest(BaseModel):
     contextPolicy: ContextPolicy = Field(default_factory=ContextPolicy)
     model: str | None = Field(default=None, min_length=1, max_length=128)
     maxOutputTokens: int | None = Field(default=None, ge=1, le=128000)
-    # A quoted Story Blueprint job binds the exact provider input (including
+    # A quoted text job binds the exact provider input (including
     # tool schema and output bound) before any paid completion is dispatched.
     expectedInputSha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
@@ -66,6 +66,10 @@ class StoryBlueprintQuoteRequest(BaseModel):
     maxOutputTokens: int = Field(ge=1, le=128000)
     input: AgentInput
     contextPolicy: ContextPolicy = Field(default_factory=ContextPolicy)
+
+
+class TextQuoteRequest(StoryBlueprintQuoteRequest):
+    agentType: Literal["proofreader", "copyeditor", "bookbible", "consistency", "writer", "metadata", "story_blueprint"]
 
 
 # ponytail: in-memory stores — replace with Postgres ai_jobs/ai_suggestions/ai_runs
@@ -97,6 +101,20 @@ def health() -> dict:
 def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(default=None)) -> dict:
     authorize_service(x_service_token)
     provider = get_provider()  # Missing production provider credentials fail closed.
+    prepared = None
+    if req.agentType == "story_blueprint" or req.expectedInputSha256 is not None:
+        if provider.name != "openai":
+            raise HTTPException(status_code=503, detail="Quoted text generation requires OpenAI.")
+        if req.maxOutputTokens is None or req.model is None or req.expectedInputSha256 is None:
+            raise HTTPException(status_code=422, detail="Quoted generation requires a model, output bound and request hash.")
+        try:
+            agent, agent_request = build_text_agent(req, provider, req.model)
+            prepared = agent.provider_request(agent_request)
+            canonical = provider_payload(agent, prepared)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not compare_digest(canonical_story_blueprint_request_hash(canonical), req.expectedInputSha256):
+            raise HTTPException(status_code=409, detail="Text request no longer matches its funded quote.")
     receipt_store = None
     fingerprint = None
     durable_type = req.agentType in {"metadata", "bookbible", "writer", "proofreader", "copyeditor", "consistency"}
@@ -133,41 +151,10 @@ def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(def
 
     model = req.model or default_model(provider.name)
     job.update({"provider": provider.name, "model": model})
-    executor = InMemoryExecutor(
-        chapters=req.input.chapters, style_guide=req.input.styleGuide, bible=req.input.bookBible,
-        search_results=req.input.relatedContext,
-    )
     try:
-        agent = get_agent(req.agentType, provider, executor, model)
-        agent.max_output_tokens = min(req.maxOutputTokens or 6000, 6000) if req.agentType == "bookbible" else req.maxOutputTokens
-        agent_request = {
-            "workspaceId": req.workspaceId,
-            "bookId": req.bookId,
-            "chapterIds": req.input.chapterIds,
-            "book": req.input.book,
-            "storyBlueprint": req.input.storyBlueprint,
-            "userInstruction": req.input.userInstruction,
-            "contextPolicy": req.contextPolicy.model_dump(),
-        }
-        if req.agentType == "story_blueprint":
-            if provider.name != "openai":
-                raise HTTPException(status_code=503, detail="Story blueprint generation is not configured.")
-            if req.maxOutputTokens is None:
-                raise HTTPException(status_code=422, detail="Story Blueprint generation requires a quoted output bound.")
-            if req.expectedInputSha256 is None:
-                raise HTTPException(status_code=422, detail="Story Blueprint generation requires its quoted request hash.")
-            messages, tools, tool_choice = agent.provider_request(agent_request)
-            canonical_request = {
-                "model": model,
-                "input": messages,
-                "tools": openai_tools(tools),
-                "tool_choice": tool_choice,
-                "max_output_tokens": req.maxOutputTokens,
-            }
-            actual_hash = canonical_story_blueprint_request_hash(canonical_request)
-            if not compare_digest(actual_hash, req.expectedInputSha256):
-                raise HTTPException(status_code=409, detail="Story Blueprint request no longer matches its funded quote.")
-        result = agent.run(agent_request, job_id=job_id)
+        if prepared is None:
+            agent, agent_request = build_text_agent(req, provider, model)
+        result = agent.run(agent_request, job_id=job_id, prepared_request=prepared)
     except ProviderOutcomeUnknown as e:
         # Leave the durable reservation unresolved. A 503 is not proof the
         # provider did no work and must not become a failed/free result.
@@ -198,18 +185,15 @@ def canonical_story_blueprint_request_hash(request: dict) -> str:
     return hashlib.sha256(json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def story_blueprint_generation_request(req: StoryBlueprintQuoteRequest, provider=None) -> dict:
-    """Canonical provider request. Its hash is bound to the funded quote."""
-    provider = provider or get_provider()
-    if provider.name != "openai":
-        raise HTTPException(status_code=503, detail="Story blueprint generation is not configured.")
+def build_text_agent(req, provider, model: str):
+    agent_type = getattr(req, "agentType", "story_blueprint")
     executor = InMemoryExecutor(
         chapters=req.input.chapters, style_guide=req.input.styleGuide, bible=req.input.bookBible,
         search_results=req.input.relatedContext,
     )
-    agent = get_agent("story_blueprint", provider, executor, req.model)
-    agent.max_output_tokens = req.maxOutputTokens
-    messages, tools, tool_choice = agent.provider_request({
+    agent = get_agent(agent_type, provider, executor, model)
+    agent.max_output_tokens = min(req.maxOutputTokens or 6000, 6000) if agent_type == "bookbible" else req.maxOutputTokens
+    return agent, {
         "workspaceId": req.workspaceId,
         "bookId": req.bookId,
         "chapterIds": req.input.chapterIds,
@@ -217,14 +201,22 @@ def story_blueprint_generation_request(req: StoryBlueprintQuoteRequest, provider
         "storyBlueprint": req.input.storyBlueprint,
         "userInstruction": req.input.userInstruction,
         "contextPolicy": req.contextPolicy.model_dump(),
-    })
-    return {
-        "model": req.model,
-        "input": messages,
-        "tools": openai_tools(tools),
-        "tool_choice": tool_choice,
-        "max_output_tokens": req.maxOutputTokens,
     }
+
+
+def provider_payload(agent, prepared) -> dict:
+    messages, tools, tool_choice = prepared
+    return openai_request(messages, tools, agent.model,
+                          max_output_tokens=agent.max_output_tokens, tool_choice=tool_choice)
+
+
+def story_blueprint_generation_request(req: StoryBlueprintQuoteRequest | TextQuoteRequest, provider=None) -> dict:
+    """Exact wire payload, shared with dispatch; no provider call is made."""
+    provider = provider or get_provider()
+    if provider.name != "openai":
+        raise HTTPException(status_code=503, detail="Quoted text generation requires OpenAI.")
+    agent, agent_request = build_text_agent(req, provider, req.model)
+    return provider_payload(agent, agent.provider_request(agent_request))
 
 
 def count_story_blueprint_input(request: dict) -> int:
@@ -233,13 +225,44 @@ def count_story_blueprint_input(request: dict) -> int:
         raise RuntimeError("OpenAI credentials unavailable")
     from openai import OpenAI
 
-    response = OpenAI(api_key=api_key, max_retries=0, timeout=20).responses.input_tokens.count(
-        model=request["model"], input=request["input"], tools=request["tools"], tool_choice=request["tool_choice"],
-    )
+    # The count endpoint accepts the Responses input fields, not an output cap.
+    payload = {key: value for key, value in request.items() if key != "max_output_tokens"}
+    response = OpenAI(api_key=api_key, max_retries=0, timeout=20).responses.input_tokens.count(**payload)
     value = getattr(response, "input_tokens", None)
-    if not isinstance(value, int) or value < 1:
+    if type(value) is not int or value < 1 or value > 2147483647:
         raise RuntimeError("invalid input token count")
     return value
+
+
+@app.post("/v1/ai/text/request-hash")
+def verify_text_request_hash(req: TextQuoteRequest, x_service_token: str | None = Header(default=None)) -> dict:
+    authorize_service(x_service_token)
+    try:
+        request = story_blueprint_generation_request(req)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not verify text request identity. No generation was started.") from exc
+    return {"inputSha256": canonical_story_blueprint_request_hash(request), "model": req.model,
+            "maxOutputTokens": request["max_output_tokens"], "agentType": req.agentType}
+
+
+@app.post("/v1/ai/text/quote")
+def count_text_quote(req: TextQuoteRequest, x_service_token: str | None = Header(default=None)) -> dict:
+    authorize_service(x_service_token)
+    try:
+        request = story_blueprint_generation_request(req)
+        input_tokens = count_story_blueprint_input(request)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not verify text token count. No generation was started.") from exc
+    return {"inputTokens": input_tokens, "inputSha256": canonical_story_blueprint_request_hash(request),
+            "model": req.model, "maxOutputTokens": request["max_output_tokens"], "agentType": req.agentType}
 
 
 @app.post("/v1/ai/story-blueprint/request-hash")

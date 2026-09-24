@@ -28,6 +28,16 @@ They are not approved commercial offers.
 
 ## Credit accounting direction
 
+### Exact request preparation for remaining text agents
+
+Private quote/hash endpoints now support writer, proofreader, copyeditor,
+consistency, metadata and Book Bible, sharing the exact gateway payload with
+dispatch. Supplied hashes are checked before receipt reservation, and the
+checked prompt is dispatched without rebuilding it. Book Bible's effective
+6,000-token cap is returned explicitly. These endpoints do not grant funds or
+convert operational credits to retail token settlement. See
+[Text quote preparation](TEXT_QUOTE_PREPARATION.md) for the remaining API/UI gates.
+
 ### Cross-service receipt compatibility
 
 Metadata, Book Bible and manuscript-review consumers now preserve and validate

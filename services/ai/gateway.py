@@ -69,6 +69,17 @@ class ProviderOutcomeUnknown(RuntimeError):
     """The paid request may have run; never silently dispatch it again."""
 
 
+def openai_request(messages: list[dict], tools: list[dict], model: str, *,
+                   max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> dict:
+    """One wire representation for quote identity, counting, and generation."""
+    payload = {"model": model, "input": messages, "tools": openai_tools(tools)}
+    if max_output_tokens is not None:
+        payload["max_output_tokens"] = max_output_tokens
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    return payload
+
+
 class OpenAIProvider:
     name = "openai"
 
@@ -80,11 +91,7 @@ class OpenAIProvider:
 
     def complete(self, messages: list[dict], tools: list[dict], model: str, *,
                  max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> Completion:
-        payload = {"model": model, "input": messages, "tools": openai_tools(tools)}
-        if max_output_tokens is not None:
-            payload["max_output_tokens"] = max_output_tokens
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
+        payload = openai_request(messages, tools, model, max_output_tokens=max_output_tokens, tool_choice=tool_choice)
         try:
             resp = self._client.responses.create(**payload)
         except Exception as exc:

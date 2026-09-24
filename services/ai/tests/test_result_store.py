@@ -105,6 +105,31 @@ def test_book_bible_receipt_survives_cache_loss_without_second_generation(durabl
     assert client.post("/v1/ai/jobs", json={**bible, "bookId": "other"}).status_code == 409
 
 
+def test_real_book_bible_agent_saves_and_recovers_quoted_result(durable_service, monkeypatch):
+    from agents.copyeditor import get_agent
+    from gateway import MockProvider
+    client, body, rows, _ = durable_service
+    provider = MockProvider([{"toolCalls": [{"name": "propose_book_bible_candidates", "input": {"candidates": []}}]}])
+    provider.name = "openai"
+    monkeypatch.setattr(main, "get_agent", get_agent)
+    monkeypatch.setattr(main, "get_provider", lambda: provider)
+    chapter_id = "00000000-0000-4000-8000-000000000001"
+    request = {**body, "agentType": "bookbible", "model": "fixture-model", "maxOutputTokens": 2400,
+        "input": {"chapterIds": [chapter_id], "chapters": {chapter_id: {
+            "documentVersionId": "00000000-0000-4000-8000-000000000002",
+            "nodes": [{"id": "n1", "text": "A quiet morning.", "textHash": "f" * 64}],
+        }}}}
+    canonical = main.story_blueprint_generation_request(main.TextQuoteRequest.model_validate(request), provider)
+    request["expectedInputSha256"] = main.canonical_story_blueprint_request_hash(canonical)
+    first = client.post("/v1/ai/jobs", json=request)
+    assert first.status_code == 201 and first.json()["status"] == "succeeded", first.text
+    assert rows["bible:" + body["jobId"]]["result_json"] == first.json()
+    main._JOBS.clear(); main._JOBS_BY_IDEMPOTENCY.clear()
+    assert client.get("/v1/ai/jobs/" + body["jobId"]).json() == first.json()
+    assert client.post("/v1/ai/jobs", json=request).json() == first.json()
+    assert len(provider.calls) == 1
+
+
 def test_book_bible_unconfirmed_reservation_never_regenerates(durable_service, monkeypatch):
     client, payload, rows, calls = durable_service
     bible = {**payload, "agentType": "bookbible", "idempotencyKey": "bible-uncertain"}

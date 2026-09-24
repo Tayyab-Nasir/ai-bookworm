@@ -26,6 +26,8 @@ def _register():
     AGENTS[_P.agent_type] = _P
     AGENTS[CopyEditorAgent.agent_type] = CopyEditorAgent
     AGENTS[_B.agent_type] = _B
+    # Public job/receipt contracts use bookbible; prompt files use book_bible.
+    AGENTS["bookbible"] = _B
     AGENTS[_C.agent_type] = _C
     AGENTS[_W.agent_type] = _W
     AGENTS[_M.agent_type] = _M

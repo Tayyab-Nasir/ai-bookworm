@@ -1,5 +1,15 @@
 # MVP Release Checklist
 
+## 2026-09-24 text quote preparation and Book Bible dispatch
+
+Fixed the public `bookbible` job name not resolving the internal `book_bible`
+agent. Real-agent HTTP tests now cover dispatch and durable receipt recovery.
+Private text quote/hash preparation supports the remaining text agents, with
+one shared wire payload, output-cap binding and no prompt rebuild after hash
+verification. See [Text quote preparation](TEXT_QUOTE_PREPARATION.md).
+This is not author-facing funded token settlement; gate 10 remains PARTIAL.
+No hosted migration, paid provider call, price activation or deployment.
+
 ## 2026-09-24 measured AI receipt compatibility
 
 The release review found a real-provider contract mismatch: Python returned

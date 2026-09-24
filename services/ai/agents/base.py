@@ -177,9 +177,12 @@ class BaseAgent:
 
     # ---- main loop ----
 
-    def run(self, request: dict, job_id: str | None = None) -> AgentResult:
+    def run(self, request: dict, job_id: str | None = None, *, prepared_request=None) -> AgentResult:
         job_id = job_id or str(uuid.uuid4())
         result = AgentResult(jobId=job_id, status="running")
+        # Quoted jobs dispatch the exact request already checked against the
+        # quote, including evidence assembled by this agent instance.
+        self._prepared_request = prepared_request
         try:
             result = self._run(request, job_id)
         except ProviderOutcomeUnknown:
@@ -189,10 +192,12 @@ class BaseAgent:
             result = AgentResult(jobId=job_id, status="failed", error=f"validation: {e}")
         except Exception as e:
             result = AgentResult(jobId=job_id, status="failed", error=str(e))
+        finally:
+            self._prepared_request = None
         return result
 
     def _run(self, request: dict, job_id: str) -> AgentResult:
-        messages, tools, tool_choice = self.provider_request(request)
+        messages, tools, tool_choice = self._prepared_request or self.provider_request(request)
         usage = Usage()
         suggestions: list[dict] = []
         diagnostics: list[dict] = []

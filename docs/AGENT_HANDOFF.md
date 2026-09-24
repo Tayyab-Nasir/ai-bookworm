@@ -23,6 +23,22 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Exact text request preparation and real Book Bible dispatch
+
+Fixed public `bookbible` jobs not resolving the internal `book_bible` agent.
+The private AI service now counts/hashes exact provider requests across the
+remaining text agents, checks supplied hashes before receipt reservation and
+reuses the checked prompt/evidence for generation. Book Bible's effective
+6,000-token cap is explicit. Real-agent HTTP and durable receipt recovery
+tests cover the former registry gap. See `TEXT_QUOTE_PREPARATION.md`.
+Full local `npm run verify` passes: 411 service tests, 12 E2E, 30 security,
+80 disposable migrations/57 SQL suites, type/unit/web checks, load and evals.
+This is not yet an author-facing funded token quote/settlement flow. Next:
+convert metadata generation end-to-end using scoped saved inputs, approved
+catalog, explicit quote acceptance, atomic holds and measured settlement;
+then the remaining operational workflows and full-product release gates.
+No hosted action, provider call, pricing activation or deployment.
+
 ### Real-provider measured usage receipt compatibility
 
 Fixed Python `usage.measuredTokens` being rejected by strict metadata, Book
