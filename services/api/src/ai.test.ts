@@ -381,7 +381,9 @@ test("metadata generation returns a cited review draft without overwriting saved
   const requests: Row[] = [];
   const app = await buildApp(() => fakeSupabase(store), { aiFetch: async (_url, init) => {
     requests.push(JSON.parse(String(init?.body)) as Row);
-    return new Response(JSON.stringify(metadataResult()));
+    return Response.json({ ...metadataResult(), provider: "openai", model: "fixture-model", requestId: "req-fixture",
+      usage: { inputTokens: 20, outputTokens: 10, estimatedCostUsd: 0.001,
+        measuredTokens: [{ dimension: "text_input", tokens: "15" }, { dimension: "text_cached_input", tokens: "5" }, { dimension: "text_output", tokens: "10" }] } });
   } });
   const response = await app.inject({
     method: "POST", url: `/v1/books/${BOOK}/metadata/generate`, headers: auth,
@@ -398,7 +400,9 @@ test("metadata generation returns a cited review draft without overwriting saved
   assert.deepEqual((((sent.input as Row).bookBible as Row[])[0].attributes), { calling: "mapmaker" });
   assert.equal(JSON.stringify(store.tables.ai_jobs[0].input_ref).includes("Old text"), false);
   const completion = store.rpcCalls.find((call) => call.name === "complete_metadata_ai_job");
-  assert.equal(completion?.args.p_credit_quantity, 0);
+  assert.equal(completion?.args.p_credit_quantity, 1);
+  assert.deepEqual((completion?.args.p_usage as Row).measuredTokens,
+    [{ dimension: "text_input", tokens: "15" }, { dimension: "text_cached_input", tokens: "5" }, { dimension: "text_output", tokens: "10" }]);
   assert.equal((completion?.args.p_candidate as Row).status, "pending");
   assert.equal((store.tables.ai_jobs[0].output_ref as Row).savedMetadataUpdated, false);
   await app.close();

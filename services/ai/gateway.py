@@ -96,12 +96,16 @@ class OpenAIProvider:
         for item in resp.output:
             if item.type == "function_call":
                 calls.append({"name": item.name, "input": json.loads(item.arguments or "{}")})
-        ti = resp.usage.input_tokens if resp.usage else 0
-        to = resp.usage.output_tokens if resp.usage else 0
+        ti = getattr(resp.usage, "input_tokens", None) if resp.usage else None
+        to = getattr(resp.usage, "output_tokens", None) if resp.usage else None
+        if any(type(value) is not int or value < 0 for value in (ti, to)):
+            raise ProviderOutcomeUnknown("Paid provider token usage is unconfirmed.")
         details = getattr(resp.usage, "input_tokens_details", None) if resp.usage else None
-        cached = getattr(details, "cached_tokens", 0)
+        cached = getattr(details, "cached_tokens", None)
         measured = None
-        if all(isinstance(value, int) and value >= 0 for value in (ti, to, cached)) and cached <= ti:
+        if cached is not None and (type(cached) is not int or cached < 0 or cached > ti):
+            raise ProviderOutcomeUnknown("Paid provider cached-token usage is unconfirmed.")
+        if cached is not None:
             measured = [
                 {"dimension": "text_input", "tokens": str(ti - cached)},
                 {"dimension": "text_cached_input", "tokens": str(cached)},

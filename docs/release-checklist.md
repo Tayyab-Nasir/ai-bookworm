@@ -1,5 +1,17 @@
 # MVP Release Checklist
 
+## 2026-09-24 measured AI receipt compatibility
+
+The release review found a real-provider contract mismatch: Python returned
+`usage.measuredTokens`, while metadata, Book Bible and manuscript-review
+validators rejected it. Shared validation now preserves the cached/uncached/
+output split and checks it against aggregate counts. Missing aggregate usage
+remains an unknown paid outcome instead of fabricated measured zero.
+Production-shaped receipt fixtures exercise all three consumer paths; no
+live provider was called. See [AI usage receipt contract](AI_USAGE_RECEIPTS.md).
+This resolves an integration defect but leaves gate 10 PARTIAL: approved retail
+token conversion and actual funded provider/Stripe acceptance are still open.
+
 ## 2026-09-24 Google Play Books ebook export
 
 Google Play Books now has a local, entitlement-gated, EPUB-only preflight and

@@ -5,6 +5,7 @@ import { AppError } from "../errors.js";
 import { parseNodes } from "./authoring.js";
 import { retrievalQuery, searchBookContext } from "./retrieval.js";
 import type { SupabaseClient } from "./supabase.js";
+import { aiUsageSchema } from "./ai-usage.js";
 
 const agentTypes = ["writer", "proofreader", "copyeditor", "consistency"] as const;
 const inputSchema = z.object({
@@ -13,7 +14,7 @@ const inputSchema = z.object({
   contextPolicy: z.object({ includeBookBible: z.boolean(), includeStyleGuide: z.boolean(), includeRelatedContext: z.boolean(), semanticTopK: z.number().int().min(1).max(20), maxTokens: z.number().int().min(256).max(16_000) }).strict(),
 }).strict();
 const claimedSchema = z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), book_id: z.string().uuid(), created_by: z.string().uuid(), agent_type: z.enum(agentTypes), lease_token: z.string().uuid(), input_ref: inputSchema }).passthrough();
-const usageSchema = z.object({ inputTokens: z.number().int().nonnegative().default(0), outputTokens: z.number().int().nonnegative().default(0), estimatedCostUsd: z.number().nonnegative().default(0) }).strict();
+const usageSchema = aiUsageSchema;
 const resultSchema = z.object({ status: z.enum(["succeeded","failed"]), provider: z.string().min(1).max(100), model: z.string().min(1).max(200), suggestions: z.array(z.unknown()).max(200).default([]), diagnostics: z.array(z.unknown()).max(500).default([]), usage: usageSchema, error: z.string().max(2_000).optional() }).passthrough();
 const editSchema = z.object({ chapterId: z.string().uuid(), nodeId: z.string().min(1).max(200), operation: z.unknown(), rationale: z.string().trim().min(1).max(2_000), confidence: z.number().min(0).max(1).nullable().optional() }).passthrough();
 type Snapshot = { title: string; order: number; version: number; nodes: BookNode[] };

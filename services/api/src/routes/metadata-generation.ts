@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { aiUsageSchema } from "../lib/ai-usage.js";
 import { AppError } from "../errors.js";
 import { loadBook, parseNodes } from "../lib/authoring.js";
 import { requireEntitlement } from "../lib/entitlements.js";
@@ -57,12 +58,7 @@ const aiResponse = z.object({
   model: z.string().trim().min(1).max(200),
   suggestions: z.array(z.unknown()).max(1),
   diagnostics: z.array(diagnostic).max(500).default([]),
-  usage: z.object({
-    inputTokens: z.number().int().nonnegative().max(2_147_483_647).default(0),
-    outputTokens: z.number().int().nonnegative().max(2_147_483_647).default(0),
-    estimatedCostUsd: z.number().nonnegative().default(0),
-    latencyMs: z.number().int().nonnegative().max(2_147_483_647).optional(),
-  }).strict(),
+  usage: aiUsageSchema,
   error: z.string().max(2_000).optional(),
 }).passthrough();
 

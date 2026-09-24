@@ -35,6 +35,40 @@ def test_openai_provider_uses_responses_api_and_maps_function_calls():
     assert captured["tools"][0]["name"] == "propose_edit"
     assert result.tool_calls == [{"name": "propose_edit", "input": {"chapterId": "c1"}}]
     assert result.usage.estimatedCostUsd == 0.002
+    assert result.usage.measuredTokens is None  # Missing cached detail is not measured zero.
+
+
+def test_openai_usage_preserves_nonoverlapping_measured_dimensions():
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    provider._client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(
+        output=[], output_text="", _request_id="req-fixture", model="fixture-model",
+        usage=SimpleNamespace(input_tokens=100, output_tokens=20,
+            input_tokens_details=SimpleNamespace(cached_tokens=25)),
+    )))
+    result = provider.complete([], [], "fixture-model")
+    assert result.request_id == "req-fixture"
+    assert result.usage.to_dict()["measuredTokens"] == [
+        {"dimension": "text_input", "tokens": "75"},
+        {"dimension": "text_cached_input", "tokens": "25"},
+        {"dimension": "text_output", "tokens": "20"},
+    ]
+
+
+@pytest.mark.parametrize("usage", [
+    None,
+    SimpleNamespace(input_tokens=True, output_tokens=1),
+    SimpleNamespace(input_tokens=1, output_tokens=-1),
+    SimpleNamespace(input_tokens="1", output_tokens=1),
+    SimpleNamespace(input_tokens=1, output_tokens=1, input_tokens_details=SimpleNamespace(cached_tokens=2)),
+    SimpleNamespace(input_tokens=1, output_tokens=1, input_tokens_details=SimpleNamespace(cached_tokens=False)),
+])
+def test_openai_missing_or_invalid_usage_remains_unknown_not_zero(usage):
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    provider._client = SimpleNamespace(responses=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(
+        output=[], output_text="", usage=usage,
+    )))
+    with pytest.raises(ProviderOutcomeUnknown, match="usage is unconfirmed"):
+        provider.complete([], [], "fixture-model")
 
 
 def test_astra_cost_uses_published_long_context_multiplier():

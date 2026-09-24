@@ -308,7 +308,8 @@ test("paid Book Bible generation stores a cited review draft, replays by key, an
     assert.equal(payload.input.chapters[CHAPTER].nodes[0].text, SOURCE_TEXT);
     assert.equal(payload.input.chapters[CHAPTER].nodes[0].textHash, SOURCE_HASH);
     const result = { jobId: payload.jobId, workspaceId: WORKSPACE, bookId: BOOK, agentType: "bookbible",
-      status: "succeeded", provider: "mock", model: "mock-1", usage: { inputTokens: 20, outputTokens: 10, estimatedCostUsd: 0 },
+      status: "succeeded", provider: "openai", model: "fixture-model", requestId: "req-fixture", usage: { inputTokens: 20, outputTokens: 10, estimatedCostUsd: 0.001,
+        measuredTokens: [{ dimension: "text_input", tokens: "15" }, { dimension: "text_cached_input", tokens: "5" }, { dimension: "text_output", tokens: "10" }] },
       diagnostics: [], suggestions: [{ suggestionKind: "book_bible_candidate", status: "pending", type: "character",
         name: "Elara", description: "A mapmaker", attributes: { eyes: "silver" }, confidence: 0.8,
         sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: SOURCE_HASH }] }] };

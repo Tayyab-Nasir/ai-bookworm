@@ -23,6 +23,17 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Real-provider measured usage receipt compatibility
+
+Fixed Python `usage.measuredTokens` being rejected by strict metadata, Book
+Bible and manuscript-review schemas. Shared validation now preserves the
+cached/uncached/output split and checks aggregate consistency. Missing provider
+usage remains unknown, not measured zero. Full local `npm run verify` passes:
+80 migrations/57 SQL suites, 381 services, 12 E2E, 30 security, types/API/web,
+load and six deterministic evals. No live action. See `AI_USAGE_RECEIPTS.md`.
+Next: approved token-credit settlement for remaining operational generation
+paths, hosted billing acceptance and wider full-product release gates.
+
 ### Full saved-passage section navigation
 
 The Book Bible source viewer now reaches every section of a long saved node

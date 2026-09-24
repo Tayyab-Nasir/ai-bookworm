@@ -68,6 +68,23 @@ test("AI review worker holds an uncertain paid service reply without redispatch 
   assert.equal(calls.some((call) => call.name === "fail_ai_review_job"), false);
 });
 
+test("AI review worker accepts and preserves real-shaped measured usage, holding inconsistent receipts", async () => {
+  for (const valid of [true, false]) {
+    const { sb, calls } = workerSupabase();
+    const measuredTokens = [{ dimension: "text_input", tokens: valid ? "6" : "7" },
+      { dimension: "text_cached_input", tokens: "2" }, { dimension: "text_output", tokens: "3" }];
+    const outcome = await runOneAiReviewJob(sb, { fetcher: async () => Response.json({
+      jobId: JOB, workspaceId: WORKSPACE, bookId: BOOK, agentType: "proofreader", status: "succeeded",
+      provider: "openai", model: "fixture-model", requestId: "req-fixture", suggestions: [], diagnostics: [],
+      usage: { inputTokens: 8, outputTokens: 3, estimatedCostUsd: 0.001, measuredTokens },
+    }) });
+    assert.equal(outcome.status, valid ? "succeeded" : "requires_review");
+    const complete = calls.find((call) => call.name === "complete_leased_ai_review_job");
+    if (valid) assert.deepEqual((complete?.args.p_usage as Row).measuredTokens, measuredTokens);
+    else assert.equal(complete, undefined);
+  }
+});
+
 test("AI review worker does not call the provider when the durable dispatch marker reply is lost", async () => {
   const { sb, calls } = workerSupabase({ markerReplyLost: true }); let providerCalls = 0;
   const outcome = await runOneAiReviewJob(sb, { fetcher: async () => { providerCalls++; return new Response("unexpected"); } });

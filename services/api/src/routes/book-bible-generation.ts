@@ -6,6 +6,7 @@ import { loadBook, parseNodes } from "../lib/authoring.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { buildBibleReadingPlan, type BibleReadingChapter } from "../lib/bible-reading-plan.js";
+import { aiUsageSchema } from "../lib/ai-usage.js";
 
 const uuid = z.string().uuid();
 const generationRequest = z.object({
@@ -44,12 +45,7 @@ const aiResponse = z.object({
   status: z.enum(["succeeded", "failed"]), provider: z.string().min(1).max(200),
   model: z.string().min(1).max(200), suggestions: z.array(z.unknown()).max(10),
   diagnostics: z.array(diagnostic).max(500).default([]),
-  usage: z.object({
-    inputTokens: z.number().int().nonnegative().max(2147483647),
-    outputTokens: z.number().int().nonnegative().max(2147483647),
-    estimatedCostUsd: z.number().nonnegative(),
-    latencyMs: z.number().int().nonnegative().max(2147483647).optional(),
-  }).strict(), error: z.string().max(2000).optional(),
+  usage: aiUsageSchema, error: z.string().max(2000).optional(),
 }).passthrough();
 type Evidence = z.infer<typeof sourceRef>;
 

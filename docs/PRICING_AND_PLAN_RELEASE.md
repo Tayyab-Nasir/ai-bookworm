@@ -28,6 +28,14 @@ They are not approved commercial offers.
 
 ## Credit accounting direction
 
+### Cross-service receipt compatibility
+
+Metadata, Book Bible and manuscript-review consumers now preserve and validate
+the Python gateway's optional measured token split instead of rejecting valid
+provider successes. Missing provider usage is not fabricated as measured zero.
+See [AI usage receipts](AI_USAGE_RECEIPTS.md). This does not convert existing
+operational units into approved retail token pricing or activate any plan.
+
 ### Server-owned translation catalog
 
 `TRANSLATION_PRICING_CATALOG_JSON` is optional server-only deployment configuration.
