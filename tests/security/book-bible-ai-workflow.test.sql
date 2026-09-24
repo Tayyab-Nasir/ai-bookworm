@@ -102,4 +102,19 @@ begin
   assert usage_count=(select count(*) from public.usage_events where ai_job_id=result.id), 'replay duplicated usage';
 end $$;
 reset role;
+do $$ begin
+  update public.ai_jobs set input_ref=input_ref || jsonb_build_object('reading',jsonb_build_object('fingerprint',repeat('a',64),'pageIndex',0))
+    where id='b7100000-0000-4000-8000-000000000007';
+  begin
+    insert into public.ai_jobs(workspace_id,book_id,agent_type,status,input_ref,idempotency_key,created_by)
+    values('b7100000-0000-4000-8000-000000000003','b7100000-0000-4000-8000-000000000004','bookbible','succeeded',
+      jsonb_build_object('reading',jsonb_build_object('fingerprint',repeat('a',64),'pageIndex',0)),
+      'duplicate-reading-page','b7100000-0000-4000-8000-000000000001');
+    assert false,'same reading page completed twice';
+  exception when unique_violation then null; end;
+  insert into public.ai_jobs(workspace_id,book_id,agent_type,status,input_ref,idempotency_key,created_by)
+  values('b7100000-0000-4000-8000-000000000003','b7100000-0000-4000-8000-000000000004','bookbible','succeeded',
+    jsonb_build_object('reading',jsonb_build_object('fingerprint',repeat('a',64),'pageIndex',1)),
+    'different-reading-page','b7100000-0000-4000-8000-000000000001');
+end $$;
 rollback;

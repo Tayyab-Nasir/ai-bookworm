@@ -528,6 +528,28 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/reading-plan:
+    post:
+      summary: Prepare a free saved-version Book Bible reading plan and resume author progress
+      description: Requires editing access. Returns deterministic fingerprint, excerpt ranges and completed job IDs, never manuscript text. No provider request, job reservation or credit charge. Up to three chapters and 8 MB of text; UTF-16 ranges do not split Unicode code points.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [chapterIds]
+              properties:
+                chapterIds: { type: array, minItems: 1, maxItems: 3, items: { type: string, format: uuid } }
+                maxTokens: { type: integer, minimum: 4096, maximum: 16000, default: 12000 }
+      responses:
+        '200': { description: Private fingerprint, page descriptors, creditsPerPage and completedJobId per page }
+        '401': { description: Authentication required }
+        '403': { description: Editing access required }
+        '422': { description: Invalid selection, missing saved version or unsupported manuscript size }
   /v1/books/{bookId}/bible/generate:
     post:
       tags: [v1]
@@ -548,6 +570,13 @@ paths:
                 idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
                 chapterIds: { type: array, minItems: 1, maxItems: 3, items: { type: string, format: uuid } }
                 maxTokens: { type: integer, minimum: 4096, maximum: 16000, default: 12000 }
+                reading:
+                  type: object
+                  additionalProperties: false
+                  required: [fingerprint, pageIndex]
+                  properties:
+                    fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+                    pageIndex: { type: integer, minimum: 0, maximum: 4999 }
       responses:
         "200": { description: Existing successful job and candidate list; no new generation }
         "201": { description: Candidate list saved for review; Book Bible canon unchanged }

@@ -26,6 +26,7 @@ type BookBibleCandidate = {
   confidence: number;
 };
 type BibleHistoryResponse = { drafts: { id: string; createdAt: string; candidates: unknown }[]; pending: PendingMetadata[] };
+type BibleReadingPlan = { fingerprint: string; creditsPerPage: number; pages: { pageIndex: number; bytes: number; completedJobId: string | null }[] };
 export const metadataGenerationBlocked = (pending: PendingMetadata[] | null) => pending === null || pending.length > 0;
 export const bibleGenerationBlocked = metadataGenerationBlocked;
 type Memory = {
@@ -185,6 +186,8 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const [bibleGenerationError, setBibleGenerationError] = useState<string | null>(null);
   const [generatingBible, setGeneratingBible] = useState(false);
   const [bibleChapterIds, setBibleChapterIds] = useState<string[]>([]);
+  const [bibleReadingPlan, setBibleReadingPlan] = useState<BibleReadingPlan | null>(null);
+  const [biblePageIndex, setBiblePageIndex] = useState(0);
   const [entryDirty, setEntryDirty] = useState(false);
   const [formRevision, setFormRevision] = useState(0);
   const endpoint = `/books/${encodeURIComponent(bookId)}`;
@@ -206,6 +209,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       setMetadataCandidate(null); setMetadataGenerationError(null); setMetadataRequestKey(null);
       setMetadataHistory(null);
       setBibleCandidates(null); setBibleHistory(null); setBibleRequestKey(null); setBibleGenerationError(null);
+      setBibleReadingPlan(null); setBiblePageIndex(0);
       setBibleChapterIds(result.chapters.filter((chapter) => chapter.current_document_version_id).slice(0, 3).map((chapter) => chapter.id));
       setIdentityDirty(false); setMetadataDirty(false); setEntryDirty(false);
       setFormRevision((value) => value + 1);
@@ -413,15 +417,34 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     const idempotencyKey = bibleRequestKey ?? crypto.randomUUID();
     setBibleRequestKey(idempotencyKey); setGeneratingBible(true); setBibleGenerationError(null); setNotice(null);
     try {
-      const result = await request<{ candidates: unknown }>(`${endpoint}/bible/generate`, "POST", { idempotencyKey, chapterIds: bibleChapterIds });
+      const result = await request<{ candidates: unknown; job?: { id: string } }>(`${endpoint}/bible/generate`, "POST", {
+        idempotencyKey, chapterIds: bibleChapterIds,
+        ...(bibleReadingPlan ? { reading: { fingerprint: bibleReadingPlan.fingerprint, pageIndex: biblePageIndex } } : {}),
+      });
       setBibleCandidates(parseBookBibleCandidates(result.candidates));
+      if (result.job?.id) setBibleReadingPlan((current) => current ? { ...current,
+        pages: current.pages.map((page) => page.pageIndex === biblePageIndex ? { ...page, completedJobId: result.job!.id } : page) } : null);
       setBibleRequestKey(null);
     } catch (reason) {
       if (metadataRequestCanRestart(reason)) setBibleRequestKey(null);
       const failure = reason as { details?: { status?: string } };
+      if (failure.details?.status === "not_started") { setBibleRequestKey(null); setBibleReadingPlan(null); }
       if (["queued", "running"].includes(failure.details?.status ?? "")) setPendingBible(null);
       setBibleGenerationError(messageOf(reason));
     } finally { setGeneratingBible(false); }
+  }
+
+  async function prepareBibleReading() {
+    if (!memory?.canEdit || busy || bibleRequestKey || !bibleChapterIds.length) return;
+    setSaving("bible-reading"); setBibleGenerationError(null);
+    try {
+      const plan = await request<BibleReadingPlan>(`${endpoint}/bible/reading-plan`, "POST", { chapterIds: bibleChapterIds });
+      if (!Array.isArray(plan.pages) || !plan.pages.length || !/^[a-f0-9]{64}$/.test(plan.fingerprint)) throw new Error("The reading plan is unavailable.");
+      setBibleReadingPlan(plan);
+      setBiblePageIndex(plan.pages.find((page) => !page.completedJobId)?.pageIndex ?? 0);
+      setNotice("Saved-version reading plan prepared. No generation or credit charge occurred.");
+    } catch (reason) { setBibleGenerationError(messageOf(reason)); }
+    finally { setSaving(null); }
   }
 
   function useBibleCandidate(item: BookBibleCandidate) {
@@ -467,18 +490,28 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         {memory.canEdit && <div className="mt-5 rounded-2xl border border-sky-300/20 bg-sky-300/[0.045] p-4 sm:p-5" aria-labelledby="bible-ai-title">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div><h3 id="bible-ai-title" className="font-medium text-sky-50">AI candidate shelf</h3><p id="bible-ai-help" className="mt-1 max-w-2xl text-xs leading-5 text-[#aaa]">Choose up to three saved chapters from anywhere in your book to extract up to ten candidates. Generation uses one AI credit. If the selection exceeds the reading limit, you can choose fewer chapters before any extraction starts. Review each detail before saving it to your book’s memory.</p></div>
-            <button type="button" onClick={() => void generateBible()} disabled={busy || bibleGenerationBlocked(pendingBible) || !bibleChapterIds.length} aria-describedby="bible-ai-help" className={secondaryClass}>{generatingBible ? "Extracting…" : "Generate candidates · 1 credit"}</button>
+            <button type="button" onClick={() => void generateBible()} disabled={busy || bibleGenerationBlocked(pendingBible) || !bibleChapterIds.length} aria-describedby="bible-ai-help" className={secondaryClass}>{generatingBible ? "Loading candidates…" : bibleReadingPlan?.pages[biblePageIndex]?.completedJobId ? "Open batch candidates · no credits" : "Generate candidates · 1 credit"}</button>
           </div>
           <fieldset disabled={busy || Boolean(bibleRequestKey) || bibleGenerationBlocked(pendingBible)} className="mt-4">
             <legend className="text-xs font-medium text-[#ccc]">Chapters to read · {bibleChapterIds.length} of 3 selected</legend>
             <div className="mt-2 max-h-52 space-y-2 overflow-y-auto rounded-xl border border-white/10 p-3">
               {memory.chapters.map((chapter) => <label key={chapter.id} className="flex items-start gap-3 text-sm text-[#bbb]">
-                <input type="checkbox" className="mt-1 accent-white" checked={bibleChapterIds.includes(chapter.id)} disabled={!chapter.current_document_version_id || (!bibleChapterIds.includes(chapter.id) && bibleChapterIds.length >= 3)} onChange={(event) => setBibleChapterIds((current) => event.target.checked ? [...current, chapter.id] : current.filter((id) => id !== chapter.id))} />
+                <input type="checkbox" className="mt-1 accent-white" checked={bibleChapterIds.includes(chapter.id)} disabled={!chapter.current_document_version_id || (!bibleChapterIds.includes(chapter.id) && bibleChapterIds.length >= 3)} onChange={(event) => { setBibleReadingPlan(null); setBiblePageIndex(0); setBibleChapterIds((current) => event.target.checked ? [...current, chapter.id] : current.filter((id) => id !== chapter.id)); }} />
                 <span>{chapter.title}{!chapter.current_document_version_id && <span className="ml-2 text-xs text-[#888]">Save this chapter first</span>}</span>
               </label>)}
               {!memory.chapters.length && <p className="text-xs text-[#999]">Add a manuscript chapter to begin.</p>}
             </div>
           </fieldset>
+          <div className="mt-4 space-y-3">
+            <button type="button" disabled={busy || Boolean(bibleRequestKey) || !bibleChapterIds.length} onClick={() => void prepareBibleReading()} className={secondaryClass}>Prepare reading batches · no credits</button>
+            <p className="text-xs leading-5 text-[#aaa]">Long chapters can be read in batches without changing your manuscript. Each new batch uses 1 AI credit and produces up to ten review-only candidates. Prepare the same selection again to resume saved progress.</p>
+            {bibleReadingPlan && <label className="block text-xs text-[#bbb]">Reading batch · {bibleReadingPlan.pages.filter((page) => page.completedJobId).length} of {bibleReadingPlan.pages.length} completed
+              <select value={biblePageIndex} disabled={busy || Boolean(bibleRequestKey) || bibleGenerationBlocked(pendingBible)} onChange={(event) => setBiblePageIndex(Number(event.target.value))} className={inputClass}>
+                {bibleReadingPlan.pages.map((page) => <option key={page.pageIndex} value={page.pageIndex}>Batch {page.pageIndex + 1} · {page.completedJobId ? "saved — reopen without credits" : "1 credit to generate"}</option>)}
+              </select>
+              <span className="mt-2 block">Completed batches reopen their candidates without generating again. Editing a selected chapter creates a different reading plan.</span>
+            </label>}
+          </div>
           {bibleRequestKey && !generatingBible && <p role="status" className="mt-3 text-xs text-amber-100">The previous request is unresolved. Retry with the same request key or recover its saved result; do not start another extraction.</p>}
           {pendingBible === null && <p role="status" className="mt-3 text-xs text-amber-100">Check saved request status before starting another paid extraction.</p>}
           {pendingBible && pendingBible.length > 0 && <div role="status" className="mt-3 rounded-xl border border-amber-200/20 p-3 text-xs text-amber-100"><p>One extraction is still pending. Recovery reads its existing result without generating again.</p>{pendingBible.map((job) => <div key={job.id} className="mt-2"><span>{job.status} · {new Date(job.createdAt).toLocaleString()} · request {job.id}</span><button type="button" disabled={busy} onClick={() => void recoverBible(job.id)} className={`${secondaryClass} mt-2 block`}>Recover existing result</button></div>)}</div>}

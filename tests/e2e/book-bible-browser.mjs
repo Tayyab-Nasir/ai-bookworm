@@ -32,10 +32,16 @@ try {
   });
   await page.route('**/metadata/drafts', route => route.fulfill({ json: { drafts: [], pending: [] } }));
   await page.route('**/bible/drafts', route => route.fulfill({ json: { drafts, pending } }));
+  await page.route('**/bible/reading-plan', route => route.fulfill({ json: {
+    fingerprint: 'a'.repeat(64), creditsPerPage: 1,
+    pages: [{ pageIndex: 0, bytes: 20000, completedJobId: 'previous-batch' },
+      { pageIndex: 1, bytes: 10000, completedJobId: drafts.length ? job.id : null }],
+  } }));
   await page.route('**/bible/generate', async route => {
     generations++;
     const body = route.request().postDataJSON();
     assert.deepEqual(body.chapterIds, [chapterId, laterChapterId]);
+    assert.deepEqual(body.reading, { fingerprint: 'a'.repeat(64), pageIndex: 1 });
     assert.match(body.idempotencyKey, /^[a-f0-9-]{36}$/);
     pending = [job];
     await route.fulfill({ status: 409, json: { error: { code: 'conflict', message: 'The existing extraction is still running.', details: { status: 'running', jobId: job.id } } } });
@@ -67,6 +73,9 @@ try {
   await chapter.uncheck(); await expect(generate).toBeDisabled();
   await chapter.check();
   await page.getByRole('checkbox', { name: 'Return', exact: true }).check();
+  await page.getByRole('button', { name: 'Prepare reading batches · no credits' }).click();
+  await expect(page.getByRole('combobox', { name: /Reading batch/ })).toHaveValue('1');
+  assert.equal(generations, 0, 'planning must not generate');
   await generate.click();
   await expect(page.getByText('The existing extraction is still running.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Load saved candidate drafts · no credits' }).click();
@@ -89,6 +98,12 @@ try {
   await expect(page.getByText('1 saved entry · changes are saved only when you choose Save.', { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByText('1 saved entry · changes are saved only when you choose Save.', { exact: true })).toBeVisible();
+  await page.getByRole('checkbox', { name: 'Crossing', exact: true }).uncheck();
+  await page.getByRole('checkbox', { name: 'Letter', exact: true }).uncheck();
+  await page.getByRole('checkbox', { name: 'Return', exact: true }).check();
+  await page.getByRole('button', { name: 'Prepare reading batches · no credits' }).click();
+  await expect(page.getByRole('combobox', { name: /Reading batch · 2 of 2 completed/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Open batch candidates · no credits' })).toBeVisible();
   assert.equal(saves, 1); assert.equal(generations, 1); assert.equal(recoveries, 1);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);

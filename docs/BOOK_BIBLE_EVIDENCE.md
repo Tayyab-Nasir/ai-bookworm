@@ -69,15 +69,31 @@ display text at 24,000 characters with an explicit truncation flag; reading
 does not generate content, spend credits or save canonical entries.
 
 Authors can select up to three saved chapters from anywhere in the book.
-The API includes every nonempty text node in that selection or rejects it
-before a paid job is reserved. Missing saved versions, more than 100 text
-nodes, or a selection exceeding the bounded prompt budget return a corrective
-error. Large nodes that fit are included whole; the previous silent 8 KB
-node skip is removed. Prompt budgeting includes citation/wrapper overhead.
-This is complete selected text coverage, not exhaustive entity discovery:
-each response still contains at most ten candidates, and rich content without
-a text field is outside this extractor. Long chapters still need smaller
-selections or an eventual resumable extraction workflow.
+Free reading-plan preparation now divides all nonempty text nodes into
+bounded, gap-free batches, including excerpts of a single long node without
+splitting Unicode code points. Citation hashes continue to identify full saved
+nodes; explicit offsets record which excerpt each batch read. JSON escaping
+and provenance overhead count against the conservative input budget. Plans
+are capped at 8 MB of selected text. Rich content without text is excluded,
+and at most ten candidates per batch is not exhaustive entity discovery.
+
+The UI prepares/resumes a plan, selects the first unfinished batch and shows
+completed batches. Each new batch requires an explicit one-operational-credit
+generation; no automatic chain spends credits. A fingerprint binds versions,
+node hashes, ranges and budget. Stale plans are rejected before reservation.
+Completed results reopen without credits, even if the current allowance is
+exhausted. A source-only unique index prevents concurrent active/completed
+purchases of the same author/book/plan/page. Existing request-key recovery
+still handles uncertain responses. Legacy generation without a plan accepts
+only one-batch selections and otherwise directs the author to prepare a plan.
+
+Checkpoint: 32 focused API/planner tests, API/web types, 103 web tests, 80
+disposable migrations/57 SQL suites, OpenAPI parsing and native Edge fixture
+journey pass. The browser verifies plan preparation and resumed progress;
+API tests verify actual gap-free planning, stale versions and no regeneration.
+The unique index is not installed hosted. Source passage navigation beyond
+the existing 24,000-character display cap remains a review-UX follow-up;
+full saved text is available in manuscript history. No live provider call.
 
 ## Reviewed no-result hold release — source checkpoint
 

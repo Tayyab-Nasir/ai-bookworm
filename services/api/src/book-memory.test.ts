@@ -157,6 +157,47 @@ test("Book Bible extraction rejects incomplete reading before reserving credits"
   }
 });
 
+test("Book Bible reading plans are free, version-pinned and resume completed long-node batches", async (t) => {
+  const store = initialStore();
+  const longText = "😀 harbor fact. ".repeat(3000);
+  store.document_versions[0].content_json = { nodes: [{ id: "n1", type: "paragraph", text: longText }] };
+  let posts = 0;
+  const aiFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    posts++;
+    const payload = JSON.parse(String(init?.body));
+    const node = payload.input.chapters[CHAPTER].nodes[0];
+    assert.equal(node.text, longText.slice(node.excerptStart, node.excerptEnd));
+    assert.equal(node.textHash, createHash("sha256").update(longText).digest("hex"));
+    return Response.json({ jobId: payload.jobId, workspaceId: WORKSPACE, bookId: BOOK,
+      agentType: "bookbible", status: "succeeded", provider: "mock", model: "mock-1", usage: { inputTokens: 1, outputTokens: 1, estimatedCostUsd: 0 },
+      suggestions: [], diagnostics: [] });
+  };
+  const app = await appWith(store, undefined, aiFetch); t.after(() => app.close());
+  const planUrl = `/v1/books/${BOOK}/bible/reading-plan`;
+  assert.equal((await app.inject({ method: "POST", url: planUrl, payload: { chapterIds: [CHAPTER] } })).statusCode, 401);
+  const preview = await app.inject({ method: "POST", url: planUrl, headers: auth, payload: { chapterIds: [CHAPTER] } });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.equal(preview.headers["cache-control"], "private, no-store");
+  const plan = preview.json(); assert.ok(plan.pages.length > 1);
+  assert.equal(store.ai_jobs?.length ?? 0, 0); assert.equal(posts, 0);
+  assert.equal(preview.body.includes("harbor fact"), false);
+  store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];
+  store.subscriptions = [{ organization_id: store.workspaces[0].organization_id, status: "active", plan_id: "paid" }];
+  store.plans = [{ id: "paid", entitlements_json: { ai_credits_monthly: 10 } }];
+  const request = { idempotencyKey: randomUUID(), chapterIds: [CHAPTER], reading: { fingerprint: plan.fingerprint, pageIndex: 1 } };
+  const generateUrl = `/v1/books/${BOOK}/bible/generate`;
+  const first = await app.inject({ method: "POST", url: generateUrl, headers: auth, payload: request });
+  assert.equal(first.statusCode, 201, first.body);
+  store.plans[0].entitlements_json = { ai_credits_monthly: 0 };
+  const again = await app.inject({ method: "POST", url: generateUrl, headers: auth, payload: { ...request, idempotencyKey: randomUUID() } });
+  assert.equal(again.statusCode, 200, again.body); assert.equal(posts, 1);
+  const resumed = await app.inject({ method: "POST", url: planUrl, headers: auth, payload: { chapterIds: [CHAPTER] } });
+  assert.equal(resumed.json().pages[1].completedJobId, first.json().job.id);
+  store.document_versions[0].content_json = { nodes: [{ id: "n1", type: "paragraph", text: longText + " changed" }] };
+  const stale = await app.inject({ method: "POST", url: generateUrl, headers: auth, payload: { ...request, idempotencyKey: randomUUID(), reading: { ...request.reading, pageIndex: 0 } } });
+  assert.equal(stale.statusCode, 409, stale.body); assert.equal(posts, 1);
+});
+
 test("Book Bible extraction can select a later chapter and includes its complete large node", async (t) => {
   const store = initialStore();
   store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];

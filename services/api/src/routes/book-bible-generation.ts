@@ -5,12 +5,14 @@ import { AppError } from "../errors.js";
 import { loadBook, parseNodes } from "../lib/authoring.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import type { SupabaseClient } from "../lib/supabase.js";
+import { buildBibleReadingPlan, type BibleReadingChapter } from "../lib/bible-reading-plan.js";
 
 const uuid = z.string().uuid();
 const generationRequest = z.object({
   idempotencyKey: z.string().trim().min(8).max(200),
   chapterIds: z.array(uuid).min(1).max(3).optional(),
   maxTokens: z.number().int().min(4096).max(16000).default(12000),
+  reading: z.object({ fingerprint: z.string().regex(/^[a-f0-9]{64}$/u), pageIndex: z.number().int().min(0).max(4999) }).strict().optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.chapterIds && new Set(value.chapterIds).size !== value.chapterIds.length) {
     ctx.addIssue({ code: "custom", path: ["chapterIds"], message: "Do not repeat chapter IDs." });
@@ -51,6 +53,29 @@ const aiResponse = z.object({
 }).passthrough();
 type Evidence = z.infer<typeof sourceRef>;
 
+async function loadReadingPlan(user: SupabaseClient, bookId: string, chapterIds: string[] | undefined, maxTokens: number) {
+  let query = user.from("chapters").select("id,title,order_index,current_document_version_id")
+    .eq("book_id", bookId).order("order_index").limit(3);
+  if (chapterIds) query = query.in("id", chapterIds);
+  const { data: chapters, error } = await query;
+  if (error) throw new AppError(500, "Could not load saved manuscript evidence.");
+  if (chapterIds && (new Set(chapterIds).size !== chapterIds.length || chapters?.length !== chapterIds.length)) {
+    throw new AppError(422, "Every selected chapter must belong to this book and be selected only once.");
+  }
+  if (!chapters?.length) throw new AppError(422, "Add saved manuscript chapters first.");
+  const inputs: BibleReadingChapter[] = [];
+  for (const chapter of chapters) {
+    if (!chapter.current_document_version_id) throw new AppError(422, "Save every selected chapter before extracting candidates.");
+    const { data: version, error: versionError } = await user.from("document_versions").select("*")
+      .eq("id", chapter.current_document_version_id).eq("chapter_id", chapter.id).maybeSingle();
+    if (versionError) throw new AppError(500, "Could not load the current saved manuscript version.");
+    if (!version) throw new AppError(422, "A selected chapter's saved version is unavailable. Reload the manuscript and try again.");
+    inputs.push({ id: chapter.id, title: chapter.title, order: chapter.order_index,
+      version: version.version_number, documentVersionId: version.id, nodes: parseNodes(version.content_json) });
+  }
+  return buildBibleReadingPlan(inputs, maxTokens);
+}
+
 function candidatesFromJob(job: Record<string, unknown>) {
   const output = job.output_ref as { candidates?: unknown } | null;
   const parsed = candidatesSchema.safeParse(output?.candidates);
@@ -58,7 +83,8 @@ function candidatesFromJob(job: Record<string, unknown>) {
 }
 
 function requestFingerprint(bookId: string, body: z.infer<typeof generationRequest>) {
-  return createHash("sha256").update(JSON.stringify({ bookId, chapterIds: body.chapterIds ?? null, maxTokens: body.maxTokens })).digest("hex");
+  return createHash("sha256").update(JSON.stringify({ bookId, chapterIds: body.chapterIds ?? null, maxTokens: body.maxTokens,
+    ...(body.reading ? { reading: body.reading } : {}) })).digest("hex");
 }
 
 function validateCandidates(values: unknown[], evidence: Evidence[]) {
@@ -128,6 +154,25 @@ async function settleResult(sb: SupabaseClient, job: Record<string, unknown>, ra
 
 export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
   const fetcher = options.fetcher ?? fetch;
+
+  app.post("/books/:bookId/bible/reading-plan", async (req, reply) => {
+    const bookId = uuid.safeParse((req.params as { bookId: string }).bookId);
+    const body = z.object({ chapterIds: z.array(uuid).min(1).max(3),
+      maxTokens: z.number().int().min(4096).max(16000).default(12000) }).strict().safeParse(req.body);
+    if (!bookId.success || !body.success) throw new AppError(422, "Select up to three saved chapters and a valid reading budget.");
+    const user = app.supabaseFactory(req.userToken);
+    await loadBook(user, bookId.data, req.userId, true);
+    const plan = await loadReadingPlan(user, bookId.data, body.data.chapterIds, body.data.maxTokens);
+    const { data: jobs, error } = await user.from("ai_jobs").select("id,input_ref")
+      .eq("book_id", bookId.data).eq("created_by", req.userId).eq("agent_type", "bookbible")
+      .eq("status", "succeeded").order("created_at", { ascending: false }).limit(5000);
+    if (error) throw new AppError(500, "Could not verify saved reading progress.");
+    reply.header("cache-control", "private, no-store");
+    return { fingerprint: plan.fingerprint, totalBytes: plan.totalBytes, creditsPerPage: 1,
+      pages: plan.pages.map((page, pageIndex) => ({ pageIndex, ranges: page.ranges, bytes: page.bytes,
+        completedJobId: jobs?.find((job) => job.input_ref?.reading?.fingerprint === plan.fingerprint
+          && job.input_ref?.reading?.pageIndex === pageIndex)?.id ?? null })) };
+  });
 
   app.get("/books/:bookId/bible/drafts", async (req, reply) => {
     const parsed = uuid.safeParse((req.params as { bookId: string }).bookId);
@@ -201,45 +246,32 @@ export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetch
     const { data: workspace, error: workspaceError } = await service.from("workspaces")
       .select("organization_id").eq("id", book.workspace_id).maybeSingle();
     if (workspaceError || !workspace) throw new AppError(500, "Could not resolve Book Bible credits.");
-    await requireEntitlement(service, workspace.organization_id, "ai_credits", 1);
 
-    let chapterQuery = user.from("chapters").select("id,title,order_index,current_document_version_id")
-      .eq("book_id", bookId).order("order_index").limit(3);
-    if (body.chapterIds) chapterQuery = chapterQuery.in("id", body.chapterIds);
-    const { data: chapters, error: chapterError } = await chapterQuery;
-    if (chapterError) throw new AppError(500, "Could not load saved manuscript evidence.");
-    if (body.chapterIds && chapters?.length !== body.chapterIds.length) throw new AppError(422, "Every selected chapter must belong to this book.");
-    if (!chapters?.length) throw new AppError(422, "Add saved manuscript chapters first.");
-    const evidence: Evidence[] = [];
-    const chapterInput: Record<string, unknown> = {};
-    let remaining = Math.min(24000, Math.floor(body.maxTokens * 1.7));
-    for (const chapter of chapters) {
-      if (!chapter.current_document_version_id) throw new AppError(422, "Save every selected chapter before extracting candidates.");
-      const { data: version, error } = await user.from("document_versions").select("*")
-        .eq("id", chapter.current_document_version_id).eq("chapter_id", chapter.id).maybeSingle();
-      if (error) throw new AppError(500, "Could not load the current saved manuscript version.");
-      if (!version) throw new AppError(422, "A selected chapter's saved version is unavailable. Reload the manuscript and try again.");
-      const nodes = [];
-      for (const node of parseNodes(version.content_json)) {
-        const text = typeof node.text === "string" ? node.text : "";
-        // Budget provenance labels and the untrusted-text wrapper as well as
-        // manuscript bytes so many short nodes still fit the service prompt.
-        const size = Buffer.byteLength(text) + 512;
-        if (!text.trim()) continue;
-        if (evidence.length >= 100 || size > remaining) {
-          throw new AppError(422, "The selected chapters exceed this extraction's reading limit. Select fewer chapters or divide a long chapter before generating. No extraction was started.");
-        }
-        remaining -= size;
-        const textHash = createHash("sha256").update(text).digest("hex");
-        nodes.push({ ...node, textHash });
-        evidence.push({ chapterId: chapter.id, documentVersionId: version.id, nodeId: node.id, textHash });
-      }
-      if (nodes.length) chapterInput[chapter.id] = {
-        id: chapter.id, title: chapter.title, order: chapter.order_index,
-        version: version.version_number, documentVersionId: version.id, nodes,
-      };
+    const plan = await loadReadingPlan(user, bookId, body.chapterIds, body.maxTokens);
+    if (body.reading && body.reading.fingerprint !== plan.fingerprint) {
+      throw new AppError(409, "The saved manuscript or reading budget changed. Refresh the reading plan before purchasing another batch.", { status: "not_started" });
     }
-    if (!evidence.length) throw new AppError(422, "Add saved manuscript text before extracting Book Bible candidates.");
+    if (!body.reading && plan.pages.length > 1) {
+      throw new AppError(422, "This selection needs multiple reading batches. Prepare a reading plan and choose a batch before generating. No extraction was started.");
+    }
+    const pageIndex = body.reading?.pageIndex ?? 0;
+    const page = plan.pages[pageIndex];
+    if (!page) throw new AppError(422, "This reading batch is outside the saved plan.");
+    const { data: completedPages, error: progressError } = await service.from("ai_jobs").select("*")
+      .eq("book_id", bookId).eq("created_by", req.userId).eq("agent_type", "bookbible")
+      .eq("status", "succeeded").order("created_at", { ascending: false }).limit(5000);
+    if (progressError) throw new AppError(503, "Could not verify saved reading progress. No extraction was started.");
+    const completedPage = completedPages?.find((saved) => saved.input_ref?.reading?.fingerprint === plan.fingerprint
+      && saved.input_ref?.reading?.pageIndex === pageIndex);
+    if (completedPage) {
+      const candidates = candidatesFromJob(completedPage);
+      if (!candidates) throw new AppError(503, "The completed reading batch needs review; no new extraction was started.");
+      reply.header("cache-control", "private, no-store");
+      return { job: completedPage, candidates };
+    }
+    const chapterInput = page.chapters;
+    const evidence: Evidence[] = page.ranges.map(({ startOffset: _start, endOffset: _end, ...ref }) => ref);
+    await requireEntitlement(service, workspace.organization_id, "ai_credits", 1);
     const jobId = randomUUID();
     const { data: job, error: insertError } = await service.from("ai_jobs").insert({
       id: jobId, workspace_id: book.workspace_id, book_id: bookId, agent_type: "bookbible",
@@ -250,6 +282,7 @@ export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetch
           return { chapterId: value.id, documentVersionId: value.documentVersionId };
         }),
         contextSources: evidence,
+        reading: { fingerprint: plan.fingerprint, pageIndex, pageCount: plan.pages.length, ranges: page.ranges },
         maxTokens: body.maxTokens,
       },
       idempotency_key: body.idempotencyKey, created_by: req.userId,
@@ -275,7 +308,7 @@ export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetch
           input: { chapterIds: Object.keys(chapterInput), chapters: chapterInput,
             book: { title: book.title, author: book.author_name, language: book.language },
             bookBible: [], relatedContext: [], styleGuide: {},
-            userInstruction: "Extract only reviewable entities grounded in the selected saved manuscript nodes." },
+            userInstruction: "Extract only reviewable entities grounded in the supplied saved manuscript excerpts. A passage may be only part of a node; do not infer facts from omitted text. Citation hashes identify the full saved node, not only this excerpt." },
         }),
       });
       const text = await response.text();

@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Resumable Book Bible reading batches
+
+Author UI and API now prepare free saved-version reading plans, select a
+batch and resume completed progress. Long nodes are split on Unicode code
+point boundaries with full-node hashes and exact excerpt offsets; each new
+batch is an explicit one-credit request, and completed batches reopen free.
+Stale plans fail before reservation; a source-only unique index blocks repeat
+active/completed batch purchases. 32 focused API/planner tests, API/web types,
+103 web tests, 80 local migrations/57 SQL suites and Edge fixture journey
+pass. No hosted/provider action. Next: source viewer navigation to later
+excerpts, saved malformed-result disposition and wider release gates.
+
 ### Book Bible reviewed no-result hold release
 
 Admin UI/API and a source-only migration provide an audited release of an
