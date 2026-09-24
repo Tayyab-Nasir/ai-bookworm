@@ -466,11 +466,14 @@ before production tuning.
   its operational credit reserved; no customer usage event is written.
 - Do not manually reset the job or dispatch marker based on age. Review AI
   service receipts and provider organization usage. A saved result must be
-  recovered; never release that hold. For an aged hold with no saved result,
+  recovered with the admin receipt-only settlement action; never release
+  that hold. For an aged hold with no saved result,
   platform admins can use the reviewed incident-reference release in Admin →
   Jobs. The database rechecks the receipt, output, suggestions, run and usage
-  before ending the credit hold without a customer debit. A result-settlement
-  route is still missing; see
+  before ending the credit hold without a customer debit. A saved result is
+  validated against the original chapter versions and settled through the
+  existing atomic usage transaction, with no provider redispatch. Invalid
+  saved results require separate operator disposition; see
   `docs/AI_REVIEW_UNCERTAINTY.md` before enabling unattended operation.
 
 ## Account support and data rights

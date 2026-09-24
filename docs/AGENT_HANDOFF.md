@@ -36,8 +36,10 @@ read without another provider call. The worker attempts one read-only
 receipt recovery after an uncertain POST, validating job identity and saved
 manuscript operations before charging. An admin-only, audited release is now
 source-built for aged holds with no result; a saved result blocks release.
-All three additive migrations are source-only, not live. Operator receipt
-settlement and provider-usage
+An admin-only receipt settlement action now re-leases a held job only when a
+matching successful private result exists; it validates the saved manuscript
+before the existing atomic completion and never dispatches OpenAI. All four
+additive migrations are source-only, not live. Invalid-result disposition and provider-usage
 reconciliation remain open; do not clear holds by age. This is a prerequisite
 for exposing the existing Book Bible candidate agent through paid jobs, not
 the candidate workflow itself. See `docs/AI_REVIEW_UNCERTAINTY.md`.

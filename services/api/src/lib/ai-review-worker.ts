@@ -34,7 +34,18 @@ function normalize(result: z.infer<typeof resultSchema>, book: Record<string, un
   });
 }
 
-async function contextForJob(sb: SupabaseClient, job: z.infer<typeof claimedSchema>) {
+function validatedResult(rawResult: unknown, job: z.infer<typeof claimedSchema>, context: Awaited<ReturnType<typeof loadReviewSources>>) {
+  const parsedResult = resultSchema.safeParse(rawResult);
+  if (!parsedResult.success || parsedResult.data.status !== "succeeded") throw new AiReviewFailure("ai_provider_failed", false);
+  const result = parsedResult.data;
+  if (result.jobId !== job.id || result.workspaceId !== job.workspace_id
+    || result.bookId !== job.book_id || result.agentType !== job.agent_type) {
+    throw new AiReviewFailure("ai_invalid_output", false, "AI result identity did not match its saved job");
+  }
+  return { result, suggestions: normalize(result, context.book, context.snapshots) };
+}
+
+async function loadReviewSources(sb: SupabaseClient, job: z.infer<typeof claimedSchema>) {
   const { data: book, error: bookError } = await sb.from("books").select("id,workspace_id,title,author_name,language").eq("id", job.book_id).maybeSingle();
   if (bookError || !book || book.workspace_id !== job.workspace_id) throw new AiReviewFailure("ai_source_unavailable", false, "Book source is unavailable");
   const snapshots = new Map<string, Snapshot>();
@@ -44,6 +55,11 @@ async function contextForJob(sb: SupabaseClient, job: z.infer<typeof claimedSche
     if (chapterError || versionError || !chapter || !version || chapter.book_id !== job.book_id) throw new AiReviewFailure("ai_source_changed", false, "The saved chapter version is no longer available");
     snapshots.set(pointer.chapterId, { title: String(chapter.title), order: Number(chapter.order_index), version: Number(version.version_number), nodes: parseNodes(version.content_json) });
   }
+  return { book: book as Record<string, unknown>, snapshots };
+}
+
+async function contextForJob(sb: SupabaseClient, job: z.infer<typeof claimedSchema>) {
+  const { book, snapshots } = await loadReviewSources(sb, job);
   const [{ data: style, error: styleError }, { data: bible, error: bibleError }] = await Promise.all([
     sb.from("style_guides").select("rules_json,tone,spelling_variant").eq("book_id", job.book_id).maybeSingle(),
     sb.from("book_bible_items").select("id,type,name,description,attributes_json,source_refs_json").eq("book_id", job.book_id).order("created_at").limit(100),
@@ -51,7 +67,7 @@ async function contextForJob(sb: SupabaseClient, job: z.infer<typeof claimedSche
   if (styleError || bibleError) throw new AiReviewFailure("ai_source_unavailable", true, "Could not assemble approved AI context");
   const query = retrievalQuery(job.input_ref.userInstruction ?? [...snapshots.values()].map((chapter) => `${chapter.title} ${chapter.nodes.map((node) => node.text ?? "").join(" ")}`).join(" "));
   const related = job.input_ref.contextPolicy.includeRelatedContext && ["writer","consistency"].includes(job.agent_type) && query ? await searchBookContext(sb, job.book_id, { query, limit: job.input_ref.contextPolicy.semanticTopK, includeBible: job.input_ref.contextPolicy.includeBookBible }) : [];
-  return { book: book as Record<string, unknown>, snapshots, body: { jobId: job.id, workspaceId: job.workspace_id, bookId: job.book_id, agentType: job.agent_type, idempotencyKey: `worker:${job.id}`, contextPolicy: job.input_ref.contextPolicy, input: { chapterIds: [...snapshots.keys()], chapters: Object.fromEntries([...snapshots].map(([id, value]) => [id, { id, title: value.title, version: value.version, nodes: value.nodes }])), styleGuide: job.input_ref.contextPolicy.includeStyleGuide && style ? { rules: style.rules_json, tone: style.tone, spellingVariant: style.spelling_variant } : {}, bookBible: job.input_ref.contextPolicy.includeBookBible ? bible ?? [] : [], relatedContext: related, userInstruction: job.input_ref.userInstruction } } };
+  return { book, snapshots, body: { jobId: job.id, workspaceId: job.workspace_id, bookId: job.book_id, agentType: job.agent_type, idempotencyKey: `worker:${job.id}`, contextPolicy: job.input_ref.contextPolicy, input: { chapterIds: [...snapshots.keys()], chapters: Object.fromEntries([...snapshots].map(([id, value]) => [id, { id, title: value.title, version: value.version, nodes: value.nodes }])), styleGuide: job.input_ref.contextPolicy.includeStyleGuide && style ? { rules: style.rules_json, tone: style.tone, spellingVariant: style.spelling_variant } : {}, bookBible: job.input_ref.contextPolicy.includeBookBible ? bible ?? [] : [], relatedContext: related, userInstruction: job.input_ref.userInstruction } } };
 }
 
 export async function runOneAiReviewJob(sb: SupabaseClient, options: { leaseSeconds?: number; fetcher?: typeof fetch } = {}): Promise<AiReviewWorkerOutcome> {
@@ -63,14 +79,7 @@ export async function runOneAiReviewJob(sb: SupabaseClient, options: { leaseSeco
   const base = process.env.AI_SERVICE_URL ?? `http://127.0.0.1:${process.env.AI_SERVICE_PORT ?? "8000"}`;
   const completeResult = async (rawResult: unknown) => {
     if (!context) throw new AiReviewFailure("ai_source_unavailable", false);
-    const parsedResult = resultSchema.safeParse(rawResult);
-    if (!parsedResult.success || parsedResult.data.status !== "succeeded") throw new AiReviewFailure("ai_provider_failed", false);
-    const result = parsedResult.data;
-    if (result.jobId !== jobId || result.workspaceId !== parsed.data.workspace_id
-      || result.bookId !== parsed.data.book_id || result.agentType !== parsed.data.agent_type) {
-      throw new AiReviewFailure("ai_invalid_output", false, "AI result identity did not match its saved job");
-    }
-    const suggestions = normalize(result, context.book, context.snapshots);
+    const { result, suggestions } = validatedResult(rawResult, parsed.data, context);
     abort.signal.throwIfAborted(); completionAttempted = true;
     const complete = await sb.rpc("complete_leased_ai_review_job", { p_job_id: jobId, p_lease_token: token, p_provider: result.provider, p_model: result.model, p_usage: result.usage, p_diagnostics: result.diagnostics, p_suggestions: suggestions, p_credit_quantity: result.provider === "mock" ? 0 : 1 });
     if (complete.error || !row(complete.data)) throw new AiReviewFailure(complete.error?.code === "40001" ? "ai_lease_lost" : "ai_completion_failed", true);
@@ -115,4 +124,38 @@ export async function runOneAiReviewJob(sb: SupabaseClient, options: { leaseSeco
     const failed = await sb.rpc("fail_ai_review_job", { p_job_id: jobId, p_lease_token: token, p_error_code: failure.code, p_error_message: failure.message.slice(0, 2_000), p_retryable: failure.retryable });
     if (failed.error?.code === "40001") return { status: "lease_lost", jobId }; if (failed.error || !row(failed.data)) throw new AiReviewFailure("ai_failure_persistence_failed", true); return { status: row(failed.data)?.status === "queued" ? "queued" : "failed", jobId };
   } finally { clearInterval(heartbeat); await renewal; }
+}
+
+export async function recoverHeldAiReviewReceipt(sb: SupabaseClient, input: {
+  jobId: string; actorId: string; incidentRef: string;
+}): Promise<AiReviewWorkerOutcome> {
+  const claim = await sb.rpc("claim_ai_review_receipt_recovery", {
+    p_job_id: input.jobId, p_actor_id: input.actorId, p_incident_ref: input.incidentRef,
+    p_receipt_reviewed: true, p_provider_reviewed: true, p_lease_seconds: 300,
+  });
+  if (claim.error?.code === "P0002") throw new AppError(404, "AI review request not found.");
+  if (claim.error?.code === "22023") throw new AppError(409, "No eligible saved AI review result can be settled. Recheck the receipt and job state.");
+  if (claim.error) throw new AppError(503, "AI review recovery could not be started. Refresh the job and audit before retrying.");
+  const parsed = claimedSchema.safeParse(row(claim.data));
+  if (!parsed.success || parsed.data.id !== input.jobId) throw new AppError(503, "AI review recovery reply was invalid. Refresh the job and audit before retrying.");
+  const job = parsed.data; const token = job.lease_token;
+  try {
+    const context = await loadReviewSources(sb, job);
+    const receipt = await sb.from("ai_review_service_receipts").select("result_json").eq("job_id", job.id).maybeSingle();
+    if (receipt.error || !receipt.data) throw new AiReviewFailure("ai_receipt_unavailable", false);
+    const { result, suggestions } = validatedResult(receipt.data.result_json, job, context);
+    const complete = await sb.rpc("complete_leased_ai_review_job", {
+      p_job_id: job.id, p_lease_token: token, p_provider: result.provider, p_model: result.model,
+      p_usage: result.usage, p_diagnostics: result.diagnostics, p_suggestions: suggestions,
+      p_credit_quantity: result.provider === "mock" ? 0 : 1,
+    });
+    if (complete.error || row(complete.data)?.status !== "succeeded") throw new AiReviewFailure("ai_receipt_settlement_unconfirmed", false);
+    return { status: "succeeded", jobId: job.id };
+  } catch {
+    try { const check = await sb.from("ai_jobs").select("status").eq("id", job.id).maybeSingle();
+      if (check.data?.status === "succeeded") return { status: "succeeded", jobId: job.id }; } catch { /* Preserve the hold. */ }
+    const held = await sb.rpc("mark_ai_review_outcome_unconfirmed", { p_job_id: job.id, p_lease_token: token });
+    if (!held.error && row(held.data)?.error_code === "ai_provider_outcome_unconfirmed") return { status: "requires_review", jobId: job.id };
+    return { status: "completion_unknown", jobId: job.id };
+  }
 }

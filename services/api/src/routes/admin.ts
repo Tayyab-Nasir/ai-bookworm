@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 import { logAdminAudit } from "../lib/admin.js";
+import { recoverHeldAiReviewReceipt } from "../lib/ai-review-worker.js";
 
 // All routes run behind plugins/admin.ts requireAdmin and use the
 // service-role client (bypasses RLS): admin-only by construction.
@@ -159,6 +160,19 @@ export function adminRoutes(app: FastifyInstance) {
       }
       reply.header("cache-control", "private, no-store");
       return { jobId: id.data, status: "failed" as const, incidentRef: body.data.incidentRef };
+    });
+
+    a.post("/admin/jobs/ai/:id/settle-review-receipt", async (req, reply) => {
+      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const body = z.object({ incidentRef: z.string().regex(/^[A-Z0-9][A-Z0-9-]{5,63}$/),
+        receiptReviewed: z.literal(true), providerReviewed: z.literal(true) }).strict().safeParse(req.body);
+      if (!id.success || !body.success) throw new AppError(422, "Provide an incident reference and confirm receipt and provider review.");
+      const outcome = await recoverHeldAiReviewReceipt(app.supabaseFactory(), {
+        jobId: id.data, actorId: req.userId, incidentRef: body.data.incidentRef,
+      });
+      if (outcome.status !== "succeeded") throw new AppError(503, "Receipt settlement is unconfirmed. Refresh the job and audit record; do not dispatch generation again.");
+      reply.header("cache-control", "private, no-store");
+      return { jobId: id.data, status: "succeeded" as const, incidentRef: body.data.incidentRef };
     });
 
     // ---- audit ---------------------------------------------------------------

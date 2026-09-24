@@ -301,6 +301,52 @@ test("AI review hold release fails closed when receipt exists or migration is un
   }
 });
 
+test("admin receipt settlement validates access and completes the saved job without exposing its text", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000245";
+  const workspaceId = "a9000000-0000-4000-8000-000000000246";
+  const bookId = "a9000000-0000-4000-8000-000000000247";
+  const chapterId = "a9000000-0000-4000-8000-000000000248";
+  const token = "a9000000-0000-4000-8000-000000000249";
+  const body = { incidentRef: "INC-REVIEW-123", receiptReviewed: true, providerReviewed: true };
+  const calls: string[] = [];
+  const claim = { id: jobId, workspace_id: workspaceId, book_id: bookId, created_by: "a9000000-0000-4000-8000-000000000250",
+    agent_type: "proofreader", lease_token: token, input_ref: { chapterVersions: [{ chapterId, version: 1 }],
+      userInstruction: null, contextPolicy: { includeBookBible: false, includeStyleGuide: false,
+        includeRelatedContext: false, semanticTopK: 5, maxTokens: 4096 } } };
+  const store: Store = { tables: {
+    books: [{ id: bookId, workspace_id: workspaceId, title: "Novel", author_name: "Author", language: "en" }],
+    chapters: [{ id: chapterId, book_id: bookId, title: "One", order_index: 0 }],
+    document_versions: [{ chapter_id: chapterId, version_number: 1,
+      content_json: { schemaVersion: "1.0", nodes: [{ id: "n1", type: "paragraph", text: "Private chapter" }] } }],
+    style_guides: [], book_bible_items: [], ai_jobs: [],
+    ai_review_service_receipts: [{ job_id: jobId, result_json: { jobId, workspaceId, bookId,
+      agentType: "proofreader", status: "succeeded", provider: "mock", model: "mock-1",
+      usage: { inputTokens: 2, outputTokens: 1, estimatedCostUsd: 0 }, diagnostics: [], suggestions: [] } }],
+  }, rpc(name, args) {
+    calls.push(name);
+    if (name === "claim_ai_review_receipt_recovery") {
+      assert.equal(args.p_actor_id, "admin-1"); return { data: claim, error: null };
+    }
+    if (name === "complete_leased_ai_review_job") {
+      assert.equal(args.p_lease_token, token); return { data: { ...claim, status: "succeeded" }, error: null };
+    }
+    throw new Error(`unexpected RPC ${name}`);
+  } };
+  const app = await appWith(store);
+  const url = `/v1/admin/jobs/ai/${jobId}/settle-review-receipt`;
+  try {
+    assert.equal((await app.inject({ method: "POST", url, payload: body })).statusCode, 401);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("good"), payload: body })).statusCode, 403);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("admin"), payload: { ...body, receiptReviewed: false } })).statusCode, 422);
+    assert.deepEqual(calls, []);
+    const settled = await app.inject({ method: "POST", url, headers: as("admin"), payload: body });
+    assert.equal(settled.statusCode, 200, settled.body);
+    assert.deepEqual(settled.json(), { jobId, status: "succeeded", incidentRef: body.incidentRef });
+    assert.deepEqual(calls, ["claim_ai_review_receipt_recovery", "complete_leased_ai_review_job"]);
+    assert.doesNotMatch(settled.body, /Private chapter/);
+  } finally { await app.close(); }
+});
+
 test("publishing retry delegates atomic reset and audit to the queue RPC", async () => {
   const jobId = "a9000000-0000-4000-8000-000000000001";
   const store: Store = {

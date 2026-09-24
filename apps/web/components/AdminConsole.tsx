@@ -33,6 +33,7 @@ export default function AdminConsole() {
   const [incidentRef, setIncidentRef] = useState("");
   const [storageChecked, setStorageChecked] = useState(false);
   const [receiptReviewed, setReceiptReviewed] = useState(false);
+  const [reviewHoldAction, setReviewHoldAction] = useState<"settle" | "release">("settle");
   const [providerReviewed, setProviderReviewed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -147,21 +148,29 @@ export default function AdminConsole() {
               </div>}
               {jobType === "ai" && row.status === "running" && row.error_code === "ai_provider_outcome_unconfirmed" && <div className="mt-4">
                 <button type="button" className={button} disabled={!!busy} onClick={() => {
-                  setHoldJobId(holdJobId === id ? null : id); setIncidentRef(""); setReceiptReviewed(false); setProviderReviewed(false);
+                  setHoldJobId(holdJobId === id ? null : id); setIncidentRef(""); setReceiptReviewed(false); setProviderReviewed(false); setReviewHoldAction("settle");
                 }}>{holdJobId === id ? "Close hold review" : "Review unresolved text hold"}</button>
                 {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4" onSubmit={(event) => {
                   event.preventDefault();
                   if (!receiptReviewed || !providerReviewed) return;
-                  void update(id, () => api.adminReleaseReviewHold(id, { incidentRef, receiptReviewed: true, providerReviewed: true }),
-                    "Unresolved AI review hold released without a customer debit. Audit the incident record.");
+                  void update(id, () => reviewHoldAction === "settle"
+                    ? api.adminSettleReviewReceipt(id, { incidentRef, receiptReviewed: true, providerReviewed: true })
+                    : api.adminReleaseReviewHold(id, { incidentRef, receiptReviewed: true, providerReviewed: true }),
+                  reviewHoldAction === "settle"
+                    ? "Saved AI review result settled without regeneration. Audit the incident and customer usage."
+                    : "Unresolved AI review hold released without a customer debit. Audit the incident record.");
                 }}>
-                  <p className="text-sm text-amber-100">Recover a saved result if one exists. Release only an aged request with no result after reviewing the private receipt and provider usage. Bookworm may still have been billed; the author is not charged.</p>
+                  <p className="text-sm text-amber-100">Settle a saved result without another AI call, or release only an aged request with no saved result. Review the private receipt and provider usage first. Release does not charge the author; settlement records the original usage.</p>
+                  <fieldset className="space-y-2 text-xs text-white/70"><legend className="mb-2">Resolution</legend>
+                    <label className="flex items-center gap-2"><input type="radio" name={`review-hold-${id}`} checked={reviewHoldAction === "settle"} onChange={() => { setReviewHoldAction("settle"); setReceiptReviewed(false); }} />Settle the saved result</label>
+                    <label className="flex items-center gap-2"><input type="radio" name={`review-hold-${id}`} checked={reviewHoldAction === "release"} onChange={() => { setReviewHoldAction("release"); setReceiptReviewed(false); }} />Release with no saved result</label>
+                  </fieldset>
                   <label className="block text-xs text-white/70">Incident reference
                     <input required pattern="[A-Z0-9][A-Z0-9-]{5,63}" maxLength={64} value={incidentRef} onChange={(event) => setIncidentRef(event.target.value.toUpperCase())} placeholder="INC-123456" className={`${input} mt-2 block w-full`} />
                   </label>
-                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={receiptReviewed} onChange={(event) => setReceiptReviewed(event.target.checked)} className="mt-0.5" />I checked the private AI review receipt and found no saved result to recover.</label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={receiptReviewed} onChange={(event) => setReceiptReviewed(event.target.checked)} className="mt-0.5" />{reviewHoldAction === "settle" ? "I checked the private receipt and confirmed a matching saved result for this job." : "I checked the private receipt and found no saved result to recover."}</label>
                   <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={providerReviewed} onChange={(event) => setProviderReviewed(event.target.checked)} className="mt-0.5" />I reviewed provider usage or support evidence and recorded this incident; I am not asserting zero provider cost.</label>
-                  <button type="submit" disabled={!!busy || !receiptReviewed || !providerReviewed || !/^[A-Z0-9][A-Z0-9-]{5,63}$/.test(incidentRef)} className={button}>{busy === id ? "Releasing…" : "Release held text credit"}</button>
+                  <button type="submit" disabled={!!busy || !receiptReviewed || !providerReviewed || !/^[A-Z0-9][A-Z0-9-]{5,63}$/.test(incidentRef)} className={button}>{busy === id ? "Resolving…" : reviewHoldAction === "settle" ? "Settle saved AI result" : "Release held text credit"}</button>
                 </form>}
               </div>}
             </div>}
