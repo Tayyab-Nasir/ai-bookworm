@@ -23,6 +23,24 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Saved-text AI suggestion proof sheet
+
+`7c8bf70` replaces the opaque replacement snippet in the author AI sidebar
+with a bounded-context Current/Proposed proof sheet derived from the saved
+chapter and canonical replacement offsets. It marks insertion, deletion and
+replacement text; stale chapter versions, missing nodes, invalid ranges,
+wrong-chapter and no-op proposals cannot be applied from the UI. Apply remains
+human-controlled and the API still validates the operation authoritatively.
+An accepted apply is recorded before chapter refresh, so a refresh failure
+does not tell the author that the save failed or enable another stale apply.
+The synthetic AI fixture now carries a complete canonical operation. Web
+TypeScript, 98 web tests, isolated production build and browser-script syntax
+pass; the native browser journey was amended but could not be run under the
+temporary-server policy. No provider/live action. Next: native Edge visual
+and keyboard/mobile acceptance on an allowed host, then hosted private
+author journeys and full release gates. See vault note
+`Codex Sessions/2026-09/2026-09-24-bookworm-ai-proof-sheet.md`.
+
 ### Paid AI review request recovery
 
 `ea32cd5` closes the accepted-but-lost reply gap for proofreading, copyediting,
