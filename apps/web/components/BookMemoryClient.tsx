@@ -185,11 +185,18 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setNotice(null); void load();
   }
 
-  function chooseEntry(item?: BookBibleItem) {
-    if (busy) return;
-    if (entryDirty && !window.confirm("Discard the unsaved changes to this memory entry?")) return;
+  function chooseEntry(item?: BookBibleItem): boolean {
+    if (busy) return false;
+    if (entryDirty && !window.confirm("Discard the unsaved changes to this memory entry?")) return false;
     setDraft(item ? entryDraft(item) : emptyDraft());
     setEntryDirty(false); setDeleting(null); setError(null); setNotice(null);
+    return true;
+  }
+
+  function openBibleEntry(id: string) {
+    const item = memory?.items.find((entry) => entry.id === id);
+    if (!item) { setNotice("This entry is no longer in the loaded Book Bible. Reload saved data and search again."); return; }
+    if (chooseEntry(item)) requestAnimationFrame(() => document.getElementById("bible-entry-details")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
   function changeDraft(change: Partial<EntryDraft>) {
@@ -343,7 +350,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     {!loading && !memory && <div className={`${panelClass} mt-6`}><h2 className="text-lg font-medium">Book memory is unavailable</h2><p className="mt-2 text-sm text-[#aaa]">Check your session and workspace access, then reload. No sample book data is substituted.</p></div>}
 
     {memory && <>
-      <BookSearchPanel key={bookId} bookId={bookId} />
+      <BookSearchPanel key={bookId} bookId={bookId} onOpenBibleEntry={openBibleEntry} />
       {!memory.canEdit && <p className="mt-5 rounded-xl border border-white/15 p-4 text-sm text-[#ccc]">You have read-only access. An editor can update this book’s memory and metadata.</p>}
       <section className="mt-9" aria-labelledby="bible-title">
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -361,7 +368,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               <span className="text-[10px] uppercase tracking-widest text-[#aaa]">{item.type}</span><h3 className="mt-2 break-words text-lg font-medium">{item.name}</h3><p className="mt-2 line-clamp-3 break-words text-sm leading-6 text-[#999]">{item.description || "No description yet."}</p>
             </button>)}
           </div>
-          {draft ? <form onSubmit={saveEntry} className={panelClass}>
+          {draft ? <form id="bible-entry-details" onSubmit={saveEntry} className={panelClass}>
             <h3 className="text-xl font-medium">{draft.id ? "Memory details" : "New memory entry"}</h3>
             <fieldset disabled={!memory.canEdit || busy} className="mt-5 space-y-4">
               <div className="grid gap-4 sm:grid-cols-[1fr_150px]">

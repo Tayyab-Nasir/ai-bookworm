@@ -1,16 +1,22 @@
 "use client";
 
+import Link from "next/link";
 import { useRef, useState, type FormEvent } from "react";
 import type { BookSearchResult } from "@bookworm/api-client";
 import { apiClient } from "./api";
 
-export default function BookSearchPanel({ bookId }: { bookId: string }) {
+export default function BookSearchPanel({ bookId, onOpenBibleEntry }: { bookId: string; onOpenBibleEntry?: (id: string) => void }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<BookSearchResult[]>([]);
   const [searched, setSearched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
+  function changeQuery(value: string) {
+    // A response for the old phrase must never appear below the new phrase.
+    ++generation.current;
+    setQuery(value); setResults([]); setSearched(false); setError(null); setBusy(false);
+  }
   async function search(event: FormEvent) {
     event.preventDefault();
     if (!query.trim()) return;
@@ -28,7 +34,7 @@ export default function BookSearchPanel({ bookId }: { bookId: string }) {
     <p className="mt-2 max-w-3xl text-sm leading-6 text-[#999]">Find exact words, names, and facts across saved chapters and Book Bible entries. Results cite current saved sources. This is private keyword search, not an AI-generated answer.</p>
     <form onSubmit={search} className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
       <label className="min-w-0 flex-1 text-xs text-[#aaa]">Words or phrase
-        <input type="search" maxLength={1000} value={query} onChange={(event) => setQuery(event.target.value)} required placeholder='Try Elara, or "silver compass"' className="mt-2 w-full rounded-xl border border-white/15 bg-black px-4 py-3 text-sm text-white outline-none focus-visible:ring-2 focus-visible:ring-white/50" />
+        <input type="search" maxLength={1000} value={query} onChange={(event) => changeQuery(event.target.value)} required placeholder='Try Elara, or "silver compass"' className="mt-2 w-full rounded-xl border border-white/15 bg-black px-4 py-3 text-sm text-white outline-none focus-visible:ring-2 focus-visible:ring-white/50" />
       </label>
       <button disabled={busy || !query.trim()} className="min-h-11 rounded-full bg-white px-5 py-3 text-sm font-semibold text-black disabled:opacity-50">{busy ? "Searching…" : "Search saved sources"}</button>
     </form>
@@ -38,6 +44,8 @@ export default function BookSearchPanel({ bookId }: { bookId: string }) {
       <p className="text-[10px] uppercase tracking-widest text-[#999]">{result.source_type === "bible" ? "Book Bible" : "Saved manuscript"}</p>
       <h3 className="mt-2 break-words font-medium">{result.title}</h3>
       <blockquote className="mt-3 whitespace-pre-wrap break-words border-l border-white/20 pl-3 text-sm leading-6 text-[#ccc]">{result.excerpt}</blockquote>
+      {result.source_type === "manuscript" && result.chapter_id && <Link href={`/books/${encodeURIComponent(bookId)}?chapter=${encodeURIComponent(result.chapter_id)}`} className="mt-3 inline-flex min-h-10 items-center text-sm font-medium text-white underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-white">Open saved chapter →</Link>}
+      {result.source_type === "bible" && result.bible_item_id && onOpenBibleEntry && <button type="button" onClick={() => onOpenBibleEntry(result.bible_item_id!)} className="mt-3 block min-h-10 text-sm font-medium text-white underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-white">Open Book Bible entry →</button>}
       <details className="mt-3 text-xs text-[#999]"><summary className="cursor-pointer rounded outline-none focus-visible:ring-2 focus-visible:ring-white">Source citation</summary><dl className="mt-2 space-y-1 break-all">
         <dt>Source ID</dt><dd>{result.bible_item_id ?? result.chapter_id}</dd>
         {result.document_version_id && <><dt>Saved version</dt><dd>{result.document_version_id}</dd><dt>Node</dt><dd>{result.node_id}</dd></>}

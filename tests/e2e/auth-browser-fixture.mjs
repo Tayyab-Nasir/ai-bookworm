@@ -438,14 +438,19 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname === `${memoryBase}/memory` && req.method === 'GET') return json(200, { book: memoryBook, metadata: memoryMetadata, items: memoryItems, chapters: memoryChapters, imageAssets: memoryImages, canEdit: true });
   if (url.pathname === `${memoryBase}/search` && req.method === 'POST') {
-    if (!String(body.query ?? '').toLowerCase().includes('elara')) return json(200, { results: [], strategy: 'postgres_full_text', query: body.query });
+    const phrase = String(body.query ?? '').toLowerCase();
+    const bibleResults = memoryItems.filter(item => `${item.name} ${item.description ?? ''}`.toLowerCase().includes(phrase)).map(item => ({
+      id: item.id, source_type: 'bible', chapter_id: null, bible_item_id: item.id,
+      document_version_id: null, node_id: null, chunk_index: 0, title: item.name,
+      excerpt: item.description || item.name, text_hash: 'fixture-bible-hash', score: 1,
+    }));
     return json(200, {
-      results: [{
+      results: [...(phrase.includes('elara') ? [{
         id: '77777777-7777-4777-8777-777777777777', source_type: 'manuscript', chapter_id: memoryChapters[0].id,
         bible_item_id: null, document_version_id: memoryChapters[0].current_document_version_id,
         node_id: 'n1', chunk_index: 0, title: 'Arrival',
         excerpt: 'Elara carries a silver compass from the harbor.', text_hash: 'fixture-search-hash', score: 1,
-      }],
+      }] : []), ...bibleResults],
       strategy: 'postgres_full_text', query: body.query,
     });
   }
