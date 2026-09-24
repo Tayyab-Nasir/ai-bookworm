@@ -32,6 +32,7 @@ export default function AdminConsole() {
   const [holdJobId, setHoldJobId] = useState<string | null>(null);
   const [incidentRef, setIncidentRef] = useState("");
   const [storageChecked, setStorageChecked] = useState(false);
+  const [receiptReviewed, setReceiptReviewed] = useState(false);
   const [providerReviewed, setProviderReviewed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -127,7 +128,7 @@ export default function AdminConsole() {
             {tab === "jobs" && <div><div className="flex flex-wrap justify-between gap-4"><div><h3 className="text-sm font-medium">{value(row, "job_type", value(row, "channel", jobType === "ai" ? value(row, "agent_type", "AI generation") : "Publishing package"))}</h3><p className="mt-2 break-all font-mono text-xs text-white/40">{id}</p><p className="mt-2 text-xs text-white/40">{stamp} · Attempts: {value(row, "attempts", "0")}</p>{typeof row.error_code === "string" && row.error_code && <p className="mt-2 text-xs text-amber-200">{row.error_code}</p>}</div><span className="h-fit rounded-full border border-white/15 px-3 py-1.5 text-xs capitalize text-white/70">{value(row, "status")}</span></div>
               {jobType === "ai" && row.status === "running" && ["illustrator", "cover_designer"].includes(String(row.agent_type)) && <div className="mt-4">
                 <button type="button" className={button} disabled={!!busy} onClick={() => {
-                  setHoldJobId(holdJobId === id ? null : id); setIncidentRef(""); setStorageChecked(false); setProviderReviewed(false);
+                  setHoldJobId(holdJobId === id ? null : id); setIncidentRef(""); setStorageChecked(false); setReceiptReviewed(false); setProviderReviewed(false);
                 }}>{holdJobId === id ? "Close hold review" : "Review unresolved image hold"}</button>
                 {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4" onSubmit={(event) => {
                   event.preventDefault();
@@ -142,6 +143,25 @@ export default function AdminConsole() {
                   <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={storageChecked} onChange={(event) => setStorageChecked(event.target.checked)} className="mt-0.5" />I checked private storage and found no delivered asset or recoverable completion receipt.</label>
                   <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={providerReviewed} onChange={(event) => setProviderReviewed(event.target.checked)} className="mt-0.5" />I reviewed provider usage or support evidence and recorded this incident; I am not asserting zero provider cost.</label>
                   <button type="submit" disabled={!!busy || !storageChecked || !providerReviewed || !/^[A-Z0-9][A-Z0-9-]{5,63}$/.test(incidentRef)} className={button}>{busy === id ? "Releasing…" : "Release held image credit"}</button>
+                </form>}
+              </div>}
+              {jobType === "ai" && row.status === "running" && row.error_code === "ai_provider_outcome_unconfirmed" && <div className="mt-4">
+                <button type="button" className={button} disabled={!!busy} onClick={() => {
+                  setHoldJobId(holdJobId === id ? null : id); setIncidentRef(""); setReceiptReviewed(false); setProviderReviewed(false);
+                }}>{holdJobId === id ? "Close hold review" : "Review unresolved text hold"}</button>
+                {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4" onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!receiptReviewed || !providerReviewed) return;
+                  void update(id, () => api.adminReleaseReviewHold(id, { incidentRef, receiptReviewed: true, providerReviewed: true }),
+                    "Unresolved AI review hold released without a customer debit. Audit the incident record.");
+                }}>
+                  <p className="text-sm text-amber-100">Recover a saved result if one exists. Release only an aged request with no result after reviewing the private receipt and provider usage. Bookworm may still have been billed; the author is not charged.</p>
+                  <label className="block text-xs text-white/70">Incident reference
+                    <input required pattern="[A-Z0-9][A-Z0-9-]{5,63}" maxLength={64} value={incidentRef} onChange={(event) => setIncidentRef(event.target.value.toUpperCase())} placeholder="INC-123456" className={`${input} mt-2 block w-full`} />
+                  </label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={receiptReviewed} onChange={(event) => setReceiptReviewed(event.target.checked)} className="mt-0.5" />I checked the private AI review receipt and found no saved result to recover.</label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={providerReviewed} onChange={(event) => setProviderReviewed(event.target.checked)} className="mt-0.5" />I reviewed provider usage or support evidence and recorded this incident; I am not asserting zero provider cost.</label>
+                  <button type="submit" disabled={!!busy || !receiptReviewed || !providerReviewed || !/^[A-Z0-9][A-Z0-9-]{5,63}$/.test(incidentRef)} className={button}>{busy === id ? "Releasing…" : "Release held text credit"}</button>
                 </form>}
               </div>}
             </div>}

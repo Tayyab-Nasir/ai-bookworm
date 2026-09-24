@@ -32,8 +32,10 @@ hold the running job with `ai_provider_outcome_unconfirmed`, preserve the
 operational credit reservation, and create a private incident without charging
 the author. The AI panel shows this state. The AI service now also reserves
 and saves private, durable review-result receipts, so a lost reply can be
-read without another provider call. Both additive migrations are source-only,
-not live. Operator receipt settlement/release and provider-usage
+read without another provider call. An admin-only, audited release is now
+source-built for aged holds with no result; a saved result blocks release.
+All three additive migrations are source-only, not live. Operator receipt
+settlement and provider-usage
 reconciliation remain open; do not clear holds by age. This is a prerequisite
 for exposing the existing Book Bible candidate agent through paid jobs, not
 the candidate workflow itself. See `docs/AI_REVIEW_UNCERTAINTY.md`.

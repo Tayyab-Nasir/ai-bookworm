@@ -12,8 +12,8 @@ The AI service now reserves each paid review job in a private, durable
 response before returning it. A matching replay returns the saved result;
 an unresolved reservation refuses another provider call. The service's
 read-only job lookup can recover a saved result after a lost worker reply.
-This does not itself settle a held job: operator-controlled reconciliation
-and a safe completion/release route remain necessary.
+This does not itself settle a held job: operator-controlled result settlement
+remains necessary.
 
 The OpenAI Responses client disables SDK retries. An API transport/status
 error propagates as an uncertain paid outcome rather than a normal failed
@@ -28,13 +28,30 @@ was written, still blocks lease-based redispatch.
 The author sees a request-specific warning in the AI panel. Support can
 inspect the existing admin AI job list and incident queue. Do **not** reset
 the marker, lease, job status, or receipt by age alone; age does not prove the
-provider did no work. This slice does not yet provide an operator resolution
-RPC. A supervised recovery/release
-workflow, provider organization-usage reconciliation and native hosted
-acceptance remain open before selling this as fully hands-off generation.
+provider did no work. The source-only
+`20260924210000_ai_review_manual_hold_release.sql` adds a guarded release
+path for an aged unconfirmed job **only when no result was saved**, and an
+admin-only action records both receipt and provider-review attestations with
+an incident reference. The database rechecks job state, receipt, debit,
+suggestions, run and output under lock, marks the job failed without charging
+the author, and records the audit atomically. A late completion cannot charge
+the released job. A saved result must be recovered and settled, not released;
+that settlement route is not yet built. Provider organization-usage
+reconciliation and native hosted acceptance remain open before selling this
+as fully hands-off generation.
 
-The additive migrations `20260924190000_ai_review_uncertain_hold.sql` and
-`20260924200000_ai_review_service_receipts.sql` are source-only. They have
+Before release, inspect the private `ai_review_service_receipts` row or the
+AI service's authenticated read-only job lookup for a completed result. Check
+provider usage/support evidence for the request's time window and record any
+uncertain provider cost as an operational incident, not a customer debit.
+Use Admin → Jobs → AI generation → the unconfirmed running job to enter a
+secret-free uppercase incident reference and attest to both reviews. If the
+RPC response is lost, refresh the job and audit record before retrying. Do
+not treat the checkboxes or elapsed time as proof of zero provider cost.
+
+The additive migrations `20260924190000_ai_review_uncertain_hold.sql`,
+`20260924200000_ai_review_service_receipts.sql`, and
+`20260924210000_ai_review_manual_hold_release.sql` are source-only. They have
 not been applied to the hosted Supabase project; deploying the worker before
 them would leave dispatch marking or receipt reservation unavailable and
 must fail before provider execution. This change does not enable Book Bible

@@ -456,15 +456,19 @@ before production tuning.
 
 ## Unconfirmed paid AI reviews
 - Writer/proofreader/copyeditor/consistency workers must run only after
-  `20260924190000_ai_review_uncertain_hold.sql` is installed and verified.
+  the uncertain-hold and durable-receipt migrations are installed and verified.
   The worker marks dispatch before HTTP; a marked expired lease is never
   reclaimed for another paid call. OpenAI SDK retries are disabled.
 - Alert on `ai_provider_outcome_unconfirmed` and inspect the private
   `ai_review_unconfirmed` dead-letter incident. The job remains running with
   its operational credit reserved; no customer usage event is written.
 - Do not manually reset the job or dispatch marker based on age. Review AI
-  service receipts and provider organization usage. There is not yet an
-  operator recovery/release RPC for this path; see
+  service receipts and provider organization usage. A saved result must be
+  recovered; never release that hold. For an aged hold with no saved result,
+  platform admins can use the reviewed incident-reference release in Admin →
+  Jobs. The database rechecks the receipt, output, suggestions, run and usage
+  before ending the credit hold without a customer debit. A result-settlement
+  route is still missing; see
   `docs/AI_REVIEW_UNCERTAINTY.md` before enabling unattended operation.
 
 ## Account support and data rights

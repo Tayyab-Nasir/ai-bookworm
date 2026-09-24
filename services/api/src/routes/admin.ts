@@ -139,6 +139,28 @@ export function adminRoutes(app: FastifyInstance) {
       return { jobId: id.data, status: "failed" as const, incidentRef: body.data.incidentRef };
     });
 
+    a.post("/admin/jobs/ai/:id/release-review-hold", async (req, reply) => {
+      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const body = z.object({ incidentRef: z.string().regex(/^[A-Z0-9][A-Z0-9-]{5,63}$/),
+        receiptReviewed: z.literal(true), providerReviewed: z.literal(true) }).strict().safeParse(req.body);
+      if (!id.success || !body.success) throw new AppError(422, "Provide an incident reference and confirm receipt and provider review.");
+      const svc = app.supabaseFactory();
+      const { data, error } = await svc.rpc("release_unconfirmed_ai_review_job", {
+        p_job_id: id.data, p_actor_id: req.userId, p_incident_ref: body.data.incidentRef,
+        p_receipt_reviewed: true, p_provider_reviewed: true,
+      });
+      if (error?.code === "P0002") throw new AppError(404, "AI review request not found.");
+      if (error?.code === "22023") throw new AppError(409, "This AI review cannot be released. Recheck its receipt, age, output and debit.");
+      if (error?.code === "PGRST202" || error?.code === "42883") throw new AppError(503, "AI review hold release migration is not installed.");
+      if (error) throw new AppError(503, "AI review hold release was not confirmed. Refresh the job and audit record before retrying.");
+      if (!z.object({ id: z.literal(id.data), status: z.literal("failed"),
+        error_code: z.literal("ai_review_hold_released") }).passthrough().safeParse(data).success) {
+        throw new AppError(503, "AI review hold release reply was invalid. Refresh the job and audit record before retrying.");
+      }
+      reply.header("cache-control", "private, no-store");
+      return { jobId: id.data, status: "failed" as const, incidentRef: body.data.incidentRef };
+    });
+
     // ---- audit ---------------------------------------------------------------
     a.get("/admin/audit", async (req) => {
       const q = pagination.extend({
