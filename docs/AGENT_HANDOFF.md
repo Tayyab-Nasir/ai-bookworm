@@ -23,6 +23,24 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Rich manuscript retrieval baseline
+
+`f9556c2` adds an unapplied migration indexing visible table cells, captions
+and image alt text with canonical chapter/node/version citations. Superseded
+rich content is removed on version change; backfill targets current rich-node
+chapters. Disposable PostgreSQL asserts content, hashes, filters, stale-version
+removal and cross-tenant denial. Full `npm run verify` passes with 68 local
+migrations/46 SQL assertion files, 348 services, 12 E2E, 30 security, load
+smoke and mock AI evals. No hosted migration, live provider or deployment.
+The existing decision remains: PostgreSQL source search is the author-facing
+baseline; LightRAG needs a private per-book citation/deletion/cost benchmark
+before adoption. SnapOtter remains optional behind a licensing/isolation
+decision, not installed. See `docs/BOOK_RETRIEVAL_DECISION.md`,
+`docs/SNAPOTTER_EVALUATION.md` and the vault note
+`Codex Sessions/2026-09/2026-09-24-bookworm-rich-retrieval.md`. Next:
+review/install pending live migrations only with explicit release approval,
+benchmark long-book retrieval and continue author/publishing release gates.
+
 ### Manuscript source upload recovery
 
 `e5e0c75` makes the setup asset ID durable before allocation. The API accepts
