@@ -33,9 +33,10 @@ before offering the editor, and requires re-entry when no book exists. If
 browser recovery storage cannot save the ID, no create request is sent. The
 checkpoint keeps identifiers only, not manuscript or story text. Local 88 web
 and 292 API tests, both TypeScript checks, isolated production build and native
-Edge synthetic-auth/API lost-reply/reload acceptance pass. This is not hosted
-Supabase acceptance. No migration, provider call or deployment. Next: cover
-the pre-accept outage/re-entry browser path and the upload allocation/PUT lost
+Edge synthetic-auth/API lost-reply/reload acceptance pass. `4974312` also
+passes the pre-accept outage/reload-404/re-entry/same-ID retry path; both modes
+end with one book. This is not hosted Supabase acceptance. No migration,
+provider call or deployment. Next: resolve the upload allocation/PUT lost
 reply orphan risk, then continue cross-service author journeys and release
 gates. See `Codex Sessions/2026-09/2026-09-24-bookworm-create-recovery.md` in
 the shared vault. Preserve generated Next/Graphify dirt.
