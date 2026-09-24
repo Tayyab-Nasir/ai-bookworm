@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { ManuscriptImportJob, ManuscriptImportResult } from "@bookworm/api-client";
+import { ApiClientError, type ManuscriptImportJob, type ManuscriptImportResult } from "@bookworm/api-client";
 import { apiClient } from "./api";
 import { readSetupCheckpoint, recoverManuscriptReport, runManuscriptSetup, setupKey, type SetupCheckpoint, type SetupStage } from "../lib/manuscript-setup";
 
@@ -49,20 +49,27 @@ export default function BookSetupClient() {
       try { saved = readSetupCheckpoint(window.sessionStorage.getItem(setupKey(user.id, workspace)), user.id, workspace); }
       catch { if (!cancelled) setNotice("Browser recovery storage is unavailable. Keep this tab open until import finishes."); }
       if (saved) {
-        const { book } = await api.getBook(saved.bookId);
-        if (book.workspace_id !== workspace) throw new Error("The saved setup belongs to a different workspace.");
+        let book = null;
+        try { ({ book } = await api.getBook(saved.bookId)); }
+        catch (reason) { if (!(saved.bookCreated === false && reason instanceof ApiClientError && reason.status === 404)) throw reason; }
+        if (book && book.workspace_id !== workspace) throw new Error("The saved setup belongs to a different workspace.");
+        if (book && saved.bookCreated === false) {
+          saved = { ...saved, bookCreated: true, savedAt: Date.now() };
+          try { window.sessionStorage.setItem(setupKey(user.id, workspace), JSON.stringify(saved)); } catch { /* The server book remains available. */ }
+        }
         let savedReport = null;
         let reportError = false;
-        try { savedReport = await recoverManuscriptReport(api, saved); } catch { reportError = true; }
+        if (book) { try { savedReport = await recoverManuscriptReport(api, saved); } catch { reportError = true; } }
         if (cancelled) return;
         if (savedReport) {
           saved = { ...saved, completed: true }; setReport(savedReport);
           try { window.sessionStorage.setItem(setupKey(user.id, workspace), JSON.stringify(saved)); } catch { /* The report remains durable on the server. */ }
         }
         if (reportError) setError("The saved import report is temporarily unavailable. Your book is preserved; reload to check again.");
-        setTitle(book.title); setAuthorName(book.author_name); setGenre(book.genre ?? ""); setLanguage(book.language);
+        if (book) { setTitle(book.title); setAuthorName(book.author_name); setGenre(book.genre ?? ""); setLanguage(book.language); }
         setMode(saved.setupMode ?? (saved.importing ? "import" : "blank")); setCheckpoint(saved); current.current = saved;
-        setNotice(saved.completed ? "This setup already finished. Open the editor to review your manuscript."
+        setNotice(!book ? "Book creation was interrupted. Re-enter the same details, then retry; Bookworm will reuse this request ID."
+          : saved.completed ? "This setup already finished. Open the editor to review your manuscript."
           : saved.setupMode === "ai" && saved.starter && !saved.starter.jobId
             ? "Chapter 1 is ready. Your brief was not saved in browser recovery; open the editor and use Draft to enter it again."
             : "Your existing book is ready to resume. We will reuse its uploaded source when available.");
@@ -118,7 +125,10 @@ export default function BookSetupClient() {
   const saveCheckpoint = (saved: SetupCheckpoint) => {
     current.current = saved; setCheckpoint(saved);
     try { window.sessionStorage.setItem(setupKey(userId, workspaceId), JSON.stringify(saved)); }
-    catch { setNotice("Your server changes are saved, but browser recovery storage is unavailable. Keep this tab open."); }
+    catch {
+      if (saved.bookCreated === false) throw new Error("Browser recovery storage is unavailable. Enable session storage before creating a book; no new request was sent.");
+      setNotice("Your server changes are saved, but browser recovery storage is unavailable. Keep this tab open.");
+    }
   };
 
   const startAnother = () => {
@@ -178,7 +188,10 @@ export default function BookSetupClient() {
       else { setReport(result.report); setNotice(result.report ? "Your manuscript is imported. Review the results before editing." : "This source is already imported. Open the editor to review the saved chapters."); }
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Could not finish book setup.";
-      setError(current.current ? `${message} Your existing book is preserved; retry continues the same setup.` : `${message} If the connection failed while creating the book, check your library before trying again.`);
+      setError(current.current?.bookCreated === false
+        ? `${message} Creation may have reached the server. Retry uses the same book request; do not start a second book.`
+        : current.current ? `${message} Your existing book is preserved; retry continues the same setup.`
+          : `${message} Check your library before trying again.`);
     } finally {
       setSaving(false);
       setSaveStage(null);
@@ -217,7 +230,7 @@ export default function BookSetupClient() {
           </div>
 
           <form onSubmit={onSubmit} aria-busy={saving} className="mt-5 rounded-[26px] border border-white/[0.1] bg-white/[0.025] p-5 sm:p-7">
-            <fieldset disabled={!ready || saving || Boolean(checkpoint)} className="grid min-w-0 gap-5 sm:grid-cols-2 disabled:opacity-70">
+            <fieldset disabled={!ready || saving || Boolean(checkpoint && checkpoint.bookCreated !== false)} className="grid min-w-0 gap-5 sm:grid-cols-2 disabled:opacity-70">
               <legend className="sr-only">Book details</legend>
               <label className="sm:col-span-2">
                 <span className="mb-2 block text-[11px] font-medium uppercase tracking-[0.14em] text-[#8a8a8a]">Book title</span>
@@ -275,16 +288,16 @@ export default function BookSetupClient() {
 
             <div className="mt-6 flex flex-wrap items-center gap-3">
               {!checkpoint?.completed && (!importJob || importJob.status === "failed") && <button type="submit" disabled={!ready || saving || (mode === "ai" && !storyBrief.trim())} className="glass-solid metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-semibold text-black disabled:cursor-wait disabled:opacity-60">
-                <span className="relative z-10">{saveStage ? stageLabels[saveStage] : checkpoint ? mode === "ai" ? "Queue first draft" : "Retry import" : mode === "import" ? "Create and import" : mode === "ai" ? "Create and queue draft" : "Create book"}</span>
+                <span className="relative z-10">{saveStage ? stageLabels[saveStage] : checkpoint?.bookCreated === false ? "Retry book creation" : checkpoint ? mode === "ai" ? "Queue first draft" : mode === "import" ? "Retry import" : "Continue setup" : mode === "import" ? "Create and import" : mode === "ai" ? "Create and queue draft" : "Create book"}</span>
               </button>}
-              {checkpoint && (
+              {checkpoint && checkpoint.bookCreated !== false && (
                 <button type="button" disabled={saving} onClick={() => continueToEditor(checkpoint.bookId, title, checkpoint.starter?.chapterId, checkpoint.starter?.jobId)} className="glass-ghost inline-flex h-12 items-center rounded-full px-5 text-sm font-medium text-white disabled:opacity-60">
                   Continue to editor
                 </button>
               )}
-              {checkpoint && !saving && <button type="button" onClick={startAnother} className="text-sm text-[#bdbdbd] underline underline-offset-4">Start another book</button>}
+              {checkpoint && checkpoint.bookCreated !== false && !saving && <button type="button" onClick={startAnother} className="text-sm text-[#bdbdbd] underline underline-offset-4">Start another book</button>}
             </div>
-            {checkpoint && !saving && <p className="mt-3 text-xs leading-5 text-[#969696]">Starting another book leaves this book and its original in your library and Assets. Recovery is saved in this browser tab for 24 hours.</p>}
+            {checkpoint?.bookCreated !== false && checkpoint && !saving && <p className="mt-3 text-xs leading-5 text-[#969696]">Starting another book leaves this book and its original in your library and Assets. Recovery is saved in this browser tab for 24 hours.</p>}
           </form>
 
           {checkpoint?.completed && mode === "import" && <section aria-labelledby="import-results" className="mt-6 rounded-[26px] border border-white/20 bg-white/[0.04] p-5 sm:p-7">

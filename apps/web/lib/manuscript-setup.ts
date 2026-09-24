@@ -5,6 +5,7 @@ export type SetupMode = "blank" | "import" | "ai";
 export type SetupCheckpoint = {
   version: 1; userId: string; workspaceId: string; bookId: string; savedAt: number;
   completed: boolean; importing: boolean;
+  bookCreated?: boolean;
   setupMode?: SetupMode;
   source?: { assetId: string; checksumSha256: string; sizeBytes: number };
   starter?: { chapterId: string; jobId?: string };
@@ -23,13 +24,16 @@ export function readSetupCheckpoint(raw: string | null, userId: string, workspac
     const setupMode = value.setupMode;
     if (setupMode !== undefined && setupMode !== "blank" && setupMode !== "import" && setupMode !== "ai") return null;
     if (setupMode && (setupMode === "import") !== value.importing) return null;
+    if (value.bookCreated !== undefined && typeof value.bookCreated !== "boolean") return null;
     const source = value.source;
+    if (value.bookCreated === false && (value.completed || source || value.starter)) return null;
     if (source && (!uuid.test(source.assetId) || !/^[a-f0-9]{64}$/.test(source.checksumSha256)
       || !Number.isInteger(source.sizeBytes) || source.sizeBytes < 1 || source.sizeBytes > 20 * 1024 * 1024)) return null;
     const starter = value.starter;
     if (starter && (setupMode !== "ai" || !uuid.test(starter.chapterId) || (starter.jobId !== undefined && !uuid.test(starter.jobId)))) return null;
     return { version: 1, userId, workspaceId, bookId: value.bookId, savedAt: value.savedAt, completed: value.completed, importing: value.importing,
       ...(setupMode ? { setupMode } : {}),
+      ...(value.bookCreated !== undefined ? { bookCreated: value.bookCreated } : {}),
       ...(source ? { source: { assetId: source.assetId, checksumSha256: source.checksumSha256, sizeBytes: source.sizeBytes } } : {}),
       ...(starter ? { starter: { chapterId: starter.chapterId, ...(starter.jobId ? { jobId: starter.jobId } : {}) } } : {}) };
   } catch { return null; }
@@ -49,6 +53,7 @@ export async function runManuscriptSetup(input: {
   file: File | null; checkpoint: SetupCheckpoint | null;
   save: (checkpoint: SetupCheckpoint) => void; stage: (stage: SetupStage) => void;
   setupMode?: SetupMode; finishWhenBookCreated?: boolean;
+  newBookId?: () => string;
   upload?: typeof fetch;
   queueImport?: ReturnType<typeof createClient>["queueManuscriptImport"];
 }) {
@@ -66,11 +71,18 @@ export async function runManuscriptSetup(input: {
   }
   const save = () => { checkpoint = { ...checkpoint!, savedAt: Date.now() }; input.save(checkpoint); };
   if (!checkpoint) {
-    input.stage("creating");
-    const book = await input.api.createBook(input.details);
+    const bookId = (input.newBookId ?? (() => crypto.randomUUID()))();
+    if (!uuid.test(bookId)) throw new Error("Could not create a valid book request ID.");
     checkpoint = { version: 1, userId: input.userId, workspaceId: input.details.workspaceId,
-      bookId: book.id, savedAt: Date.now(), completed: false, importing: input.importing, setupMode };
-    save(); // A later upload, scan or parser failure must never recreate this book.
+      bookId, savedAt: Date.now(), completed: false, importing: input.importing, setupMode, bookCreated: false };
+  }
+  if (checkpoint.bookCreated === false) {
+    input.stage("creating");
+    save(); // Verify the retry identity persists before every create dispatch.
+    const book = await input.api.createBook({ ...input.details, requestId: checkpoint.bookId });
+    if (book.id !== checkpoint.bookId) throw new Error("Book creation returned a different ID. Check your library before continuing.");
+    checkpoint.bookCreated = true;
+    save();
   }
   if (!input.importing) {
     if (input.finishWhenBookCreated ?? true) { checkpoint.completed = true; save(); }

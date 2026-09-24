@@ -85,6 +85,7 @@ export interface DocumentOperation {
 
 export interface CreateBookRequest {
   workspaceId: string;
+  requestId?: string;
   title: string;
   subtitle?: string;
   authorName: string;
@@ -694,7 +695,7 @@ export function createClient(opts: ClientOptions) {
       call<{ books: Book[] }>("GET", `/v1/books?workspaceId=${encodeURIComponent(workspaceId)}`),
     createBook: (body: CreateBookRequest) => call<Book>("POST", "/v1/books", body),
     getBook: (bookId: string) => call<{ book: Book; role: string }>("GET", `/v1/books/${bookId}`),
-    updateBook: (bookId: string, body: Partial<Omit<CreateBookRequest, "workspaceId" | "subtitle" | "genre">> & { subtitle?: string | null; genre?: string | null; expectedUpdatedAt: string }) =>
+    updateBook: (bookId: string, body: Partial<Omit<CreateBookRequest, "workspaceId" | "requestId" | "subtitle" | "genre">> & { subtitle?: string | null; genre?: string | null; expectedUpdatedAt: string }) =>
       call<{ book: Book }>("PATCH", `/v1/books/${bookId}`, body),
     getStoryBlueprint: (bookId: string) =>
       call<{ blueprint: StoryBlueprint | null; role: string }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint`),

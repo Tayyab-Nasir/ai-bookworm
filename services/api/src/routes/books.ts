@@ -12,6 +12,7 @@ import { importJobSchema } from "../lib/document-worker.js";
 
 const createSchema = z.object({
   workspaceId: z.string().uuid(),
+  requestId: z.string().uuid().optional(),
   title: z.string().trim().min(1).max(500),
   subtitle: z.string().max(500).optional(),
   authorName: z.string().trim().min(1).max(300),
@@ -70,7 +71,7 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
 
   app.patch("/books/:bookId", async (req) => {
     const { bookId } = req.params as { bookId: string };
-    const body = createSchema.omit({ workspaceId: true }).partial().extend({ subtitle: z.string().max(500).nullable().optional(), genre: z.string().max(200).nullable().optional(), expectedUpdatedAt: z.string().datetime({ offset: true }) }).safeParse(req.body);
+    const body = createSchema.omit({ workspaceId: true, requestId: true }).partial().extend({ subtitle: z.string().max(500).nullable().optional(), genre: z.string().max(200).nullable().optional(), expectedUpdatedAt: z.string().datetime({ offset: true }) }).safeParse(req.body);
     if (!body.success) throw new AppError(422, "Invalid book details", { issues: body.error.issues });
     const sb = app.supabaseFactory(req.userToken);
     await loadBook(sb, bookId, req.userId, true);
@@ -147,6 +148,7 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
     const sb = app.supabaseFactory(req.userToken);
     await requireWorkspaceEditor(sb, b.workspaceId, req.userId);
     const { data, error } = await sb.from("books").insert({
+      ...(b.requestId ? { id: b.requestId } : {}),
       workspace_id: b.workspaceId,
       title: b.title,
       subtitle: b.subtitle ?? null,
@@ -155,6 +157,16 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
       genre: b.genre ?? null,
       created_by: req.userId,
     }).select().single();
+    if (error?.code === "23505" && b.requestId) {
+      const existing = await sb.from("books").select("*").eq("id", b.requestId).eq("workspace_id", b.workspaceId).maybeSingle();
+      if (existing.error) throw new AppError(503, "Book creation recovery is temporarily unavailable");
+      const book = existing.data;
+      if (book?.created_by === req.userId && book.title === b.title && book.subtitle === (b.subtitle ?? null)
+        && book.author_name === b.authorName && book.language === b.language && book.genre === (b.genre ?? null)) {
+        return reply.status(200).send(book);
+      }
+      throw new AppError(409, "This book request was already used with different details. Reload your library before continuing.");
+    }
     if (error) throw new AppError(422, error.message);
     return reply.status(201).send(data);
   });

@@ -29,7 +29,7 @@ function fixture() {
   } as unknown as Parameters<typeof runManuscriptSetup>[0]["api"];
   const run = (changes: Partial<Parameters<typeof runManuscriptSetup>[0]> = {}) => runManuscriptSetup({ api, userId,
     details: { workspaceId, title: "Harbor", authorName: "Author" }, importing: true, file,
-    checkpoint: saved, save: (value) => { saved = structuredClone(value); }, stage: () => {},
+    checkpoint: saved, save: (value) => { saved = structuredClone(value); }, stage: () => {}, newBookId: () => bookId,
     upload: async () => { calls.push("upload"); return new Response(null, { status: 200 }); }, ...changes });
   return { run, calls, saved: () => saved, scanError: (error: Error | null) => { confirmError = error; },
     parserError: (error: Error | null) => { importError = error; }, clean: (value: boolean) => { clean = value; }, replaced: () => { replaced = true; }, linkedBook: (value: string) => { linkedBook = value; } };
@@ -112,6 +112,36 @@ test("upload failure retains the created book and retry does not recreate it", a
   await f.run(); assert.equal(f.calls.filter((call) => call === "create").length, 1);
 });
 
+test("lost create reply keeps the same request ID and cannot create a second book", async () => {
+  const f = fixture();
+  const requests: string[] = [];
+  let accepted = false;
+  const api = {
+    ...({} as Parameters<typeof runManuscriptSetup>[0]["api"]),
+    createBook: async (body: { requestId?: string }) => {
+      assert.equal(f.saved()?.bookCreated, false, "retry ID must be stored before network dispatch");
+      requests.push(body.requestId!);
+      if (!accepted) { accepted = true; throw unavailable(); }
+      return { id: bookId };
+    },
+  } as unknown as Parameters<typeof runManuscriptSetup>[0]["api"];
+  await assert.rejects(f.run({ api, importing: false, file: null }), /Service unavailable/);
+  const pending = readSetupCheckpoint(JSON.stringify(f.saved()), userId, workspaceId);
+  assert.equal(pending?.bookId, bookId);
+  assert.equal(pending?.bookCreated, false);
+  const result = await f.run({ api, importing: false, file: null, checkpoint: pending });
+  assert.equal(result.bookId, bookId);
+  assert.deepEqual(requests, [bookId, bookId]);
+  assert.equal(f.saved()?.bookCreated, true);
+  assert.equal(f.saved()?.completed, true);
+});
+
+test("book create never dispatches when its retry identity cannot be saved", async () => {
+  const f = fixture();
+  await assert.rejects(f.run({ importing: false, file: null, save: () => { throw new Error("Browser recovery storage is unavailable"); } }), /storage is unavailable/);
+  assert.deepEqual(f.calls, []);
+});
+
 test("checkpoint recovery bounds age/size, scopes identity and strips unrecognized data", async () => {
   const f = fixture(); await f.run(); const saved = f.saved()!; const now = saved.savedAt;
   const read = (value: unknown, at = now) => readSetupCheckpoint(JSON.stringify(value), userId, workspaceId, at);
@@ -122,6 +152,7 @@ test("checkpoint recovery bounds age/size, scopes identity and strips unrecogniz
   assert.equal(read({ ...saved, source: { ...saved.source, checksumSha256: "bad" } }), null);
   assert.equal(read({ ...saved, source: { ...saved.source, sizeBytes: 21 * 1024 * 1024 } }), null);
   assert.equal(read({ ...saved, secret: "x".repeat(2048) }), null);
+  assert.equal(read({ ...saved, bookCreated: false }), null);
   assert.equal(readSetupCheckpoint("{", userId, workspaceId), null);
   assert.deepEqual(read({ ...saved, token: "strip-me", source: { ...saved.source, uploadUrl: "strip-me" } }), saved);
   assert.notEqual(setupKey(userId, workspaceId), setupKey(workspaceId, userId));
