@@ -23,6 +23,21 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Book Bible paid candidate persistence
+
+`6b7dc10` is pushed. The AI service now privately reserves and saves
+Book Bible result receipts without replaying a possibly paid provider call.
+Two source-only migrations add the receipt table and atomic, review-only
+candidate/AI-run/operational-credit completion with full saved-node citation
+checks and one active request per author/book. The service output is capped
+at 6,000 tokens. Full local `npm run verify` passes (78 disposable migrations,
+56 SQL suites, 374 services, 12 E2E, 30 security, other checks).
+No hosted migration/provider call/deployment. The author-facing Fastify paid
+request/recovery route, saved candidate history and human review/apply UI are
+**not connected**. Continue those next; use the existing Book Bible save API
+for explicit author approval. See the shared vault note
+`Codex Sessions/2026-09/2026-09-24-bookworm-bible-paid-persistence.md`.
+
 ### Book Bible AI candidate evidence guard
 
 `adff04e` is pushed on `codex/paid-story-blueprint-20260923`. The existing
