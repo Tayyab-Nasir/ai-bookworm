@@ -33,7 +33,9 @@ remain unsupported. Full local `npm run verify` passes (71 disposable
 migrations/49 SQL files, 355 services, 99 web, 12 E2E, 30 security, plus
 API/type/load/evals); isolated production web build and real EPUBCheck 5.4.0
 on a header-bearing EPUB pass. See `docs/TABLE_HEADER_FIDELITY.md`. Native
-processing-container CI and hosted import acceptance remain open.
+processing-container CI passed for `b8c7e22` (run 35958694353, including
+DOCX header import through Google EPUB package). Hosted import acceptance
+remains open.
 
 ### Google Play Books ebook handoff
 

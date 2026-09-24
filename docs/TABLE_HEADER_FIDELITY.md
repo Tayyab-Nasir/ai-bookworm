@@ -23,5 +23,7 @@ silently rewritten.
 
 Local evidence: DOCX → Book Model → EPUB → Book Model round-trip tests,
 multi-page print PDF header repetition, editor model tests, and real
-EPUBCheck 5.4.0 validation of a header-bearing EPUB. Hosted import/Storage
+EPUBCheck 5.4.0 validation of a header-bearing EPUB. Native isolated
+processing-container [run 35958694353](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/35958694353)
+also passed the generated DOCX header through Google EPUB packaging. Hosted import/Storage
 and retailer acceptance remain separate release gates.
