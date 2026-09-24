@@ -20,7 +20,7 @@ ENTITY_CANDIDATE_SCHEMA: dict = {
         "type": {"type": "string", "enum": ["character", "place", "organization", "object", "event", "term"]},
         "name": {"type": "string", "minLength": 1, "maxLength": 160},
         "description": {"type": "string", "maxLength": 12000},
-        "attributes": {"type": "object", "maxProperties": 40},
+        "attributes": {"type": "object", "maxProperties": 40, "propertyNames": {"minLength": 1, "maxLength": 80}},
         "sourceRefs": {
             "type": "array",
             "minItems": 1,

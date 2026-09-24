@@ -44,8 +44,14 @@ Related search and existing Book Bible context cannot be cited as new
 manuscript evidence. The agent returns suggestions only; it cannot write to
 `book_bible_items`.
 
-This is **not yet a paid author-facing candidate workflow**. It still needs a
-funded queue, durable private result receipt and uncertainty recovery, a
-review/apply UI, and explicit author save through the citation-checking API.
+This is **not yet a paid author-facing candidate workflow**. The AI service
+now uses a source-only private Book Bible result receipt, and a separate
+source-only completion function can atomically store bounded candidates,
+the AI run, and one operational AI-credit event without writing canon. The
+function rechecks each citation against both the job's trusted input and the
+full saved document node. One active request per author/book is enforced in
+the disposable database. These migrations are not installed hosted. The
+author API queue, read-only receipt recovery, review/apply UI, and explicit
+save through the citation-checking API still need to be connected.
 The citation validates source identity, not semantic truth; author review
 remains required before any generated detail becomes canon.

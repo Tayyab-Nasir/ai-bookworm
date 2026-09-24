@@ -21,10 +21,12 @@ def durable_service(monkeypatch):
     def handle(request):
         assert request.headers["apikey"] == "fixture-service-key"
         assert request.headers["authorization"] == "Bearer fixture-service-key"
-        assert request.url.path in {"/rest/v1/metadata_service_receipts", "/rest/v1/ai_review_service_receipts"}
+        assert request.url.path in {"/rest/v1/metadata_service_receipts", "/rest/v1/ai_review_service_receipts",
+                                    "/rest/v1/book_bible_service_receipts"}
         body = json.loads(request.content) if request.content else {}
         job_id = request.url.params.get("job_id", "eq.")[3:]
-        prefix = "review:" if request.url.path.endswith("/ai_review_service_receipts") else ""
+        prefix = ("review:" if request.url.path.endswith("/ai_review_service_receipts") else
+                  "bible:" if request.url.path.endswith("/book_bible_service_receipts") else "")
         key = prefix + (body.get("job_id", job_id))
         if request.method == "POST":
             if key in rows:
@@ -88,6 +90,49 @@ def test_paid_review_receipt_survives_cache_loss_without_second_generation(durab
     assert client.post("/v1/ai/jobs", json=review).json() == first.json()
     assert len(calls) == 1
     assert client.post("/v1/ai/jobs", json={**review, "bookId": "other"}).status_code == 409
+
+
+def test_book_bible_receipt_survives_cache_loss_without_second_generation(durable_service):
+    client, payload, rows, calls = durable_service
+    bible = {**payload, "agentType": "bookbible", "idempotencyKey": "bible-receipt"}
+    first = client.post("/v1/ai/jobs", json=bible)
+    assert first.status_code == 201, first.text
+    assert "bible:" + payload["jobId"] in rows
+    main._JOBS.clear(); main._JOBS_BY_IDEMPOTENCY.clear()
+    assert client.get("/v1/ai/jobs/" + payload["jobId"]).json() == first.json()
+    assert client.post("/v1/ai/jobs", json=bible).json() == first.json()
+    assert len(calls) == 1
+    assert client.post("/v1/ai/jobs", json={**bible, "bookId": "other"}).status_code == 409
+
+
+def test_book_bible_unconfirmed_reservation_never_regenerates(durable_service, monkeypatch):
+    client, payload, rows, calls = durable_service
+    bible = {**payload, "agentType": "bookbible", "idempotencyKey": "bible-uncertain"}
+    def uncertain(*args, **kwargs):
+        raise ProviderOutcomeUnknown("Paid provider outcome is unconfirmed.")
+    monkeypatch.setattr(main, "get_agent", lambda *args: SimpleNamespace(run=uncertain))
+    assert client.post("/v1/ai/jobs", json=bible).status_code == 503
+    assert rows["bible:" + payload["jobId"]]["result_json"] is None
+    assert client.post("/v1/ai/jobs", json=bible).status_code == 409
+    assert client.get("/v1/ai/jobs/" + payload["jobId"]).status_code == 404
+    assert calls == []
+
+
+@pytest.mark.parametrize("requested", [None, 128000])
+def test_book_bible_output_is_capped_before_provider_dispatch(durable_service, monkeypatch, requested):
+    client, payload, _, _ = durable_service
+    seen = []
+    class Agent:
+        max_output_tokens = None
+        def run(self, *args, **kwargs):
+            seen.append(self.max_output_tokens)
+            return SimpleNamespace(to_dict=lambda: {"status": "succeeded", "suggestions": []})
+    monkeypatch.setattr(main, "get_agent", lambda *args: Agent())
+    bible = {**payload, "agentType": "bookbible", "idempotencyKey": f"bible-output-{requested}"}
+    if requested is not None:
+        bible["maxOutputTokens"] = requested
+    assert client.post("/v1/ai/jobs", json=bible).status_code == 201
+    assert seen == [6000]
 
 
 def test_paid_review_unconfirmed_reservation_never_regenerates(durable_service, monkeypatch):

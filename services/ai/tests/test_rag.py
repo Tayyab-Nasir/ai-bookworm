@@ -184,6 +184,7 @@ def test_bookbible_emits_candidates_as_suggestions():
     lambda c: c.update(name="Mara "),
     lambda c: c.update(attributes={"__proto__": {"admin": True}}),
     lambda c: c.update(attributes={"backstory": "x" * 24001}),
+    lambda c: c.update(attributes={"x" * 81: "value"}),
 ])
 def test_bookbible_malformed_candidate_rejected(mutate):
     import copy

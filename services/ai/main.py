@@ -19,7 +19,7 @@ from agents.base import AgentValidationError
 from agents.copyeditor import get_agent
 from gateway import ProviderOutcomeUnknown, default_model, get_provider, openai_tools
 from tools import InMemoryExecutor
-from result_store import AiReviewResultStore, MetadataResultStore, ReceiptUnavailable, ReceiptConflict
+from result_store import AiReviewResultStore, BookBibleResultStore, MetadataResultStore, ReceiptUnavailable, ReceiptConflict
 
 app = FastAPI(title="bookworm-ai")
 
@@ -99,14 +99,15 @@ def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(def
     provider = get_provider()  # Missing production provider credentials fail closed.
     receipt_store = None
     fingerprint = None
-    durable_type = req.agentType in {"metadata", "writer", "proofreader", "copyeditor", "consistency"}
+    durable_type = req.agentType in {"metadata", "bookbible", "writer", "proofreader", "copyeditor", "consistency"}
     if durable_type and (provider.name != "mock" or os.environ.get("AI_RESULT_STORE") == "supabase"):
         if req.jobId is None:
             raise HTTPException(status_code=422, detail="Durable AI generation requires a saved job ID.")
         fingerprint = hashlib.sha256(json.dumps(req.model_dump(mode="json"), sort_keys=True,
                                                separators=(",", ":")).encode()).hexdigest()
         try:
-            receipt_store = MetadataResultStore() if req.agentType == "metadata" else AiReviewResultStore()
+            receipt_store = (MetadataResultStore() if req.agentType == "metadata" else
+                             BookBibleResultStore() if req.agentType == "bookbible" else AiReviewResultStore())
             existing = receipt_store.reserve(req.jobId, fingerprint)
             if existing is not None:
                 return existing
@@ -138,7 +139,7 @@ def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(def
     )
     try:
         agent = get_agent(req.agentType, provider, executor, model)
-        agent.max_output_tokens = req.maxOutputTokens
+        agent.max_output_tokens = min(req.maxOutputTokens or 6000, 6000) if req.agentType == "bookbible" else req.maxOutputTokens
         agent_request = {
             "workspaceId": req.workspaceId,
             "bookId": req.bookId,
@@ -287,7 +288,7 @@ def get_job(job_id: str, x_service_token: str | None = Header(default=None)) -> 
             except ValueError:
                 raise HTTPException(status_code=404, detail="job not found")
             try:
-                for store in (MetadataResultStore, AiReviewResultStore):
+                for store in (MetadataResultStore, BookBibleResultStore, AiReviewResultStore):
                     result = store().load(job_id)
                     if isinstance(result, dict):
                         return result

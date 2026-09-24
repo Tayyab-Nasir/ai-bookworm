@@ -78,3 +78,10 @@ class AiReviewResultStore(MetadataResultStore):
 
     table = "ai_review_service_receipts"
     label = "AI review"
+
+
+class BookBibleResultStore(MetadataResultStore):
+    """Private, replay-safe results for paid Book Bible candidates."""
+
+    table = "book_bible_service_receipts"
+    label = "Book Bible"
