@@ -23,6 +23,22 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Book Bible AI candidate evidence guard
+
+`adff04e` is pushed on `codex/paid-story-blueprint-20260923`. The existing
+`book_bible` agent now emits v2 review-only candidates only when every cited
+source is an exact selected saved manuscript node with document version and
+full-node hash. Output count, fields and attribute size are bounded to the
+Book Bible storage contract; zero supported candidates is valid. This is
+agent-level validation, **not** a funded author-facing generation/review flow.
+Full local `npm run verify` passes (76 disposable migrations/54 SQL suites,
+369 services, 12 E2E, 30 security, other checks). No live migration, provider
+call or deployment. Next: implement the paid durable Book Bible queue/result
+receipt and review/apply UI, with explicit author save through the existing
+citation-checking API; then private hosted acceptance and wider release gates.
+See `docs/BOOK_BIBLE_EVIDENCE.md` and the shared vault note
+`Codex Sessions/2026-09/2026-09-24-bookworm-bible-candidate-guard.md`.
+
 ### Paid AI review uncertain-response hold
 
 OpenAI text SDK retries are disabled. The paid review worker writes a durable
