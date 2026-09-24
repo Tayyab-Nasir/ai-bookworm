@@ -18,7 +18,8 @@ export interface GeneratedImage {
   model: string;
   requestId: string | null;
   usage: { inputTokens: number; outputTokens: number; estimatedCostUsd: number; latencyMs: number;
-    measurementStatus?: "complete" | "partial" | "unavailable" };
+    measurementStatus?: "complete" | "partial" | "unavailable";
+    costEstimateBasis?: "itemized" | "conservative_input" | "unavailable" };
 }
 
 export type ImageGenerator = (input: ImageGenerationInput) => Promise<GeneratedImage>;
@@ -26,35 +27,53 @@ export type ImageGenerator = (input: ImageGenerationInput) => Promise<GeneratedI
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-export function estimatedImageCost(model: string, usage: unknown): number {
-  // Diagnostic provider estimate, not the customer credit debit. Prices are
-  // standard Image API USD per token, reviewed against OpenAI on 2026-09-24.
-  const rates = /^gpt-image-2\.5-(?:sunburst|flare)(?:-|$)/.test(model)
+type ImageUsage = { input_tokens?: unknown; output_tokens?: unknown;
+  input_tokens_details?: { text_tokens?: unknown; image_tokens?: unknown } } | null | undefined;
+const validTokenCount = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+
+function imageRates(model: string) {
+  return /^gpt-image-2\.5-(?:sunburst|flare)(?:-|$)/.test(model)
     ? { textInput: 5e-6, imageInput: 8e-6, output: 30e-6 }
     : /^gpt-image-2(?:-|$)/.test(model)
       ? { textInput: 2.5e-6, imageInput: 4e-6, output: 15e-6 }
       : null;
-  if (!rates) return 0;
-  const value = usage as { input_tokens?: number; output_tokens?: number; input_tokens_details?: { text_tokens?: number; image_tokens?: number } } | undefined;
-  const valid = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
-  const totalInput = valid(value?.input_tokens) ? value.input_tokens : 0;
-  const textInput = valid(value?.input_tokens_details?.text_tokens) ? value.input_tokens_details.text_tokens : 0;
-  const imageInput = valid(value?.input_tokens_details?.image_tokens) ? value.input_tokens_details.image_tokens : 0;
-  const output = valid(value?.output_tokens) ? value.output_tokens : 0;
+}
+
+export function imageCostEstimateBasis(model: string, usage: unknown): "itemized" | "conservative_input" | "unavailable" {
+  const value = usage as ImageUsage;
+  if (!imageRates(model) || !validTokenCount(value?.input_tokens) || !validTokenCount(value?.output_tokens)) {
+    return "unavailable";
+  }
+  const text = value.input_tokens_details?.text_tokens;
+  const image = value.input_tokens_details?.image_tokens;
+  return validTokenCount(text) && validTokenCount(image) && text + image === value.input_tokens
+    ? "itemized" : "conservative_input";
+}
+
+export function estimatedImageCost(model: string, usage: unknown): number {
+  // Diagnostic provider estimate, not the customer credit debit. Prices are
+  // standard Image API USD per token, reviewed against OpenAI on 2026-09-24.
+  const rates = imageRates(model);
+  const value = usage as ImageUsage;
+  if (!rates || !validTokenCount(value?.input_tokens) || !validTokenCount(value?.output_tokens)) return 0;
+  const totalInput = value.input_tokens;
+  const textInput = value.input_tokens_details?.text_tokens;
+  const imageInput = value.input_tokens_details?.image_tokens;
+  const output = value.output_tokens;
   // A partial modality breakdown must not make the unclassified input free.
-  // Charge the unclassified remainder at the higher image-input rate.
-  const knownText = Math.min(totalInput, textInput);
-  const knownImage = Math.min(totalInput - knownText, imageInput);
-  const unclassified = totalInput - knownText - knownImage;
-  return Number((knownText * rates.textInput + (knownImage + unclassified) * rates.imageInput
+  // Charge the unclassified remainder at the higher image-input rate. An
+  // impossible breakdown is discarded rather than discounting excess text.
+  const knownText = validTokenCount(textInput) && textInput <= totalInput
+    && (imageInput === undefined || (validTokenCount(imageInput) && imageInput <= totalInput - textInput))
+    ? textInput : 0;
+  return Number((knownText * rates.textInput + (totalInput - knownText) * rates.imageInput
     + output * rates.output).toFixed(6));
 }
 
 export function imageUsageMeasurementStatus(usage: unknown): "complete" | "partial" | "unavailable" {
   const value = usage as { input_tokens?: unknown; output_tokens?: unknown } | null | undefined;
-  const valid = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
-  if (!valid(value?.input_tokens) && !valid(value?.output_tokens)) return "unavailable";
-  if (!valid(value?.input_tokens) || !valid(value?.output_tokens)) return "partial";
+  if (!validTokenCount(value?.input_tokens) && !validTokenCount(value?.output_tokens)) return "unavailable";
+  if (!validTokenCount(value?.input_tokens) || !validTokenCount(value?.output_tokens)) return "partial";
   return "complete";
 }
 
@@ -91,11 +110,12 @@ export const openAiImageGenerator: ImageGenerator = async ({ prompt, size, quali
     model,
     requestId: result._request_id ?? null,
     usage: {
-      inputTokens: result.usage?.input_tokens ?? 0,
-      outputTokens: result.usage?.output_tokens ?? 0,
+      inputTokens: validTokenCount(result.usage?.input_tokens) ? result.usage.input_tokens : 0,
+      outputTokens: validTokenCount(result.usage?.output_tokens) ? result.usage.output_tokens : 0,
       estimatedCostUsd: estimatedImageCost(model, result.usage),
       latencyMs: Date.now() - started,
       measurementStatus: imageUsageMeasurementStatus(result.usage),
+      costEstimateBasis: imageCostEstimateBasis(model, result.usage),
     },
   };
 };

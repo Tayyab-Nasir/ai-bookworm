@@ -23,6 +23,22 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Image provider cost-estimate provenance
+
+The image job usage JSON now records `costEstimateBasis` separately from
+`measurementStatus`: itemized input, conservative treatment of incomplete or
+contradictory input breakdowns, or unavailable cost. Contradictory modality
+counts cannot discount text, and invalid totals are stored as numeric
+compatibility placeholders rather than as measured usage. This changes no
+customer debit: image generation still consumes one paid entitlement, and
+retail pricing/actual provider reconciliation remain unapproved. Full local
+`npm run verify` passes; after the final token-normalization guard, API
+typecheck and focused image adapter tests pass. No key, live provider request,
+hosted migration, payment, or deployment was used. See
+`docs/OPENAI_MODEL_PRICING_AUDIT.md`. Next: bounded provider receipt and
+organization-usage reconciliation in an approved private environment, then a
+funded versioned customer catalog and broader release gates.
+
 ### Imported table header fidelity
 
 DOCX explicitly repeating header rows and EPUB `<thead>`/leading `<th>` rows

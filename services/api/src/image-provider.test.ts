@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { estimatedImageCost, imageUsageMeasurementStatus, openAiImageGenerator } from "./lib/image-generation.js";
+import { estimatedImageCost, imageCostEstimateBasis, imageUsageMeasurementStatus, openAiImageGenerator } from "./lib/image-generation.js";
 
 test("image usage provenance distinguishes missing and partial provider telemetry", () => {
   assert.equal(imageUsageMeasurementStatus(undefined), "unavailable");
@@ -26,8 +26,23 @@ test("current OpenAI image pricing distinguishes text, image input and output to
     input_tokens: 300, input_tokens_details: { text_tokens: 100, image_tokens: 100 }, output_tokens: 1_000,
   }), 0.0321);
   assert.equal(estimatedImageCost("gpt-image-2.5-sunburst", { input_tokens: 300, output_tokens: 1_000 }), 0.0324);
+  assert.equal(estimatedImageCost("gpt-image-2.5-sunburst", {
+    input_tokens: 300, input_tokens_details: { text_tokens: 400, image_tokens: 20 }, output_tokens: 1_000,
+  }), 0.0324);
+  assert.equal(estimatedImageCost("gpt-image-2.5-sunburst", {
+    input_tokens: 300, input_tokens_details: { text_tokens: 100, image_tokens: 250 }, output_tokens: 1_000,
+  }), 0.0324);
   assert.equal(estimatedImageCost("gpt-image-2.5-sunburst", { input_tokens: -5, output_tokens: Number.NaN }), 0);
   assert.equal(estimatedImageCost("fixture-model", { input_tokens: 100, output_tokens: 100 }), 0);
+  assert.equal(imageCostEstimateBasis("gpt-image-2.5-sunburst", {
+    input_tokens: 300, input_tokens_details: { text_tokens: 100, image_tokens: 200 }, output_tokens: 1_000,
+  }), "itemized");
+  assert.equal(imageCostEstimateBasis("gpt-image-2.5-sunburst", {
+    input_tokens: 300, input_tokens_details: { text_tokens: 100, image_tokens: 250 }, output_tokens: 1_000,
+  }), "conservative_input");
+  assert.equal(imageCostEstimateBasis("gpt-image-2.5-sunburst", { input_tokens: 300, output_tokens: 1_000 }), "conservative_input");
+  assert.equal(imageCostEstimateBasis("gpt-image-2.5-sunburst", { input_tokens: 300 }), "unavailable");
+  assert.equal(imageCostEstimateBasis("fixture-model", { input_tokens: 300, output_tokens: 1_000 }), "unavailable");
 });
 
 test("image adapter submits reference bytes as multipart edits and unconditioned requests as generations", async () => {
@@ -62,7 +77,9 @@ test("image adapter submits reference bytes as multipart edits and unconditioned
     const created = await openAiImageGenerator(input);
     assert.deepEqual(paths, ["/v1/images/edits", "/v1/images/generations"]);
     assert.equal(edited.usage.measurementStatus, "unavailable");
+    assert.equal(edited.usage.costEstimateBasis, "unavailable");
     assert.equal(created.usage.measurementStatus, "complete");
+    assert.equal(created.usage.costEstimateBasis, "itemized");
     assert.equal(created.usage.estimatedCostUsd, 0.0321);
   } finally {
     globalThis.fetch = oldFetch;

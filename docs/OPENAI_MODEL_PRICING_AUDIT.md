@@ -6,6 +6,7 @@ billing acceptance test. Official sources consulted:
 - Model catalog: https://developers.openai.com/api/docs/models
 - Standard token prices: https://developers.openai.com/api/docs/pricing
 - Image generation and token-cost guidance: https://developers.openai.com/api/docs/guides/image-generation
+- Image create response schema: https://developers.openai.com/api/reference/cli/resources/images/methods/generate
 - Text-to-speech model and endpoint: https://developers.openai.com/api/docs/guides/text-to-speech
 - TTS model token prices: https://developers.openai.com/api/docs/models/gpt-4o-mini-tts
 
@@ -22,14 +23,22 @@ Mini TTS text input/audio output $0.60/$12. Discounts, caching, service tiers,
 and regional processing may change realized cost. Recheck before pricing plans.
 
 `estimatedImageCost` now uses the corresponding 2.5 or 2 price table and
-conservatively treats unclassified input as image tokens. This number is
+conservatively treats unclassified input as image tokens. Contradictory
+text/image counts are discarded as a breakdown, so they cannot discount
+input incorrectly. The saved usage also records `costEstimateBasis`:
+`itemized` when both input modalities sum to the reported total,
+`conservative_input` when total input/output are present but the breakdown is
+missing, partial, or contradictory, and `unavailable` when a total or known
+price table is missing. Numeric zero is still a compatibility placeholder,
+not a measured cost, when the basis is unavailable. This number is
 diagnostic provider telemetry, **not** the customer's debit. Image requests
 currently reserve one `image_credits` entitlement per generation; the app
 now records `measurementStatus` in the image job's usage JSON as `complete`,
 `partial`, or `unavailable`. An absent provider usage object still produces
 zero token/cost placeholders for the existing numeric AI-run columns, but
 `unavailable` explicitly means **unknown provider spend, not free generation**.
-Partial token receipts may understate actual cost; reconcile against provider
+Partial token receipts may understate actual cost; even `itemized` is only an
+estimate at the listed standard rates, not an invoice. Reconcile against provider
 organization usage before financial reporting or publishing a retail price.
 Image API usage availability should be verified with a bounded live request:
 the provider's guide describes usage data, while the API reference documents
