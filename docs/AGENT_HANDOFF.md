@@ -25,13 +25,15 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ### Rich manuscript retrieval baseline
 
-`f9556c2` adds an unapplied migration indexing visible table cells, captions
+`f9556c2` adds a migration indexing visible table cells, captions
 and image alt text with canonical chapter/node/version citations. Superseded
 rich content is removed on version change; backfill targets current rich-node
 chapters. Disposable PostgreSQL asserts content, hashes, filters, stale-version
 removal and cross-tenant denial. Full `npm run verify` passes with 68 local
 migrations/46 SQL assertion files, 348 services, 12 E2E, 30 security, load
-smoke and mock AI evals. No hosted migration, live provider or deployment.
+smoke and mock AI evals. This work did not apply a hosted migration, call a
+live provider or deploy; live migration listing timed out twice, so current
+hosted installation status was not verified.
 The existing decision remains: PostgreSQL source search is the author-facing
 baseline; LightRAG needs a private per-book citation/deletion/cost benchmark
 before adoption. SnapOtter remains optional behind a licensing/isolation

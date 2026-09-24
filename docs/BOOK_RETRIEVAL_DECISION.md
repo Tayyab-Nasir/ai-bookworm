@@ -5,8 +5,9 @@ Status: accepted for the current product build (2026-09-06)
 2026-09-24 local extension: the canonical-version index also extracts visible
 table cells, captions and image alt text. Superseded versions are removed by
 the same chapter trigger; the SQL suite checks source-node citations, exact
-excerpt hashes, tenant isolation and stale-version removal. This migration is
-not installed in the live Supabase project yet.
+excerpt hashes, tenant isolation and stale-version removal. This work did not
+apply the migration to Supabase; the live migration listing timed out during
+this review, so its hosted installation status is unverified.
 
 ## Decision
 
