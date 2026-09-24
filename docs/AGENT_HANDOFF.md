@@ -23,6 +23,28 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Author-facing Book Bible AI candidate flow (source-only)
+
+`cfb5a64` is pushed on `codex/paid-story-blueprint-20260923`. The API now
+reserves a funded Book Bible job before dispatch, sends complete saved-node
+text and full hashes from at most three current chapters, checks candidate
+citations, and settles through the source-only atomic completion function.
+Request-key replay and read-only private receipt recovery avoid another paid
+POST after a lost response. The Book Bible screen lists saved/pending batches,
+allows recovery, and opens each candidate as an **unsaved** editable entry;
+only the author's separate Save uses the existing citation-checking API to
+write canon. Forged output remains held with no debit. Definite service
+failure releases the slot without charging; uncertain/malformed output does
+not. Full `npm run verify` passes (78 migrations/56 SQL suites, 374 service,
+12 E2E, 30 security, 322 API and 102 web tests); isolated Next production
+build and OpenAPI parsing pass. No hosted migration, OpenAI call, pricing
+approval or deployment. Next: resolve invalid/uncertain Book Bible holds
+through audited operator actions, run native browser and hosted
+Storage/Auth/provider/ledger acceptance, extend extraction beyond the first
+three chapters, then finish the wider release gates. See
+`docs/BOOK_BIBLE_EVIDENCE.md` and vault note
+`Codex Sessions/2026-09/2026-09-24-bookworm-bible-author-flow.md`.
+
 ### Book Bible paid candidate persistence
 
 `6b7dc10` is pushed. The AI service now privately reserves and saves
