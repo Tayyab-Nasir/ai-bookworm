@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Book Bible native browser acceptance (local fixtures)
+
+The new `tests/e2e/book-bible-browser.mjs` passes in native headless Edge:
+later-chapter selection and selection bounds, unresolved-job blocking,
+recovery without another generation, source failure/retry and historical
+notice, explicit canonical save through the real Next BFF, reload persistence,
+and expanded candidate mobile containment. No page errors. AI/evidence and
+storage remain local fixtures; hosted/provider/ledger acceptance is still open.
+See `docs/BOOK_BIBLE_EVIDENCE.md` for reproducible isolated-server setup.
+Next: resumable long-chapter extraction, audited unresolved-result disposition,
+and wider release gates. No application source or hosted state changed here.
+
 ### Book Bible source passage review
 
 Candidate cards can now load their exact cited saved text on demand. The

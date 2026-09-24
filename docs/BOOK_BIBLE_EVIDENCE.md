@@ -78,3 +78,28 @@ This is complete selected text coverage, not exhaustive entity discovery:
 each response still contains at most ten candidates, and rich content without
 a text field is outside this extractor. Long chapters still need smaller
 selections or an eventual resumable extraction workflow.
+
+## Native browser checkpoint — 2026-09-24
+
+`node tests/e2e/book-bible-browser.mjs` passes in headless Microsoft Edge
+against an isolated Next dev app on port 4398 and
+`node tests/e2e/auth-browser-fixture.mjs` on port 4399. It exercises real
+login cookies, rendered controls, and BFF canonical saving; AI job history,
+generation/recovery and evidence responses are browser fixtures, and storage
+is fixture memory. This is not hosted Auth, provider, database, or credit-ledger
+acceptance.
+
+Verified: maximum-three chapter selection, selecting a later chapter, empty
+selection blocking, pending request blocking, recovery with exactly one
+generation attempt, source-read failure/retry, historical-version warning,
+cached passage reopening, zero canonical writes before explicit Save, one
+save through the BFF, persistence across reload, no page errors, and 390px
+containment including the expanded candidate/source card.
+
+For the isolated Next process, set `SUPABASE_URL` and `API_URL` to
+`http://127.0.0.1:4399`, both `SUPABASE_PUBLISHABLE_KEY` and
+`SUPABASE_ANON_KEY` to `fixture-key`, `APP_URL` to `http://127.0.0.1:4398`,
+and `BOOKWORM_DIST_DIR` to `.next-codex-bible-browser`. Run
+`node node_modules/next/dist/bin/next dev apps/web --hostname 127.0.0.1 --port 4398`.
+Use a fresh fixture process for each test run; stop only these owned test
+processes afterward. Do not point this harness at production.
