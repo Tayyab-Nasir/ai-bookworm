@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { ImageGenerator } from "./lib/image-generation.js";
 import { createHttpAssetScanner, type AssetMalwareScanner } from "./lib/asset-scanner.js";
+import { AppError } from "./errors.js";
 
 process.env.SUPABASE_URL ??= "http://localhost:54321";
 process.env.SUPABASE_ANON_KEY ??= "test-anon";
@@ -349,7 +350,7 @@ test("viewer cannot spend image credits or call the provider", async () => {
   await app.close();
 });
 
-test("provider failure marks the job failed without storing an asset or usage", async () => {
+test("provider transport failure retains an unresolved job without exposing provider details", async () => {
   const store = baseStore();
   const app = await buildApp(() => fakeSupabase(store), { imageGenerator: async () => { throw new Error("provider details"); } });
   const response = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth, payload: {
@@ -357,7 +358,8 @@ test("provider failure marks the job failed without storing an asset or usage", 
     idempotencyKey: "image-request-0003",
   } });
   assert.equal(response.statusCode, 503);
-  assert.equal(store.tables.ai_jobs[0].status, "failed");
+  assert.equal(response.json().error.code, "image_provider_outcome_unconfirmed");
+  assert.equal(store.tables.ai_jobs[0].status, "running");
   assert.equal(store.tables.assets.length, 0);
   assert.equal(store.tables.usage_events.length, 0);
   assert.equal(store.objects.size, 0);
@@ -422,6 +424,47 @@ test("image request replay recovers the saved asset without another provider cal
     assert.equal(quarantined.statusCode, 409);
     assert.equal(prompts.length, 1); assert.equal(store.tables.usage_events.length, 1);
     assert.equal(store.tables.ai_jobs.length, 1);
+  } finally { await app.close(); }
+});
+
+test("uncertain image provider reply retains its reservation and blocks a second dispatch", async () => {
+  const store = baseStore(); let attempts = 0;
+  const app = await buildApp(() => fakeSupabase(store), { imageGenerator: async () => {
+    attempts++; throw new Error("socket closed after provider accepted request");
+  } });
+  const payload = { workspaceId: WORKSPACE, kind: "illustration", name: "Moonlit scene",
+    prompt: "A moonlit forest with a stone bridge", idempotencyKey: "unknown-image-0001" };
+  try {
+    const first = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth, payload });
+    assert.equal(first.statusCode, 503, first.body);
+    assert.equal(first.json().error.code, "image_provider_outcome_unconfirmed");
+    assert.doesNotMatch(first.body, /No credits were used/);
+    assert.equal(store.tables.ai_jobs[0].status, "running");
+    const sameKey = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth, payload });
+    assert.equal(sameKey.statusCode, 409);
+    const freshKey = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth,
+      payload: { ...payload, idempotencyKey: "unknown-image-0002" } });
+    assert.equal(freshKey.statusCode, 409);
+    assert.equal(freshKey.json().error.code, "image_request_pending");
+    assert.equal(attempts, 1);
+    assert.equal(store.tables.ai_jobs.length, 1);
+    assert.equal(store.tables.usage_events.length, 0);
+  } finally { await app.close(); }
+});
+
+test("unconfigured image provider fails without leaving a pending credit hold", async () => {
+  const store = baseStore();
+  const app = await buildApp(() => fakeSupabase(store), { imageGenerator: async () => {
+    throw new AppError(503, "Image generation is not configured.", undefined, "image_provider_not_configured");
+  } });
+  try {
+    const response = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth,
+      payload: { workspaceId: WORKSPACE, kind: "illustration", name: "Moonlit scene",
+        prompt: "A moonlit forest with a stone bridge", idempotencyKey: "unconfigured-image-0001" } });
+    assert.equal(response.statusCode, 503, response.body);
+    assert.equal(response.json().error.code, "image_provider_not_configured");
+    assert.equal(store.tables.ai_jobs[0].status, "failed");
+    assert.equal(store.tables.usage_events.length, 0);
   } finally { await app.close(); }
 });
 

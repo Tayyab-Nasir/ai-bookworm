@@ -56,14 +56,16 @@ export const openAiImageGenerator: ImageGenerator = async ({ prompt, size, quali
   }
 
   const model = process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2.5-sunburst";
-  const client = new OpenAI({ apiKey, timeout: 130_000, maxRetries: 1 });
+  // An automatic retry after a lost response can generate and bill twice.
+  // The caller holds an unresolved job for recovery instead of redispatching.
+  const client = new OpenAI({ apiKey, timeout: 130_000, maxRetries: 0 });
   const started = Date.now();
   const result = referenceImages?.length ? await client.images.edit({
     model, prompt, size, quality, output_format: "png",
     image: await Promise.all(referenceImages.map((image, index) => toFile(image.bytes, `reference-${index + 1}.png`, { type: image.mimeType }))),
-  }, { timeout: 130_000, maxRetries: 1 }) : await client.images.generate(
+  }, { timeout: 130_000, maxRetries: 0 }) : await client.images.generate(
     { model, prompt, size, quality, output_format: "png" },
-    { timeout: 130_000, maxRetries: 1 },
+    { timeout: 130_000, maxRetries: 0 },
   );
   const encoded = result.data?.[0]?.b64_json;
   if (!encoded) throw new AppError(503, "The image provider returned no image.", undefined, "image_provider_failed");

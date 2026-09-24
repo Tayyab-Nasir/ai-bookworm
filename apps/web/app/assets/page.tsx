@@ -49,6 +49,7 @@ function AssetsPageInner() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoadedWorkspace, setHistoryLoadedWorkspace] = useState<string | null>(null);
   const [finalizingImage, setFinalizingImage] = useState<string | null>(null);
   const [uploadStage, setUploadStage] = useState<"uploading" | "scanning" | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
@@ -66,16 +67,19 @@ function AssetsPageInner() {
 
   useEffect(() => {
     let live = true;
-    setImageJobs([]); setHistoryError(null);
+    setImageJobs([]); setHistoryError(null); setHistoryLoadedWorkspace(null);
     if (!workspaceId) return;
     setHistoryLoading(true);
     void api.listImageGenerationJobs(workspaceId).then(result => {
-      if (live) setImageJobs(result.jobs);
+      if (live) { setImageJobs(result.jobs); setHistoryLoadedWorkspace(workspaceId); }
     }).catch(() => {
       if (live) setHistoryError("Image request history is temporarily unavailable. Your asset files are unchanged.");
     }).finally(() => { if (live) setHistoryLoading(false); });
     return () => { live = false; };
   }, [api, workspaceId, historyRevision]);
+
+  const pendingImageRequest = imageJobs.some(job => job.status === "queued" || job.status === "running");
+  const imageDispatchReady = historyLoadedWorkspace === workspaceId && !historyLoading && !historyError && !pendingImageRequest;
 
   useEffect(() => {
     let live = true;
@@ -203,7 +207,7 @@ function AssetsPageInner() {
   };
 
   const generate = async () => {
-    if (!workspaceId || !canEdit || generating || finalizingImage || !imageName.trim() || prompt.trim().length < 10) return;
+    if (!workspaceId || !canEdit || !imageDispatchReady || generating || finalizingImage || !imageName.trim() || prompt.trim().length < 10) return;
     setGenerating(true);
     setError(null);
     try {
@@ -317,10 +321,12 @@ function AssetsPageInner() {
           </fieldset>
           <div className="mt-4 flex items-center justify-between gap-4">
             <p className="text-xs text-[#777]">Uses one image credit after the image is safely stored.</p>
-            <button type="button" onClick={() => void generate()} disabled={!workspaceId || generating || !imageName.trim() || prompt.trim().length < 10} className="btn-primary disabled:cursor-not-allowed disabled:opacity-50">
+            <button type="button" onClick={() => void generate()} disabled={!workspaceId || !canEdit || !imageDispatchReady || generating || !imageName.trim() || prompt.trim().length < 10} className="btn-primary disabled:cursor-not-allowed disabled:opacity-50">
               {generating ? "Generating…" : "Generate image"}
             </button>
           </div>
+          {pendingImageRequest && <p role="status" className="mt-2 text-xs text-amber-200">An earlier image request is pending. Check its status below before starting another; an uncertain provider response is not retried automatically.</p>}
+          {!historyLoadedWorkspace && historyError && <p className="mt-2 text-xs text-amber-200">Image generation is paused until request history can be checked. Refresh image history to retry.</p>}
           </fieldset>
         </section>
 

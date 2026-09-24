@@ -23,6 +23,21 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Ambiguous paid image response guard
+
+The OpenAI image adapter no longer silently retries an uncertain provider
+reply. The asset API retains the reserved running job if the provider outcome
+cannot be established, blocks another sequential image dispatch by that
+author/workspace, and never claims that provider spend or credit outcome is
+known. A definitely missing API key fails and releases the hold. The Assets
+UI waits for image history before allowing generation and pauses while a
+request is pending or history is unavailable. API TypeScript, 300 API tests,
+web TypeScript, 98 web tests and isolated production build pass. There is no
+provider receipt for a lost reply: operator reconciliation/release and native
+multi-connection race testing remain open. No live provider call, migration or
+deployment. See the shared vault note
+`Codex Sessions/2026-09/2026-09-24-bookworm-image-uncertainty.md`.
+
 ### OpenAI model/pricing audit
 
 Current official OpenAI documentation still lists the configured defaults:

@@ -310,6 +310,12 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
       return reply.status(200).send({ jobId: previous.id, asset, preview: { url: signed.signedUrl, expiresIn: 300 },
         provider: previous.output_ref?.provider ?? "openai", model: previous.model, requestId: null, replayed: true });
     }
+    const { data: pending, error: pendingError } = await user.from("ai_jobs").select("id")
+      .eq("workspace_id", input.workspaceId).eq("created_by", req.userId)
+      .in("agent_type", ["illustrator", "cover_designer"]).in("status", ["queued", "running"])
+      .limit(1).maybeSingle();
+    if (pendingError) throw new AppError(503, "Could not verify pending image requests. No new generation was started.");
+    if (pending) throw new AppError(409, "An image request is already pending. Check image history before starting another.", undefined, "image_request_pending");
     const { data: workspace, error: workspaceError } = await service.from("workspaces")
       .select("organization_id").eq("id", input.workspaceId).maybeSingle();
     if (workspaceError || !workspace) throw new AppError(404, "Workspace not found.");
@@ -400,9 +406,17 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     let generated: Awaited<ReturnType<ImageGenerator>>;
     try {
       generated = await imageGenerator({ prompt: providerPrompt, size: input.size, quality: input.quality, ...(referenceImages.length ? { referenceImages } : {}) });
-    } catch {
-      await service.from("ai_jobs").update({ status: "failed", error_code: "image_provider_failed", error_message: "Image generation failed.", completed_at: new Date().toISOString() }).eq("id", jobId);
-      throw new AppError(503, "Image generation failed. No credits were used.", undefined, "image_provider_failed");
+    } catch (error) {
+      if (error instanceof AppError && error.code === "image_provider_not_configured") {
+        const { error: releaseError } = await service.from("ai_jobs").update({ status: "failed", error_code: error.code,
+          error_message: "Image provider is not configured.", completed_at: new Date().toISOString() }).eq("id", jobId);
+        if (releaseError) throw new AppError(503, "Image provider is unavailable and the reservation release is unconfirmed. Check image history before retrying.");
+        throw error;
+      }
+      // A timeout, transport error, or lost response is not proof that OpenAI
+      // rejected the work. Keep the reserved job visible and never redispatch.
+      throw new AppError(503, "Image provider outcome is unconfirmed. Check image history before starting another request; support may need to review this hold.",
+        undefined, "image_provider_outcome_unconfirmed");
     }
     if (!generated.bytes.length || generated.bytes.length > MAX_GENERATED_IMAGE_BYTES || generated.mimeType !== "image/png") {
       await service.from("ai_jobs").update({ status: "failed", error_code: "invalid_image_output", error_message: "Invalid image output.", completed_at: new Date().toISOString() }).eq("id", jobId);

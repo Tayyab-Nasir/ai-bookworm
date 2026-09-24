@@ -32,6 +32,13 @@ cost is explicitly a word-rate estimate awaiting organization-usage
 reconciliation. Do not represent estimated image or speech cost as an exact
 provider invoice.
 
+Image dispatch also has an uncertainty boundary: the SDK must not retry an
+ambiguous provider response. If a response is lost, Bookworm retains the
+running job and its reserved operational credit, blocks a second request by
+that author/workspace, and requires operator review. A missing completion
+receipt does not prove that OpenAI did no work. This prevents a mistaken
+"free retry" claim, but it is not a provider-usage reconciliation workflow.
+
 Local evidence for this slice: API TypeScript and all 297 API tests pass;
 Graphify updated. No hosted migration, payment, deployment, Google OAuth
 configuration, or live generation occurred.

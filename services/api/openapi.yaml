@@ -893,6 +893,7 @@ paths:
       tags: [v1]
       operationId: generateImageAsset
       summary: Generate a private illustration or cover-art asset from saved book context
+      description: A matching completed request key replays the saved asset. A pending image request for the same author and workspace blocks a new dispatch. If the provider reply is uncertain, the original job remains pending with its credit reservation; refresh image history and seek operator review rather than starting another paid request. No provider retry occurs automatically.
       requestBody:
         required: true
         content:

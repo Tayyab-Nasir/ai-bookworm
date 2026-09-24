@@ -57,3 +57,22 @@ test("image adapter submits reference bytes as multipart edits and unconditioned
     if (oldModel === undefined) delete process.env.OPENAI_IMAGE_MODEL; else process.env.OPENAI_IMAGE_MODEL = oldModel;
   }
 });
+
+test("image adapter does not silently retry an ambiguous provider response", async () => {
+  const oldFetch = globalThis.fetch;
+  const oldKey = process.env.OPENAI_API_KEY;
+  let calls = 0;
+  process.env.OPENAI_API_KEY = "fixture-no-network";
+  globalThis.fetch = async input => {
+    if (new URL(String(input)).protocol === "data:") return new Response("");
+    calls++;
+    return Response.json({ error: { message: "temporarily unavailable", type: "server_error" } }, { status: 503 });
+  };
+  try {
+    await assert.rejects(openAiImageGenerator({ prompt: "Forest scene", size: "1024x1024", quality: "low" }));
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = oldFetch;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldKey;
+  }
+});
