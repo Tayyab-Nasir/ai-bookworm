@@ -954,20 +954,57 @@ paths:
     post:
       tags: [v1]
       operationId: createAiJob
-      summary: Create AI job
+      summary: Queue or recover a paid text AI review
+      description: >-
+        The body idempotencyKey is scoped to the requesting actor and exact
+        book, chapter set, agent, brief and context policy. An identical
+        replay returns the accepted job without creating another request.
+        Different content with the same key is rejected.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/CreateAiJobRequest" }
       responses:
-        "201":
-          description: Created AI job
+        "202":
+          description: AI review queued
+          content:
+            application/json:
+              schema: { type: object }
+        "200":
+          description: Existing matching AI review recovered
           content:
             application/json:
               schema: { type: object }
         "401": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /v1/ai/jobs/requests/{requestKey}:
+    get:
+      tags: [v1]
+      operationId: getAiJobByRequest
+      summary: Recover one accepted text AI review by its client request key
+      description: >-
+        Requires current book membership and the original requesting actor.
+        Returns a safe job and suggestions, never the private prompt, source
+        context or request key. This read does not queue work or charge credits.
+      parameters:
+        - name: requestKey
+          in: path
+          required: true
+          schema: { type: string, minLength: 8, maxLength: 200 }
+        - name: bookId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Accepted AI review
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /v1/ai/jobs/{jobId}:
     get:
       tags: [v1]

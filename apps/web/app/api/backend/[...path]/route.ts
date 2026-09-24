@@ -46,7 +46,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     const upstream = await fetch(target, { method: request.method, headers, body: body as BodyInit | undefined, cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(180_000) });
     if (upstream.status >= 300 && upstream.status < 400) return auth.finish(authError(502, "Unexpected API redirect."));
     const contentType = upstream.headers.get("content-type") ?? "application/json";
-    const response = new NextResponse(upstream.body, { status: upstream.status, headers: { "content-type": contentType } });
+    const response = new NextResponse(upstream.body, { status: upstream.status, headers: { "content-type": contentType, "cache-control": "private, no-store" } });
     if (contentType.split(";", 1)[0].trim().toLowerCase() === "audio/mpeg" && upstream.headers.get("content-disposition") === 'attachment; filename="chapter.mp3"') {
       response.headers.set("content-disposition", 'attachment; filename="chapter.mp3"');
       const audioQc = upstream.headers.get("x-bookworm-audio-qc");

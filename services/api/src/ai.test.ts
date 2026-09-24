@@ -347,7 +347,29 @@ test("accepted text request replays without spare quota and rejects reuse for an
   assert.equal((await send(payload)).statusCode, 200);
   assert.equal(store.tables.ai_jobs.length, 1);
   assert.equal((await send({ ...payload, agentType: "copyeditor" })).statusCode, 409);
+  assert.equal((await send({ ...payload, chapterIds: ["a0000000-0000-4000-8000-000000000099"] })).statusCode, 409);
+  assert.equal((await send({ ...payload, contextPolicy: { maxTokens: 8192 } })).statusCode, 409);
+  assert.equal((await send({ ...payload, userInstruction: "Different private brief" })).statusCode, 409);
   assert.equal((await send({ ...payload, idempotencyKey: "genuinely-new-review" })).statusCode, 422);
+});
+
+test("accepted AI request is recoverable by key without exposing private input", async (t) => {
+  const store = baseStore();
+  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => { throw new Error("Enqueue must not invoke provider"); } });
+  t.after(() => app.close());
+  const payload = { bookId: BOOK, chapterIds: [CHAPTER], agentType: "writer", userInstruction: "Private chapter brief", idempotencyKey: "lost-response-key" };
+  const created = await app.inject({ method: "POST", url: "/v1/ai/jobs", headers: auth, payload });
+  assert.equal(created.statusCode, 202, created.body);
+  const recovered = await app.inject({ method: "GET", url: `/v1/ai/jobs/requests/lost-response-key?bookId=${BOOK}`, headers: auth });
+  assert.equal(recovered.statusCode, 200, recovered.body);
+  assert.equal(recovered.headers["cache-control"], "private, no-store");
+  assert.equal(recovered.json().id, created.json().id);
+  assert.equal(JSON.stringify(recovered.json()).includes("Private chapter brief"), false);
+  assert.equal(JSON.stringify(recovered.json()).includes("lost-response-key"), false);
+  assert.equal((await app.inject({ method: "GET", url: `/v1/ai/jobs/requests/unknown-request?bookId=${BOOK}`, headers: auth })).statusCode, 404);
+  store.tables.ai_jobs[0].created_by = "a0000000-0000-4000-8000-000000000099";
+  assert.equal((await app.inject({ method: "GET", url: `/v1/ai/jobs/requests/lost-response-key?bookId=${BOOK}`, headers: auth })).statusCode, 404);
+  assert.equal(store.tables.ai_jobs.length, 1);
 });
 
 test("metadata generation returns a cited review draft without overwriting saved metadata", async () => {

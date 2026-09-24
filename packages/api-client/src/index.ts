@@ -823,6 +823,8 @@ export function createClient(opts: ClientOptions) {
     listAiJobs: (bookId: string, limit = 8) =>
       call<{ jobs: AiJobReview[] }>("GET", `/v1/ai/jobs?bookId=${encodeURIComponent(bookId)}&limit=${limit}`),
     getAiJob: (jobId: string) => call<AiJobWithSuggestions>("GET", `/v1/ai/jobs/${jobId}`),
+    getAiJobByRequest: (bookId: string, requestKey: string) =>
+      call<AiJobWithSuggestions>("GET", `/v1/ai/jobs/requests/${encodeURIComponent(requestKey)}?bookId=${encodeURIComponent(bookId)}`),
     applySuggestion: (id: string) => call<{ suggestionId: string; status: "accepted"; version: number; versionId: string }>("POST", `/v1/ai/suggestions/${id}/apply`),
     rejectSuggestion: (id: string) => call<{ suggestion: AiSuggestion }>("POST", `/v1/ai/suggestions/${id}/reject`),
     listEditions: (bookId: string) => call<{ editions: Edition[] }>("GET", `/v1/books/${bookId}/editions`),

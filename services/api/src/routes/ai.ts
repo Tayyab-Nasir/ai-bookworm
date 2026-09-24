@@ -73,6 +73,19 @@ function chapterIdsForJob(job: Record<string, unknown>) {
   }))];
 }
 
+function sameJobRequest(job: Record<string, unknown>, body: z.infer<typeof createJobSchema>) {
+  if (job.book_id !== body.bookId || job.agent_type !== body.agentType) return false;
+  const input = job.input_ref;
+  if (!input || typeof input !== "object") return false;
+  const saved = input as { userInstruction?: unknown; contextPolicy?: unknown };
+  if ((saved.userInstruction ?? null) !== (body.userInstruction ?? null)) return false;
+  const chapters = chapterIdsForJob(job);
+  if (chapters.length !== body.chapterIds.length || chapters.some((id, index) => id !== body.chapterIds[index])) return false;
+  if (!saved.contextPolicy || typeof saved.contextPolicy !== "object") return false;
+  const policy = saved.contextPolicy as Record<string, unknown>;
+  return Object.entries(body.contextPolicy).every(([key, value]) => policy[key] === value);
+}
+
 function safeAiJob(job: Record<string, unknown>) {
   const input = job.input_ref;
   const contextSources = input && typeof input === "object" && Array.isArray((input as { contextSources?: unknown }).contextSources)
@@ -169,6 +182,20 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
     return { jobs: (data ?? []).map((job) => safeAiJob(job as Record<string, unknown>)) };
   });
 
+  app.get("/ai/jobs/requests/:requestKey", async (req, reply) => {
+    const parsed = z.object({ bookId: z.string().uuid() }).strict().safeParse(req.query);
+    const key = z.string().min(8).max(200).safeParse((req.params as { requestKey: string }).requestKey);
+    if (!parsed.success || !key.success) throw new AppError(422, "Check the AI request lookup.");
+    const sb = app.supabaseFactory(req.userToken);
+    await loadBook(sb, parsed.data.bookId, req.userId);
+    const { data: job, error } = await sb.from("ai_jobs").select("*")
+      .eq("idempotency_key", key.data).eq("book_id", parsed.data.bookId).eq("created_by", req.userId).maybeSingle();
+    if (error) throw new AppError(500, "Could not recover the AI request.");
+    if (!job || !["writer", "proofreader", "copyeditor", "consistency"].includes(job.agent_type)) throw new AppError(404, "AI request not found.");
+    reply.header("cache-control", "private, no-store");
+    return jobWithSuggestions(sb, job);
+  });
+
   app.post("/ai/jobs", async (req, reply) => {
     const parsed = createJobSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "Check the AI request.", { issues: parsed.error.issues });
@@ -180,7 +207,7 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
       .eq("idempotency_key", body.idempotencyKey).eq("workspace_id", book.workspace_id).eq("created_by", req.userId).maybeSingle();
     if (replayError) throw new AppError(500, "Could not verify the AI request key.");
     if (replay) {
-      if (replay.book_id !== body.bookId || replay.agent_type !== body.agentType) throw new AppError(409, "That AI request key is already in use.");
+      if (!sameJobRequest(replay, body)) throw new AppError(409, "That AI request key is already in use for a different request.");
       return reply.status(200).send(await jobWithSuggestions(service, replay));
     }
     const { data: workspace, error: workspaceError } = await service.from("workspaces").select("organization_id").eq("id", book.workspace_id).maybeSingle();
@@ -209,7 +236,7 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
     if (insertError?.code === "23505") {
       const { data: existing } = await service.from("ai_jobs").select("*")
         .eq("idempotency_key", body.idempotencyKey).eq("workspace_id", book.workspace_id).eq("created_by", req.userId).maybeSingle();
-      if (!existing || existing.book_id !== body.bookId || existing.agent_type !== body.agentType) throw new AppError(409, "That AI request key is already in use.");
+      if (!existing || !sameJobRequest(existing, body)) throw new AppError(409, "That AI request key is already in use for a different request.");
       return reply.status(200).send(await jobWithSuggestions(service, existing));
     }
     if (insertError?.code === "23514") throw new AppError(422, "Text credit capacity is exhausted. Wait for pending requests or add funded capacity.", undefined, "quota_exceeded");

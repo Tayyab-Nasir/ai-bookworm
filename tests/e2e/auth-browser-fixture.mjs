@@ -37,6 +37,7 @@ let refusedBookBeforeAcceptance = false;
 let lostUploadAllocationReply = false;
 let lostUploadPutReply = false;
 let lostAiReply = false;
+let lostReviewReply = false;
 const memoryBookId = '88888888-8888-4888-8888-888888888888';
 const memoryBook = { id: memoryBookId, workspace_id: '33333333-3333-4333-8333-333333333333', title: 'The Long Way Home', subtitle: null, author_name: 'Fixture author', language: 'en', genre: 'Fantasy', status: 'draft', updated_at: '2026-08-31T08:00:00.000Z' };
 const memoryItems = [];
@@ -395,9 +396,16 @@ const server = createServer(async (req, res) => {
         aiReviews.set(review.id, review); aiKeys.set(body.idempotencyKey, review);
       }
       if (body.idempotencyKey.startsWith('chapter-draft:') && !lostAiReply) { lostAiReply = true; return json(503, { error: { message: 'Fixture lost AI reply after acceptance' } }); }
+      if (process.env.FIXTURE_LOST_REVIEW_REPLY === 'true' && !body.idempotencyKey.startsWith('chapter-draft:') && !body.idempotencyKey.startsWith('story-starter:') && !lostReviewReply) {
+        lostReviewReply = true; return json(503, { error: { message: 'Fixture lost paid review reply after acceptance' } });
+      }
       return json(202, review);
     }
     if (url.pathname === '/v1/ai/jobs') return json(200, { jobs: [...aiReviews.values()].filter((v) => v.book_id === url.searchParams.get('bookId')).reverse() });
+    if (url.pathname.startsWith('/v1/ai/jobs/requests/')) {
+      const review = aiKeys.get(decodeURIComponent(url.pathname.split('/').pop()));
+      return review && review.book_id === url.searchParams.get('bookId') ? json(200, review) : json(404, { error: { message: 'AI request not found' } });
+    }
     const review = aiReviews.get(url.pathname.split('/').pop());
     if (review && url.pathname.startsWith('/v1/ai/jobs/')) { review.status = 'succeeded'; return json(200, review); }
     if (url.pathname.startsWith('/v1/ai/suggestions/')) {

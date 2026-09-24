@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AiJobReview, AiJobWithSuggestions } from "@bookworm/api-client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiClientError, type AiJobReview, type AiJobWithSuggestions } from "@bookworm/api-client";
 import type { AiSuggestion } from "@bookworm/types";
 import { apiClient } from "./api";
+import { pendingReviewBody, readPendingReview, reviewBriefHash, reviewRecoveryKey, type PendingReview, type ReviewMode } from "../lib/ai-review-recovery";
 
-type Mode = "writer" | "proofreader" | "copyeditor" | "consistency";
+type Mode = ReviewMode;
 const modes: { value: Mode; label: string }[] = [
   { value: "writer", label: "Draft" },
   { value: "proofreader", label: "Proofread" },
@@ -41,6 +42,10 @@ export default function AiAssistantPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [recent, setRecent] = useState<AiJobReview[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [recoveryReady, setRecoveryReady] = useState(false);
+  const [pendingRequest, setPendingRequest] = useState<PendingReview | null>(null);
+  const requestInFlight = useRef(false);
   const suggestions = useMemo(() => job?.suggestions ?? [], [job]);
   const processing = busy || job?.status === "queued" || job?.status === "running";
 
@@ -56,6 +61,43 @@ export default function AiAssistantPanel({
   useEffect(() => { void loadRecent(); }, [loadRecent]);
   useEffect(() => { setJob(null); setError(null); setNotice(null); }, [bookId, chapterId]);
   useEffect(() => {
+    if (!chapterId) return;
+    let cancelled = false;
+    setRecoveryReady(false); setPendingRequest(null);
+    void (async () => {
+      const session = await fetch("/api/auth/session", { cache: "no-store" });
+      if (!session.ok) throw new Error("Sign in again before requesting AI review.");
+      const { user } = await session.json();
+      if (typeof user?.id !== "string") throw new Error("Your session could not be verified.");
+      const storageKey = reviewRecoveryKey(user.id, bookId, chapterId);
+      let raw: string | null;
+      try { raw = window.sessionStorage.getItem(storageKey); }
+      catch { throw new Error("Browser recovery storage is unavailable. AI review is paused to avoid duplicate charges."); }
+      const saved = readPendingReview(raw, user.id, bookId, chapterId);
+      if (raw && !saved) throw new Error("The saved AI recovery checkpoint is invalid or expired. No new request will be sent; contact support with this book and chapter.");
+      if (cancelled) return;
+      setUserId(user.id);
+      if (saved) {
+        setPendingRequest(saved); setMode(saved.mode); setIncludeRelated(saved.includeRelated); setContextBudget(saved.contextBudget);
+        try {
+          const recovered = await api.getAiJobByRequest(bookId, saved.key);
+          if (cancelled) return;
+          if (!reviewTargetsChapter(recovered, chapterId)) throw new Error("The saved AI request targets another chapter. No new request was sent.");
+          setJob(recovered); remember(recovered); setPendingRequest(null);
+          try { window.sessionStorage.removeItem(storageKey); } catch { /* A later reload can read the same server job. */ }
+          setNotice("Recovered the saved AI review without starting another request.");
+        } catch (reason) {
+          if (cancelled) return;
+          if (reason instanceof ApiClientError && reason.status === 404) {
+            setNotice("The previous request is not queued. Retry its original brief and settings with the same request key; no new key will be used.");
+          } else setError(reason instanceof Error ? reason.message : "Could not verify the saved AI request. No new request was sent.");
+        }
+      }
+      if (!cancelled) setRecoveryReady(true);
+    })().catch((reason) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "AI request recovery is unavailable."); setRecoveryReady(false); } });
+    return () => { cancelled = true; };
+  }, [api, bookId, chapterId, remember]);
+  useEffect(() => {
     // Each effect setup owns its fetch. Strict Mode may cancel and replay the
     // setup; a persistent "already opened" latch would discard both responses.
     if (!initialJobId || !chapterId) return;
@@ -65,7 +107,7 @@ export default function AiAssistantPanel({
       if (cancelled) return;
       if (!reviewTargetsChapter(result, chapterId)) { setError("This saved review belongs to a different chapter. Select that chapter before opening it."); return; }
       setJob(result); remember(result);
-      setMode(result.agent_type === "writer" ? "writer" : "proofreader");
+      if (modes.some((item) => item.value === result.agent_type)) setMode(result.agent_type as Mode);
       if (result.status === "failed") { setError(result.error_message ?? "This AI review did not finish. Start a fresh review."); return; }
       setNotice(result.status === "queued" ? "Your first draft is queued. It will continue if you leave this page."
         : result.status === "running" ? "Your first draft is running. It will continue if you leave this page."
@@ -92,20 +134,61 @@ export default function AiAssistantPanel({
   }, [api, job?.id, job?.status, remember]);
 
   const run = async () => {
-    if (!chapterId || processing || dirty || !editable || (mode === "writer" && !instruction.trim())) return;
-    setBusy(true); setError(null); setNotice(null); setJob(null);
+    if (!chapterId || !userId || !recoveryReady || requestInFlight.current || processing || dirty || !editable || (mode === "writer" && !instruction.trim())) return;
+    requestInFlight.current = true;
+    setBusy(true); setError(null); setNotice(null);
+    let request = pendingRequest;
+    let dispatched = false;
     try {
-      const result = await api.createAiJob({
-        bookId, chapterIds: [chapterId], agentType: mode,
-        userInstruction: instruction.trim() || undefined,
-        idempotencyKey: crypto.randomUUID(),
-        contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: includeRelated, maxTokens: contextBudget },
-      });
+      const digest = await reviewBriefHash(mode, instruction);
+      if (request && request.briefHash !== digest) throw new Error("Re-enter the original drafting instruction exactly before retrying this request. No new request was sent.");
+      if (!request) {
+        request = { schema: 1, userId, bookId, chapterId, key: crypto.randomUUID(), mode, includeRelated,
+          contextBudget: contextBudget as PendingReview["contextBudget"], briefHash: digest, savedAt: Date.now() };
+        try { window.sessionStorage.setItem(reviewRecoveryKey(userId, bookId, chapterId), JSON.stringify(request)); }
+        catch { throw new Error("Browser recovery storage is unavailable. No paid AI request was sent."); }
+        setPendingRequest(request);
+      } else {
+        try {
+          const existing = await api.getAiJobByRequest(bookId, request.key);
+          if (!reviewTargetsChapter(existing, chapterId)) throw new Error("The saved request targets another chapter. No new request was sent.");
+          setJob(existing); remember(existing); setPendingRequest(null);
+          try { window.sessionStorage.removeItem(reviewRecoveryKey(userId, bookId, chapterId)); } catch { /* Server job is durable. */ }
+          setNotice("Recovered the saved AI review without starting another request.");
+          return;
+        } catch (reason) { if (!(reason instanceof ApiClientError && reason.status === 404)) throw reason; }
+      }
+      dispatched = true;
+      const result = await api.createAiJob(pendingReviewBody(request, instruction));
       setJob(result);
       remember(result);
+      setPendingRequest(null);
+      try { window.sessionStorage.removeItem(reviewRecoveryKey(userId, bookId, chapterId)); } catch { /* Server job is durable. */ }
       setNotice("Review queued. It will continue if you leave this page.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "AI review failed"); }
-    finally { setBusy(false); }
+    } catch (reason) {
+      if (dispatched && reason instanceof ApiClientError && [400, 401, 403, 422].includes(reason.status)) {
+        setPendingRequest(null);
+        try { window.sessionStorage.removeItem(reviewRecoveryKey(userId, bookId, chapterId)); } catch { /* The server still rejected this request. */ }
+      }
+      setError(reason instanceof Error ? reason.message : "AI review outcome is unknown. Recover the original request before trying again.");
+    }
+    finally { requestInFlight.current = false; setBusy(false); }
+  };
+
+  const checkPending = async () => {
+    if (!pendingRequest || busy || requestInFlight.current) return;
+    requestInFlight.current = true;
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      const recovered = await api.getAiJobByRequest(bookId, pendingRequest.key);
+      if (!reviewTargetsChapter(recovered, chapterId)) throw new Error("The saved request targets another chapter. No new request was sent.");
+      setJob(recovered); remember(recovered); setPendingRequest(null);
+      try { window.sessionStorage.removeItem(reviewRecoveryKey(pendingRequest.userId, bookId, pendingRequest.chapterId)); } catch { /* Server job is durable. */ }
+      setNotice("Recovered the saved AI review without starting another request.");
+    } catch (reason) {
+      if (reason instanceof ApiClientError && reason.status === 404) setNotice("No saved job is visible yet. Retry the original request with the same settings and brief; do not start a new one.");
+      else setError(reason instanceof Error ? reason.message : "Could not check the saved request. No new request was sent.");
+    } finally { requestInFlight.current = false; setBusy(false); }
   };
 
   const restore = async (review: AiJobReview) => {
@@ -118,6 +201,7 @@ export default function AiAssistantPanel({
         return;
       }
       setJob(result); remember(result);
+      if (modes.some((item) => item.value === result.agent_type)) setMode(result.agent_type as Mode);
       if (result.status === "failed") setError(result.error_message ?? "This AI review did not finish. Start a new review with a fresh request.");
       else if (!result.suggestions.length) setNotice("Saved review opened. It had no suggestions.");
       else setNotice("Saved review opened. Apply each suggestion only after checking it against the current chapter.");
@@ -151,17 +235,18 @@ export default function AiAssistantPanel({
     <h2 id="ai-assistant-title" className="text-sm font-medium">AI assistant</h2>
     <p className="mt-1 text-xs leading-5 text-white/45">Edits only the saved chapter. Drafting and consistency checks can reference matching passages and Book Bible facts. Every edit waits for your approval.</p>
     <label className="mt-4 block text-xs text-white/55" htmlFor="ai-mode">Task</label>
-    <select id="ai-mode" value={mode} onChange={(event) => setMode(event.target.value as Mode)} disabled={processing} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
+    <select id="ai-mode" value={mode} onChange={(event) => setMode(event.target.value as Mode)} disabled={processing || !!pendingRequest} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
       {modes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
     </select>
     <label className="mt-3 block text-xs text-white/55" htmlFor="ai-context-budget">Source context budget</label>
-    <select id="ai-context-budget" value={contextBudget} onChange={(event) => setContextBudget(Number(event.target.value))} disabled={processing} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
+    <select id="ai-context-budget" value={contextBudget} onChange={(event) => setContextBudget(Number(event.target.value))} disabled={processing || !!pendingRequest} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
       <option value={4096}>Compact · about 4K tokens</option><option value={8192}>Balanced · about 8K tokens</option><option value={16000}>Extended · about 16K tokens</option>
     </select>
     <p className="mt-1 text-[11px] leading-5 text-white/40">Estimated input budget, not a charge estimate. Oversized chapters are rejected, never silently cut.</p>
-    {["writer", "consistency"].includes(mode) && <label className="mt-3 flex items-start gap-2 text-xs text-white/60"><input type="checkbox" checked={includeRelated} onChange={(event) => setIncludeRelated(event.target.checked)} disabled={processing} /> Include related saved passages</label>}
+    {["writer", "consistency"].includes(mode) && <label className="mt-3 flex items-start gap-2 text-xs text-white/60"><input type="checkbox" checked={includeRelated} onChange={(event) => setIncludeRelated(event.target.checked)} disabled={processing || !!pendingRequest} /> Include related saved passages</label>}
     {mode === "writer" && <><label className="mt-3 block text-xs text-white/55" htmlFor="ai-instruction">Drafting instruction</label><textarea id="ai-instruction" value={instruction} onChange={(event) => setInstruction(event.target.value)} maxLength={4000} rows={4} placeholder="Continue this scene with…" className="mt-1 w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm" /></>}
-    <button type="button" onClick={() => void run()} disabled={!chapterId || processing || dirty || !editable || (mode === "writer" && !instruction.trim())} className="mt-3 w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-black disabled:opacity-40">{processing ? job?.status === "queued" ? "Queued…" : "Running…" : "Run on saved chapter"}</button>
+    <button type="button" onClick={() => void run()} disabled={!chapterId || !recoveryReady || processing || dirty || !editable || (mode === "writer" && !instruction.trim())} className="mt-3 w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-black disabled:opacity-40">{processing ? job?.status === "queued" ? "Queued…" : "Running…" : pendingRequest ? "Retry original request" : "Run on saved chapter"}</button>
+    {pendingRequest && <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100"><p>A previous paid request has an uncertain outcome. Its request key and settings are saved; no manuscript text is stored here. Check its server status or retry the exact original request. A new request key will not be created.</p><button type="button" disabled={busy} onClick={() => void checkPending()} className="mt-2 underline underline-offset-4 disabled:opacity-40">Check saved request · no credits</button></div>}
     {dirty && <p className="mt-2 text-xs text-amber-200">Save the chapter before running or applying AI suggestions.</p>}
     {error && <p role="alert" className="mt-3 text-xs leading-5 text-red-200">{error}</p>}
     {notice && <p role="status" className="mt-3 text-xs leading-5 text-emerald-200">{notice}</p>}
