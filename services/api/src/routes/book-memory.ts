@@ -150,6 +150,28 @@ function updatedTimestamp(previous: string) {
 }
 
 export function bookMemoryRoutes(app: FastifyInstance) {
+  app.post("/books/:bookId/bible/evidence", async (req, reply) => {
+    const body = parse(z.object({ chapterId: id, documentVersionId: id,
+      nodeId: z.string().min(1).max(200), textHash: z.string().regex(/^[a-f0-9]{64}$/u) }).strict(), req.body);
+    const { sb, bookId } = await scopedBook(app, req);
+    const { data: chapter, error: chapterError } = await sb.from("chapters")
+      .select("id,title,current_document_version_id").eq("id", body.chapterId).eq("book_id", bookId).maybeSingle();
+    if (chapterError) throw new AppError(500, "Could not load the source chapter.");
+    if (!chapter) throw new AppError(404, "Source chapter not found in this book.");
+    const { data: version, error: versionError } = await sb.from("document_versions")
+      .select("id,version_number,content_json").eq("id", body.documentVersionId).eq("chapter_id", chapter.id).maybeSingle();
+    if (versionError) throw new AppError(500, "Could not load the cited manuscript version.");
+    if (!version) throw new AppError(404, "Cited manuscript version not found.");
+    const node = parseNodes(version.content_json).find((value) => value.id === body.nodeId);
+    if (typeof node?.text !== "string") throw new AppError(404, "Cited text passage not found.");
+    if (createHash("sha256").update(node.text).digest("hex") !== body.textHash) {
+      throw new AppError(409, "This citation does not match the saved passage. Reload the candidate before using it.");
+    }
+    reply.header("cache-control", "private, no-store");
+    return { chapterTitle: chapter.title, versionNumber: version.version_number,
+      isCurrentVersion: chapter.current_document_version_id === version.id,
+      text: node.text.slice(0, 24000), truncated: node.text.length > 24000 };
+  });
   app.post("/books/:bookId/search", async (req) => {
     const body = parse(searchSchema, req.body);
     const { sb, bookId } = await scopedBook(app, req);

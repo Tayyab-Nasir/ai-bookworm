@@ -527,6 +527,34 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/evidence:
+    post:
+      tags: [v1]
+      operationId: readBookBibleSourcePassage
+      summary: Read a hash-verified saved manuscript passage for candidate review
+      description: Requires book membership, checks chapter/version ownership and full-node text hash, and returns private no-store text with current-version status. Does not start generation or save an entry.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [chapterId, documentVersionId, nodeId, textHash]
+              properties:
+                chapterId: { type: string, format: uuid }
+                documentVersionId: { type: string, format: uuid }
+                nodeId: { type: string, minLength: 1, maxLength: 200 }
+                textHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+      responses:
+        "200": { description: Verified passage text capped at 24000 characters with truncation and current-version flags }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/bible/drafts:
     get:
       tags: [v1]

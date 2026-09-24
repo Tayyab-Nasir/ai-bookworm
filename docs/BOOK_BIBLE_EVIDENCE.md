@@ -61,6 +61,13 @@ live production acceptance or an approved retail token-pricing catalog.
 The citation validates source identity, not semantic truth; author review
 remains required before any generated detail becomes canon.
 
+Candidate cards provide an on-demand source passage reader. It checks book
+membership, chapter/version ownership, node identity and the full saved-text
+hash before returning private, no-store text. Historical versions remain
+readable and are identified when the chapter has moved on. Responses cap
+display text at 24,000 characters with an explicit truncation flag; reading
+does not generate content, spend credits or save canonical entries.
+
 Authors can select up to three saved chapters from anywhere in the book.
 The API includes every nonempty text node in that selection or rejects it
 before a paid job is reserved. Missing saved versions, more than 100 text

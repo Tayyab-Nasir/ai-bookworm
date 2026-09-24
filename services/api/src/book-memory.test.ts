@@ -104,6 +104,40 @@ async function appWith(store: Store, failTable?: string, aiFetch?: typeof fetch)
 
 const entry = { type: "character", name: "Elara", description: "A mapmaker", attributes: { appearance: "Silver hair" }, imageAssetIds: [IMAGE], sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, note: "Opening scene" }] };
 
+test("Book Bible evidence reads the exact pinned passage and identifies historical versions", async (t) => {
+  const store = initialStore("viewer");
+  store.document_versions[0].version_number = 7;
+  const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/bible/evidence`;
+  const payload = { chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: SOURCE_HASH };
+  const response = await app.inject({ method: "POST", url, headers: auth, payload });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.headers["cache-control"], "private, no-store");
+  assert.deepEqual(response.json(), { chapterTitle: "Arrival", versionNumber: 7, isCurrentVersion: true,
+    text: SOURCE_TEXT, truncated: false });
+  store.chapters[0].current_document_version_id = randomUUID();
+  const historical = await app.inject({ method: "POST", url, headers: auth, payload });
+  assert.equal(historical.json().text, SOURCE_TEXT);
+  assert.equal(historical.json().isCurrentVersion, false);
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
+
+test("Book Bible evidence denies foreign, fabricated and hash-mismatched passages", async (t) => {
+  const store = initialStore();
+  const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/bible/evidence`;
+  const payload = { chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: SOURCE_HASH };
+  assert.equal((await app.inject({ method: "POST", url, payload })).statusCode, 401);
+  for (const [change, status] of [[{ textHash: "a".repeat(64) }, 409], [{ documentVersionId: randomUUID() }, 404],
+    [{ chapterId: randomUUID() }, 404], [{ nodeId: "invented" }, 404]] as const) {
+    const response = await app.inject({ method: "POST", url, headers: auth, payload: { ...payload, ...change } });
+    assert.equal(response.statusCode, status, response.body);
+    assert.equal(response.body.includes(SOURCE_TEXT), false);
+  }
+  store.chapters[0].book_id = OTHER_BOOK;
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload })).statusCode, 404);
+});
+
 test("Book Bible extraction rejects incomplete reading before reserving credits", async (t) => {
   for (const mode of ["large-text", "many-nodes", "missing-version"] as const) {
     const store = initialStore();

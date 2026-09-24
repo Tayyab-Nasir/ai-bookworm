@@ -23,6 +23,16 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Book Bible source passage review
+
+Candidate cards can now load their exact cited saved text on demand. The
+member-scoped API validates chapter/version ownership and full-node hash,
+reports when the chapter has changed, and returns bounded private no-store
+text. This read does not generate content or write canon. API/web TypeScript,
+29 focused Book Memory API tests and 102 web tests pass. Native browser
+acceptance remains pending. Next: long-chapter resumable extraction, audited
+unconfirmed-result disposition and the wider hosted release gates.
+
 ### Book Bible chapter selection and reading limits
 
 The review shelf now selects up to three saved chapters from anywhere in
