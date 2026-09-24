@@ -19,7 +19,14 @@ export type GeneratedMetadataCandidate = {
 type MetadataFields = { description: string; keywords: string; categories: string };
 type PendingMetadata = { id: string; createdAt: string; status: "queued" | "running" };
 type MetadataHistoryResponse = { drafts: { id: string; createdAt: string; candidate: unknown }[]; pending: PendingMetadata[] };
+type BookBibleCandidate = {
+  type: string; name: string; description: string; attributes: Record<string, unknown>;
+  sourceRefs: { chapterId: string; documentVersionId: string; nodeId: string; textHash: string }[];
+  confidence: number;
+};
+type BibleHistoryResponse = { drafts: { id: string; createdAt: string; candidates: unknown }[]; pending: PendingMetadata[] };
 export const metadataGenerationBlocked = (pending: PendingMetadata[] | null) => pending === null || pending.length > 0;
+export const bibleGenerationBlocked = metadataGenerationBlocked;
 type Memory = {
   book: Book;
   metadata: BookMetadata | null;
@@ -104,6 +111,37 @@ export function parseGeneratedMetadataCandidate(value: unknown): GeneratedMetada
   };
 }
 
+export function parseBookBibleCandidates(value: unknown): BookBibleCandidate[] {
+  if (!Array.isArray(value) || value.length > 10) throw new Error("The saved Book Bible draft is invalid.");
+  return value.map((item) => {
+    if (!item || typeof item !== "object") throw new Error("The saved Book Bible draft is invalid.");
+    const entry = item as Record<string, unknown>;
+    const attributes = entry.attributes;
+    const refs = entry.sourceRefs;
+    if (entry.suggestionKind !== "book_bible_candidate" || entry.status !== "pending"
+      || typeof entry.type !== "string" || !types.includes(entry.type)
+      || typeof entry.name !== "string" || !entry.name.trim() || entry.name.length > 160
+      || typeof entry.description !== "string" || entry.description.length > 12000
+      || !attributes || typeof attributes !== "object" || Array.isArray(attributes)
+      || Object.keys(attributes).length > 40 || JSON.stringify(attributes).length > 24000
+      || typeof entry.confidence !== "number" || entry.confidence < 0 || entry.confidence > 1
+      || !Array.isArray(refs) || !refs.length || refs.length > 30) {
+      throw new Error("The saved Book Bible draft is invalid.");
+    }
+    const sourceRefs = refs.map((source) => {
+      if (!source || typeof source !== "object") throw new Error("The Book Bible draft has an invalid citation.");
+      const ref = source as Record<string, unknown>;
+      if (typeof ref.chapterId !== "string" || typeof ref.documentVersionId !== "string"
+        || typeof ref.nodeId !== "string" || typeof ref.textHash !== "string"
+        || !/^[a-f0-9]{64}$/u.test(ref.textHash)) throw new Error("The Book Bible draft has an invalid citation.");
+      return { chapterId: ref.chapterId, documentVersionId: ref.documentVersionId,
+        nodeId: ref.nodeId, textHash: ref.textHash };
+    });
+    return { type: entry.type, name: entry.name, description: entry.description,
+      attributes: attributes as Record<string, unknown>, sourceRefs, confidence: entry.confidence };
+  });
+}
+
 function entryDraft(item: BookBibleItem): EntryDraft {
   const images = item.attributes_json?.imageAssetIds;
   return {
@@ -139,15 +177,22 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const [metadataGenerationError, setMetadataGenerationError] = useState<string | null>(null);
   const [generatingMetadata, setGeneratingMetadata] = useState(false);
   const [metadataRequestKey, setMetadataRequestKey] = useState<string | null>(null);
+  const [bibleCandidates, setBibleCandidates] = useState<BookBibleCandidate[] | null>(null);
+  const [bibleHistory, setBibleHistory] = useState<{ id: string; createdAt: string; candidates: BookBibleCandidate[] }[] | null>(null);
+  const [pendingBible, setPendingBible] = useState<PendingMetadata[] | null>(null);
+  const [bibleRequestKey, setBibleRequestKey] = useState<string | null>(null);
+  const [bibleGenerationError, setBibleGenerationError] = useState<string | null>(null);
+  const [generatingBible, setGeneratingBible] = useState(false);
   const [entryDirty, setEntryDirty] = useState(false);
   const [formRevision, setFormRevision] = useState(0);
   const endpoint = `/books/${encodeURIComponent(bookId)}`;
   const dirty = identityDirty || metadataDirty || entryDirty;
-  const busy = loading || !!saving || generatingMetadata;
+  const busy = loading || !!saving || generatingMetadata || generatingBible;
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     setPendingMetadata(null);
+    setPendingBible(null);
     try {
       const result = await request<Memory>(`${endpoint}/memory`);
       setMemory(result); setDraft(null); setDeleting(null);
@@ -158,6 +203,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       });
       setMetadataCandidate(null); setMetadataGenerationError(null); setMetadataRequestKey(null);
       setMetadataHistory(null);
+      setBibleCandidates(null); setBibleHistory(null); setBibleRequestKey(null); setBibleGenerationError(null);
       setIdentityDirty(false); setMetadataDirty(false); setEntryDirty(false);
       setFormRevision((value) => value + 1);
       if (result.canEdit) {
@@ -166,6 +212,11 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           setMetadataHistory(history.drafts.map((draft) => ({ ...draft, candidate: parseGeneratedMetadataCandidate(draft.candidate) })));
           setPendingMetadata(history.pending);
         } catch (reason) { setMetadataGenerationError(messageOf(reason)); }
+        try {
+          const history = await request<BibleHistoryResponse>(`${endpoint}/bible/drafts`);
+          setBibleHistory(history.drafts.map((item) => ({ ...item, candidates: parseBookBibleCandidates(item.candidates) })));
+          setPendingBible(history.pending);
+        } catch (reason) { setBibleGenerationError(messageOf(reason)); }
       }
     } catch (reason) { setError(messageOf(reason)); }
     finally { setLoading(false); }
@@ -330,6 +381,59 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setNotice("AI draft copied into the form. Review it, then choose Save metadata when you are ready.");
   }
 
+  async function loadBibleHistory() {
+    if (!memory?.canEdit || busy) return;
+    setSaving("bible-history"); setBibleGenerationError(null); setPendingBible(null);
+    try {
+      const history = await request<BibleHistoryResponse>(`${endpoint}/bible/drafts`);
+      setBibleHistory(history.drafts.map((item) => ({ ...item, candidates: parseBookBibleCandidates(item.candidates) })));
+      setPendingBible(history.pending);
+    } catch (reason) { setBibleGenerationError(messageOf(reason)); }
+    finally { setSaving(null); }
+  }
+
+  async function recoverBible(jobId: string) {
+    if (!memory?.canEdit || busy) return;
+    setSaving("bible-recovery"); setBibleGenerationError(null);
+    try {
+      const result = await request<{ candidates: unknown }>(`${endpoint}/bible/jobs/${encodeURIComponent(jobId)}/recover`, "POST", {});
+      setBibleCandidates(parseBookBibleCandidates(result.candidates));
+      setPendingBible((current) => current?.filter((job) => job.id !== jobId) ?? null);
+      setBibleRequestKey(null);
+      setNotice("Existing Book Bible result recovered. No new generation was started.");
+    } catch (reason) { setBibleGenerationError(messageOf(reason)); }
+    finally { setSaving(null); }
+  }
+
+  async function generateBible() {
+    if (!memory?.canEdit || busy || bibleGenerationBlocked(pendingBible)) return;
+    const idempotencyKey = bibleRequestKey ?? crypto.randomUUID();
+    setBibleRequestKey(idempotencyKey); setGeneratingBible(true); setBibleGenerationError(null); setNotice(null);
+    try {
+      const result = await request<{ candidates: unknown }>(`${endpoint}/bible/generate`, "POST", { idempotencyKey });
+      setBibleCandidates(parseBookBibleCandidates(result.candidates));
+      setBibleRequestKey(null);
+    } catch (reason) {
+      if (metadataRequestCanRestart(reason)) setBibleRequestKey(null);
+      const failure = reason as { details?: { status?: string } };
+      if (["queued", "running"].includes(failure.details?.status ?? "")) setPendingBible(null);
+      setBibleGenerationError(messageOf(reason));
+    } finally { setGeneratingBible(false); }
+  }
+
+  function useBibleCandidate(item: BookBibleCandidate) {
+    if (!memory?.canEdit || busy) return;
+    if (!chooseEntry()) return;
+    setDraft({ type: item.type, name: item.name, description: item.description,
+      attributes: Object.entries(item.attributes).map(([key, value]) => {
+        const text = typeof value === "string" ? value : JSON.stringify(value);
+        return { key, value: text, original: value, originalText: text };
+      }), imageAssetIds: [], sourceRefs: item.sourceRefs });
+    setEntryDirty(true);
+    setNotice("Candidate copied into an unsaved memory entry. Review every fact and source, then choose Save.");
+    requestAnimationFrame(() => document.getElementById("bible-entry-details")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
+
   const visibleItems = (memory?.items ?? []).filter((item) => (filter === "all" || item.type === filter) && `${item.name} ${item.description ?? ""}`.toLowerCase().includes(query.toLowerCase()));
   const selected = memory?.items.find((item) => item.id === draft?.id);
 
@@ -357,6 +461,21 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           <div><h2 id="bible-title" className="text-2xl font-medium tracking-tight">Book Bible</h2><p className="mt-2 text-sm text-[#999]">{memory.items.length} saved {memory.items.length === 1 ? "entry" : "entries"} · changes are saved only when you choose Save.</p></div>
           {memory.canEdit && <button type="button" disabled={!!saving} onClick={() => chooseEntry()} className={primaryClass}>Add memory entry</button>}
         </div>
+        {memory.canEdit && <div className="mt-5 rounded-2xl border border-sky-300/20 bg-sky-300/[0.045] p-4 sm:p-5" aria-labelledby="bible-ai-title">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div><h3 id="bible-ai-title" className="font-medium text-sky-50">AI candidate shelf</h3><p id="bible-ai-help" className="mt-1 max-w-2xl text-xs leading-5 text-[#aaa]">Extract up to ten characters, places, objects, and other details from the first three saved chapters. Generation uses one AI credit. Candidates are suggestions, not established facts; only your explicit Save makes an entry part of this book’s memory.</p></div>
+            <button type="button" onClick={() => void generateBible()} disabled={busy || bibleGenerationBlocked(pendingBible)} aria-describedby="bible-ai-help" className={secondaryClass}>{generatingBible ? "Extracting…" : "Generate candidates · 1 credit"}</button>
+          </div>
+          {bibleRequestKey && !generatingBible && <p role="status" className="mt-3 text-xs text-amber-100">The previous request is unresolved. Retry with the same request key or recover its saved result; do not start another extraction.</p>}
+          {pendingBible === null && <p role="status" className="mt-3 text-xs text-amber-100">Check saved request status before starting another paid extraction.</p>}
+          {pendingBible && pendingBible.length > 0 && <div role="status" className="mt-3 rounded-xl border border-amber-200/20 p-3 text-xs text-amber-100"><p>One extraction is still pending. Recovery reads its existing result without generating again.</p>{pendingBible.map((job) => <div key={job.id} className="mt-2"><span>{job.status} · {new Date(job.createdAt).toLocaleString()} · request {job.id}</span><button type="button" disabled={busy} onClick={() => void recoverBible(job.id)} className={`${secondaryClass} mt-2 block`}>Recover existing result</button></div>)}</div>}
+          <div className="mt-4 border-t border-white/10 pt-4"><button type="button" disabled={busy} onClick={() => void loadBibleHistory()} className={secondaryClass}>{saving === "bible-history" ? "Loading drafts…" : "Load saved candidate drafts · no credits"}</button>
+            {bibleHistory && <div className="mt-3 space-y-2"><p className="text-xs text-[#999]">Latest 20 successful extractions. Opening a draft does not save facts or use credits.</p>{!bibleHistory.length && <p className="text-sm text-[#aaa]">No saved candidate drafts yet.</p>}{bibleHistory.map((item) => <button type="button" key={item.id} disabled={busy} onClick={() => { setBibleCandidates(item.candidates); setNotice("Saved candidates opened for review. No generation credits used."); }} className="block w-full rounded-xl border border-white/15 p-3 text-left text-sm hover:bg-white/5 disabled:opacity-50"><span className="block text-xs text-[#999]">{new Date(item.createdAt).toLocaleString()}</span><span className="mt-1 block">{item.candidates.length} candidate{item.candidates.length === 1 ? "" : "s"}{item.candidates.length ? ` · ${item.candidates.map((candidate) => candidate.name).join(", ")}` : " · no supported entities"}</span></button>)}</div>}
+          </div>
+          {generatingBible && <p role="status" className="mt-4 text-sm text-sky-100">Reading saved manuscript evidence and preparing review-only candidates…</p>}
+          {bibleGenerationError && <p role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-100">{bibleGenerationError} Your saved Book Bible was not changed.</p>}
+          {bibleCandidates && <div className="mt-5 space-y-3" aria-label="Review AI Book Bible candidates"><div className="flex flex-wrap items-center justify-between gap-3"><h4 className="font-medium">Review generated candidates</h4><button type="button" disabled={busy} onClick={() => setBibleCandidates(null)} className="text-xs text-[#aaa] underline underline-offset-4 hover:text-white">Close preview</button></div>{!bibleCandidates.length && <p className="rounded-xl border border-white/10 p-4 text-sm text-[#aaa]">The selected manuscript supported no candidates. No entry was added to your Book Bible.</p>}{bibleCandidates.map((item, index) => <article key={`${item.type}-${item.name}-${index}`} className="rounded-xl border border-white/15 bg-black/30 p-4"><div className="flex flex-wrap items-center gap-2"><span className="text-[10px] uppercase tracking-widest text-[#aaa]">{item.type}</span><span className="text-xs text-[#999]">{Math.round(item.confidence * 100)}% model confidence · verify against the text</span></div><h5 className="mt-2 break-words text-lg font-medium">{item.name}</h5><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#ccc]">{item.description || "No description supplied."}</p>{Object.keys(item.attributes).length > 0 && <dl className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(item.attributes).map(([key, value]) => <div key={key} className="rounded-lg border border-white/10 p-2 text-xs"><dt className="text-[#999]">{key}</dt><dd className="mt-1 break-words text-[#ddd]">{typeof value === "string" ? value : JSON.stringify(value)}</dd></div>)}</dl>}<div className="mt-4 border-t border-white/10 pt-3"><p className="text-[11px] uppercase tracking-widest text-[#999]">Saved manuscript citations</p><ul className="mt-2 space-y-2">{item.sourceRefs.map((ref) => <li key={`${ref.chapterId}-${ref.documentVersionId}-${ref.nodeId}`} className="break-all text-xs leading-5 text-[#aaa]">{memory.chapters.find((chapter) => chapter.id === ref.chapterId)?.title ?? "Referenced chapter"} · node {ref.nodeId} · pinned version {ref.documentVersionId.slice(0, 8)}… · hash {ref.textHash.slice(0, 12)}…</li>)}</ul></div><button type="button" disabled={busy} onClick={() => useBibleCandidate(item)} className={`${primaryClass} mt-4`}>Open as unsaved entry</button></article>)}</div>}
+        </div>}
         <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_180px]">
           <label className="text-xs text-[#aaa]">Search memory<input value={query} onChange={(event) => setQuery(event.target.value)} className={inputClass} placeholder="Name or description" type="search" /></label>
           <label className="text-xs text-[#aaa]">Entry type<select value={filter} onChange={(event) => setFilter(event.target.value)} className={inputClass}><option value="all">All types</option>{types.map((type) => <option key={type} value={type}>{type[0].toUpperCase() + type.slice(1)}</option>)}</select></label>

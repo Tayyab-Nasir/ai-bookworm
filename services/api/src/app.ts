@@ -24,6 +24,7 @@ import { editionRoutes } from "./routes/editions.js";
 import { publishingRoutes } from "./routes/publishing.js";
 import { accountRoutes } from "./routes/account.js";
 import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
+import { bookBibleGenerationRoutes } from "./routes/book-bible-generation.js";
 import { audiobookRoutes } from "./routes/audiobooks.js";
 import { translationRoutes } from "./routes/translations.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -63,6 +64,7 @@ export async function buildApp(
     storyBlueprintRoutes(v1);
     storyBlueprintProposalRoutes(v1);
     metadataGenerationRoutes(v1, { fetcher: opts.aiFetch });
+    bookBibleGenerationRoutes(v1, { fetcher: opts.aiFetch });
     aiRoutes(v1, { fetcher: opts.aiFetch });
     audiobookRoutes(v1, { fetcher: opts.renderFetch });
     translationRoutes(v1);

@@ -6,6 +6,7 @@ import { makeAuthPlugin } from "./plugins/auth.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
 import { bookMemoryRoutes } from "./routes/book-memory.js";
 import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
+import { bookBibleGenerationRoutes } from "./routes/book-bible-generation.js";
 
 const BOOK = "11111111-1111-4111-8111-111111111111";
 const OTHER_BOOK = "22222222-2222-4222-8222-222222222222";
@@ -26,6 +27,17 @@ type Store = Record<string, Row[]>;
 function fakeSupabase(store: Store, failTable?: string) {
   return {
     auth: { getUser: async (token: string) => ({ data: { user: token === "good" ? { id: USER } : null }, error: null }) },
+    async rpc(name: string, args: Record<string, unknown>) {
+      if (name !== "complete_book_bible_ai_job") return { data: null, error: { code: "42883" } };
+      const job = (store.ai_jobs ?? []).find((row) => row.id === args.p_job_id);
+      if (!job) return { data: null, error: { code: "P0002" } };
+      if (job.status !== "succeeded") {
+        job.status = "succeeded";
+        job.output_ref = { candidates: args.p_candidates, reviewRequired: true, savedBibleUpdated: false };
+        (store.usage_events ??= []).push({ ai_job_id: job.id, quantity: args.p_credit_quantity });
+      }
+      return { data: { ...job }, error: null };
+    },
     from(table: string) {
       const rows = store[table] ??= [];
       const filters: ((row: Row) => boolean)[] = [];
@@ -53,6 +65,7 @@ function fakeSupabase(store: Store, failTable?: string) {
         select() { return this; },
         limit(value: number) { rowLimit = value; return this; },
         eq(column: string, value: unknown) { filters.push((row) => row[column] === value); return this; },
+        gte(column: string, value: unknown) { filters.push((row) => String(row[column]) >= String(value)); return this; },
         is(column: string, value: unknown) { filters.push((row) => row[column] === value); return this; },
         in(column: string, values: unknown[]) { filters.push((row) => values.includes(row[column])); return this; },
         order(column: string, options?: { ascending: boolean }) { orderColumn = column; ascending = options?.ascending ?? true; return this; },
@@ -79,16 +92,183 @@ function initialStore(role = "editor"): Store {
   };
 }
 
-async function appWith(store: Store, failTable?: string) {
+async function appWith(store: Store, failTable?: string, aiFetch?: typeof fetch) {
   const app = Fastify();
   await app.register(errorHandlerPlugin);
   await app.register(makeAuthPlugin(() => fakeSupabase(store, failTable)));
   await app.register(async (v1) => bookMemoryRoutes(v1), { prefix: "/v1" });
   await app.register(async (v1) => metadataGenerationRoutes(v1, { fetcher: async () => { throw new Error("History must never call an AI provider"); } }), { prefix: "/v1" });
+  await app.register(async (v1) => bookBibleGenerationRoutes(v1, { fetcher: aiFetch ?? (async () => { throw new Error("Test transport must not dispatch AI"); }) }), { prefix: "/v1" });
   return app;
 }
 
 const entry = { type: "character", name: "Elara", description: "A mapmaker", attributes: { appearance: "Silver hair" }, imageAssetIds: [IMAGE], sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, note: "Opening scene" }] };
+
+test("Book Bible draft history is book-scoped, review-only, and redacts job input", async (t) => {
+  const store = initialStore();
+  const candidate = { suggestionKind: "book_bible_candidate", status: "pending", type: "character",
+    name: "Elara", description: "A mapmaker", attributes: { eyes: "silver" }, confidence: 0.8,
+    sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: SOURCE_HASH }] };
+  const job = { id: randomUUID(), book_id: BOOK, agent_type: "bookbible", status: "succeeded",
+    created_by: USER, created_at: TIME, input_ref: { secret: "private manuscript" }, output_ref: { candidates: [candidate] } };
+  store.ai_jobs = [job, { ...job, id: randomUUID(), book_id: OTHER_BOOK },
+    { ...job, id: randomUUID(), status: "running" },
+    { ...job, id: randomUUID(), output_ref: { candidates: [{ bad: true }] } }];
+  const app = await appWith(store); t.after(() => app.close());
+  const response = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/bible/drafts`, headers: auth });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.headers["cache-control"], "private, no-store");
+  assert.deepEqual(response.json(), { drafts: [{ id: job.id, createdAt: TIME, candidates: [candidate] }],
+    pending: [{ id: store.ai_jobs[2].id, createdAt: TIME, status: "running" }] });
+  assert.equal(response.body.includes("private manuscript"), false);
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
+
+test("Book Bible generation rejects unpaid access before any provider dispatch", async (t) => {
+  const store = initialStore();
+  store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];
+  const app = await appWith(store); t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/generate`, headers: auth,
+    payload: { idempotencyKey: randomUUID(), chapterIds: [CHAPTER] } });
+  assert.equal(response.statusCode, 422, response.body);
+  assert.equal(response.json().error.code, "quota_exceeded");
+  assert.equal(store.ai_jobs?.length ?? 0, 0);
+});
+
+test("Book Bible recovery never dispatches a second generation when result is unavailable", async (t) => {
+  const store = initialStore();
+  const job = { id: randomUUID(), book_id: BOOK, workspace_id: WORKSPACE,
+    agent_type: "bookbible", status: "running", created_by: USER, created_at: TIME,
+    input_ref: { contextSources: [{ chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: SOURCE_HASH }] } };
+  store.ai_jobs = [job];
+  const app = await appWith(store); t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/jobs/${job.id}/recover`, headers: auth });
+  assert.equal(response.statusCode, 503, response.body);
+  assert.equal(store.ai_jobs[0].status, "running");
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
+
+test("paid Book Bible generation stores a cited review draft, replays by key, and never writes canon", async (t) => {
+  const store = initialStore();
+  store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];
+  store.subscriptions = [{ organization_id: store.workspaces[0].organization_id, status: "active", plan_id: "paid" }];
+  store.plans = [{ id: "paid", entitlements_json: { ai_credits_monthly: 2 } }];
+  let posts = 0;
+  const aiFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(init?.method, "POST"); posts++;
+    const payload = JSON.parse(String(init.body));
+    assert.equal(payload.agentType, "bookbible");
+    assert.equal(payload.maxOutputTokens, 6000);
+    assert.equal(payload.input.chapters[CHAPTER].nodes[0].text, SOURCE_TEXT);
+    assert.equal(payload.input.chapters[CHAPTER].nodes[0].textHash, SOURCE_HASH);
+    const result = { jobId: payload.jobId, workspaceId: WORKSPACE, bookId: BOOK, agentType: "bookbible",
+      status: "succeeded", provider: "mock", model: "mock-1", usage: { inputTokens: 20, outputTokens: 10, estimatedCostUsd: 0 },
+      diagnostics: [], suggestions: [{ suggestionKind: "book_bible_candidate", status: "pending", type: "character",
+        name: "Elara", description: "A mapmaker", attributes: { eyes: "silver" }, confidence: 0.8,
+        sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: SOURCE_HASH }] }] };
+    return Response.json(result);
+  };
+  const app = await appWith(store, undefined, aiFetch); t.after(() => app.close());
+  const payload = { idempotencyKey: randomUUID(), chapterIds: [CHAPTER] };
+  const url = `/v1/books/${BOOK}/bible/generate`;
+  const first = await app.inject({ method: "POST", url, headers: auth, payload });
+  assert.equal(first.statusCode, 201, first.body);
+  assert.equal(first.json().candidates[0].name, "Elara");
+  assert.equal(posts, 1);
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+  assert.equal(store.usage_events?.length, 1);
+  assert.equal(JSON.stringify(store.ai_jobs?.[0].input_ref).includes(SOURCE_TEXT), false);
+  const replay = await app.inject({ method: "POST", url, headers: auth, payload });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(posts, 1);
+  assert.equal(store.usage_events?.length, 1);
+  const changed = await app.inject({ method: "POST", url, headers: auth,
+    payload: { ...payload, maxTokens: 16000 } });
+  assert.equal(changed.statusCode, 409);
+});
+
+test("lost Book Bible reply recovers its saved result without another paid POST", async (t) => {
+  const store = initialStore();
+  store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];
+  store.subscriptions = [{ organization_id: store.workspaces[0].organization_id, status: "active", plan_id: "paid" }];
+  store.plans = [{ id: "paid", entitlements_json: { ai_credits_monthly: 2 } }];
+  let saved: Record<string, unknown> | null = null;
+  let posts = 0;
+  const aiFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      posts++;
+      const input = JSON.parse(String(init.body));
+      saved = { jobId: input.jobId, workspaceId: WORKSPACE, bookId: BOOK, agentType: "bookbible",
+        status: "succeeded", provider: "mock", model: "mock-1", usage: { inputTokens: 20, outputTokens: 10, estimatedCostUsd: 0 },
+        diagnostics: [], suggestions: [] };
+      throw new Error("reply lost after result was saved");
+    }
+    assert.equal(init?.method, "GET");
+    return Response.json(saved);
+  };
+  const app = await appWith(store, undefined, aiFetch); t.after(() => app.close());
+  const key = randomUUID();
+  const url = `/v1/books/${BOOK}/bible/generate`;
+  const first = await app.inject({ method: "POST", url, headers: auth,
+    payload: { idempotencyKey: key, chapterIds: [CHAPTER] } });
+  assert.equal(first.statusCode, 503, first.body);
+  assert.equal(store.ai_jobs[0].status, "running");
+  assert.equal(posts, 1);
+  assert.equal(store.usage_events?.length ?? 0, 0);
+  const replay = await app.inject({ method: "POST", url, headers: auth,
+    payload: { idempotencyKey: key, chapterIds: [CHAPTER] } });
+  assert.equal(replay.statusCode, 409);
+  assert.equal(posts, 1);
+  const recovery = await app.inject({ method: "POST",
+    url: `/v1/books/${BOOK}/bible/jobs/${store.ai_jobs[0].id}/recover`, headers: auth });
+  assert.equal(recovery.statusCode, 200, recovery.body);
+  assert.deepEqual(recovery.json().candidates, []);
+  assert.equal(posts, 1);
+  assert.equal(store.usage_events.length, 1);
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
+
+test("Book Bible API holds forged citations without charging or writing canon", async (t) => {
+  const store = initialStore();
+  store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];
+  store.subscriptions = [{ organization_id: store.workspaces[0].organization_id, status: "active", plan_id: "paid" }];
+  store.plans = [{ id: "paid", entitlements_json: { ai_credits_monthly: 2 } }];
+  const aiFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    const payload = JSON.parse(String(init?.body));
+    return Response.json({ jobId: payload.jobId, workspaceId: WORKSPACE, bookId: BOOK, agentType: "bookbible",
+      status: "succeeded", provider: "mock", model: "mock-1", usage: { inputTokens: 20, outputTokens: 10, estimatedCostUsd: 0 },
+      diagnostics: [], suggestions: [{ suggestionKind: "book_bible_candidate", status: "pending", type: "character",
+        name: "Invented", description: "Unsupported", attributes: {}, confidence: 0.5,
+        sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: "a".repeat(64) }] }] });
+  };
+  const app = await appWith(store, undefined, aiFetch); t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/generate`, headers: auth,
+    payload: { idempotencyKey: randomUUID(), chapterIds: [CHAPTER] } });
+  assert.equal(response.statusCode, 503, response.body);
+  assert.equal(store.ai_jobs[0].status, "running");
+  assert.equal(store.usage_events?.length ?? 0, 0);
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
+
+test("a saved, definite Book Bible AI failure releases its slot without charging", async (t) => {
+  const store = initialStore();
+  store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];
+  store.subscriptions = [{ organization_id: store.workspaces[0].organization_id, status: "active", plan_id: "paid" }];
+  store.plans = [{ id: "paid", entitlements_json: { ai_credits_monthly: 2 } }];
+  const aiFetch = async (_url: string | URL | Request, init?: RequestInit) => {
+    const payload = JSON.parse(String(init?.body));
+    return Response.json({ jobId: payload.jobId, workspaceId: WORKSPACE, bookId: BOOK, agentType: "bookbible",
+      status: "failed", provider: "mock", model: "mock-1", usage: { inputTokens: 20, outputTokens: 10, estimatedCostUsd: 0 },
+      diagnostics: [], suggestions: [], error: "validation failed" });
+  };
+  const app = await appWith(store, undefined, aiFetch); t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/generate`, headers: auth,
+    payload: { idempotencyKey: randomUUID(), chapterIds: [CHAPTER] } });
+  assert.equal(response.statusCode, 503, response.body);
+  assert.equal(store.ai_jobs[0].status, "failed");
+  assert.equal(store.usage_events?.length ?? 0, 0);
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
 
 test("saved metadata drafts recover across fresh app instances without leaking job inputs", async (t) => {
   const store = initialStore();

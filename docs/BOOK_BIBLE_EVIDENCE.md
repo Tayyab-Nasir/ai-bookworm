@@ -44,14 +44,19 @@ Related search and existing Book Bible context cannot be cited as new
 manuscript evidence. The agent returns suggestions only; it cannot write to
 `book_bible_items`.
 
-This is **not yet a paid author-facing candidate workflow**. The AI service
-now uses a source-only private Book Bible result receipt, and a separate
-source-only completion function can atomically store bounded candidates,
-the AI run, and one operational AI-credit event without writing canon. The
-function rechecks each citation against both the job's trusted input and the
-full saved document node. One active request per author/book is enforced in
-the disposable database. These migrations are not installed hosted. The
-author API queue, read-only receipt recovery, review/apply UI, and explicit
-save through the citation-checking API still need to be connected.
+The author-facing source workflow now includes a paid API request, saved
+candidate history, read-only result recovery, and a review shelf in the Book
+Bible screen. The request reserves one operational `ai_credits` unit before
+dispatch, builds full-node citations from saved manuscript versions, and
+blocks another extraction while its original result is unresolved. The AI
+service uses a source-only private Book Bible result receipt, and a separate
+source-only completion function atomically stores bounded candidates, the AI
+run, and one operational AI-credit event without writing canon. The function
+rechecks each citation against both the job's trusted input and the full
+saved document node. The author can copy a candidate into an unsaved form,
+edit it, and explicitly Save through the citation-checking Book Bible API.
+One active request per author/book is enforced in the disposable database.
+These migrations are **not installed hosted**; this source workflow is not
+live production acceptance or an approved retail token-pricing catalog.
 The citation validates source identity, not semantic truth; author review
 remains required before any generated detail becomes canon.

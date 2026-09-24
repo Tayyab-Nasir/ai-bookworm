@@ -499,6 +499,60 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/generate:
+    post:
+      tags: [v1]
+      operationId: generateBookBibleCandidates
+      summary: Generate review-only, manuscript-cited Book Bible candidates
+      description: Reserves one operational AI credit before provider dispatch. A saved request key replays its original job; uncertain replies must be recovered without regenerating. Generation never changes canonical Book Bible entries.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idempotencyKey]
+              additionalProperties: false
+              properties:
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+                chapterIds: { type: array, minItems: 1, maxItems: 3, items: { type: string, format: uuid } }
+                maxTokens: { type: integer, minimum: 4096, maximum: 16000, default: 12000 }
+      responses:
+        "200": { description: Existing successful job and candidate list; no new generation }
+        "201": { description: Candidate list saved for review; Book Bible canon unchanged }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/drafts:
+    get:
+      tags: [v1]
+      operationId: listBookBibleCandidateDrafts
+      summary: List saved candidate batches and unresolved requests without spending credits
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Book-scoped review drafts and caller-owned pending job identifiers }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/jobs/{jobId}/recover:
+    post:
+      tags: [v1]
+      operationId: recoverBookBibleCandidateResult
+      summary: Read and settle an existing private Book Bible result without new generation
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Existing candidate list; no provider POST }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/metadata/generate:
     post:
       tags: [v1]
