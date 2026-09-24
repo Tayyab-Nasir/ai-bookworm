@@ -21,7 +21,24 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 - Read git status before edits. Preserve shared uncommitted work. Saved
   completion claims require current code and behavioral verification.
 
-## Current checkpoint: 2026-09-23
+## Current checkpoint: 2026-09-24
+
+### Book creation recovery
+
+`b9bdca8` gives new-book setup a client-generated UUID stored before the first
+POST. The API accepts it as the book ID and returns the original row on a
+matching unique-key replay; changed details, actor or workspace do not become
+a second book. On reload, the UI resolves an uncertain ID against the server
+before offering the editor, and requires re-entry when no book exists. If
+browser recovery storage cannot save the ID, no create request is sent. The
+checkpoint keeps identifiers only, not manuscript or story text. Local 88 web
+and 292 API tests, both TypeScript checks, isolated production build and native
+Edge synthetic-auth/API lost-reply/reload acceptance pass. This is not hosted
+Supabase acceptance. No migration, provider call or deployment. Next: cover
+the pre-accept outage/re-entry browser path and the upload allocation/PUT lost
+reply orphan risk, then continue cross-service author journeys and release
+gates. See `Codex Sessions/2026-09/2026-09-24-bookworm-create-recovery.md` in
+the shared vault. Preserve generated Next/Graphify dirt.
 
 ### Chapter restore recovery
 
