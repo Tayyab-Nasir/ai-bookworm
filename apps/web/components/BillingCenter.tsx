@@ -9,7 +9,7 @@ import { apiClient } from "./api";
 const cardClass = "rounded-2xl border border-white/10 bg-white/[0.035] p-5";
 
 function channelName(channel: string) {
-  return ({ export: "Universal export", kdp: "Amazon KDP", apple_books: "Apple Books", barnes_noble: "Barnes & Noble Press", lulu: "Lulu" } as Record<string, string>)[channel] ?? channel;
+  return ({ export: "Universal export", kdp: "Amazon KDP", apple_books: "Apple Books", barnes_noble: "Barnes & Noble Press", lulu: "Lulu", google_play: "Google Play Books" } as Record<string, string>)[channel] ?? channel;
 }
 
 function meter(summary: BillingUsageSummary | null, key: string, quotaKey?: string) {

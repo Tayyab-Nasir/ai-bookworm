@@ -47,7 +47,7 @@ export async function loadPublishingInputs(sb: SupabaseClient, job: Job) {
   if (config.kind === "audiobook") throw new WorkerFailure("worker_invalid_channel", false);
   const formatChannels: Record<string, readonly string[]> = {
     render: ["ebook", "print"], export: ["ebook", "print"], kdp: ["ebook", "print"],
-    apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"],
+    apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"],
   };
   if (!formatChannels[job.channel]?.includes(config.kind)
     || (job.request_json.action === "render" ? job.channel !== "render" : job.channel === "render")
@@ -60,7 +60,7 @@ export async function loadPublishingInputs(sb: SupabaseClient, job: Job) {
   if (!workspace) throw new WorkerFailure("worker_workspace_missing", false);
   const { entitlements } = await currentEntitlements(sb, workspace.organization_id);
   if (job.request_json.action === "export_package") {
-    const entitlement = { kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu" }[job.channel];
+    const entitlement = { kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu", googleplay: "google_play" }[job.channel];
     if (!entitlement || !entitlements.publishing_channels.includes(entitlement)) throw new WorkerFailure("worker_plan_changed", false);
   } else if (entitlements.rendering !== true) throw new WorkerFailure("worker_plan_changed", false);
   const model = await assembleBookModel(sb, book);

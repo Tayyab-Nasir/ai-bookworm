@@ -1086,7 +1086,7 @@ paths:
               properties:
                 bookId: { type: string, format: uuid }
                 editionId: { type: string, format: uuid }
-                channel: { type: string, enum: [export, kdp, apple, barnesnoble, lulu] }
+                channel: { type: string, enum: [export, kdp, apple, barnesnoble, lulu, googleplay] }
                 idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
       responses:
         "201":
@@ -2498,7 +2498,7 @@ components:
             confidence: { type: string, maxLength: 100 }
     RetailerChannel:
       type: string
-      enum: [kdp, apple, barnesnoble, lulu]
+      enum: [kdp, apple, barnesnoble, lulu, googleplay]
     PreflightResult:
       type: object
       required: [jobId, ruleVersion, channel, requestedChannel, errors, warnings, findings]
@@ -2506,7 +2506,7 @@ components:
         jobId: { type: string, format: uuid }
         ruleVersion: { type: string }
         channel: { type: string, nullable: true }
-        requestedChannel: { type: string, enum: [export, kdp, apple, barnesnoble, lulu] }
+        requestedChannel: { type: string, enum: [export, kdp, apple, barnesnoble, lulu, googleplay] }
         errors: { type: integer, minimum: 0 }
         warnings: { type: integer, minimum: 0 }
         findings: { type: array, items: { type: object } }

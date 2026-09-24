@@ -471,13 +471,13 @@ export interface PreflightResult {
   jobId: string;
   ruleVersion: string;
   channel: string | null;
-  requestedChannel: "export" | "kdp" | "apple" | "barnesnoble" | "lulu";
+  requestedChannel: "export" | "kdp" | "apple" | "barnesnoble" | "lulu" | "googleplay";
   errors: number;
   warnings: number;
   findings: PreflightFinding[];
 }
 
-export type RetailerChannel = "kdp" | "apple" | "barnesnoble" | "lulu";
+export type RetailerChannel = "kdp" | "apple" | "barnesnoble" | "lulu" | "googleplay";
 
 export interface PublishingPackageJob {
   id: string;

@@ -9,6 +9,7 @@ _REGISTRY: dict[str, str] = {
     "apple": "rules.apple_v1",
     "barnesnoble": "rules.bn_v1",
     "lulu": "rules.lulu_v1",
+    "googleplay": "rules.google_play_v1",
 }
 
 

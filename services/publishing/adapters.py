@@ -109,7 +109,10 @@ class ExportAdapter:
                      "Use book.epub or book.pdf and the included cover, when present, in the retailer's own upload form.\n"
                      "metadata.json contains the saved listing text for manual entry, not a retailer import schema.\n"
                      "Review description, keywords and categories against the current retailer form.\n"
-                     "Confirm rights, ISBN entitlement, territories, pricing and required AI-content disclosures yourself.\n"
+                     + ("For Google Play Books, upload book.epub in an existing single-book Partner Center Content tab; this generic filename is not for bulk upload.\n"
+                        "Run EpubCheck and review Google's processing result, pricing, territories and Review tab before you click Publish.\n"
+                        if self.CHANNEL == "googleplay" else "")
+                     + "Confirm rights, ISBN entitlement, territories, pricing and required AI-content disclosures yourself.\n"
                      "Inspect the retailer preview or physical proof before approving publication.\n"
                      "manifest.json records checksums and the validation rule version; zero errors is not retailer approval.\n"
                      "This is a snapshot: later book changes require a new render, preflight and package.\n"
@@ -176,8 +179,15 @@ class LuluAdapter(ExportAdapter):
                                 required_metadata=("title", "author", "language"))
 
 
+class GooglePlayAdapter(ExportAdapter):
+    CHANNEL = "googleplay"
+    _CAPS = ChannelCapabilities(formats=("epub",), can_submit=False,
+                                can_check_status=False,
+                                required_metadata=("title", "author", "language"))
+
+
 _ADAPTERS: dict[str, ExportAdapter] = {
-    a.CHANNEL: a for a in (KdpAdapter(), AppleBooksAdapter(), BarnesNobleAdapter(), LuluAdapter())
+    a.CHANNEL: a for a in (KdpAdapter(), AppleBooksAdapter(), BarnesNobleAdapter(), LuluAdapter(), GooglePlayAdapter())
 }
 
 

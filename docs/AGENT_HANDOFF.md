@@ -23,6 +23,20 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Google Play Books ebook handoff
+
+An EPUB-only `googleplay` target now spans Publishing Studio, the client/API,
+rendering preflight, package service and a source-only additive SQL migration.
+The channel checks a readable 640–7200px front cover embedded in the exact
+EPUB, requires the `google_play` paid publishing entitlement, and produces a
+private deterministic ZIP for manual single-title Partner Center upload.
+It does **not** submit, publish, run EpubCheck, verify Google processing or
+create a sale. Full local `npm run verify` and isolated production web build
+pass (71 disposable migrations/49 SQL assertions, 304 API, 349 services,
+12 E2E, 30 security, load/evals). No hosted migration or retailer action.
+See `docs/GOOGLE_PLAY_EBOOK_EXPORT.md`. Next: EpubCheck integration and
+native Partner Center/hosted acceptance, then wider release gates.
+
 ### Image usage measurement provenance
 
 The OpenAI image adapter now saves `measurementStatus` (`complete`, `partial`,

@@ -40,7 +40,7 @@ def _ctx(artifact=True):
 
 
 def test_all_channels_registered():
-    for ch in ("kdp", "apple", "barnesnoble", "lulu"):
+    for ch in ("kdp", "apple", "barnesnoble", "lulu", "googleplay"):
         assert get_adapter(ch).channel() == ch
     with pytest.raises(KeyError):
         get_adapter("smashwords")
@@ -63,6 +63,40 @@ def test_kdp_validate_flags_missing_description():
     result = get_adapter("kdp").validate(ctx)
     assert result["errors"] >= 1
     assert any(f["rule_id"] == "KDP-META-001" for f in result["findings"])
+
+
+def test_google_play_requires_embedded_front_cover_and_builds_single_title_handoff():
+    from PIL import Image
+    adapter = get_adapter("googleplay")
+    assert adapter.capabilities().formats == ("epub",)
+    assert adapter.capabilities().can_submit is False
+    missing = adapter.validate({**_ctx(), "channel": "googleplay"})
+    assert any(item["code"] == "GOOGLE-EPUB-COVER" for item in missing["findings"])
+
+    cover_id = "google-test-cover"
+    edition = {"kind": "ebook", "cover": {"asset_id": cover_id}}
+    cover = BytesIO()
+    Image.new("RGB", (800, 1200), "#43536a").save(cover, "PNG")
+    epub, _ = render_epub(VALID, parse_edition(edition), cover.getvalue())
+    ctx = {"book": VALID, "edition": edition, "artifact": epub, "channel": "googleplay",
+           "cover_bytes": cover.getvalue()}
+    result = adapter.validate(ctx)
+    assert result["errors"] == 0, result["findings"]
+    assert result["ruleVersion"] == "core-1.0.8+google-play-1.0.0"
+    exported = adapter.build_package(ctx, {"book.epub": epub})[0]
+    assert exported.path == "googleplay-export.zip"
+    with zipfile.ZipFile(BytesIO(exported.data)) as archive:
+        assert archive.read("book.epub") == epub
+        assert b"Partner Center Content tab" in archive.read("README.txt")
+        assert json.loads(archive.read("manifest.json"))["channel"] == "googleplay"
+
+    too_small = BytesIO()
+    Image.new("RGB", (320, 480), "#43536a").save(too_small, "PNG")
+    small_epub, _ = render_epub(VALID, parse_edition(edition), too_small.getvalue())
+    small = adapter.validate({**ctx, "artifact": small_epub})
+    assert any(item["code"] == "GOOGLE-EPUB-COVER" for item in small["findings"])
+    print_only = adapter.validate({**ctx, "edition": {"kind": "print"}})
+    assert any(item["code"] == "GOOGLE-EPUB-ONLY" for item in print_only["findings"])
 
 
 def test_build_package_deterministic_export_zip():

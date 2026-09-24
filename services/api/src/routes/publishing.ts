@@ -7,8 +7,8 @@ import { requireEntitlement } from "../lib/entitlements.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { editionConfigSchema, loadRenderImages, withEditionLanguage } from "./editions.js";
 
-const channelSchema = z.enum(["export", "kdp", "apple", "barnesnoble", "lulu"]);
-const retailerChannelSchema = z.enum(["kdp", "apple", "barnesnoble", "lulu"]);
+const channelSchema = z.enum(["export", "kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
+const retailerChannelSchema = z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
 const preflightSchema = z.object({
   bookId: z.string().uuid(),
   editionId: z.string().uuid(),
@@ -84,10 +84,10 @@ export const packageServiceResponseSchema = z.object({
 }).strict();
 
 const CHANNEL_ENTITLEMENT: Record<z.infer<typeof retailerChannelSchema>, string> = {
-  kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu",
+  kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu", googleplay: "google_play",
 };
 const CHANNEL_FORMATS: Record<z.infer<typeof retailerChannelSchema>, ("ebook" | "print")[]> = {
-  kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"],
+  kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"],
 };
 
 const BUCKET = "book-assets";

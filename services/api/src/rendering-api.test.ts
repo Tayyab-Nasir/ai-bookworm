@@ -201,37 +201,37 @@ function successfulRenderer(requests: unknown[]) {
 function enableRetailerPackages(store: Store) {
   const planId = "d0000000-0000-4000-8000-000000000009";
   store.tables.subscriptions.push({ id: crypto.randomUUID(), organization_id: ORG, plan_id: planId, status: "active", created_at: "2026-09-04T00:00:00Z", current_period_end: null });
-  store.tables.plans.push({ id: planId, name: "team", entitlements_json: { publishing_channels: ["export", "kdp", "apple_books", "barnes_noble", "lulu"] } });
+  store.tables.plans.push({ id: planId, name: "team", entitlements_json: { publishing_channels: ["export", "kdp", "apple_books", "barnes_noble", "lulu", "google_play"] } });
 }
 
-function successfulRenderAndPreflight(requests: unknown[]) {
+function successfulRenderAndPreflight(requests: unknown[], channel = "kdp") {
   return async (input: string | URL | Request, init?: RequestInit) => {
     requests.push({ url: String(input), body: JSON.parse(String(init?.body)) });
     if (String(input).endsWith("/preflight")) {
       return new Response(JSON.stringify({
-        ruleVersion: "core-test+kdp-test", channel: "kdp", errors: 0, warnings: 1, findings: [],
+        ruleVersion: `core-test+${channel}-test`, channel, errors: 0, warnings: 1, findings: [],
       }), { status: 200, headers: { "content-type": "application/json" } });
     }
     return successfulRenderer([])(input, init);
   };
 }
 
-function successfulPackager(requests: unknown[]) {
+function successfulPackager(requests: unknown[], channel = "kdp") {
   return async (_input: string | URL | Request, init?: RequestInit) => {
     requests.push(JSON.parse(String(init?.body)));
     const packageBytes = Buffer.from("PK\u0003\u0004deterministic-channel-package");
     return new Response(JSON.stringify({
-      channel: "kdp", ruleVersion: "core-test+kdp-test", errors: 0,
-      packages: [{ path: "kdp-export.zip", sha256: sha(packageBytes), dataBase64: packageBytes.toString("base64") }],
+      channel, ruleVersion: `core-test+${channel}-test`, errors: 0,
+      packages: [{ path: `${channel}-export.zip`, sha256: sha(packageBytes), dataBase64: packageBytes.toString("base64") }],
     }), { status: 200, headers: { "content-type": "application/json" } });
   };
 }
 
-async function createReadySources(app: Awaited<ReturnType<typeof buildApp>>) {
+async function createReadySources(app: Awaited<ReturnType<typeof buildApp>>, channel = "kdp") {
   const render = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: crypto.randomUUID() } });
   assert.equal(render.statusCode, 201, render.body);
   const preflight = await app.inject({ method: "POST", url: "/v1/publishing/validate", headers: auth, payload: {
-    bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: crypto.randomUUID(),
+    bookId: BOOK, editionId: EDITION, channel, idempotencyKey: crypto.randomUUID(),
   } });
   assert.equal(preflight.statusCode, 201, preflight.body);
   return { renderJobId: render.json().jobId as string, preflightJobId: preflight.json().jobId as string };
@@ -401,6 +401,29 @@ test("editor creates a durable private retailer package and can list, read, and 
   assert.equal(replay.json().id, body.id);
   assert.equal(packageRequests.length, 1);
   assert.equal(store.tables.usage_events.filter((row) => row.meter === "publishing").length, 1);
+  await app.close();
+});
+
+test("Google Play ebook preflight and private package remain manual and plan-gated", async () => {
+  const store = baseStore();
+  const packageRequests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([], "googleplay"),
+    publishingFetch: successfulPackager(packageRequests, "googleplay"),
+  });
+  const sources = await createReadySources(app, "googleplay");
+  const payload = { bookId: BOOK, editionId: EDITION, channel: "googleplay", ...sources,
+    idempotencyKey: "google-play-package-0001" };
+  const denied = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+  assert.equal(denied.statusCode, 422, denied.body);
+  assert.equal(packageRequests.length, 0);
+  enableRetailerPackages(store);
+  const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(created.json().submissionMode, "manual");
+  assert.equal(created.json().channel, "googleplay");
+  assert.equal((packageRequests[0] as Row).channel, "googleplay");
+  assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 1);
   await app.close();
 });
 

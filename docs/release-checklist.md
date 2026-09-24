@@ -1,5 +1,16 @@
 # MVP Release Checklist
 
+## 2026-09-24 Google Play Books ebook export
+
+Google Play Books now has a local, entitlement-gated, EPUB-only preflight and
+private manual-handoff package. It checks saved metadata and a readable front
+cover embedded in the exact EPUB, and explicitly requires the author to run
+EpubCheck and complete Google Partner Center review/pricing/publishing. The
+additive database migration is local-only. No Google account was connected,
+file uploaded, sale recorded or title published. See
+[`GOOGLE_PLAY_EBOOK_EXPORT.md`](GOOGLE_PLAY_EBOOK_EXPORT.md). This adds a
+channel to item 9; it does not change item 9's PARTIAL release status.
+
 ## 2026-09-23 worker runtime preparation
 
 Nine worker roles now share an allowlisted launcher, with Linux systemd fleet
