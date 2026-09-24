@@ -83,6 +83,30 @@ async function race(kind, media) {
   assert.equal(await sql(`select count(*) from ai_jobs j join workspaces w on w.id=j.workspace_id where w.organization_id='${f.org}' and j.status in ('queued','running');`), kind === 'completion' ? '0' : '1');
   console.log(`PASS native concurrent ${media.label} ${kind}`);
 }
+async function imageSingleFlightRace(rollback) {
+  const f = await fixture({ meter: 'image_credits', first: 'illustrator', second: 'cover_designer' });
+  await sql(`update plans set entitlements_json='{"image_credits_monthly":3}'
+    where id=(select plan_id from subscriptions where organization_id='${f.org}' order by created_at desc limit 1);`);
+  const secondId = randomUUID();
+  const second = `insert into ai_jobs(id,workspace_id,agent_type,status,input_ref,idempotency_key,created_by)
+    values('${secondId}','${f.ws}','cover_designer','running','{}','${secondId}','${f.u}');`;
+  const held = session();
+  held.child.stdin.write(`begin; ${f.first} select 'BOOKWORM_READY';\n`);
+  await until(() => { assert.equal(held.ended, false, held.stderr); return held.stdout.includes('BOOKWORM_READY'); }, 'Image single-flight holder did not become ready');
+  const name = `image_single_${randomUUID().replaceAll('-', '')}`;
+  const contender = session(database, name); contender.child.stdin.end(second);
+  await until(async () => {
+    assert.equal(contender.ended, false, `Image single-flight contender did not wait: ${contender.stderr}`);
+    return await sql(`select count(*) from pg_stat_activity where application_name='${name}' and wait_event_type='Lock';`) === '1';
+  }, 'Expected image single-flight organization lock wait');
+  held.child.stdin.end(rollback ? 'rollback;\n' : 'commit;\n');
+  assert.equal((await held.done).code, 0, held.stderr);
+  const result = await contender.done;
+  if (rollback) assert.equal(result.code, 0, result.stderr);
+  else { assert.notEqual(result.code, 0); assert.match(result.stderr, /23514.*image request already pending/s); }
+  assert.equal(await sql(`select count(*) from ai_jobs where workspace_id='${f.ws}' and created_by='${f.u}' and status='running';`), '1');
+  console.log(`PASS native image single-flight ${rollback ? 'rollback' : 'commit'}`);
+}
 async function deductionRace(replay) {
   const user = randomUUID(); const job = randomUUID();
   await sql(`insert into auth.users(id,email) values('${user}','deduction@local.test');
@@ -557,6 +581,8 @@ try {
   ]) {
     for (const kind of ['reservation', 'completion', 'rollback']) await race(kind, media);
   }
+  await imageSingleFlightRace(false);
+  await imageSingleFlightRace(true);
   await deductionRace(true);
   await deductionRace(false);
   await fundedQuoteRace();

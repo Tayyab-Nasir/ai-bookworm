@@ -398,6 +398,9 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     if (jobError?.code === "23514" && jobError.message === "image credit capacity exhausted") {
       throw new AppError(422, "Your image credits are used or reserved by pending requests. Check image history before generating again. No new image generation was started.", undefined, "image_credit_capacity_exhausted");
     }
+    if (jobError?.code === "23514" && jobError.message === "image request already pending") {
+      throw new AppError(409, "An image request is already pending. Check image history before starting another.", undefined, "image_request_pending");
+    }
     if (jobError?.code === "42501" && jobError.message === "image reservation requires editing access") {
       throw new AppError(403, "Your editing permission changed. No image generation was started.", undefined, "image_reservation_access_changed");
     }

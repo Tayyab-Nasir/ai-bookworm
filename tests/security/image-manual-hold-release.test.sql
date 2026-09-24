@@ -13,6 +13,7 @@ begin
   insert into public.workspaces(id,organization_id,name,slug,created_by)
     values(v_ws,v_org,'Image Studio','image-release-studio',v_user);
   insert into public.workspace_members(workspace_id,user_id,role) values(v_ws,v_user,'editor');
+  insert into public.workspace_members(workspace_id,user_id,role) values(v_ws,v_admin,'editor');
   insert into public.plans(id,name,billing_period,price_cents,entitlements_json)
     values(v_plan,'Release fixture','month',1000,'{"image_credits_monthly":5}');
   insert into public.subscriptions(organization_id,plan_id,status) values(v_org,v_plan,'active');
@@ -77,7 +78,7 @@ begin
   end;
   insert into public.ai_jobs(id,workspace_id,agent_type,status,input_ref,idempotency_key,created_by,started_at)
     values('a9000000-0000-4000-8000-000000000238','a9000000-0000-4000-8000-000000000234',
-      'illustrator','running','{}','image-release-receipt','a9000000-0000-4000-8000-000000000231',now()-interval '16 minutes');
+      'illustrator','running','{}','image-release-receipt','a9000000-0000-4000-8000-000000000232',now()-interval '16 minutes');
   insert into public.image_completion_receipts(job_id,completion_json)
     values('a9000000-0000-4000-8000-000000000238','{}');
   begin

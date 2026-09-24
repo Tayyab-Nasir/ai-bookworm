@@ -32,7 +32,14 @@ Before releasing a hold:
    rechecks eligibility and writes an audit row atomically.
 5. Refresh the admin job and audit record, then have the author refresh image
    history. The old idempotency key remains failed and cannot regenerate;
-   the author may explicitly start a new request when ready.
+the author may explicitly start a new request when ready.
+
+`20260924160000_image_single_flight_reservation.sql` also prevents a second
+pending image reservation for the same author/workspace inside the database
+transaction, even when two API connections both pass their advisory pending
+read. This is a dispatch safety guard, not an automatic release policy. Until
+that migration is installed, the earlier hosted database cannot be assumed to
+have this concurrency protection.
 
 Do **not** release on a timer alone. The checkboxes are operator attestations,
 not automated proof. An uncertain provider charge is a platform reconciliation

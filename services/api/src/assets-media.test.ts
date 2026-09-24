@@ -143,6 +143,7 @@ const auth = { authorization: "Bearer good" };
 test("image reservation refusal never starts a provider call or stores an image", async () => {
   for (const [code, message, status, errorCode] of [
     ["23514", "image credit capacity exhausted", 422, "image_credit_capacity_exhausted"],
+    ["23514", "image request already pending", 409, "image_request_pending"],
     ["42501", "image reservation requires editing access", 403, "image_reservation_access_changed"],
     ["23514", "private unrelated SQL detail", 500, null],
   ] as const) {

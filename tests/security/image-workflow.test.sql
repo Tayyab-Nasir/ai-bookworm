@@ -2,7 +2,8 @@
 begin;
 
 insert into auth.users(id,email) values
-  ('a6000000-0000-0000-0000-000000000001','image-editor@local.test');
+  ('a6000000-0000-0000-0000-000000000001','image-editor@local.test'),
+  ('a6000000-0000-0000-0000-000000000002','image-second-editor@local.test');
 insert into public.organizations(id,name,slug,owner_user_id) values
   ('11000000-0000-4000-8000-000000000001','Image Org','image-org','a6000000-0000-0000-0000-000000000001');
 insert into public.organization_members(organization_id,user_id,role) values
@@ -10,7 +11,8 @@ insert into public.organization_members(organization_id,user_id,role) values
 insert into public.workspaces(id,organization_id,name,slug,created_by) values
   ('21000000-0000-4000-8000-000000000001','11000000-0000-4000-8000-000000000001','Image Workspace','image-ws','a6000000-0000-0000-0000-000000000001');
 insert into public.workspace_members(workspace_id,user_id,role) values
-  ('21000000-0000-4000-8000-000000000001','a6000000-0000-0000-0000-000000000001','editor');
+  ('21000000-0000-4000-8000-000000000001','a6000000-0000-0000-0000-000000000001','editor'),
+  ('21000000-0000-4000-8000-000000000001','a6000000-0000-0000-0000-000000000002','editor');
 insert into public.plans(id,name,billing_period,price_cents,entitlements_json) values
   ('71000000-0000-4000-8000-000000000001','Image test','month',1000,'{"image_credits_monthly":5}');
 insert into public.subscriptions(organization_id,plan_id,status) values
@@ -23,7 +25,7 @@ insert into public.ai_jobs(
   id,workspace_id,book_id,agent_type,status,input_ref,idempotency_key,created_by
 ) values
   ('51000000-0000-4000-8000-000000000001','21000000-0000-4000-8000-000000000001','31000000-0000-4000-8000-000000000001','illustrator','running','{"size":"1024x1024","quality":"medium"}','image-success','a6000000-0000-0000-0000-000000000001'),
-  ('51000000-0000-4000-8000-000000000002','21000000-0000-4000-8000-000000000001','31000000-0000-4000-8000-000000000001','illustrator','running','{"size":"1024x1024","quality":"low"}','image-invalid','a6000000-0000-0000-0000-000000000001');
+  ('51000000-0000-4000-8000-000000000002','21000000-0000-4000-8000-000000000001','31000000-0000-4000-8000-000000000001','illustrator','running','{"size":"1024x1024","quality":"low"}','image-invalid','a6000000-0000-0000-0000-000000000002');
 
 do $$
 begin

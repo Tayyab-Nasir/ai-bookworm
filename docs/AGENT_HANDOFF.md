@@ -23,6 +23,23 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Concurrent image request reservation
+
+`20260924160000_image_single_flight_reservation.sql` moves the
+one-pending-image-per-author/workspace rule into the database's existing
+organization-lock/credit-reservation transaction. Two API connections can no
+longer both pass the earlier read and dispatch overlapping paid image jobs for
+the same author/workspace. A different author or workspace can still reserve
+available credits. The API maps the specific database refusal to 409 without
+calling the provider. The new disposable SQL test and adapted older fixtures
+pass; a native two-connection commit/rollback race is added to CI but was not
+run locally because this machine lacks `psql`/Docker. Full local `npm run
+verify` passes: 70 migrations, 48 SQL assertion files, 302 API tests, 348
+service tests, 12 Python E2E tests, 30 security tests, load smoke and mock
+evals. No hosted migration or provider call was made. The new migration is
+source-only until a separate rollout review; image pricing/provider/storage
+and native browser acceptance remain release gates.
+
 ### Operator resolution for unconfirmed image holds
 
 An additive migration and admin-only API/UI now provide a reviewed release
