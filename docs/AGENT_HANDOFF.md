@@ -32,7 +32,9 @@ hold the running job with `ai_provider_outcome_unconfirmed`, preserve the
 operational credit reservation, and create a private incident without charging
 the author. The AI panel shows this state. The AI service now also reserves
 and saves private, durable review-result receipts, so a lost reply can be
-read without another provider call. An admin-only, audited release is now
+read without another provider call. The worker attempts one read-only
+receipt recovery after an uncertain POST, validating job identity and saved
+manuscript operations before charging. An admin-only, audited release is now
 source-built for aged holds with no result; a saved result blocks release.
 All three additive migrations are source-only, not live. Operator receipt
 settlement and provider-usage

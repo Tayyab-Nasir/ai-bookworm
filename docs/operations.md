@@ -458,7 +458,9 @@ before production tuning.
 - Writer/proofreader/copyeditor/consistency workers must run only after
   the uncertain-hold and durable-receipt migrations are installed and verified.
   The worker marks dispatch before HTTP; a marked expired lease is never
-  reclaimed for another paid call. OpenAI SDK retries are disabled.
+  reclaimed for another paid call. OpenAI SDK retries are disabled. After an
+  uncertain POST the worker may read and settle an already-saved, matching
+  receipt; that read never regenerates content.
 - Alert on `ai_provider_outcome_unconfirmed` and inspect the private
   `ai_review_unconfirmed` dead-letter incident. The job remains running with
   its operational credit reserved; no customer usage event is written.

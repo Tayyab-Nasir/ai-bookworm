@@ -12,13 +12,18 @@ The AI service now reserves each paid review job in a private, durable
 response before returning it. A matching replay returns the saved result;
 an unresolved reservation refuses another provider call. The service's
 read-only job lookup can recover a saved result after a lost worker reply.
-This does not itself settle a held job: operator-controlled result settlement
-remains necessary.
+The worker now makes one read-only receipt lookup after an uncertain POST and
+can settle the original fenced job if a matching saved result is already
+available. It never sends a second generation POST. Identity and saved
+manuscript operations are validated before settlement. If the result arrives
+only after the worker has held the job, operator-controlled settlement remains
+necessary.
 
 The OpenAI Responses client disables SDK retries. An API transport/status
 error propagates as an uncertain paid outcome rather than a normal failed
 agent result. If the worker loses the service reply, receives a non-success
-or invalid response, or cannot confirm database completion, it tries to mark
+or invalid response, or cannot confirm database completion, it first checks
+for an already-saved result; if none can be safely settled, it tries to mark
 the running job `ai_provider_outcome_unconfirmed`. That clears its lease but
 keeps its `running` status and operational credit hold. It creates a private
 dead-letter incident. No customer usage event is written on that path. A

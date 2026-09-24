@@ -59,9 +59,24 @@ export async function runOneAiReviewJob(sb: SupabaseClient, options: { leaseSeco
   if (claim.error) throw new AiReviewFailure("ai_claim_failed", true); const raw = row(claim.data); if (!raw) return { status: "idle" };
   const parsed = claimedSchema.safeParse(raw); const jobId = String(raw.id); const token = String(raw.lease_token); if (!parsed.success) { await sb.rpc("fail_ai_review_job", { p_job_id: jobId, p_lease_token: token, p_error_code: "ai_invalid_input", p_error_message: "Invalid queued AI job", p_retryable: false }); return { status: "failed", jobId }; }
   const abort = new AbortController(); let renewal: Promise<void> | undefined; const heartbeat = setInterval(() => { if (renewal) return; renewal = Promise.resolve(sb.rpc("renew_ai_review_lease", { p_job_id: jobId, p_lease_token: token, p_lease_seconds: leaseSeconds })).then((renewed) => { if (renewed.error || renewed.data !== true) abort.abort(); }).catch(() => abort.abort()).finally(() => { renewal = undefined; }); }, Math.floor(leaseSeconds * 1000 / 3)); heartbeat.unref(); let completionAttempted = false; let dispatched = false;
+  let context: Awaited<ReturnType<typeof contextForJob>> | undefined;
+  const base = process.env.AI_SERVICE_URL ?? `http://127.0.0.1:${process.env.AI_SERVICE_PORT ?? "8000"}`;
+  const completeResult = async (rawResult: unknown) => {
+    if (!context) throw new AiReviewFailure("ai_source_unavailable", false);
+    const parsedResult = resultSchema.safeParse(rawResult);
+    if (!parsedResult.success || parsedResult.data.status !== "succeeded") throw new AiReviewFailure("ai_provider_failed", false);
+    const result = parsedResult.data;
+    if (result.jobId !== jobId || result.workspaceId !== parsed.data.workspace_id
+      || result.bookId !== parsed.data.book_id || result.agentType !== parsed.data.agent_type) {
+      throw new AiReviewFailure("ai_invalid_output", false, "AI result identity did not match its saved job");
+    }
+    const suggestions = normalize(result, context.book, context.snapshots);
+    abort.signal.throwIfAborted(); completionAttempted = true;
+    const complete = await sb.rpc("complete_leased_ai_review_job", { p_job_id: jobId, p_lease_token: token, p_provider: result.provider, p_model: result.model, p_usage: result.usage, p_diagnostics: result.diagnostics, p_suggestions: suggestions, p_credit_quantity: result.provider === "mock" ? 0 : 1 });
+    if (complete.error || !row(complete.data)) throw new AiReviewFailure(complete.error?.code === "40001" ? "ai_lease_lost" : "ai_completion_failed", true);
+  };
   try {
-    const context = await contextForJob(sb, parsed.data); abort.signal.throwIfAborted();
-    const base = process.env.AI_SERVICE_URL ?? `http://127.0.0.1:${process.env.AI_SERVICE_PORT ?? "8000"}`;
+    context = await contextForJob(sb, parsed.data); abort.signal.throwIfAborted();
     // This durable marker is written before HTTP. Once set, an expired lease
     // cannot cause another worker to send the paid request again.
     const marked = await sb.rpc("mark_ai_review_dispatched", { p_job_id: jobId, p_lease_token: token });
@@ -71,13 +86,26 @@ export async function runOneAiReviewJob(sb: SupabaseClient, options: { leaseSeco
     dispatched = true;
     const response = await (options.fetcher ?? fetch)(`${base.replace(/\/$/u, "")}/v1/ai/jobs`, { method: "POST", redirect: "error", signal: AbortSignal.any([abort.signal, AbortSignal.timeout(90_000)]), headers: { "content-type": "application/json", ...(process.env.AI_SERVICE_TOKEN ? { "x-service-token": process.env.AI_SERVICE_TOKEN } : {}) }, body: JSON.stringify(context.body) });
     const text = await response.text(); if (!response.ok || Buffer.byteLength(text) > 5_000_000) throw new AiReviewFailure("ai_service_unavailable", true, "AI service unavailable");
-    const result = resultSchema.safeParse(JSON.parse(text)); if (!result.success || result.data.status === "failed") throw new AiReviewFailure("ai_provider_failed", false, result.success ? result.data.error ?? "AI provider failed" : "Invalid AI service response");
-    const suggestions = normalize(result.data, context.book, context.snapshots); abort.signal.throwIfAborted(); completionAttempted = true;
-    const complete = await sb.rpc("complete_leased_ai_review_job", { p_job_id: jobId, p_lease_token: token, p_provider: result.data.provider, p_model: result.data.model, p_usage: result.data.usage, p_diagnostics: result.data.diagnostics, p_suggestions: suggestions, p_credit_quantity: result.data.provider === "mock" ? 0 : 1 });
-    if (complete.error || !row(complete.data)) throw new AiReviewFailure(complete.error?.code === "40001" ? "ai_lease_lost" : "ai_completion_failed", true); return { status: "succeeded", jobId };
+    await completeResult(JSON.parse(text)); return { status: "succeeded", jobId };
   } catch (error) {
     if (completionAttempted) { try { const recovered = await sb.from("ai_jobs").select("status,lease_token").eq("id", jobId).maybeSingle(); if (recovered.data?.status === "succeeded") return { status: "succeeded", jobId }; } catch { /* Try to hold the marked dispatch below; never retry it. */ } }
     if (dispatched) {
+      // GET is a private receipt read, not a second generation request.
+      // A lost POST reply can still be settled while this lease is valid.
+      try {
+        const receipt = await (options.fetcher ?? fetch)(`${base.replace(/\/$/u, "")}/v1/ai/jobs/${encodeURIComponent(jobId)}`, {
+          method: "GET", redirect: "error", signal: AbortSignal.timeout(5_000),
+          headers: { ...(process.env.AI_SERVICE_TOKEN ? { "x-service-token": process.env.AI_SERVICE_TOKEN } : {}) },
+        });
+        if (receipt.ok) {
+          const text = await receipt.text();
+          if (Buffer.byteLength(text) <= 5_000_000) {
+            await completeResult(JSON.parse(text));
+            return { status: "succeeded", jobId };
+          }
+        }
+      } catch { /* No saved result was confirmed; preserve the hold below. */ }
+      if (completionAttempted) { try { const recovered = await sb.from("ai_jobs").select("status").eq("id", jobId).maybeSingle(); if (recovered.data?.status === "succeeded") return { status: "succeeded", jobId }; } catch { /* Preserve the hold. */ } }
       const held = await sb.rpc("mark_ai_review_outcome_unconfirmed", { p_job_id: jobId, p_lease_token: token });
       if (!held.error && row(held.data)?.error_code === "ai_provider_outcome_unconfirmed") return { status: "requires_review", jobId };
       return { status: "completion_unknown", jobId };

@@ -49,7 +49,7 @@ test("AI review worker rehydrates saved chapter versions only after a fenced cla
   const { sb, calls } = workerSupabase(); let request: Row | undefined;
   const outcome = await runOneAiReviewJob(sb, { fetcher: async (_url, init) => {
     request = JSON.parse(String(init?.body)) as Row;
-    return Response.json({ status: "succeeded", provider: "mock", model: "mock-1", diagnostics: [], usage: { inputTokens: 8, outputTokens: 3, estimatedCostUsd: 0 }, suggestions: [{ chapterId: CHAPTER, nodeId: "n1", rationale: "Clearer", confidence: 0.9, operation: { operationId: "provider", type: "replace_text", target: { chapterId: CHAPTER, nodeId: "n1" }, payload: { nodeId: "n1", from: 0, to: 3, text: "New" }, expectedVersion: 1 } }] });
+    return Response.json({ jobId: JOB, workspaceId: WORKSPACE, bookId: BOOK, agentType: "proofreader", status: "succeeded", provider: "mock", model: "mock-1", diagnostics: [], usage: { inputTokens: 8, outputTokens: 3, estimatedCostUsd: 0 }, suggestions: [{ chapterId: CHAPTER, nodeId: "n1", rationale: "Clearer", confidence: 0.9, operation: { operationId: "provider", type: "replace_text", target: { chapterId: CHAPTER, nodeId: "n1" }, payload: { nodeId: "n1", from: 0, to: 3, text: "New" }, expectedVersion: 1 } }] });
   } });
   assert.deepEqual(outcome, { status: "succeeded", jobId: JOB });
   assert.equal(JSON.stringify(request).includes("Old text"), true);
@@ -76,9 +76,39 @@ test("AI review worker does not call the provider when the durable dispatch mark
 });
 
 test("AI review worker freezes a lost network reply instead of retrying the provider", async () => {
-  const { sb, calls } = workerSupabase(); let providerCalls = 0;
-  const outcome = await runOneAiReviewJob(sb, { fetcher: async () => { providerCalls++; throw new Error("socket closed"); } });
+  const { sb, calls } = workerSupabase(); let providerCalls = 0; let receiptReads = 0;
+  const outcome = await runOneAiReviewJob(sb, { fetcher: async (_url, init) => { if (init?.method === "GET") { receiptReads++; return new Response(null, { status: 404 }); } providerCalls++; throw new Error("socket closed"); } });
   assert.deepEqual(outcome, { status: "requires_review", jobId: JOB });
   assert.equal(providerCalls, 1);
+  assert.equal(receiptReads, 1);
   assert.equal(calls.some((call) => call.name === "fail_ai_review_job"), false);
+});
+
+test("AI review worker settles a saved result after a lost POST reply without regeneration", async () => {
+  const { sb, calls } = workerSupabase(); let providerCalls = 0; let receiptReads = 0;
+  const outcome = await runOneAiReviewJob(sb, { fetcher: async (_url, init) => {
+    if (init?.method === "GET") {
+      receiptReads++;
+      return Response.json({ jobId: JOB, workspaceId: WORKSPACE, bookId: BOOK, agentType: "proofreader",
+        status: "succeeded", provider: "mock", model: "mock-1", diagnostics: [],
+        usage: { inputTokens: 8, outputTokens: 3, estimatedCostUsd: 0 }, suggestions: [] });
+    }
+    providerCalls++; throw new Error("lost reply");
+  } });
+  assert.deepEqual(outcome, { status: "succeeded", jobId: JOB });
+  assert.equal(providerCalls, 1);
+  assert.equal(receiptReads, 1);
+  assert.equal(calls.filter((call) => call.name === "complete_leased_ai_review_job").length, 1);
+  assert.equal(calls.some((call) => call.name === "mark_ai_review_outcome_unconfirmed"), false);
+});
+
+test("AI review worker refuses a saved receipt for a different job", async () => {
+  const { sb, calls } = workerSupabase();
+  const outcome = await runOneAiReviewJob(sb, { fetcher: async (_url, init) => init?.method === "GET"
+    ? Response.json({ jobId: "a0000000-0000-4000-8000-000000000099", workspaceId: WORKSPACE, bookId: BOOK,
+      agentType: "proofreader", status: "succeeded", provider: "mock", model: "mock-1", diagnostics: [],
+      usage: { inputTokens: 8, outputTokens: 3, estimatedCostUsd: 0 }, suggestions: [] })
+    : new Response(null, { status: 503 }) });
+  assert.deepEqual(outcome, { status: "requires_review", jobId: JOB });
+  assert.equal(calls.some((call) => call.name === "complete_leased_ai_review_job"), false);
 });
