@@ -41,5 +41,6 @@ Local validation: disposable SQL migration and service-only completion
 assertions, Python rule/package tests, API route/entitlement tests, and
 workspace typechecks. The processing-container workflow also exercises
 rendering preflight and packaging with the real checker under network-isolated,
-read-only runtime constraints. Native hosted Supabase/Storage, current provider,
+read-only runtime constraints; [run 35957543082](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/35957543082)
+passed for `00c91fd`. Native hosted Supabase/Storage, current provider,
 Partner Center upload and actual retailer approval remain unverified.
