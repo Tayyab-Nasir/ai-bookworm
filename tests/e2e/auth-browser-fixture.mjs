@@ -33,6 +33,7 @@ function fixtureDownload(name) {
 }
 let lostChapterReply = false;
 let lostBookReply = false;
+let refusedBookBeforeAcceptance = false;
 let lostAiReply = false;
 const memoryBookId = '88888888-8888-4888-8888-888888888888';
 const memoryBook = { id: memoryBookId, workspace_id: '33333333-3333-4333-8333-333333333333', title: 'The Long Way Home', subtitle: null, author_name: 'Fixture author', language: 'en', genre: 'Fantasy', status: 'draft', updated_at: '2026-08-31T08:00:00.000Z' };
@@ -254,6 +255,10 @@ const server = createServer(async (req, res) => {
     workspaces.push(workspace); return json(201, workspace);
   }
   if (url.pathname === '/v1/books' && req.method === 'POST') {
+    if (process.env.FIXTURE_REFUSE_BOOK_BEFORE_ACCEPTANCE === 'true' && !refusedBookBeforeAcceptance) {
+      refusedBookBeforeAcceptance = true;
+      return json(503, { error: { code: 'fixture_outage', message: 'Fixture refused book before acceptance' } });
+    }
     const existing = body.requestId && setupBooks.find((book) => book.id === body.requestId);
     if (existing) return json(200, existing);
     const book = { id: body.requestId ?? randomUUID(), workspace_id: body.workspaceId, title: body.title, subtitle: body.subtitle ?? null, author_name: body.authorName,
