@@ -23,6 +23,19 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### OpenAI model/pricing audit
+
+Current official OpenAI documentation still lists the configured defaults:
+GPT-6 Astra text, GPT Image 2.5 Sunburst image and GPT-4o Mini TTS audio.
+`estimatedImageCost` now distinguishes the older Image 2 rates from Image 2.5
+and conservatively accounts for partial input-token breakdowns. This is
+diagnostic provider telemetry, not an image customer-credit quote; account
+model access and actual paid usage remain unverified. API TypeScript and 297
+API tests pass; no provider or live action. See
+`docs/OPENAI_MODEL_PRICING_AUDIT.md`. Next: version and fund real customer
+offers, validate worst-case model/size/quality/reference costs and usage
+reconciliation in an approved private environment before selling credits.
+
 ### Saved-text AI suggestion proof sheet
 
 `7c8bf70` replaces the opaque replacement snippet in the author AI sidebar

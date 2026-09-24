@@ -8,6 +8,17 @@ test("current OpenAI image pricing distinguishes text, image input and output to
     input_tokens_details: { text_tokens: 100, image_tokens: 200 },
     output_tokens: 1_000,
   }), 0.0321);
+  assert.equal(estimatedImageCost("gpt-image-2.5-flare", {
+    input_tokens: 300, input_tokens_details: { text_tokens: 100 }, output_tokens: 1_000,
+  }), 0.0321);
+  assert.equal(estimatedImageCost("gpt-image-2", {
+    input_tokens: 300, input_tokens_details: { text_tokens: 100, image_tokens: 200 }, output_tokens: 1_000,
+  }), 0.01605);
+  assert.equal(estimatedImageCost("gpt-image-2.5-sunburst", {
+    input_tokens: 300, input_tokens_details: { text_tokens: 100, image_tokens: 100 }, output_tokens: 1_000,
+  }), 0.0321);
+  assert.equal(estimatedImageCost("gpt-image-2.5-sunburst", { input_tokens: 300, output_tokens: 1_000 }), 0.0324);
+  assert.equal(estimatedImageCost("gpt-image-2.5-sunburst", { input_tokens: -5, output_tokens: Number.NaN }), 0);
   assert.equal(estimatedImageCost("fixture-model", { input_tokens: 100, output_tokens: 100 }), 0);
 });
 

@@ -26,15 +26,27 @@ const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 export function estimatedImageCost(model: string, usage: unknown): number {
-  if (!model.startsWith("gpt-image-2.5-sunburst") && !model.startsWith("gpt-image-2")) return 0;
+  // Diagnostic provider estimate, not the customer credit debit. Prices are
+  // standard Image API USD per token, reviewed against OpenAI on 2026-09-24.
+  const rates = /^gpt-image-2\.5-(?:sunburst|flare)(?:-|$)/.test(model)
+    ? { textInput: 5e-6, imageInput: 8e-6, output: 30e-6 }
+    : /^gpt-image-2(?:-|$)/.test(model)
+      ? { textInput: 2.5e-6, imageInput: 4e-6, output: 15e-6 }
+      : null;
+  if (!rates) return 0;
   const value = usage as { input_tokens?: number; output_tokens?: number; input_tokens_details?: { text_tokens?: number; image_tokens?: number } } | undefined;
-  const textInput = value?.input_tokens_details?.text_tokens;
-  const imageInput = value?.input_tokens_details?.image_tokens;
-  const totalInput = value?.input_tokens ?? 0;
-  const inputCost = textInput === undefined && imageInput === undefined
-    ? totalInput * 8e-6
-    : (textInput ?? 0) * 5e-6 + (imageInput ?? 0) * 8e-6;
-  return Number((inputCost + (value?.output_tokens ?? 0) * 30e-6).toFixed(6));
+  const valid = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+  const totalInput = valid(value?.input_tokens) ? value.input_tokens : 0;
+  const textInput = valid(value?.input_tokens_details?.text_tokens) ? value.input_tokens_details.text_tokens : 0;
+  const imageInput = valid(value?.input_tokens_details?.image_tokens) ? value.input_tokens_details.image_tokens : 0;
+  const output = valid(value?.output_tokens) ? value.output_tokens : 0;
+  // A partial modality breakdown must not make the unclassified input free.
+  // Charge the unclassified remainder at the higher image-input rate.
+  const knownText = Math.min(totalInput, textInput);
+  const knownImage = Math.min(totalInput - knownText, imageInput);
+  const unclassified = totalInput - knownText - knownImage;
+  return Number((knownText * rates.textInput + (knownImage + unclassified) * rates.imageInput
+    + output * rates.output).toFixed(6));
 }
 
 export const openAiImageGenerator: ImageGenerator = async ({ prompt, size, quality, referenceImages }) => {
