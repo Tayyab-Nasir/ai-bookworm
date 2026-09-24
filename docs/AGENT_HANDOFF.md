@@ -23,6 +23,21 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Search-result source navigation
+
+`6045e7e` links current saved manuscript hits to their chapter and Book Bible
+hits to the loaded entry form. Changing the phrase clears old hits and
+invalidates in-flight responses, so an earlier query cannot be presented as
+the new one. Book Bible selection respects unsaved-entry confirmation; a
+deleted/not-yet-loaded hit asks for reload. A synthetic Edge journey was added
+but could not run in this session because the temporary Next test-server
+launch was rejected by execution policy. Web TypeScript, 92 web tests,
+isolated production build and browser-script syntax checks pass. No live
+service or provider was touched. Next: run the native Edge journey on an
+allowed test host, then validate source navigation against hosted current-
+version retrieval and continue the wider author/publishing release gates.
+See the shared vault `Codex Sessions/2026-09/2026-09-24-bookworm-search-navigation.md`.
+
 ### Rich manuscript retrieval baseline
 
 `f9556c2` adds a migration indexing visible table cells, captions
