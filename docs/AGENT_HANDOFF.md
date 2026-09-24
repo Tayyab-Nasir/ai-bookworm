@@ -23,6 +23,23 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Book Bible manuscript evidence
+
+Book Bible node citations are now checked against an actual saved document
+version; unversioned node references are pinned on API save, and full canonical
+node-text hashes are stored/checked. Invented nodes and stale text hashes
+fail before write. An additive source-only SQL trigger rejects direct
+PostgREST bypasses for new/changed references; historical rows are not
+retroactively certified. Chapter-only references remain human notes, not
+passage proof. Focused API tests cover save, stale/foreign refs, historical
+edits and no-write failures. Full local `npm run verify` passes: 72
+disposable migrations/50 SQL suites, 355 service tests, 12 E2E, 30 security,
+plus workspace typechecks, API/web, load and mock evals. SQL tests cover
+direct insert/update bypasses. See `docs/BOOK_BIBLE_EVIDENCE.md`. No
+hosted rollout or AI provider action. Next: review/apply the migration in a
+separately approved hosted rollout, verify author journeys, and continue the
+wider release gates.
+
 ### Image provider cost-estimate provenance
 
 The image job usage JSON now records `costEstimateBasis` separately from

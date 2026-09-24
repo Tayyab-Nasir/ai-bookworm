@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { makeAuthPlugin } from "./plugins/auth.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
@@ -15,6 +15,8 @@ const IMAGE = "55555555-5555-4555-8555-555555555555";
 const VERSION = "66666666-6666-4666-8666-666666666666";
 const USER = "77777777-7777-4777-8777-777777777777";
 const TIME = "2026-08-31T08:00:00.000Z";
+const SOURCE_TEXT = "Elara carries a silver compass.";
+const SOURCE_HASH = createHash("sha256").update(SOURCE_TEXT).digest("hex");
 const auth = { authorization: "Bearer good" };
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
@@ -71,7 +73,7 @@ function initialStore(role = "editor"): Store {
     books: [{ id: BOOK, workspace_id: WORKSPACE, title: "The Long Way Home", author_name: "Ada", updated_at: TIME }],
     workspace_members: [{ user_id: USER, workspace_id: WORKSPACE, role, status: "active" }],
     chapters: [{ id: CHAPTER, book_id: BOOK, title: "Arrival", current_document_version_id: VERSION }],
-    document_versions: [{ id: VERSION, chapter_id: CHAPTER }],
+    document_versions: [{ id: VERSION, chapter_id: CHAPTER, content_json: { nodes: [{ id: "n1", type: "paragraph", text: SOURCE_TEXT }] } }],
     assets: [{ id: IMAGE, workspace_id: WORKSPACE, name: "Elara.png", mime_type: "image/png", checksum: "a".repeat(64), storage_path: "private/image.png", size_bytes: 100, deleted_at: null }],
     asset_versions: [{ asset_id: IMAGE, mime_type: "image/png", checksum: "a".repeat(64), storage_path: "private/image.png", size_bytes: 100, scan_status: "clean" }],
   };
@@ -162,11 +164,50 @@ test("created memory persists across requests and a fresh app instance", async (
 
 test("existing AI candidate types, nested attributes and node references round-trip", async (t) => {
   const app = await appWith(initialStore()); t.after(() => app.close());
-  const payload = { ...entry, type: "place", attributes: { palette: ["blue", "silver"], climate: { season: "winter" } }, sourceRefs: [{ chapterId: CHAPTER, nodeId: "n1", textHash: "source-hash" }] };
+  const payload = { ...entry, type: "place", attributes: { palette: ["blue", "silver"], climate: { season: "winter" } }, sourceRefs: [{ chapterId: CHAPTER, nodeId: "n1", textHash: SOURCE_HASH }] };
   const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload });
   assert.equal(created.statusCode, 201, created.body);
-  assert.deepEqual(created.json().item.source_refs_json, payload.sourceRefs);
+  assert.deepEqual(created.json().item.source_refs_json, [{ ...payload.sourceRefs[0], documentVersionId: VERSION }]);
   assert.deepEqual(created.json().item.attributes_json.palette, ["blue", "silver"]);
+});
+
+test("node-level Bible evidence is pinned to a saved version and rejects invented or stale citations", async (t) => {
+  const store = initialStore(); const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/bible`;
+  const valid = { ...entry, sourceRefs: [{ chapterId: CHAPTER, nodeId: "n1" }] };
+  const saved = await app.inject({ method: "POST", url, headers: auth, payload: valid });
+  assert.equal(saved.statusCode, 201, saved.body);
+  assert.deepEqual(saved.json().item.source_refs_json, [{ chapterId: CHAPTER, nodeId: "n1", documentVersionId: VERSION, textHash: SOURCE_HASH }]);
+  for (const sourceRefs of [
+    [{ chapterId: CHAPTER, nodeId: "invented" }],
+    [{ chapterId: CHAPTER, nodeId: "n1", textHash: "0".repeat(64) }],
+    [{ chapterId: CHAPTER, textHash: SOURCE_HASH }],
+    [{ chapterId: CHAPTER, documentVersionId: randomUUID(), nodeId: "n1" }],
+  ]) {
+    const rejected = await app.inject({ method: "POST", url, headers: auth, payload: { ...entry, sourceRefs } });
+    assert.equal(rejected.statusCode, 422, rejected.body);
+  }
+  assert.equal(store.book_bible_items.length, 1);
+  store.chapters[0].current_document_version_id = null;
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: valid })).statusCode, 422);
+});
+
+test("pinned Bible evidence remains editable after the current chapter version changes", async (t) => {
+  const store = initialStore(); const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/bible`;
+  const created = await app.inject({ method: "POST", url, headers: auth,
+    payload: { ...entry, sourceRefs: [{ chapterId: CHAPTER, nodeId: "n1" }] } });
+  assert.equal(created.statusCode, 201, created.body);
+  const saved = created.json().item;
+  store.chapters[0].current_document_version_id = randomUUID();
+  const updated = await app.inject({ method: "PUT", url: `${url}/${saved.id}`, headers: auth,
+    payload: { ...entry, name: "Elara the mapmaker", sourceRefs: saved.source_refs_json, expectedUpdatedAt: saved.updated_at } });
+  assert.equal(updated.statusCode, 200, updated.body);
+  assert.deepEqual(updated.json().item.source_refs_json, saved.source_refs_json);
+  const stale = await app.inject({ method: "PUT", url: `${url}/${saved.id}`, headers: auth,
+    payload: { ...entry, sourceRefs: [{ ...saved.source_refs_json[0], textHash: "0".repeat(64) }], expectedUpdatedAt: updated.json().item.updated_at } });
+  assert.equal(stale.statusCode, 422, stale.body);
+  assert.equal(store.book_bible_items[0].name, "Elara the mapmaker");
 });
 
 test("viewer can read saved memory but cannot create, replace, delete or edit metadata", async (t) => {

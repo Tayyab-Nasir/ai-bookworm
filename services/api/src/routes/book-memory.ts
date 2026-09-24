@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { AppError } from "../errors.js";
+import { parseNodes } from "../lib/authoring.js";
 import { requireWorkspaceEditor, requireWorkspaceMember } from "../lib/authorize.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { searchBookContext, searchSchema } from "../lib/retrieval.js";
@@ -12,9 +14,9 @@ const sourceRef = z.object({
   chapterId: id,
   documentVersionId: id.optional(),
   nodeId: z.string().min(1).max(200).optional(),
-  textHash: z.string().min(1).max(128).optional(),
+  textHash: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   note: z.string().trim().max(500).optional(),
-}).strict();
+}).strict().refine((ref) => !ref.textHash || !!ref.nodeId, "A text hash needs a source node.");
 const attributes = z.record(z.string().min(1).max(80), z.unknown()).superRefine((value, ctx) => {
   if (Object.keys(value).length > 40 || JSON.stringify(value).length > 24_000) {
     ctx.addIssue({ code: "custom", message: "Use at most 40 attributes and 24,000 characters." });
@@ -79,19 +81,41 @@ async function validateReferences(sb: SupabaseClient, bookId: string, workspaceI
     }
   }
   const chapterIds = [...new Set(body.sourceRefs.map((ref) => ref.chapterId))];
+  let chapters: { id: string; current_document_version_id: string | null }[] = [];
   if (chapterIds.length) {
-    const { data, error } = await sb.from("chapters").select("id").eq("book_id", bookId).in("id", chapterIds);
+    const { data, error } = await sb.from("chapters").select("id,current_document_version_id").eq("book_id", bookId).in("id", chapterIds);
     if (error) throw new AppError(500, "Could not verify source chapters.");
     if (data?.length !== chapterIds.length) throw new AppError(422, "Source chapters must belong to this book.");
+    chapters = data;
   }
-  const versionIds = [...new Set(body.sourceRefs.flatMap((ref) => ref.documentVersionId ? [ref.documentVersionId] : []))];
+  const chapterVersions = new Map(chapters.map((chapter) => [chapter.id, chapter.current_document_version_id]));
+  const versionIds = [...new Set(body.sourceRefs.flatMap((ref) => {
+    const versionId = ref.documentVersionId ?? (ref.nodeId ? chapterVersions.get(ref.chapterId) : null);
+    if (ref.nodeId && !versionId) throw new AppError(422, "A source node needs a saved chapter version.");
+    return versionId ? [versionId] : [];
+  }))];
+  let versions: { id: string; chapter_id: string; content_json: unknown }[] = [];
   if (versionIds.length) {
-    const { data, error } = await sb.from("document_versions").select("id,chapter_id").in("id", versionIds);
+    const { data, error } = await sb.from("document_versions").select("id,chapter_id,content_json").in("id", versionIds);
     if (error) throw new AppError(500, "Could not verify source versions.");
-    if (body.sourceRefs.some((ref) => ref.documentVersionId && !data?.some((version) => version.id === ref.documentVersionId && version.chapter_id === ref.chapterId))) {
+    versions = data ?? [];
+    if (body.sourceRefs.some((ref) => ref.documentVersionId && !versions.some((version) => version.id === ref.documentVersionId && version.chapter_id === ref.chapterId))) {
       throw new AppError(422, "Each source version must belong to its referenced chapter.");
     }
   }
+  const nodesByVersion = new Map<string, ReturnType<typeof parseNodes>>();
+  return body.sourceRefs.map((ref) => {
+    if (!ref.nodeId) return ref;
+    const versionId = ref.documentVersionId ?? chapterVersions.get(ref.chapterId);
+    const version = versions.find((item) => item.id === versionId && item.chapter_id === ref.chapterId);
+    if (!version) throw new AppError(422, "The cited manuscript version is unavailable.");
+    if (!nodesByVersion.has(version.id)) nodesByVersion.set(version.id, parseNodes(version.content_json));
+    const node = nodesByVersion.get(version.id)?.find((item) => item.id === ref.nodeId);
+    if (!node) throw new AppError(422, "The cited manuscript node is unavailable in that saved version.");
+    const textHash = typeof node.text === "string" ? createHash("sha256").update(node.text).digest("hex") : undefined;
+    if (ref.textHash && ref.textHash !== textHash) throw new AppError(422, "The cited manuscript text changed. Reload before saving this evidence.");
+    return { ...ref, documentVersionId: version.id, ...(textHash ? { textHash } : {}) };
+  });
 }
 
 type MemoryImage = { id: string; mime_type: string; checksum: string; storage_path: string; size_bytes: number };
@@ -111,13 +135,13 @@ async function clearedImages<T extends MemoryImage>(sb: SupabaseClient, assets: 
     && ["clean", "trusted_generated"].includes(String(version.scan_status))));
 }
 
-function bibleRow(body: z.infer<typeof bibleSchema>) {
+function bibleRow(body: z.infer<typeof bibleSchema>, sourceRefs: z.infer<typeof sourceRef>[]) {
   return {
     type: body.type,
     name: body.name,
     description: body.description || null,
     attributes_json: { ...body.attributes, imageAssetIds: [...new Set(body.imageAssetIds)] },
-    source_refs_json: body.sourceRefs,
+    source_refs_json: sourceRefs,
   };
 }
 
@@ -150,8 +174,8 @@ export function bookMemoryRoutes(app: FastifyInstance) {
   app.post("/books/:bookId/bible", async (req, reply) => {
     const body = parse(bibleSchema, req.body);
     const { sb, book, bookId } = await scopedBook(app, req, true);
-    await validateReferences(sb, bookId, book.workspace_id, body);
-    const { data, error } = await sb.from("book_bible_items").insert({ book_id: bookId, ...bibleRow(body) }).select("*").single();
+    const sourceRefs = await validateReferences(sb, bookId, book.workspace_id, body);
+    const { data, error } = await sb.from("book_bible_items").insert({ book_id: bookId, ...bibleRow(body, sourceRefs) }).select("*").single();
     if (error || !data) throw new AppError(500, "Could not save the memory entry.");
     return reply.status(201).send({ item: data });
   });
@@ -160,9 +184,9 @@ export function bookMemoryRoutes(app: FastifyInstance) {
     const body = parse(updateBibleSchema, req.body);
     const itemId = parse(id, (req.params as { itemId: string }).itemId);
     const { sb, book, bookId } = await scopedBook(app, req, true);
-    await validateReferences(sb, bookId, book.workspace_id, body);
+    const sourceRefs = await validateReferences(sb, bookId, book.workspace_id, body);
     const { data, error } = await sb.from("book_bible_items")
-      .update({ ...bibleRow(body), updated_at: updatedTimestamp(body.expectedUpdatedAt) })
+      .update({ ...bibleRow(body, sourceRefs), updated_at: updatedTimestamp(body.expectedUpdatedAt) })
       .eq("id", itemId).eq("book_id", bookId).eq("updated_at", body.expectedUpdatedAt).select("*").maybeSingle();
     if (error) throw new AppError(500, "Could not save the memory entry.");
     if (!data) throw new AppError(409, "This entry changed or was removed. Reload before saving your changes.");
