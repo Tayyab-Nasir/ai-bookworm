@@ -41,7 +41,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   const [pendingRestore, setPendingRestore] = useState<{ chapterId: string; versionId: string; body: { operationId: string; expectedVersion: number } } | null>(null);
   const restoring = useRef(false);
 
-  const loadChapter = useCallback(async (chapterId: string) => {
+  const loadChapter = useCallback(async (chapterId: string, reportFailure = false) => {
     const sequence = ++loadSequence.current;
     setLoading(true);
     try {
@@ -51,6 +51,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       setDirty(false); setConflict(false); setError(null); setPendingRestore(null); pendingSave.current = null; setReloadKey((v) => v + 1);
     } catch (reason) {
       if (sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : "Could not load manuscript");
+      if (reportFailure) throw reason;
     } finally { if (sequence === loadSequence.current) setLoading(false); }
   }, [api]);
 
@@ -226,7 +227,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
         {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={document} workspaceId={book.workspace_id} permissions={editable && !saving ? "editor" : "viewer"} onChange={(nodes) => { setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border border-dashed border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
       </section>
       <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">
-        <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} initialJobId={activeAiJobId} dirty={dirty} editable={editable && !saving && !loading && !pendingDraft} onApplied={async () => { if (document) await loadChapter(document.chapterId); }} />
+        <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} dirty={dirty} editable={editable && !saving && !loading && !pendingDraft} onApplied={async () => { if (document) await loadChapter(document.chapterId, true); }} />
         <div className="rounded-2xl border border-white/10 p-2"><VersionTimeline key={document?.chapterId ?? "empty"} versions={versions} onRestore={(id) => void restore(id)} readOnly={!editable || saving || loading} /></div>
       </div>
     </div>

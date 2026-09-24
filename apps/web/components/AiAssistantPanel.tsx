@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiClientError, type AiJobReview, type AiJobWithSuggestions } from "@bookworm/api-client";
 import type { AiSuggestion } from "@bookworm/types";
 import { apiClient } from "./api";
-import { pendingReviewBody, readPendingReview, reviewBriefHash, reviewRecoveryKey, type PendingReview, type ReviewMode } from "../lib/ai-review-recovery";
+import AiProofSheet from "./AiProofSheet";
+import { pendingReviewBody, readPendingReview, reviewBriefHash, reviewRecoveryKey, reviewTargetsChapter, type PendingReview, type ReviewMode } from "../lib/ai-review-recovery";
+import { previewAiSuggestion, type SavedChapterPreview } from "../lib/ai-suggestion-preview";
 
 type Mode = ReviewMode;
 const modes: { value: Mode; label: string }[] = [
@@ -14,23 +16,13 @@ const modes: { value: Mode; label: string }[] = [
   { value: "consistency", label: "Consistency" },
 ];
 
-function operationPreview(suggestion: AiSuggestion) {
-  const operation = suggestion.operation_json as { payload?: { text?: unknown; from?: unknown; to?: unknown } } | null;
-  const text = typeof operation?.payload?.text === "string" ? operation.payload.text : "";
-  return { text, from: operation?.payload?.from, to: operation?.payload?.to };
-}
-
-export function reviewTargetsChapter(review: Pick<AiJobReview, "chapter_ids">, chapterId: string | null) {
-  return chapterId != null && review.chapter_ids.includes(chapterId);
-}
-
 function modeLabel(agentType: string) {
   return modes.find((mode) => mode.value === agentType)?.label ?? agentType;
 }
 
 export default function AiAssistantPanel({
-  bookId, chapterId, initialJobId, dirty, editable, onApplied,
-}: { bookId: string; chapterId: string | null; initialJobId?: string; dirty: boolean; editable: boolean; onApplied: () => Promise<void> }) {
+  bookId, chapterId, savedChapter, initialJobId, dirty, editable, onApplied,
+}: { bookId: string; chapterId: string | null; savedChapter: SavedChapterPreview | null; initialJobId?: string; dirty: boolean; editable: boolean; onApplied: () => Promise<void> }) {
   const api = apiClient();
   const [mode, setMode] = useState<Mode>("proofreader");
   const [instruction, setInstruction] = useState("");
@@ -45,6 +37,7 @@ export default function AiAssistantPanel({
   const [userId, setUserId] = useState<string | null>(null);
   const [recoveryReady, setRecoveryReady] = useState(false);
   const [pendingRequest, setPendingRequest] = useState<PendingReview | null>(null);
+  const [lastAppliedVersion, setLastAppliedVersion] = useState<number | null>(null);
   const requestInFlight = useRef(false);
   const suggestions = useMemo(() => job?.suggestions ?? [], [job]);
   const processing = busy || job?.status === "queued" || job?.status === "running";
@@ -59,7 +52,7 @@ export default function AiAssistantPanel({
   }, []);
 
   useEffect(() => { void loadRecent(); }, [loadRecent]);
-  useEffect(() => { setJob(null); setError(null); setNotice(null); }, [bookId, chapterId]);
+  useEffect(() => { setJob(null); setLastAppliedVersion(null); setError(null); setNotice(null); }, [bookId, chapterId]);
   useEffect(() => {
     if (!chapterId) return;
     let cancelled = false;
@@ -83,7 +76,7 @@ export default function AiAssistantPanel({
           const recovered = await api.getAiJobByRequest(bookId, saved.key);
           if (cancelled) return;
           if (!reviewTargetsChapter(recovered, chapterId)) throw new Error("The saved AI request targets another chapter. No new request was sent.");
-          setJob(recovered); remember(recovered); setPendingRequest(null);
+          setJob(recovered); setLastAppliedVersion(null); remember(recovered); setPendingRequest(null);
           try { window.sessionStorage.removeItem(storageKey); } catch { /* A later reload can read the same server job. */ }
           setNotice("Recovered the saved AI review without starting another request.");
         } catch (reason) {
@@ -106,12 +99,13 @@ export default function AiAssistantPanel({
     void api.getAiJob(initialJobId).then((result) => {
       if (cancelled) return;
       if (!reviewTargetsChapter(result, chapterId)) { setError("This saved review belongs to a different chapter. Select that chapter before opening it."); return; }
-      setJob(result); remember(result);
+      setJob(result); setLastAppliedVersion(null); remember(result);
       if (modes.some((item) => item.value === result.agent_type)) setMode(result.agent_type as Mode);
       if (result.status === "failed") { setError(result.error_message ?? "This AI review did not finish. Start a fresh review."); return; }
-      setNotice(result.status === "queued" ? "Your first draft is queued. It will continue if you leave this page."
-        : result.status === "running" ? "Your first draft is running. It will continue if you leave this page."
-          : result.suggestions.length ? "Your first draft is ready to review." : "This draft completed with no proposal.");
+      const label = result.agent_type === "writer" ? "draft" : "review";
+      setNotice(result.status === "queued" ? `Your ${label} is queued. It will continue if you leave this page.`
+        : result.status === "running" ? `Your ${label} is running. It will continue if you leave this page.`
+          : result.suggestions.length ? `Your ${label} is ready to review.` : `This ${label} completed with no proposal.`);
     }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not open the saved AI review."); })
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
@@ -152,7 +146,7 @@ export default function AiAssistantPanel({
         try {
           const existing = await api.getAiJobByRequest(bookId, request.key);
           if (!reviewTargetsChapter(existing, chapterId)) throw new Error("The saved request targets another chapter. No new request was sent.");
-          setJob(existing); remember(existing); setPendingRequest(null);
+          setJob(existing); setLastAppliedVersion(null); remember(existing); setPendingRequest(null);
           try { window.sessionStorage.removeItem(reviewRecoveryKey(userId, bookId, chapterId)); } catch { /* Server job is durable. */ }
           setNotice("Recovered the saved AI review without starting another request.");
           return;
@@ -160,7 +154,7 @@ export default function AiAssistantPanel({
       }
       dispatched = true;
       const result = await api.createAiJob(pendingReviewBody(request, instruction));
-      setJob(result);
+      setJob(result); setLastAppliedVersion(null);
       remember(result);
       setPendingRequest(null);
       try { window.sessionStorage.removeItem(reviewRecoveryKey(userId, bookId, chapterId)); } catch { /* Server job is durable. */ }
@@ -182,7 +176,7 @@ export default function AiAssistantPanel({
     try {
       const recovered = await api.getAiJobByRequest(bookId, pendingRequest.key);
       if (!reviewTargetsChapter(recovered, chapterId)) throw new Error("The saved request targets another chapter. No new request was sent.");
-      setJob(recovered); remember(recovered); setPendingRequest(null);
+      setJob(recovered); setLastAppliedVersion(null); remember(recovered); setPendingRequest(null);
       try { window.sessionStorage.removeItem(reviewRecoveryKey(pendingRequest.userId, bookId, pendingRequest.chapterId)); } catch { /* Server job is durable. */ }
       setNotice("Recovered the saved AI review without starting another request.");
     } catch (reason) {
@@ -200,7 +194,7 @@ export default function AiAssistantPanel({
         setError("This saved review belongs to a different chapter. Select that chapter before opening it.");
         return;
       }
-      setJob(result); remember(result);
+      setJob(result); setLastAppliedVersion(null); remember(result);
       if (modes.some((item) => item.value === result.agent_type)) setMode(result.agent_type as Mode);
       if (result.status === "failed") setError(result.error_message ?? "This AI review did not finish. Start a new review with a fresh request.");
       else if (!result.suggestions.length) setNotice("Saved review opened. It had no suggestions.");
@@ -210,13 +204,16 @@ export default function AiAssistantPanel({
   };
 
   const apply = async (suggestion: AiSuggestion) => {
-    if (dirty || reviewing) return;
+    if (dirty || reviewing || !editable || previewAiSuggestion(suggestion, savedChapter).state !== "ready"
+        || (lastAppliedVersion !== null && (savedChapter?.version ?? 0) < lastAppliedVersion)) return;
     setReviewing(suggestion.id); setError(null); setNotice(null);
     try {
       const result = await api.applySuggestion(suggestion.id);
       setJob((current) => current ? { ...current, suggestions: current.suggestions.map((item) => item.id === suggestion.id ? { ...item, status: "accepted" } : item) } : current);
-      await onApplied();
-      setNotice(`Applied as manuscript version ${result.version}. Other suggestions from this review may now be stale.`);
+      setLastAppliedVersion(result.version);
+      setNotice(`Applied as manuscript version ${result.version}. Refreshing the saved chapter…`);
+      try { await onApplied(); setNotice(`Applied as manuscript version ${result.version}. Other suggestions from this review may now be stale.`); }
+      catch { setError(`Applied as manuscript version ${result.version}, but the editor could not refresh. Reload the chapter before another edit.`); }
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not apply suggestion"); }
     finally { setReviewing(null); }
   };
@@ -267,12 +264,13 @@ export default function AiAssistantPanel({
     </details>}
     <div className="mt-4 space-y-3">
       {suggestions.map((suggestion) => {
-        const preview = operationPreview(suggestion);
+        const preview = previewAiSuggestion(suggestion, savedChapter);
+        const awaitingRefresh = lastAppliedVersion !== null && (savedChapter?.version ?? 0) < lastAppliedVersion;
         return <article key={suggestion.id} className="rounded-xl border border-white/10 bg-white/[0.025] p-3">
           <p className="text-xs leading-5 text-white/70">{suggestion.rationale ?? "Suggested manuscript edit"}</p>
-          {preview.text && <blockquote className="mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap border-l border-white/15 pl-2 text-xs text-white/50">{preview.text}</blockquote>}
-          <p className="mt-2 text-[10px] text-white/30">Replace characters {String(preview.from ?? "?")}–{String(preview.to ?? "?")} · {suggestion.confidence == null ? "confidence not supplied" : `${Math.round(Number(suggestion.confidence) * 100)}% confidence`}</p>
-          {suggestion.status === "pending" ? <div className="mt-3 flex gap-2"><button type="button" disabled={!!reviewing || dirty} onClick={() => void apply(suggestion)} className="rounded-md bg-white px-3 py-1.5 text-xs text-black disabled:opacity-40">Apply</button><button type="button" disabled={!!reviewing} onClick={() => void reject(suggestion)} className="rounded-md border border-white/15 px-3 py-1.5 text-xs disabled:opacity-40">Reject</button></div> : <p className="mt-3 text-xs capitalize text-white/45">{suggestion.status}</p>}
+          {awaitingRefresh ? <p className="mt-3 text-xs leading-5 text-amber-200">The previous edit is saved, but this chapter has not refreshed. Reload it before reviewing another proposal.</p> : <AiProofSheet preview={preview} />}
+          <p className="mt-2 text-[10px] text-white/40">{suggestion.confidence == null ? "Confidence not supplied" : `${Math.round(Number(suggestion.confidence) * 100)}% model confidence`} · Always review the wording yourself.</p>
+          {suggestion.status === "pending" ? <div className="mt-3 flex gap-2"><button type="button" disabled={!!reviewing || dirty || !editable || preview.state !== "ready" || awaitingRefresh} onClick={() => void apply(suggestion)} className="rounded-md bg-white px-3 py-1.5 text-xs text-black disabled:opacity-40">Apply</button><button type="button" disabled={!!reviewing} onClick={() => void reject(suggestion)} className="rounded-md border border-white/15 px-3 py-1.5 text-xs disabled:opacity-40">Reject</button></div> : <p className="mt-3 text-xs capitalize text-white/45">{suggestion.status}</p>}
         </article>;
       })}
     </div>

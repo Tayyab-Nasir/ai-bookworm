@@ -1,4 +1,4 @@
-import type { CreateAiJobRequest } from "@bookworm/api-client";
+import type { AiJobReview, CreateAiJobRequest } from "@bookworm/api-client";
 
 export type ReviewMode = CreateAiJobRequest["agentType"];
 export type PendingReview = {
@@ -16,6 +16,10 @@ export type PendingReview = {
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const modes = new Set<ReviewMode>(["writer", "proofreader", "copyeditor", "consistency"]);
+
+export function reviewTargetsChapter(review: Pick<AiJobReview, "chapter_ids">, chapterId: string | null) {
+  return chapterId != null && review.chapter_ids.includes(chapterId);
+}
 
 export function reviewRecoveryKey(userId: string, bookId: string, chapterId: string) {
   return `bookworm:ai-review:${userId}:${bookId}:${chapterId}`;

@@ -390,8 +390,9 @@ const server = createServer(async (req, res) => {
         review = { id: randomUUID(), book_id: body.bookId, chapter_ids: body.chapterIds, agent_type: body.agentType,
           status: 'queued', context_source_count: 0, created_at: new Date().toISOString(), usage_json: {}, suggestions: [{
             id: randomUUID(), status: 'pending', rationale: 'Opening scene for author review',
-            operation_json: { target: { chapterId: source.chapter.id, nodeId: source.document.nodes[0].id },
-              payload: { from: 0, to: 0, text: 'Mara reached the harbor before dawn.' }, expectedVersion: 1 },
+            operation_json: { operationId: randomUUID(), type: 'replace_text',
+              target: { chapterId: source.chapter.id, nodeId: source.document.nodes[0].id },
+              payload: { nodeId: source.document.nodes[0].id, from: 0, to: 0, text: 'Mara reached the harbor before dawn.' }, expectedVersion: source.document.version },
           }] };
         aiReviews.set(review.id, review); aiKeys.set(body.idempotencyKey, review);
       }

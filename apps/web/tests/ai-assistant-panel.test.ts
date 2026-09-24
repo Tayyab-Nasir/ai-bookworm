@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { reviewTargetsChapter } from "../components/AiAssistantPanel";
+import { reviewTargetsChapter } from "../lib/ai-review-recovery";
 
 test("saved AI reviews only reopen for the selected chapter", () => {
   const review = { chapter_ids: ["chapter-a"] };
