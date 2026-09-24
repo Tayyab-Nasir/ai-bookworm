@@ -23,6 +23,27 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Manuscript source upload recovery
+
+`e5e0c75` makes the setup asset ID durable before allocation. The API accepts
+that ID for `/assets/upload-url`, verifies exact actor/workspace/metadata and
+pending version on replay, repairs a missing first version after partial
+allocation, and issues a fresh signed URL without another asset row. The
+browser checks whether uncertain PUT bytes arrived before attempting another
+upload; a clean original is reused, and changed files or newer/unsafe asset
+versions fail closed. No manuscript bytes, filename or signed URL enter the
+session checkpoint. If recovery storage cannot persist the ID, allocation
+does not start. Native Edge synthetic Auth/API/Storage journeys for lost
+allocation and lost PUT replies both reach a queued import with one book,
+asset and stored upload. Full local `npm run verify` passes (including 67
+migrations/45 SQL suites, 348 services, 12 E2E, 30 security, load smoke and
+mock AI evals); isolated web production build passes. This is not hosted
+Supabase Storage, scanner or multi-connection race acceptance. No live
+migration, provider call or deployment. Next: hosted upload/quarantine and
+worker acceptance, then wider author/publishing and release gates. See
+`Codex Sessions/2026-09/2026-09-24-bookworm-upload-recovery.md` in the vault.
+Preserve generated Next/Graphify dirt.
+
 ### Book creation recovery
 
 `b9bdca8` gives new-book setup a client-generated UUID stored before the first
