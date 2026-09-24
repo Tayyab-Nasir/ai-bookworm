@@ -25,7 +25,16 @@ and regional processing may change realized cost. Recheck before pricing plans.
 conservatively treats unclassified input as image tokens. This number is
 diagnostic provider telemetry, **not** the customer's debit. Image requests
 currently reserve one `image_credits` entitlement per generation; the app
-must still establish a funded, versioned customer offer and validate
+now records `measurementStatus` in the image job's usage JSON as `complete`,
+`partial`, or `unavailable`. An absent provider usage object still produces
+zero token/cost placeholders for the existing numeric AI-run columns, but
+`unavailable` explicitly means **unknown provider spend, not free generation**.
+Partial token receipts may understate actual cost; reconcile against provider
+organization usage before financial reporting or publishing a retail price.
+Image API usage availability should be verified with a bounded live request:
+the provider's guide describes usage data, while the API reference documents
+optional usage with narrower model wording. The app must still establish a
+funded, versioned customer offer and validate
 worst-case cost by size, quality, references, and model before public sales.
 Speech endpoint responses do not provide a token receipt; Bookworm's audio
 cost is explicitly a word-rate estimate awaiting organization-usage

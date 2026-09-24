@@ -17,7 +17,8 @@ export interface GeneratedImage {
   provider: "openai";
   model: string;
   requestId: string | null;
-  usage: { inputTokens: number; outputTokens: number; estimatedCostUsd: number; latencyMs: number };
+  usage: { inputTokens: number; outputTokens: number; estimatedCostUsd: number; latencyMs: number;
+    measurementStatus?: "complete" | "partial" | "unavailable" };
 }
 
 export type ImageGenerator = (input: ImageGenerationInput) => Promise<GeneratedImage>;
@@ -47,6 +48,14 @@ export function estimatedImageCost(model: string, usage: unknown): number {
   const unclassified = totalInput - knownText - knownImage;
   return Number((knownText * rates.textInput + (knownImage + unclassified) * rates.imageInput
     + output * rates.output).toFixed(6));
+}
+
+export function imageUsageMeasurementStatus(usage: unknown): "complete" | "partial" | "unavailable" {
+  const value = usage as { input_tokens?: unknown; output_tokens?: unknown } | null | undefined;
+  const valid = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+  if (!valid(value?.input_tokens) && !valid(value?.output_tokens)) return "unavailable";
+  if (!valid(value?.input_tokens) || !valid(value?.output_tokens)) return "partial";
+  return "complete";
 }
 
 export const openAiImageGenerator: ImageGenerator = async ({ prompt, size, quality, referenceImages }) => {
@@ -86,6 +95,7 @@ export const openAiImageGenerator: ImageGenerator = async ({ prompt, size, quali
       outputTokens: result.usage?.output_tokens ?? 0,
       estimatedCostUsd: estimatedImageCost(model, result.usage),
       latencyMs: Date.now() - started,
+      measurementStatus: imageUsageMeasurementStatus(result.usage),
     },
   };
 };

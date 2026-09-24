@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { estimatedImageCost, openAiImageGenerator } from "./lib/image-generation.js";
+import { estimatedImageCost, imageUsageMeasurementStatus, openAiImageGenerator } from "./lib/image-generation.js";
+
+test("image usage provenance distinguishes missing and partial provider telemetry", () => {
+  assert.equal(imageUsageMeasurementStatus(undefined), "unavailable");
+  assert.equal(imageUsageMeasurementStatus({}), "unavailable");
+  assert.equal(imageUsageMeasurementStatus({ input_tokens: 12 }), "partial");
+  assert.equal(imageUsageMeasurementStatus({ input_tokens: 12, output_tokens: 34 }), "complete");
+  assert.equal(imageUsageMeasurementStatus({ input_tokens: -1, output_tokens: 34 }), "partial");
+});
 
 test("current OpenAI image pricing distinguishes text, image input and output tokens", () => {
   assert.equal(estimatedImageCost("gpt-image-2.5-sunburst", {
@@ -29,7 +37,7 @@ test("image adapter submits reference bytes as multipart edits and unconditioned
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const paths: string[] = [];
   process.env.OPENAI_API_KEY = "fixture-no-network";
-  process.env.OPENAI_IMAGE_MODEL = "fixture-model";
+  process.env.OPENAI_IMAGE_MODEL = "gpt-image-2.5-sunburst";
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
     // SDK probes native FormData support with a local data URL.
@@ -44,13 +52,18 @@ test("image adapter submits reference bytes as multipart edits and unconditioned
     } else {
       const body = await request.json() as { prompt?: unknown }; assert.equal(body.prompt, "Same character in a new scene");
     }
-    return Response.json({ data: [{ b64_json: png.toString("base64") }] });
+    return Response.json({ data: [{ b64_json: png.toString("base64") }],
+      ...(request.url.endsWith("/generations") ? { usage: { input_tokens: 300, output_tokens: 1_000,
+        input_tokens_details: { text_tokens: 100, image_tokens: 200 } } } : {}) });
   };
   try {
     const input = { prompt: "Same character in a new scene", size: "1024x1024" as const, quality: "low" as const };
-    await openAiImageGenerator({ ...input, referenceImages: [{ bytes: png, mimeType: "image/png" }] });
-    await openAiImageGenerator(input);
+    const edited = await openAiImageGenerator({ ...input, referenceImages: [{ bytes: png, mimeType: "image/png" }] });
+    const created = await openAiImageGenerator(input);
     assert.deepEqual(paths, ["/v1/images/edits", "/v1/images/generations"]);
+    assert.equal(edited.usage.measurementStatus, "unavailable");
+    assert.equal(created.usage.measurementStatus, "complete");
+    assert.equal(created.usage.estimatedCostUsd, 0.0321);
   } finally {
     globalThis.fetch = oldFetch;
     if (oldKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldKey;

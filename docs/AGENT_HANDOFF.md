@@ -23,6 +23,19 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Image usage measurement provenance
+
+The OpenAI image adapter now saves `measurementStatus` (`complete`, `partial`,
+or `unavailable`) in the job's usage JSON. Numeric zero placeholders remain
+for existing AI-run columns when the provider omits usage, but the saved job
+now distinguishes unknown provider spend from measured zero. This does not
+change the one-credit image entitlement or establish retail pricing. Full
+local `npm run verify` passes (70 disposable migrations/48 SQL assertions,
+303 API tests, 348 service tests, 12 E2E, 30 security, load/evals). No live
+provider request or hosted migration. Next: bounded private provider usage
+acceptance and reconciliation, then an approved funded image catalog and the
+remaining release gates.
+
 ### Concurrent image request reservation
 
 `20260924160000_image_single_flight_reservation.sql` moves the
