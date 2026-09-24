@@ -23,6 +23,27 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Paid AI review request recovery
+
+`ea32cd5` closes the accepted-but-lost reply gap for proofreading, copyediting,
+consistency and regular drafting reviews. The server exposes an actor/book-
+scoped, read-only request-key lookup and permits replay only for the exact
+book, ordered chapter IDs, agent, brief and context policy. The browser saves
+only a user/book/chapter-scoped request pointer, settings and SHA-256 brief
+fingerprint before POST; uncertain replies retain the key and recover or retry
+the original request. Invalid/unavailable recovery storage fails closed. The
+UI also restores the correct agent mode when reopening a saved review, and
+authenticated BFF responses explicitly forbid caching. No migration or
+provider call. Full local `npm run verify` passes (68 migrations/46 SQL files,
+95 web tests, 348 service tests, 12 E2E and 30 security cases); isolated
+production web build and OpenAPI YAML parsing pass. A synthetic lost-reply
+Edge journey was added but is unrun because starting temporary Next on 4398
+was policy-rejected in the prior session. This is not hosted provider/billing
+acceptance. Next: run that browser journey on an allowed host, then verify
+paid ledger and provider behavior in an approved private environment; continue
+the full author/publishing release gates. See vault note
+`Codex Sessions/2026-09/2026-09-24-bookworm-ai-review-recovery.md`.
+
 ### Search-result source navigation
 
 `6045e7e` links current saved manuscript hits to their chapter and Book Bible
