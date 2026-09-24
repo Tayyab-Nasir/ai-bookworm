@@ -30,8 +30,10 @@ dispatch marker before contacting the AI service; expired leases cannot
 redispatch marked jobs. Lost/invalid service replies or uncertain completion
 hold the running job with `ai_provider_outcome_unconfirmed`, preserve the
 operational credit reservation, and create a private incident without charging
-the author. The AI panel shows this state. The additive migration is
-source-only, not live. Operator receipt recovery/release and provider-usage
+the author. The AI panel shows this state. The AI service now also reserves
+and saves private, durable review-result receipts, so a lost reply can be
+read without another provider call. Both additive migrations are source-only,
+not live. Operator receipt settlement/release and provider-usage
 reconciliation remain open; do not clear holds by age. This is a prerequisite
 for exposing the existing Book Bible candidate agent through paid jobs, not
 the candidate workflow itself. See `docs/AI_REVIEW_UNCERTAINTY.md`.
