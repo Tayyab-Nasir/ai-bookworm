@@ -1,6 +1,9 @@
 # SnapOtter integration decision
 
-Reviewed 2026-09-07. Status: evaluated; not installed, copied, or connected.
+Reviewed again 2026-09-24 against the upstream repository. Status: evaluated;
+not installed, copied, or connected. Its upstream README still describes
+AGPLv3/commercial dual licensing for proprietary SaaS use; the licensing gate
+below remains open.
 
 SnapOtter is a candidate for an optional private processing service, particularly
 OCR for scanned manuscripts, artwork cleanup/upscaling, format conversion and

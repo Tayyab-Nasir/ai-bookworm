@@ -2,6 +2,12 @@
 
 Status: accepted for the current product build (2026-09-06)
 
+2026-09-24 local extension: the canonical-version index also extracts visible
+table cells, captions and image alt text. Superseded versions are removed by
+the same chapter trigger; the SQL suite checks source-node citations, exact
+excerpt hashes, tenant isolation and stale-version removal. This migration is
+not installed in the live Supabase project yet.
+
 ## Decision
 
 Use tenant-scoped PostgreSQL full-text search for the first production retrieval
@@ -48,3 +54,11 @@ and bounded prompt assembly remain mandatory regardless of backend.
 
 Qdrant configuration already present in the repository is likewise optional and
 does not represent the active author-facing search path.
+
+As of the September 2026 upstream review, LightRAG recommends its REST server
+for integrations and PostgreSQL for production storage; its default local-file
+stores are not production storage. These are deployment characteristics, not
+proof that its workspace model satisfies Bookworm's book-level authorization
+or deletion rules. Keep it out of the author request path until a private
+adapter proves those invariants and improves the measured citation/recall
+baseline. [Official LightRAG repository](https://github.com/HKUDS/LightRAG).
