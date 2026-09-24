@@ -65,8 +65,12 @@ Candidate cards provide an on-demand source passage reader. It checks book
 membership, chapter/version ownership, node identity and the full saved-text
 hash before returning private, no-store text. Historical versions remain
 readable and are identified when the chapter has moved on. Responses cap
-display text at 24,000 characters with an explicit truncation flag; reading
-does not generate content, spend credits or save canonical entries.
+display text at 24,000 UTF-16 units per section, without splitting Unicode
+code points. Next/previous controls reach the full saved node. Every section
+rechecks book/version ownership and the full-node hash; invalid offsets fail
+closed. The viewer validates returned positions, retains the current text on
+navigation failure, and resets section scroll after successful navigation.
+Reading does not generate content, spend credits or save canonical entries.
 
 Authors can select up to three saved chapters from anywhere in the book.
 Free reading-plan preparation now divides all nonempty text nodes into
@@ -91,9 +95,13 @@ Checkpoint: 32 focused API/planner tests, API/web types, 103 web tests, 80
 disposable migrations/57 SQL suites, OpenAPI parsing and native Edge fixture
 journey pass. The browser verifies plan preparation and resumed progress;
 API tests verify actual gap-free planning, stale versions and no regeneration.
-The unique index is not installed hosted. Source passage navigation beyond
-the existing 24,000-character display cap remains a review-UX follow-up;
-full saved text is available in manuscript history. No live provider call.
+The unique index is not installed hosted. Source passage section navigation
+now reaches beyond the initial display cap; direct jumps/highlighting from a
+batch's stored excerpt ranges are a further review-UX improvement. No live
+provider call. Pagination follow-up passes 31 Book Memory API tests, API/web
+types, 103 web tests and the expanded native Edge fixture journey (failed
+next-section fetch, retained current text, retry, next/previous and final-page
+disable). Hosted services and multi-connection races remain separate gates.
 
 ## Reviewed no-result hold release — source checkpoint
 

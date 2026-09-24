@@ -152,7 +152,8 @@ function updatedTimestamp(previous: string) {
 export function bookMemoryRoutes(app: FastifyInstance) {
   app.post("/books/:bookId/bible/evidence", async (req, reply) => {
     const body = parse(z.object({ chapterId: id, documentVersionId: id,
-      nodeId: z.string().min(1).max(200), textHash: z.string().regex(/^[a-f0-9]{64}$/u) }).strict(), req.body);
+      nodeId: z.string().min(1).max(200), textHash: z.string().regex(/^[a-f0-9]{64}$/u),
+      offset: z.number().int().min(0).max(100000000).default(0) }).strict(), req.body);
     const { sb, bookId } = await scopedBook(app, req);
     const { data: chapter, error: chapterError } = await sb.from("chapters")
       .select("id,title,current_document_version_id").eq("id", body.chapterId).eq("book_id", bookId).maybeSingle();
@@ -167,10 +168,20 @@ export function bookMemoryRoutes(app: FastifyInstance) {
     if (createHash("sha256").update(node.text).digest("hex") !== body.textHash) {
       throw new AppError(409, "This citation does not match the saved passage. Reload the candidate before using it.");
     }
+    const startOffset = body.offset;
+    if (startOffset > node.text.length || (startOffset > 0 && /[\uDC00-\uDFFF]/u.test(node.text.charAt(startOffset))
+      && /[\uD800-\uDBFF]/u.test(node.text.charAt(startOffset - 1)))) {
+      throw new AppError(422, "Choose a valid position in this saved passage.");
+    }
+    let endOffset = Math.min(node.text.length, startOffset + 24000);
+    if (endOffset < node.text.length && /[\uDC00-\uDFFF]/u.test(node.text.charAt(endOffset))
+      && /[\uD800-\uDBFF]/u.test(node.text.charAt(endOffset - 1))) endOffset--;
     reply.header("cache-control", "private, no-store");
     return { chapterTitle: chapter.title, versionNumber: version.version_number,
       isCurrentVersion: chapter.current_document_version_id === version.id,
-      text: node.text.slice(0, 24000), truncated: node.text.length > 24000 };
+      text: node.text.slice(startOffset, endOffset), truncated: endOffset < node.text.length,
+      startOffset, endOffset, totalLength: node.text.length,
+      nextOffset: endOffset < node.text.length ? endOffset : null };
   });
   app.post("/books/:bookId/search", async (req) => {
     const body = parse(searchSchema, req.body);

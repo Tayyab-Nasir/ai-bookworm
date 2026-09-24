@@ -114,12 +114,40 @@ test("Book Bible evidence reads the exact pinned passage and identifies historic
   assert.equal(response.statusCode, 200, response.body);
   assert.equal(response.headers["cache-control"], "private, no-store");
   assert.deepEqual(response.json(), { chapterTitle: "Arrival", versionNumber: 7, isCurrentVersion: true,
-    text: SOURCE_TEXT, truncated: false });
+    text: SOURCE_TEXT, truncated: false, startOffset: 0, endOffset: SOURCE_TEXT.length,
+    totalLength: SOURCE_TEXT.length, nextOffset: null });
   store.chapters[0].current_document_version_id = randomUUID();
   const historical = await app.inject({ method: "POST", url, headers: auth, payload });
   assert.equal(historical.json().text, SOURCE_TEXT);
   assert.equal(historical.json().isCurrentVersion, false);
   assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
+
+test("Book Bible evidence paginates full saved Unicode text and rejects invalid positions", async (t) => {
+  const store = initialStore("viewer");
+  const text = "a".repeat(23999) + "😀" + "b".repeat(25000);
+  store.document_versions[0].content_json = { nodes: [{ id: "n1", type: "paragraph", text }] };
+  const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/bible/evidence`;
+  const payload = { chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: createHash("sha256").update(text).digest("hex") };
+  let offset: number | null = 0; let rebuilt = "";
+  while (offset !== null) {
+    const response: { statusCode: number; body: string; json(): { text: string; startOffset: number; nextOffset: number | null } } =
+      await app.inject({ method: "POST", url, headers: auth, payload: { ...payload, offset } });
+    assert.equal(response.statusCode, 200, response.body);
+    const page: { text: string; startOffset: number; nextOffset: number | null } = response.json();
+    assert.equal(page.startOffset, offset);
+    assert.ok(page.text.length <= 24000);
+    assert.equal(Buffer.from(page.text).toString("utf8"), page.text);
+    rebuilt += page.text; offset = page.nextOffset;
+  }
+  assert.equal(rebuilt, text);
+  for (const badOffset of [-1, 1.5, 24000, text.length + 1]) {
+    const response = await app.inject({ method: "POST", url, headers: auth, payload: { ...payload, offset: badOffset } });
+    assert.equal(response.statusCode, 422, response.body);
+  }
+  store.document_versions[0].content_json = { nodes: [{ id: "n1", type: "paragraph", text: text + "changed" }] };
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: { ...payload, offset: 23999 } })).statusCode, 409);
 });
 
 test("Book Bible evidence denies foreign, fabricated and hash-mismatched passages", async (t) => {

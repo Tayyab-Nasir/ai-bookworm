@@ -23,6 +23,16 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Full saved-passage section navigation
+
+The Book Bible source viewer now reaches every section of a long saved node
+with next/previous controls and verified text positions. Each API read checks
+scope/hash, bounds output and avoids split Unicode code points. Failed
+navigation preserves current text. 31 focused API tests, API/web types, 103
+web tests and the expanded native Edge fixture journey pass. No hosted action.
+Next: direct batch-excerpt jumps/highlighting, saved malformed-result
+disposition and wider release gates.
+
 ### Resumable Book Bible reading batches
 
 Author UI and API now prepare free saved-version reading plans, select a

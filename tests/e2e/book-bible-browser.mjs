@@ -53,12 +53,18 @@ try {
   });
   await page.route('**/bible/evidence', async route => {
     evidenceReads++;
-    assert.deepEqual(route.request().postDataJSON(), citation);
-    if (evidenceReads === 1) {
+    const request = route.request().postDataJSON();
+    const later = 'She checked the compass again before leaving the harbor.';
+    assert.deepEqual(request, { ...citation, offset: request.offset });
+    assert.ok([0, text.length].includes(request.offset));
+    if (evidenceReads === 1 || evidenceReads === 3) {
       await route.fulfill({ status: 503, json: { error: { message: 'Saved passage temporarily unavailable.' } } });
       return;
     }
-    await route.fulfill({ json: { chapterTitle: 'Arrival', versionNumber: 1, isCurrentVersion: false, text, truncated: false } });
+    await route.fulfill({ json: { chapterTitle: 'Arrival', versionNumber: 1, isCurrentVersion: false,
+      text: request.offset === 0 ? text : later, truncated: request.offset === 0,
+      startOffset: request.offset, endOffset: request.offset === 0 ? text.length : text.length + later.length,
+      totalLength: text.length + later.length, nextOffset: request.offset === 0 ? text.length : null } });
   });
   await page.goto(`http://127.0.0.1:4398/books/${bookId}/memory`);
   await page.getByLabel('Email').fill('author@example.test');
@@ -66,6 +72,8 @@ try {
   await page.getByRole('button', { name: /sign in/i }).click();
   const generate = page.getByRole('button', { name: 'Generate candidates · 1 credit', exact: true });
   const chapter = page.getByRole('checkbox', { name: 'Arrival', exact: true });
+  // First navigation compiles login, memory and BFF routes in isolated dev mode.
+  await chapter.waitFor({ timeout: 60000 });
   await expect(chapter).toBeChecked();
   await expect(page.getByRole('checkbox', { name: 'Return', exact: true })).toBeDisabled();
   await page.getByRole('checkbox', { name: 'Crossing', exact: true }).uncheck();
@@ -90,6 +98,14 @@ try {
   await page.getByRole('button', { name: 'Hide source passage' }).click();
   await page.getByRole('button', { name: 'Read source passage' }).click();
   assert.equal(evidenceReads, 2, 'reopening should reuse the verified passage after one retry');
+  await page.getByRole('button', { name: 'Next passage section' }).click();
+  await expect(page.getByText('Saved passage temporarily unavailable.', { exact: true })).toBeVisible();
+  await expect(page.locator('blockquote')).toHaveText(text);
+  await page.getByRole('button', { name: 'Next passage section' }).click();
+  await expect(page.locator('blockquote')).toHaveText('She checked the compass again before leaving the harbor.');
+  await expect(page.getByRole('button', { name: 'Next passage section' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Previous passage section' }).click();
+  await expect(page.locator('blockquote')).toHaveText(text);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.getByRole('button', { name: 'Open as unsaved entry' }).click();

@@ -606,8 +606,9 @@ paths:
                 documentVersionId: { type: string, format: uuid }
                 nodeId: { type: string, minLength: 1, maxLength: 200 }
                 textHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+                offset: { type: integer, minimum: 0, maximum: 100000000, default: 0, description: UTF-16 text position; must not split a Unicode code point }
       responses:
-        "200": { description: Verified passage text capped at 24000 characters with truncation and current-version flags }
+        "200": { description: Verified passage section capped at 24000 UTF-16 units without splitting code points; startOffset, endOffset, totalLength, nextOffset (null at end), truncation and current-version flags }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
