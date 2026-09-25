@@ -23,6 +23,18 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 ## Current checkpoint: 2026-09-24
 
+### Metadata quote preparation — 2026-09-25
+
+Added `services/api/src/lib/metadata-quote.ts`: bounded source/context,
+provider-token-counting consent, private AI count, approved catalog, exact
+request hash, conservative cached/uncached reserve and expiry recheck. Six
+synthetic tests and API typecheck pass. This is a preparation helper only;
+existing author UI/operational generation has not been converted and must not
+be presented as paid token pricing. See `METADATA_TOKEN_QUOTES.md`.
+Next: transactional quote proposal/acceptance schema and RPC; source-version
+revalidation, leased metadata worker with measured settlement/recovery, and
+author quote/acceptance UI. No hosted action, provider spend or price activation.
+
 ### Exact text request preparation and real Book Bible dispatch
 
 Fixed public `bookbible` jobs not resolving the internal `book_bible` agent.

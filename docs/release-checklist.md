@@ -1,5 +1,15 @@
 # MVP Release Checklist
 
+## 2026-09-25 metadata quote preparation
+
+A server-only metadata quote calculator now snapshots bounded selected text,
+counts it with the private AI service and builds a conservative expiring
+quote from server-owned rates and credit policy. Six synthetic tests and API
+types pass. This is not connected to customer acceptance, atomic funding,
+leased dispatch, settlement or UI; the current operational metadata route is
+unchanged. Gate 10 remains PARTIAL. See
+[Metadata token quotes](METADATA_TOKEN_QUOTES.md).
+
 ## 2026-09-24 text quote preparation and Book Bible dispatch
 
 Fixed the public `bookbible` job name not resolving the internal `book_bible`

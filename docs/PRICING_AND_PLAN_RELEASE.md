@@ -28,6 +28,15 @@ They are not approved commercial offers.
 
 ## Credit accounting direction
 
+### Metadata quote preparation status
+
+A private metadata quote calculator now binds the counted, selected source
+snapshot to the server-approved text catalog and conservative cached/uncached
+token bounds. Six synthetic contract tests and API TypeScript pass. This helper
+is not wired to author-facing quote acceptance, funded reservation, worker
+dispatch or settlement; current metadata generation still uses its operational
+one-credit route. See [Metadata token quotes](METADATA_TOKEN_QUOTES.md).
+
 ### Exact request preparation for remaining text agents
 
 Private quote/hash endpoints now support writer, proofreader, copyeditor,
