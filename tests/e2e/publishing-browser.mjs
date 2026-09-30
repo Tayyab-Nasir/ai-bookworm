@@ -1,7 +1,9 @@
 // UI acceptance only: fixture files are diagnostic text, not real EPUB/ZIPs.
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
-assert.equal((await fetch('http://127.0.0.1:4399/health').then((r) => r.json())).fixture, true);
+const fixtureOrigin = process.env.BROWSER_TEST_FIXTURE_ORIGIN ?? 'http://127.0.0.1:4399';
+const appOrigin = process.env.BROWSER_TEST_ORIGIN ?? 'http://127.0.0.1:4398';
+assert.equal((await fetch(`${fixtureOrigin}/health`).then((r) => r.json())).fixture, true);
 const browser = await chromium.launch({ headless: true, ...(process.env.BROWSER_TEST_CHANNEL ? { channel: process.env.BROWSER_TEST_CHANNEL } : {}) });
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -13,19 +15,26 @@ try {
     if (response.url().includes('/audio-download')) audioResponses.push(await response.allHeaders());
   });
   page.on('dialog', (dialog) => dialog.dismiss());
-  const url = 'http://127.0.0.1:4398/books/88888888-8888-4888-8888-888888888888/publish';
+  const url = `${appOrigin}/books/88888888-8888-4888-8888-888888888888/publish`;
   await page.goto(url);
   await page.getByLabel('Email').fill('author@example.test');
   await page.getByLabel('Password', { exact: true }).fill('fixture-password');
   await page.getByRole('button', { name: /sign in/i }).click();
   await page.waitForURL(/\/books\/88888888-8888-4888-8888-888888888888\/publish(?:\?|$)/, { timeout: 60000 });
   await page.getByRole('button', { name: 'New EPUB', exact: true }).click();
+  assert.equal(await page.getByLabel('Layout starter').count(), 0, 'reflowable EPUB offered paginated layout starters');
   await page.getByLabel('Include EPUB title page', { exact: false }).check();
   await page.getByLabel('Publisher or imprint', { exact: true }).fill('Finch & Fox');
   await page.getByLabel('Copyright notice', { exact: true }).fill('Copyright Ada\nPermission required.');
   await page.getByLabel('Add QR code').check();
   await page.getByLabel('HTTPS destination').fill('https://author.example/harbor');
   await page.getByLabel('QR label', { exact: true }).fill('Read more');
+  await page.getByLabel('Flow').selectOption('fixed');
+  await page.getByLabel('Layout starter').selectOption('trade-paperback');
+  assert.equal(await page.getByLabel('Body size (pt)').inputValue(), '11');
+  assert.equal(await page.getByLabel('Line spacing (pt)').inputValue(), '14.5');
+  assert.equal(await page.getByLabel('Include EPUB title page', { exact: false }).isChecked(), true);
+  assert.equal(await page.getByLabel('HTTPS destination').inputValue(), 'https://author.example/harbor');
   await page.getByRole('button', { name: 'Save edition', exact: true }).click();
   await page.getByText('Edition settings saved.', { exact: true }).waitFor();
   await page.reload();
@@ -34,6 +43,8 @@ try {
   assert.equal(await page.getByLabel('Publisher or imprint', { exact: true }).inputValue(), 'Finch & Fox');
   assert.equal(await page.getByRole('textbox', { name: 'Copyright notice', exact: true }).inputValue(), 'Copyright Ada\nPermission required.');
   assert.equal(await page.getByLabel('Include EPUB title page', { exact: false }).isChecked(), true);
+  assert.equal(await page.getByLabel('Flow').inputValue(), 'fixed');
+  assert.equal(await page.getByLabel('Line spacing (pt)').inputValue(), '14.5');
   const packageButton = page.getByRole('button', { name: 'Create retailer package', exact: true });
   assert.equal(await packageButton.isEnabled(), false);
   await page.getByLabel('Preflight target').selectOption('kdp');
@@ -63,6 +74,20 @@ try {
   await page.getByLabel('Back cover text', { exact: true }).fill('A journey through the harbor.');
   await page.getByLabel('Spine text (optional)', { exact: true }).fill('The Long Way Home');
   await page.getByLabel('Starting page number').fill('17');
+  await page.getByLabel('Bleed').selectOption('0.125');
+  await page.getByLabel('Interior bleed edges').selectOption('all');
+  await page.getByLabel('Add QR code').check();
+  await page.getByLabel('HTTPS destination').fill('https://author.example/print');
+  await page.getByLabel('QR label', { exact: true }).fill('Print companion');
+  await page.getByLabel('Layout starter').selectOption('large-print');
+  assert.equal(await page.getByLabel('Body size (pt)').inputValue(), '16');
+  assert.equal(await page.getByLabel('Line spacing (pt)').inputValue(), '20');
+  assert.equal(await page.getByLabel('Trim size').inputValue(), '6x9');
+  assert.equal(await page.getByLabel('Cover artwork').inputValue(), '55555555-5555-4555-8555-555555555555');
+  assert.equal(await page.getByLabel('Interior bleed edges').inputValue(), 'all');
+  assert.equal(await page.getByLabel('Starting page number').inputValue(), '17');
+  assert.equal(await page.getByLabel('HTTPS destination').inputValue(), 'https://author.example/print');
+  assert.equal(await page.getByLabel('Include chapter contents', { exact: false }).isChecked(), true);
   await page.getByRole('button', { name: 'Save edition', exact: true }).click();
   await page.getByText('Edition settings saved.', { exact: true }).waitFor();
   await page.reload();
@@ -75,6 +100,35 @@ try {
   assert.equal(await page.getByLabel('Template page count', { exact: true }).inputValue(), '184');
   assert.equal(await page.getByLabel('Back cover text').inputValue(), 'A journey through the harbor.');
   assert.equal(await page.getByLabel('Body font').inputValue(), 'BookwormVera');
+  assert.equal(await page.getByLabel('Body size (pt)').inputValue(), '16');
+  assert.equal(await page.getByLabel('Interior bleed edges').inputValue(), 'all');
+  assert.equal(await page.getByLabel('HTTPS destination').inputValue(), 'https://author.example/print');
+  await page.getByLabel('Preflight target').selectOption('lulu');
+  await page.getByRole('button', { name: 'Render PDF', exact: true }).click();
+  await page.getByRole('link', { name: 'Download private file', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Run preflight', exact: true }).click();
+  await page.getByText('0 errors', { exact: true }).waitFor();
+  assert.equal(await packageButton.isEnabled(), true, 'saved large-print proof was not ready for packaging');
+  await page.getByLabel('Layout starter').selectOption('poetry');
+  assert.equal(await page.getByLabel('Body size (pt)').inputValue(), '12');
+  assert.equal(await page.getByLabel('Line spacing (pt)').inputValue(), '18');
+  assert.equal(await page.getByRole('button', { name: 'Render PDF', exact: true }).isEnabled(), false);
+  assert.equal(await page.getByRole('button', { name: 'Run preflight', exact: true }).isEnabled(), false);
+  assert.equal(await packageButton.isEnabled(), false, 'stale render/preflight allowed packaging after a preset change');
+  await page.getByRole('button', { name: 'Save edition', exact: true }).click();
+  await page.getByText('Edition settings saved.', { exact: true }).waitFor();
+  await page.reload();
+  await page.getByRole('button', { name: /^print /i }).click();
+  assert.equal(await page.getByLabel('Body size (pt)').inputValue(), '12');
+  assert.equal(await page.getByLabel('Line spacing (pt)').inputValue(), '18');
+  assert.equal(await page.getByLabel('Create full cover PDF', { exact: true }).isChecked(), true);
+  assert.equal(await page.getByLabel('HTTPS destination').inputValue(), 'https://author.example/print');
+  assert.equal(await page.getByLabel('Interior bleed edges').inputValue(), 'all');
+  await page.getByLabel('Preflight target').selectOption('lulu');
+  await page.getByRole('button', { name: 'Render PDF', exact: true }).click();
+  await page.getByRole('link', { name: 'Download private file', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Run preflight', exact: true }).click();
+  await page.getByText('0 errors', { exact: true }).waitFor();
   await page.getByLabel('Preflight target').selectOption('apple');
   assert.equal(await page.getByRole('button', { name: 'Run preflight', exact: true }).isEnabled(), false, 'print accepted for Apple');
   await page.setViewportSize({ width: 390, height: 844 });
@@ -111,7 +165,7 @@ try {
   await page.getByRole('alert').filter({ hasText: 'Fixture export reply lost. Retry safely.' }).waitFor();
   await queueExport.click();
   await page.getByRole('status').filter({ hasText: 'Export queued.' }).waitFor();
-  const state = () => fetch('http://127.0.0.1:4399/fixture-export-state').then((r) => r.json());
+  const state = () => fetch(`${fixtureOrigin}/fixture-export-state`).then((r) => r.json());
   assert.equal((await state()).jobs.length, 1, 'uncertain response retry created duplicate exports');
   assert.equal((await state()).keys.length, 1, 'retry rotated the idempotency key');
   await page.reload();
@@ -125,7 +179,7 @@ try {
   await queueExport.click();
   await page.getByRole('status').filter({ hasText: 'Export queued.' }).waitFor();
   assert.equal((await state()).jobs.length, 2, 'new request reused cancelled export identity');
-  const advance = (status) => fetch('http://127.0.0.1:4399/fixture-export-state', {
+  const advance = (status) => fetch(`${fixtureOrigin}/fixture-export-state`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status }),
   });
   await advance('running');
@@ -144,5 +198,5 @@ try {
   assert.notEqual(await archiveLink.getAttribute('href'), archiveUrl, 'export history did not refresh private download URL');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'audiobook mobile overflow');
   assert.deepEqual(errors, []);
-  console.log('PASS publishing browser: edition settings, render/preflight/package, audio QC/sign-off, async export response-loss retry identity, reload recovery, cancellation, polled progress, refreshed download URL, disclosure and mobile. Artifact bytes remain fixtures.');
+  console.log('PASS publishing browser: layout starters for fixed EPUB and print, preserved settings, save/reload, render/preflight/package, audio QC/sign-off, async export response-loss retry identity, reload recovery, cancellation, polled progress, refreshed download URL, disclosure and mobile. Artifact bytes remain fixtures.');
 } finally { await browser.close(); }

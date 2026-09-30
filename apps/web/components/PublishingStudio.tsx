@@ -452,7 +452,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
               {form.flow === "fixed" && <p className="text-sm leading-relaxed text-amber-100/80 sm:col-span-2">Fixed layout uses the page size, margins and typography below. Pages become images with text alternatives; text is not selectable and cannot resize in the reader. Poppler is required on the rendering worker. Choose reflowable for adjustable text, broader script support and accessibility. Reader and retailer preview checks are still required.</p>}
             </>}
             {paginated && <>
-              <label className="text-sm text-white/65 sm:col-span-2">Layout starter<select value="" onChange={(event) => {
+              <div className="sm:col-span-2"><label htmlFor="layout-preset" className="text-sm text-white/65">Layout starter</label><select id="layout-preset" value="" onChange={(event) => {
                 const presetId = event.target.value;
                 if (!isLayoutPresetId(presetId)) return;
                 setForm((current) => applyLayoutPreset(current, presetId));
@@ -461,7 +461,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
               }} disabled={!editable || Boolean(busy)} aria-describedby="layout-preset-help" className={fieldClass}>
                 <option value="">Choose a starting layout</option>
                 {(Object.entries(LAYOUT_PRESET_LABELS) as [LayoutPresetId, string][]).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
-              </select><span id="layout-preset-help" className="mt-2 block text-xs leading-relaxed text-white/45">Adjustable starting points, not retailer certification. They change trim, margins and typography only; cover, QR, bleed, page numbering and front matter stay as set. Save, render a proof and run preflight with your chosen publisher.</span></label>
+              </select><p id="layout-preset-help" className="mt-2 text-xs leading-relaxed text-white/45">Adjustable starting points, not retailer certification. They change trim, margins and typography only; cover, QR, bleed, page numbering and front matter stay as set. Save, render a proof and run preflight with your chosen publisher.</p></div>
               <label className="text-sm text-white/65">Trim size<select value={form.trimSize} onChange={(event) => update("trimSize", event.target.value as FormState["trimSize"])} className={fieldClass}>{["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].map((size) => <option key={size}>{size}</option>)}</select></label>
               {form.kind === "print" && <><label className="text-sm text-white/65">Bleed<select value={form.bleed} onChange={(event) => update("bleed", Number(event.target.value))} className={fieldClass}><option value={0}>No bleed</option><option value={0.125}>0.125 in</option></select></label>
               {form.bleed > 0 && <label className="text-sm text-white/65">Interior bleed edges<select value={form.bleedEdges} onChange={(event) => update("bleedEdges", event.target.value as FormState["bleedEdges"])} className={fieldClass}><option value="outer">Top, bottom and outer edge · KDP</option><option value="all">All four edges · Lulu</option></select></label>}
