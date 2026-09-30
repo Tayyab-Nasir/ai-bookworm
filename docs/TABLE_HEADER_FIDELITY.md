@@ -40,6 +40,11 @@ processing-container [run 35958694353](https://github.com/Tayyab-Nasir/ai-bookwo
 also passed the generated DOCX header through Google EPUB packaging. Hosted import/Storage
 and retailer acceptance remain separate release gates.
 
-The 2026-09-30 merge extension has local parser/renderer tests only; the
-older EPUBCheck and container run above predate it and must not be treated as
-validation of merged-cell output.
+The 2026-09-30 merge extension additionally passed the official,
+checksum-pinned [EPUBCheck 5.4.0](https://github.com/w3c/epubcheck/releases/tag/v5.4.0)
+against an exact local DOCX → merged-header/body EPUB proof: zero errors
+and zero warnings. The EPUB SHA-256 is
+`a443c56c485628cd45c04efb53a50212a4c0c0e82e747b148959e8382d3deef9`.
+The older container run above predates this change. This one synthetic
+proof does not establish accessible-table certification, every imported
+layout, hosted Storage behavior or retailer acceptance.
