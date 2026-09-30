@@ -10,9 +10,9 @@ from io import BytesIO
 from html import escape
 
 from editions import EbookEdition, resolve_text_direction
-from manuscript import block_tree, image_width, inline_markup, table_header_rows, table_rows
+from manuscript import block_tree, image_width, inline_markup, table_header_rows, table_rows, table_spans
 
-RENDERER_VERSION = "epub-1.9.0"
+RENDERER_VERSION = "epub-1.10.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"
@@ -67,15 +67,27 @@ def _node_html(node: dict, image_ids: set[str] | None = None) -> str:
         if not grid:
             return f"<p>{text}</p>"
         header_count = table_header_rows(node, grid)
-        def row_html(row, header=False):
+        spans = table_spans(node, grid)
+        anchors = {(span["row"], span["col"]): span for span in spans}
+        covered = {(r, c) for span in spans for r in range(span["row"], span["row"] + span["rowspan"])
+                   for c in range(span["col"], span["col"] + span["colspan"])
+                   if (r, c) != (span["row"], span["col"])}
+        def row_html(row, row_index, header=False):
             tag = "th" if header else "td"
             scope = ' scope="col"' if header else ""
-            return "<tr>" + "".join(f"<{tag}{scope}>" + escape(cell).replace("\n", "<br/>") + f"</{tag}>" for cell in row) + "</tr>"
+            cells = []
+            for col, cell in enumerate(row):
+                if (row_index, col) in covered:
+                    continue
+                span = anchors.get((row_index, col))
+                size = (f' rowspan="{span["rowspan"]}"' if span and span["rowspan"] > 1 else "") + (f' colspan="{span["colspan"]}"' if span and span["colspan"] > 1 else "")
+                cells.append(f"<{tag}{scope}{size}>" + escape(cell).replace("\n", "<br/>") + f"</{tag}>")
+            return "<tr>" + "".join(cells) + "</tr>"
         if header_count:
-            head = "".join(row_html(row, True) for row in grid[:header_count])
-            body = "".join(row_html(row) for row in grid[header_count:])
+            head = "".join(row_html(row, index, True) for index, row in enumerate(grid[:header_count]))
+            body = "".join(row_html(row, index) for index, row in enumerate(grid) if index >= header_count)
             return f"<table><thead>{head}</thead><tbody>{body}</tbody></table>"
-        return "<table>" + "".join(row_html(row) for row in grid) + "</table>"
+        return "<table>" + "".join(row_html(row, index) for index, row in enumerate(grid)) + "</table>"
     return f"<p>{text}</p>" if text else ""
 
 

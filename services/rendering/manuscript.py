@@ -1,5 +1,6 @@
 """Safe, deterministic inline formatting and list structure shared by exporters."""
 from html import escape
+from hashlib import sha256
 from math import isfinite
 
 MARKS = {"bold", "italic", "strike", "code", "underline"}
@@ -19,6 +20,39 @@ def table_header_rows(node: dict, rows: list[list[str]]) -> int:
     attrs = node.get("attributes")
     count = attrs.get("tableHeaderRows") if isinstance(attrs, dict) else None
     return count if type(count) is int and 0 <= count <= len(rows) else 0
+
+
+def table_spans(node: dict, rows: list[list[str]]) -> list[dict[str, int]]:
+    """Accept only complete, non-overlapping spans for this exact text grid."""
+    attrs = node.get("attributes")
+    if not isinstance(attrs, dict) or not isinstance(attrs.get("tableSpans"), list):
+        return []
+    text = "\n".join("\t".join(row) for row in rows)
+    if attrs.get("tableSpanSource") != sha256(text.encode("utf-8")).hexdigest():
+        return []
+    raw = attrs["tableSpans"]
+    if len(raw) > sum(len(row) for row in rows):
+        return []
+    covered = set()
+    spans = []
+    header_count = table_header_rows(node, rows)
+    for span in raw:
+        if not isinstance(span, dict) or any(type(span.get(key)) is not int for key in ("row", "col", "rowspan", "colspan")):
+            return []
+        row, col, height, width = (span[key] for key in ("row", "col", "rowspan", "colspan"))
+        if row < 0 or col < 0 or height < 1 or width < 1 or height * width < 2 or row + height > len(rows):
+            return []
+        if header_count and row < header_count < row + height:
+            return []
+        for r in range(row, row + height):
+            if col + width > len(rows[r]):
+                return []
+            for c in range(col, col + width):
+                if (r, c) in covered or ((r, c) != (row, col) and rows[r][c]):
+                    return []
+                covered.add((r, c))
+        spans.append({"row": row, "col": col, "rowspan": height, "colspan": width})
+    return sorted(spans, key=lambda item: (item["row"], item["col"]))
 
 
 def inline_runs(node: dict) -> list[dict]:

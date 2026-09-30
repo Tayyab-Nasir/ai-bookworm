@@ -29,12 +29,12 @@ from reportlab.platypus import (
 )
 
 from editions import PrintEdition, print_requires_unsupported_rtl_typography
-from manuscript import block_tree, image_focal_point, image_print_placement, image_width, inline_markup, table_header_rows, table_rows
+from manuscript import block_tree, image_focal_point, image_print_placement, image_width, inline_markup, table_header_rows, table_rows, table_spans
 from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
 from print_layout import NUMBER_SIZE_PT, NUMBER_TRIM_INSET_IN, number_metrics, print_layout_issues
 
-RENDERER_VERSION = "pdf-1.13.0"
+RENDERER_VERSION = "pdf-1.14.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -287,6 +287,9 @@ def render_pdf(book: dict, edition: PrintEdition,
                                        ("RIGHTPADDING", (0, 0), (-1, -1), 5)]
                         if header_count:
                             table_style.append(("BACKGROUND", (0, 0), (-1, header_count - 1), colors.HexColor("#e7e2d8")))
+                        for span in table_spans(n, rows):
+                            table_style.append(("SPAN", (span["col"], span["row"]),
+                                                (span["col"] + span["colspan"] - 1, span["row"] + span["rowspan"] - 1)))
                         story.append(LongTable(cells, colWidths=[frame_w / columns] * columns,
                             repeatRows=header_count, splitByRow=1, splitInRow=1, hAlign="LEFT",
                             spaceAfter=typo.leading, style=table_style))

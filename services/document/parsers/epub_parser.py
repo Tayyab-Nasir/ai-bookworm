@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup, Comment, NavigableString
 from . import (ParseError, check_size, make_book, make_report, new_chapter,
                node, safe_zip_members)
 from .embedded_images import EmbeddedImages, EXTENSIONS
+from .table_grid import span_attributes
 
 _CONTAINER = "META-INF/container.xml"
 _OPF_NS = "{http://www.idpf.org/2007/opf}"
@@ -110,23 +111,54 @@ def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None) -> list
                     walk(caption, "caption", nesting=nesting + level + 1)
                 rows = []
                 header_rows = 0
-                for row in child.find_all("tr"):
-                    if row.find_parent("table") is not child:
-                        continue
-                    cells = []
+                spans = []
+                occupied_by_row = {}
+                source_rows = [row for row in child.find_all("tr") if row.find_parent("table") is child]
+                if len(source_rows) > 2000:
+                    raise ParseError("EPUB table exceeds safe row limit")
+                for row_index, row in enumerate(source_rows):
+                    cells = {}
+                    col = 0
                     source_cells = row.find_all(["td", "th"], recursive=False)
                     for cell in source_cells:
+                        def span_size(name, maximum):
+                            value = cell.get(name, "1")
+                            return int(value) if isinstance(value, str) and len(value) <= 4 and value.isdecimal() and 1 <= int(value) <= maximum else 1
+                        height = span_size("rowspan", min(2000, len(source_rows) - row_index))
+                        width = span_size("colspan", 100)
+                        while col + width <= 100 and any(
+                            c in occupied_by_row.get(r, set())
+                            for r in range(row_index, row_index + height)
+                            for c in range(col, col + width)
+                        ):
+                            col += 1
+                        if col + width > 100:
+                            raise ParseError("EPUB table exceeds safe column limit")
                         # Reuse the same safe walker; no scripts, links or source HTML.
                         cell_nodes = _xhtml_to_nodes(cell, _nesting=nesting + level + 1, image_node=image_node)
-                        cells.append("\n".join(n.get("text", "") for n in cell_nodes))
-                    if cells:
+                        cells[col] = "\n".join(n.get("text", "") for n in cell_nodes)
+                        for r in range(row_index, row_index + height):
+                            for c in range(col, col + width):
+                                occupied_by_row.setdefault(r, set()).add(c)
+                        if height > 1 or width > 1:
+                            spans.append({"row": row_index, "col": col, "rowspan": height, "colspan": width})
+                        col += width
+                    occupied_in_row = occupied_by_row.get(row_index, set())
+                    if cells or occupied_in_row:
                         head = row.find_parent("thead")
-                        if header_rows == len(rows) and ((head is not None and head.find_parent("table") is child) or all(cell.name == "th" and cell.get("scope") != "row" for cell in source_cells)):
+                        if header_rows == len(rows) and ((head is not None and head.find_parent("table") is child) or (source_cells and all(cell.name == "th" and cell.get("scope") != "row" for cell in source_cells))):
                             header_rows += 1
-                        rows.append(cells)
-                if rows:
+                        width = max([*cells.keys(), *occupied_in_row]) + 1
+                        rows.append([cells.get(c, "") for c in range(width)])
+                    else:
+                        rows.append([])
+                if any(rows):
+                    if spans:
+                        width = max(len(row) for row in rows)
+                        rows = [row + [""] * (width - len(row)) for row in rows]
+                    attributes = span_attributes(rows, header_rows, spans)
                     nodes.append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows,
-                                      **({"attributes": {"tableHeaderRows": header_rows}} if header_rows else {})))
+                                      **({"attributes": attributes} if attributes else {})))
             elif tag in _TAG_BLOCK or tag in containers or tag == "figcaption":
                 # Paragraphs within a list item are its own text, not new bullets.
                 if tag == "p" and kind == "listItem":
@@ -219,7 +251,7 @@ def parse_epub(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
 
             nodes = _xhtml_to_nodes(soup, image_node=image_node)
             if soup.find("table"):
-                warnings.append(f"Table text, row order and any explicit header rows in {href} were preserved; merged-cell layout and cell formatting require review against the original.")
+                warnings.append(f"Table text, row order, explicit header rows and rectangular merged cells in {href} were preserved; complex merged-cell layout and cell formatting require review against the original.")
             if not nodes:
                 continue
             # chapter title from first h1/h2, else filename

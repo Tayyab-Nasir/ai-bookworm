@@ -139,6 +139,106 @@ def test_docx_merged_cells_do_not_duplicate_source_text():
     doc.save(buf)
     book, _ = parse_docx(buf.getvalue())
     assert book["chapters"][0]["nodes"][0]["text"].count("Only once") == 1
+    assert book["chapters"][0]["nodes"][0]["attributes"]["tableSpans"] == [
+        {"row": 0, "col": 0, "rowspan": 2, "colspan": 2}]
+
+
+def test_docx_rectangular_merges_survive_epub_round_trip_and_print(monkeypatch):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rendering"))
+    from editions import EbookEdition, PrintEdition
+    from epub_renderer import render_epub
+    from pdf_renderer import render_pdf
+    import pdf_renderer
+    from pypdf import PdfReader
+    from zipfile import ZipFile
+
+    doc = Document()
+    table = doc.add_table(rows=3, cols=3)
+    table.cell(0, 0).merge(table.cell(0, 1)).text = "Across"
+    table.cell(1, 0).merge(table.cell(2, 0)).text = "Down"
+    table.cell(0, 2).text = "Right"
+    table.cell(1, 1).text = "Middle"
+    table.cell(1, 2).text = "Other"
+    table.cell(2, 1).text = "Last"
+    table.cell(2, 2).text = "End"
+    source = io.BytesIO()
+    doc.save(source)
+
+    book, _ = parse_docx(source.getvalue())
+    table_node = book["chapters"][0]["nodes"][0]
+    assert table_node["rows"] == [["Across", "", "Right"], ["Down", "Middle", "Other"], ["", "Last", "End"]]
+    assert table_node["attributes"]["tableSpans"] == [
+        {"row": 0, "col": 0, "rowspan": 1, "colspan": 2},
+        {"row": 1, "col": 0, "rowspan": 2, "colspan": 1},
+    ]
+    epub, _ = render_epub(book, EbookEdition())
+    with ZipFile(io.BytesIO(epub)) as archive:
+        chapter = archive.read("OEBPS/ch0000.xhtml")
+    assert b'<td colspan="2">Across</td>' in chapter
+    assert b'<td rowspan="2">Down</td>' in chapter
+    assert chapter.count(b"Across") == 1
+    assert chapter.count(b"Down") == 1
+    imported, _ = parse_epub(epub)
+    imported_node = imported["chapters"][0]["nodes"][0]
+    assert imported_node["rows"] == table_node["rows"]
+    assert imported_node["attributes"]["tableSpans"] == table_node["attributes"]["tableSpans"]
+    commands = []
+    real_table = pdf_renderer.LongTable
+    def recording_table(*args, **kwargs):
+        commands.extend(kwargs.get("style", []))
+        return real_table(*args, **kwargs)
+    monkeypatch.setattr(pdf_renderer, "LongTable", recording_table)
+    pdf, _ = render_pdf(book, PrintEdition())
+    assert ("SPAN", (0, 0), (1, 0)) in commands
+    assert ("SPAN", (0, 1), (0, 2)) in commands
+    text = "\n".join(page.extract_text() for page in PdfReader(io.BytesIO(pdf)).pages)
+    assert text.count("Across") == text.count("Down") == 1
+
+
+def test_epub_merged_cells_have_bounded_safe_grid_and_stale_metadata_is_ignored():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rendering"))
+    from manuscript import table_spans
+    nodes = _xhtml_to_nodes(BeautifulSoup(
+        '<table><tr><th colspan="2">A</th><th>B</th></tr>'
+        '<tr><td rowspan="2">C</td><td>D</td><td>E</td></tr>'
+        '<tr><td>F</td><td>G</td></tr></table>', "lxml"))
+    table = nodes[0]
+    assert table["rows"] == [["A", "", "B"], ["C", "D", "E"], ["", "F", "G"]]
+    assert table["attributes"]["tableHeaderRows"] == 1
+    assert table_spans(table, table["rows"]) == [
+        {"row": 0, "col": 0, "rowspan": 1, "colspan": 2},
+        {"row": 1, "col": 0, "rowspan": 2, "colspan": 1},
+    ]
+    table["rows"][1][1] = "Edited"
+    table["text"] = "\n".join("\t".join(row) for row in table["rows"])
+    assert table_spans(table, table["rows"]) == []
+
+
+def test_epub_colspan_moves_past_an_earlier_rowspan_and_rejects_oversized_grid():
+    nodes = _xhtml_to_nodes(BeautifulSoup(
+        '<table><tr><td>A</td><td rowspan="2">B</td><td>C</td><td>D</td></tr>'
+        '<tr><td>E</td><td colspan="2">F</td></tr></table>', "lxml"))
+    assert nodes[0]["rows"] == [["A", "B", "C", "D"], ["E", "", "F", ""]]
+    assert nodes[0]["attributes"]["tableSpans"] == [
+        {"row": 0, "col": 1, "rowspan": 2, "colspan": 1},
+        {"row": 1, "col": 2, "rowspan": 1, "colspan": 2},
+    ]
+    with pytest.raises(ParseError, match="column limit"):
+        _xhtml_to_nodes(BeautifulSoup(
+            "<table><tr>" + "<td>x</td>" * 101 + "</tr></table>", "lxml"))
+
+
+def test_invalid_or_overlapping_table_span_metadata_falls_back_to_plain_grid():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rendering"))
+    from manuscript import table_spans
+    from parsers.table_grid import span_attributes
+    rows = [["A", ""], ["B", "C"]]
+    spans = [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}]
+    attrs = span_attributes(rows, 0, spans)
+    assert table_spans({"attributes": attrs}, rows) == spans
+    assert table_spans({"attributes": {**attrs, "tableSpans": spans * 2}}, rows) == []
+    assert table_spans({"attributes": {**attrs, "tableSpans": [{**spans[0], "colspan": True}]}}, rows) == []
+    assert table_spans({"attributes": {**attrs, "tableSpans": [{**spans[0], "rowspan": 2}]}}, rows) == []
 
 
 def test_explicit_docx_table_header_survives_ebook_round_trip_and_print():

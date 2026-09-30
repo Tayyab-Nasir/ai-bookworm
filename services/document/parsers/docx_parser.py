@@ -11,6 +11,7 @@ from docx.table import Table
 from . import (ParseError, check_size, make_book, make_report, new_chapter,
                node, safe_zip_members)
 from .embedded_images import EmbeddedImages
+from .table_grid import span_attributes
 
 _HEADING_LEVELS = {f"Heading {i}": i for i in range(1, 7)}
 
@@ -96,11 +97,13 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
             rows = []
             header_rows = 0
             seen_cells = set()
+            positions = {}
             for row in para.rows:
                 if header_rows == len(rows) and _is_marked_header(row):
                     header_rows += 1
                 cells = []
                 for cell in row.cells:
+                    positions.setdefault(cell._tc, []).append((len(rows), len(cells)))
                     # Word exposes a merged cell multiple times in its grid.
                     # Keep its text once; don't invent repeated manuscript content.
                     if cell._tc in seen_cells:
@@ -109,9 +112,22 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
                         seen_cells.add(cell._tc)
                         cells.append(cell.text)
                 rows.append(cells)
+            spans = []
+            for locations in positions.values():
+                if len(locations) < 2:
+                    continue
+                top = min(r for r, _ in locations)
+                left = min(c for _, c in locations)
+                height = max(r for r, _ in locations) - top + 1
+                width = max(c for _, c in locations) - left + 1
+                # Only a complete rectangle can be represented safely.
+                if len(locations) == height * width and (top, left) in locations:
+                    spans.append({"row": top, "col": left, "rowspan": height, "colspan": width})
+            spans.sort(key=lambda span: (span["row"], span["col"]))
+            attributes = span_attributes(rows, header_rows, spans)
             current["nodes"].append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows,
-                                         **({"attributes": {"tableHeaderRows": header_rows}} if header_rows else {})))
-            warnings.append("DOCX table text, row order and any explicitly marked header rows were preserved; merged-cell layout, cell formatting and nested tables require review against the original.")
+                                         **({"attributes": attributes} if attributes else {})))
+            warnings.append("DOCX table text, row order, any explicitly marked header rows and rectangular merged cells were preserved; complex merged-cell layout, cell formatting and nested tables require review against the original.")
             continue
         style = para.style.name if para.style else ""
         level = _HEADING_LEVELS.get(style)
