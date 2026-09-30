@@ -13,8 +13,9 @@ covered grid positions. DOCX grid identity and EPUB `rowspan`/`colspan` map to
 merged table cells. A hash of the imported grid is stored with the spans so
 author edits to table text invalidate old merge layout rather than applying
 it to new content. The EPUB importer caps the table at 2,000 rows and 100
-columns before expanding spans. Renderer fingerprints are `epub-1.10.0` and
-`pdf-1.14.0` for this changed output.
+columns before expanding spans. This output was introduced with renderer
+fingerprints `epub-1.10.0` and `pdf-1.14.0`; later renderer versions also
+retain this support.
 
 The author can mark the first row as headers, or remove the marking, in the
 manuscript table editor. EPUB export emits `<thead>` and scoped `<th>` cells.

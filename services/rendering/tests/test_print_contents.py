@@ -63,6 +63,25 @@ def test_contents_repaginate_when_typography_changes_and_remain_optional():
     assert "Contents" not in "\n".join(page.extract_text() for page in legacy.pages)
 
 
+def test_imported_first_chapter_heading_is_printed_once_but_later_headings_remain():
+    model = book(1)
+    model["chapters"][0]["title"] = "Chapter One"
+    model["chapters"][0]["nodes"] = [
+        {"id": "imported-heading", "type": "heading", "level": 1, "text": "Chapter One"},
+        {"id": "body", "type": "paragraph", "text": "The journey begins."},
+        {"id": "intentional-heading", "type": "heading", "level": 2, "text": "Chapter One"},
+    ]
+    pdf = PdfReader(io.BytesIO(render_pdf(model, PrintEdition())[0]))
+    chapter_page = "\n".join(page.extract_text() for page in pdf.pages[1:])
+    assert chapter_page.splitlines().count("Chapter One") == 2
+    assert "The journey begins." in chapter_page
+
+    model["chapters"][0]["nodes"][0]["text"] = "A distinct opening heading"
+    distinct = PdfReader(io.BytesIO(render_pdf(model, PrintEdition())[0]))
+    text = "\n".join(page.extract_text() for page in distinct.pages[1:])
+    assert "Chapter One" in text and "A distinct opening heading" in text
+
+
 def test_wrapped_titles_link_once_and_contents_font_is_checked():
     model = book(2)
     model["chapters"][0]["title"] = "A long chapter title about the harbor and its letters " * 3

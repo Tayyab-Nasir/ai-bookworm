@@ -34,7 +34,7 @@ from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
 from print_layout import NUMBER_SIZE_PT, NUMBER_TRIM_INSET_IN, number_metrics, print_layout_issues
 
-RENDERER_VERSION = "pdf-1.14.0"
+RENDERER_VERSION = "pdf-1.15.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -248,8 +248,15 @@ def render_pdf(book: dict, edition: PrintEdition,
         if edition.include_table_of_contents or chapter_bookmarks:
             chapter_style = ParagraphStyle(f"ChapterHeading{index}", parent=heading)
             doc.toc_chapters[chapter_style.name] = (ch.get("title", ""), f"chapter-{index}")
-        story.append(Paragraph(escape(ch.get("title", "")), chapter_style))
-        for block in block_tree(ch.get("nodes", [])):
+        chapter_nodes = ch.get("nodes", [])
+        first_node = chapter_nodes[0] if chapter_nodes else None
+        repeated_title = (isinstance(first_node, dict) and first_node.get("type") == "heading"
+                          and first_node.get("level") == 1 and bool(ch.get("title", "").strip())
+                          and (first_node.get("text") or "").strip() == ch["title"].strip())
+        title_markup = (inline_markup(first_node, pdf=True, pdf_code_font=code_font(typo.heading_font))
+                        if repeated_title else escape(ch.get("title", "")))
+        story.append(Paragraph(title_markup, chapter_style))
+        for block in block_tree(chapter_nodes[1:] if repeated_title else chapter_nodes):
             if "node" not in block:
                 story.append(render_list(block))
                 continue
