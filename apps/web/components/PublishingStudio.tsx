@@ -38,6 +38,45 @@ interface FormState {
   copyrightNotice: string; publisher: string; ebookTitlePage: boolean; printContents: boolean;
 }
 
+export type LayoutPresetId = "trade-paperback" | "large-print" | "poetry";
+
+type LayoutPresetFields = Pick<FormState,
+  "trimSize" | "top" | "bottom" | "inner" | "outer" | "bodyFont" | "bodySize" | "headingFont" | "headingSize"
+  | "leading" | "paragraphSpacing" | "firstLineIndent" | "textAlign"
+>;
+
+const LAYOUT_PRESETS: Record<LayoutPresetId, LayoutPresetFields> = {
+  "trade-paperback": {
+    trimSize: "6x9", top: 0.75, bottom: 0.75, inner: 0.8, outer: 0.6,
+    bodyFont: "BookwormVera", bodySize: 11, headingFont: "BookwormVera-Bold", headingSize: 16,
+    leading: 14.5, paragraphSpacing: 4, firstLineIndent: 0.25, textAlign: "justify",
+  },
+  "large-print": {
+    trimSize: "6x9", top: 0.9, bottom: 0.9, inner: 0.9, outer: 0.7,
+    bodyFont: "BookwormVera", bodySize: 16, headingFont: "BookwormVera-Bold", headingSize: 20,
+    leading: 20, paragraphSpacing: 8, firstLineIndent: 0, textAlign: "left",
+  },
+  poetry: {
+    trimSize: "6x9", top: 1, bottom: 1, inner: 0.9, outer: 0.65,
+    bodyFont: "BookwormVera", bodySize: 12, headingFont: "BookwormVera-Bold", headingSize: 18,
+    leading: 18, paragraphSpacing: 12, firstLineIndent: 0, textAlign: "left",
+  },
+};
+
+const LAYOUT_PRESET_LABELS: Record<LayoutPresetId, string> = {
+  "trade-paperback": "Trade paperback",
+  "large-print": "Large print (16 pt)",
+  poetry: "Poetry (open spacing)",
+};
+
+function isLayoutPresetId(value: string): value is LayoutPresetId {
+  return Object.prototype.hasOwnProperty.call(LAYOUT_PRESETS, value);
+}
+
+export function applyLayoutPreset(form: FormState, presetId: LayoutPresetId): FormState {
+  return { ...form, ...LAYOUT_PRESETS[presetId] };
+}
+
 const DEFAULT_FORM: FormState = {
   kind: "ebook", language: "en", textDirection: "auto", flow: "reflowable", navigation: "toc+landmarks",
   trimSize: "6x9", bleed: 0, bleedEdges: "outer", top: 0.75, bottom: 0.75, inner: 0.75, outer: 0.5,
@@ -413,6 +452,16 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
               {form.flow === "fixed" && <p className="text-sm leading-relaxed text-amber-100/80 sm:col-span-2">Fixed layout uses the page size, margins and typography below. Pages become images with text alternatives; text is not selectable and cannot resize in the reader. Poppler is required on the rendering worker. Choose reflowable for adjustable text, broader script support and accessibility. Reader and retailer preview checks are still required.</p>}
             </>}
             {paginated && <>
+              <label className="text-sm text-white/65 sm:col-span-2">Layout starter<select value="" onChange={(event) => {
+                const presetId = event.target.value;
+                if (!isLayoutPresetId(presetId)) return;
+                setForm((current) => applyLayoutPreset(current, presetId));
+                setDirty(true); setRendered(null); setPreflight(null); setError(null);
+                setNotice("Layout starter applied. Review settings, then save and render a new proof.");
+              }} disabled={!editable || Boolean(busy)} aria-describedby="layout-preset-help" className={fieldClass}>
+                <option value="">Choose a starting layout</option>
+                {(Object.entries(LAYOUT_PRESET_LABELS) as [LayoutPresetId, string][]).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+              </select><span id="layout-preset-help" className="mt-2 block text-xs leading-relaxed text-white/45">Adjustable starting points, not retailer certification. They change trim, margins and typography only; cover, QR, bleed, page numbering and front matter stay as set. Save, render a proof and run preflight with your chosen publisher.</span></label>
               <label className="text-sm text-white/65">Trim size<select value={form.trimSize} onChange={(event) => update("trimSize", event.target.value as FormState["trimSize"])} className={fieldClass}>{["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].map((size) => <option key={size}>{size}</option>)}</select></label>
               {form.kind === "print" && <><label className="text-sm text-white/65">Bleed<select value={form.bleed} onChange={(event) => update("bleed", Number(event.target.value))} className={fieldClass}><option value={0}>No bleed</option><option value={0.125}>0.125 in</option></select></label>
               {form.bleed > 0 && <label className="text-sm text-white/65">Interior bleed edges<select value={form.bleedEdges} onChange={(event) => update("bleedEdges", event.target.value as FormState["bleedEdges"])} className={fieldClass}><option value="outer">Top, bottom and outer edge · KDP</option><option value="all">All four edges · Lulu</option></select></label>}
