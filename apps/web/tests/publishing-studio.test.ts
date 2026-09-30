@@ -17,7 +17,7 @@ test("fixed EPUB page controls survive saving and switching flow", () => {
   const reflowable = toConfig({ ...form, flow: "reflowable" }, saved);
   assert.deepEqual(toConfig({ ...formFromEdition({ ...edition, edition_metadata_json: reflowable }), flow: "fixed" }, reflowable), saved);
 });
-import { resolveEditionTextDirection, formFromEdition, toConfig } from "../components/PublishingStudio";
+import { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../components/PublishingStudio";
 import type { Edition } from "@bookworm/types";
 
 test("front matter survives save and reload for both book formats", () => {
@@ -116,4 +116,59 @@ test("full paperback cover settings survive save and reload without leaking to E
   assert.deepEqual(saved.wrap_cover, config.wrap_cover);
   assert.deepEqual(toConfig(formFromEdition({ ...edition, edition_metadata_json: saved })), saved);
   assert.equal("wrap_cover" in toConfig({ ...form, kind: "ebook" }), false);
+});
+
+test("layout presets set print typography and preserve cover, QR, bleed, and front matter", () => {
+  const edition = { type: "print", language: "en", edition_metadata_json: { kind: "print" } } as unknown as Edition;
+  const source = {
+    ...formFromEdition(edition), coverAssetId: "cover-asset", titleOnCover: false,
+    qrEnabled: true, qrUrl: "https://example.test/bonus", qrLabel: "Bonus chapter",
+    bleed: 0.125, bleedEdges: "outer" as const, wrapEnabled: true, backText: "Back cover copy",
+    copyrightNotice: "Copyright 2026", publisher: "Harbor Press",
+  };
+
+  const largePrint = applyLayoutPreset(source, "large-print");
+
+  assert.equal(largePrint.trimSize, "6x9");
+  assert.equal(largePrint.bodySize, 16);
+  assert.equal(largePrint.headingSize, 20);
+  assert.equal(largePrint.leading, 20);
+  assert.equal(largePrint.firstLineIndent, 0);
+  assert.equal(largePrint.textAlign, "left");
+  assert.equal(largePrint.coverAssetId, source.coverAssetId);
+  assert.equal(largePrint.titleOnCover, source.titleOnCover);
+  assert.equal(largePrint.qrUrl, source.qrUrl);
+  assert.equal(largePrint.qrLabel, source.qrLabel);
+  assert.equal(largePrint.bleed, source.bleed);
+  assert.equal(largePrint.bleedEdges, source.bleedEdges);
+  assert.equal(largePrint.wrapEnabled, source.wrapEnabled);
+  assert.equal(largePrint.backText, source.backText);
+  assert.equal(largePrint.copyrightNotice, source.copyrightNotice);
+  assert.equal(largePrint.publisher, source.publisher);
+});
+
+test("trade and poetry layout presets have different composition and survive edition save", () => {
+  const edition = { type: "print", language: "en", edition_metadata_json: { kind: "print" } } as unknown as Edition;
+  const source = formFromEdition(edition);
+  const trade = applyLayoutPreset(source, "trade-paperback");
+  const poetry = applyLayoutPreset(source, "poetry");
+
+  assert.equal(trade.bodySize, 11);
+  assert.equal(trade.textAlign, "justify");
+  assert.equal(trade.firstLineIndent, 0.25);
+  assert.equal(poetry.bodySize, 12);
+  assert.equal(poetry.leading, 18);
+  assert.equal(poetry.paragraphSpacing, 12);
+  assert.equal(poetry.firstLineIndent, 0);
+  assert.equal(poetry.textAlign, "left");
+  assert.notDeepEqual(
+    [trade.bodySize, trade.leading, trade.paragraphSpacing, trade.firstLineIndent, trade.textAlign],
+    [poetry.bodySize, poetry.leading, poetry.paragraphSpacing, poetry.firstLineIndent, poetry.textAlign],
+  );
+  const saved = toConfig({ ...poetry, kind: "print" });
+  assert.equal(saved.kind, "print");
+  if (saved.kind !== "print") throw new Error("wrong edition");
+  assert.equal(saved.typography?.body_size_pt, 12);
+  assert.equal(saved.typography?.leading, 18);
+  assert.equal(saved.typography?.paragraph_spacing_pt, 12);
 });
