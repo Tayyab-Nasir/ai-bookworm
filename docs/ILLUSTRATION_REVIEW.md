@@ -37,10 +37,15 @@ and 100 MiB combined are accepted. Archived/rejected images are not placeable,
 even when human review was grandfathered.
 
 Render/preflight/package request identities include `imageSha256`, a
-deterministic hash of the verified cover and illustration bytes. Packaging
+deterministic hash of the verified cover and illustration bytes plus their
+typed `artworkSnapshot`: version, path, checksum, MIME/size, review requirement
+and exact approval ID. Object/array ordering is canonicalized, including
+PostgreSQL JSONB key reordering. Books without artwork carry an explicit empty
+snapshot. Packaging
 requires both successful saved proofs to match current content, settings and
-artwork. Historical proofs without the image hash require a new render and
-preflight; they are not upgraded by assuming their artwork was unchanged.
+artwork. Historical proofs or queued jobs without the snapshot/hash require a
+new render and preflight; they are not upgraded by assuming their artwork was
+unchanged. Retrying the old immutable job cannot manufacture that proof.
 
 Artwork is re-read after service work and before completion. A revision,
 quarantine, revoked review or different stored bytes fails the attempt, and
@@ -48,11 +53,27 @@ attempt-owned uploads are compensated without charging successful usage.
 These rechecks add private Storage reads. They are bounded but should be
 included in operating costs; they do not invoke an AI provider.
 
-The last artwork read and the completion RPC are separate operations. This
-checkpoint does not claim atomic acceptance against a concurrent revision or
-revocation at that final boundary. Native two-connection SQL acceptance and
-an atomic snapshot guard remain release work. A database metadata check also
-cannot by itself prove that an external Storage object is immutable.
+`20261003030000_atomic_artwork_completion.sql` adds one completion trigger
+shared by direct and leased render, preflight and package RPCs. It freezes
+publishing request identity and validates the bounded snapshot while locking
+the edition, book/membership, asset, version, approval and package source
+proofs in a deterministic order. These metadata locks are held through the
+artifact/findings/usage/status transaction; rejection rolls back those writes.
+Permission loss returns HTTP 403; stale/missing proofs return HTTP 422 with
+instructions to render/preflight again. Workers use an allowlisted SQL detail
+to distinguish snapshot changes from lease loss. Invalid snapshots and revoked
+permission are terminal, not another renderer attempt. Lost completion replies
+still require an authoritative status read before removing attempt-owned
+objects; unknown or confirmed committed completion never removes those objects.
+
+This guard is source-only until the migration is installed in the target
+environment. Disposable SQL assertions prove serial rejection, rollback and
+replay; the native runner adds 108 two-connection lock/commit/rollback schedules
+for revision, scan, review, version deletion, permission and edition changes.
+Execute and inspect those native results before claiming concurrent acceptance.
+Metadata locking cannot prove external Storage-byte immutability or an atomic
+whole-manuscript fingerprint. The existing content and private byte rechecks
+remain necessary; hosted Storage/provider acceptance is still a release gate.
 
 ## Local acceptance
 
@@ -63,6 +84,13 @@ node --import tsx --test services/api/src/asset-approval-routes.test.ts services
 npm run test:db
 npm run verify
 ```
+
+`tests/security/run-native-postgres.mjs` requires `BOOKWORM_NATIVE_TEST=1`, an
+explicit disposable password, and native PostgreSQL on its fixed local test
+port. It creates/removes only its generated disposable database, runs serial
+SQL suites and verifies actual `pg_stat_activity` lock waits. The GitHub
+`Native database acceptance` workflow runs it against PostgreSQL 16. Never
+point this runner at the hosted project or a customer database.
 
 `tests/e2e/illustration-review-browser.mjs` uses an isolated real Next app and
 synthetic Auth/API routes. It verifies independent request/decision recovery,

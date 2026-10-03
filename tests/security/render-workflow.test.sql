@@ -21,10 +21,14 @@ insert into public.books(id,workspace_id,title,author_name,created_by) values
 insert into public.editions(id,book_id,type,language) values
   ('42000000-0000-4000-8000-000000000001','32000000-0000-4000-8000-000000000001','ebook','en');
 insert into public.publishing_jobs(
-  id,book_id,edition_id,channel,status,idempotency_key,created_by,started_at
+  id,book_id,edition_id,channel,status,idempotency_key,created_by,started_at,request_json
 ) values
-  ('52000000-0000-4000-8000-000000000001','32000000-0000-4000-8000-000000000001','42000000-0000-4000-8000-000000000001','render','running','render-success','a7000000-0000-0000-0000-000000000001',now()),
-  ('52000000-0000-4000-8000-000000000002','32000000-0000-4000-8000-000000000001','42000000-0000-4000-8000-000000000001','render','running','render-invalid','a7000000-0000-0000-0000-000000000001',now());
+  ('52000000-0000-4000-8000-000000000001','32000000-0000-4000-8000-000000000001','42000000-0000-4000-8000-000000000001','render','running','render-success','a7000000-0000-0000-0000-000000000001',now(),
+   jsonb_build_object('action','render','editionUpdatedAt',(select updated_at from public.editions where id='42000000-0000-4000-8000-000000000001'),'bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
+    'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb)),
+  ('52000000-0000-4000-8000-000000000002','32000000-0000-4000-8000-000000000001','42000000-0000-4000-8000-000000000001','render','running','render-invalid','a7000000-0000-0000-0000-000000000001',now(),
+   jsonb_build_object('action','render','editionUpdatedAt',(select updated_at from public.editions where id='42000000-0000-4000-8000-000000000001'),'bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
+    'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb));
 
 do $$
 begin

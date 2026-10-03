@@ -357,14 +357,15 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
 
     const model = withEditionLanguage(await assembleBookModel(user, book), edition.language);
     const modelSha256 = bookModelFingerprint(model);
-    const images = await loadRenderImages(
+    const loadedImages = await loadRenderImages(
       service,
       book.workspace_id,
       model.assets.map((asset) => asset.id),
       config.cover.asset_id,
       model.chapters.flatMap((chapter) => chapter.nodes),
     );
-    const imageSha256 = renderImagesFingerprint(images);
+    const { artworkSnapshot, ...images } = loadedImages;
+    const imageSha256 = renderImagesFingerprint(loadedImages);
     const jobId = randomUUID();
     const { data: inserted, error: insertError } = await service.from("publishing_jobs").insert({
       id: jobId,
@@ -372,7 +373,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       edition_id: editionId,
       channel: "render",
       status: "running",
-      request_json: { action: "render", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256 },
+      request_json: { action: "render", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256, artworkSnapshot },
       idempotency_key: parsed.data.idempotencyKey,
       created_by: req.userId,
       started_at: new Date().toISOString(),
@@ -497,6 +498,12 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
           await failRenderJob(service, jobId, "render_persistence_failed");
           if (completeError?.code === "PGRST202" || completeError?.code === "42883") {
             throw new AppError(503, "The render workflow migration is not installed. Nothing was charged.");
+          }
+          if (completeError?.code === "40001" || completeError?.code === "22023") {
+            throw new AppError(422, "Book artwork or edition settings changed before completion. Render again. Nothing was charged.");
+          }
+          if (completeError?.code === "42501") {
+            throw new AppError(403, "Your book editing permission changed before completion. Check your access. Nothing was charged.");
           }
           throw new AppError(500, "Could not persist the rendered edition. Nothing was charged.");
         }

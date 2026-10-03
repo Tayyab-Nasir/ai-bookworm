@@ -17,12 +17,15 @@ insert into public.editions(id,book_id,type,language,updated_at) values
   ('4b000000-0000-4000-8000-000000000001','3b000000-0000-4000-8000-000000000001','ebook','en','2026-09-24T00:00:00Z');
 insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,response_json,idempotency_key,created_by,started_at,completed_at) values
   ('5b000000-0000-4000-8000-000000000001','3b000000-0000-4000-8000-000000000001','4b000000-0000-4000-8000-000000000001','render','succeeded',
-   jsonb_build_object('action','render','editionUpdatedAt','2026-09-24T00:00:00Z','bookModelSha256',repeat('a',64)),
+   jsonb_build_object('action','render','editionUpdatedAt','2026-09-24T00:00:00Z','bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
+    'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),
    '{"artifacts":[],"rendererVersion":"test","usage":{}}','google-render','ab000000-0000-4000-8000-000000000001',now(),now()),
   ('5b000000-0000-4000-8000-000000000002','3b000000-0000-4000-8000-000000000001','4b000000-0000-4000-8000-000000000001','googleplay','running',
-   '{"action":"validate"}',null,'google-preflight','ab000000-0000-4000-8000-000000000001',now(),null),
+   jsonb_build_object('action','validate','editionUpdatedAt','2026-09-24T00:00:00Z','bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
+    'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),null,'google-preflight','ab000000-0000-4000-8000-000000000001',now(),null),
   ('5b000000-0000-4000-8000-000000000003','3b000000-0000-4000-8000-000000000001','4b000000-0000-4000-8000-000000000001','googleplay','running',
    jsonb_build_object('action','export_package','editionUpdatedAt','2026-09-24T00:00:00Z','bookModelSha256',repeat('a',64),
+     'imageSha256',repeat('b',64),'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb,
      'sourceRenderJobId','5b000000-0000-4000-8000-000000000001','sourcePreflightJobId','5b000000-0000-4000-8000-000000000002'),
    null,'google-package','ab000000-0000-4000-8000-000000000001',now(),null);
 

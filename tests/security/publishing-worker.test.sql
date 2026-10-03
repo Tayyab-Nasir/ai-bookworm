@@ -17,11 +17,13 @@ insert into public.editions(id,book_id,type,language,edition_metadata_json) valu
  ('ba400000-0000-4000-8000-000000000001','ba300000-0000-4000-8000-000000000001','ebook','en','{}');
 insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,idempotency_key,created_by,max_attempts,attempts)
 select 'ba500000-0000-4000-8000-000000000001','ba300000-0000-4000-8000-000000000001',e.id,'kdp','queued',
- jsonb_build_object('action','validate','editionUpdatedAt',e.updated_at,'bookModelSha256',repeat('a',64)),
+ jsonb_build_object('action','validate','editionUpdatedAt',e.updated_at,'bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
+  'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),
  'worker-retry-success','ba000000-0000-4000-8000-000000000001',3,0 from public.editions e where e.id='ba400000-0000-4000-8000-000000000001';
 insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,idempotency_key,created_by,max_attempts,attempts)
 select 'ba500000-0000-4000-8000-000000000002','ba300000-0000-4000-8000-000000000001',e.id,'kdp','queued',
- jsonb_build_object('action','validate','editionUpdatedAt',e.updated_at,'bookModelSha256',repeat('b',64)),
+ jsonb_build_object('action','validate','editionUpdatedAt',e.updated_at,'bookModelSha256',repeat('b',64),'imageSha256',repeat('b',64),
+  'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),
  'worker-terminal','ba000000-0000-4000-8000-000000000001',3,0 from public.editions e where e.id='ba400000-0000-4000-8000-000000000001';
 
 do $$ begin

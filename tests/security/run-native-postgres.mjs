@@ -5,6 +5,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
+import { artworkCompletionRaces } from './native-artwork-completion.mjs';
 
 if (process.env.BOOKWORM_NATIVE_TEST !== '1' || !process.env.BOOKWORM_NATIVE_TEST_PASSWORD) {
   throw new Error('Requires explicit BOOKWORM_NATIVE_TEST=1 and a disposable test password.');
@@ -593,6 +594,7 @@ try {
   await cancellationDispatchRace();
   await storyBlueprintMaterializationRace();
   await audioExportRaces();
+  await artworkCompletionRaces({ sql, session, until, database });
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');

@@ -4,7 +4,7 @@ import { AppError } from "../errors.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "./authoring.js";
 import { currentEntitlements } from "./entitlements.js";
 import type { SupabaseClient } from "./supabase.js";
-import { renderImagesFingerprint, assertRenderImagesCurrent } from "./render-images.js";
+import { artworkSnapshotSchema, renderImagesFingerprint, assertRenderImagesCurrent } from "./render-images.js";
 import { decodeArtifact, decodeRenderedCover, editionConfigSchema, loadRenderImages, renderResponseSchema } from "../routes/editions.js";
 import {
   assertSourceJob, decodePackage, loadRenderedPackageInputs, packageServiceResponseSchema,
@@ -19,7 +19,7 @@ const jobSchema = z.object({
   request_json: z.object({
     action: z.enum(publishingActions), editionUpdatedAt: z.string().datetime({ offset: true }),
     bookModelSha256: z.string().regex(/^[a-f0-9]{64}$/u),
-    imageSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+    imageSha256: z.string().regex(/^[a-f0-9]{64}$/u), artworkSnapshot: artworkSnapshotSchema,
     sourceRenderJobId: z.string().uuid().optional(), sourcePreflightJobId: z.string().uuid().optional(),
   }),
 }).passthrough();
@@ -107,9 +107,11 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
   const { book, config, model } = await loadPublishingInputs(sb, job);
   const imageIds = model.assets.map(asset => asset.id);
   const imageReferences = model.chapters.flatMap(chapter => chapter.nodes);
-  const images = await loadRenderImages(sb, book.workspace_id, imageIds, config.cover.asset_id, imageReferences);
-  const imageSha256 = renderImagesFingerprint(images);
-  if (job.request_json.imageSha256 !== undefined && job.request_json.imageSha256 !== imageSha256) {
+  const loadedImages = await loadRenderImages(sb, book.workspace_id, imageIds, config.cover.asset_id, imageReferences);
+  const { artworkSnapshot: _artworkSnapshot, ...images } = loadedImages;
+  const imageSha256 = renderImagesFingerprint(loadedImages);
+  if (job.request_json.imageSha256 !== imageSha256
+    || renderImagesFingerprint({ ...images, artworkSnapshot: job.request_json.artworkSnapshot }) !== imageSha256) {
     throw new WorkerFailure("worker_artwork_changed", false);
   }
   const recheckImages = () => assertRenderImagesCurrent(sb, book.workspace_id, imageIds, config.cover.asset_id, imageReferences, imageSha256);
@@ -225,6 +227,13 @@ export async function runOnePublishingJob(sb: SupabaseClient, options: {
     completionAttempted = true;
     const completed = await sb.rpc("complete_leased_publishing_job", { p_job_id: jobId, p_lease_token: token, p_result: output });
     if (completed.error || row(completed.data)?.status !== "succeeded") {
+      // Only the guard's allowlisted detail distinguishes stale inputs from
+      // lease fencing. Never expose or classify using arbitrary SQL messages.
+      if (completed.error?.code === "42501") throw new WorkerFailure("worker_permission_changed", false);
+      if (completed.error?.code === "22023") throw new WorkerFailure("worker_invalid_input", false);
+      if (completed.error?.code === "40001" && completed.error.details === "bookworm_publishing_snapshot_changed") {
+        throw new WorkerFailure("worker_inputs_changed", false);
+      }
       throw new WorkerFailure(completed.error?.code === "40001" ? "worker_lease_lost" : "worker_completion_failed", true);
     }
     return { status: "succeeded", jobId };

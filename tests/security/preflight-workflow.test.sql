@@ -16,8 +16,12 @@ insert into public.books(id,workspace_id,title,author_name,created_by) values
 insert into public.editions(id,book_id,type,language) values
   ('48000000-0000-4000-8000-000000000001','38000000-0000-4000-8000-000000000001','ebook','en');
 insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,idempotency_key,created_by,started_at) values
-  ('58000000-0000-4000-8000-000000000001','38000000-0000-4000-8000-000000000001','48000000-0000-4000-8000-000000000001','kdp','running','{"action":"validate"}','preflight-success','a8000000-0000-0000-0000-000000000001',now()),
-  ('58000000-0000-4000-8000-000000000002','38000000-0000-4000-8000-000000000001','48000000-0000-4000-8000-000000000001','kdp','running','{"action":"validate"}','preflight-invalid','a8000000-0000-0000-0000-000000000001',now());
+  ('58000000-0000-4000-8000-000000000001','38000000-0000-4000-8000-000000000001','48000000-0000-4000-8000-000000000001','kdp','running',
+   jsonb_build_object('action','validate','editionUpdatedAt',(select updated_at from public.editions where id='48000000-0000-4000-8000-000000000001'),'bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
+    'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),'preflight-success','a8000000-0000-0000-0000-000000000001',now()),
+  ('58000000-0000-4000-8000-000000000002','38000000-0000-4000-8000-000000000001','48000000-0000-4000-8000-000000000001','kdp','running',
+   jsonb_build_object('action','validate','editionUpdatedAt',(select updated_at from public.editions where id='48000000-0000-4000-8000-000000000001'),'bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
+    'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),'preflight-invalid','a8000000-0000-0000-0000-000000000001',now());
 
 do $$
 begin

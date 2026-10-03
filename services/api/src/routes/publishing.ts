@@ -262,9 +262,10 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
     const model = withEditionLanguage(await assembleBookModel(user, book), edition.language);
     const modelSha256 = bookModelFingerprint(model);
-    const images = await loadRenderImages(service, book.workspace_id, model.assets.map((asset) => asset.id), config.cover.asset_id,
+    const loadedImages = await loadRenderImages(service, book.workspace_id, model.assets.map((asset) => asset.id), config.cover.asset_id,
       model.chapters.flatMap((chapter) => chapter.nodes));
-    const imageSha256 = renderImagesFingerprint(images);
+    const { artworkSnapshot, ...images } = loadedImages;
+    const imageSha256 = renderImagesFingerprint(loadedImages);
     const jobId = randomUUID();
     const { data: inserted, error: insertError } = await service.from("publishing_jobs").insert({
       id: jobId,
@@ -272,7 +273,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       edition_id: body.editionId,
       channel: body.channel,
       status: "running",
-      request_json: { action: "validate", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256 },
+      request_json: { action: "validate", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256, artworkSnapshot },
       idempotency_key: body.idempotencyKey,
       created_by: req.userId,
       started_at: new Date().toISOString(),
@@ -344,6 +345,12 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
           if (completeError?.code === "PGRST202" || completeError?.code === "42883") {
             throw new AppError(503, "The preflight workflow migration is not installed.");
           }
+          if (completeError?.code === "40001" || completeError?.code === "22023") {
+            throw new AppError(422, "Book artwork or edition settings changed before completion. Run preflight again.");
+          }
+          if (completeError?.code === "42501") {
+            throw new AppError(403, "Your book editing permission changed before completion. Check your access.");
+          }
           throw new AppError(500, "Could not persist the validation result.");
         }
       }
@@ -388,6 +395,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     const modelSha256 = bookModelFingerprint(model);
     const images = await loadRenderImages(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
       model.chapters.flatMap(chapter => chapter.nodes));
+    const { artworkSnapshot } = images;
     const imageSha256 = renderImagesFingerprint(images);
     const [{ data: renderJob, error: renderError }, { data: preflightJob, error: preflightError }] = await Promise.all([
       service.from("publishing_jobs").select("*").eq("id", body.renderJobId).maybeSingle(),
@@ -408,6 +416,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       action: "export_package", editionUpdatedAt: edition.updated_at,
       bookModelSha256: modelSha256,
       imageSha256,
+      artworkSnapshot,
       sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
     };
     const { data: inserted, error: insertError } = await service.from("publishing_jobs").insert({
@@ -495,6 +504,12 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
           await failPackageJob(service, jobId, "package_persistence_failed");
           if (completeError?.code === "PGRST202" || completeError?.code === "42883") {
             throw new AppError(503, "The publishing package workflow migration is not installed.");
+          }
+          if (completeError?.code === "40001" || completeError?.code === "22023") {
+            throw new AppError(422, "Book artwork, edition settings or source proofs changed before completion. Render and run preflight again.");
+          }
+          if (completeError?.code === "42501") {
+            throw new AppError(403, "Your book editing permission changed before completion. Check your access. Nothing was charged.");
           }
           throw new AppError(500, "Could not persist the publishing package.");
         }

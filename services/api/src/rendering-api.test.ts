@@ -16,7 +16,7 @@ type Row = Record<string, unknown>;
 interface Store {
   tables: Record<string, Row[]>;
   objects: Map<string, Buffer>;
-  rpcError?: { code: string };
+  rpcError?: { code: string; message?: string; details?: string };
 }
 
 function fakeSupabase(store: Store) {
@@ -395,6 +395,42 @@ test("database completion failure compensates uploaded objects and does not char
   assert.equal(store.tables.usage_events.length, 0);
   assert.equal(store.objects.size, originalObjects);
   await app.close();
+});
+
+test("atomic completion refusals are actionable, private and leave no new artifact or charge", async () => {
+  for (const action of ["render", "validate", "export_package"] as const) {
+    for (const code of ["40001", "22023", "42501"]) {
+      const store = baseStore();
+      enableRetailerPackages(store);
+      const requests: unknown[] = [];
+      const app = await buildApp(() => fakeSupabase(store), {
+        renderFetch: successfulRenderAndPreflight(requests), publishingFetch: successfulPackager(requests),
+      });
+      try {
+        const sources = action === "export_package" ? await createReadySources(app) : {};
+        const counts = [store.objects.size, store.tables.assets.length, store.tables.usage_events.length, store.tables.publishing_validations.length];
+        store.rpcError = { code, message: "private SQL detail", details: "bookworm_publishing_snapshot_changed" };
+        const response = await app.inject({ method: "POST", headers: auth,
+          url: action === "render" ? `/v1/editions/${EDITION}/render` : action === "validate" ? "/v1/publishing/validate" : "/v1/publishing/jobs",
+          payload: { idempotencyKey: crypto.randomUUID(), ...(action === "render" ? {} : { bookId: BOOK, editionId: EDITION, channel: "kdp" }), ...sources },
+        });
+        assert.equal(response.statusCode, code === "42501" ? 403 : 422, `${action}/${code}: ${response.body}`);
+        assert.match(response.body, code === "42501" ? /permission|access/iu : /again/iu);
+        assert.equal(response.body.includes("private SQL detail"), false);
+        assert.equal(response.body.includes("bookworm_publishing_snapshot_changed"), false);
+        assert.deepEqual([store.objects.size, store.tables.assets.length, store.tables.usage_events.length, store.tables.publishing_validations.length], counts);
+        const failed = store.tables.publishing_jobs.at(-1)!;
+        assert.equal(failed.status, "failed");
+        const snapshot = (failed.request_json as Row).artworkSnapshot as Row;
+        assert.equal(snapshot.schemaVersion, 1);
+        assert.equal((snapshot.assets as Row[]).length, 2);
+        for (const sent of requests) {
+          const request = sent as Row;
+          assert.equal(((request.body as Row | undefined) ?? request).artworkSnapshot, undefined);
+        }
+      } finally { await app.close(); }
+    }
+  }
 });
 
 test("preflight validates saved content and persists deterministic findings", async () => {

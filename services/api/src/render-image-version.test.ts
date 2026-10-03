@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { loadRenderImages } from "./routes/editions.js";
 import { checkAssetReferences } from "./lib/authoring.js";
+import { assertRenderImagesCurrent, renderImagesFingerprint } from "./lib/render-images.js";
 import type { SupabaseClient } from "./lib/supabase.js";
 
-const workspace = "workspace", assetId = "art";
+const workspace = "workspace", assetId = "f7400000-0000-4000-8000-000000000001";
+const approvalId = "07400000-0000-4000-8000-000000000001";
 const bytes = Buffer.from("approved version four");
 const checksum = createHash("sha256").update(bytes).digest("hex");
 const path = "workspaces/workspace/assets/art/v4/art.png";
@@ -15,7 +17,7 @@ function fixture() {
     size_bytes: bytes.length, checksum, status: "approved", requires_approval: true, deleted_at: null };
   const version: Row = { asset_id: assetId, version_number: 4, storage_path: path, mime_type: "image/png",
     size_bytes: bytes.length, checksum, scan_status: "clean" };
-  const approval: Row = { id: "review", workspace_id: workspace, entity_type: "asset", entity_id: assetId,
+  const approval: Row = { id: approvalId, workspace_id: workspace, entity_type: "asset", entity_id: assetId,
     entity_version_number: 4, status: "approved", superseded_at: null };
   const tables: Record<string, Row[]> = { assets: [asset], asset_versions: [version], approvals: [approval] };
   const downloads: string[] = [];
@@ -47,6 +49,39 @@ test("render loads exactly the placed approved version, shared with the cover", 
   assert.deepEqual(f.downloads, [path]);
   assert.equal(result.coverBase64, bytes.toString("base64"));
   assert.equal(result.assetImagesBase64[assetId], result.coverBase64);
+  assert.deepEqual(result.artworkSnapshot, {
+    schemaVersion: 1, coverAssetId: assetId, illustrationAssetIds: [assetId],
+    assets: [{ assetId, versionNumber: 4, storagePath: path, checksum, mimeType: "image/png",
+      sizeBytes: bytes.length, requiresApproval: true, approvalId }],
+  });
+});
+
+test("identical image bytes do not hide a revised cover or replacement approval", async () => {
+  for (const change of ["version", "approval"]) {
+    const f = fixture();
+    const before = renderImagesFingerprint(await loadRenderImages(f.sb, workspace, [], assetId));
+    if (change === "version") {
+      f.version.version_number = 5; f.approval.entity_version_number = 5;
+    } else f.approval.id = "07400000-0000-4000-8000-000000000002";
+    await assert.rejects(assertRenderImagesCurrent(f.sb, workspace, [], assetId, [], before), /artwork changed/u);
+  }
+});
+
+test("books without artwork still have an explicit empty completion snapshot", async () => {
+  const f = fixture();
+  const result = await loadRenderImages(f.sb, workspace, [], null);
+  assert.deepEqual(result.artworkSnapshot, { schemaVersion: 1, coverAssetId: null, illustrationAssetIds: [], assets: [] });
+  assert.deepEqual(f.downloads, []);
+});
+
+test("artwork fingerprint ignores PostgreSQL JSONB object-key ordering", async () => {
+  const f = fixture();
+  const images = await loadRenderImages(f.sb, workspace, [assetId], assetId, pin());
+  const reverse = (value: object) => Object.fromEntries(Object.entries(value).reverse());
+  const snapshot = reverse(images.artworkSnapshot) as typeof images.artworkSnapshot;
+  snapshot.assets = images.artworkSnapshot.assets.map(asset => reverse(asset) as typeof asset);
+  assert.notEqual(JSON.stringify(snapshot), JSON.stringify(images.artworkSnapshot));
+  assert.equal(renderImagesFingerprint({ ...images, artworkSnapshot: snapshot }), renderImagesFingerprint(images));
 });
 
 test("a later approved revision cannot silently replace a pinned illustration", async () => {
