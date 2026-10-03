@@ -13,6 +13,7 @@
     "@bookworm/api-client": "*",
     "@bookworm/book-model": "*",
     "@bookworm/types": "*",
+    "@noble/hashes": "2.4.0",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
     "@tailwindcss/postcss": "^4.3.3",

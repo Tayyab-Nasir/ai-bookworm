@@ -12,7 +12,7 @@ from html import escape
 from editions import EbookEdition, resolve_text_direction
 from manuscript import block_tree, image_width, inline_markup, table_header_rows, table_rows, table_spans
 
-RENDERER_VERSION = "epub-1.11.0"
+RENDERER_VERSION = "epub-1.12.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"

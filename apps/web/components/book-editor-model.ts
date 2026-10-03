@@ -1,26 +1,10 @@
 import type { BookNode } from "@bookworm/book-model";
 import { nodeInline, safeInline, inlineText } from "@bookworm/book-model/rich-text";
+export { manuscriptTableRows, manuscriptTableHeaderRows, withTableRows } from "../lib/manuscript-table";
 
 export interface EditorJson {
   type?: string; text?: string; attrs?: Record<string, unknown>;
   content?: EditorJson[]; marks?: { type: string }[];
-}
-
-export function manuscriptTableRows(node: BookNode): string[][] | null {
-  const rows = node.rows;
-  if (!Array.isArray(rows) || !rows.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === "string"))) return null;
-  return node.text === undefined || node.text === rows.map((row) => row.join("\t")).join("\n") ? rows : null;
-}
-
-export function manuscriptTableHeaderRows(node: BookNode): number {
-  const rows = manuscriptTableRows(node);
-  const count = node.attributes?.tableHeaderRows;
-  return rows && typeof count === "number" && Number.isInteger(count) && count >= 0 && count <= rows.length ? count : 0;
-}
-
-export function withTableRows(node: BookNode, rows: string[][]): BookNode {
-  const { richText: _stale, ...attributes } = node.attributes ?? {};
-  return { ...node, rows, text: rows.map((row) => row.join("\t")).join("\n"), attributes };
 }
 
 export function nodesToEditor(nodes: BookNode[]): EditorJson {

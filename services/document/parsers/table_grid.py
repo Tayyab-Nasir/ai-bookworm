@@ -1,12 +1,13 @@
 """Canonical table-grid metadata shared by trusted archive importers."""
 from hashlib import sha256
+import json
 
 
 def span_attributes(rows: list[list[str]], header_rows: int, spans: list[dict]) -> dict:
     attributes = {"tableHeaderRows": header_rows} if header_rows else {}
     if spans:
-        text = "\n".join("\t".join(row) for row in rows)
         attributes["tableSpans"] = spans
-        # A later cell edit invalidates layout rather than applying old merges.
-        attributes["tableSpanSource"] = sha256(text.encode("utf-8")).hexdigest()
+        # Out-of-band edits invalidate layout; the grid editor updates both atomically.
+        grid = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        attributes["tableSpanSource"] = "v2:" + sha256(grid.encode("utf-8")).hexdigest()
     return attributes

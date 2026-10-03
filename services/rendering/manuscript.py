@@ -1,6 +1,7 @@
 """Safe, deterministic inline formatting and list structure shared by exporters."""
 from html import escape
 from hashlib import sha256
+import json
 from math import isfinite
 
 MARKS = {"bold", "italic", "strike", "code", "underline"}
@@ -27,8 +28,14 @@ def table_spans(node: dict, rows: list[list[str]]) -> list[dict[str, int]]:
     attrs = node.get("attributes")
     if not isinstance(attrs, dict) or not isinstance(attrs.get("tableSpans"), list):
         return []
-    text = "\n".join("\t".join(row) for row in rows)
-    if attrs.get("tableSpanSource") != sha256(text.encode("utf-8")).hexdigest():
+    source = attrs.get("tableSpanSource")
+    if isinstance(source, str) and source.startswith("v2:"):
+        grid = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        expected = "v2:" + sha256(grid.encode("utf-8")).hexdigest()
+    else:
+        text = "\n".join("\t".join(row) for row in rows)
+        expected = sha256(text.encode("utf-8")).hexdigest()
+    if source != expected:
         return []
     raw = attrs["tableSpans"]
     if len(raw) > sum(len(row) for row in rows):

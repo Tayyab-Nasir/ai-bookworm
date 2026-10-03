@@ -40,7 +40,10 @@ function fixture() {
         };
         function execute(single: boolean) {
           if (insertion) {
-            const row = insertion;
+            // Mirror DB defaults used when the caller cannot write protected state.
+            const defaults = table === "assets" ? { status: "draft", deleted_at: null }
+              : table === "asset_versions" ? { scan_status: "pending" } : {};
+            const row: Record<string, unknown> = { ...defaults, ...insertion };
             insertion = null;
             if (table === "asset_versions" && failVersionOnce) {
               failVersionOnce = false;
@@ -120,6 +123,9 @@ test("upload replay never reopens a finalized or replaced source", async () => {
   const f = fixture();
   try {
     assert.equal((await f.app.inject({ method: "POST", url: "/assets/upload-url", payload: body })).statusCode, 200);
+    f.tables.assets[0].status = "archived";
+    assert.equal((await f.app.inject({ method: "POST", url: "/assets/upload-url", payload: body })).statusCode, 409);
+    f.tables.assets[0].status = "draft";
     f.tables.asset_versions[0].scan_status = "clean";
     assert.equal((await f.app.inject({ method: "POST", url: "/assets/upload-url", payload: body })).statusCode, 409);
     f.tables.asset_versions[0].scan_status = "pending";

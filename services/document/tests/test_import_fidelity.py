@@ -241,6 +241,24 @@ def test_invalid_or_overlapping_table_span_metadata_falls_back_to_plain_grid():
     assert table_spans({"attributes": {**attrs, "tableSpans": [{**spans[0], "rowspan": 2}]}}, rows) == []
 
 
+def test_table_grid_hash_matches_web_unicode_contract_and_legacy_imports_still_render():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rendering"))
+    from hashlib import sha256
+    from manuscript import table_spans
+    from parsers.table_grid import span_attributes
+    rows = [["A\tB", ""], ["Mira 🌙", "D\nE"]]
+    spans = [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}]
+    attrs = span_attributes(rows, 1, spans)
+    assert attrs["tableSpanSource"] == "v2:ac83bba0564a344c30307d809c44502ecf81ed278ed12fe996eea5f254d6f2d9"
+    assert table_spans({"attributes": attrs}, rows) == spans
+    text = "\n".join("\t".join(row) for row in rows)
+    legacy = {**attrs, "tableSpanSource": sha256(text.encode("utf-8")).hexdigest()}
+    assert table_spans({"attributes": legacy}, rows) == spans
+    # The same flattened text can describe a different cell layout.
+    reshaped = [["A", "B", ""], ["Mira 🌙", "D\nE"]]
+    assert table_spans({"attributes": attrs}, reshaped) == []
+
+
 def test_explicit_docx_table_header_survives_ebook_round_trip_and_print():
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "rendering"))
     from editions import EbookEdition, PrintEdition
