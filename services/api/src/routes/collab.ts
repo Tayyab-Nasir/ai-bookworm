@@ -46,7 +46,26 @@ const createApprovalSchema = z.object({
   entityId: z.string().uuid(),
   reviewerId: z.string().uuid().nullish(),
   comment: z.string().max(2000).optional(),
+  entityVersionNumber: z.number().int().positive().optional(),
+  idempotencyKey: z.string().uuid().optional(),
 }).strict();
+
+const approvalResolutionSchema = z.object({ comment: z.string().max(2000).optional() }).strict();
+
+function throwAssetApprovalRpcError(error: { code?: string }): never {
+  if (error.code === "42501") throw new AppError(403, "You are not allowed to perform this artwork review action.");
+  if (error.code === "P0002") throw new AppError(404, "Artwork review target not found.");
+  if (error.code === "40001" || error.code === "23505") throw new AppError(409, "Artwork review changed or this request was already used.");
+  if (error.code === "23514" || error.code === "22023") throw new AppError(422, "Artwork review details are invalid or no longer current.");
+  if (error.code === "PGRST202" || error.code === "42883") throw new AppError(503, "The artwork review database workflow is not installed.");
+  throw new AppError(503, "Artwork review is temporarily unavailable.");
+}
+
+function approvalRpcRow(data: unknown) {
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== "object") throw new AppError(503, "Artwork review returned no decision.");
+  return row;
+}
 
 async function requireTargetInWorkspace(sb: SupabaseClient, workspaceId: string, entityType: typeof TARGET_TYPES[number], entityId: string) {
   if (entityType === "book" || entityType === "asset") {
@@ -243,9 +262,36 @@ export function collabRoutes(app: FastifyInstance) {
   app.post("/approvals", async (req, reply) => {
     const parsed = createApprovalSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid approval request", { issues: parsed.error.issues });
-    const { workspaceId, entityType, entityId, reviewerId, comment } = parsed.data;
+    const { workspaceId, entityType, entityId, reviewerId, comment, entityVersionNumber, idempotencyKey } = parsed.data;
     const sb = app.supabaseFactory(req.userToken);
     await requireWorkspaceEditor(sb, workspaceId, req.userId);
+
+    if (entityType === "asset") {
+      if (!reviewerId) throw new AppError(422, "reviewer is required for artwork approval");
+      if (entityVersionNumber === undefined || !idempotencyKey) {
+        throw new AppError(422, "artwork approval requires an exact version and idempotency key");
+      }
+      if (reviewerId === req.userId) throw new AppError(422, "reviewer cannot request their own artwork approval");
+      await requireActiveAssignee(sb, workspaceId, reviewerId, true);
+      // The locked RPC validates new requests and recovers accepted requests
+      // before checking mutable asset state. A later revision must not hide a
+      // previously committed decision after a lost HTTP reply.
+      const { data, error } = await app.supabaseFactory().rpc("request_asset_approval", {
+        p_workspace_id: workspaceId,
+        p_asset_id: entityId,
+        p_entity_version_number: entityVersionNumber,
+        p_requested_by: req.userId,
+        p_reviewer_id: reviewerId,
+        p_request_key: idempotencyKey,
+        p_comment: comment?.trim() || null,
+      });
+      if (error) throwAssetApprovalRpcError(error);
+      return reply.status(201).send(approvalRpcRow(data));
+    }
+
+    if (entityVersionNumber !== undefined || idempotencyKey !== undefined) {
+      throw new AppError(422, "version pinning and idempotency keys are only valid for artwork approvals");
+    }
     await requireTargetInWorkspace(sb, workspaceId, entityType, entityId);
     if (reviewerId) await requireActiveAssignee(sb, workspaceId, reviewerId, true);
     const { data, error } = await sb
@@ -262,10 +308,30 @@ export function collabRoutes(app: FastifyInstance) {
   for (const action of ["approve", "reject"] as const) {
     app.post(`/approvals/:id/${action}`, async (req) => {
       const { id } = req.params as { id: string };
+      const parsed = approvalResolutionSchema.safeParse(req.body ?? {});
+      if (!parsed.success) throw new AppError(422, "invalid approval decision", { issues: parsed.error.issues });
+      const comment = parsed.data.comment?.trim() || null;
       const sb = app.supabaseFactory(req.userToken);
-      const { data: approval } = await sb.from("approvals").select("id,workspace_id,status,reviewer_id").eq("id", id).maybeSingle();
+      const { data: approval } = await sb.from("approvals")
+        .select("id,workspace_id,status,reviewer_id,requested_by,entity_type,entity_id,entity_version_number,resolved_by,resolution_note,superseded_at")
+        .eq("id", id).maybeSingle();
       if (!approval) throw new AppError(404, "approval not found");
       await requireWorkspaceApprover(sb, approval.workspace_id, req.userId);
+
+      if (approval.entity_type === "asset") {
+        if (approval.requested_by === req.userId) throw new AppError(403, "requester cannot resolve their own artwork approval");
+        if (!approval.reviewer_id || approval.reviewer_id !== req.userId) throw new AppError(403, "only the assigned artwork reviewer can decide");
+        if (action === "reject" && !comment) throw new AppError(422, "a rejection note is required");
+        const { data, error } = await app.supabaseFactory().rpc("resolve_asset_approval", {
+          p_approval_id: id,
+          p_actor_id: req.userId,
+          p_action: action,
+          p_comment: comment,
+        });
+        if (error) throwAssetApprovalRpcError(error);
+        return approvalRpcRow(data);
+      }
+
       if (approval.status !== "pending") throw new AppError(409, `approval already ${approval.status}`);
       if (approval.reviewer_id && approval.reviewer_id !== req.userId) throw new AppError(403, "assigned to another reviewer");
 

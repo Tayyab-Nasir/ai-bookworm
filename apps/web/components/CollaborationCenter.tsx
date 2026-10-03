@@ -2,14 +2,17 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiClientError } from "@bookworm/api-client";
 import type { ActivityEvent, TaskPriority, WorkspaceInvitation, WorkspaceTargetType } from "@bookworm/api-client";
 import type { Approval, Asset, Book, MemberRole, Task, Workspace, WorkspaceMember } from "@bookworm/types";
+import { getOrCreateApprovalRequestKey, getRequestableArtwork } from "../lib/approved-artwork";
 import { apiClient } from "./api";
 
 type View = "tasks" | "approvals" | "team";
 type MemberProfile = { id: string; display_name: string; avatar_url: string | null };
 type SessionUser = { id: string; email: string | null; displayName: string | null };
 type InviteRole = Exclude<MemberRole, "owner">;
+type ArtworkApprovalIntent = { reviewerId: string; comment: string };
 
 const card = "rounded-2xl border border-white/10 bg-white/[0.035]";
 const input = "mt-2 block w-full rounded-xl border border-white/15 bg-black px-3 py-2.5 text-sm text-white outline-none focus:border-white/40";
@@ -63,6 +66,15 @@ export default function CollaborationCenter({ view }: { view: View }) {
   const [approvalTarget, setApprovalTarget] = useState("");
   const [approvalReviewer, setApprovalReviewer] = useState("");
   const [approvalComment, setApprovalComment] = useState("");
+  const [artworkApprovalTarget, setArtworkApprovalTarget] = useState("");
+  const [artworkReviewer, setArtworkReviewer] = useState("");
+  const [artworkComment, setArtworkComment] = useState("");
+  const [artworkRetryIdentity, setArtworkRetryIdentity] = useState<string | null>(null);
+  const [rejectionNotes, setRejectionNotes] = useState<Record<string, string>>({});
+  const [rejectionRetryIds, setRejectionRetryIds] = useState<Record<string, boolean>>({});
+  const artworkRequestKeys = useRef(new Map<string, string>());
+  const artworkRequestIntents = useRef(new Map<string, ArtworkApprovalIntent>());
+  const artworkResolutionIntents = useRef(new Map<string, string>());
   const requestGeneration = useRef(0);
 
   useEffect(() => {
@@ -135,12 +147,34 @@ export default function CollaborationCenter({ view }: { view: View }) {
     if (!userId) return "Unassigned";
     return profiles.find((profile) => profile.id === userId)?.display_name || (userId === sessionUser?.id ? sessionUser.displayName : null) || shortId(userId);
   }, [profiles, sessionUser]);
-  const pending = approvals.filter((approval) => approval.status === "pending");
-  const resolved = approvals.filter((approval) => approval.status !== "pending");
+  const pending = approvals.filter((approval) => approval.status === "pending" && approval.entity_type !== "asset");
+  const resolved = approvals.filter((approval) => approval.status !== "pending" && approval.entity_type !== "asset");
+  const pendingArtwork = approvals.filter((approval) => approval.entity_type === "asset" && approval.status === "pending");
+  const resolvedArtwork = approvals.filter((approval) => approval.entity_type === "asset" && approval.status !== "pending");
+  const reviewableAssets = useMemo(() => getRequestableArtwork(assets, approvals), [assets, approvals]);
   const targets = useMemo(() => [
     ...books.map((book) => ({ value: `book:${book.id}`, label: `Book · ${book.title}` })),
-    ...assets.map((asset) => ({ value: `asset:${asset.id}`, label: `Asset · ${asset.name}` })),
-  ], [assets, books]);
+  ], [books]);
+  const selectedArtwork = reviewableAssets.find((asset) => asset.id === artworkApprovalTarget) ?? null;
+  const selectedArtworkVersion = selectedArtwork?.current_version_number ?? null;
+  const selectedArtworkIdentity = selectedArtwork && selectedArtworkVersion
+    ? `${workspaceId}:${sessionUser?.id ?? ""}:${selectedArtwork.id}:${selectedArtworkVersion}`
+    : null;
+  const selectedArtworkRetry = selectedArtworkIdentity !== null && artworkRetryIdentity === selectedArtworkIdentity;
+  const artworkReviewers = activeMembers.filter((member) => approveRoles.has(member.role) && member.user_id !== sessionUser?.id);
+  useEffect(() => {
+    if (artworkApprovalTarget && !reviewableAssets.some((asset) => asset.id === artworkApprovalTarget)) {
+      setArtworkApprovalTarget("");
+    }
+  }, [artworkApprovalTarget, reviewableAssets]);
+  useEffect(() => {
+    if (!selectedArtworkIdentity || artworkRetryIdentity !== selectedArtworkIdentity) return;
+    const intent = artworkRequestIntents.current.get(selectedArtworkIdentity);
+    if (intent) {
+      setArtworkReviewer(intent.reviewerId);
+      setArtworkComment(intent.comment);
+    }
+  }, [artworkRetryIdentity, selectedArtworkIdentity]);
   const targetName = useCallback((entityType: string, entityId: string) => {
     if (entityType === "book") return books.find((book) => book.id === entityId)?.title ?? shortId(entityId);
     if (entityType === "asset") return assets.find((asset) => asset.id === entityId)?.name ?? shortId(entityId);
@@ -149,9 +183,10 @@ export default function CollaborationCenter({ view }: { view: View }) {
 
   function changeWorkspace(nextId: string) {
     requestGeneration.current += 1;
+    artworkRequestKeys.current.clear(); artworkRequestIntents.current.clear(); artworkResolutionIntents.current.clear();
     setLoadedWorkspaceId("");
     setMembers([]); setProfiles([]); setTasks([]); setApprovals([]); setBooks([]); setAssets([]); setInvitations([]); setActivity([]);
-    setTaskAssignee(""); setApprovalTarget(""); setApprovalReviewer(""); setInviteLink(""); setNotice(null); setError(null);
+    setTaskAssignee(""); setApprovalTarget(""); setApprovalReviewer(""); setArtworkApprovalTarget(""); setArtworkReviewer(""); setArtworkComment(""); setArtworkRetryIdentity(null); setRejectionNotes({}); setRejectionRetryIds({}); setInviteLink(""); setNotice(null); setError(null);
     setWorkspaceId(nextId);
     const url = new URL(window.location.href); url.searchParams.set("ws", nextId); window.history.replaceState(null, "", url);
   }
@@ -162,6 +197,71 @@ export default function CollaborationCenter({ view }: { view: View }) {
     try { await action(); if (await load()) setNotice(success); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "The action could not be completed."); }
     finally { setBusy(null); }
+  }
+
+  async function submitArtworkApproval() {
+    if (!selectedArtwork || !selectedArtworkVersion || !sessionUser?.id || !artworkReviewer || artworkReviewer === sessionUser.id) return;
+    const identity = `${workspaceId}:${sessionUser.id}:${selectedArtwork.id}:${selectedArtworkVersion}`;
+    const idempotencyKey = getOrCreateApprovalRequestKey(artworkRequestKeys.current, identity, () => crypto.randomUUID());
+    const saved = artworkRequestIntents.current.get(identity);
+    const intent = saved ?? { reviewerId: artworkReviewer, comment: artworkComment.trim() };
+    if (!saved) artworkRequestIntents.current.set(identity, intent);
+    try {
+      await api.createApproval({
+        workspaceId,
+        entityType: "asset",
+        entityId: selectedArtwork.id,
+        reviewerId: intent.reviewerId,
+        comment: intent.comment || undefined,
+        entityVersionNumber: selectedArtworkVersion,
+        idempotencyKey,
+      });
+      artworkRequestKeys.current.delete(identity);
+      artworkRequestIntents.current.delete(identity);
+      setArtworkRetryIdentity(null);
+      setArtworkApprovalTarget("");
+      setArtworkReviewer("");
+      setArtworkComment("");
+    } catch (reason) {
+      if (reason instanceof ApiClientError && reason.status >= 400 && reason.status < 500) {
+        artworkRequestKeys.current.delete(identity);
+        artworkRequestIntents.current.delete(identity);
+        setArtworkRetryIdentity(null);
+      } else {
+        setArtworkRetryIdentity(identity);
+        setArtworkReviewer(intent.reviewerId);
+        setArtworkComment(intent.comment);
+      }
+      throw reason;
+    }
+  }
+
+  async function resolveArtworkApproval(approval: Approval, action: "approve" | "reject") {
+    if (action === "approve") {
+      await api.resolveApproval(approval.id, action);
+      setRejectionNotes((current) => ({ ...current, [approval.id]: "" }));
+      return;
+    }
+    const typedNote = rejectionNotes[approval.id]?.trim() ?? "";
+    const savedNote = artworkResolutionIntents.current.get(approval.id);
+    const comment = savedNote ?? typedNote;
+    if (!comment) return;
+    if (savedNote === undefined) artworkResolutionIntents.current.set(approval.id, comment);
+    try {
+      await api.resolveApproval(approval.id, action, comment);
+      artworkResolutionIntents.current.delete(approval.id);
+      setRejectionNotes((current) => ({ ...current, [approval.id]: "" }));
+      setRejectionRetryIds((current) => ({ ...current, [approval.id]: false }));
+    } catch (reason) {
+      if (reason instanceof ApiClientError && reason.status >= 400 && reason.status < 500) {
+        artworkResolutionIntents.current.delete(approval.id);
+        setRejectionRetryIds((current) => ({ ...current, [approval.id]: false }));
+      } else {
+        setRejectionNotes((current) => ({ ...current, [approval.id]: comment }));
+        setRejectionRetryIds((current) => ({ ...current, [approval.id]: true }));
+      }
+      throw reason;
+    }
   }
 
   const workspaceQuery = workspaceId ? `?ws=${encodeURIComponent(workspaceId)}` : "";
@@ -191,11 +291,50 @@ export default function CollaborationCenter({ view }: { view: View }) {
     </div>}
 
     {scopeReady && view === "approvals" && <div className="mt-8 grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
-      <div className="space-y-6">{canEdit && <form className={`${card} p-5`} onSubmit={(event) => { event.preventDefault(); const [entityType, entityId] = approvalTarget.split(":"); if (!entityType || !entityId) return; void perform("request-approval", async () => { await api.createApproval({ workspaceId, entityType: entityType as WorkspaceTargetType, entityId, reviewerId: approvalReviewer || null, comment: approvalComment.trim() || undefined }); setApprovalTarget(""); setApprovalComment(""); }, "Approval requested."); }}><h2 className="text-lg font-medium">Request a review</h2><p className="mt-1 text-xs leading-5 text-white/45">Choose a saved book or asset in this workspace.</p><label className="mt-5 block text-xs text-white/55">Review target<select required value={approvalTarget} onChange={(event) => setApprovalTarget(event.target.value)} className={input}><option value="">Select a target</option>{targets.map((target) => <option key={target.value} value={target.value}>{target.label}</option>)}</select></label><label className="mt-4 block text-xs text-white/55">Reviewer<select value={approvalReviewer} onChange={(event) => setApprovalReviewer(event.target.value)} className={input}><option value="">Any eligible reviewer</option>{activeMembers.filter((member) => approveRoles.has(member.role)).map((member) => <option key={member.user_id} value={member.user_id}>{nameOf(member.user_id)} · {member.role}</option>)}</select></label><label className="mt-4 block text-xs text-white/55">Review note<textarea rows={4} maxLength={2000} value={approvalComment} onChange={(event) => setApprovalComment(event.target.value)} className={input} placeholder="What should the reviewer check?" /></label><button disabled={!approvalTarget || busy === "request-approval"} className="glass-solid mt-5 min-h-10 w-full rounded-full px-5 text-sm font-semibold text-black disabled:opacity-40">{busy === "request-approval" ? "Requesting…" : "Request approval"}</button></form>}
+      <div className="space-y-6">{canEdit && <form className={`${card} p-5`} onSubmit={(event) => { event.preventDefault(); const [entityType, entityId] = approvalTarget.split(":"); if (!entityType || !entityId) return; void perform("request-approval", async () => { await api.createApproval({ workspaceId, entityType: entityType as WorkspaceTargetType, entityId, reviewerId: approvalReviewer || null, comment: approvalComment.trim() || undefined }); setApprovalTarget(""); setApprovalComment(""); setApprovalReviewer(""); }, "Book review requested."); }}><h2 className="text-lg font-medium">Request a book review</h2><p className="mt-1 text-xs leading-5 text-white/45">Book approvals stay in the general review queue; illustration review is version-pinned below.</p><label className="mt-5 block text-xs text-white/55">Review target<select required value={approvalTarget} onChange={(event) => setApprovalTarget(event.target.value)} className={input}><option value="">Select a book</option>{targets.map((target) => <option key={target.value} value={target.value}>{target.label}</option>)}</select></label><label className="mt-4 block text-xs text-white/55">Reviewer<select value={approvalReviewer} onChange={(event) => setApprovalReviewer(event.target.value)} className={input}><option value="">Any eligible reviewer</option>{activeMembers.filter((member) => approveRoles.has(member.role)).map((member) => <option key={member.user_id} value={member.user_id}>{nameOf(member.user_id)} · {member.role}</option>)}</select></label><label className="mt-4 block text-xs text-white/55">Review note<textarea rows={4} maxLength={2000} value={approvalComment} onChange={(event) => setApprovalComment(event.target.value)} className={input} placeholder="What should the reviewer check?" /></label><button disabled={!approvalTarget || busy === "request-approval"} className="glass-solid mt-5 min-h-10 w-full rounded-full px-5 text-sm font-semibold text-black disabled:opacity-40">{busy === "request-approval" ? "Requesting…" : "Request approval"}</button></form>}
         <section className={`${card} p-5`}><h2 className="text-lg font-medium">Resolved</h2><div className="mt-4 space-y-2">{resolved.map((approval) => <article key={approval.id} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 p-3 text-sm"><div><p>{titleCase(approval.entity_type)} · {targetName(approval.entity_type, approval.entity_id)}</p><p className="mt-1 text-xs text-white/35">Requested by {nameOf(approval.requested_by)}</p></div><span className={`rounded-full border px-2.5 py-1 text-[10px] ${statusTone(approval.status)}`}>{titleCase(approval.status)}</span></article>)}{!loading && resolved.length === 0 && <p className="py-4 text-sm text-white/35">No resolved decisions yet.</p>}</div></section>
       </div>
       <section className={`${card} p-5`}><div className="flex items-center justify-between"><h2 className="text-xl font-medium">Pending review</h2><span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/45">{pending.length}</span></div><div className="mt-5 space-y-3">{pending.map((approval) => { const assignedElsewhere = Boolean(approval.reviewer_id && approval.reviewer_id !== sessionUser?.id); return <article key={approval.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-medium">{titleCase(approval.entity_type)} · {targetName(approval.entity_type, approval.entity_id)}</h3><p className="mt-1 text-xs text-white/40">Requested by {nameOf(approval.requested_by)} · {new Date(approval.created_at).toLocaleString()}</p></div><span className={`rounded-full border px-2.5 py-1 text-[10px] ${statusTone(approval.status)}`}>Pending</span></div>{approval.comment && <p className="mt-4 rounded-lg bg-white/[0.04] p-3 text-sm leading-6 text-white/60">{approval.comment}</p>}<p className="mt-3 text-xs text-white/35">Reviewer: {approval.reviewer_id ? nameOf(approval.reviewer_id) : "Any eligible reviewer"}</p>{canApprove && !assignedElsewhere && <div className="mt-4 flex gap-2"><button disabled={Boolean(busy)} onClick={() => void perform(`approve-${approval.id}`, () => api.resolveApproval(approval.id, "approve").then(() => undefined), "Approval accepted.")} className="glass-solid rounded-full px-4 py-2 text-xs font-semibold text-black disabled:opacity-40">Approve</button><button disabled={Boolean(busy)} onClick={() => void perform(`reject-${approval.id}`, () => api.resolveApproval(approval.id, "reject").then(() => undefined), "Approval rejected.")} className="rounded-full border border-white/15 px-4 py-2 text-xs disabled:opacity-40">Reject</button></div>}{assignedElsewhere && <p className="mt-3 text-xs text-amber-100/60">This decision is assigned to {nameOf(approval.reviewer_id)}.</p>}</article>; })}{!loading && pending.length === 0 && <div className="py-16 text-center"><p className="text-lg">Queue is clear</p><p className="mt-2 text-sm text-white/35">New review requests will appear here.</p></div>}</div></section>
     </div>}
+
+    {scopeReady && view === "approvals" && <section className={`${card} mt-6 overflow-hidden`} aria-labelledby="artwork-review-title">
+      <div className="border-b border-white/10 p-5 sm:p-6"><p className="text-[10px] uppercase tracking-[0.16em] text-white/35">Version-controlled assets</p><h2 id="artwork-review-title" className="mt-1 text-2xl font-medium">Illustration review</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-white/50">Only clean, current artwork can enter review. Every decision is pinned to one exact version; a new upload needs its own approval.</p></div>
+      <div className="grid gap-6 p-5 sm:p-6 xl:grid-cols-[0.8fr_1.2fr]">
+        <div className="space-y-6">
+          {canEdit ? <form className={`${card} p-5`} onSubmit={(event) => { event.preventDefault(); void perform("request-artwork-approval", submitArtworkApproval, "Artwork sent to the assigned reviewer."); }}>
+            <h3 className="text-lg font-medium">Send artwork for review</h3>
+            <p className="mt-1 text-xs leading-5 text-white/45">Choose an uploaded or generated illustration that has completed its safety scan.</p>
+            <label className="mt-5 block text-xs text-white/55">Artwork<select aria-label="Artwork" required value={artworkApprovalTarget} onChange={(event) => setArtworkApprovalTarget(event.target.value)} className={input}><option value="">Select reviewable artwork</option>{reviewableAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name} · v{asset.current_version_number}</option>)}</select></label>
+            {!reviewableAssets.length && <p className="mt-2 text-xs text-white/35">No clean, review-required illustrations are waiting for a decision.</p>}
+            {selectedArtwork && <p className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs text-white/55">Pinned to version <span className="font-medium text-white">{selectedArtworkVersion}</span> · scan <span className="text-emerald-100">{selectedArtwork.current_scan_status}</span></p>}
+            <label className="mt-4 block text-xs text-white/55">Assigned reviewer<select aria-label="Assigned reviewer" required value={artworkReviewer} disabled={selectedArtworkRetry} onChange={(event) => setArtworkReviewer(event.target.value)} className={input}><option value="">Choose an independent reviewer</option>{artworkReviewers.map((member) => <option key={member.user_id} value={member.user_id}>{nameOf(member.user_id)} · {member.role}</option>)}</select></label>
+            {!artworkReviewers.length && <p className="mt-2 text-xs text-amber-100/60">Add an active reviewer other than yourself before requesting artwork approval.</p>}
+            <label className="mt-4 block text-xs text-white/55">Review brief <span className="text-white/30">(optional)</span><textarea rows={4} maxLength={2000} value={artworkComment} disabled={selectedArtworkRetry} onChange={(event) => setArtworkComment(event.target.value)} className={input} placeholder="Check the character details, composition, or placement…" /></label>
+            {selectedArtworkRetry && <div role="status" className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.07] p-3 text-xs leading-5 text-amber-50/80"><p>The response was uncertain. Retry keeps the original reviewer, note, artwork version, and request key.</p><button type="button" onClick={() => void load()} className="mt-2 underline underline-offset-2">Refresh the review queue</button></div>}
+            <button disabled={Boolean(busy) || !selectedArtwork || !selectedArtworkVersion || !artworkReviewer || artworkReviewer === sessionUser?.id} className="glass-solid mt-5 min-h-10 w-full rounded-full px-5 text-sm font-semibold text-black disabled:opacity-40">{busy === "request-artwork-approval" ? "Sending…" : selectedArtworkRetry ? "Retry saved review request" : "Request artwork approval"}</button>
+          </form> : <section className={`${card} p-5`}><h3 className="font-medium">Artwork review requests</h3><p className="mt-2 text-sm leading-6 text-white/45">An editor, writer, illustrator, designer, or workspace admin can submit a scanned artwork version for review.</p></section>}
+
+          <section className={`${card} p-5`}><div className="flex items-center justify-between"><h3 className="text-lg font-medium">Resolved artwork reviews</h3><span className="text-xs text-white/35">{resolvedArtwork.length}</span></div><div className="mt-4 space-y-2">{resolvedArtwork.map((approval) => { const state = approval.superseded_at ? "superseded" : approval.status; return <article key={approval.id} className="rounded-xl border border-white/10 p-3"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm">{targetName("asset", approval.entity_id)}</p><p className="mt-1 text-xs text-white/35">Version {approval.entity_version_number ?? "unknown"} · requested by {nameOf(approval.requested_by)}</p></div><span className={`rounded-full border px-2.5 py-1 text-[10px] ${statusTone(state)}`}>{titleCase(state)}</span></div>{approval.resolution_note && <p className="mt-3 rounded-lg bg-white/[0.04] p-3 text-xs leading-5 text-white/55">Reviewer note: {approval.resolution_note}</p>}</article>; })}{!resolvedArtwork.length && <p className="py-4 text-sm text-white/35">No artwork decisions yet.</p>}</div></section>
+        </div>
+
+        <section className={`${card} p-5`}><div className="flex items-center justify-between"><div><p className="text-[10px] uppercase tracking-[0.16em] text-white/35">Exact version decisions</p><h3 className="mt-1 text-xl font-medium">Awaiting review</h3></div><span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/45">{pendingArtwork.length}</span></div>
+          <div className="mt-5 space-y-3">{pendingArtwork.map((approval) => {
+            const assignedElsewhere = Boolean(approval.reviewer_id && approval.reviewer_id !== sessionUser?.id);
+            const requestedByMe = approval.requested_by === sessionUser?.id;
+            const canDecide = canApprove && approval.reviewer_id === sessionUser?.id && !requestedByMe;
+            const note = rejectionNotes[approval.id] ?? "";
+            const noteLocked = Boolean(rejectionRetryIds[approval.id]);
+            return <article key={approval.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-medium">{targetName("asset", approval.entity_id)}</h4><p className="mt-1 text-xs text-white/40">Version {approval.entity_version_number ?? "unknown"} · requested by {nameOf(approval.requested_by)}</p><p className="mt-1 text-[11px] text-white/30">{new Date(approval.created_at).toLocaleString()}</p></div><span className={`rounded-full border px-2.5 py-1 text-[10px] ${statusTone(approval.status)}`}>Pending</span></div>
+              {approval.comment && <p className="mt-4 rounded-lg bg-white/[0.04] p-3 text-sm leading-6 text-white/60">{approval.comment}</p>}
+              <p className="mt-3 text-xs text-white/35">Assigned to {approval.reviewer_id ? nameOf(approval.reviewer_id) : "no reviewer"}</p>
+              {canDecide && <div className="mt-4 space-y-3"><label className="block text-xs text-white/55">Required note when rejecting<textarea rows={3} maxLength={2000} value={note} disabled={noteLocked} onChange={(event) => setRejectionNotes((current) => ({ ...current, [approval.id]: event.target.value }))} className={input} placeholder="Explain what needs to change…" /></label>{noteLocked && <p role="status" className="text-xs text-amber-100/70">The reject response was uncertain. Retry uses the same saved note.</p>}<div className="flex flex-wrap gap-2"><button disabled={Boolean(busy)} onClick={() => void perform(`approve-artwork-${approval.id}`, () => resolveArtworkApproval(approval, "approve"), "Artwork version approved.")} className="glass-solid rounded-full px-4 py-2 text-xs font-semibold text-black disabled:opacity-40">Approve version</button><button disabled={Boolean(busy) || !note.trim()} onClick={() => void perform(`reject-artwork-${approval.id}`, () => resolveArtworkApproval(approval, "reject"), "Artwork revision requested.")} className="rounded-full border border-white/15 px-4 py-2 text-xs disabled:opacity-40">Request a revision</button></div></div>}
+              {requestedByMe && <p className="mt-3 text-xs text-white/35">You requested this review and cannot decide it.</p>}
+              {!requestedByMe && !canDecide && assignedElsewhere && <p className="mt-3 text-xs text-amber-100/60">Only the assigned reviewer can decide this artwork version.</p>}
+            </article>;
+          })}{!pendingArtwork.length && <div className="py-16 text-center"><p className="text-lg">No artwork awaiting review</p><p className="mt-2 text-sm text-white/35">New clean versions will appear here after an editor assigns a reviewer.</p></div>}</div>
+        </section>
+      </div>
+    </section>}
 
     {scopeReady && view === "team" && <div className="mt-8 grid gap-6 lg:grid-cols-[0.75fr_1.25fr]">
       <div className="space-y-6"><section className={`${card} p-5`}><h2 className="text-lg font-medium">Invite a collaborator</h2><p className="mt-2 text-xs leading-5 text-white/45">Links expire after seven days and can be accepted only by the invited email. Until email delivery is connected, share the generated link directly.</p>{canManage ? <form className="mt-5 space-y-4" onSubmit={(event) => { event.preventDefault(); if (!inviteEmail.trim()) return; void perform("invite", async () => { const result = await api.inviteMember(workspaceId, { email: inviteEmail.trim(), role: inviteRole }); setInviteLink(result.acceptanceUrl); setInviteEmail(""); }, "Secure invitation created."); }}><label className="block text-xs text-white/55">Email<input required type="email" maxLength={254} value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} className={input} placeholder="editor@example.com" /></label><label className="block text-xs text-white/55">Role<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as InviteRole)} className={input}>{roles.filter((item): item is InviteRole => item !== "owner").map((item) => <option key={item} value={item}>{titleCase(item)}</option>)}</select></label><button disabled={busy === "invite"} className="glass-solid min-h-10 w-full rounded-full px-5 text-sm font-semibold text-black disabled:opacity-40">{busy === "invite" ? "Creating…" : "Create invite link"}</button></form> : <p className="mt-5 rounded-xl border border-white/10 p-4 text-sm text-white/45">Only workspace owners and admins can invite or change roles.</p>}{inviteLink && <div className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3"><label className="text-xs text-emerald-100">Copy this link now<input readOnly value={inviteLink} className={`${input} border-emerald-400/20 text-xs`} onFocus={(event) => event.currentTarget.select()} /></label><button type="button" onClick={() => void navigator.clipboard.writeText(inviteLink).then(() => setNotice("Invitation link copied."), () => setError("Copy failed. Select and copy the link manually."))} className="mt-3 rounded-full border border-emerald-200/20 px-4 py-2 text-xs text-emerald-50">Copy link</button></div>}</section>

@@ -179,8 +179,8 @@ function baseStore(role = "editor"): Store {
       ],
       book_metadata: [], style_guides: [], book_bible_items: [], subscriptions: [], plans: [],
       publishing_jobs: [], publishing_validations: [], asset_versions: [
-        { asset_id: COVER, version_number: 1, storage_path: coverPath, checksum: sha(cover), scan_status: "clean" },
-        { asset_id: ILLUSTRATION, version_number: 1, storage_path: illustrationPath, checksum: sha(illustration), scan_status: "clean" },
+        { asset_id: COVER, version_number: 1, storage_path: coverPath, checksum: sha(cover), scan_status: "clean", mime_type: "image/png", size_bytes: cover.length },
+        { asset_id: ILLUSTRATION, version_number: 1, storage_path: illustrationPath, checksum: sha(illustration), scan_status: "clean", mime_type: "image/png", size_bytes: illustration.length },
       ], asset_links: [], usage_events: [], activity_events: [],
     },
   };
@@ -260,6 +260,90 @@ test("editor renders the saved edition into private durable artifacts and one us
   assert.ok(request.assetImagesBase64[ILLUSTRATION]);
   assert.equal(response.body.includes("Mira crossed"), false);
   await app.close();
+});
+
+test("render and preflight preserve saved illustration pins and reject a later revision before dispatch", async () => {
+  for (const action of ["render", "validate"] as const) {
+    const store = baseStore();
+    const document = store.tables.document_versions[0].content_json as { nodes: Row[] };
+    document.nodes[1].assetVersionNumber = 1;
+    const requests: unknown[] = [];
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight(requests) });
+    try {
+      const request = () => app.inject({ method: "POST", headers: auth,
+        url: action === "render" ? `/v1/editions/${EDITION}/render` : "/v1/publishing/validate",
+        payload: { idempotencyKey: crypto.randomUUID(), ...(action === "validate" ? { bookId: BOOK, editionId: EDITION, channel: "kdp" } : {}) },
+      });
+      const good = await request();
+      assert.equal(good.statusCode, 201, good.body);
+      const sent = (requests[0] as { body: { assetImagesBase64: Record<string, string> } }).body;
+      assert.equal(sent.assetImagesBase64[ILLUSTRATION], store.objects.get(String(store.tables.assets[1].storage_path))!.toString("base64"));
+      const jobs = store.tables.publishing_jobs.length;
+      const usage = store.tables.usage_events.length;
+      const calls = requests.length;
+      store.tables.asset_versions.find(row => row.asset_id === ILLUSTRATION)!.version_number = 2;
+      const stale = await request();
+      assert.equal(stale.statusCode, 422, stale.body);
+      assert.match(stale.body, /placed illustration version has changed/u);
+      assert.equal(requests.length, calls, "stale placement must not dispatch rendering");
+      assert.equal(store.tables.publishing_jobs.length, jobs);
+      assert.equal(store.tables.usage_events.length, usage);
+    } finally { await app.close(); }
+  }
+});
+
+test("quarantine during render, preflight or packaging prevents completion and charges", async () => {
+  for (const action of ["render", "validate", "export_package"] as const) {
+    const store = baseStore();
+    enableRetailerPackages(store);
+    const app = await buildApp(() => fakeSupabase(store), {
+      renderFetch: action === "export_package" ? successfulRenderAndPreflight([]) : async (url, init) => {
+        store.tables.asset_versions[0].scan_status = "infected";
+        return successfulRenderAndPreflight([])(url, init);
+      },
+      publishingFetch: async (url, init) => {
+        store.tables.asset_versions[0].scan_status = "infected";
+        return successfulPackager([])(url, init);
+      },
+    });
+    try {
+      const ready = action === "export_package" ? await createReadySources(app) : null;
+      const usage = store.tables.usage_events.length;
+      const objects = store.objects.size;
+      const response = await app.inject({ method: "POST", headers: auth,
+        url: action === "render" ? `/v1/editions/${EDITION}/render` : action === "validate" ? "/v1/publishing/validate" : "/v1/publishing/jobs",
+        payload: { idempotencyKey: crypto.randomUUID(), ...(action === "render" ? {} : { bookId: BOOK, editionId: EDITION, channel: "kdp" }), ...ready },
+      });
+      assert.equal(response.statusCode, 422, response.body);
+      assert.match(response.body, /clean.*confirmed current version/u);
+      assert.equal(store.tables.usage_events.length, usage);
+      assert.equal(store.objects.size, objects, "failed proof must remove only new attempt artifacts");
+      assert.equal(store.tables.publishing_jobs.at(-1)?.status, "failed");
+    } finally { await app.close(); }
+  }
+});
+
+test("changed cover bytes invalidate stored render/preflight before package dispatch", async () => {
+  const store = baseStore();
+  enableRetailerPackages(store);
+  const requests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(requests) });
+  try {
+    const ready = await createReadySources(app);
+    const cover = store.tables.assets.find(asset => asset.id === COVER)!;
+    const revised = Buffer.from([0x89, 0x50, 0x4e, 0x47, 25]);
+    const path = String(cover.storage_path).replace("/v1/", "/v2/");
+    Object.assign(cover, { storage_path: path, checksum: sha(revised), size_bytes: revised.length });
+    store.objects.set(path, revised);
+    store.tables.asset_versions.push({ asset_id: COVER, version_number: 2, storage_path: path, checksum: sha(revised), mime_type: "image/png", size_bytes: revised.length, scan_status: "clean" });
+    const usage = store.tables.usage_events.length;
+    const response = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth,
+      payload: { bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: crypto.randomUUID(), ...ready } });
+    assert.equal(response.statusCode, 422, response.body);
+    assert.match(response.body, /fresh successful render/u);
+    assert.equal(requests.length, 0);
+    assert.equal(store.tables.usage_events.length, usage);
+  } finally { await app.close(); }
 });
 
 test("viewer cannot render or call the renderer", async () => {

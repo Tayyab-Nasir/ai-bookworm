@@ -4,6 +4,7 @@ import { AppError } from "../errors.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "./authoring.js";
 import { currentEntitlements } from "./entitlements.js";
 import type { SupabaseClient } from "./supabase.js";
+import { renderImagesFingerprint, assertRenderImagesCurrent } from "./render-images.js";
 import { decodeArtifact, decodeRenderedCover, editionConfigSchema, loadRenderImages, renderResponseSchema } from "../routes/editions.js";
 import {
   assertSourceJob, decodePackage, loadRenderedPackageInputs, packageServiceResponseSchema,
@@ -18,6 +19,7 @@ const jobSchema = z.object({
   request_json: z.object({
     action: z.enum(publishingActions), editionUpdatedAt: z.string().datetime({ offset: true }),
     bookModelSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    imageSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
     sourceRenderJobId: z.string().uuid().optional(), sourcePreflightJobId: z.string().uuid().optional(),
   }),
 }).passthrough();
@@ -103,6 +105,14 @@ async function serviceRequest(fetcher: typeof fetch, kind: "RENDERING" | "PUBLIS
 export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetcher: typeof fetch,
   signal: AbortSignal, uploadedPaths: string[]) {
   const { book, config, model } = await loadPublishingInputs(sb, job);
+  const imageIds = model.assets.map(asset => asset.id);
+  const imageReferences = model.chapters.flatMap(chapter => chapter.nodes);
+  const images = await loadRenderImages(sb, book.workspace_id, imageIds, config.cover.asset_id, imageReferences);
+  const imageSha256 = renderImagesFingerprint(images);
+  if (job.request_json.imageSha256 !== undefined && job.request_json.imageSha256 !== imageSha256) {
+    throw new WorkerFailure("worker_artwork_changed", false);
+  }
+  const recheckImages = () => assertRenderImagesCurrent(sb, book.workspace_id, imageIds, config.cover.asset_id, imageReferences, imageSha256);
   const artifacts: Record<string, unknown>[] = [];
   async function upload(bytes: Buffer, filename: string, type: string, role: string, mimeType: string, checksum: string) {
     signal.throwIfAborted();
@@ -128,7 +138,7 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
     ]);
     if (render.error || preflight.error) throw new WorkerFailure("worker_database_unavailable", true);
     const source = { bookId: job.book_id, editionId: job.edition_id,
-      editionUpdatedAt: job.request_json.editionUpdatedAt, bookModelSha256: job.request_json.bookModelSha256 };
+      editionUpdatedAt: job.request_json.editionUpdatedAt, bookModelSha256: job.request_json.bookModelSha256, imageSha256 };
     assertSourceJob(render.data, { ...source, action: "render", channel: "render" });
     assertSourceJob(preflight.data, { ...source, action: "validate", channel: job.channel });
     const validation = storedPreflightResponseSchema.safeParse(preflight.data?.response_json);
@@ -143,17 +153,18 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
       throw new WorkerFailure("worker_invalid_response", true);
     }
     const pkg = parsed.data.packages[0];
+    await recheckImages();
     const artifact = await upload(decodePackage(pkg.dataBase64, pkg.sha256), pkg.path, "publishing_package", "publishing_package", "application/zip", pkg.sha256);
-    return { artifact, ruleVersion: parsed.data.ruleVersion };
+    return { artifact, ruleVersion: parsed.data.ruleVersion, imageSha256 };
   }
-  const images = await loadRenderImages(sb, book.workspace_id, model.assets.map((a) => a.id), config.cover.asset_id);
   if (job.request_json.action === "validate") {
     const raw = await serviceRequest(fetcher, "RENDERING", "/preflight", {
       editionConfig: config, bookModel: model, channel: job.channel === "export" ? null : job.channel, includeArtifact: true, ...images,
     }, 2_000_000, signal);
     const parsed = preflightResponseSchema.safeParse(raw);
     if (!parsed.success || parsed.data.channel !== (job.channel === "export" ? null : job.channel)) throw new WorkerFailure("worker_invalid_response", true);
-    return { ...parsed.data, requestedChannel: job.channel };
+    await recheckImages();
+    return { ...parsed.data, requestedChannel: job.channel, imageSha256 };
   }
   const raw = await serviceRequest(fetcher, "RENDERING", "/render", { editionConfig: config, bookModel: model, ...images }, 220_000_000, signal);
   const parsed = renderResponseSchema.safeParse(raw);
@@ -163,12 +174,13 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
   const decodedCover = decodeRenderedCover(config, rendered);
   const primary = decodeArtifact(rendered.artifactBase64, rendered.sha256, 150 * 1024 * 1024,
     Buffer.from(format === "epub" ? "PK" : "%PDF-"), format);
+  await recheckImages();
   await upload(primary, `book.${format}`, "rendered_book", config.kind === "ebook" ? "rendered_ebook" : "rendered_print",
     format === "epub" ? "application/epub+zip" : "application/pdf", rendered.sha256);
   if (decodedCover) {
     await upload(decodedCover.bytes, decodedCover.filename, "rendered_cover", "rendered_cover", decodedCover.mimeType, decodedCover.checksum);
   }
-  return { artifacts, rendererVersion: rendered.rendererVersion, usage: {
+  return { artifacts, rendererVersion: rendered.rendererVersion, imageSha256, usage: {
     renderedBytes: artifacts.reduce((total, artifact) => total + Number(artifact.sizeBytes), 0), illustrationCount: model.assets.length,
   } };
 }
@@ -204,9 +216,11 @@ export async function runOnePublishingJob(sb: SupabaseClient, options: {
   try {
     const parsed = jobSchema.safeParse(claimed);
     if (!parsed.success) throw new WorkerFailure("worker_invalid_input", false);
-    const output = await buildPublishingOutput(sb, parsed.data, options.fetcher ?? fetch, abort.signal, uploadedPaths);
+    const { imageSha256, ...output } = await buildPublishingOutput(sb, parsed.data, options.fetcher ?? fetch, abort.signal, uploadedPaths);
     // A long renderer call must not publish a stale current-edition result.
-    await loadPublishingInputs(sb, parsed.data);
+    const current = await loadPublishingInputs(sb, parsed.data);
+    await assertRenderImagesCurrent(sb, current.book.workspace_id, current.model.assets.map(asset => asset.id), current.config.cover.asset_id,
+      current.model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
     abort.signal.throwIfAborted();
     completionAttempted = true;
     const completed = await sb.rpc("complete_leased_publishing_job", { p_job_id: jobId, p_lease_token: token, p_result: output });

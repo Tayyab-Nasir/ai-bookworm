@@ -766,9 +766,9 @@ export function createClient(opts: ClientOptions) {
     getAssetAccess: (workspaceId: string) => call<{ canEdit: boolean }>("GET", `/v1/assets/access?${new URLSearchParams({ workspaceId })}`),
     listImageGenerationJobs: (workspaceId: string) => call<{ jobs: ImageGenerationJob[] }>("GET", `/v1/assets/generation-jobs?${new URLSearchParams({ workspaceId })}`),
     finalizeImageJob: (jobId: string) => call<{ jobId: string; status: string }>("POST", `/v1/assets/generation-jobs/${encodeURIComponent(jobId)}/finalize`),
-    getAssetDownloadUrl: (assetId: string) =>
-      call<{ url: string; expiresIn: number }>("GET", `/v1/assets/${assetId}/download-url`),
-    updateAsset: (assetId: string, body: { name?: string; folderId?: string | null; status?: Asset["status"] }) =>
+    getAssetDownloadUrl: (assetId: string, versionNumber?: number) =>
+      call<{ url: string; expiresIn: number }>("GET", `/v1/assets/${assetId}/download-url${versionNumber === undefined ? "" : `?versionNumber=${encodeURIComponent(String(versionNumber))}`}`),
+    updateAsset: (assetId: string, body: { name?: string; folderId?: string | null }) =>
       call<Asset>("PATCH", `/v1/assets/${assetId}`, body),
     deleteAsset: (assetId: string) => call<{ assetId: string; deleted: boolean }>("DELETE", `/v1/assets/${assetId}`),
     restoreAsset: (assetId: string) => call<{ assetId: string; restored: boolean }>("POST", `/v1/assets/${assetId}/restore`),
@@ -798,10 +798,10 @@ export function createClient(opts: ClientOptions) {
       call<Task>("PATCH", `/v1/tasks/${taskId}`, body),
     listApprovals: (workspaceId: string, status?: Approval["status"]) =>
       call<{ approvals: Approval[] }>("GET", `/v1/approvals?workspaceId=${workspaceId}${status ? `&status=${status}` : ""}`),
-    createApproval: (body: { workspaceId: string; entityType: WorkspaceTargetType; entityId: string; reviewerId?: string | null; comment?: string }) =>
+    createApproval: (body: { workspaceId: string; entityType: WorkspaceTargetType; entityId: string; reviewerId?: string | null; comment?: string; entityVersionNumber?: number; idempotencyKey?: string }) =>
       call<Approval>("POST", "/v1/approvals", body),
-    resolveApproval: (approvalId: string, action: "approve" | "reject") =>
-      call<Approval>("POST", `/v1/approvals/${approvalId}/${action}`),
+    resolveApproval: (approvalId: string, action: "approve" | "reject", comment?: string) =>
+      call<Approval>("POST", `/v1/approvals/${approvalId}/${action}`, comment === undefined ? {} : { comment }),
     listActivity: (workspaceId: string, limit?: number) =>
       call<{ events: ActivityEvent[] }>("GET", `/v1/activity?workspaceId=${workspaceId}${limit ? `&limit=${limit}` : ""}`),
     listMembers: (workspaceId: string) =>

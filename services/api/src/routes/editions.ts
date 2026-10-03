@@ -6,6 +6,8 @@ import { assembleBookModel, bookModelFingerprint, loadBook } from "../lib/author
 import { logActivity } from "../lib/activity.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { requireEntitlement } from "../lib/entitlements.js";
+import { loadRenderImages, renderImagesFingerprint, assertRenderImagesCurrent } from "../lib/render-images.js";
+export { loadRenderImages } from "../lib/render-images.js";
 
 const BUCKET = "book-assets";
 
@@ -208,51 +210,6 @@ async function hydrateRenderResult(sb: SupabaseClient, job: Record<string, unkno
   return { jobId: job.id, status: job.status, artifacts };
 }
 
-export async function loadRenderImages(
-  sb: SupabaseClient,
-  workspaceId: string,
-  illustrationIds: string[],
-  coverId: string | null,
-) {
-  const ids = [...new Set([...illustrationIds, ...(coverId ? [coverId] : [])])];
-  if (ids.length > 100) throw new AppError(422, "A render can include at most 100 images.");
-  if (!ids.length) return { coverBase64: null, assetImagesBase64: {} as Record<string, string> };
-
-  const { data, error } = await sb.from("assets")
-    .select("id,workspace_id,storage_path,mime_type,size_bytes,checksum,status,deleted_at")
-    .eq("workspace_id", workspaceId).is("deleted_at", null).in("id", ids);
-  if (error || !data || data.length !== ids.length) {
-    throw new AppError(422, "A book image is missing or belongs to another workspace.");
-  }
-
-  let totalBytes = 0;
-  const encoded = new Map<string, string>();
-  for (const asset of data) {
-    if (!String(asset.mime_type).startsWith("image/") || asset.checksum === "pending") {
-      throw new AppError(422, "All render images must be confirmed image assets.");
-    }
-    const expectedSize = Number(asset.size_bytes);
-    if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > 25 * 1024 * 1024) {
-      throw new AppError(422, "A render image exceeds the 25 MB limit.");
-    }
-    totalBytes += expectedSize;
-    if (totalBytes > 100 * 1024 * 1024) throw new AppError(422, "Render images exceed the 100 MB total limit.");
-    const { data: stored, error: downloadError } = await sb.storage.from(BUCKET).download(asset.storage_path);
-    if (downloadError || !stored) throw new AppError(503, "A render image could not be loaded from private storage.");
-    const bytes = Buffer.from(await stored.arrayBuffer());
-    const checksum = createHash("sha256").update(bytes).digest("hex");
-    if (bytes.length !== expectedSize || checksum !== String(asset.checksum).toLowerCase()) {
-      throw new AppError(422, "A render image no longer matches its confirmed version.");
-    }
-    encoded.set(asset.id, bytes.toString("base64"));
-  }
-
-  return {
-    coverBase64: coverId ? encoded.get(coverId) ?? null : null,
-    assetImagesBase64: Object.fromEntries(illustrationIds.map((id) => [id, encoded.get(id)!])),
-  };
-}
-
 async function loadEdition(sb: SupabaseClient, editionId: string) {
   const { data, error } = await sb.from("editions").select("*").eq("id", editionId).maybeSingle();
   if (error) throw new AppError(500, "Could not load edition.");
@@ -260,15 +217,54 @@ async function loadEdition(sb: SupabaseClient, editionId: string) {
   return data;
 }
 
+async function requireCurrentArtworkApproval(
+  sb: SupabaseClient,
+  asset: {
+    id: string;
+    storage_path: string;
+    mime_type: string;
+    size_bytes: number;
+    checksum: string;
+    status: string;
+    requires_approval?: boolean;
+  },
+) {
+  if (asset.requires_approval !== true) return;
+  if (asset.status !== "approved") {
+    throw new AppError(422, "Artwork must be approved for its exact current version before rendering.");
+  }
+
+  const { data: version, error: versionError } = await sb.from("asset_versions")
+    .select("version_number,storage_path,checksum,mime_type,size_bytes,scan_status")
+    .eq("asset_id", asset.id).eq("storage_path", asset.storage_path).maybeSingle();
+  if (versionError) throw new AppError(503, "Artwork version approval could not be verified.");
+  const versionNumber = Number(version?.version_number);
+  if (!version || !Number.isSafeInteger(versionNumber) || versionNumber < 1
+    || version.checksum.toLowerCase() !== asset.checksum.toLowerCase()
+    || version.mime_type !== asset.mime_type || Number(version.size_bytes) !== Number(asset.size_bytes)
+    || !["clean", "trusted_generated"].includes(String(version.scan_status))) {
+    throw new AppError(422, "Artwork must be a clean, current image version before rendering.");
+  }
+
+  const { data: approval, error: approvalError } = await sb.from("approvals")
+    .select("id")
+    .eq("entity_type", "asset").eq("entity_id", asset.id)
+    .eq("entity_version_number", versionNumber).eq("status", "approved")
+    .is("superseded_at", null).maybeSingle();
+  if (approvalError) throw new AppError(503, "Artwork approval could not be verified.");
+  if (!approval) throw new AppError(422, "Artwork must be approved for its exact current version before rendering.");
+}
+
 async function validateCover(sb: SupabaseClient, workspaceId: string, config: z.infer<typeof editionConfigSchema>) {
   if (config.kind === "audiobook") return;
   const assetId = config.cover.asset_id;
   if (!assetId) return;
-  const { data, error } = await sb.from("assets").select("id,mime_type,checksum,status,deleted_at")
+  const { data, error } = await sb.from("assets").select("id,storage_path,mime_type,size_bytes,checksum,status,requires_approval,deleted_at")
     .eq("id", assetId).eq("workspace_id", workspaceId).maybeSingle();
   if (error || !data || data.deleted_at || data.checksum === "pending" || !String(data.mime_type).startsWith("image/")) {
     throw new AppError(422, "Choose a confirmed image from this workspace for the cover.");
   }
+  await requireCurrentArtworkApproval(sb, data);
 }
 
 export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
@@ -366,7 +362,9 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       book.workspace_id,
       model.assets.map((asset) => asset.id),
       config.cover.asset_id,
+      model.chapters.flatMap((chapter) => chapter.nodes),
     );
+    const imageSha256 = renderImagesFingerprint(images);
     const jobId = randomUUID();
     const { data: inserted, error: insertError } = await service.from("publishing_jobs").insert({
       id: jobId,
@@ -374,7 +372,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       edition_id: editionId,
       channel: "render",
       status: "running",
-      request_json: { action: "render", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256 },
+      request_json: { action: "render", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256 },
       idempotency_key: parsed.data.idempotencyKey,
       created_by: req.userId,
       started_at: new Date().toISOString(),
@@ -388,7 +386,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       const request = existing.request_json && typeof existing.request_json === "object" && !Array.isArray(existing.request_json)
         ? existing.request_json as Record<string, unknown> : {};
       if (request.action !== "render" || existing.edition_id !== editionId
-        || request.editionUpdatedAt !== edition.updated_at || request.bookModelSha256 !== modelSha256) {
+        || request.editionUpdatedAt !== edition.updated_at || request.bookModelSha256 !== modelSha256 || request.imageSha256 !== imageSha256) {
         throw new AppError(409, "That render request key belongs to different saved book content or edition settings.");
       }
       if (existing.status !== "succeeded") throw new AppError(409, `That render request is already ${existing.status}.`);
@@ -482,6 +480,8 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
         renderedBytes: artifacts.reduce((sum, artifact) => sum + Number(artifact.sizeBytes), 0),
         illustrationCount: model.assets.length,
       };
+      await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
+        model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
       const { data: completed, error: completeError } = await service.rpc("complete_render_job", {
         p_job_id: jobId,
         p_artifacts: artifacts,

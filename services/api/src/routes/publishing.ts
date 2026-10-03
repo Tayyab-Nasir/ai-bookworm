@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { renderImagesFingerprint, assertRenderImagesCurrent } from "../lib/render-images.js";
 import { AppError } from "../errors.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "../lib/authoring.js";
 import { requireEntitlement } from "../lib/entitlements.js";
@@ -112,12 +113,13 @@ function requestJson(job: Record<string, unknown>) {
 
 export function assertSourceJob(
   job: Record<string, unknown> | null,
-  expected: { action: "render" | "validate"; bookId: string; editionId: string; channel: string; editionUpdatedAt: string; bookModelSha256: string },
+  expected: { action: "render" | "validate"; bookId: string; editionId: string; channel: string; editionUpdatedAt: string; bookModelSha256: string; imageSha256?: string },
 ) {
   const request = job ? requestJson(job) : {};
   if (!job || job.status !== "succeeded" || job.book_id !== expected.bookId || job.edition_id !== expected.editionId
     || job.channel !== expected.channel || request.action !== expected.action
-    || request.editionUpdatedAt !== expected.editionUpdatedAt || request.bookModelSha256 !== expected.bookModelSha256) {
+    || request.editionUpdatedAt !== expected.editionUpdatedAt || request.bookModelSha256 !== expected.bookModelSha256
+    || (expected.imageSha256 !== undefined && request.imageSha256 !== expected.imageSha256)) {
     throw new AppError(422, `Run a fresh successful ${expected.action === "render" ? "render" : "preflight"} for these saved edition settings.`);
   }
 }
@@ -260,7 +262,9 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
     const model = withEditionLanguage(await assembleBookModel(user, book), edition.language);
     const modelSha256 = bookModelFingerprint(model);
-    const images = await loadRenderImages(service, book.workspace_id, model.assets.map((asset) => asset.id), config.cover.asset_id);
+    const images = await loadRenderImages(service, book.workspace_id, model.assets.map((asset) => asset.id), config.cover.asset_id,
+      model.chapters.flatMap((chapter) => chapter.nodes));
+    const imageSha256 = renderImagesFingerprint(images);
     const jobId = randomUUID();
     const { data: inserted, error: insertError } = await service.from("publishing_jobs").insert({
       id: jobId,
@@ -268,7 +272,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       edition_id: body.editionId,
       channel: body.channel,
       status: "running",
-      request_json: { action: "validate", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256 },
+      request_json: { action: "validate", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256 },
       idempotency_key: body.idempotencyKey,
       created_by: req.userId,
       started_at: new Date().toISOString(),
@@ -280,7 +284,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       if (!existing) throw new AppError(409, "That preflight request key is already in use.");
       const request = requestJson(existing);
       if (request.action !== "validate" || existing.edition_id !== body.editionId || existing.channel !== body.channel
-        || request.editionUpdatedAt !== edition.updated_at || request.bookModelSha256 !== modelSha256) {
+        || request.editionUpdatedAt !== edition.updated_at || request.bookModelSha256 !== modelSha256 || request.imageSha256 !== imageSha256) {
         throw new AppError(409, "That preflight request key belongs to different saved book content, edition settings, or channel.");
       }
       if (existing.status !== "succeeded") throw new AppError(409, `That preflight request is already ${existing.status}.`);
@@ -325,6 +329,8 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       }
 
       const result = { ...validation.data, requestedChannel: body.channel };
+      await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
+        model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
       const { data: completed, error: completeError } = await service.rpc("complete_preflight_job", {
         p_job_id: jobId,
         p_result: result,
@@ -380,12 +386,15 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
     const model = withEditionLanguage(await assembleBookModel(user, book), edition.language);
     const modelSha256 = bookModelFingerprint(model);
+    const images = await loadRenderImages(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
+      model.chapters.flatMap(chapter => chapter.nodes));
+    const imageSha256 = renderImagesFingerprint(images);
     const [{ data: renderJob, error: renderError }, { data: preflightJob, error: preflightError }] = await Promise.all([
       service.from("publishing_jobs").select("*").eq("id", body.renderJobId).maybeSingle(),
       service.from("publishing_jobs").select("*").eq("id", body.preflightJobId).maybeSingle(),
     ]);
     if (renderError || preflightError) throw new AppError(500, "Could not verify the source publishing jobs.");
-    const source = { bookId: body.bookId, editionId: body.editionId, editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256 };
+    const source = { bookId: body.bookId, editionId: body.editionId, editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256 };
     assertSourceJob(renderJob, { ...source, action: "render", channel: "render" });
     assertSourceJob(preflightJob, { ...source, action: "validate", channel: body.channel });
     const storedPreflight = storedPreflightResponseSchema.safeParse(preflightJob?.response_json);
@@ -398,6 +407,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     const requestJson = {
       action: "export_package", editionUpdatedAt: edition.updated_at,
       bookModelSha256: modelSha256,
+      imageSha256,
       sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
     };
     const { data: inserted, error: insertError } = await service.from("publishing_jobs").insert({
@@ -413,7 +423,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
         ? existing.request_json as Record<string, unknown> : {};
       if (existing.channel !== body.channel || existing.edition_id !== body.editionId
         || existingRequest.action !== "export_package" || existingRequest.editionUpdatedAt !== edition.updated_at
-        || existingRequest.bookModelSha256 !== modelSha256
+        || existingRequest.bookModelSha256 !== modelSha256 || existingRequest.imageSha256 !== imageSha256
         || existingRequest.sourceRenderJobId !== body.renderJobId
         || existingRequest.sourcePreflightJobId !== body.preflightJobId) {
         throw new AppError(409, "That publishing request key belongs to a different package request.");
@@ -470,6 +480,8 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       if (uploadError) throw new AppError(503, "The publishing package could not be stored.");
       uploadedPaths.push(storagePath);
 
+      await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
+        model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
       const { data: completed, error: completeError } = await service.rpc("complete_publishing_package_job", {
         p_job_id: jobId, p_artifact: artifact, p_rule_version: packaged.data.ruleVersion,
         p_source_render_job_id: body.renderJobId, p_source_preflight_job_id: body.preflightJobId,

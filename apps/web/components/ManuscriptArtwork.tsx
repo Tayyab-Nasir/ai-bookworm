@@ -7,27 +7,29 @@ import type { BookNode } from "@bookworm/book-model";
 import type { Asset } from "@bookworm/types";
 import { apiClient } from "./api";
 import ManuscriptTable from "./ManuscriptTable";
+import { isArtworkPlaceable } from "../lib/approved-artwork";
 
 const field = "mt-1 block min-h-11 w-full rounded-lg border border-black/20 bg-white px-3 py-2 text-sm text-black outline-none focus-visible:ring-2 focus-visible:ring-black";
 const action = "min-h-11 rounded-lg border border-black/20 px-3 py-2 text-sm text-black outline-none hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-black disabled:opacity-40";
 
-function usePrivateImage(assetId: string | null) {
+function usePrivateImage(assetId: string | null, versionNumber: number | null = null) {
   const [attempt, setAttempt] = useState(0);
-  const [state, setState] = useState<{ id: string | null; url: string | null; error: string | null }>({ id: null, url: null, error: null });
+  const key = assetId ? `${assetId}:${versionNumber ?? "current"}` : null;
+  const [state, setState] = useState<{ key: string | null; url: string | null; error: string | null }>({ key: null, url: null, error: null });
   useEffect(() => {
     let cancelled = false;
-    setState({ id: assetId, url: null, error: null });
-    if (assetId) void apiClient().getAssetDownloadUrl(assetId).then(({ url }) => {
-      if (!cancelled) setState({ id: assetId, url, error: null });
+    setState({ key, url: null, error: null });
+    if (assetId) void apiClient().getAssetDownloadUrl(assetId, versionNumber ?? undefined).then(({ url }) => {
+      if (!cancelled) setState({ key, url, error: null });
     }).catch((reason) => {
-      if (!cancelled) setState({ id: assetId, url: null, error: reason instanceof Error ? reason.message : "Artwork preview unavailable." });
+      if (!cancelled) setState({ key, url: null, error: reason instanceof Error ? reason.message : "Artwork preview unavailable." });
     });
     return () => { cancelled = true; };
-  }, [assetId, attempt]);
+  }, [assetId, attempt, key, versionNumber]);
   return {
-    url: state.id === assetId ? state.url : null,
-    error: state.id === assetId ? state.error : null,
-    fail: () => setState({ id: assetId, url: null, error: "The private preview expired or could not be loaded. Refresh to try again." }),
+    url: state.key === key ? state.url : null,
+    error: state.key === key ? state.error : null,
+    fail: () => setState({ key, url: null, error: "The private preview expired or could not be loaded. Refresh to try again." }),
     retry: () => setAttempt((value) => value + 1),
   };
 }
@@ -35,7 +37,8 @@ function usePrivateImage(assetId: string | null) {
 export function ManuscriptBlockView({ node, editor, selected, updateAttributes, deleteNode }: NodeViewProps) {
   const original = node.attrs.canonical as BookNode | undefined;
   const assetId = original?.type === "image" && typeof original.assetId === "string" ? original.assetId : null;
-  const preview = usePrivateImage(assetId);
+  const versionNumber = typeof original?.assetVersionNumber === "number" ? original.assetVersionNumber : null;
+  const preview = usePrivateImage(assetId, versionNumber);
   const editable = useEditorState({ editor, selector: ({ editor: current }) => current.isEditable });
   const [settings, setSettings] = useState(false);
   const id = useId();
@@ -100,7 +103,8 @@ export function ArtworkPicker({ workspaceId, onInsert, onClose }: { workspaceId:
   const [printPlacement, setPrintPlacement] = useState<"inline" | "fullBleed">("inline");
   const [focalX, setFocalX] = useState(50);
   const [focalY, setFocalY] = useState(50);
-  const preview = usePrivateImage(selected || null);
+  const selectedAsset = assets.find((asset) => asset.id === selected);
+  const preview = usePrivateImage(selected || null, selectedAsset?.current_version_number ?? null);
   const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const titleId = useId();
@@ -109,7 +113,7 @@ export function ArtworkPicker({ workspaceId, onInsert, onClose }: { workspaceId:
     let cancelled = false;
     setLoading(true); setError(null); setSelected("");
     void apiClient().listAssets(workspaceId).then(({ assets: rows }) => {
-      if (!cancelled) setAssets(rows.filter((asset) => !asset.deleted_at && asset.checksum !== "pending" && !["archived", "rejected"].includes(asset.status) && ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(asset.mime_type)));
+      if (!cancelled) setAssets(rows.filter(isArtworkPlaceable));
     }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not load artwork."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -121,10 +125,12 @@ export function ArtworkPicker({ workspaceId, onInsert, onClose }: { workspaceId:
     {loading ? <p className="py-10 text-sm" role="status">Loading workspace artwork…</p> : error ? <div role="alert" className="py-6"><p>{error}</p><button type="button" className={`${action} mt-3`} onClick={() => setRefresh((v) => v + 1)}>Retry artwork list</button></div> : !assets.length ? <div className="my-6 rounded-xl border border-dashed border-black/25 p-6 text-sm leading-6">No usable images in this workspace yet. Save your chapter before opening Assets to upload or generate an illustration.<button type="button" className={`${action} mt-3 block`} onClick={() => setRefresh((v) => v + 1)}>Refresh library</button></div> : <form className="mt-6 grid gap-6 sm:grid-cols-2" onSubmit={(event) => {
       event.preventDefault();
       if (!selected || !preview.url || loadedUrl !== preview.url || (!decorative && !alt.trim())) return;
-      onInsert({ id: crypto.randomUUID(), type: "image", assetId: selected, altText: decorative ? "" : alt.trim(), caption: caption.trim(), attributes: { widthPercent: width, decorative, printPlacement, printFocalX: focalX, printFocalY: focalY } });
+      if (!selectedAsset?.current_version_number) return;
+      onInsert({ id: crypto.randomUUID(), type: "image", assetId: selected, assetVersionNumber: selectedAsset.current_version_number,
+        altText: decorative ? "" : alt.trim(), caption: caption.trim(), attributes: { widthPercent: width, decorative, printPlacement, printFocalX: focalX, printFocalY: focalY } });
     }}>
       <div className="space-y-4">
-        <label className="block text-xs text-black/70">Workspace image<select autoFocus required className={field} value={selected} onChange={(event) => { setSelected(event.target.value); setLoadedUrl(null); }}><option value="">Choose artwork…</option>{assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
+        <label className="block text-xs text-black/70">Workspace image<select aria-label="Workspace image" autoFocus required className={field} value={selected} onChange={(event) => { setSelected(event.target.value); setLoadedUrl(null); }}><option value="">Choose artwork…</option>{assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
         <label className="block text-xs text-black/70">Image description (alt text)<textarea required={!decorative} disabled={decorative} value={alt} onChange={(event) => setAlt(event.target.value)} maxLength={1000} rows={3} className={field} placeholder="Describe what a reader should know about this picture." /></label>
         <label className="flex min-h-11 items-center gap-2 text-xs text-black/70"><input type="checkbox" checked={decorative} onChange={(event) => setDecorative(event.target.checked)} />This picture is purely decorative</label>
         <label className="block text-xs text-black/70">Caption (optional)<input className={field} value={caption} onChange={(event) => setCaption(event.target.value)} maxLength={2000} /></label>

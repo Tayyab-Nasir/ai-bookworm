@@ -55,7 +55,6 @@ const patchSchema = z
   .object({
     name: z.string().min(1).max(256).optional(),
     folderId: z.string().uuid().nullable().optional(),
-    status: z.enum(["draft", "in_review", "approved", "rejected", "archived"]).optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "nothing to update" });
 
@@ -508,7 +507,6 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
         mime_type: mimeType,
         size_bytes: sizeBytes,
         checksum: "pending", // set by /confirm
-        status: "draft",
         created_by: req.userId,
       })
       .select("id")
@@ -537,14 +535,13 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
         checksum: "pending",
         mime_type: mimeType,
         size_bytes: sizeBytes,
-        scan_status: "pending",
         created_by: req.userId,
       });
       if (versionError?.code === "23505" && requestId) {
         ({ data: version, error: versionReadError } = await readVersion());
         if (versionReadError) throw new AppError(503, "Upload version recovery is temporarily unavailable");
       } else if (versionError) {
-        if (!requestId && created) await sb.from("assets").delete().eq("id", assetId);
+        if (!requestId && created) await app.supabaseFactory().from("assets").delete().eq("id", assetId);
         throw new AppError(503, "Upload version allocation failed; retry the same request.");
       } else version = { asset_id: assetId, version_number: 1, storage_path: path, checksum: "pending",
         mime_type: mimeType, size_bytes: sizeBytes, scan_status: "pending", created_by: req.userId };
@@ -604,7 +601,17 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     if (q.status) query = query.eq("status", q.status);
     const { data, error } = await query;
     if (error) throw new AppError(500, error.message);
-    return { assets: data };
+    const rows = data ?? [];
+    if (!rows.length) return { assets: rows };
+    const { data: versions, error: versionsError } = await sb.from("asset_versions")
+      .select("asset_id,version_number,storage_path,scan_status")
+      .in("asset_id", rows.map((asset) => asset.id));
+    if (versionsError || !versions) throw new AppError(503, "Asset scan status is temporarily unavailable.");
+    const current = new Map(versions.map((version) => [`${version.asset_id}:${version.storage_path}`, version]));
+    return { assets: rows.map((asset) => {
+      const version = current.get(`${asset.id}:${asset.storage_path}`);
+      return { ...asset, current_version_number: version?.version_number ?? null, current_scan_status: version?.scan_status ?? null };
+    }) };
   });
 
   // New immutable version: returns a signed upload URL for v{n+1}; the row
@@ -642,7 +649,6 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
       checksum: "pending",
       mime_type: parsed.data.mimeType,
       size_bytes: parsed.data.sizeBytes,
-      scan_status: "pending",
       created_by: req.userId,
     });
     if (error) throw new AppError(422, error.message);
@@ -696,6 +702,11 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
 
   app.get("/assets/:assetId/download-url", async (req, reply) => {
     const { assetId } = req.params as { assetId: string };
+    const query = req.query as { versionNumber?: string };
+    const versionNumber = query.versionNumber === undefined ? null : Number(query.versionNumber);
+    if (versionNumber !== null && (!Number.isSafeInteger(versionNumber) || versionNumber < 1)) {
+      throw new AppError(422, "invalid asset version");
+    }
     const sb = app.supabaseFactory(req.userToken);
     const { data: asset, error } = await sb.from("assets").select("id,workspace_id,storage_path,checksum,deleted_at")
       .eq("id", assetId).maybeSingle();
@@ -704,18 +715,19 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     await requireWorkspaceMember(sb, asset.workspace_id, req.userId);
     if (!asset.checksum || asset.checksum === "pending") throw new AppError(409, "Asset upload is not complete.");
     const { data: version, error: versionError } = await sb.from("asset_versions")
-      .select("scan_status").eq("asset_id", asset.id).eq("storage_path", asset.storage_path).maybeSingle();
+      .select("version_number,storage_path,checksum,scan_status").eq("asset_id", asset.id)
+      .eq(versionNumber === null ? "storage_path" : "version_number", versionNumber === null ? asset.storage_path : versionNumber).maybeSingle();
     if (versionError) throw new AppError(500, "Could not verify the asset scan status.");
-    if (!version || !["clean", "trusted_generated"].includes(String(version.scan_status))) {
+    if (!version || version.checksum === "pending" || !["clean", "trusted_generated"].includes(String(version.scan_status))) {
       throw new AppError(409, "Asset remains quarantined and cannot be downloaded.");
     }
-    const { data: signed, error: signError } = await sb.storage.from(BUCKET).createSignedUrl(asset.storage_path, 300);
+    const { data: signed, error: signError } = await sb.storage.from(BUCKET).createSignedUrl(version.storage_path, 300);
     if (signError || !signed?.signedUrl) throw new AppError(503, "A private download link could not be created.");
     reply.header("cache-control", "private, no-store");
     return { url: signed.signedUrl, expiresIn: 300 };
   });
 
-  // Rename/move/status change on the asset row.
+  // Asset review state is changed only by its server-side workflow.
   app.patch("/assets/:assetId", async (req) => {
     const { assetId } = req.params as { assetId: string };
     const parsed = patchSchema.safeParse(req.body);
@@ -728,13 +740,12 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     const update: Record<string, unknown> = {};
     if (parsed.data.name !== undefined) update.name = parsed.data.name;
     if (parsed.data.folderId !== undefined) update.folder_id = parsed.data.folderId;
-    if (parsed.data.status !== undefined) update.status = parsed.data.status;
     const { data, error } = await sb.from("assets").update(update).eq("id", assetId).select().single();
     if (error) throw new AppError(422, error.message);
     await logActivity(sb, {
       workspaceId: asset.workspace_id,
       actorId: req.userId,
-      eventType: parsed.data.status ? "asset_status_changed" : parsed.data.folderId !== undefined ? "asset_moved" : "asset_renamed",
+      eventType: parsed.data.folderId !== undefined ? "asset_moved" : "asset_renamed",
       entityType: "asset",
       entityId: assetId,
       payload: update,
@@ -749,7 +760,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     const asset = await loadAsset(sb, assetId);
     await requireWorkspaceEditor(sb, asset.workspace_id, req.userId);
     if (asset.deleted_at) throw new AppError(409, "asset already deleted");
-    const { error } = await sb.from("assets").update({ deleted_at: new Date().toISOString(), status: "archived" }).eq("id", assetId);
+    const { error } = await app.supabaseFactory().from("assets").update({ deleted_at: new Date().toISOString(), status: "archived" }).eq("id", assetId);
     if (error) throw new AppError(500, error.message);
     await logActivity(sb, { workspaceId: asset.workspace_id, actorId: req.userId, eventType: "asset_deleted", entityType: "asset", entityId: assetId });
     return { assetId, deleted: true };
@@ -761,7 +772,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     const asset = await loadAsset(sb, assetId);
     await requireWorkspaceEditor(sb, asset.workspace_id, req.userId);
     if (!asset.deleted_at) throw new AppError(409, "asset is not deleted");
-    const { error } = await sb.from("assets").update({ deleted_at: null, status: "draft" }).eq("id", assetId);
+    const { error } = await app.supabaseFactory().from("assets").update({ deleted_at: null, status: "draft" }).eq("id", assetId);
     if (error) throw new AppError(500, error.message);
     await logActivity(sb, { workspaceId: asset.workspace_id, actorId: req.userId, eventType: "asset_restored", entityType: "asset", entityId: assetId });
     return { assetId, restored: true };

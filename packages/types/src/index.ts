@@ -150,6 +150,9 @@ export interface Asset extends Timestamps {
   size_bytes: number;
   checksum: string;
   status: AssetStatus;
+  requires_approval?: boolean;
+  current_version_number?: number | null;
+  current_scan_status?: string | null;
   deleted_at?: string | null;
   created_by: string;
 }
@@ -177,6 +180,12 @@ export interface Approval extends Timestamps {
   reviewer_id: string | null;
   status: ApprovalStatus;
   comment: string | null;
+  entity_version_number?: number | null;
+  request_key?: string | null;
+  resolved_by?: string | null;
+  resolved_at?: string | null;
+  resolution_note?: string | null;
+  superseded_at?: string | null;
 }
 
 export interface AiJob {

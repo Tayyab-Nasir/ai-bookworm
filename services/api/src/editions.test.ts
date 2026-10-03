@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 process.env.SUPABASE_URL ??= "http://localhost:54321";
 process.env.SUPABASE_ANON_KEY ??= "test-anon";
@@ -10,6 +11,7 @@ process.env.NODE_ENV = "test";
 process.env.LOG_LEVEL = "error";
 
 const { buildApp } = await import("./app.js");
+const { loadRenderImages } = await import("./routes/editions.js");
 type Row = Record<string, unknown>;
 interface Store { tables: Record<string, Row[]> }
 
@@ -18,12 +20,13 @@ function fakeSupabase(store: Store) {
     auth: { getUser: async (token: string) => token === "good"
       ? { data: { user: { id: USER } }, error: null }
       : { data: { user: null }, error: { message: "bad" } } },
+    storage: { from: () => ({ download: async () => ({ data: new Blob(["approved cover bytes"]), error: null }) }) },
     from: (table: string) => {
       const rows = (store.tables[table] ??= []);
-      const filters: [string, unknown][] = [];
+      const filters: ((row: Row) => boolean)[] = [];
       let insert: Row | null = null;
       let update: Row | null = null;
-      const selected = () => rows.filter((row) => filters.every(([key, value]) => row[key] === value));
+      const selected = () => rows.filter((row) => filters.every((filter) => filter(row)));
       const mutate = () => {
         if (insert) {
           const row = { id: insert.id ?? crypto.randomUUID(), created_at: new Date().toISOString(), updated_at: new Date().toISOString(), ...insert };
@@ -35,8 +38,10 @@ function fakeSupabase(store: Store) {
         return selected();
       };
       const builder: Record<string, unknown> = {};
-      for (const method of ["select", "order", "limit", "is", "in"]) builder[method] = () => builder;
-      builder.eq = (key: string, value: unknown) => { filters.push([key, value]); return builder; };
+      for (const method of ["select", "order", "limit"]) builder[method] = () => builder;
+      builder.eq = (key: string, value: unknown) => { filters.push((row) => row[key] === value); return builder; };
+      builder.is = (key: string, value: unknown) => { filters.push((row) => row[key] === value); return builder; };
+      builder.in = (key: string, values: unknown[]) => { filters.push((row) => values.includes(row[key])); return builder; };
       builder.insert = (row: Row) => { insert = row; return builder; };
       builder.update = (row: Row) => { update = row; return builder; };
       builder.single = async () => ({ data: mutate()[0] ?? null, error: null });
@@ -102,6 +107,78 @@ test("edition input rejects unsafe QR destinations and unconfirmed cover assets"
   assert.equal(pending.statusCode, 422);
   assert.equal(store.tables.editions.length, 0);
   await app.close();
+});
+
+test("edition config requires approval of the exact current cover version", async () => {
+  const store = baseStore();
+  const bytes = Buffer.from("approved cover bytes");
+  const storagePath = `workspaces/${WORKSPACE}/assets/${COVER}/v3/cover.png`;
+  Object.assign(store.tables.assets[0]!, {
+    requires_approval: true,
+    storage_path: storagePath,
+    size_bytes: bytes.length,
+    checksum: createHash("sha256").update(bytes).digest("hex"),
+  });
+  store.tables.asset_versions = [{
+    asset_id: COVER,
+    version_number: 3,
+    storage_path: storagePath,
+    checksum: store.tables.assets[0]!.checksum,
+    mime_type: "image/png",
+    size_bytes: bytes.length,
+    scan_status: "clean",
+  }];
+  store.tables.approvals = [];
+  const app = await buildApp(() => fakeSupabase(store));
+  const payload = { config: { kind: "ebook", cover: { asset_id: COVER } } };
+  try {
+    const unreviewed = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload });
+    assert.equal(unreviewed.statusCode, 422);
+
+    store.tables.approvals.push({
+      id: "c0000000-0000-4000-8000-000000000006", entity_type: "asset", entity_id: COVER,
+      entity_version_number: 2, status: "approved", superseded_at: null,
+    });
+    const stale = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload });
+    assert.equal(stale.statusCode, 422);
+
+    store.tables.approvals.push({
+      id: "c0000000-0000-4000-8000-000000000007", entity_type: "asset", entity_id: COVER,
+      entity_version_number: 3, status: "approved", superseded_at: null,
+    });
+    const approved = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload });
+    assert.equal(approved.statusCode, 201, approved.body);
+  } finally {
+    await app.close();
+  }
+});
+
+test("render rejects review-required cover art until its exact current version is approved", async () => {
+  const store = baseStore();
+  const bytes = Buffer.from("approved cover bytes");
+  const storagePath = `workspaces/${WORKSPACE}/assets/${COVER}/v3/cover.png`;
+  Object.assign(store.tables.assets[0]!, {
+    requires_approval: true,
+    storage_path: storagePath,
+    size_bytes: bytes.length,
+    checksum: createHash("sha256").update(bytes).digest("hex"),
+  });
+  store.tables.asset_versions = [{
+    asset_id: COVER,
+    version_number: 3,
+    storage_path: storagePath,
+    checksum: store.tables.assets[0]!.checksum,
+    mime_type: "image/png",
+    size_bytes: bytes.length,
+    scan_status: "clean",
+  }];
+  store.tables.approvals = [];
+  const service = fakeSupabase(store);
+
+  await assert.rejects(
+    loadRenderImages(service, WORKSPACE, [], COVER),
+    /approved.*current version/i,
+  );
 });
 
 test("viewer cannot create an edition", async () => {

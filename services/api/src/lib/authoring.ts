@@ -61,17 +61,43 @@ export function rpcError(error: { code?: string; message?: string; details?: str
 export async function checkAssetReferences(sb: SupabaseClient, nodes: BookNode[], workspaceId: string) {
   const ids = [...new Set(nodes.flatMap((n) => typeof n.assetId === "string" ? [n.assetId] : []))];
   if (!ids.length) return;
-  const { data, error } = await sb.from("assets").select("id,checksum,storage_path").eq("workspace_id", workspaceId).is("deleted_at", null).in("id", ids);
-  if (error || !data || data.length !== ids.length || data.some((asset) => asset.checksum === "pending")) {
+  const { data, error } = await sb.from("assets")
+    .select("id,checksum,storage_path,mime_type,status,requires_approval")
+    .eq("workspace_id", workspaceId).is("deleted_at", null).in("id", ids);
+  if (error || !data || data.length !== ids.length || data.some((asset) => asset.checksum === "pending" || ["archived", "rejected"].includes(asset.status))) {
     throw new AppError(422, "A referenced image is missing, unconfirmed, or belongs to another workspace.");
   }
   const { data: versions, error: versionError } = await sb.from("asset_versions")
-    .select("asset_id,storage_path,scan_status").in("asset_id", ids);
-  const safeCurrent = new Set((versions ?? [])
+    .select("asset_id,version_number,storage_path,checksum,scan_status").in("asset_id", ids);
+  if (versionError || !versions) throw new AppError(503, "A referenced image version could not be verified.");
+  const currentByAsset = new Map(versions
     .filter((version) => ["clean", "trusted_generated"].includes(String(version.scan_status)))
-    .map((version) => `${version.asset_id}:${version.storage_path}`));
-  if (versionError || data.some((asset) => !safeCurrent.has(`${asset.id}:${asset.storage_path}`))) {
+    .map((version) => [`${version.asset_id}:${version.storage_path}`, version]));
+  const currentForAsset = new Map(data.map((asset) => [asset.id, currentByAsset.get(`${asset.id}:${asset.storage_path}`)]));
+  if (data.some((asset) => {
+    const current = currentForAsset.get(asset.id);
+    return !current || current.checksum !== asset.checksum;
+  })) {
     throw new AppError(422, "A referenced image is quarantined and cannot be attached to a manuscript.");
+  }
+
+  const approvalRequired = data.filter((asset) => asset.requires_approval === true);
+  if (!approvalRequired.length) return;
+  const requiredIds = approvalRequired.map((asset) => asset.id);
+  const { data: approvals, error: approvalError } = await sb.from("approvals")
+    .select("entity_id,entity_version_number")
+    .eq("workspace_id", workspaceId).eq("entity_type", "asset").eq("status", "approved").is("superseded_at", null).in("entity_id", requiredIds);
+  if (approvalError || !approvals) throw new AppError(503, "Illustration approvals could not be verified.");
+  const approvedVersions = new Set(approvals.map((approval) => `${approval.entity_id}:${approval.entity_version_number}`));
+  for (const node of nodes) {
+    if (typeof node.assetId !== "string") continue;
+    const asset = data.find((candidate) => candidate.id === node.assetId);
+    if (!asset?.requires_approval) continue;
+    const current = currentForAsset.get(asset.id);
+    if (!Number.isSafeInteger(node.assetVersionNumber) || node.assetVersionNumber !== current?.version_number
+      || asset.status !== "approved" || !approvedVersions.has(`${asset.id}:${node.assetVersionNumber}`)) {
+      throw new AppError(422, "Illustration must be approved for its current version before it can be placed.");
+    }
   }
 }
 
