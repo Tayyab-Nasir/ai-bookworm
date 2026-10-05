@@ -102,6 +102,35 @@ export interface CreateAiJobRequest {
   contextPolicy?: { includeBookBible?: boolean; includeStyleGuide?: boolean; includeRelatedContext?: boolean; semanticTopK?: number; maxTokens?: number };
 }
 
+export interface AiReviewModelChoice {
+  id: string;
+  label: string;
+  model: string;
+  priceVersion: string;
+  policyVersion: string;
+}
+
+export interface AiReviewUsageQuote {
+  requestId: string;
+  status: "ready";
+  agentType: CreateAiJobRequest["agentType"];
+  model: string;
+  countedInputTokens: number;
+  maxOutputTokens: number;
+  reservedCredits: number;
+  expiresAt: string;
+}
+
+export interface CreateAiReviewQuoteRequest {
+  modelId: string;
+  agentType: CreateAiJobRequest["agentType"];
+  chapterIds: string[];
+  userInstruction?: string;
+  idempotencyKey: string;
+  contextPolicy: NonNullable<CreateAiJobRequest["contextPolicy"]>;
+  allowProviderTokenCounting: true;
+}
+
 export interface AiJobReview {
   id: string;
   book_id: string | null;
@@ -150,6 +179,25 @@ export interface GeneratedBookMetadataCandidate {
 export interface GeneratedBookMetadataResponse {
   job: AiJob;
   candidate: GeneratedBookMetadataCandidate;
+}
+
+export interface CreateMetadataQuoteRequest extends GenerateBookMetadataRequest {
+  modelId: string;
+  allowProviderTokenCounting: true;
+}
+export interface MetadataUsageQuote {
+  id: string;
+  model: string;
+  reservedCredits: number;
+  expiresAt: string;
+  status: "ready" | "accepted" | "expired";
+  acceptedJobId: string | null;
+}
+export interface MetadataQuoteStatus {
+  request: { id: string; status: "counting" | "ready" | "failed"; createdAt: string; errorCode?: string };
+  quote: MetadataUsageQuote | null;
+  job?: { id: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled"; errorCode?: string };
+  candidate?: GeneratedBookMetadataCandidate | null;
 }
 
 export interface StoryBlueprintStory {
@@ -247,36 +295,21 @@ export interface StoryBlueprintProposalResult {
   reviewStatus?: "pending" | "ready" | "requires_review" | "failed";
 }
 
-export interface GenerateImageRequest {
-  referenceAssetIds?: string[];
-  workspaceId: string;
-  bookId?: string | null;
-  folderId?: string | null;
-  kind: "illustration" | "front_cover";
-  name: string;
-  prompt: string;
-  size?: "1024x1024" | "1024x1536" | "1536x1024";
-  quality?: "low" | "medium" | "high";
-  idempotencyKey: string;
-}
-
 export interface ImageGenerationJob {
   id: string;
   bookId: string | null;
   kind: "illustration" | "front_cover";
   status: string;
+  billingMode?: "operational" | "quoted";
   createdAt: string;
   completedAt: string | null;
 }
 
-export interface GeneratedAssetResult {
-  jobId: string;
-  asset: Asset;
-  preview: { url: string; expiresIn: number };
-  provider: string;
-  model: string;
-  requestId?: string | null;
-}
+export interface ImageQuoteModel { id: string; label: string; model: string; size: "1024x1024" | "1024x1536" | "1536x1024";
+  quality: "low" | "medium" | "high"; maxReferenceImages: number; maxPromptBytes: number; priceVersion: string; policyVersion: string }
+export interface ImageQuote { id: string; status: "ready" | "expired"; model: string; size: string; quality: string; kind: "illustration" | "cover";
+  reservedCredits: string; expiresAt: string; pricingBasis: "maximum_token_budget"; purchaseAvailable: false }
+export interface ImageQuoteJob { id: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled"; assetId: string | null }
 
 export interface EditionCoverConfig {
   asset_id?: string | null;
@@ -762,7 +795,6 @@ export function createClient(opts: ClientOptions) {
       if (filter?.status) qs.set("status", filter.status);
       return call<{ assets: Asset[] }>("GET", `/v1/assets?${qs}`);
     },
-    generateImage: (body: GenerateImageRequest) => call<GeneratedAssetResult>("POST", "/v1/assets/generate", body),
     getAssetAccess: (workspaceId: string) => call<{ canEdit: boolean }>("GET", `/v1/assets/access?${new URLSearchParams({ workspaceId })}`),
     listImageGenerationJobs: (workspaceId: string) => call<{ jobs: ImageGenerationJob[] }>("GET", `/v1/assets/generation-jobs?${new URLSearchParams({ workspaceId })}`),
     finalizeImageJob: (jobId: string) => call<{ jobId: string; status: string }>("POST", `/v1/assets/generation-jobs/${encodeURIComponent(jobId)}/finalize`),
@@ -809,6 +841,17 @@ export function createClient(opts: ClientOptions) {
         "GET", `/v1/workspaces/${workspaceId}/members`),
     listInvitations: (workspaceId: string) =>
       call<{ invitations: WorkspaceInvitation[] }>("GET", `/v1/workspaces/${workspaceId}/invitations`),
+    listImageQuoteModels: (workspaceId: string) => call<{ catalogVersion: string; pricingBasis: "maximum_token_budget"; purchaseAvailable: boolean; models: ImageQuoteModel[] }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-models`),
+    recoverImageQuote: (workspaceId: string, idempotencyKey: string) =>
+      call<{ quoteId: string; purchaseAvailable: false }>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/recover`, { idempotencyKey }),
+    createImageQuote: (workspaceId: string, body: { modelId: string; idempotencyKey: string; bookId?: string; kind: "illustration" | "cover"; prompt: string; referenceAssetIds: string[]; consentToQuoteStorage: true }) =>
+      call<{ quoteId: string; purchaseAvailable: false }>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes`, body),
+    getImageQuote: (workspaceId: string, quoteId: string) =>
+      call<{ quote: ImageQuote }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/${encodeURIComponent(quoteId)}`),
+    acceptImageQuote: (workspaceId: string, quoteId: string, expectedCredits: string) =>
+      call<{ quoteId: string; jobId: string; status: string }>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/${encodeURIComponent(quoteId)}/accept`, { expectedCredits, consentToGenerate: true }),
+    getImageQuoteJob: (workspaceId: string, quoteId: string) =>
+      call<{ quoteId: string; accepted: boolean; job: ImageQuoteJob | null }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/${encodeURIComponent(quoteId)}/job`),
     inviteMember: (workspaceId: string, body: { email: string; role?: Exclude<WorkspaceMember["role"], "owner"> }) =>
       call<{ invitation: WorkspaceInvitation; acceptanceUrl: string }>("POST", `/v1/workspaces/${workspaceId}/invitations`, body),
     revokeInvitation: (workspaceId: string, invitationId: string) =>
@@ -818,8 +861,22 @@ export function createClient(opts: ClientOptions) {
     updateMemberRole: (workspaceId: string, userId: string, role: WorkspaceMember["role"]) =>
       call<WorkspaceMember>("PATCH", `/v1/workspaces/${workspaceId}/members/${userId}`, { role }),
     createAiJob: (body: CreateAiJobRequest) => call<AiJobWithSuggestions>("POST", "/v1/ai/jobs", body),
-    generateBookMetadata: (bookId: string, body: GenerateBookMetadataRequest) =>
-      call<GeneratedBookMetadataResponse>("POST", `/v1/books/${encodeURIComponent(bookId)}/metadata/generate`, body),
+    listAiReviewModels: (bookId: string) => call<{ catalogVersion: string; models: AiReviewModelChoice[] }>("GET", `/v1/books/${encodeURIComponent(bookId)}/ai-review/models`),
+    createAiReviewQuote: (bookId: string, body: CreateAiReviewQuoteRequest) =>
+      call<{ request: { id: string; status: "counting" } | null; quote: AiReviewUsageQuote | null }>("POST", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes`, body),
+    acceptAiReviewQuote: (bookId: string, requestId: string, expectedCredits: number) =>
+      call<{ jobId: string; status: "queued" | "running" | "succeeded" | "failed" }>("POST", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes/${encodeURIComponent(requestId)}/accept`, { expectedCredits }),
+    getAiReviewQuote: (bookId: string, requestId: string) =>
+      call<{ quote: AiReviewUsageQuote | { requestId: string; status: "counting" | "failed"; errorCode?: string }; job?: { id: string; status: string } }>("GET", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes/${encodeURIComponent(requestId)}`),
+    listMetadataModels: (bookId: string) => call<{ catalogVersion: string; models: AiReviewModelChoice[] }>("GET", `/v1/books/${encodeURIComponent(bookId)}/metadata/models`),
+    createMetadataQuote: (bookId: string, body: CreateMetadataQuoteRequest) =>
+      call<MetadataQuoteStatus>("POST", `/v1/books/${encodeURIComponent(bookId)}/metadata/quotes`, body),
+    recoverMetadataQuote: (bookId: string, idempotencyKey: string) =>
+      call<MetadataQuoteStatus>("POST", `/v1/books/${encodeURIComponent(bookId)}/metadata/quotes/recover`, { idempotencyKey }),
+    getMetadataQuote: (bookId: string, requestId: string) =>
+      call<MetadataQuoteStatus>("GET", `/v1/books/${encodeURIComponent(bookId)}/metadata/quote-requests/${encodeURIComponent(requestId)}`),
+    acceptMetadataQuote: (bookId: string, requestId: string, expectedCredits: number) =>
+      call<{ jobId: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" }>("POST", `/v1/books/${encodeURIComponent(bookId)}/metadata/quotes/${encodeURIComponent(requestId)}/accept`, { expectedCredits }),
     listAiJobs: (bookId: string, limit = 8) =>
       call<{ jobs: AiJobReview[] }>("GET", `/v1/ai/jobs?bookId=${encodeURIComponent(bookId)}&limit=${limit}`),
     getAiJob: (jobId: string) => call<AiJobWithSuggestions>("GET", `/v1/ai/jobs/${jobId}`),

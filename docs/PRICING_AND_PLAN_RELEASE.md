@@ -28,14 +28,18 @@ They are not approved commercial offers.
 
 ## Credit accounting direction
 
-### Metadata quote preparation status
+### Metadata quote and generation status
 
-A private metadata quote calculator now binds the counted, selected source
-snapshot to the server-approved text catalog and conservative cached/uncached
-token bounds. Six synthetic contract tests and API TypeScript pass. This helper
-is not wired to author-facing quote acceptance, funded reservation, worker
-dispatch or settlement; current metadata generation still uses its operational
-one-credit route. See [Metadata token quotes](METADATA_TOKEN_QUOTES.md).
+Local source now connects metadata token counting to explicit author consent,
+server-owned expiring price quotes, exact-credit acceptance, a transactional
+hold, source-revalidated one-way worker dispatch, measured usage settlement and
+read-only recovery. The author UI reviews the returned candidate and requires
+a separate Save action. The former operational one-credit endpoint returns
+410 by default; only legacy regression tests opt in to its compatibility code.
+No customer-facing price is configured or commercially approved, so no
+metadata model is purchasable. The quote/worker migrations remain unapplied to
+hosted Supabase and OpenAI credentials/provider acceptance are outstanding.
+See [Metadata token quotes](METADATA_TOKEN_QUOTES.md).
 
 ### Exact request preparation for remaining text agents
 
@@ -43,9 +47,13 @@ Private quote/hash endpoints now support writer, proofreader, copyeditor,
 consistency, metadata and Book Bible, sharing the exact gateway payload with
 dispatch. Supplied hashes are checked before receipt reservation, and the
 checked prompt is dispatched without rebuilding it. Book Bible's effective
-6,000-token cap is returned explicitly. These endpoints do not grant funds or
-convert operational credits to retail token settlement. See
-[Text quote preparation](TEXT_QUOTE_PREPARATION.md) for the remaining API/UI gates.
+6,000-token cap is returned explicitly. These preparation endpoints do not
+grant funds by themselves; separate author flows implement paid quotes for
+metadata, Story Blueprint, translation, Book Bible and manuscript review
+(writer/proofreader/copyeditor/consistency). Their legacy unquoted dispatch
+paths are retired by default. Local implementation and disposable verification
+do not approve a catalog or prove live provider reconciliation.
+See [Text quote preparation](TEXT_QUOTE_PREPARATION.md) for the remaining gates.
 
 ### Cross-service receipt compatibility
 
@@ -140,12 +148,13 @@ the saved quote. Speech estimates remain non-billable until reconciled.
 All calculator test rates are synthetic, not OpenAI prices or retail offers.
 
 Local migration `20260919050000_metadata_credit_reservations.sql` adds a
-database-side hold for the existing one-unit metadata operation before provider
-execution. It counts pending metadata requests across organization workspaces.
-This is not a versioned token-to-customer-credit policy and is not installed live
-by the build. Other text-generation paths sharing ai_credits must participate in
-the same reservation model before paid launch; do not interpret this component
-check as full billing readiness.
+database-side hold for the historical one-unit metadata operation. That direct
+generation endpoint is now closed by default; token-priced metadata instead
+uses the later quote/accept/settlement migrations, which remain source-only.
+The older one-unit reservation is not a retail token-to-customer-credit policy.
+Other text-generation paths sharing `ai_credits` must participate in approved
+reservation and settlement controls before paid launch; do not interpret a
+single workflow's local checks as full billing readiness.
 
 Follow-up local migration `20260919060000_shared_text_credit_reservations.sql`
 extends that hold across writer, proofreader, copyeditor, consistency, bookbible
@@ -154,14 +163,18 @@ reservations. Native multi-connection acceptance remains required, and this
 still uses operational units rather than an approved retail token conversion.
 
 The existing `ai_credits`, `image_credits`, `audio_credits`, and
-`translation_credits` meters are operational units, not provider tokens. Audio
-and translation each reserve one credit per started 1,000 source characters in
-their version-pinned job. Before paid launch,
-define a versioned conversion table from
-provider usage and model price snapshots into customer credits. Reserve a
-conservative maximum before dispatch, reconcile against the provider receipt
-after success, and release unused credit. Never rely on a front-end balance
-check as the spending boundary.
+`translation_credits` meters are operational units, not provider tokens.
+Metadata, editor AI review, Book Bible, Story Blueprint and translation flows convert a saved,
+server-approved provider/model price and customer policy snapshot to an exact
+maximum credit reservation, then reconcile measured provider usage. Neither
+commercial catalog nor plan is approved or active, so no offer is purchasable.
+Audio still reserves operational credits per started 1,000 source characters
+in version-pinned jobs; its retail token/usage migration remains open.
+Before launch, approve and configure each versioned price/policy
+catalog, validate live measured receipts and margins, and migrate the remaining
+meters. Reserve a conservative maximum before dispatch, reconcile against the
+provider receipt after success, and release unused credit. Never rely on a
+front-end balance check as the spending boundary.
 
 Provider pricing changes over time. Store the model, price version, measured
 usage, provider cost estimate, customer debit, job ID, and idempotency key with

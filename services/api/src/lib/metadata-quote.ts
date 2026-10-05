@@ -87,6 +87,35 @@ function catalog(raw: string | undefined, now: string) {
   catch { throw new AppError(503, "Usage-priced metadata is not configured for purchase.", undefined, "metadata_catalog_unavailable"); }
 }
 
+export function metadataQuoteCatalog(raw: string | undefined, now: string) {
+  return catalog(raw, now);
+}
+
+export function buildMetadataGenerationRequest(input: {
+  rawCatalog: string | undefined; modelId: string; scope: z.infer<typeof scopeSchema>;
+  context: unknown; maxTokens: number; allowProviderTokenCounting: boolean;
+}, now = new Date().toISOString()) {
+  if (input.allowProviderTokenCounting !== true) throw new AppError(422, "Consent to sending selected metadata context for token counting is required.");
+  const selectedCatalog = catalog(input.rawCatalog, now);
+  const entry = selectedCatalog.entries.find((item) => item.id === input.modelId);
+  if (!entry) throw new AppError(422, "Choose an available metadata model.");
+  const scope = scopeSchema.safeParse(input.scope);
+  const maxTokens = z.number().int().min(4_096).max(16_000).safeParse(input.maxTokens);
+  if (!scope.success || !maxTokens.success) throw new AppError(422, "Invalid metadata quote scope or context budget.");
+  const context = snapshot(input.context);
+  const generationRequest = {
+    jobId: scope.data.jobId, workspaceId: scope.data.workspaceId, bookId: scope.data.bookId,
+    agentType: "metadata" as const, model: entry.price.model, maxOutputTokens: entry.maxOutputTokens,
+    contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: false,
+      semanticTopK: 5, maxTokens: maxTokens.data },
+    input: context,
+  };
+  const sourceSha256 = createHash("sha256").update(canonicalJson({
+    input: context, contextPolicy: generationRequest.contextPolicy,
+  })).digest("hex");
+  return { catalog: selectedCatalog, entry, scope: scope.data, generationRequest, sourceSha256 };
+}
+
 export function availableMetadataModels(raw: string | undefined, now: string) {
   const value = catalog(raw, now);
   return { catalogVersion: value.version, models: value.entries.map((entry) => ({
@@ -99,29 +128,13 @@ export async function prepareMetadataQuote(input: {
   rawCatalog: string | undefined; modelId: string; scope: z.infer<typeof scopeSchema>;
   context: unknown; maxTokens: number; allowProviderTokenCounting: boolean;
 }, options: { fetcher?: typeof fetch; clock?: () => string } = {}) {
-  if (input.allowProviderTokenCounting !== true) throw new AppError(422, "Consent to sending selected metadata context for token counting is required.");
   const clock = options.clock ?? (() => new Date().toISOString());
   const startedAt = clock(); const started = clockTime(startedAt);
-  const selectedCatalog = catalog(input.rawCatalog, startedAt);
-  const entry = selectedCatalog.entries.find((item) => item.id === input.modelId);
-  if (!entry) throw new AppError(422, "Choose an available metadata model.");
-  const scope = scopeSchema.safeParse(input.scope);
-  const maxTokens = z.number().int().min(4_096).max(16_000).safeParse(input.maxTokens);
-  if (!scope.success || !maxTokens.success) throw new AppError(422, "Invalid metadata quote scope or context budget.");
-  const context = snapshot(input.context);
-  const request = {
-    jobId: scope.data.jobId, workspaceId: scope.data.workspaceId, bookId: scope.data.bookId,
-    agentType: "metadata" as const, model: entry.price.model, maxOutputTokens: entry.maxOutputTokens,
-    contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: false,
-      semanticTopK: 5, maxTokens: maxTokens.data },
-    input: context,
-  };
+  const preparedRequest = buildMetadataGenerationRequest(input, startedAt);
+  const { catalog: selectedCatalog, entry, scope, generationRequest: request } = preparedRequest;
   // Serialized before yielding: caller mutations cannot change what is counted
   // or returned for later dispatch/persistence.
   const requestBody = JSON.stringify(request);
-  const sourceSha256 = createHash("sha256").update(canonicalJson({
-    input: context, contextPolicy: request.contextPolicy,
-  })).digest("hex");
   const token = process.env.AI_SERVICE_TOKEN?.trim();
   if (!token) throw new AppError(503, "Private AI service authentication is not configured.");
   const baseUrl = (process.env.AI_SERVICE_URL ?? `http://127.0.0.1:${process.env.AI_SERVICE_PORT ?? "8000"}`).replace(/\/$/, "");
@@ -143,7 +156,7 @@ export async function prepareMetadataQuote(input: {
   if (finished < started || finished >= Date.parse(expiresAt)) throw new AppError(409, "Metadata quote expired while counting. Request a fresh quote.");
   if (counted.inputTokens > entry.maxInputTokens) throw new AppError(422, "Metadata input exceeds the selected model limit.");
   const quote = quoteUsage({
-    scope: { jobId: scope.data.jobId, workspaceId: scope.data.workspaceId, userId: scope.data.userId, inputSha256: counted.inputSha256 },
+    scope: { jobId: scope.jobId, workspaceId: scope.workspaceId, userId: scope.userId, inputSha256: counted.inputSha256 },
     price: entry.price, policy: entry.policy,
     maximumTokens: [{ dimension: "text_input", tokens: String(counted.inputTokens) },
       { dimension: "text_cached_input", tokens: String(counted.inputTokens) },
@@ -151,6 +164,6 @@ export async function prepareMetadataQuote(input: {
     createdAt: startedAt, expiresAt,
   });
   if (BigInt(quote.reservedCredits) > 2147483647n) throw new AppError(422, "Metadata quote exceeds ledger capacity.");
-  return { catalogVersion: selectedCatalog.version, modelId: entry.id, sourceSha256,
+  return { catalogVersion: selectedCatalog.version, modelId: entry.id, sourceSha256: preparedRequest.sourceSha256,
     generationRequest: request, quote };
 }

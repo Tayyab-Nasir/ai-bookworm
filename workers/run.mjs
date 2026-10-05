@@ -14,6 +14,10 @@ const roles = Object.freeze({
   translation: ['workers/translation/worker.ts', '--quoted'],
   'blueprint-quotes': ['workers/story-blueprint/worker.ts', '--prepare-quotes'],
   blueprint: ['workers/story-blueprint/worker.ts', '--quoted'],
+  'metadata-quotes': ['workers/metadata/worker.ts'],
+  'ai-review-quotes': ['workers/ai-review/worker.ts'],
+  'book-bible-quotes': ['workers/book-bible/worker.ts'],
+  'image-quotes': ['workers/image/worker.ts'],
 });
 
 async function main() {

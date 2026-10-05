@@ -5,6 +5,8 @@
 This is the full AI-native publishing application, not only its landing page.
 Shared vault: `C:/Users/Asus/Memory-Ai`.
 
+- Current paid author workflow and verification boundaries:
+  `docs/PAID_GENERATION_CHECKPOINT.md` (2026-10-05).
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:

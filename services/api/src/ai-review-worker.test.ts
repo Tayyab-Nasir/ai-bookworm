@@ -10,7 +10,7 @@ const JOB = "a0000000-0000-4000-8000-000000000009";
 const LEASE = "a0000000-0000-4000-8000-000000000010";
 type Row = Record<string, unknown>;
 
-function workerSupabase(options: { markerReplyLost?: boolean } = {}) {
+function workerSupabase(options: { markerReplyLost?: boolean; includeBookBible?: boolean; includeStyleGuide?: boolean } = {}) {
   const tables: Record<string, Row[]> = {
     books: [{ id: BOOK, workspace_id: WORKSPACE, title: "Novel", author_name: "Author", language: "en" }],
     chapters: [{ id: CHAPTER, book_id: BOOK, title: "One", order_index: 0 }],
@@ -18,10 +18,12 @@ function workerSupabase(options: { markerReplyLost?: boolean } = {}) {
     style_guides: [], book_bible_items: [], ai_jobs: [], ai_review_service_receipts: [],
   };
   const claim = { id: JOB, workspace_id: WORKSPACE, book_id: BOOK, created_by: USER, agent_type: "proofreader", lease_token: LEASE,
-    input_ref: { chapterVersions: [{ chapterId: CHAPTER, version: 1 }], userInstruction: null, contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: false, semanticTopK: 5, maxTokens: 4096 } } };
+    input_ref: { chapterVersions: [{ chapterId: CHAPTER, version: 1 }], userInstruction: null, contextPolicy: { includeBookBible: options.includeBookBible ?? true, includeStyleGuide: options.includeStyleGuide ?? true, includeRelatedContext: false, semanticTopK: 5, maxTokens: 4096 } } };
   const calls: { name: string; args: Row }[] = [];
+  const selectedTables: string[] = [];
   const sb = {
     from: (table: string) => {
+      selectedTables.push(table);
       const filters: [string, unknown][] = []; let ordered = false; let capped: number | undefined;
       const selected = () => { let result = (tables[table] ?? []).filter((value) => filters.every(([key, expected]) => value[key] === expected)); if (ordered) result = [...result]; return capped == null ? result : result.slice(0, capped); };
       const builder: Record<string, unknown> = {};
@@ -43,7 +45,7 @@ function workerSupabase(options: { markerReplyLost?: boolean } = {}) {
       throw new Error(`unexpected RPC ${name}`);
     },
   } as never;
-  return { sb, calls, tables };
+  return { sb, calls, tables, selectedTables };
 }
 
 test("AI review worker rehydrates saved chapter versions only after a fenced claim", async () => {
@@ -58,6 +60,21 @@ test("AI review worker rehydrates saved chapter versions only after a fenced cla
   assert.ok(calls.findIndex((call) => call.name === "mark_ai_review_dispatched") < calls.findIndex((call) => call.name === "complete_leased_ai_review_job"));
   assert.equal(completed.args.p_lease_token, LEASE);
   assert.equal((completed.args.p_suggestions as Row[]).length, 1);
+});
+
+test("AI review worker does not load or send Book Bible/style guide when author excludes them", async () => {
+  const { sb, selectedTables } = workerSupabase({ includeBookBible: false, includeStyleGuide: false });
+  let request: Row | undefined;
+  const outcome = await runOneAiReviewJob(sb, { fetcher: async (_url, init) => {
+    request = JSON.parse(String(init?.body)) as Row;
+    return Response.json({ jobId: JOB, workspaceId: WORKSPACE, bookId: BOOK, agentType: "proofreader", status: "succeeded",
+      provider: "mock", model: "mock-1", diagnostics: [], usage: { inputTokens: 1, outputTokens: 1, estimatedCostUsd: 0 }, suggestions: [] });
+  } });
+  assert.equal(outcome.status, "succeeded");
+  assert.equal(selectedTables.includes("book_bible_items"), false);
+  assert.equal(selectedTables.includes("style_guides"), false);
+  assert.deepEqual((request?.input as Row).bookBible, []);
+  assert.deepEqual((request?.input as Row).styleGuide, {});
 });
 
 test("AI review worker holds an uncertain paid service reply without redispatch or leaking provider text", async () => {

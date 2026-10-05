@@ -17,6 +17,8 @@ const draftChapters = new Map();
 const chapterKeys = new Map();
 const aiReviews = new Map();
 const aiKeys = new Map();
+const aiReviewQuotes = new Map();
+const aiReviewQuoteKeys = new Map();
 const publishingEditions = new Map();
 const publishingPackages = [];
 const publishingRenders = new Map();
@@ -382,6 +384,54 @@ const server = createServer(async (req, res) => {
     const draft = draftChapters.get(url.pathname.split('/')[3]);
     if (draft && url.pathname.endsWith('/document')) return json(200, { ...draft, role: 'owner' });
     if (draft && url.pathname.endsWith('/versions')) return json(200, { versions: [] });
+    const aiReviewModelMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/models$/u);
+    if (aiReviewModelMatch && req.method === 'GET') return json(200, { catalogVersion: 'fixture-v1', models: [
+      { id: 'fixture-writer', label: 'Fixture Writer', model: 'gpt-6-astra-fixture', priceVersion: 'fixture-price-v1', policyVersion: 'fixture-policy-v1' },
+    ] });
+    const aiReviewQuoteMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/quotes$/u);
+    if (aiReviewQuoteMatch && req.method === 'POST') {
+      let quote = aiReviewQuoteKeys.get(body.idempotencyKey);
+      if (!quote) {
+        quote = { requestId: randomUUID(), status: 'ready', agentType: body.agentType, model: 'gpt-6-astra-fixture',
+          countedInputTokens: 420, maxOutputTokens: 1200, reservedCredits: 24,
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), bookId: aiReviewQuoteMatch[1],
+          chapterIds: body.chapterIds, idempotencyKey: body.idempotencyKey };
+        aiReviewQuoteKeys.set(body.idempotencyKey, quote); aiReviewQuotes.set(quote.requestId, quote);
+      }
+      if (quote.bookId !== aiReviewQuoteMatch[1] || quote.agentType !== body.agentType || quote.chapterIds.join(',') !== body.chapterIds.join(',')) {
+        return json(409, { error: { message: 'Quote key is bound to different inputs' } });
+      }
+      return json(201, { quote: { ...quote, bookId: undefined, chapterIds: undefined, idempotencyKey: undefined } });
+    }
+    const aiReviewQuoteStatusMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/quotes\/([^/]+)$/u);
+    if (aiReviewQuoteStatusMatch && req.method === 'GET') {
+      const quote = aiReviewQuotes.get(aiReviewQuoteStatusMatch[2]);
+      if (!quote || quote.bookId !== aiReviewQuoteStatusMatch[1]) return json(404, { error: { message: 'Quote not found' } });
+      return json(200, { quote: { ...quote, bookId: undefined, chapterIds: undefined, idempotencyKey: undefined },
+        ...(quote.acceptedJobId ? { job: { id: quote.acceptedJobId, status: aiReviews.get(quote.acceptedJobId)?.status ?? 'queued' } } : {}) });
+    }
+    const aiReviewAcceptMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/quotes\/([^/]+)\/accept$/u);
+    if (aiReviewAcceptMatch && req.method === 'POST') {
+      const quote = aiReviewQuotes.get(aiReviewAcceptMatch[2]);
+      if (!quote || quote.bookId !== aiReviewAcceptMatch[1]) return json(404, { error: { message: 'Quote not found' } });
+      if (body.expectedCredits !== quote.reservedCredits) return json(409, { error: { message: 'Exact credits required' } });
+      let review = quote.acceptedJobId ? aiReviews.get(quote.acceptedJobId) : null;
+      if (!review) {
+        const source = draftChapters.get(quote.chapterIds[0]);
+        if (!source) return json(422, { error: { message: 'Unknown chapter' } });
+        review = { id: randomUUID(), book_id: quote.bookId, chapter_ids: quote.chapterIds, agent_type: quote.agentType,
+          status: 'queued', context_source_count: 0, created_at: new Date().toISOString(), usage_json: {}, suggestions: [{
+            id: randomUUID(), entity_type: 'chapter', entity_id: source.chapter.id, status: 'pending', rationale: 'Opening scene for author review',
+            operation_json: { operationId: randomUUID(), type: 'replace_text', target: { chapterId: source.chapter.id, nodeId: source.document.nodes[0].id },
+              payload: { nodeId: source.document.nodes[0].id, from: 0, to: 0, text: 'Mara reached the harbor before dawn.' }, expectedVersion: source.document.version },
+          }] };
+        quote.acceptedJobId = review.id; aiReviews.set(review.id, review); aiKeys.set(quote.idempotencyKey, review);
+      }
+      if (quote.agentType !== 'writer' && process.env.FIXTURE_LOST_REVIEW_REPLY === 'true' && !lostReviewReply) {
+        lostReviewReply = true; return json(503, { error: { message: 'Fixture lost paid review acceptance reply' } });
+      }
+      return json(202, { jobId: review.id, status: review.status });
+    }
     if (url.pathname === '/v1/ai/jobs' && req.method === 'POST') {
       let review = aiKeys.get(body.idempotencyKey);
       if (!review) {
@@ -389,7 +439,7 @@ const server = createServer(async (req, res) => {
         if (!source) return json(422, { error: { message: 'Unknown chapter' } });
         review = { id: randomUUID(), book_id: body.bookId, chapter_ids: body.chapterIds, agent_type: body.agentType,
           status: 'queued', context_source_count: 0, created_at: new Date().toISOString(), usage_json: {}, suggestions: [{
-            id: randomUUID(), status: 'pending', rationale: 'Opening scene for author review',
+            id: randomUUID(), entity_type: 'chapter', entity_id: source.chapter.id, status: 'pending', rationale: 'Opening scene for author review',
             operation_json: { operationId: randomUUID(), type: 'replace_text',
               target: { chapterId: source.chapter.id, nodeId: source.document.nodes[0].id },
               payload: { nodeId: source.document.nodes[0].id, from: 0, to: 0, text: 'Mara reached the harbor before dawn.' }, expectedVersion: source.document.version },

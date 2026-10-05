@@ -8,6 +8,12 @@
 :root {
   color-scheme: dark;
   background: #000000;
+  --bookworm-proof-paper: #e8dfcc;
+  --bookworm-proof-ink: #1d1a16;
+  --bookworm-proof-edge: #b9a888;
+  --bookworm-proof-muted: #665946;
+  --bookworm-proof-copy: #433b30;
+  --bookworm-proof-action: #211d18;
 }
 
 html,

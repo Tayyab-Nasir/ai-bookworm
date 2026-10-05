@@ -92,17 +92,31 @@ function initialStore(role = "editor"): Store {
   };
 }
 
-async function appWith(store: Store, failTable?: string, aiFetch?: typeof fetch) {
+async function appWith(store: Store, failTable?: string, aiFetch?: typeof fetch, enableLegacyGeneration = true) {
   const app = Fastify();
   await app.register(errorHandlerPlugin);
   await app.register(makeAuthPlugin(() => fakeSupabase(store, failTable)));
   await app.register(async (v1) => bookMemoryRoutes(v1), { prefix: "/v1" });
   await app.register(async (v1) => metadataGenerationRoutes(v1, { fetcher: async () => { throw new Error("History must never call an AI provider"); } }), { prefix: "/v1" });
-  await app.register(async (v1) => bookBibleGenerationRoutes(v1, { fetcher: aiFetch ?? (async () => { throw new Error("Test transport must not dispatch AI"); }) }), { prefix: "/v1" });
+  await app.register(async (v1) => bookBibleGenerationRoutes(v1, { fetcher: aiFetch ?? (async () => { throw new Error("Test transport must not dispatch AI"); }), enableLegacyGeneration }), { prefix: "/v1" });
   return app;
 }
 
 const entry = { type: "character", name: "Elara", description: "A mapmaker", attributes: { appearance: "Silver hair" }, imageAssetIds: [IMAGE], sourceRefs: [{ chapterId: CHAPTER, documentVersionId: VERSION, note: "Opening scene" }] };
+
+test("legacy fixed-credit Book Bible generation is retired by default before manuscript or provider access", async (t) => {
+  const store = initialStore();
+  let posts = 0;
+  const app = await appWith(store, undefined, async () => { posts++; throw new Error("must not dispatch"); }, false);
+  t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/generate`, headers: auth,
+    payload: { idempotencyKey: randomUUID(), chapterIds: [CHAPTER] } });
+  assert.equal(response.statusCode, 410, response.body);
+  assert.match(response.body, /funded token quote/u);
+  assert.equal(posts, 0);
+  assert.equal(store.ai_jobs?.length ?? 0, 0);
+  assert.equal(store.usage_events?.length ?? 0, 0);
+});
 
 test("Book Bible evidence reads the exact pinned passage and identifies historical versions", async (t) => {
   const store = initialStore("viewer");
@@ -207,6 +221,7 @@ test("Book Bible reading plans are free, version-pinned and resume completed lon
   assert.equal(preview.statusCode, 200, preview.body);
   assert.equal(preview.headers["cache-control"], "private, no-store");
   const plan = preview.json(); assert.ok(plan.pages.length > 1);
+  assert.equal(Object.hasOwn(plan, "creditsPerPage"), false, "free preparation must not advertise a flat generation price");
   assert.equal(store.ai_jobs?.length ?? 0, 0); assert.equal(posts, 0);
   assert.equal(preview.body.includes("harbor fact"), false);
   store.workspaces = [{ id: WORKSPACE, organization_id: randomUUID() }];
@@ -292,6 +307,22 @@ test("Book Bible recovery never dispatches a second generation when result is un
   assert.equal(response.statusCode, 503, response.body);
   assert.equal(store.ai_jobs[0].status, "running");
   assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
+
+test("legacy Book Bible recovery cannot settle quoted jobs outside their measured settlement worker", async (t) => {
+  const store = initialStore();
+  const job = { id: randomUUID(), book_id: BOOK, workspace_id: WORKSPACE, agent_type: "bookbible",
+    billing_mode: "quoted", status: "running", created_by: USER, created_at: TIME,
+    input_ref: { contextSources: [{ chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: SOURCE_HASH }] } };
+  store.ai_jobs = [job];
+  let fetches = 0;
+  const app = await appWith(store, undefined, async () => { fetches++; throw new Error("quoted recovery must not GET legacy receipt"); });
+  t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/jobs/${job.id}/recover`, headers: auth });
+  assert.equal(response.statusCode, 409, response.body);
+  assert.match(response.body, /quote status/u);
+  assert.equal(fetches, 0);
+  assert.equal(store.usage_events?.length ?? 0, 0);
 });
 
 test("paid Book Bible generation stores a cited review draft, replays by key, and never writes canon", async (t) => {

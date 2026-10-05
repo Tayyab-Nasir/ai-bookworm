@@ -27,7 +27,7 @@ const candidateSourceRef = z.object({
   textHash: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
 }).strict();
 
-const metadataCandidate = z.object({
+export const metadataCandidate = z.object({
   suggestionKind: z.literal("metadata_candidate"),
   description: z.string().trim().min(40).max(4_000),
   keywords: z.array(z.string().trim().min(1).max(100)).min(1).max(30),
@@ -99,7 +99,7 @@ function boundedBible(rows: Record<string, unknown>[]) {
   return result;
 }
 
-function candidateFromJob(job: Record<string, unknown>) {
+export function candidateFromJob(job: Record<string, unknown>) {
   const output = job.output_ref as { candidate?: unknown } | null;
   const parsed = metadataCandidate.safeParse(output?.candidate);
   return parsed.success ? parsed.data : null;
@@ -128,7 +128,7 @@ function validateCandidateSources(candidate: z.infer<typeof metadataCandidate>, 
   }
 }
 
-export function metadataGenerationRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
+export function metadataGenerationRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch; enableLegacyGeneration?: boolean } = {}) {
   const fetcher = options.fetcher ?? fetch;
 
   app.post("/books/:bookId/metadata/jobs/:jobId/recover", async (req) => {
@@ -199,7 +199,32 @@ export function metadataGenerationRoutes(app: FastifyInstance, options: { fetche
     }) };
   });
 
+  app.get("/books/:bookId/metadata/jobs/:jobId/status", async (req, reply) => {
+    const params = z.object({ bookId: uuid, jobId: uuid }).safeParse(req.params);
+    if (!params.success) throw new AppError(422, "Invalid metadata status request.");
+    const user = app.supabaseFactory(req.userToken);
+    await loadBook(user, params.data.bookId, req.userId);
+    const service = app.supabaseFactory();
+    const { data: job, error } = await service.from("ai_jobs")
+      .select("id,status,billing_mode,error_code,output_ref,created_at")
+      .eq("id", params.data.jobId).eq("book_id", params.data.bookId)
+      .eq("agent_type", "metadata").eq("created_by", req.userId).maybeSingle();
+    if (error) throw new AppError(503, "Could not read metadata request status.");
+    if (!job) throw new AppError(404, "Metadata request not found.");
+    const candidate = job.status === "succeeded" ? candidateFromJob(job) : null;
+    const safeReviewCode = typeof job.error_code === "string"
+      && ["metadata_generation_requires_review", "metadata_source_changed_before_dispatch", "metadata_request_mismatch_before_dispatch"].includes(job.error_code)
+      ? job.error_code : undefined;
+    reply.header("cache-control", "private, no-store");
+    return { job: { id: job.id, status: job.status, billingMode: job.billing_mode ?? "operational",
+      ...(safeReviewCode ? { errorCode: safeReviewCode } : !candidate && job.status === "succeeded" ? { errorCode: "metadata_generation_requires_review" } : {}) },
+      candidate };
+  });
+
   app.post("/books/:bookId/metadata/generate", async (req, reply) => {
+    if (!options.enableLegacyGeneration) {
+      throw new AppError(410, "Direct metadata generation is retired. Request and accept a token quote to generate metadata.");
+    }
     const parsed = generationRequest.safeParse(req.body);
     const parsedBookId = uuid.safeParse((req.params as { bookId: string }).bookId);
     if (!parsed.success || !parsedBookId.success) {

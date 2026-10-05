@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { parseGeneratedMetadataCandidate } from "../components/BookMemoryClient";
+import { metadataQuoteIntentKey, parseGeneratedMetadataCandidate } from "../components/BookMemoryClient";
 
 test("generated metadata parser keeps bounded publishing fields and valid evidence", () => {
   const candidate = parseGeneratedMetadataCandidate({
@@ -40,10 +40,23 @@ test("generated metadata parser rejects incomplete drafts", () => {
 test("metadata UI keeps AI generation and persistence as separate author actions", async () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const source = await readFile(resolve(here, "..", "components", "BookMemoryClient.tsx"), "utf8");
-  assert.match(source, /metadata\/generate`, "POST"/);
+  assert.match(source, /metadata\/quotes`, "POST"/);
+  assert.match(source, /metadata\/quotes\/\$\{encodeURIComponent\(metadataQuoteIntent\.requestId\)\}\/accept/);
+  assert.match(source, /expectedCredits: metadataQuote\.reservedCredits/);
+  assert.match(source, /I agree to send the selected saved chapters.*input-token counting/s);
+  assert.match(source, /Accepting starts one generation and reserves this amount/s);
+  assert.doesNotMatch(source, /metadata\/generate`, "POST"/, "the author UI must not bypass exact token quotes");
   assert.match(source, />Use this draft<\/button>/);
   assert.match(source, /Using a draft does not save it\./);
   assert.match(source, /AI draft copied into the form\. Review it, then choose Save metadata/);
   const useDraft = source.split("function useMetadataCandidate()")[1]?.split("async function loadBibleHistory()")[0] ?? "";
   assert.equal(/request<[^>]*>/.test(useDraft), false, "Use draft must not make a persistence request");
+});
+
+test("metadata quote recovery key is isolated by book and contains no manuscript text", () => {
+  const first = metadataQuoteIntentKey("book-one");
+  const second = metadataQuoteIntentKey("book-two");
+  assert.equal(first, "bookworm:metadata-quote:v1:book-one");
+  assert.notEqual(first, second);
+  assert.doesNotMatch(first, /chapter|manuscript|source text/i);
 });

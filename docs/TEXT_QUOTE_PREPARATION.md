@@ -4,10 +4,13 @@
 
 The private Python AI service can prepare exact input counts and request hashes
 for writer, proofreader, copyeditor, consistency, metadata, Book Bible and Story
-Blueprint jobs. This is an internal building block, **not** a new purchase flow.
-Existing operational text-generation routes are not yet converted to approved
-token-priced reservations and settlement. No rate, model, paid plan or catalog
-is activated by this change.
+Blueprint jobs. The two internal endpoints below are preparation primitives,
+not purchase authorization: they do not persist customer quotes, hold credits,
+or settle usage. Separate author-facing paid quote paths consume the shared
+hash/count contract for metadata, Story Blueprint, translation, Book Bible and
+writer/proofreader/copyeditor/consistency. Their accepted jobs require funded
+holds, fenced dispatch and measured settlement. Catalog configuration remains
+owner-controlled; source wiring does not activate or approve a commercial offer.
 
 Both endpoints require the internal `x-service-token`:
 
@@ -15,6 +18,18 @@ Both endpoints require the internal `x-service-token`:
 - `POST /v1/ai/text/quote`: counts the same input through OpenAI, without a
   completion. In production this sends the selected content to OpenAI; expose
   it only behind member scope, consent, request limits and server-owned inputs.
+
+The API also has an `ai-review-pricing.ts` preparation primitive
+for the writer/proofreader/copyeditor/consistency catalog shape. It consumes
+the exact private AI-service count/hash response and calculates a cached-input,
+uncached-input and output maximum using server catalog values. Synthetic unit
+tests cover consent, failure, identity and limits. Authenticated
+`ai-review-quotes.ts` routes now use it to prepare immutable consented quotes;
+separate acceptance creates a funded job. The `ai-review-quotes` worker verifies
+the accepted saved request and durable receipt before measured completion.
+The preparation primitive alone never authorizes purchase. The legacy direct
+review route is disabled by default in the production app. Provider/catalog,
+native service and browser acceptance remain distinct release gates.
 
 Request fields: `jobId`, `workspaceId`, `bookId`, `agentType`, explicit `model`,
 `maxOutputTokens`, canonical `input`, and optional `contextPolicy`. Responses
@@ -65,13 +80,16 @@ rejection and no provider/receipt side effects on pre-dispatch failures.
 `test_result_store.py` covers real-agent durable receipt recovery with a local
 HTTP transport fixture. These are not live OpenAI or Supabase acceptance.
 
-Full local `npm run verify` passed on 2026-09-24: type/unit/web checks,
-80 disposable migrations/57 SQL assertion suites, 411 service tests, 12 E2E,
-30 security, load smoke with no 5xx and six deterministic AI evaluations.
-The live evaluation was skipped because no provider API key was configured.
+Full local `npm run verify` passed on 2026-09-25: workspace TypeScript,
+348 API/unit tests, 104 web tests, 82 disposable migrations/58 SQL assertion
+files, 411 service tests, 12 E2E, 30 security, load smoke with no 5xx and six
+deterministic AI evaluations. Live provider evaluation was skipped because no
+provider API key was configured.
 
-Next implementation: choose a remaining operational text workflow and wire
-server-owned catalog selection, scoped saved-input snapshot, count consent,
-expiring quote, explicit acceptance, atomic credit hold/dispatch, measured
-settlement and read-only receipt recovery through API and author UI. Do not
-publish retail offers until those gates and approved pricing are verified.
+Next acceptance: verify the coherent API, migration, worker, client and author
+UI bundle independently of unrelated dirty work. Exercise native concurrent
+acceptance/dispatch/settlement and lost-response recovery, then hosted service,
+provider and supervised-worker behavior. Historical local counts above are not
+current release certification. Preserve existing operational jobs for their
+explicit recovery paths; do not enable new unquoted generation. Do not publish
+retail offers until those gates and approved pricing are verified.

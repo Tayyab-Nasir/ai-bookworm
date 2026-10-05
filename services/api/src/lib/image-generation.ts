@@ -5,6 +5,8 @@ export type ImageSize = "1024x1024" | "1024x1536" | "1536x1024";
 export type ImageQuality = "low" | "medium" | "high";
 
 export interface ImageGenerationInput {
+  /** Server-owned accepted quote model; never take this directly from a browser. */
+  model?: string;
   prompt: string;
   size: ImageSize;
   quality: ImageQuality;
@@ -19,6 +21,8 @@ export interface GeneratedImage {
   requestId: string | null;
   usage: { inputTokens: number; outputTokens: number; estimatedCostUsd: number; latencyMs: number;
     measurementStatus?: "complete" | "partial" | "unavailable";
+    providerTokenUsage?: ImageTokenEvidence;
+    reconciliationStatus?: "supported" | "requires_review";
     costEstimateBasis?: "itemized" | "conservative_input" | "unavailable" };
 }
 
@@ -30,6 +34,58 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 type ImageUsage = { input_tokens?: unknown; output_tokens?: unknown;
   input_tokens_details?: { text_tokens?: unknown; image_tokens?: unknown } } | null | undefined;
 const validTokenCount = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+
+export interface ImageTokenEvidence {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  input_tokens_details?: { text_tokens?: number; image_tokens?: number };
+  output_tokens_details?: { text_tokens?: number; image_tokens?: number };
+}
+
+// Preserve measured modality counters for reconciliation without copying an
+// arbitrary provider payload, inventing missing counters, or treating estimates
+// as measurements. Contradictory totals remain evidence for a review decision.
+export function imageTokenEvidence(usage: unknown): ImageTokenEvidence | undefined {
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return undefined;
+  const source = usage as Record<string, unknown>;
+  const evidence: ImageTokenEvidence = {};
+  for (const field of ["input_tokens", "output_tokens", "total_tokens"] as const) {
+    if (validTokenCount(source[field])) evidence[field] = source[field];
+  }
+  for (const field of ["input_tokens_details", "output_tokens_details"] as const) {
+    const detail = source[field];
+    if (!detail || typeof detail !== "object" || Array.isArray(detail)) continue;
+    const counters: { text_tokens?: number; image_tokens?: number } = {};
+    for (const modality of ["text_tokens", "image_tokens"] as const) {
+      const count = (detail as Record<string, unknown>)[modality];
+      if (validTokenCount(count)) counters[modality] = count;
+    }
+    if (Object.keys(counters).length) evidence[field] = counters;
+  }
+  return Object.keys(evidence).length ? evidence : undefined;
+}
+
+// Inspect the original usage object before the diagnostic projection drops
+// unknown fields. Cached/novel dimensions cannot become standard-rate usage.
+export function imageReconciliationStatus(usage: unknown): "supported" | "requires_review" {
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return "requires_review";
+  const raw = usage as Record<string, unknown>;
+  const totals = ["input_tokens", "output_tokens", "total_tokens"] as const;
+  const details = ["input_tokens_details", "output_tokens_details"] as const;
+  if (Object.keys(raw).some(key => ![...totals, ...details].includes(key as typeof totals[number]))
+    || totals.some(key => !validTokenCount(raw[key]))) return "requires_review";
+  for (const key of details) {
+    const value = raw[key];
+    if (!value || typeof value !== "object" || Array.isArray(value)) return "requires_review";
+    const part = value as Record<string, unknown>;
+    if (Object.keys(part).some(field => field !== "text_tokens" && field !== "image_tokens")
+      || !validTokenCount(part.text_tokens) || !validTokenCount(part.image_tokens)
+      || BigInt(part.text_tokens) + BigInt(part.image_tokens) !== BigInt(raw[key === "input_tokens_details" ? "input_tokens" : "output_tokens"] as number)) return "requires_review";
+  }
+  return BigInt(raw.input_tokens as number) + BigInt(raw.output_tokens as number) === BigInt(raw.total_tokens as number)
+    ? "supported" : "requires_review";
+}
 
 function imageRates(model: string) {
   return /^gpt-image-2\.5-(?:sunburst|flare)(?:-|$)/.test(model)
@@ -77,13 +133,16 @@ export function imageUsageMeasurementStatus(usage: unknown): "complete" | "parti
   return "complete";
 }
 
-export const openAiImageGenerator: ImageGenerator = async ({ prompt, size, quality, referenceImages }) => {
+export const openAiImageGenerator: ImageGenerator = async ({ prompt, size, quality, referenceImages, model: quotedModel }) => {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
     throw new AppError(503, "Image generation is not configured.", undefined, "image_provider_not_configured");
   }
 
-  const model = process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2.5-sunburst";
+  if (quotedModel !== undefined && (!quotedModel.trim() || quotedModel !== quotedModel.trim() || quotedModel.length > 128)) {
+    throw new AppError(422, "The accepted image model is invalid.");
+  }
+  const model = quotedModel ?? (process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2.5-sunburst");
   // An automatic retry after a lost response can generate and bill twice.
   // The caller holds an unresolved job for recovery instead of redispatching.
   const client = new OpenAI({ apiKey, timeout: 130_000, maxRetries: 0 });
@@ -115,6 +174,8 @@ export const openAiImageGenerator: ImageGenerator = async ({ prompt, size, quali
       estimatedCostUsd: estimatedImageCost(model, result.usage),
       latencyMs: Date.now() - started,
       measurementStatus: imageUsageMeasurementStatus(result.usage),
+      providerTokenUsage: imageTokenEvidence(result.usage),
+      reconciliationStatus: imageReconciliationStatus(result.usage),
       costEstimateBasis: imageCostEstimateBasis(model, result.usage),
     },
   };

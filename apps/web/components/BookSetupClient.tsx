@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ApiClientError, type ManuscriptImportJob, type ManuscriptImportResult } from "@bookworm/api-client";
+import { ApiClientError, type AiReviewModelChoice, type AiReviewUsageQuote, type ManuscriptImportJob, type ManuscriptImportResult } from "@bookworm/api-client";
 import { apiClient } from "./api";
 import { readSetupCheckpoint, recoverManuscriptReport, runManuscriptSetup, setupKey, type SetupCheckpoint, type SetupStage } from "../lib/manuscript-setup";
 
@@ -33,6 +33,11 @@ export default function BookSetupClient() {
   const [report, setReport] = useState<ManuscriptImportResult["report"] | null>(null);
   const [importJob, setImportJob] = useState<ManuscriptImportJob | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
+  const [aiModels, setAiModels] = useState<AiReviewModelChoice[]>([]);
+  const [aiModelId, setAiModelId] = useState("");
+  const [countingConsent, setCountingConsent] = useState(false);
+  const [aiQuote, setAiQuote] = useState<AiReviewUsageQuote | null>(null);
+  const [quoteCounting, setQuoteCounting] = useState(false);
   const reportHeading = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
@@ -80,6 +85,39 @@ export default function BookSetupClient() {
   }, [api]);
 
   useEffect(() => { if (checkpoint?.completed) reportHeading.current?.focus(); }, [checkpoint?.completed]);
+
+  useEffect(() => {
+    if (!ready || mode !== "ai" || !checkpoint?.bookCreated || checkpoint.completed) return;
+    let cancelled = false;
+    void api.listAiReviewModels(checkpoint.bookId).then(({ models }) => {
+      if (!cancelled) { setAiModels(models); setAiModelId((checkpoint.starter?.modelId && models.some((item) => item.id === checkpoint.starter?.modelId) ? checkpoint.starter.modelId : models[0]?.id) ?? ""); }
+    }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not load available AI models."); });
+    return () => { cancelled = true; };
+  }, [api, checkpoint?.bookId, checkpoint?.bookCreated, checkpoint?.completed, checkpoint?.starter?.modelId, mode, ready]);
+
+  useEffect(() => {
+    const starter = checkpoint?.starter;
+    if (!starter?.quoteRequestId || !checkpoint?.bookId || checkpoint.completed) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const status = await api.getAiReviewQuote(checkpoint.bookId, starter.quoteRequestId!);
+        if (cancelled) return;
+        if (status.job) {
+          const saved = { ...checkpoint, completed: true, starter: { ...starter, jobId: status.job.id }, savedAt: Date.now() };
+          saveCheckpoint(saved); setAiQuote(null); setQuoteCounting(false);
+          setNotice("Your first draft is queued. Open Chapter 1 to review it; nothing is applied automatically.");
+        } else if (status.quote.status === "ready") { setAiQuote(status.quote); setQuoteCounting(false); }
+        else if (status.quote.status === "failed") {
+          const retryable = { ...checkpoint, starter: { chapterId: starter.chapterId, modelId: starter.modelId, allowProviderTokenCounting: starter.allowProviderTokenCounting }, savedAt: Date.now() };
+          saveCheckpoint(retryable); setQuoteCounting(false); setError("Token counting failed. No generation job or credit hold was created. Re-enter your brief to request a fresh quote.");
+        }
+        else setQuoteCounting(true);
+      } catch { /* Read-only polling cannot create another quote or job. */ }
+    };
+    void refresh(); const timer = window.setInterval(() => { void refresh(); }, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [api, checkpoint?.bookId, checkpoint?.completed, checkpoint?.starter?.quoteRequestId]);
 
   useEffect(() => {
     if (!ready || saving || checkpoint?.completed || !checkpoint?.source || checkpoint.source.uploaded === false) return;
@@ -143,7 +181,7 @@ export default function BookSetupClient() {
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (busy.current || !ready || !title.trim() || checkpoint?.completed || (mode === "ai" && !storyBrief.trim()) || (importJob && importJob.status !== "failed")) return;
+    if (busy.current || !ready || !title.trim() || checkpoint?.completed || (mode === "ai" && checkpoint?.starter && !checkpoint.starter.jobId) || (importJob && importJob.status !== "failed")) return;
     busy.current = true;
     setSaving(true);
     setSaveStage("creating");
@@ -174,17 +212,7 @@ export default function BookSetupClient() {
           saved = { ...saved, starter, savedAt: Date.now() };
           saveCheckpoint(saved);
         }
-        const chapterId = starter.chapterId;
-        const job = starter.jobId
-          ? await api.getAiJob(starter.jobId)
-          : await api.createAiJob({
-            bookId: result.bookId, chapterIds: [chapterId], agentType: "writer", userInstruction: storyBrief.trim(),
-            idempotencyKey: `story-starter:${result.bookId}:${chapterId}`,
-            contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: true, maxTokens: 16_000 },
-          });
-        saved = { ...saved, completed: true, starter: { chapterId, jobId: job.id }, savedAt: Date.now() };
-        saveCheckpoint(saved);
-        continueToEditor(result.bookId, title, chapterId, job.id);
+        setNotice("Chapter 1 is ready. Choose a model, consent to token counting, and review the exact credit quote before generation.");
       }
       else if (result.job) { setImportJob(result.job); setNotice("Import queued. Processing continues on the server if you leave this page."); }
       else { setReport(result.report); setNotice(result.report ? "Your manuscript is imported. Review the results before editing." : "This source is already imported. Open the editor to review the saved chapters."); }
@@ -199,6 +227,55 @@ export default function BookSetupClient() {
       setSaveStage(null);
       busy.current = false;
     }
+  };
+
+  const prepareFirstDraftQuote = async () => {
+    const saved = current.current;
+    if (!saved?.starter || !aiModelId || !storyBrief.trim() || !countingConsent || busy.current) return;
+    busy.current = true; setSaving(true); setError(null); setNotice(null); setAiQuote(null);
+    try {
+      const session = await fetch("/api/auth/session", { cache: "no-store" });
+      if (!session.ok || (await session.json()).user?.id !== userId) throw new Error("Your session changed. Reload before continuing.");
+      const starter = { ...saved.starter, quoteKey: saved.starter.quoteKey ?? `story-starter:${saved.bookId}:${saved.starter.chapterId}`, modelId: aiModelId, allowProviderTokenCounting: true as const };
+      const pending = { ...saved, starter, savedAt: Date.now() };
+      saveCheckpoint(pending); // Persist stable quote identity and consent before sending the selected brief for counting.
+      const result = await api.createAiReviewQuote(saved.bookId, { modelId: aiModelId, agentType: "writer", chapterIds: [starter.chapterId], userInstruction: storyBrief.trim(),
+        idempotencyKey: starter.quoteKey!, contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: true, semanticTopK: 5, maxTokens: 16_000 }, allowProviderTokenCounting: true });
+      if (result.quote) {
+        const next = { ...pending, starter: { ...starter, quoteRequestId: result.quote.requestId }, savedAt: Date.now() };
+        saveCheckpoint(next); setAiQuote(result.quote); setQuoteCounting(false);
+      }
+      else if (result.request) {
+        const next = { ...pending, starter: { ...starter, quoteRequestId: result.request.id }, savedAt: Date.now() };
+        saveCheckpoint(next); setQuoteCounting(true); setNotice("Counting the selected saved chapter and brief. This does not reserve credits or start generation.");
+      } else throw new Error("The quote service returned no quote status. Check the saved request before retrying.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not prepare a usage quote."); }
+    finally { setSaving(false); busy.current = false; }
+  };
+
+  const acceptFirstDraftQuote = async () => {
+    const saved = current.current; const quote = aiQuote;
+    if (!saved?.starter || !quote || busy.current) return;
+    busy.current = true; setSaving(true); setError(null);
+    try {
+      const session = await fetch("/api/auth/session", { cache: "no-store" });
+      if (!session.ok || (await session.json()).user?.id !== userId) throw new Error("Your session changed. Reload before accepting this quote.");
+      const accepted = await api.acceptAiReviewQuote(saved.bookId, quote.requestId, quote.reservedCredits);
+      const next = { ...saved, completed: true, starter: { ...saved.starter, jobId: accepted.jobId }, savedAt: Date.now() };
+      saveCheckpoint(next); setAiQuote(null); setNotice("Draft accepted and queued. Nothing is applied until you review it in Chapter 1.");
+      continueToEditor(saved.bookId, title, saved.starter.chapterId, accepted.jobId);
+    } catch (reason) {
+      // Recover only through quote status; never issue a second acceptance with a new quote.
+      const requestId = quote.requestId;
+      try {
+        const status = await api.getAiReviewQuote(saved.bookId, requestId);
+        if (status.job) {
+          const next = { ...saved, completed: true, starter: { ...saved.starter, quoteRequestId: requestId, jobId: status.job.id }, savedAt: Date.now() };
+          saveCheckpoint(next); setAiQuote(null); setNotice("Recovered the accepted first draft without another charge.");
+          continueToEditor(saved.bookId, title, saved.starter.chapterId, status.job.id);
+        } else { setError(reason instanceof Error ? `${reason.message} The quote remains available; check its status before retrying.` : "Acceptance could not be confirmed. Check quote status before retrying."); }
+      } catch { setError("Acceptance could not be confirmed. Check the saved quote status before retrying; do not create a new quote yet."); }
+    } finally { setSaving(false); busy.current = false; }
   };
 
   return (
@@ -267,13 +344,28 @@ export default function BookSetupClient() {
               </label>
             )}
 
-            {mode === "ai" && !checkpoint?.starter && !checkpoint?.completed && (
+            {mode === "ai" && !checkpoint?.completed && !checkpoint?.starter?.jobId && (
               <label className="mt-5 block">
                 <span className="mb-2 block text-[11px] font-medium uppercase tracking-[0.14em] text-[#8a8a8a]">Story brief</span>
                 <textarea value={storyBrief} onChange={(event) => setStoryBrief(event.target.value)} required maxLength={4000} rows={6} placeholder="A quiet historical mystery set on the coast. Write a tense opening scene from Mara's point of view…" className="w-full resize-y rounded-xl border border-white/[0.1] bg-black/20 px-4 py-3 text-[15px] leading-6 text-white outline-none transition focus:border-white/35" />
-                <span className="mt-2 block text-[13px] leading-5 text-[#909090]">Bookworm creates one saved Chapter 1 and queues a draft for review. Nothing is added to your manuscript until you approve it.</span>
+                <span className="mt-2 block text-[13px] leading-5 text-[#909090]">Your brief stays in this page memory, not browser recovery storage. You will consent to token counting, review the exact credit quote, and accept it before generation begins.</span>
               </label>
             )}
+
+            {mode === "ai" && checkpoint?.starter && !checkpoint.completed && !checkpoint.starter.jobId && <section aria-label="First draft usage quote" className="mt-5 rounded-2xl border border-white/[0.1] bg-black/20 p-4 sm:p-5">
+              <label className="block"><span className="mb-2 block text-[11px] font-medium uppercase tracking-[0.14em] text-[#8a8a8a]">Generation model</span>
+                <select value={aiModelId} disabled={saving || quoteCounting || !!aiQuote} onChange={(event) => setAiModelId(event.target.value)} className="h-11 w-full rounded-xl border border-white/[0.1] bg-[#151515] px-3 text-sm text-white outline-none focus:border-white/35">
+                  {aiModels.length ? aiModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>) : <option value="">No approved model available</option>}
+                </select>
+              </label>
+              <label className="mt-4 flex items-start gap-2 text-xs leading-5 text-[#bdbdbd]"><input type="checkbox" checked={countingConsent || checkpoint.starter.allowProviderTokenCounting === true} disabled={saving || quoteCounting || !!aiQuote || checkpoint.starter.allowProviderTokenCounting === true} onChange={(event) => setCountingConsent(event.target.checked)} />
+                <span>I agree to send the selected saved Chapter 1 context and this brief to OpenAI for token counting. This calculates the quote; it does not generate content or reserve credits.</span></label>
+              {quoteCounting && <p role="status" className="mt-4 text-sm text-[#d0d0d0]">Counting usage. No generation job or credit hold has been created.</p>}
+              {aiQuote && <div className="mt-4 rounded-xl border border-emerald-200/20 bg-emerald-200/[0.06] p-4" role="status"><p className="text-sm font-medium text-white">Exact quote · {aiQuote.reservedCredits} credits</p><p className="mt-1 text-xs leading-5 text-[#bdbdbd]">{aiQuote.countedInputTokens.toLocaleString()} counted input tokens · up to {aiQuote.maxOutputTokens.toLocaleString()} output tokens · expires {new Date(aiQuote.expiresAt).toLocaleString()}</p></div>}
+              {!aiQuote && <button type="button" disabled={!ready || saving || !aiModelId || !storyBrief.trim() || !(countingConsent || checkpoint.starter.allowProviderTokenCounting === true) || quoteCounting} onClick={() => void prepareFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{quoteCounting ? "Counting tokens…" : checkpoint.starter.quoteRequestId ? "Retry same quote request" : "Prepare exact credit quote"}</button>}
+              {aiQuote && <button type="button" disabled={saving} onClick={() => void acceptFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{saving ? "Accepting…" : `Accept · ${aiQuote.reservedCredits} credits and generate`}</button>}
+              <p className="mt-3 text-[11px] leading-5 text-[#858585]">Quote and acceptance use the same saved request identity for safe recovery. Your brief is never stored in browser session recovery.</p>
+            </section>}
 
             {checkpoint?.source?.uploaded !== false && checkpoint?.source && !checkpoint.completed && <p className="mt-5 text-sm leading-6 text-[#bdbdbd]">Your original upload is saved. Import uses this existing book and source. Background processing requires the document worker to be running.</p>}
             {importJob && !checkpoint?.completed && <div role="status" className="mt-5 rounded-xl border border-white/15 px-4 py-3 text-sm leading-6 text-[#bdbdbd]">
@@ -289,8 +381,8 @@ export default function BookSetupClient() {
             {notice && <p role="status" className="mt-5 rounded-xl border border-amber-300/20 bg-amber-300/[0.08] px-4 py-3 text-sm leading-6 text-amber-50">{notice}</p>}
 
             <div className="mt-6 flex flex-wrap items-center gap-3">
-              {!checkpoint?.completed && (!importJob || importJob.status === "failed") && <button type="submit" disabled={!ready || saving || (mode === "ai" && !storyBrief.trim())} className="glass-solid metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-semibold text-black disabled:cursor-wait disabled:opacity-60">
-                <span className="relative z-10">{saveStage ? stageLabels[saveStage] : checkpoint?.bookCreated === false ? "Retry book creation" : checkpoint ? mode === "ai" ? "Queue first draft" : mode === "import" ? "Retry import" : "Continue setup" : mode === "import" ? "Create and import" : mode === "ai" ? "Create and queue draft" : "Create book"}</span>
+              {!checkpoint?.completed && (!importJob || importJob.status === "failed") && !(mode === "ai" && checkpoint?.starter) && <button type="submit" disabled={!ready || saving} className="glass-solid metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-semibold text-black disabled:cursor-wait disabled:opacity-60">
+                <span className="relative z-10">{saveStage ? stageLabels[saveStage] : checkpoint?.bookCreated === false ? "Retry book creation" : checkpoint ? mode === "ai" ? "Prepare Chapter 1" : mode === "import" ? "Retry import" : "Continue setup" : mode === "import" ? "Create and import" : mode === "ai" ? "Create book & Chapter 1" : "Create book"}</span>
               </button>}
               {checkpoint && checkpoint.bookCreated !== false && (
                 <button type="button" disabled={saving} onClick={() => continueToEditor(checkpoint.bookId, title, checkpoint.starter?.chapterId, checkpoint.starter?.jobId)} className="glass-ghost inline-flex h-12 items-center rounded-full px-5 text-sm font-medium text-white disabled:opacity-60">

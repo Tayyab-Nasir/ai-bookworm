@@ -49,7 +49,7 @@ const aiResponse = z.object({
 }).passthrough();
 type Evidence = z.infer<typeof sourceRef>;
 
-async function loadReadingPlan(user: SupabaseClient, bookId: string, chapterIds: string[] | undefined, maxTokens: number) {
+export async function loadBibleReadingPlan(user: SupabaseClient, bookId: string, chapterIds: string[] | undefined, maxTokens: number) {
   let query = user.from("chapters").select("id,title,order_index,current_document_version_id")
     .eq("book_id", bookId).order("order_index").limit(3);
   if (chapterIds) query = query.in("id", chapterIds);
@@ -148,7 +148,11 @@ async function settleResult(sb: SupabaseClient, job: Record<string, unknown>, ra
   return values;
 }
 
-export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
+export function bookBibleGenerationRoutes(app: FastifyInstance, options: {
+  fetcher?: typeof fetch;
+  /** Explicit regression-test escape hatch only; production must use funded token quotes. */
+  enableLegacyGeneration?: boolean;
+} = {}) {
   const fetcher = options.fetcher ?? fetch;
 
   app.post("/books/:bookId/bible/reading-plan", async (req, reply) => {
@@ -158,13 +162,13 @@ export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetch
     if (!bookId.success || !body.success) throw new AppError(422, "Select up to three saved chapters and a valid reading budget.");
     const user = app.supabaseFactory(req.userToken);
     await loadBook(user, bookId.data, req.userId, true);
-    const plan = await loadReadingPlan(user, bookId.data, body.data.chapterIds, body.data.maxTokens);
+    const plan = await loadBibleReadingPlan(user, bookId.data, body.data.chapterIds, body.data.maxTokens);
     const { data: jobs, error } = await user.from("ai_jobs").select("id,input_ref")
       .eq("book_id", bookId.data).eq("created_by", req.userId).eq("agent_type", "bookbible")
       .eq("status", "succeeded").order("created_at", { ascending: false }).limit(5000);
     if (error) throw new AppError(500, "Could not verify saved reading progress.");
     reply.header("cache-control", "private, no-store");
-    return { fingerprint: plan.fingerprint, totalBytes: plan.totalBytes, creditsPerPage: 1,
+    return { fingerprint: plan.fingerprint, totalBytes: plan.totalBytes,
       pages: plan.pages.map((page, pageIndex) => ({ pageIndex, ranges: page.ranges, bytes: page.bytes,
         completedJobId: jobs?.find((job) => job.input_ref?.reading?.fingerprint === plan.fingerprint
           && job.input_ref?.reading?.pageIndex === pageIndex)?.id ?? null })) };
@@ -203,6 +207,10 @@ export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetch
     const job = await loadSavedJob(service, book, req.userId, parsed.data.jobId);
     const saved = candidatesFromJob(job);
     if (job.status === "succeeded" && saved) return { candidates: saved };
+    if (job.billing_mode === "quoted") {
+      throw new AppError(409, "Quoted Book Bible jobs are recovered through quote status; this endpoint only recovers legacy receipts.",
+        { jobId: job.id, status: job.status });
+    }
     if (!["queued", "running"].includes(String(job.status))) throw new AppError(409, "This request cannot be recovered.");
     let raw: unknown;
     try { raw = await readResult(fetcher, parsed.data.jobId); }
@@ -213,6 +221,9 @@ export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetch
   });
 
   app.post("/books/:bookId/bible/generate", async (req, reply) => {
+    if (options.enableLegacyGeneration !== true) {
+      throw new AppError(410, "Fixed-credit Book Bible generation is retired. A funded token quote is required before generation can start.");
+    }
     const parsed = generationRequest.safeParse(req.body);
     const parsedBookId = uuid.safeParse((req.params as { bookId: string }).bookId);
     if (!parsed.success || !parsedBookId.success) {
@@ -243,7 +254,7 @@ export function bookBibleGenerationRoutes(app: FastifyInstance, options: { fetch
       .select("organization_id").eq("id", book.workspace_id).maybeSingle();
     if (workspaceError || !workspace) throw new AppError(500, "Could not resolve Book Bible credits.");
 
-    const plan = await loadReadingPlan(user, bookId, body.chapterIds, body.maxTokens);
+    const plan = await loadBibleReadingPlan(user, bookId, body.chapterIds, body.maxTokens);
     if (body.reading && body.reading.fingerprint !== plan.fingerprint) {
       throw new AppError(409, "The saved manuscript or reading budget changed. Refresh the reading plan before purchasing another batch.", { status: "not_started" });
     }

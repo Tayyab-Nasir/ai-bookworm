@@ -24,7 +24,11 @@ try {
   await page.getByRole('button', { name: 'Start with AI', exact: true }).click();
   await page.getByLabel('Book title').fill('Harbor browser journey');
   await page.getByLabel('Story brief').fill('Private story brief for Mara at the harbor.');
-  await page.getByRole('button', { name: 'Create and queue draft', exact: true }).click();
+  await page.getByRole('button', { name: 'Create book & Chapter 1', exact: true }).click();
+  await page.getByRole('checkbox').check();
+  await page.getByRole('button', { name: 'Prepare exact credit quote', exact: true }).click();
+  await page.getByText(/Exact quote · 24 credits/).waitFor();
+  await page.getByRole('button', { name: 'Accept · 24 credits and generate', exact: true }).click();
   await page.getByText('Opening scene for author review', { exact: true }).waitFor();
   const proof = page.getByRole('region', { name: 'Proposed manuscript text change' });
   await proof.getByText('01 / Current saved text').waitFor();

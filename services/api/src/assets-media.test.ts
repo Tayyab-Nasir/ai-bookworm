@@ -167,6 +167,34 @@ test("image reservation refusal never starts a provider call or stores an image"
   }
 });
 
+test("unquoted image generation is retired outside test mode before any provider or credit write", async () => {
+  const store = baseStore();
+  let providerCalls = 0;
+  const app = await buildApp(() => fakeSupabase(store), { imageGenerator: async () => {
+    providerCalls++;
+    throw new Error("provider must not run");
+  } });
+  const previousMode = process.env.NODE_ENV;
+  const previousLegacyFlag = process.env.IMAGE_LEGACY_GENERATION_ENABLED;
+  process.env.NODE_ENV = "production";
+  delete process.env.IMAGE_LEGACY_GENERATION_ENABLED;
+  try {
+    const result = await app.inject({ method: "POST", url: "/v1/assets/generate", headers: auth, payload: {
+      workspaceId: WORKSPACE, kind: "illustration", name: "Unquoted", prompt: "An unquoted image request", idempotencyKey: "legacy-image-disabled",
+    } });
+    assert.equal(result.statusCode, 410);
+    assert.equal(result.json().error.code, "image_quote_required");
+    assert.equal(providerCalls, 0);
+    assert.equal(store.rpcCalls.length, 0);
+    assert.equal(store.tables.ai_jobs.length, 0);
+    assert.equal(store.tables.usage_events.length, 0);
+  } finally {
+    if (previousMode === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousMode;
+    if (previousLegacyFlag === undefined) delete process.env.IMAGE_LEGACY_GENERATION_ENABLED; else process.env.IMAGE_LEGACY_GENERATION_ENABLED = previousLegacyFlag;
+    await app.close();
+  }
+});
+
 function baseStore(role = "editor"): Store {
   return { objects: new Map(), rpcCalls: [], tables: {
     workspaces: [{ id: WORKSPACE, organization_id: ORG }],
@@ -211,13 +239,17 @@ test("image history is bounded, author/workspace scoped and omits private job pa
   const store = baseStore();
   const seed = { workspace_id: WORKSPACE, created_by: USER, agent_type: "illustrator", status: "running", created_at: "2026-09-12T00:00:00Z",
     input_ref: { prompt: "private manuscript prompt" }, output_ref: { url: "private-provider-url" }, idempotency_key: "private-request-key" };
-  store.tables.ai_jobs.push({ ...seed, id: "own" }, { ...seed, id: "other-author", created_by: "other" },
+  store.tables.ai_jobs.push({ ...seed, id: "own", billing_mode: "operational" }, { ...seed, id: "other-author", created_by: "other" },
     { ...seed, id: "other-workspace", workspace_id: "other" }, { ...seed, id: "text-job", agent_type: "writer" });
   const app = await buildApp(() => fakeSupabase(store));
   try {
     const response = await app.inject({ method: "GET", url: `/v1/assets/generation-jobs?workspaceId=${WORKSPACE}&limit=1`, headers: auth });
     assert.equal(response.statusCode, 200, response.body);
     assert.deepEqual(response.json().jobs.map((job: { id: string }) => job.id), ["own"]);
+    store.tables.ai_jobs.push({ ...seed, id: "quoted", billing_mode: "quoted", created_at: "2026-09-11T00:00:00Z" });
+    const all = await app.inject({ method: "GET", url: `/v1/assets/generation-jobs?workspaceId=${WORKSPACE}&limit=20`, headers: auth });
+    assert.equal(all.json().jobs.find((job: { id: string }) => job.id === "own").billingMode, "operational");
+    assert.equal(all.json().jobs.find((job: { id: string }) => job.id === "quoted").billingMode, "quoted");
     assert.doesNotMatch(response.body, /private-|input_ref|output_ref|idempotency/);
     assert.equal(response.headers["cache-control"], "private, no-store");
     const invalid = await app.inject({ method: "GET", url: `/v1/assets/generation-jobs?workspaceId=${WORKSPACE}&limit=51`, headers: auth });

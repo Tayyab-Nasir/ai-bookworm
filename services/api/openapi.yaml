@@ -8,6 +8,139 @@ servers:
 tags:
   - name: v1
 paths:
+  /v1/workspaces/{workspaceId}/image-quotes/recover:
+    post:
+      operationId: recoverImageQuoteByRequestKey
+      summary: Find the caller's saved image quote after an uncertain save response
+      description: Read-only lookup independent of current pricing or source context. Requires active workspace membership. No generation, funding or re-quote. Request key stays out of the URL.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, required: [idempotencyKey], properties: { idempotencyKey: { type: string, minLength: 8, maxLength: 200 } } }
+      responses:
+        "200":
+          description: Private no-store saved quote identity; GET that quote for verified offer details
+          content:
+            application/json:
+              schema: { type: object, required: [quoteId, purchaseAvailable], properties: { quoteId: { type: string, format: uuid }, purchaseAvailable: { const: false } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/image-quotes:
+    post:
+      operationId: createImageQuoteSnapshot
+      summary: Save an immutable maximum-budget image offer without generation or funding
+      description: Requires active editing access and explicit storage consent. Uses authorized saved book context and verified clean reference bytes. Repeat the same key after an uncertain reply. Purchases remain unavailable.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [modelId, idempotencyKey, kind, prompt, consentToQuoteStorage]
+              properties:
+                modelId: { type: string, minLength: 1, maxLength: 128 }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+                bookId: { type: string, format: uuid }
+                kind: { enum: [illustration, cover] }
+                prompt: { type: string, minLength: 1, maxLength: 8000 }
+                referenceAssetIds: { type: array, maxItems: 3, uniqueItems: true, items: { type: string, format: uuid } }
+                consentToQuoteStorage: { const: true }
+      responses:
+        "200":
+          description: Saved offer identity; recover details through the quote GET route
+          content:
+            application/json:
+              schema: { type: object, required: [quoteId, purchaseAvailable], properties: { quoteId: { type: string, format: uuid }, purchaseAvailable: { const: false } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/image-models:
+    get:
+      operationId: listImageQuoteModels
+      summary: List approved image quote options for an active workspace member
+      description: Read-only discovery. No generation or funding; purchaseAvailable follows the server purchase gate. No internal rates are exposed.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Private no-store approved model options
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [catalogVersion, pricingBasis, purchaseAvailable, models]
+                properties:
+                  catalogVersion: { type: string }
+                  pricingBasis: { const: maximum_token_budget }
+                  purchaseAvailable: { type: boolean }
+                  models: { type: array, items: { type: object } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/image-quotes/{quoteId}:
+    get:
+      operationId: getImageQuoteSnapshot
+      summary: Recover the caller's saved image offer without generating or charging
+      description: Active membership required. Verifies stored price and request identity. Private no-store response omits prompts, references and internal rates.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: quoteId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Verified saved offer with ready or expired status and purchaseAvailable false
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/image-quotes/{quoteId}/accept:
+    post:
+      operationId: acceptImageQuote
+      summary: Accept an image offer and enqueue one funded image job
+      description: Requires active editor access, explicit generation consent, exact quoted credits, an enabled purchase flag and a current approved catalog. Existing acceptance can be recovered idempotently.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: quoteId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, required: [expectedCredits, consentToGenerate], properties: { expectedCredits: { type: string, pattern: '^[1-9][0-9]{0,9}$' }, consentToGenerate: { const: true } } }
+      responses:
+        "200": { description: Accepted quote and queued image job identity }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/image-quotes/{quoteId}/job:
+    get:
+      operationId: recoverImageQuoteJob
+      summary: Read accepted image job status without starting another generation
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: quoteId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Private no-store minimal job status and completed asset ID, if ready }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/admin/access:
     get:
       operationId: adminAccess
@@ -546,7 +679,7 @@ paths:
                 chapterIds: { type: array, minItems: 1, maxItems: 3, items: { type: string, format: uuid } }
                 maxTokens: { type: integer, minimum: 4096, maximum: 16000, default: 12000 }
       responses:
-        '200': { description: Private fingerprint, page descriptors, creditsPerPage and completedJobId per page }
+        '200': { description: Private fingerprint, free page descriptors and completedJobId per page }
         '401': { description: Authentication required }
         '403': { description: Editing access required }
         '422': { description: Invalid selection, missing saved version or unsupported manuscript size }
@@ -554,8 +687,8 @@ paths:
     post:
       tags: [v1]
       operationId: generateBookBibleCandidates
-      summary: Generate review-only, manuscript-cited Book Bible candidates
-      description: Reserves one operational AI credit before provider dispatch. A saved request key replays its original job; uncertain replies must be recovered without regenerating. Generation never changes canonical Book Bible entries.
+      summary: Retired legacy fixed-credit Book Bible generation endpoint
+      description: Returns 410 before reading manuscript content. Use the token-quote preparation and separate acceptance endpoints; existing legacy jobs can only use the legacy receipt recovery endpoint.
       parameters:
         - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -578,8 +711,7 @@ paths:
                     fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
                     pageIndex: { type: integer, minimum: 0, maximum: 4999 }
       responses:
-        "200": { description: Existing successful job and candidate list; no new generation }
-        "201": { description: Candidate list saved for review; Book Bible canon unchanged }
+        "410": { description: Legacy flat operational-credit generation is retired }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
@@ -595,6 +727,97 @@ paths:
         - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
         required: true
+  /v1/books/{bookId}/bible/models:
+    get:
+      tags: [v1]
+      operationId: listBookBiblePricedModels
+      summary: List server-approved models available for token-priced Book Bible extraction
+      description: Requires book membership. No default model or price is advertised when no active approved catalog is configured.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Safe model and catalog version projection; private no-store }
+        '401': { $ref: "#/components/responses/Error" }
+        '403': { $ref: "#/components/responses/Error" }
+        '503': { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/quotes:
+    post:
+      tags: [v1]
+      operationId: requestBookBibleTokenQuote
+      summary: Count one selected saved Book Bible reading batch and prepare an exact expiring credit quote
+      description: Requires writing access and explicit provider token-count consent. Persists an idempotent private source/model/catalog snapshot before counting. It does not create a generation job or reserve credits; separate quote acceptance is required.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [modelId, idempotencyKey, chapterIds, allowProviderTokenCounting]
+              properties:
+                modelId: { type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,63}$' }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+                chapterIds: { type: array, minItems: 1, maxItems: 3, items: { type: string, format: uuid } }
+                maxTokens: { type: integer, minimum: 4096, maximum: 16000, default: 12000 }
+                reading:
+                  type: object
+                  additionalProperties: false
+                  required: [fingerprint, pageIndex]
+                  properties:
+                    fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+                    pageIndex: { type: integer, minimum: 0, maximum: 4999 }
+                allowProviderTokenCounting: { type: boolean, const: true }
+      responses:
+        '201': { description: Exact token/credit quote is ready; not a funded purchase }
+        '202': { description: Existing consented quote count is still pending; retry same request key }
+        '400': { $ref: "#/components/responses/Error" }
+        '401': { $ref: "#/components/responses/Error" }
+        '403': { $ref: "#/components/responses/Error" }
+        '409': { $ref: "#/components/responses/Error" }
+        '422': { $ref: "#/components/responses/Error" }
+        '429': { $ref: "#/components/responses/Error" }
+        '503': { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/quotes/{requestId}:
+    get:
+      tags: [v1]
+      operationId: getBookBibleTokenQuote
+      summary: Read caller-scoped Book Bible quote and accepted job status without provider dispatch
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200': { description: Safe quote and optional accepted job status; private no-store }
+        '401': { $ref: "#/components/responses/Error" }
+        '403': { $ref: "#/components/responses/Error" }
+        '404': { $ref: "#/components/responses/Error" }
+        '503': { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/quotes/{requestId}/accept:
+    post:
+      tags: [v1]
+      operationId: acceptBookBibleTokenQuote
+      summary: Explicitly accept an exact Book Bible quote, atomically enqueue one quoted job and reserve credits
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedCredits]
+              properties:
+                expectedCredits: { type: integer, minimum: 1, maximum: 2147483647 }
+      responses:
+        '202': { description: One funded quoted job accepted; provider dispatch is asynchronous }
+        '401': { $ref: "#/components/responses/Error" }
+        '403': { $ref: "#/components/responses/Error" }
+        '404': { $ref: "#/components/responses/Error" }
+        '409': { $ref: "#/components/responses/Error" }
+        '503': { $ref: "#/components/responses/Error" }
         content:
           application/json:
             schema:
@@ -640,33 +863,95 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
-  /v1/books/{bookId}/metadata/generate:
+  /v1/books/{bookId}/metadata/models:
+    get:
+      tags: [v1]
+      operationId: listMetadataQuoteModels
+      summary: List approved metadata model labels without private rates
+      parameters: [{ name: bookId, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses:
+        "200": { description: Private no-store model discovery; missing approved catalog disables creation }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/metadata/quotes:
     post:
       tags: [v1]
-      operationId: generateBookMetadataCandidate
-      summary: Generate a cited, review-only metadata draft
-      description: Uses bounded current manuscript versions and Book Bible evidence. The successful draft is audited on the AI job and consumes the applicable AI credit; it never updates book_metadata. An editor must explicitly save accepted fields through the metadata update endpoint.
-      parameters:
-        - name: bookId
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
+      operationId: createMetadataTokenQuote
+      summary: Persist a consented saved-input token quote; do not generate or reserve credits
+      description: The original key and settings replay the immutable offer before current source/catalog preparation. Counting, generation consent and exact acceptance remain separate actions.
+      parameters: [{ name: bookId, in: path, required: true, schema: { type: string, format: uuid } }]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/GenerateBookMetadataRequest" }
+            schema: { $ref: "#/components/schemas/CreateMetadataQuoteRequest" }
       responses:
-        "200":
-          description: Idempotent replay of the existing metadata job
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/GeneratedBookMetadataResponse" }
-        "201":
-          description: Metadata candidate created for author review; canonical metadata is unchanged
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/GeneratedBookMetadataResponse" }
+        "200": { description: Existing immutable quote/status, content: { application/json: { schema: { $ref: "#/components/schemas/MetadataQuoteStatus" } } } }
+        "201": { description: Counted saved offer; no generation, content: { application/json: { schema: { $ref: "#/components/schemas/MetadataQuoteStatus" } } } }
+        "202": { description: Saved counting request; no automatic recount, content: { application/json: { schema: { $ref: "#/components/schemas/MetadataQuoteStatus" } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/metadata/quotes/recover:
+    post:
+      tags: [v1]
+      operationId: recoverMetadataQuoteByRequestKey
+      summary: Read the caller's saved metadata offer after an uncertain response
+      description: Active book membership and ownership required. Key-only lookup is independent of current catalog/manuscript. No provider, acceptance, job or ledger writes. Private no-store projection excludes source and rates.
+      parameters: [{ name: bookId, in: path, required: true, schema: { type: string, format: uuid } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [idempotencyKey]
+              properties: { idempotencyKey: { type: string, minLength: 8, maxLength: 200 } }
+      responses:
+        "200": { description: Original offer and accepted result status, content: { application/json: { schema: { $ref: "#/components/schemas/MetadataQuoteStatus" } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/metadata/quote-requests/{requestId}:
+    get:
+      tags: [v1]
+      operationId: getMetadataQuoteStatus
+      summary: Recover immutable metadata offer and accepted job/candidate status
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Private no-store original status, content: { application/json: { schema: { $ref: "#/components/schemas/MetadataQuoteStatus" } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/metadata/quotes/{requestId}/accept:
+    post:
+      tags: [v1]
+      operationId: acceptMetadataTokenQuote
+      summary: Explicitly confirm exact credits and atomically accept the saved metadata quote
+      description: Active writing role required. SQL validates source, offer expiry and saved catalog and atomically creates one funded job. Replays use the same accepted identity.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedCredits]
+              properties: { expectedCredits: { type: integer, minimum: 1, maximum: 2147483647 } }
+      responses:
+        "202": { description: Existing or newly accepted job identity; recovery does not create another hold }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -718,6 +1003,25 @@ paths:
         content:
           application/json:
             schema: { $ref: "#/components/schemas/SaveStoryBlueprintRequest" }
+  /v1/books/{bookId}/metadata/generate:
+    post:
+      tags: [v1]
+      operationId: generateBookMetadataCandidate
+      deprecated: true
+      summary: Retired direct metadata generation route
+      description: Always returns 410 Gone. Use the authenticated metadata quote, acceptance, and worker flow instead; direct unquoted generation is disabled.
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "401": { $ref: "#/components/responses/Error" }
+        "410":
+          description: Direct unquoted generation is retired; request and accept an exact metadata token quote.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
       responses:
         "200":
           description: Updated blueprint
@@ -1060,20 +1364,10 @@ paths:
     post:
       tags: [v1]
       operationId: generateImageAsset
-      summary: Generate a private illustration or cover-art asset from saved book context
-      description: A matching completed request key replays the saved asset. A pending image request for the same author and workspace blocks a new dispatch. If the provider reply is uncertain, the original job remains pending with its credit reservation; refresh image history and seek operator review rather than starting another paid request. No provider retry occurs automatically.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/GenerateImageRequest" }
+      summary: Retired unquoted image generation endpoint
+      description: Retired outside test mode unless IMAGE_LEGACY_GENERATION_ENABLED is explicitly enabled by the operator. New author image generation requires a saved token-priced quote and explicit funded acceptance.
       responses:
-        "201": { description: Generated asset and short-lived private preview }
-        "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
-        "422": { $ref: "#/components/responses/Error" }
-        "503": { $ref: "#/components/responses/Error" }
+        "410": { $ref: "#/components/responses/Error" }
   /v1/assets/{assetId}/download-url:
     get:
       tags: [v1]
@@ -1123,28 +1417,16 @@ paths:
     post:
       tags: [v1]
       operationId: createAiJob
-      summary: Queue or recover a paid text AI review
-      description: >-
-        The body idempotencyKey is scoped to the requesting actor and exact
-        book, chapter set, agent, brief and context policy. An identical
-        replay returns the accepted job without creating another request.
-        Different content with the same key is rejected.
+      deprecated: true
+      summary: Retired legacy operational-credit AI review endpoint
+      description: Direct operational-credit AI review is closed by default. Use the token-priced quote, explicit acceptance, and recovery endpoints. A compatibility implementation is available only to named regression tests.
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/CreateAiJobRequest" }
       responses:
-        "202":
-          description: AI review queued
-          content:
-            application/json:
-              schema: { type: object }
-        "200":
-          description: Existing matching AI review recovered
-          content:
-            application/json:
-              schema: { type: object }
+        "410": { description: Use the token-priced quote and acceptance flow }
         "401": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
   /v1/ai/jobs/requests/{requestKey}:
@@ -1191,7 +1473,88 @@ paths:
             application/json:
               schema: { type: object }
         "401": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/ai-review/models:
+    get:
+      tags: [v1]
+      operationId: listAiReviewModels
+      summary: List currently approved usage-priced text models
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Public model choices and pricing-policy versions }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "503": { description: No approved pricing catalog or private counter configuration }
+  /v1/books/{bookId}/ai-review/quotes:
+    post:
+      tags: [v1]
+      operationId: createAiReviewTokenQuote
+      summary: Prepare a consented exact-usage quote without creating a generation job
+      description: Saves source-version pointers and the exact generation request privately. Provider token counting requires explicit consent; repeated idempotency keys recover the same quote.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [modelId, agentType, chapterIds, idempotencyKey, contextPolicy, allowProviderTokenCounting]
+              properties:
+                modelId: { type: string }
+                agentType: { type: string, enum: [writer, proofreader, copyeditor, consistency] }
+                chapterIds: { type: array, minItems: 1, maxItems: 5, items: { type: string, format: uuid } }
+                userInstruction: { type: string, maxLength: 4000 }
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+                contextPolicy: { type: object }
+                allowProviderTokenCounting: { type: boolean, enum: [true] }
+      responses:
+        "201": { description: Exact quote ready; no generation job or credit hold exists yet }
+        "202": { description: Token counting in progress; poll the saved request status }
+        "200": { description: Existing exact quote recovered }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { description: Counting/storage unavailable; no generation is started }
+  /v1/books/{bookId}/ai-review/quotes/{requestId}:
+    get:
+      tags: [v1]
+      operationId: getAiReviewTokenQuote
+      summary: Read a private token quote and accepted job status
+      description: Read-only recovery; never dispatches provider work or reserves credits.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Safe quote status and optional safe job status }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/ai-review/quotes/{requestId}/accept:
+    post:
+      tags: [v1]
+      operationId: acceptAiReviewTokenQuote
+      summary: Explicitly reserve the exact quoted credits and queue AI review
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedCredits]
+              properties:
+                expectedCredits: { type: integer, minimum: 1 }
+      responses:
+        "202": { description: Exact quote accepted and job queued; replay returns the same job }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { description: Quote expired, source changed, or exact credit total no longer matches }
+        "503": { description: Acceptance outcome unclear; recover the same quote before retrying }
   /v1/ai/suggestions/{id}/apply:
     post:
       tags: [v1]
@@ -1701,6 +2064,7 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
   /v1/workspaces/{workspaceId}/members:
+      description: Asset artwork requests require reviewerId, entityVersionNumber for the exact current clean version, and a stable idempotencyKey. The optional version and key are not accepted for non-asset approvals.
     get:
       tags: [v1]
       operationId: listMembers
@@ -1714,6 +2078,8 @@ paths:
   /v1/workspaces/{workspaceId}/invitations:
     get:
       tags: [v1]
+                entityVersionNumber: { type: integer, minimum: 1, description: Required for asset artwork approvals; pins the request to the exact current scanned version. }
+                idempotencyKey: { type: string, format: uuid, description: Required for asset artwork approvals and reused after an uncertain response. }
       operationId: listWorkspaceInvitations
       summary: List invitation metadata without token hashes (owner/admin)
       parameters:
@@ -1727,6 +2093,14 @@ paths:
       operationId: inviteMember
       summary: Create or rotate a hashed, seven-day invitation link (owner/admin)
       parameters:
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment: { type: string, maxLength: 2000, description: Required when rejecting asset artwork. }
         - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
         required: true
@@ -2810,6 +3184,55 @@ components:
         candidate: { $ref: "#/components/schemas/GeneratedBookMetadataCandidate" }
     StoryBlueprintStory:
       type: object
+    CreateMetadataQuoteRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, modelId, allowProviderTokenCounting]
+      properties:
+        idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+        modelId: { type: string, pattern: "^[a-z0-9][a-z0-9_-]{0,63}$" }
+        allowProviderTokenCounting: { type: boolean, const: true }
+        chapterIds:
+          type: array
+          minItems: 1
+          maxItems: 5
+          uniqueItems: true
+          items: { type: string, format: uuid }
+        audience: { type: string, minLength: 1, maxLength: 500 }
+        tone: { type: string, minLength: 1, maxLength: 200 }
+        maxTokens: { type: integer, minimum: 4096, maximum: 16000, default: 12000 }
+    MetadataQuoteStatus:
+      type: object
+      additionalProperties: false
+      required: [request, quote]
+      properties:
+        request:
+          type: object
+          required: [id, status, createdAt]
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string, enum: [counting, ready, failed] }
+            createdAt: { type: string, format: date-time }
+            errorCode: { type: string }
+        quote:
+          type: [object, "null"]
+          required: [id, model, reservedCredits, expiresAt, status, acceptedJobId]
+          properties:
+            id: { type: string, format: uuid }
+            model: { type: string }
+            reservedCredits: { type: integer, minimum: 1, maximum: 2147483647 }
+            expiresAt: { type: string, format: date-time }
+            status: { type: string, enum: [ready, accepted, expired] }
+            acceptedJobId: { type: [string, "null"], format: uuid }
+        job:
+          type: object
+          required: [id, status]
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+            errorCode: { type: string }
+        candidate:
+          oneOf: [{ $ref: "#/components/schemas/GeneratedBookMetadataCandidate" }, { type: "null" }]
       additionalProperties: false
       required: [workingTitle, premise, readerPromise, genre, tone, pointOfView, tense, targetWordCount, synopsis, theme, notes]
       properties:

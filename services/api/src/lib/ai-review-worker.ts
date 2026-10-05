@@ -14,6 +14,7 @@ const inputSchema = z.object({
   contextPolicy: z.object({ includeBookBible: z.boolean(), includeStyleGuide: z.boolean(), includeRelatedContext: z.boolean(), semanticTopK: z.number().int().min(1).max(20), maxTokens: z.number().int().min(256).max(16_000) }).strict(),
 }).strict();
 const claimedSchema = z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), book_id: z.string().uuid(), created_by: z.string().uuid(), agent_type: z.enum(agentTypes), lease_token: z.string().uuid(), input_ref: inputSchema }).passthrough();
+export type AiReviewContextJob = z.infer<typeof claimedSchema>;
 const usageSchema = aiUsageSchema;
 const resultSchema = z.object({ status: z.enum(["succeeded","failed"]), provider: z.string().min(1).max(100), model: z.string().min(1).max(200), suggestions: z.array(z.unknown()).max(200).default([]), diagnostics: z.array(z.unknown()).max(500).default([]), usage: usageSchema, error: z.string().max(2_000).optional() }).passthrough();
 const editSchema = z.object({ chapterId: z.string().uuid(), nodeId: z.string().min(1).max(200), operation: z.unknown(), rationale: z.string().trim().min(1).max(2_000), confidence: z.number().min(0).max(1).nullable().optional() }).passthrough();
@@ -59,11 +60,15 @@ async function loadReviewSources(sb: SupabaseClient, job: z.infer<typeof claimed
   return { book: book as Record<string, unknown>, snapshots };
 }
 
-async function contextForJob(sb: SupabaseClient, job: z.infer<typeof claimedSchema>) {
+export async function buildAiReviewContext(sb: SupabaseClient, job: AiReviewContextJob) {
   const { book, snapshots } = await loadReviewSources(sb, job);
   const [{ data: style, error: styleError }, { data: bible, error: bibleError }] = await Promise.all([
-    sb.from("style_guides").select("rules_json,tone,spelling_variant").eq("book_id", job.book_id).maybeSingle(),
-    sb.from("book_bible_items").select("id,type,name,description,attributes_json,source_refs_json").eq("book_id", job.book_id).order("created_at").limit(100),
+    job.input_ref.contextPolicy.includeStyleGuide
+      ? sb.from("style_guides").select("rules_json,tone,spelling_variant").eq("book_id", job.book_id).maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+    job.input_ref.contextPolicy.includeBookBible
+      ? sb.from("book_bible_items").select("id,type,name,description,attributes_json,source_refs_json").eq("book_id", job.book_id).order("created_at").limit(100)
+      : Promise.resolve({ data: [], error: null }),
   ]);
   if (styleError || bibleError) throw new AiReviewFailure("ai_source_unavailable", true, "Could not assemble approved AI context");
   const query = retrievalQuery(job.input_ref.userInstruction ?? [...snapshots.values()].map((chapter) => `${chapter.title} ${chapter.nodes.map((node) => node.text ?? "").join(" ")}`).join(" "));
@@ -71,12 +76,17 @@ async function contextForJob(sb: SupabaseClient, job: z.infer<typeof claimedSche
   return { book, snapshots, body: { jobId: job.id, workspaceId: job.workspace_id, bookId: job.book_id, agentType: job.agent_type, idempotencyKey: `worker:${job.id}`, contextPolicy: job.input_ref.contextPolicy, input: { chapterIds: [...snapshots.keys()], chapters: Object.fromEntries([...snapshots].map(([id, value]) => [id, { id, title: value.title, version: value.version, nodes: value.nodes }])), styleGuide: job.input_ref.contextPolicy.includeStyleGuide && style ? { rules: style.rules_json, tone: style.tone, spellingVariant: style.spelling_variant } : {}, bookBible: job.input_ref.contextPolicy.includeBookBible ? bible ?? [] : [], relatedContext: related, userInstruction: job.input_ref.userInstruction } } };
 }
 
+export function validateAiReviewResult(raw: unknown, job: AiReviewContextJob,
+  context: Awaited<ReturnType<typeof buildAiReviewContext>>) {
+  return validatedResult(raw, job, { book: context.book, snapshots: context.snapshots });
+}
+
 export async function runOneAiReviewJob(sb: SupabaseClient, options: { leaseSeconds?: number; fetcher?: typeof fetch } = {}): Promise<AiReviewWorkerOutcome> {
   const leaseSeconds = options.leaseSeconds ?? 180; const claim = await sb.rpc("claim_ai_review_job", { p_lease_seconds: leaseSeconds });
   if (claim.error) throw new AiReviewFailure("ai_claim_failed", true); const raw = row(claim.data); if (!raw) return { status: "idle" };
   const parsed = claimedSchema.safeParse(raw); const jobId = String(raw.id); const token = String(raw.lease_token); if (!parsed.success) { await sb.rpc("fail_ai_review_job", { p_job_id: jobId, p_lease_token: token, p_error_code: "ai_invalid_input", p_error_message: "Invalid queued AI job", p_retryable: false }); return { status: "failed", jobId }; }
   const abort = new AbortController(); let renewal: Promise<void> | undefined; const heartbeat = setInterval(() => { if (renewal) return; renewal = Promise.resolve(sb.rpc("renew_ai_review_lease", { p_job_id: jobId, p_lease_token: token, p_lease_seconds: leaseSeconds })).then((renewed) => { if (renewed.error || renewed.data !== true) abort.abort(); }).catch(() => abort.abort()).finally(() => { renewal = undefined; }); }, Math.floor(leaseSeconds * 1000 / 3)); heartbeat.unref(); let completionAttempted = false; let dispatched = false;
-  let context: Awaited<ReturnType<typeof contextForJob>> | undefined;
+  let context: Awaited<ReturnType<typeof buildAiReviewContext>> | undefined;
   const base = process.env.AI_SERVICE_URL ?? `http://127.0.0.1:${process.env.AI_SERVICE_PORT ?? "8000"}`;
   const completeResult = async (rawResult: unknown) => {
     if (!context) throw new AiReviewFailure("ai_source_unavailable", false);
@@ -86,7 +96,7 @@ export async function runOneAiReviewJob(sb: SupabaseClient, options: { leaseSeco
     if (complete.error || !row(complete.data)) throw new AiReviewFailure(complete.error?.code === "40001" ? "ai_lease_lost" : "ai_completion_failed", true);
   };
   try {
-    context = await contextForJob(sb, parsed.data); abort.signal.throwIfAborted();
+    context = await buildAiReviewContext(sb, parsed.data); abort.signal.throwIfAborted();
     // This durable marker is written before HTTP. Once set, an expired lease
     // cannot cause another worker to send the paid request again.
     const marked = await sb.rpc("mark_ai_review_dispatched", { p_job_id: jobId, p_lease_token: token });

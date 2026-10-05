@@ -11,6 +11,7 @@ import { bookMemoryRoutes } from "./routes/book-memory.js";
 import { storyBlueprintRoutes } from "./routes/story-blueprints.js";
 import { storyBlueprintProposalRoutes } from "./routes/story-blueprint-proposals.js";
 import { assetRoutes } from "./routes/assets.js";
+import { imageQuoteRoutes } from "./routes/image-quotes.js";
 import { folderRoutes } from "./routes/folders.js";
 import { collabRoutes } from "./routes/collab.js";
 import { teamRoutes } from "./routes/team.js";
@@ -24,7 +25,10 @@ import { editionRoutes } from "./routes/editions.js";
 import { publishingRoutes } from "./routes/publishing.js";
 import { accountRoutes } from "./routes/account.js";
 import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
+import { metadataQuoteRoutes } from "./routes/metadata-quotes.js";
+import { aiReviewQuoteRoutes } from "./routes/ai-review-quotes.js";
 import { bookBibleGenerationRoutes } from "./routes/book-bible-generation.js";
+import { bookBibleQuoteRoutes } from "./routes/book-bible-quotes.js";
 import { audiobookRoutes } from "./routes/audiobooks.js";
 import { translationRoutes } from "./routes/translations.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -37,7 +41,7 @@ import type { AssetMalwareScanner } from "./lib/asset-scanner.js";
 
 export async function buildApp(
   supabaseFactory: SupabaseFactory = defaultSupabaseFactory,
-  opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner } = {},
+  opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner; enableLegacyMetadataGenerationForTests?: boolean; enableLegacyAiReviewForTests?: boolean } = {},
 ): Promise<FastifyInstance> {
   const env = loadEnv();
   const app = Fastify({ logger: { level: env.LOG_LEVEL } });
@@ -61,14 +65,18 @@ export async function buildApp(
     bookRoutes(v1, { assetScanner: opts.assetScanner });
     chapterRoutes(v1);
     bookMemoryRoutes(v1);
+    bookBibleQuoteRoutes(v1, { fetcher: opts.aiFetch });
     storyBlueprintRoutes(v1);
     storyBlueprintProposalRoutes(v1);
-    metadataGenerationRoutes(v1, { fetcher: opts.aiFetch });
+    metadataGenerationRoutes(v1, { fetcher: opts.aiFetch, enableLegacyGeneration: opts.enableLegacyMetadataGenerationForTests === true });
+    metadataQuoteRoutes(v1, { fetcher: opts.aiFetch });
+    aiReviewQuoteRoutes(v1, { fetcher: opts.aiFetch });
     bookBibleGenerationRoutes(v1, { fetcher: opts.aiFetch });
-    aiRoutes(v1, { fetcher: opts.aiFetch });
+    aiRoutes(v1, { fetcher: opts.aiFetch, enableLegacyGeneration: opts.enableLegacyAiReviewForTests === true });
     audiobookRoutes(v1, { fetcher: opts.renderFetch });
     translationRoutes(v1);
     assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner });
+    imageQuoteRoutes(v1);
     editionRoutes(v1, { fetcher: opts.renderFetch });
     publishingRoutes(v1, { renderFetcher: opts.renderFetch, publishingFetcher: opts.publishingFetch });
     folderRoutes(v1);

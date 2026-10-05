@@ -162,7 +162,7 @@ function normalizeSuggestions(result: z.infer<typeof serviceResult>, book: Recor
   });
 }
 
-export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
+export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch; enableLegacyGeneration?: boolean } = {}) {
   const fetcher = options.fetcher ?? fetch;
 
   app.get("/ai/jobs", async (req, reply) => {
@@ -197,6 +197,9 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
   });
 
   app.post("/ai/jobs", async (req, reply) => {
+    if (!options.enableLegacyGeneration) {
+      throw new AppError(410, "Direct operational-credit AI review is retired. Prepare and accept a token-priced AI review quote instead.");
+    }
     const parsed = createJobSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "Check the AI request.", { issues: parsed.error.issues });
     const body = parsed.data;

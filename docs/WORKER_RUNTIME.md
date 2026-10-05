@@ -1,6 +1,6 @@
 # Worker runtime
 
-The Next.js app can run on Vercel. These nine persistent queue consumers need
+The Next.js app can run on Vercel. These thirteen persistent queue consumers need
 a separate host with Node.js 22, private service connectivity and server-side
 credentials. The repository now includes a shared allowlisted launcher and a
 systemd worker template for Linux. Installing these files does not configure
@@ -34,10 +34,22 @@ environment and verifies configuration refusal before any network work.
 | translation | Accepted funded translation jobs |
 | blueprint-quotes | Story Blueprint quote preparation |
 | blueprint | Accepted funded Blueprint proposals |
+| metadata-quotes | Accepted metadata token quotes and measured settlement |
+| ai-review-quotes | Accepted funded writer/proofreader/copyeditor/consistency jobs |
+| book-bible-quotes | Accepted funded Book Bible extraction and measured settlement |
+| image-quotes | Accepted funded illustrations/covers, private receipts and measured atomic settlement |
 
 `npm run worker -- <role> [--once]` starts real processing. It may call OpenAI
 and consume paid usage for queued work. Translation and Blueprint execution
 are always in quoted mode; arbitrary paths and mode overrides are refused.
+Metadata processing requires a valid server-owned catalog and an accepted
+credit hold; absent/expired pricing configuration offers no purchasable model.
+AI review offers require `AI_REVIEW_PRICING_CATALOG_JSON`; do not start the
+quoted AI-review worker until its migrations and server-only price catalog
+have been reviewed and installed/configured.
+Book Bible quotes require `BOOK_BIBLE_PRICING_CATALOG_JSON`; keep this worker
+stopped until its quote migration is reviewed/applied and the server-only price
+catalog is explicitly approved/configured.
 
 ## Linux installation and activation
 
@@ -99,7 +111,7 @@ and dependencies, then start the approved roles. Monitor queue age, expired
 leases, terminal failures, scratch disk capacity and provider settlement
 separately; no monitoring or paging destination is installed by these units.
 
-CI validates service syntax and all nine launcher entrypoints on Linux without
+CI validates service syntax and all thirteen launcher entrypoints on Linux without
 starting system services or supplying credentials. Host permissions, network,
 secret storage, worker supervision/recovery, backup and alerts still require
 acceptance on the deployment host. The service settings follow the official

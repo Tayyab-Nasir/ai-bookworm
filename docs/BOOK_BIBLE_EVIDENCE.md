@@ -32,7 +32,35 @@ insert/update bypass attempts. The migration is **source-only**, not applied
 to the hosted Supabase project. Existing Book Bible rows are not rewritten or
 retroactively certified; audit them before any claim of universal provenance.
 
-## AI extraction boundary (source checkpoint)
+## AI extraction boundary (current source checkpoint — 2026-09-25)
+
+The prior flat-credit Book Bible generation endpoint is closed in production
+by default. The current author workflow lists only owner-approved server-catalog
+models, requires explicit consent before sending the exact selected saved batch
+for input-token counting, persists a version/fingerprint-pinned quote request,
+shows the exact credit maximum, and requires separate explicit quote acceptance
+before queueing funded generation. Session recovery stores only the quote key,
+request ID, and selected chapter IDs; status recovery is read-only. Results are
+proposal drafts and are never written to canonical Book Bible records by the
+worker. Users review candidate provenance and choose Save themselves.
+
+The accepted-job worker is a separate `book-bible-quotes` role. It verifies the
+saved quote/job/request identity, source version/hash, exact AI-service request
+hash, candidate citations and provider-measured input/cached/output token split.
+Missing or unbalanced measurements and uncertain post-dispatch outcomes remain
+held for review; they cannot be billed as guessed zero or estimated usage. The
+source-only `20260925140000_book_bible_token_quotes.sql` migration atomically
+settles credits and stores the AI run, usage event, service receipt, draft
+candidates and job status. Do not apply this migration or activate a catalog
+without separate owner approval and hosted acceptance.
+
+Local evidence: `npm run verify` passes, including 86 disposable migrations / 60
+SQL assertion files, and `tests/e2e/book-bible-browser.mjs` passes against an
+isolated Next app plus synthetic Auth/API fixture. This does not prove native
+Supabase/RLS/PostgREST/Storage behavior, multiple-connection races, real OpenAI
+quality/cost or production worker operations.
+
+## Historical AI extraction boundary (legacy operational-credit checkpoint)
 
 The `book_bible` agent's v2 prompt and structured output now require each
 candidate to cite a selected manuscript node with exact chapter ID, saved

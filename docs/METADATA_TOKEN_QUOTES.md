@@ -1,6 +1,36 @@
 # Metadata token quotes
 
-## Implemented preparation
+## Source implementation checkpoint
+
+### 2026-10-03 recovery and fenced completion follow-up
+
+Metadata offers can now be recovered by the caller's original key through
+read-only `POST /v1/books/:bookId/metadata/quotes/recover`. It returns the same
+private no-store offer/job/candidate projection as the saved-request GET. It
+requires active book membership and ownership, but never reads the current
+catalog or manuscript, calls the provider, accepts an offer, or writes a job or
+ledger entry. Creation retries with unchanged saved settings also replay before
+current context/catalog preparation. A missing recovery key returns 404; it
+must not silently create a new counted request.
+
+Public ready offers must exactly match canonical price arithmetic, saved
+job/user/workspace/request hash, model, output limit, input bounds, policy and
+original catalog lifetime. Verification rebuilds the immutable saved snapshot
+at its original quote time, so expiry or current catalog removal does not erase
+read-only recovery. Private source, commercial rates and approval references
+are not returned. Typed client methods now separate creation, key recovery,
+status and exact acceptance; the retired direct generation method is removed.
+OpenAPI describes these routes and safe projections.
+
+Additive source migration `20261003043000_text_quote_recovery_completion.sql`
+reclaims expired undispatched text leases, cancels invalid pre-dispatch holds,
+locks saved source before one-way dispatch, preserves immutable durable receipts,
+and atomically completes metadata with measured settlement under a current lease
+and membership lock. Worker hash checks match the actual four-field AI-service
+reply. Ambiguous completion requires an authoritative status read; it must not
+regenerate or separately release a dispatched hold. This migration is not
+applied hosted. Current local verification and native/browser limits belong in
+the latest dated Codex checkpoint, not the historical counts below.
 
 `services/api/src/lib/metadata-quote.ts` builds a server-only quote from a
 bounded, validated metadata context, a server-configured approved text catalog,
@@ -16,41 +46,67 @@ commercial rates or approval references. Missing, expired or malformed catalog
 configuration disables quote preparation. Tests use a synthetic catalog,
 counter and internal credential only.
 
-## Not yet connected to author purchases
+The durable local source flow is now connected:
 
-This is a preparation module, not a customer purchase workflow. It is not yet
-called by `metadata-generation.ts` or `BookMemoryClient.tsx`. There is no saved
-quote proposal, author-facing total/acceptance, atomic acceptance RPC, funded
-worker lease, pre-dispatch source revalidation, usage settlement or user
-recovery flow for metadata. Do not display or accept this prepared quote as a
-billable offer until those steps are implemented together.
+- Source-only migrations `20260925100000_metadata_token_quote_acceptance.sql`
+  and `20260925103000_quoted_metadata_worker.sql` define private count-request
+  persistence, explicit-consent recording, caller-scoped acceptance with an
+  exact expected-credit total, one funded hold/job, dispatch fencing, source
+  version checks, renewals, pre-dispatch cancellation and review holds. They
+  are not applied to hosted Supabase.
+- Authenticated API routes expose approved model choices, quote request/status,
+  exact-total acceptance, and safe read-only job status. Source is collected
+  under the caller's book access, bounded and version-pinned. Quote/history
+  reads are private no-store.
+- `runOneQuotedMetadataJob` verifies the accepted quote, source snapshot and
+  request hash before one-way dispatch; it checks the private AI receipt,
+  validates citations and measured usage, settles through the funded ledger,
+  and preserves uncertain provider outcomes for review rather than redispatch.
+- `npm run worker:metadata-quotes` and the allowlisted `metadata-quotes`
+  launcher/systemd role now run this queue. This is code wiring only; no worker
+  was started or deployed by this implementation.
+- `BookMemoryClient` now requests an exact quote after explicit consent to
+  OpenAI input-token counting, shows the reserved-credit ceiling and expiry,
+  requires separate explicit purchase confirmation, supports same-key/status
+  recovery in session storage (IDs/options only, no manuscript text), and
+  exposes the returned candidate only as an unsaved review draft. A read-only
+  status endpoint replaces automatic legacy recovery for pending jobs.
+- The quote card uses a restrained publisher-proof visual: an instrument-serif
+  receipt on warm paper against the existing dark Book Memory workspace. Its
+  hierarchy separates evidence consent, quote and purchase confirmation.
 
-The existing `/metadata/generate` route still spends one operational AI credit
-and directly calls the synchronous AI service. It must remain clearly separate
-from this helper until the new durable path is complete; do not send it a
-`expectedCredits` value and assume that creates authorization. Retail pricing
-approval is an owner decision; the code only accepts dated, approved server
-catalog configuration and seeds no price.
+## Boundaries and remaining gates
 
-## Next steps
+The approved pricing catalog remains owner-controlled environment
+configuration (`METADATA_PRICING_CATALOG_JSON`). No rates were invented or
+activated. When this variable is missing/unapproved/expired, the API advertises
+no purchasable model and the author cannot start generation. No live OpenAI
+key/call or commercial usage occurred here.
 
-1. Add source-only quote-request/proposal SQL with strict immutability,
-   caller-scoped reads, rate limits, idempotency and atomic expected-credit
-   acceptance that creates the metadata job and funded hold together. Ensure
-   existing operational metadata reservation triggers cannot double-reserve.
-2. Add API quote, status/recovery and acceptance routes. Load book/chapter,
-   current document versions, style and approved Book Bible under caller RLS;
-   snapshot precisely the same bounded context that is sent to the token
-   counter. Recheck every version at quote acceptance and again before dispatch.
-3. Add a leased metadata worker. Verify the stored request hash/model before
-   claiming irreversible dispatch, send that hash to `/v1/ai/jobs`, persist a
-   private result receipt, validate source citations, and atomically settle
-   measured provider usage. Uncertain or incomplete receipts stay held for
-   read-only recovery/review, never a second generation.
-4. Connect `BookMemoryClient` to model selection, explicit provider-counting
-   consent, quoted credit total, acceptance, pending progress and recovery.
-   Keep candidate content review-only and require the author's existing
-   explicit Save before updating publishing metadata.
-5. Verify source-only SQL, API routes, worker idempotency/races, web UI and
-   native local-browser recovery before considering an owner-approved hosted
-   catalog or production offer.
+The older `POST /metadata/generate` endpoint now returns `410 Gone` before
+reading manuscript data, reserving credits or calling a provider. The
+compatibility implementation is disabled in the production `buildApp` path;
+only explicitly opted-in legacy regression tests can exercise it. OpenAPI and
+operations docs describe the retired contract. Keep this gate in place until
+the exact-quote flow has passed hosted acceptance and the legacy implementation
+can be safely removed. The remaining migration, provider-receipt, ledger and
+worker checks are local synthetic/disposable tests; hosted Supabase, live
+OpenAI, pricing activation and production worker supervision have not been
+accepted.
+
+Current local evidence (2026-09-25): 82 migrations and 58 SQL assertion files
+pass in disposable PostgreSQL; 348 API tests, 104 web tests, 3 worker-launcher
+tests and all workspace TypeScript checks pass. Native headless Edge metadata
+acceptance verifies explicit counting consent, exact 37-credit fixture quote,
+explicit purchase acceptance, read-only result recovery, author review and
+separate Save at 390px. An isolated Next production build also passes. Browser
+AI, quote, ledger and storage outcomes are fixtures, not live integration
+proof. The isolated Next runs auto-adjusted the already-dirty `next-env.d.ts`
+and `tsconfig.json`; only the test-output references they added were removed,
+and the other shared config changes were preserved.
+
+Next: remove the now-gated legacy implementation after verifying that no old
+client depends on it; rerun the focused and full local checks,
+then complete native hosted Auth/Storage/ledger and owner-approved
+pricing/provider acceptance. Keep both migrations source-only until a separate
+explicit hosted rollout approval.

@@ -97,16 +97,18 @@ test("invalid files are rejected before creating anything; blank books skip sour
   await f.run({ importing: false, file: null }); assert.deepEqual(f.calls, ["create"]);
 });
 
-test("AI setup saves only recovery IDs until its reviewable first draft is queued", async () => {
+test("AI setup checkpoints only chapter and paid-quote recovery pointers, never the private brief", async () => {
   const f = fixture();
   const result = await f.run({ importing: false, file: null, setupMode: "ai", finishWhenBookCreated: false });
   assert.equal(result.bookId, bookId); assert.deepEqual(f.calls, ["create"]);
   assert.equal(f.saved()?.completed, false); assert.equal(f.saved()?.setupMode, "ai");
   const saved = f.saved()!;
-  const recovered = readSetupCheckpoint(JSON.stringify({ ...saved, starter: { chapterId: assetId, jobId: userId }, storyBrief: "private idea" }), userId, workspaceId);
-  assert.deepEqual(recovered?.starter, { chapterId: assetId, jobId: userId });
+  const recovered = readSetupCheckpoint(JSON.stringify({ ...saved, starter: { chapterId: assetId, quoteKey: "story-starter-key-123", quoteRequestId: userId,
+    modelId: "fixture-writer", allowProviderTokenCounting: true }, storyBrief: "private idea" }), userId, workspaceId);
+  assert.deepEqual(recovered?.starter, { chapterId: assetId, quoteKey: "story-starter-key-123", quoteRequestId: userId, modelId: "fixture-writer", allowProviderTokenCounting: true });
   assert.doesNotMatch(JSON.stringify(recovered), /private idea/);
   assert.equal(readSetupCheckpoint(JSON.stringify({ ...saved, starter: { chapterId: "not-an-id" } }), userId, workspaceId), null);
+  assert.equal(readSetupCheckpoint(JSON.stringify({ ...saved, starter: { chapterId: assetId, allowProviderTokenCounting: false } }), userId, workspaceId), null);
 });
 
 test("upload failure retains the created book and retry does not recreate it", async () => {

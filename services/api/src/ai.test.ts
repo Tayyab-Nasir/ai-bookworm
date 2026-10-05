@@ -131,6 +131,47 @@ function baseStore(): Store {
   } };
 }
 
+function buildLegacyMetadataTestApp(store: Store, options: { aiFetch?: typeof fetch } = {}) {
+  return buildApp(() => fakeSupabase(store), { ...options, enableLegacyMetadataGenerationForTests: true });
+}
+
+function buildLegacyAiReviewTestApp(store: Store, options: { aiFetch?: typeof fetch } = {}) {
+  return buildApp(() => fakeSupabase(store), { ...options, enableLegacyAiReviewForTests: true });
+}
+
+test("direct operational-credit AI review is retired without touching the manuscript or provider", async (t) => {
+  const store = baseStore();
+  let providerCalls = 0;
+  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => { providerCalls++; return new Response(JSON.stringify(aiResult())); } });
+  t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: "/v1/ai/jobs", headers: auth, payload: {
+    bookId: BOOK, chapterIds: [CHAPTER], agentType: "proofreader", idempotencyKey: "retired-operational-ai-review",
+  } });
+  assert.equal(response.statusCode, 410, response.body);
+  assert.match(response.json().error.message, /token-priced.*quote/i);
+  assert.equal(providerCalls, 0);
+  assert.equal(store.tables.ai_jobs.length, 0);
+  assert.equal(store.rpcCalls.length, 0);
+});
+
+test("unpriced direct metadata generation is retired by default without side effects", async (t) => {
+  const store = baseStore();
+  let providerCalls = 0;
+  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => {
+    providerCalls++;
+    return new Response(JSON.stringify(metadataResult()));
+  } });
+  t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/metadata/generate`, headers: auth,
+    payload: { idempotencyKey: "retired-unpriced-metadata", chapterIds: [CHAPTER] } });
+  assert.equal(response.statusCode, 410, response.body);
+  assert.match(response.json().error.message, /token quote/i);
+  assert.equal(providerCalls, 0);
+  assert.equal(store.tables.ai_jobs.length, 0);
+  assert.equal(store.tables.usage_events.length, 0);
+  assert.equal(store.rpcCalls.length, 0);
+});
+
 function metadataResult(sourcePatch: Row = {}) {
   return {
     status: "succeeded", provider: "mock", model: "mock-metadata-1", diagnostics: [],
@@ -167,7 +208,7 @@ function aiResult() {
 test("AI review queues private canonical pointers without calling the provider in the HTTP request", async () => {
   const store = baseStore();
   const requests: Row[] = [];
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async (_url, init) => {
+  const app = await buildLegacyAiReviewTestApp(store, { aiFetch: async (_url, init) => {
     requests.push(JSON.parse(String(init?.body)) as Row);
     return new Response(JSON.stringify(aiResult()), { status: 200, headers: { "content-type": "application/json" } });
   } });
@@ -215,7 +256,7 @@ test("AI review history is book-scoped and omits private job input", async () =>
 test("a queued AI review has no provider side effect or credit before the worker claims it", async () => {
   const store = baseStore();
   let called = false;
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => { called = true; return new Response(JSON.stringify(aiResult())); } });
+  const app = await buildLegacyAiReviewTestApp(store, { aiFetch: async () => { called = true; return new Response(JSON.stringify(aiResult())); } });
   const response = await app.inject({ method: "POST", url: "/v1/ai/jobs", headers: auth, payload: {
     bookId: BOOK, chapterIds: [CHAPTER], agentType: "proofreader", idempotencyKey: "request-0002",
   } });
@@ -230,7 +271,7 @@ test("writer receives book-scoped cited context but persists only source identif
   const store = baseStore();
   store.tables.search_results = [{ id: "chunk", chapter_id: CHAPTER, document_version_id: VERSION_1, text_hash: "hash", excerpt: "Private silver compass passage" }];
   let called = false;
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async (_url, init) => {
+  const app = await buildLegacyAiReviewTestApp(store, { aiFetch: async (_url, init) => {
     called = true; return new Response(JSON.stringify(aiResult()));
   } });
   const response = await app.inject({ method: "POST", url: "/v1/ai/jobs", headers: auth, payload: {
@@ -250,7 +291,7 @@ test("concurrent metadata keys cannot start a second provider call and completio
   const started = new Promise<void>((resolve) => { entered = resolve; });
   const gate = new Promise<void>((resolve) => { release = resolve; });
   let calls = 0;
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => {
+  const app = await buildLegacyMetadataTestApp(store, { aiFetch: async () => {
     calls++; entered(); await gate;
     return new Response(JSON.stringify(metadataResult()));
   } });
@@ -277,7 +318,7 @@ test("lost metadata response remains reserved and recovery reads one existing re
   let receipt: Row | null = null;
   let generationCalls = 0;
   let recoveryCalls = 0;
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async (_url, init) => {
+  const app = await buildLegacyMetadataTestApp(store, { aiFetch: async (_url, init) => {
     if (init?.method === "POST") {
       generationCalls++;
       const body = JSON.parse(String(init.body));
@@ -322,11 +363,33 @@ test("metadata recovery refuses foreign receipts and never frees an unknown requ
   assert.equal(calls, 1);
 });
 
+test("metadata status recovery is private, caller-scoped, and never calls the AI provider", async (t) => {
+  const store = baseStore();
+  const candidate = metadataResult().suggestions[0];
+  const job = { id: VERSION_2, book_id: BOOK, workspace_id: WORKSPACE, created_by: USER,
+    agent_type: "metadata", billing_mode: "quoted", status: "succeeded",
+    output_ref: { candidate, reviewRequired: true, savedMetadataUpdated: false } };
+  store.tables.ai_jobs.push(job);
+  let providerCalls = 0;
+  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => { providerCalls++; throw new Error("Status reads must not call providers"); } });
+  t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/metadata/jobs/${job.id}/status`;
+  const response = await app.inject({ method: "GET", url, headers: auth });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.headers["cache-control"], "private, no-store");
+  assert.equal(response.json().job.billingMode, "quoted");
+  assert.equal(response.json().candidate.description, (candidate as Row).description);
+  assert.equal(providerCalls, 0);
+  job.created_by = "another-user";
+  assert.equal((await app.inject({ method: "GET", url, headers: auth })).statusCode, 404);
+  assert.equal(providerCalls, 0);
+});
+
 test("metadata reservation quota and role failures stop before provider execution", async (t) => {
   for (const [code, status] of [["23514", 422], ["42501", 403]] as const) {
     const store = baseStore(); store.metadataInsertError = code;
     let calls = 0;
-    const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => { calls++; return new Response(JSON.stringify(metadataResult())); } });
+    const app = await buildLegacyMetadataTestApp(store, { aiFetch: async () => { calls++; return new Response(JSON.stringify(metadataResult())); } });
     t.after(() => app.close());
     const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/metadata/generate`, headers: auth,
       payload: { idempotencyKey: "quota-race-request", chapterIds: [CHAPTER] } });
@@ -338,7 +401,7 @@ test("metadata reservation quota and role failures stop before provider executio
 
 test("accepted text request replays without spare quota and rejects reuse for another agent", async (t) => {
   const store = baseStore();
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => { throw new Error("Enqueue must not invoke provider"); } });
+  const app = await buildLegacyAiReviewTestApp(store, { aiFetch: async () => { throw new Error("Enqueue must not invoke provider"); } });
   t.after(() => app.close());
   const payload = { bookId: BOOK, chapterIds: [CHAPTER], agentType: "proofreader", idempotencyKey: "review-quota-replay" };
   const send = (body: Row) => app.inject({ method: "POST", url: "/v1/ai/jobs", headers: auth, payload: body });
@@ -355,7 +418,7 @@ test("accepted text request replays without spare quota and rejects reuse for an
 
 test("accepted AI request is recoverable by key without exposing private input", async (t) => {
   const store = baseStore();
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => { throw new Error("Enqueue must not invoke provider"); } });
+  const app = await buildLegacyAiReviewTestApp(store, { aiFetch: async () => { throw new Error("Enqueue must not invoke provider"); } });
   t.after(() => app.close());
   const payload = { bookId: BOOK, chapterIds: [CHAPTER], agentType: "writer", userInstruction: "Private chapter brief", idempotencyKey: "lost-response-key" };
   const created = await app.inject({ method: "POST", url: "/v1/ai/jobs", headers: auth, payload });
@@ -379,7 +442,7 @@ test("metadata generation returns a cited review draft without overwriting saved
     name: "Elara", description: "A determined cartographer", attributes_json: { calling: "mapmaker" }, source_refs_json: [],
   });
   const requests: Row[] = [];
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async (_url, init) => {
+  const app = await buildLegacyMetadataTestApp(store, { aiFetch: async (_url, init) => {
     requests.push(JSON.parse(String(init?.body)) as Row);
     return Response.json({ ...metadataResult(), provider: "openai", model: "fixture-model", requestId: "req-fixture",
       usage: { inputTokens: 20, outputTokens: 10, estimatedCostUsd: 0.001,
@@ -410,7 +473,7 @@ test("metadata generation returns a cited review draft without overwriting saved
 
 test("metadata generation rejects unverifiable citations and does not complete or charge", async () => {
   const store = baseStore();
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => new Response(JSON.stringify(metadataResult({
+  const app = await buildLegacyMetadataTestApp(store, { aiFetch: async () => new Response(JSON.stringify(metadataResult({
     textHash: "b".repeat(64),
   }))) });
   const response = await app.inject({
@@ -429,7 +492,7 @@ test("viewers cannot invoke metadata generation", async () => {
   const store = baseStore();
   store.tables.workspace_members[0].role = "viewer";
   let called = false;
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => {
+  const app = await buildLegacyMetadataTestApp(store, { aiFetch: async () => {
     called = true; return new Response(JSON.stringify(metadataResult()));
   } });
   const response = await app.inject({
@@ -451,7 +514,7 @@ test("metadata generation replays the same scoped request without another provid
     status: "succeeded", output_ref: { candidate, reviewRequired: true, savedMetadataUpdated: false },
   });
   let called = false;
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => {
+  const app = await buildLegacyMetadataTestApp(store, { aiFetch: async () => {
     called = true; return new Response(JSON.stringify(metadataResult()));
   } });
   const response = await app.inject({
@@ -474,7 +537,7 @@ test("a failed metadata idempotency key requires an explicit fresh key", async (
     status: "failed", error_code: "ai_service_unavailable", output_ref: null,
   });
   let called = false;
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => {
+  const app = await buildLegacyMetadataTestApp(store, { aiFetch: async () => {
     called = true; return new Response(JSON.stringify(metadataResult()));
   } });
   const response = await app.inject({
@@ -496,7 +559,7 @@ test("an in-flight metadata idempotency key is retained for safe polling", async
     status: "running", output_ref: null,
   });
   let called = false;
-  const app = await buildApp(() => fakeSupabase(store), { aiFetch: async () => {
+  const app = await buildLegacyMetadataTestApp(store, { aiFetch: async () => {
     called = true; return new Response(JSON.stringify(metadataResult()));
   } });
   const response = await app.inject({

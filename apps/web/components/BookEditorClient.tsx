@@ -10,11 +10,11 @@ import BookTree from "./BookTree";
 import RichBookEditor, { type EditorDocument } from "./RichBookEditor";
 import VersionTimeline from "./VersionTimeline";
 import AiAssistantPanel from "./AiAssistantPanel";
-import { retryableAiDraft, chapterDraftIdempotencyKey } from "../lib/ai-draft-request";
+import { storyBlueprintWriterBrief } from "../lib/story-blueprint-draft";
 
 const EDIT_ROLES = new Set(["owner","admin","editor","writer","illustrator","designer"]);
 
-export default function BookEditorClient({ bookId, initialChapterId, initialAiJobId }: { bookId: string; initialChapterId?: string; initialAiJobId?: string }) {
+export default function BookEditorClient({ bookId, initialChapterId, initialAiJobId, initialDraftPlanItemId }: { bookId: string; initialChapterId?: string; initialAiJobId?: string; initialDraftPlanItemId?: string }) {
   const api = apiClient();
   const [book, setBook] = useState<Book | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -30,8 +30,10 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   const [notice, setNotice] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [newChapterBrief, setNewChapterBrief] = useState("");
+  const [initialDraftInstruction, setInitialDraftInstruction] = useState<string | undefined>();
+  const [draftPlanTargetChapterId, setDraftPlanTargetChapterId] = useState<string | null>(null);
+  const [draftPlanMessage, setDraftPlanMessage] = useState<string | null>(null);
   const [activeAiJobId, setActiveAiJobId] = useState<string | undefined>(initialAiJobId);
-  const [pendingDraft, setPendingDraft] = useState<ReturnType<typeof retryableAiDraft> | null>(null);
   const creatingChapter = useRef(false);
   const pendingCreation = useRef<{ title: string; brief: string; idempotencyKey: string } | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
@@ -57,14 +59,29 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([api.getBook(bookId), api.listChapters(bookId)]).then(([identity, result]) => {
+    void Promise.all([api.getBook(bookId), api.listChapters(bookId)]).then(async ([identity, result]) => {
       if (cancelled) return;
       setBook(identity.book); setRole(identity.role); setChapters(result.chapters);
       const selected = result.chapters.find((chapter) => chapter.id === initialChapterId) ?? result.chapters[0];
+      if (selected && initialDraftPlanItemId) {
+        setInitialDraftInstruction(undefined);
+        setDraftPlanTargetChapterId(null);
+        setDraftPlanMessage(null);
+        try {
+          const { blueprint } = await api.getStoryBlueprint(bookId);
+          if (cancelled) return;
+          const brief = storyBlueprintWriterBrief(blueprint, initialDraftPlanItemId, selected.id);
+          if (brief.ok) { setInitialDraftInstruction(brief.instruction); setDraftPlanTargetChapterId(selected.id); }
+          else setDraftPlanMessage(brief.reason);
+        } catch {
+          if (!cancelled) setDraftPlanMessage("Could not load the saved story plan. No AI request was sent; reload the blueprint and try again.");
+        }
+      }
+      if (cancelled) return;
       if (selected) void loadChapter(selected.id); else setLoading(false);
     }).catch((reason) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "Could not load book"); setLoading(false); } });
     return () => { cancelled = true; loadSequence.current++; };
-  }, [api, bookId, initialChapterId, loadChapter]);
+  }, [api, bookId, initialChapterId, initialDraftPlanItemId, loadChapter]);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (dirty || pendingRestore) { event.preventDefault(); event.returnValue = ""; } };
@@ -110,7 +127,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   };
 
   const createChapter = async () => {
-    if (!newTitle.trim() || saving || loading || creatingChapter.current || pendingDraft || !EDIT_ROLES.has(role) || (dirty && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
+    if (!newTitle.trim() || saving || loading || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role) || (dirty && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
     creatingChapter.current = true;
     setSaving(true); setError(null);
     const creation = pendingCreation.current ?? { title: newTitle.trim(), brief: newChapterBrief.trim(), idempotencyKey: crypto.randomUUID() };
@@ -124,38 +141,18 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       createdChapterId = result.chapter.id;
       setChapters((rows) => [...rows, result.chapter]);
       setNewTitle(""); setActiveAiJobId(undefined);
-      await loadChapter(result.chapter.id);
+      await loadChapter(result.chapter.id, true);
       if (!brief) { setNewChapterBrief(""); setNotice(`Created ${chapterTitle}.`); return; }
-      const request = retryableAiDraft(api.createAiJob, {
-        bookId, chapterIds: [result.chapter.id], agentType: "writer", userInstruction: brief,
-        idempotencyKey: chapterDraftIdempotencyKey(bookId, result.chapter.id),
-        contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: true, maxTokens: 16_000 },
-      });
-      setPendingDraft(request);
-      const job = await request.run();
-      setPendingDraft(null);
+      setInitialDraftInstruction(brief);
+      setDraftPlanTargetChapterId(result.chapter.id);
       setNewChapterBrief("");
-      setActiveAiJobId(job.id);
-      setNotice("Chapter created. Open its AI review to follow progress.");
+      setNotice("Chapter created. Review the draft brief and request a price in the AI assistant. Nothing was generated or charged.");
     }
     catch (reason) {
       const message = reason instanceof Error ? reason.message : "Could not create chapter";
-      setError(createdChapterId ? `Your chapter is saved. We could not confirm the AI request: ${message} Retry the original request below to recover its review.` : `${message} Submit again to recover the original chapter request for “${chapterTitle}”.`);
+      setError(createdChapterId ? `Your chapter is saved, but it could not be loaded: ${message} Open the chapter to continue. No AI request was sent; your brief remains in the form.` : `${message} Submit again to recover the original chapter request for “${chapterTitle}”.`);
     }
     finally { creatingChapter.current = false; setSaving(false); }
-  };
-
-  const retryDraft = async () => {
-    if (!pendingDraft || saving || loading || dirty || !EDIT_ROLES.has(role)) return;
-    setSaving(true); setError(null); setNotice(null);
-    try {
-      const job = await pendingDraft.run();
-      await loadChapter(pendingDraft.chapterId);
-      setActiveAiJobId(job.id); setPendingDraft(null); setNewChapterBrief("");
-      setNotice("AI request recovered. Open its review to follow progress.");
-    } catch (reason) {
-      setError(`Could not confirm the AI request. Retry uses the same request. ${reason instanceof Error ? reason.message : "Please try again."}`);
-    } finally { setSaving(false); }
   };
 
   const reorder = async (orderedIds: string[]) => {
@@ -203,9 +200,9 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       </div>
     </div>
     {error && <div role="alert" className="mb-4 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}</div>}
+    {draftPlanMessage && <p role="status" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-3 text-sm leading-6 text-amber-100">{draftPlanMessage}</p>}
     {notice && <p role="status" className="mb-4 text-sm text-emerald-200">{notice}</p>}
     {pendingRestore && !saving && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Restore outcome is not confirmed. Your current draft remains here; editing is paused until you recover the request or reload saved content.</p><div className="mt-3 flex flex-wrap gap-4"><button type="button" disabled={loading} className="underline" onClick={() => void restore(pendingRestore.versionId)}>Retry original restore</button><button type="button" className="underline" onClick={downloadDraft}>Download my draft</button><button type="button" disabled={loading} className="underline" onClick={() => { if (window.confirm("Reload saved content and replace this draft? Download it first if needed.")) void loadChapter(pendingRestore.chapterId); }}>Reload saved content</button></div></div>}
-    {pendingDraft && !saving && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Your chapter is saved. Resolve its pending AI request before adding another chapter. The original brief is retained in this tab.</p><button type="button" disabled={loading || dirty || !editable} onClick={() => void retryDraft()} className="mt-3 rounded-lg border border-white/25 px-4 py-2 disabled:opacity-40">Retry original AI request</button>{dirty && <p className="mt-2 text-xs">Save your current edits before recovering the review.</p>}</div>}
     {conflict && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Another save changed this chapter. Your unsaved draft is still here. Download it before reloading if you need to merge changes.</p><button className="mr-4 mt-3 underline" onClick={downloadDraft}>Download my draft</button><button className="underline" onClick={() => { if (document && window.confirm("Reload saved content and replace this unsaved draft?")) void loadChapter(document.chapterId); }}>Reload saved version</button></div>}
     <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_260px]">
       <aside className="self-start rounded-2xl border border-white/10 p-2">
@@ -213,7 +210,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
         <div id="chapter-structure" className={structureOpen ? "block" : "hidden lg:block"}>
         <BookTree chapters={chapters} activeId={document?.chapterId ?? null} onSelect={selectChapter} onReorder={(ids) => void reorder(ids)} disabled={saving || loading} readOnly={!editable} />
         {editable && <form className="mt-5 space-y-2 border-t border-white/10 p-2 pt-4" onSubmit={(event) => { event.preventDefault(); void createChapter(); }}>
-          <fieldset disabled={saving || loading || Boolean(pendingDraft)} className="min-w-0 space-y-2 disabled:opacity-50">
+          <fieldset disabled={saving || loading} className="min-w-0 space-y-2 disabled:opacity-50">
           <label className="block text-xs text-white/50" htmlFor="new-chapter-title">New chapter</label><input id="new-chapter-title" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} maxLength={500} required placeholder="Chapter title" className="w-full rounded-lg border border-white/15 bg-black p-2 text-sm" />
           <label className="block text-xs text-white/50" htmlFor="new-chapter-brief">Optional AI drafting brief</label><textarea id="new-chapter-brief" value={newChapterBrief} onChange={(e) => setNewChapterBrief(e.target.value)} maxLength={4000} rows={3} placeholder="What happens in this chapter?" className="w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm" />
           <p className="text-[11px] leading-4 text-white/40">A brief creates an empty chapter and queues a draft for approval. It never writes directly into your manuscript.</p>
@@ -227,7 +224,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
         {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={document} workspaceId={book.workspace_id} permissions={editable && !saving ? "editor" : "viewer"} onChange={(nodes) => { setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border border-dashed border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
       </section>
       <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">
-        <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} dirty={dirty} editable={editable && !saving && !loading && !pendingDraft} onApplied={async () => { if (document) await loadChapter(document.chapterId, true); }} />
+        <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} initialDraftInstruction={document?.chapterId === draftPlanTargetChapterId ? initialDraftInstruction : undefined} dirty={dirty} editable={editable && !saving && !loading} onApplied={async () => { if (document) await loadChapter(document.chapterId, true); }} />
         <div className="rounded-2xl border border-white/10 p-2"><VersionTimeline key={document?.chapterId ?? "empty"} versions={versions} onRestore={(id) => void restore(id)} readOnly={!editable || saving || loading} /></div>
       </div>
     </div>

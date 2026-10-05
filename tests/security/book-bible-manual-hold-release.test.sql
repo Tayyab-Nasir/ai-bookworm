@@ -30,13 +30,26 @@ set local role service_role;
 do $$
 declare j uuid := 'b7300000-0000-4000-8000-000000000005';
  actor uuid := 'b7300000-0000-4000-8000-000000000001';
- result public.ai_jobs; rejected boolean; scenario text;
+ result public.ai_jobs; rejected boolean; scenario text; scenario_job uuid; scenario_book uuid;
 begin
  foreach scenario in array array['attestation','fresh_job','fresh_receipt','saved_receipt','output','lease','wrong_agent','usage','run','suggestion'] loop
    rejected := false;
+   scenario_job := j;
    begin
      if scenario='fresh_job' then update public.ai_jobs set started_at=clock_timestamp() where id=j; end if;
-     if scenario='fresh_receipt' then update public.book_bible_service_receipts set created_at=clock_timestamp() where job_id=j; end if;
+     if scenario='fresh_receipt' then
+       -- Create a genuinely fresh reservation for an aged job; immutable
+       -- receipt timestamps cannot be rewritten to manufacture this case.
+       scenario_job:=gen_random_uuid();
+       insert into public.books(workspace_id,title,author_name,created_by)
+         select workspace_id,'Fresh receipt fixture',author_name,created_by from public.books
+           where id='b7300000-0000-4000-8000-000000000004' returning id into scenario_book;
+       insert into public.ai_jobs(id,workspace_id,book_id,agent_type,status,input_ref,idempotency_key,created_by,started_at)
+         select scenario_job,workspace_id,scenario_book,agent_type,status,input_ref,
+           'fresh-receipt:'||scenario_job::text,created_by,started_at from public.ai_jobs where id=j;
+       insert into public.book_bible_service_receipts(job_id,request_sha256)
+         values(scenario_job,repeat('a',64));
+     end if;
      if scenario='saved_receipt' then update public.book_bible_service_receipts set result_json='{"malformed":true}' where job_id=j; end if;
      if scenario='output' then update public.ai_jobs set output_ref='{}' where id=j; end if;
      if scenario='lease' then update public.ai_jobs set lease_token=gen_random_uuid(),lease_expires_at=clock_timestamp()+interval '1 minute' where id=j; end if;
@@ -45,7 +58,7 @@ begin
      if scenario='run' then insert into public.ai_runs(ai_job_id,workspace_id,provider,model,status)
        values(j,'b7300000-0000-4000-8000-000000000003','openai','fixture','succeeded'); end if;
      if scenario='suggestion' then insert into public.ai_suggestions(ai_job_id,entity_type,operation_json) values(j,'book','{}'); end if;
-     perform public.release_unconfirmed_book_bible_job(j,actor,'INC-BIBLE-123',scenario<>'attestation',true);
+     perform public.release_unconfirmed_book_bible_job(scenario_job,actor,'INC-BIBLE-123',scenario<>'attestation',true);
    exception when sqlstate '22023' then rejected:=true;
    end;
    assert rejected, 'unsafe release accepted: ' || scenario;

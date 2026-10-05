@@ -8,7 +8,7 @@ export type SetupCheckpoint = {
   bookCreated?: boolean;
   setupMode?: SetupMode;
   source?: { assetId: string; checksumSha256: string; sizeBytes: number; uploaded?: boolean };
-  starter?: { chapterId: string; jobId?: string };
+  starter?: { chapterId: string; jobId?: string; quoteKey?: string; quoteRequestId?: string; modelId?: string; allowProviderTokenCounting?: true };
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const setupKey = (userId: string, workspaceId: string) => `bookworm:setup:${userId}:${workspaceId}`;
@@ -32,13 +32,19 @@ export function readSetupCheckpoint(raw: string | null, userId: string, workspac
       || (source.uploaded !== undefined && typeof source.uploaded !== "boolean")
       || (source.uploaded === false && (!value.importing || value.completed || value.bookCreated !== true)))) return null;
     const starter = value.starter;
-    if (starter && (setupMode !== "ai" || !uuid.test(starter.chapterId) || (starter.jobId !== undefined && !uuid.test(starter.jobId)))) return null;
+    if (starter && (setupMode !== "ai" || !uuid.test(starter.chapterId) || (starter.jobId !== undefined && !uuid.test(starter.jobId))
+      || (starter.quoteRequestId !== undefined && !uuid.test(starter.quoteRequestId))
+      || (starter.quoteKey !== undefined && (typeof starter.quoteKey !== "string" || starter.quoteKey.length < 8 || starter.quoteKey.length > 200))
+      || (starter.modelId !== undefined && (typeof starter.modelId !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(starter.modelId)))
+      || (starter.allowProviderTokenCounting !== undefined && starter.allowProviderTokenCounting !== true))) return null;
     return { version: 1, userId, workspaceId, bookId: value.bookId, savedAt: value.savedAt, completed: value.completed, importing: value.importing,
       ...(setupMode ? { setupMode } : {}),
       ...(value.bookCreated !== undefined ? { bookCreated: value.bookCreated } : {}),
       ...(source ? { source: { assetId: source.assetId, checksumSha256: source.checksumSha256, sizeBytes: source.sizeBytes,
         ...(source.uploaded !== undefined ? { uploaded: source.uploaded } : {}) } } : {}),
-      ...(starter ? { starter: { chapterId: starter.chapterId, ...(starter.jobId ? { jobId: starter.jobId } : {}) } } : {}) };
+      ...(starter ? { starter: { chapterId: starter.chapterId, ...(starter.jobId ? { jobId: starter.jobId } : {}),
+        ...(starter.quoteKey ? { quoteKey: starter.quoteKey } : {}), ...(starter.quoteRequestId ? { quoteRequestId: starter.quoteRequestId } : {}),
+        ...(starter.modelId ? { modelId: starter.modelId } : {}), ...(starter.allowProviderTokenCounting ? { allowProviderTokenCounting: true as const } : {}) } } : {}) };
   } catch { return null; }
 }
 

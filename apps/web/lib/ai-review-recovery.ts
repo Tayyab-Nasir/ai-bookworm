@@ -1,4 +1,4 @@
-import type { AiJobReview, CreateAiJobRequest } from "@bookworm/api-client";
+import type { AiJobReview, AiReviewUsageQuote, CreateAiJobRequest } from "@bookworm/api-client";
 
 export type ReviewMode = CreateAiJobRequest["agentType"];
 export type PendingReview = {
@@ -7,12 +7,26 @@ export type PendingReview = {
   bookId: string;
   chapterId: string;
   key: string;
+  modelId?: string;
+  allowProviderTokenCounting?: true;
+  quoteRequestId?: string;
   mode: ReviewMode;
   includeRelated: boolean;
+  includeBookBible?: boolean;
+  includeStyleGuide?: boolean;
   contextBudget: 4096 | 8192 | 16000;
   briefHash: string;
   savedAt: number;
 };
+
+export function canAcceptReviewQuote(quote: AiReviewUsageQuote | null, state: {
+  pending: Pick<PendingReview, "bookId" | "chapterId" | "quoteRequestId"> | null; bookId: string; chapterId: string | null;
+  editable: boolean; dirty: boolean; recoveryReady: boolean; busy: boolean; acceptanceUncertain: boolean;
+}, now = Date.now()): boolean {
+  return Boolean(quote?.status === "ready" && state.pending && state.editable && !state.dirty && state.recoveryReady && !state.busy && !state.acceptanceUncertain
+    && state.pending.bookId === state.bookId && state.pending.chapterId === state.chapterId && state.pending.quoteRequestId === quote.requestId
+    && Date.parse(quote.expiresAt) > now && Number.isSafeInteger(quote.reservedCredits) && quote.reservedCredits > 0);
+}
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const modes = new Set<ReviewMode>(["writer", "proofreader", "copyeditor", "consistency"]);
@@ -33,10 +47,16 @@ export function readPendingReview(raw: string | null, userId: string, bookId: st
   const item = value as Partial<PendingReview>;
   if (item.schema !== 1 || item.userId !== userId || item.bookId !== bookId || item.chapterId !== chapterId
       || !uuid.test(item.key ?? "") || !modes.has(item.mode as ReviewMode)
-      || typeof item.includeRelated !== "boolean" || ![4096, 8192, 16000].includes(item.contextBudget ?? 0)
+      || (item.modelId !== undefined && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(item.modelId))
+      || (item.allowProviderTokenCounting !== undefined && item.allowProviderTokenCounting !== true)
+      || (item.quoteRequestId !== undefined && !uuid.test(item.quoteRequestId))
+      || typeof item.includeRelated !== "boolean"
+      || (item.includeBookBible !== undefined && typeof item.includeBookBible !== "boolean")
+      || (item.includeStyleGuide !== undefined && typeof item.includeStyleGuide !== "boolean")
+      || ![4096, 8192, 16000].includes(item.contextBudget ?? 0)
       || !/^[0-9a-f]{64}$/.test(item.briefHash ?? "") || !Number.isFinite(item.savedAt)
       || (item.savedAt ?? 0) > now || now - (item.savedAt ?? 0) > 7 * 24 * 60 * 60 * 1000) return null;
-  return item as PendingReview;
+  return { ...item, includeBookBible: item.includeBookBible ?? true, includeStyleGuide: item.includeStyleGuide ?? true } as PendingReview;
 }
 
 export async function reviewBriefHash(mode: ReviewMode, instruction: string) {
@@ -50,7 +70,7 @@ export function pendingReviewBody(pending: PendingReview, instruction: string): 
     bookId: pending.bookId, chapterIds: [pending.chapterId], agentType: pending.mode,
     ...(pending.mode === "writer" ? { userInstruction: instruction.trim() } : {}),
     idempotencyKey: pending.key,
-    contextPolicy: { includeBookBible: true, includeStyleGuide: true,
+    contextPolicy: { includeBookBible: pending.includeBookBible ?? true, includeStyleGuide: pending.includeStyleGuide ?? true,
       includeRelatedContext: pending.includeRelated, maxTokens: pending.contextBudget },
   };
 }
