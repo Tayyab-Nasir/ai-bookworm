@@ -197,13 +197,17 @@ review versus sibling completion, and two final siblings racing to complete a
 chapter. Three new serial evidence gates (completion/reclaim/failed-parent)
 actually pass in the local disposable runner, comparing settlement against the
 production calculator and asserting assets/versions/links/runs/usage/ledger
-effects. The twenty additional multi-session schedules are authored, not yet
-executed in the above commit's CI; inspect fresh exact-commit CI before claiming
-all thirty-six native schedules pass. Synthetic metadata is never Storage-byte
-or speech-fidelity proof.
+effects. The extension is committed and non-force pushed as
+`a5a5dbae1a0260515983c2131ceb8a41f1b53bdb`. Its exact-commit
+[native run 37305407312](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/37305407312)
+completed successfully at `2026-10-05T11:52:21Z`. Job `111747766496` logs were
+actually fetched and inspected: all thirty-six native narration schedules and
+all seven serial setup/evidence gates passed. This resolves the extension's
+previous execution gap; the runner still requires observed PostgreSQL lock waits.
+Synthetic metadata is never Storage-byte or speech-fidelity proof.
 
-Next: execute and inspect the extended native receipt/completion/recovery
-schedules, then Storage/provider/supervised-worker acceptance. Native bounded
+Next: author-facing publishing scope/recovery, then
+Storage/provider/supervised-worker acceptance. Native bounded
 PCM-to-MP3 already exists; finish real speech source
 fidelity, pronunciation/mastering/listening-QC and retailer audio acceptance.
 Continue the full authoring, Bible/canon, illustration/cover/QR, layout/preflight,
@@ -215,6 +219,9 @@ Official sources checked for the workload-specific migration:
 [OpenAI TTS deprecations](https://developers.openai.com/api/docs/deprecations),
 [Realtime Mini model](https://developers.openai.com/api/docs/models/gpt-realtime-2.1-mini)
 and [out-of-band/custom-input responses](https://developers.openai.com/api/docs/guides/realtime-conversations).
+
+Author-facing publishing scope and recovery:
+[Publishing Studio checkpoint](PUBLISHING_SCOPE_RECOVERY_CHECKPOINT.md).
 
 Continuation: `docs/AGENT_HANDOFF.md` and the shared vault's
 `Codex Sessions/2026-10/2026-10-05-narration-transport-checkpoint.md`.

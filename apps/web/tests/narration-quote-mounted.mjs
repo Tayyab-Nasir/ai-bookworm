@@ -118,6 +118,317 @@ const confirmPurchase = async page => {
 };
 const settle = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
+// Exercise the real parent handlers; only transport replies are synthetic.
+async function publishingAction(operation) {
+  const page = await fixture({ publishing: true });
+  await page.evaluate(({ operation, BOOK, EDITION, WORKSPACE, artifactId, jobId, coverId }) => {
+    const audio = ["save", "audio export", "cancel export", "export history"].includes(operation);
+    if (!audio) window.editions = window.editions.map(edition => ({ ...edition, type: "ebook", edition_metadata_json: { kind: "ebook", flow: "reflowable" } }));
+    const asset = { id: artifactId, name: "Old private render", mime_type: "application/epub+zip", size_bytes: 1024, checksum: "a".repeat(64) };
+    const download = { url: "https://storage.example/old-view-private-file", expiresIn: 300 };
+    window.renderResult = { jobId, status: "succeeded", artifacts: [{ asset, role: "rendered_ebook", download }] };
+    window.preflightResult = { jobId, ruleVersion: "synthetic", channel: "kdp", requestedChannel: "kdp", errors: 0, warnings: 0,
+      findings: [{ code: "synthetic", message: "Old private preflight finding", location: "", severity: "info", category: "metadata", rule_id: "synthetic", rule_version: "synthetic" }] };
+    window.packageJob = { id: jobId, bookId: BOOK, editionId: EDITION, channel: "kdp", status: "succeeded", createdAt: "2026-10-05T00:00:00Z",
+      ruleVersion: "synthetic", failureCode: null, submissionMode: "manual", package: { asset, download } };
+    window.exportJob = { id: jobId, editionId: EDITION, status: "queued", progressChapters: 0, progressTotal: 2, errorCode: null,
+      createdAt: "2026-10-05T00:00:00Z", completedAt: null, downloadUrl: null, synthesizedVoiceDisclosureRequired: true };
+    window.savedEdition = { ...window.editions[0], language: "es" };
+    Object.assign(window.api, {
+      updateEdition: async () => window.savedEdition,
+      createEdition: async () => window.savedEdition,
+      renderEdition: async () => window.renderResult,
+      runPreflight: async () => window.preflightResult,
+      createPublishingJob: async () => window.packageJob,
+      createAudiobookGooglePlayExport: async () => ({ job: window.exportJob }),
+      cancelAudiobookGooglePlayExport: async () => ({ job: { ...window.exportJob, status: "cancelled" } }),
+      listAudiobookGooglePlayExports: async editionId => ({ jobs: operation === "cancel export" && editionId === EDITION ? [window.exportJob] : [] }),
+      listAssets: async () => ({ assets: [{ id: coverId, name: "Rain cover", mime_type: "image/png", checksum: "a".repeat(64), deleted_at: null, workspace_id: WORKSPACE }] }),
+    });
+  }, { operation, BOOK, EDITION, WORKSPACE, artifactId: uuid(31), jobId: uuid(32), coverId: uuid(33) });
+  await page.evaluate(bookId => window.renderPublishing(bookId), BOOK);
+  await expect(page.getByRole("textbox", { name: "Language", exact: true })).toHaveValue("en");
+  await expect.poll(() => page.locator("fieldset").first().evaluate(element => element.disabled)).toBe(false);
+  if (operation === "save") await page.getByRole("textbox", { name: "Language", exact: true }).fill("es");
+  if (["preflight", "package"].includes(operation)) await page.getByRole("combobox", { name: "Preflight target" }).selectOption("kdp");
+  if (operation === "package") {
+    await page.getByRole("button", { name: "Render EPUB", exact: true }).click();
+    await expect(page.getByText("Private render completed.", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await expect(page.getByText("Old private preflight finding")).toBeVisible();
+  }
+  if (operation === "audio export") {
+    await page.getByRole("textbox", { name: "ISBN-13 or publisher book ID", exact: true }).fill("rain-city-audio");
+    await page.getByRole("combobox", { name: "Audiobook cover", exact: true }).selectOption(uuid(33));
+  }
+  await page.evaluate(({ operation, oldBook, oldEdition }) => {
+    const method = { save: "updateEdition", render: "renderEdition", preflight: "runPreflight", package: "createPublishingJob",
+      "package history": "listPublishingJobs", "audio export": "createAudiobookGooglePlayExport", "cancel export": "cancelAudiobookGooglePlayExport",
+      "export history": "listAudiobookGooglePlayExports" }[operation];
+    window.actionResult = { save: window.savedEdition, render: window.renderResult, preflight: window.preflightResult, package: window.packageJob,
+      "package history": { jobs: [window.packageJob] }, "audio export": { job: window.exportJob },
+      "cancel export": { job: { ...window.exportJob, status: "cancelled" } },
+      "export history": { jobs: [{ ...window.exportJob, status: "succeeded", downloadUrl: "https://storage.example/old-view-private-archive" }] } }[operation];
+    window.actionCalls = [];
+    window.api[method] = async (...args) => {
+      if (operation === "package history" && args[0] !== oldBook) return { jobs: [] };
+      if (operation === "export history" && args[0] !== oldEdition) return { jobs: [] };
+      window.actionCalls.push({ method, args }); return window.defer("parentAction");
+    };
+  }, { operation, oldBook: BOOK, oldEdition: EDITION });
+  await clickPublishingAction(page, operation);
+  await expect.poll(() => page.evaluate(() => Boolean(window.gates.parentAction))).toBe(true);
+  return page;
+}
+
+async function clickPublishingAction(page, operation) {
+  const button = { save: "Save edition", render: "Render EPUB", preflight: "Run preflight", package: "Create retailer package",
+    "audio export": "Queue Google Play archive", "cancel export": "Cancel export" }[operation];
+  if (button) await page.getByRole("button", { name: button, exact: true }).click();
+  else await page.getByRole("heading", { name: operation === "package history" ? "Package history" : "Export history", exact: true })
+    .locator("..").getByRole("button", { name: "Refresh", exact: true }).click();
+}
+
+const resolvePublishingAction = (page, fault = false) => page.evaluate(fault => fault
+  ? window.gates.parentAction.reject(new Error("Old private publishing error"))
+  : window.gates.parentAction.resolve(window.actionResult), fault);
+
+for (const operation of ["save", "render", "preflight", "package", "package history", "audio export", "cancel export", "export history"]) {
+  test(`pending publishing ${operation} success/failure stays in its original book view`, async () => {
+    for (const loaded of [false, true]) for (const fault of [false, true]) {
+      const page = await publishingAction(operation);
+      try {
+        const historyCalls = await page.evaluate(() => window.parentCalls.length);
+        await page.evaluate(({ oldBook, newBook }) => {
+          window.bookOverride = () => window.defer("newBook");
+          window.api.listEditions = async bookId => ({ editions: bookId === oldBook ? window.editions : [] });
+          window.renderPublishing(newBook);
+        }, { oldBook: BOOK, newBook: uuid(13) });
+        await expect.poll(() => page.evaluate(() => Boolean(window.gates.newBook))).toBe(true);
+        const finishLoad = () => page.evaluate(({ book, workspace }) => window.gates.newBook.resolve({ book: { id: book, workspace_id: workspace, language: "fr" }, role: "writer" }),
+          { book: uuid(13), workspace: WORKSPACE });
+        if (loaded) { await finishLoad(); await expect(page.getByRole("textbox", { name: "Language", exact: true })).toHaveValue("fr"); }
+        await resolvePublishingAction(page, fault); await settle(page);
+        assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), !loaded, `${operation} released another view's loading lock`);
+        await expect(page.getByRole("alert")).toHaveCount(0);
+        await expect(page.getByText(/^(Edition settings saved\.|Private render completed\.|kdp package is ready|Export queued\.|Export cancelled\.)/)).toHaveCount(0);
+        await expect(page.locator('a[href*="old-view-private"]')).toHaveCount(0);
+        await expect(page.getByText("Old private preflight finding")).toHaveCount(0);
+        assert.equal(await page.evaluate(() => window.parentCalls.length), historyCalls, "Stale save started another history request");
+        assert.equal(await page.evaluate(() => window.actionCalls.length), 1);
+        if (!loaded) await finishLoad();
+        await expect(page.getByRole("textbox", { name: "Language", exact: true })).toHaveValue("fr");
+        assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
+      } finally { await page.close(); }
+    }
+  });
+}
+
+test("current publishing actions still return their result and release their own lock", async () => {
+  for (const operation of ["save", "render", "preflight", "package", "package history", "audio export", "cancel export", "export history"]) {
+    const page = await publishingAction(operation);
+    try {
+      await resolvePublishingAction(page); await settle(page);
+      assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
+      if (operation === "save") await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+      else if (operation === "preflight") await expect(page.getByText("Old private preflight finding")).toBeVisible();
+      else if (operation === "audio export") await expect(page.getByText(/^Export queued\./)).toBeVisible();
+      else if (operation === "cancel export") await expect(page.getByText("Export cancelled.", { exact: true })).toBeVisible();
+      else await expect(page.locator('a[href*="old-view-private"]')).toHaveCount(operation === "package" ? 2 : 1);
+      await expect(page.getByRole("alert")).toHaveCount(0);
+      assert.equal(await page.evaluate(() => window.actionCalls.length), 1);
+    } finally { await page.close(); }
+  }
+});
+
+test("current publishing failures stay visible, release only their own lock and permit retry", async () => {
+  for (const operation of ["save", "render", "preflight", "package", "package history", "audio export", "cancel export", "export history"]) {
+    const page = await publishingAction(operation);
+    try {
+      await resolvePublishingAction(page, true);
+      await expect(page.getByRole("alert")).toContainText("Old private publishing error");
+      assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
+      await clickPublishingAction(page, operation);
+      await expect.poll(() => page.evaluate(() => window.actionCalls.length)).toBe(2);
+      await resolvePublishingAction(page); await settle(page);
+      await expect(page.getByRole("alert")).toHaveCount(0);
+      assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
+      if (operation === "audio export") {
+        const calls = await page.evaluate(() => window.actionCalls);
+        assert.equal(calls[0].args[1].idempotencyKey, calls[1].args[1].idempotencyKey, "Export retry replaced its original key");
+      }
+    } finally { await page.close(); }
+  }
+});
+
+test("pending export history cannot replace a different edition or publish its error there", async () => {
+  for (const fault of [false, true]) {
+    const page = await publishingAction("export history");
+    try {
+      await page.getByRole("button", { name: /audiobook.*fr.*draft/ }).click();
+      await expect(page.getByRole("textbox", { name: "Language", exact: true })).toHaveValue("fr");
+      await resolvePublishingAction(page, fault); await settle(page);
+      await expect(page.locator('a[href*="old-view-private"]')).toHaveCount(0);
+      await expect(page.getByRole("alert")).toHaveCount(0);
+    } finally { await page.close(); }
+  }
+});
+
+test("unmounted pending save does not start follow-on history requests", async () => {
+  const page = await publishingAction("save");
+  try {
+    const before = await page.evaluate(() => window.parentCalls.length);
+    await page.evaluate(() => window.unmountStudio()); await settle(page);
+    await resolvePublishingAction(page); await settle(page);
+    assert.equal(await page.evaluate(() => window.parentCalls.length), before);
+  } finally { await page.close(); }
+});
+
+test("save's follow-on audio history is fenced after its edition reply was accepted", async () => {
+  for (const loaded of [false, true]) for (const fault of [false, true]) {
+    const page = await publishingAction("save");
+    try {
+      await page.evaluate(() => { window.historyOverride = () => window.defer("saveHistory"); });
+      await resolvePublishingAction(page);
+      await expect.poll(() => page.evaluate(() => Boolean(window.gates.saveHistory))).toBe(true);
+      await page.evaluate(({ book, edition }) => {
+        window.bookOverride = () => window.defer("newBook");
+        window.api.listEditions = async () => ({ editions: [{ ...window.editions[0], id: edition, book_id: book, language: "fr" }] });
+        window.api.listChapters = async () => ({ chapters: [] });
+        window.api.listAudiobookProjects = async () => ({ projects: [] });
+        window.renderPublishing(book);
+      }, { book: uuid(13), edition: uuid(44) });
+      await expect.poll(() => page.evaluate(() => Boolean(window.gates.newBook))).toBe(true);
+      const finishLoad = () => page.evaluate(({ book, workspace }) => window.gates.newBook.resolve({ book: { id: book, workspace_id: workspace, language: "fr" }, role: "writer" }),
+        { book: uuid(13), workspace: WORKSPACE });
+      if (loaded) { await finishLoad(); await expect(page.getByRole("textbox", { name: "Language", exact: true })).toHaveValue("fr"); }
+      await page.evaluate(fault => fault ? window.gates.saveHistory.reject(new Error("Old private save history error"))
+        : window.gates.saveHistory.resolve({ projects: [window.project] }), fault);
+      await settle(page);
+      assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), !loaded);
+      await expect(page.getByRole("alert")).toHaveCount(0);
+      await expect(page.getByText(/5 legacy audio units/)).toHaveCount(0);
+      if (!loaded) await finishLoad();
+      await expect(page.getByRole("textbox", { name: "Language", exact: true })).toHaveValue("fr");
+      await expect(page.getByText(/5 legacy audio units/)).toHaveCount(0);
+    } finally { await page.close(); }
+  }
+});
+
+test("new audiobook save may adopt its own edition identity and load current history", async () => {
+  const page = await fixture({ publishing: true });
+  try {
+    await page.evaluate(({ book, edition }) => {
+      window.api.createEdition = async (bookId, body) => {
+        window.createdBody = { bookId, body };
+        return { ...window.editions[0], id: edition, book_id: book, language: body.language, edition_metadata_json: body.config };
+      };
+    }, { book: BOOK, edition: uuid(44) });
+    await page.evaluate(book => window.renderPublishing(book), BOOK);
+    await expect(page.getByRole("combobox", { name: "Saved chapter" })).toBeEnabled();
+    await page.getByRole("button", { name: "New audio", exact: true }).click();
+    await page.getByRole("button", { name: "Save edition", exact: true }).click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Saved chapter" })).toBeEnabled();
+    assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
+    const saved = await page.evaluate(() => ({ body: window.createdBody, history: window.parentCalls.at(-1) }));
+    assert.equal(saved.body.bookId, BOOK); assert.equal(saved.body.body.config.kind, "audiobook");
+    assert.equal(saved.history.editionId, uuid(44));
+  } finally { await page.close(); }
+});
+
+test("read-only publishing members can view history but cannot cancel an export", async () => {
+  const page = await fixture({ publishing: true });
+  try {
+    await page.evaluate(({ book, workspace, edition, job }) => {
+      window.bookOverride = async () => ({ book: { id: book, workspace_id: workspace, language: "en" }, role: "viewer" });
+      window.api.listAudiobookGooglePlayExports = async () => ({ jobs: [{ id: job, editionId: edition, status: "queued", progressChapters: 0,
+        progressTotal: 2, createdAt: "2026-10-05T00:00:00Z", synthesizedVoiceDisclosureRequired: true }] });
+      window.api.cancelAudiobookGooglePlayExport = async () => { throw new Error("Read-only member issued cancellation"); };
+      window.renderPublishing(book);
+    }, { book: BOOK, workspace: WORKSPACE, edition: EDITION, job: uuid(32) });
+    await expect(page.getByRole("button", { name: "Refresh progress", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Cancel export", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Queue Google Play archive", exact: true })).toBeDisabled();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
+test("pending book identity clears the previous book's private form and error", async () => {
+  const page = await fixture({ publishing: true });
+  try {
+    await page.evaluate(book => window.renderPublishing(book), BOOK);
+    await expect(page.getByRole("combobox", { name: "Saved chapter" })).toBeEnabled();
+    await page.getByRole("textbox", { name: "Voice direction", exact: true }).fill("Unsaved private voice direction");
+    await page.evaluate(() => { window.historyOverride = async () => { throw new Error("Old private history failure"); }; });
+    await page.getByRole("button", { name: "Refresh progress", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Old private history failure");
+    await page.evaluate(book => { window.bookOverride = () => window.defer("newBook"); window.renderPublishing(book); }, uuid(13));
+    await expect.poll(() => page.evaluate(() => Boolean(window.gates.newBook))).toBe(true);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "Voice direction", exact: true })).toHaveCount(0);
+    assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), true);
+    assert.equal(await page.evaluate(() => {
+      const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented;
+    }), false, "New book retained the old book's unsaved-change warning");
+  } finally { await page.close(); }
+});
+
+test("failed book identity stays locked and can retry reads without any generation or mutation", async () => {
+  const page = await fixture({ publishing: true });
+  try {
+    await page.evaluate(book => { window.bookOverride = async () => { throw new Error("Publishing settings temporarily unavailable"); }; window.renderPublishing(book); }, BOOK);
+    await expect(page.getByRole("alert")).toContainText("Publishing settings temporarily unavailable");
+    assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), true);
+    await page.evaluate(() => { window.bookOverride = null; });
+    await page.getByRole("button", { name: "Retry loading this book", exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "Saved chapter" })).toBeEnabled();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => ["save", "accept"].includes(call.operation)).length), 0);
+  } finally { await page.close(); }
+});
+
+test("switching audio editions clears the previous edition's export identifier and cover", async () => {
+  const page = await publishingAction("audio export");
+  try {
+    await resolvePublishingAction(page);
+    await expect(page.getByText(/^Export queued\./)).toBeVisible();
+    await page.getByRole("button", { name: /audiobook.*fr.*draft/ }).click();
+    await expect(page.getByRole("textbox", { name: "ISBN-13 or publisher book ID", exact: true })).toHaveValue("");
+    await expect(page.getByRole("combobox", { name: "Audiobook cover", exact: true })).toHaveValue("");
+    await expect(page.getByText(/^Export queued\./)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Queue Google Play archive", exact: true })).toBeDisabled();
+  } finally { await page.close(); }
+});
+
+test("old export success cannot clear a newer book's uncertain export retry key", async () => {
+  const page = await publishingAction("audio export");
+  try {
+    await page.evaluate(({ book, edition }) => {
+      window.oldExport = window.gates.parentAction;
+      window.api.listEditions = async () => ({ editions: [{ ...window.editions[0], id: edition, book_id: book, language: "fr" }] });
+      window.newExports = [];
+      window.api.createAudiobookGooglePlayExport = async (editionId, body) => {
+        window.newExports.push({ editionId, body }); throw new Error("New export reply is unavailable");
+      };
+      window.renderPublishing(book);
+    }, { book: uuid(13), edition: uuid(44) });
+    await expect(page.getByRole("textbox", { name: "Language", exact: true })).toHaveValue("fr");
+    await page.getByRole("textbox", { name: "ISBN-13 or publisher book ID", exact: true }).fill("new-audio-fr");
+    await page.getByRole("combobox", { name: "Audiobook cover", exact: true }).selectOption(uuid(33));
+    await clickPublishingAction(page, "audio export");
+    await expect(page.getByRole("alert")).toContainText("New export reply is unavailable");
+    await page.evaluate(() => window.oldExport.resolve(window.actionResult)); await settle(page);
+    await expect(page.getByText(/^Export queued\./)).toHaveCount(0);
+    await clickPublishingAction(page, "audio export");
+    await expect.poll(() => page.evaluate(() => window.newExports.length)).toBe(2);
+    const attempts = await page.evaluate(() => window.newExports);
+    assert.equal(attempts[0].editionId, uuid(44)); assert.equal(attempts[1].editionId, uuid(44));
+    assert.equal(attempts[0].body.idempotencyKey, attempts[1].body.idempotencyKey);
+  } finally { await page.close(); }
+});
+
 test("mounted chapter review stores only opaque recovery identity before saving, displays every part and never dispatches", async () => {
   const page = await fixture();
   try {

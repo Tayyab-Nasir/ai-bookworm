@@ -46,7 +46,13 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const viewEpoch = useRef(0);
 
   const activeEdition = editions.find((edition) => edition.id === activeId) ?? null;
-  const editable = EDIT_ROLES.has(role);
+  const currentIdentity = book?.id === bookId;
+  const editable = currentIdentity && EDIT_ROLES.has(role);
+  // Navigation invalidates replies, not durable work already accepted by the server.
+  const captureView = () => {
+    const version = viewEpoch.current;
+    return () => currentIdentity && currentBook.current === bookId && viewEpoch.current === version;
+  };
   const coverAssets = useMemo(() => assets.filter((asset) => asset.mime_type.startsWith("image/") && asset.checksum !== "pending" && !asset.deleted_at), [assets]);
   const activePublishingJobs = useMemo(() => publishingJobs.filter((job) => !activeId || job.editionId === activeId), [publishingJobs, activeId]);
   const channelCompatible = form.kind !== "audiobook" && (channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind));
@@ -65,6 +71,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const valid = () => viewEpoch.current === version && currentBook.current === bookId;
     setBusy("load");
     setBook(null); setRole("viewer"); setEditions([]); setAssets([]); setChapters([]); setPublishingJobs([]);
+    currentEdition.current = null; setActiveId(null); setForm(DEFAULT_FORM); setDirty(false); setError(null);
     setAudiobookProjects([]); setGooglePlayExports([]); setNarrationChapterId("");
     setRendered(null); setPreflight(null); setNotice(null); exportRequestKey.current = null;
     setGooglePlayIdentifier(""); setGooglePlayCoverId("");
@@ -100,6 +107,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const hasActiveGooglePlayExport = googlePlayExports.some((job) => job.status === "queued" || job.status === "running");
   useEffect(() => {
     if (!activeId || form.kind !== "audiobook" || !hasActiveGooglePlayExport) return;
+    const valid = captureView();
     let active = true;
     let pending = false;
     const refresh = async () => {
@@ -107,13 +115,13 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       pending = true;
       try {
         const result = await api.listAudiobookGooglePlayExports(activeId);
-        if (active) setGooglePlayExports(result.jobs);
+        if (active && valid()) setGooglePlayExports(result.jobs);
       } catch { /* Keep the last known job state visible; manual refresh remains available. */ }
       finally { pending = false; }
     };
     const timer = window.setInterval(() => void refresh(), 4_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [activeId, api, form.kind, hasActiveGooglePlayExport]);
+  }, [bookId, activeId, api, form.kind, hasActiveGooglePlayExport]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     if (!editable || busy) return;
@@ -127,6 +135,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     currentEdition.current = edition.id;
     const valid = () => version === viewEpoch.current && currentBook.current === bookId && currentEdition.current === edition.id;
     exportRequestKey.current = null;
+    setGooglePlayIdentifier(""); setGooglePlayCoverId(""); setNotice(null);
     setActiveId(edition.id); setForm(formFromEdition(edition)); setDirty(false); setRendered(null); setPreflight(null); setError(null);
     setAudiobookProjects([]); setGooglePlayExports([]);
     if (edition.type === "audiobook") void Promise.all([api.listAudiobookProjects(edition.id), api.listAudiobookGooglePlayExports(edition.id)])
@@ -140,69 +149,78 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
     ++viewEpoch.current; currentEdition.current = null;
     exportRequestKey.current = null;
+    setGooglePlayIdentifier(""); setGooglePlayCoverId(""); setNotice(null);
     setActiveId(null); setForm({ ...DEFAULT_FORM, kind, language: book?.language ?? "en" }); setDirty(true); setRendered(null); setPreflight(null); setError(null); setAudiobookProjects([]); setGooglePlayExports([]);
   };
 
   const save = async () => {
     if (!editable || busy) return;
+    const valid = captureView(); if (!valid()) return;
     setBusy("save"); setError(null); setNotice(null);
     try {
       const saved = activeEdition
         ? await api.updateEdition(activeEdition.id, { config: toConfig(form, activeEdition.edition_metadata_json), language: form.language, expectedUpdatedAt: activeEdition.updated_at })
         : await api.createEdition(bookId, { config: toConfig(form), language: form.language });
+      if (!valid()) return;
+      currentEdition.current = saved.id;
       setEditions((current) => [saved, ...current.filter((edition) => edition.id !== saved.id)]);
       setActiveId(saved.id); setForm(formFromEdition(saved)); setDirty(false); setNotice("Edition settings saved.");
       if (saved.type === "audiobook") {
         const [projects, exports] = await Promise.all([api.listAudiobookProjects(saved.id), api.listAudiobookGooglePlayExports(saved.id)]);
+        if (!valid()) return;
         setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs);
       }
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save the edition."); }
-    finally { setBusy(null); }
+    } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not save the edition."); }
+    finally { if (valid()) setBusy(null); }
   };
 
   const render = async () => {
     if (!editable || !activeId || dirty || busy || renderBlocked) return;
+    const valid = captureView(); if (!valid()) return;
     setBusy("render"); setError(null); setNotice(null); setRendered(null);
-    try { const result = await api.renderEdition(activeId, { idempotencyKey: crypto.randomUUID() }); setRendered(result); setNotice("Private render completed."); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Rendering failed."); }
-    finally { setBusy(null); }
+    try { const result = await api.renderEdition(activeId, { idempotencyKey: crypto.randomUUID() }); if (valid()) { setRendered(result); setNotice("Private render completed."); } }
+    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Rendering failed."); }
+    finally { if (valid()) setBusy(null); }
   };
 
   const validate = async () => {
     if (!editable || !activeId || dirty || busy || !channelCompatible) return;
+    const valid = captureView(); if (!valid()) return;
     setBusy("preflight"); setError(null); setNotice(null); setPreflight(null);
-    try { setPreflight(await api.runPreflight({ bookId, editionId: activeId, channel, idempotencyKey: crypto.randomUUID() })); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Preflight failed."); }
-    finally { setBusy(null); }
+    try { const result = await api.runPreflight({ bookId, editionId: activeId, channel, idempotencyKey: crypto.randomUUID() }); if (valid()) setPreflight(result); }
+    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Preflight failed."); }
+    finally { if (valid()) setBusy(null); }
   };
 
   const createPackage = async () => {
     if (!editable || !activeId || dirty || busy || channel === "export" || !rendered || !preflight
       || preflight.requestedChannel !== channel || preflight.errors > 0 || !channelCompatible) return;
+    const valid = captureView(); if (!valid()) return;
     setBusy("package"); setError(null); setNotice(null);
     try {
       const job = await api.createPublishingJob({
         bookId, editionId: activeId, channel, renderJobId: rendered.jobId,
         preflightJobId: preflight.jobId, idempotencyKey: crypto.randomUUID(),
       });
+      if (!valid()) return;
       setPublishingJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
       setNotice(`${channel} package is ready for manual submission.`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create the retailer package."); }
-    finally { setBusy(null); }
+    } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not create the retailer package."); }
+    finally { if (valid()) setBusy(null); }
   };
 
   const refreshHistory = async () => {
     if (busy) return;
+    const valid = captureView(); if (!valid()) return;
     setBusy("history"); setError(null);
-    try { setPublishingJobs((await api.listPublishingJobs(bookId)).jobs); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh package history."); }
-    finally { setBusy(null); }
+    try { const result = await api.listPublishingJobs(bookId); if (valid()) setPublishingJobs(result.jobs); }
+    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh package history."); }
+    finally { if (valid()) setBusy(null); }
   };
 
   const refreshAudiobooks = async () => {
     if (!activeId || busy) return;
-    const editionId = activeId, version = viewEpoch.current;
-    const valid = () => version === viewEpoch.current && currentBook.current === bookId && currentEdition.current === editionId;
+    const editionId = activeId, valid = captureView(); if (!valid()) return;
     setBusy("audiobook"); setError(null);
     try { const result = await api.listAudiobookProjects(editionId); if (valid()) setAudiobookProjects(result.projects); }
     catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh audiobook progress."); }
@@ -211,34 +229,40 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
   const exportGooglePlayAudiobook = async () => {
     if (!editable || !activeId || form.kind !== "audiobook" || dirty || busy || !googlePlayIdentifier.trim() || !googlePlayCoverId) return;
+    const valid = captureView(); if (!valid()) return;
     setBusy("audiobook"); setError(null); setNotice(null);
     try {
       const { job } = await api.createAudiobookGooglePlayExport(activeId, {
         identifier: googlePlayIdentifier.trim(), coverAssetId: googlePlayCoverId,
         idempotencyKey: exportRequestKey.current ?? (exportRequestKey.current = crypto.randomUUID()),
       });
+      if (!valid()) return;
       exportRequestKey.current = null;
       setGooglePlayExports((current) => [job, ...current.filter((item) => item.id !== job.id)]);
       setNotice("Export queued. You can leave this page; progress and the private download will remain in export history.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not create the Google Play audio archive."); }
-    finally { setBusy(null); }
+    } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not create the Google Play audio archive."); }
+    finally { if (valid()) setBusy(null); }
   };
 
   const cancelGooglePlayExport = async (jobId: string) => {
-    if (busy) return;
+    if (!editable || busy) return;
+    const valid = captureView(); if (!valid()) return;
     setBusy("audiobook"); setError(null);
     try {
       const { job } = await api.cancelAudiobookGooglePlayExport(jobId);
+      if (!valid()) return;
       setGooglePlayExports((current) => current.map((item) => item.id === job.id ? job : item));
       setNotice(job.status === "cancelled" ? "Export cancelled." : "Cancellation requested. The worker will stop at its next safe checkpoint.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not cancel the export."); }
-    finally { setBusy(null); }
+    } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not cancel the export."); }
+    finally { if (valid()) setBusy(null); }
   };
 
   const refreshGooglePlayExports = async () => {
     if (!activeId || form.kind !== "audiobook") return;
-    try { setGooglePlayExports((await api.listAudiobookGooglePlayExports(activeId)).jobs); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh export history."); }
+    const valid = captureView(); if (!valid()) return;
+    setError(null);
+    try { const result = await api.listAudiobookGooglePlayExports(activeId); if (valid()) setGooglePlayExports(result.jobs); }
+    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh export history."); }
   };
 
   const leave = (event: React.MouseEvent<HTMLAnchorElement>) => { if (dirty && !window.confirm("Leave and discard unsaved edition settings?")) event.preventDefault(); };
@@ -250,10 +274,12 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       </div>
       <Link href={book ? `/assets?ws=${book.workspace_id}` : "/assets"} onClick={leave} className="glass-ghost rounded-full px-4 py-2 text-sm">Manage artwork</Link>
     </div>
-    {error && <div role="alert" className="mb-5 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}</div>}
+    {error && <div role="alert" className="mb-5 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}
+      {!currentIdentity && <button type="button" onClick={() => void load()} disabled={Boolean(busy)} className="mt-3 block rounded-lg border border-red-200/30 px-3 py-2 underline disabled:opacity-40">Retry loading this book</button>}
+    </div>}
     {notice && <p role="status" className="mb-5 text-sm text-emerald-200">{notice}</p>}
 
-    <fieldset disabled={Boolean(busy)} className="grid min-w-0 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+    <fieldset disabled={Boolean(busy) || !currentIdentity} className="grid min-w-0 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
       <aside className={`${cardClass} h-fit`}>
         <div className="flex items-center justify-between"><h2 className="font-semibold">Editions</h2><span className="text-xs text-white/40">{editions.length}</span></div>
         <div className="mt-4 space-y-2">
@@ -386,7 +412,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
                     {job.status === "cancelled" && <p className="mt-3 text-xs text-white/45">This export was cancelled before completion.</p>}
                     <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">{job.downloadUrl && job.synthesizedVoiceDisclosureRequired && <a href={job.downloadUrl} download className="font-medium underline">Download private ZIP</a>}
                       {job.totalDurationSeconds && <span className="text-xs text-white/45">{Math.floor(job.totalDurationSeconds / 60)} min · disclose “Synthesized voice” on upload</span>}
-                      {running && <button type="button" onClick={() => void cancelGooglePlayExport(job.id)} disabled={Boolean(busy)} className="text-xs text-white/55 underline disabled:opacity-40">Cancel export</button>}</div>
+                      {running && <button type="button" onClick={() => void cancelGooglePlayExport(job.id)} disabled={!editable || Boolean(busy)} className="text-xs text-white/55 underline disabled:opacity-40">Cancel export</button>}</div>
                   </li>;
                 })}</ul> : <p className="mt-3 text-sm text-white/45">No audiobook archives have been queued.</p>}
               </div>
