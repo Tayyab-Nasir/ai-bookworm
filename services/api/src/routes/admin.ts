@@ -11,6 +11,15 @@ const pagination = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
+const moderationReportRow = z.object({
+  id: z.string().uuid(),
+  entity_type: z.enum(["post", "comment"]),
+  entity_id: z.string().uuid(),
+  reason: z.string().min(1).max(1000),
+  status: z.enum(["open", "actioned", "dismissed"]),
+  created_at: z.string().datetime({ offset: true }),
+  resolution_action: z.enum(["remove", "dismiss"]).nullable().optional(),
+}).strip();
 
 const documentJobView = z.object({
   id: z.string().uuid(), book_id: z.string().uuid(), source_asset_id: z.string().uuid(),
@@ -28,6 +37,123 @@ const aiJobView = z.object({
 export function adminRoutes(app: FastifyInstance) {
   app.adminRoutes((a) => {
     a.get("/admin/access", async () => ({ admin: true }));
+    // Platform-wide community reports. This route intentionally selects only
+    // community data and omits reporter/author identifiers and private books.
+    a.get("/admin/moderation/reports", async (req, reply) => {
+      reply.header("cache-control", "private, no-store");
+      const parsedQuery = pagination.extend({
+        status: z.enum(["open", "actioned", "dismissed", "all"]).default("open"),
+        entityType: z.enum(["post", "comment"]).optional(),
+      }).safeParse(req.query ?? {});
+      if (!parsedQuery.success) throw new AppError(422, "Invalid moderation queue filters.");
+      const q = parsedQuery.data;
+      const svc = app.supabaseFactory();
+      let query = svc.from("reports")
+        .select("id,entity_type,entity_id,reason,status,created_at,resolution_action")
+        .order("created_at", { ascending: false });
+      if (q.status !== "all") query = query.eq("status", q.status);
+      if (q.entityType) query = query.eq("entity_type", q.entityType);
+      const { data, error } = await query.range(q.offset, q.offset + q.limit - 1);
+      if (error) throw new AppError(503, "Could not load the moderation queue.");
+      const parsed = z.array(moderationReportRow).safeParse(data ?? []);
+      if (!parsed.success) throw new AppError(503, "The moderation queue returned invalid report data.");
+      const reports = parsed.data;
+      const postIds = [...new Set(reports.filter((r) => r.entity_type === "post").map((r) => r.entity_id))];
+      const commentIds = [...new Set(reports.filter((r) => r.entity_type === "comment").map((r) => r.entity_id))];
+
+      const postResult = postIds.length
+        ? await svc.from("community_posts").select("id,community_id,title,body,status").in("id", postIds)
+        : { data: [], error: null };
+      if (postResult.error) throw new AppError(503, "Could not load reported community content.");
+      const directPostRows = (postResult.data ?? []).filter((row: { id: string }) => postIds.includes(row.id)) as {
+        id: string; community_id: string; title: string | null; body: string; status: string;
+      }[];
+      const commentResult = commentIds.length
+        ? await svc.from("community_comments").select("id,post_id,body,moderation_state").in("id", commentIds)
+        : { data: [], error: null };
+      if (commentResult.error) throw new AppError(503, "Could not load reported community content.");
+      const commentRows = (commentResult.data ?? []) as {
+        id: string; post_id: string; body: string; moderation_state: string;
+      }[];
+      const parentPostIds = [...new Set(commentRows.map((row) => row.post_id))];
+      const parentResult = parentPostIds.length
+        ? await svc.from("community_posts").select("id,community_id,title,body,status").in("id", parentPostIds)
+        : { data: [], error: null };
+      if (parentResult.error) throw new AppError(503, "Could not load reported community context.");
+      const postRows = [...directPostRows, ...(parentResult.data ?? [])] as {
+        id: string; community_id: string; title: string | null; body: string; status: string;
+      }[];
+      const communityIds = [...new Set(postRows.map((row) => row.community_id))];
+      const communityResult = communityIds.length
+        ? await svc.from("communities").select("id,name").in("id", communityIds)
+        : { data: [], error: null };
+      if (communityResult.error) throw new AppError(503, "Could not load reported community context.");
+      const communities = new Map(((communityResult.data ?? []) as { id: string; name: string }[]).map((row) => [row.id, row.name]));
+      const posts = new Map(postRows.map((row) => [row.id, row]));
+      const comments = new Map(commentRows.map((row) => [row.id, row]));
+      return {
+        reports: reports.map((report) => {
+          if (report.entity_type === "post") {
+            const post = posts.get(report.entity_id);
+            return {
+              ...report, resolution_action: report.resolution_action ?? null,
+              target: post ? {
+                type: "post" as const, title: post.title, body: post.body,
+                status: post.status, communityName: communities.get(post.community_id) ?? null,
+              } : null,
+            };
+          }
+          const comment = comments.get(report.entity_id);
+          const parentPost = comment ? posts.get(comment.post_id) : undefined;
+          return {
+            ...report, resolution_action: report.resolution_action ?? null,
+            target: comment ? {
+              type: "comment" as const, body: comment.body,
+              moderationState: comment.moderation_state,
+              communityName: parentPost ? communities.get(parentPost.community_id) ?? null : null,
+              parentTitle: parentPost?.title ?? null,
+              parentBody: parentPost?.body ?? null,
+            } : null,
+          };
+        }),
+        limit: q.limit,
+        offset: q.offset,
+      };
+    });
+
+    a.post("/admin/moderation/reports/:id/resolve", async (req, reply) => {
+      reply.header("cache-control", "private, no-store");
+      const params = z.object({ id: z.string().uuid() }).safeParse(req.params);
+      if (!params.success) throw new AppError(422, "Invalid report ID.");
+      const body = z.object({ action: z.enum(["remove", "dismiss"]) }).strict().safeParse(req.body ?? {});
+      if (!body.success) throw new AppError(422, "Choose a supported moderation action.");
+      const svc = app.supabaseFactory();
+      const { data, error } = await svc.rpc("admin_resolve_community_report", {
+        p_report_id: params.data.id,
+        p_action: body.data.action,
+        p_actor_id: req.userId,
+      });
+      if (error?.code === "P0002") throw new AppError(404, "Report or reported content not found.");
+      if (error?.code === "22023") throw new AppError(422, "This report cannot be resolved with that action.");
+      if (error) throw new AppError(503, "Could not confirm the moderation decision. Refresh the queue before trying again.");
+      const outcome = Array.isArray(data) ? data[0] : data;
+      const parsed = z.object({
+        report_id: z.literal(params.data.id),
+        status: z.enum(["actioned", "dismissed"]),
+        resolution_action: z.enum(["remove", "dismiss"]).nullable(),
+        already_resolved: z.boolean(),
+      }).refine((row) => row.already_resolved && row.resolution_action === null
+        || (row.status === "actioned" ? row.resolution_action === "remove" : row.resolution_action === "dismiss")
+          && (row.already_resolved || row.resolution_action === body.data.action)).safeParse(outcome);
+      if (!parsed.success) throw new AppError(503, "The moderation decision could not be verified. Refresh the queue.");
+      return {
+        reportId: parsed.data.report_id,
+        status: parsed.data.status,
+        action: parsed.data.resolution_action,
+        alreadyResolved: parsed.data.already_resolved,
+      };
+    });
+
     // ---- users -------------------------------------------------------------
     a.get("/admin/users", async (req) => {
       const q = pagination.extend({ search: z.string().trim().max(200).optional() }).parse(req.query ?? {});

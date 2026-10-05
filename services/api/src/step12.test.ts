@@ -19,14 +19,42 @@ const { buildApp } = await import("./app.js");
 type Row = Record<string, unknown>;
 interface Store {
   tables: Record<string, Row[]>;
+  commentInsertError?: { code: string; message: string };
+  reportInsertError?: { code: string; message: string };
+  reportReceipt?: Row;
   rpc?: (name: string, params: Row) => { data: unknown; error: { code: string; message: string } | null };
 }
 
 const TOKENS: Record<string, string> = { good: "user-1", other: "user-2", admin: "admin-1" };
 
-function fakeSupabase(store: Store) {
+function fakeSupabase(store: Store, token?: string) {
   const client = {
     rpc: async (name: string, params: Row) => {
+      if (name === "community_moderation_queue" && !store.rpc) {
+        const communityIds = store.tables.community_members?.filter(row => row.user_id === TOKENS[token ?? ""]
+          && row.status === "active" && ["owner","moderator"].includes(String(row.role))).map(row => row.community_id) ?? [];
+        const reports = (store.tables.reports ?? []).filter(row => {
+          const comment = row.entity_type === "comment" ? store.tables.community_comments?.find(c => c.id === row.entity_id) : undefined;
+          const post = store.tables.community_posts?.find(p => p.id === (comment?.post_id ?? row.entity_id));
+          return row.status === "open" && communityIds.includes(post?.community_id);
+        }).slice(Number(params.p_offset), Number(params.p_offset) + Number(params.p_limit));
+        return { data: reports.map(row => ({ ...row, target: null })), error: null };
+      }
+      if (name === "moderate_community_report" && !store.rpc) {
+        const report = store.tables.reports?.find(row => row.id === params.p_report_id);
+        if (!report) return { data: null, error: { code: "P0002" } };
+        const comment = report.entity_type === "comment" ? store.tables.community_comments?.find(row => row.id === report.entity_id) : undefined;
+        const post = store.tables.community_posts?.find(row => row.id === (comment?.post_id ?? report.entity_id));
+        const member = store.tables.community_members?.find(row => row.community_id === post?.community_id && row.user_id === TOKENS[token ?? ""] && row.status === "active");
+        if (!member || !["owner", "moderator"].includes(String(member.role))) return { data: null, error: { code: "42501" } };
+        const replay = report.status !== "open";
+        if (!replay) {
+          report.status = params.p_action === "remove" ? "actioned" : "dismissed";
+          report.resolution_action = params.p_action;
+          if (params.p_action === "remove") { if (comment) comment.moderation_state = "removed"; else post!.status = "removed"; }
+        }
+        return { data: [{ report_id: report.id, status: report.status, resolution_action: report.resolution_action ?? null, already_resolved: replay }], error: null };
+      }
       assert.ok(store.rpc, `unexpected RPC ${name}`);
       return store.rpc(name, params);
     },
@@ -59,6 +87,13 @@ function fakeSupabase(store: Store) {
       b.limit = (n: number) => { limitN = n; return b; };
       b.insert = (row: Row) => {
         const r = { ...row };
+        const insertError = table === "community_comments" ? store.commentInsertError
+          : table === "reports" ? store.reportInsertError : undefined;
+        if (insertError) {
+          b.single = async () => ({ data: null, error: insertError });
+          return b;
+        }
+        if (table === "community_posts") r.status ??= "published";
         const dup =
           (table === "communities" && rows.some((x) => x.slug === r.slug)) ||
           (table === "referrals" && r.referred_user_id != null && rows.some((x) => x.referred_user_id === r.referred_user_id)) ||
@@ -72,7 +107,7 @@ function fakeSupabase(store: Store) {
         r.id ??= uid();
         r.created_at ??= new Date().toISOString();
         rows.push(r);
-        b.single = async () => ({ data: r, error: null });
+        b.single = async () => ({ data: table === "reports" ? store.reportReceipt ?? r : r, error: null });
         b.maybeSingle = b.single;
         b.then = (res: (v: unknown) => unknown) => res({ data: [r], error: null });
         return b;
@@ -116,7 +151,7 @@ function fakeSupabase(store: Store) {
 }
 
 async function appWith(store: Store) {
-  return buildApp((() => fakeSupabase(store)) as never);
+  return buildApp(((token?: string) => fakeSupabase(store, token)) as never);
 }
 
 const as = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -194,6 +229,94 @@ test("post rate limit: 11th post in an hour -> 429", async () => {
   await app.close();
 });
 
+test("report creation validates input and uses the caller token with a private response", async () => {
+  const store: Store = { tables: {} };
+  const tokens: (string | undefined)[] = [];
+  const app = await buildApp(((token?: string) => { tokens.push(token); return fakeSupabase(store, token); }) as never);
+  try {
+    const result = await app.inject({ method: "POST", url: "/v1/reports", headers: as("good"),
+      payload: { entityType: "post", entityId: "b1200000-0000-4000-8000-000000000093", reason: "Review this content" } });
+    assert.equal(result.statusCode, 201, result.body);
+    assert.equal(tokens.at(-1), "good", "report writes must not bypass scoped RLS with service privileges");
+    assert.equal(result.headers["cache-control"], "private, no-store");
+    assert.equal(result.json().reporter_id, "user-1");
+  } finally { await app.close(); }
+});
+
+test("report creation rejects malformed target IDs and blank reasons before writing", async () => {
+  const store: Store = { tables: {} };
+  const app = await appWith(store);
+  try {
+    for (const payload of [
+      { entityType: "post", entityId: "not-an-id", reason: "Review" },
+      { entityType: "comment", entityId: "b1200000-0000-4000-8000-000000000093", reason: "   " },
+    ]) {
+      const result = await app.inject({ method: "POST", url: "/v1/reports", headers: as("good"), payload });
+      assert.equal(result.statusCode, 422, result.body);
+    }
+    assert.equal(store.tables.reports?.length ?? 0, 0);
+  } finally { await app.close(); }
+});
+
+test("report creation projects permission, validation and storage failures without database details", async () => {
+  for (const [code, status] of [["42501",403],["23514",422],["22023",422],["22P02",422],["XX000",503]] as const) {
+    const app = await appWith({ tables: {}, reportInsertError: { code, message: "private database row details" } });
+    try {
+      const result = await app.inject({ method: "POST", url: "/v1/reports", headers: as("other"),
+        payload: { entityType: "post", entityId: "b1200000-0000-4000-8000-000000000094", reason: "Review" } });
+      assert.equal(result.statusCode, status, result.body);
+      assert.doesNotMatch(result.body, /private database row details/);
+      assert.equal(result.headers["cache-control"], "private, no-store");
+    } finally { await app.close(); }
+  }
+});
+
+test("a report receipt cannot substitute another target or reporter", async () => {
+  const entityId = "b1200000-0000-4000-8000-000000000095";
+  const app = await appWith({ tables: {}, reportReceipt: { id: crypto.randomUUID(), reporter_id: "private-reporter",
+    entity_type: "post", entity_id: entityId, reason: "Review", status: "open", created_at: new Date().toISOString() } });
+  try {
+    const result = await app.inject({ method: "POST", url: "/v1/reports", headers: as("good"),
+      payload: { entityType: "post", entityId, reason: "Review" } });
+    assert.equal(result.statusCode, 503, result.body);
+    assert.doesNotMatch(result.body, /private-reporter/);
+  } finally { await app.close(); }
+});
+
+test("moderation queue rejects invalid windows and projects invalid or unavailable data safely", async () => {
+  for (const [result, status] of [
+    [{ data: null, error: { code: "42501", message: "private database details" } },403],
+    [{ data: null, error: { code: "XX000", message: "private database details" } },503],
+    [{ data: [{ id: "invalid-report", reporter_id: "private-reporter" }], error: null },503],
+  ] as const) {
+    const app = await appWith({ tables: {}, rpc() { return result; } });
+    try {
+      const queue = await app.inject({ method: "GET", url: "/v1/moderation/queue", headers: as("good") });
+      assert.equal(queue.statusCode, status, queue.body);
+      assert.doesNotMatch(queue.body, /private database details|private-reporter/);
+      assert.equal(queue.headers["cache-control"], "private, no-store");
+      for (const query of ["limit=0", "offset=-1", "extra=1"]) {
+        const invalid = await app.inject({ method: "GET", url: "/v1/moderation/queue?" + query, headers: as("good") });
+        assert.equal(invalid.statusCode, 422, invalid.body);
+      }
+    } finally { await app.close(); }
+  }
+});
+
+test("reaction writes project changed access, invalid arguments and uncertain storage safely", async () => {
+  for (const [code, status] of [["42501",403],["22023",422],["22P02",422],["XX000",503]] as const) {
+    const store = communityStore("public");
+    store.tables.community_posts = [{ id: "published-post", community_id: "c1", status: "published" }];
+    store.rpc = () => ({ data: null, error: { code, message: "private database details" } });
+    const app = await appWith(store);
+    try {
+      const result = await app.inject({ method: "POST", url: "/v1/posts/published-post/reactions", headers: as("good"), payload: { kind: "like" } });
+      assert.equal(result.statusCode, status, result.body);
+      assert.doesNotMatch(result.body, /private database details/);
+    } finally { await app.close(); }
+  }
+});
+
 test("report + moderate remove: post hidden from feed, report actioned", async () => {
   const store = communityStore("public", ["user-2"]);
   const app = await appWith(store);
@@ -217,6 +340,143 @@ test("report + moderate remove: post hidden from feed, report actioned", async (
   const feed = await app.inject({ method: "GET", url: "/v1/communities/c1/posts", headers: as("other") });
   assert.equal(feed.json().posts.length, 0);
   await app.close();
+});
+
+test("removed comment remains stored but is omitted from community reads", async () => {
+  const store = communityStore("public", ["user-2"]);
+  const app = await appWith(store);
+  const post = await app.inject({ method: "POST", url: "/v1/communities/c1/posts", headers: as("other"), payload: { body: "Conversation" } });
+  const postId = post.json().id as string;
+  const created = await app.inject({ method: "POST", url: "/v1/posts/" + postId + "/comments", headers: as("other"), payload: { body: "Reported reply" } });
+  assert.equal(created.statusCode, 201, created.body);
+  const commentId = created.json().id as string;
+  const stored = store.tables.community_comments.find((row) => row.id === commentId);
+  assert.equal(stored?.moderation_state, "visible");
+
+  const visible = await app.inject({ method: "GET", url: "/v1/posts/" + postId + "/comments", headers: as("good") });
+  assert.equal(visible.json().comments.length, 1);
+  stored!.moderation_state = "removed";
+  const hidden = await app.inject({ method: "GET", url: "/v1/posts/" + postId + "/comments", headers: as("good") });
+  assert.equal(hidden.json().comments.length, 0);
+  assert.equal(stored?.body, "Reported reply", "removal is soft and retains moderation evidence");
+  await app.close();
+});
+
+test("removed posts deny comment reads and new comments or reactions", async () => {
+  const store = communityStore("public", ["user-2"]);
+  store.tables.community_posts = [{ id: "removed-post", community_id: "c1", status: "removed" }];
+  store.tables.community_comments = [{ id: "visible-reply", post_id: "removed-post", body: "Hidden parent discussion", moderation_state: "visible" }];
+  const app = await appWith(store);
+  try {
+    for (const request of [
+      { method: "GET" as const, url: "/v1/posts/removed-post/comments" },
+      { method: "POST" as const, url: "/v1/posts/removed-post/comments", payload: { body: "New reply" } },
+      { method: "POST" as const, url: "/v1/posts/removed-post/reactions", payload: { kind: "like" } },
+    ]) {
+      const result = await app.inject({ ...request, headers: as("other") });
+      assert.equal(result.statusCode, 404, result.body);
+      assert.equal(result.body.includes("Hidden parent discussion"), false);
+    }
+    assert.equal(store.tables.community_comments.length, 1);
+    assert.equal(store.tables.community_post_reactions?.length ?? 0, 0);
+  } finally { await app.close(); }
+});
+
+test("a community moderator cannot see or resolve reports from another community", async () => {
+  const reportId = "a1200000-0000-4000-8000-000000000011";
+  const postId = "b1200000-0000-4000-8000-000000000011";
+  const store: Store = { tables: {
+    communities: [
+      { id: "c1", owner_user_id: "user-1", name: "Local", visibility: "public" },
+      { id: "c2", owner_user_id: "user-2", name: "Other", visibility: "public" },
+    ],
+    community_members: [
+      { community_id: "c1", user_id: "user-1", role: "moderator", status: "active" },
+      { community_id: "c2", user_id: "user-2", role: "owner", status: "active" },
+    ],
+    community_posts: [{ id: postId, community_id: "c2", author_id: "user-2", body: "Other community post", status: "published" }],
+    reports: [{ id: reportId, entity_type: "post", entity_id: postId, reason: "spam", status: "open", reporter_id: "user-1" }],
+  } };
+  const app = await appWith(store);
+  const queue = await app.inject({ method: "GET", url: "/v1/moderation/queue", headers: as("good") });
+  assert.equal(queue.statusCode, 200);
+  assert.equal(queue.json().reports.length, 0, "community moderators see only reports in their own communities");
+  const attempted = await app.inject({ method: "POST", url: "/v1/moderation/" + reportId + "/remove", headers: as("good") });
+  assert.equal(attempted.statusCode, 403);
+  assert.equal(store.tables.reports[0].status, "open");
+  assert.equal(store.tables.community_posts[0].status, "published");
+  store.tables.reports[0].status = "dismissed";
+  store.tables.reports[0].resolution_action = "dismiss";
+  const closed = await app.inject({ method: "POST", url: "/v1/moderation/" + reportId + "/remove", headers: as("good") });
+  assert.equal(closed.statusCode, 403, "closed-report replay still requires scoped moderator authority");
+  await app.close();
+});
+
+test("community resolution uses the caller-bound atomic RPC and rejects a foreign receipt", async () => {
+  const reportId = "a1200000-0000-4000-8000-000000000091";
+  const tokens: (string | undefined)[] = [];
+  const store: Store = { tables: {}, rpc(name, params) {
+    assert.equal(name, "moderate_community_report");
+    assert.deepEqual(params, { p_report_id: reportId, p_action: "dismiss" });
+    return { data: [{ report_id: "a1200000-0000-4000-8000-000000000099", status: "dismissed", resolution_action: "dismiss", already_resolved: false }], error: null };
+  } };
+  const app = await buildApp(((token?: string) => { tokens.push(token); return fakeSupabase(store, token); }) as never);
+  try {
+    const result = await app.inject({ method: "POST", url: "/v1/moderation/" + reportId + "/dismiss", headers: as("good") });
+    assert.equal(result.statusCode, 503, result.body);
+    assert.equal(tokens.at(-1), "good", "the resolution must not use a service-role client");
+    assert.equal(result.headers["cache-control"], "private, no-store");
+  } finally { await app.close(); }
+});
+
+test("moderator queue includes comment reports and uses caller-bound scope with no reporter identity", async () => {
+  const reportId = "a1200000-0000-4000-8000-000000000092";
+  const commentId = "b1200000-0000-4000-8000-000000000092";
+  const calls: (string | undefined)[] = [];
+  const app = await buildApp(((token?: string) => { calls.push(token); return fakeSupabase({ tables: {}, rpc(name, params) {
+    assert.equal(name, "community_moderation_queue");
+    assert.deepEqual(params, { p_limit: 51, p_offset: 0 });
+    return { data: [{ id: reportId, entity_type: "comment", entity_id: commentId, reason: "Review reply", status: "open",
+      created_at: "2026-10-05T00:00:00Z", target: null, reporter_id: "private-reporter" }], error: null };
+  } }, token); }) as never);
+  try {
+    const result = await app.inject({ method: "GET", url: "/v1/moderation/queue", headers: as("good") });
+    assert.equal(result.statusCode, 200, result.body);
+    assert.equal(result.json().reports[0]?.entity_type, "comment");
+    assert.equal(calls.at(-1), "good");
+    assert.doesNotMatch(result.body, /private-reporter|reporter_id/);
+    assert.equal(result.headers["cache-control"], "private, no-store");
+  } finally { await app.close(); }
+});
+
+test("comment permission changed during save is actionable and does not leak database details", async () => {
+  const store = communityStore("public");
+  store.tables.community_posts = [{ id: "published-post", community_id: "c1", status: "published" }];
+  store.commentInsertError = { code: "42501", message: "private database row details" };
+  const app = await appWith(store);
+  try {
+    const result = await app.inject({ method: "POST", url: "/v1/posts/published-post/comments", headers: as("good"), payload: { body: "Reply" } });
+    assert.equal(result.statusCode, 403, result.body);
+    assert.doesNotMatch(result.body, /private database row details/);
+  } finally { await app.close(); }
+});
+
+test("reaction toggle is caller-bound and rejects a foreign receipt", async () => {
+  const store = communityStore("public");
+  store.tables.community_posts = [{ id: "published-post", community_id: "c1", status: "published" }];
+  const tokens: (string | undefined)[] = [];
+  store.rpc = (name, params) => {
+    assert.equal(name, "toggle_community_reaction");
+    assert.deepEqual(params, { p_post_id: "published-post", p_kind: "like" });
+    return { data: { postId: "foreign-post", kind: "like", active: true }, error: null };
+  };
+  const app = await buildApp(((token?: string) => { tokens.push(token); return fakeSupabase(store, token); }) as never);
+  try {
+    const result = await app.inject({ method: "POST", url: "/v1/posts/published-post/reactions", headers: as("good"), payload: { kind: "like" } });
+    assert.equal(result.statusCode, 503, result.body);
+    assert.equal(tokens.at(-1), "good");
+    assert.equal(result.headers["cache-control"], "private, no-store");
+  } finally { await app.close(); }
 });
 
 // ---- referrals ---------------------------------------------------------------

@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiClient } from "./api";
 
-const tabs = ["users", "jobs", "flags", "support", "audit", "usage"] as const;
+const tabs = ["users", "jobs", "moderation", "flags", "support", "audit", "usage"] as const;
 type Tab = typeof tabs[number];
 type Row = Record<string, unknown>;
 type TicketStatus = "open" | "pending" | "resolved" | "closed";
+type ModerationAction = "remove" | "dismiss";
 const ticketStatuses: TicketStatus[] = ["open", "pending", "resolved", "closed"];
 const input = "rounded-xl border border-white/15 bg-[#101010] px-3 py-2.5 text-sm text-white outline-none focus-visible:ring-2 focus-visible:ring-white";
 const button = "rounded-full border border-white/15 px-4 py-2 text-sm text-white/80 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white disabled:opacity-40";
@@ -24,6 +25,9 @@ export default function AdminConsole() {
   const [jobType, setJobType] = useState<"ai" | "publishing" | "document">("ai");
   const [documentHealth, setDocumentHealth] = useState<Row | null>(null);
   const [status, setStatus] = useState("");
+  const [reportStatus, setReportStatus] = useState<"open" | "actioned" | "dismissed" | "all">("open");
+  const [reportType, setReportType] = useState<"all" | "post" | "comment">("all");
+  const [pendingModeration, setPendingModeration] = useState<{ reportId: string; action: ModerationAction } | null>(null);
   const [search, setSearch] = useState("");
   const [searchDraft, setSearchDraft] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
@@ -46,7 +50,12 @@ export default function AdminConsole() {
     try {
       const result = tab === "usage"
         ? (await api.adminUsageSummary(30)).orgs as unknown as Row[]
-        : await api.adminList(tab, {
+        : tab === "moderation"
+          ? (await api.adminModerationReports({
+            limit: 50, offset, status: reportStatus,
+            ...(reportType === "all" ? {} : { entityType: reportType }),
+          })).reports as unknown as Row[]
+        : await api.adminList(tab as Exclude<Tab, "moderation" | "usage">, {
           limit: 50, offset,
           ...(tab === "jobs" ? { type: jobType, status } : {}),
           ...(tab === "support" ? { status } : {}),
@@ -64,7 +73,7 @@ export default function AdminConsole() {
       setError(reason instanceof Error ? reason.message : "Unable to load the admin console.");
       return false;
     } finally { if (current === requestId.current) setLoading(false); }
-  }, [api, tab, offset, jobType, status, search]);
+  }, [api, tab, offset, jobType, status, search, reportStatus, reportType]);
 
   useEffect(() => { void load(); return () => { requestId.current++; }; }, [load]);
 
@@ -81,7 +90,8 @@ export default function AdminConsole() {
 
   function changeTab(next: Tab) {
     if (busy) return;
-    setTab(next); setOffset(0); setStatus(""); setSearch(""); setSearchDraft(""); setNotice(null); setHoldJobId(null);
+    setTab(next); setOffset(0); setStatus(""); setReportStatus("open"); setReportType("all");
+    setPendingModeration(null); setSearch(""); setSearchDraft(""); setNotice(null); setHoldJobId(null);
   }
 
   if (forbidden) return <main className="mx-auto max-w-3xl px-6 py-20">
@@ -104,7 +114,11 @@ export default function AdminConsole() {
     {notice && <p role="status" className="mt-6 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{notice}</p>}
 
     <div className="mt-8 flex flex-wrap items-end justify-between gap-4">
-      <div><h2 className="text-xl font-medium capitalize">{tab === "flags" ? "Feature flags" : tab === "usage" ? "Usage by organization" : tab}</h2><p className="mt-1 text-xs text-white/40">{tab === "usage" ? "Last 30 days · up to 10,000 usage events · top 50 organizations" : tab === "flags" ? "Changes apply only to the selected scope and are recorded in the audit log." : "50 records per page · newest first"}</p></div>
+      {tab === "moderation" && <div className="flex flex-wrap gap-3">
+        <label className="text-xs text-white/50">Report status<select value={reportStatus} disabled={!!busy} onChange={(event) => { setReportStatus(event.target.value as typeof reportStatus); setOffset(0); setPendingModeration(null); }} className={input + " mt-2 block"}><option value="open">Open</option><option value="actioned">Actioned</option><option value="dismissed">Dismissed</option><option value="all">All reports</option></select></label>
+        <label className="text-xs text-white/50">Content type<select value={reportType} disabled={!!busy} onChange={(event) => { setReportType(event.target.value as typeof reportType); setOffset(0); setPendingModeration(null); }} className={input + " mt-2 block"}><option value="all">Posts and comments</option><option value="post">Posts</option><option value="comment">Comments</option></select></label>
+      </div>}
+      <div><h2 className="text-xl font-medium capitalize">{tab === "flags" ? "Feature flags" : tab === "usage" ? "Usage by organization" : tab === "moderation" ? "Community report review" : tab}</h2><p className="mt-1 text-xs text-white/40">{tab === "usage" ? "Last 30 days · up to 10,000 usage events · top 50 organizations" : tab === "flags" ? "Changes apply only to the selected scope and are recorded in the audit log." : tab === "moderation" ? "Platform-wide post and comment reports · soft removal preserves an auditable record." : "50 records per page · newest first"}</p></div>
       {tab === "users" && <form onSubmit={(event) => { event.preventDefault(); setOffset(0); setSearch(searchDraft.trim()); }} className="flex flex-wrap items-end gap-2">
         <label className="text-xs text-white/50">Find a user<input value={searchDraft} disabled={!!busy} onChange={(event) => setSearchDraft(event.target.value)} maxLength={200} placeholder="Display name or full user ID" className={`${input} mt-2 block w-64 max-w-full`} /></label><button disabled={!!busy} className={button}>Search</button>
       </form>}
@@ -120,11 +134,43 @@ export default function AdminConsole() {
     </section>}
 
     <section aria-label={`${tab} records`} aria-busy={loading} className="mt-5 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.025]">
-      {loading ? <p role="status" className="p-12 text-center text-sm text-white/45">Loading {tab}…</p> : !rows.length ? <div className="p-12 text-center"><p className="text-base text-white/80">{error ? "Data unavailable" : "No matching records"}</p><p className="mt-2 text-sm text-white/40">{error ? "Use Refresh to try again." : "Records will appear here when there is activity. Adjust filters or check another page."}</p></div> : <div className="divide-y divide-white/10">
+      {loading ? <p role="status" className="p-12 text-center text-sm text-white/45">Loading {tab}…</p> : !rows.length ? <div className="p-12 text-center"><p className="text-base text-white/80">{error ? "Data unavailable" : tab === "moderation" ? "No reports match these filters" : "No matching records"}</p><p className="mt-2 text-sm text-white/40">{error ? "Use Refresh to try again." : tab === "moderation" ? "The queue is clear for this filter. Check another status or content type." : "Records will appear here when there is activity. Adjust filters or check another page."}</p></div> : <div className="divide-y divide-white/10">
         {rows.map((row, index) => {
           const id = value(row, "id", String(index));
           const stamp = date(row.created_at);
+          const target = row.target && typeof row.target === "object" ? row.target as Row : null;
+          const pendingAction = pendingModeration?.reportId === id ? pendingModeration.action : null;
           return <article key={id} className="p-5 sm:p-6">
+            {tab === "moderation" && <div className="space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div><p className="text-xs uppercase tracking-[0.14em] text-white/40">{value(row, "entity_type", "community")} report · {value(target ?? {}, "communityName", "Community unavailable")}</p><h3 className="mt-2 text-lg font-medium">{target?.type === "post" ? value(target, "title", "Untitled post") : target?.type === "comment" ? value(target, "parentTitle", "Comment report") : "Reported content unavailable"}</h3><p className="mt-2 text-xs text-white/40">{stamp} · {value(row, "status")}{row.resolution_action ? " · " + value(row, "resolution_action") : ""}</p></div>
+                <span className="h-fit rounded-full border border-white/15 px-3 py-1.5 text-xs capitalize text-white/70">{value(row, "status")}</span>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[11px] uppercase tracking-[0.14em] text-white/40">Report reason</p>
+                <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-white/80">{value(row, "reason", "No reason supplied.")}</p>
+              </div>
+              {target && <div className="rounded-xl border border-white/10 bg-white/[0.025] p-4">
+                <p className="text-[11px] uppercase tracking-[0.14em] text-white/40">Community content · {value(target, "type")}</p>
+                {target.type === "comment" && typeof target.parentBody === "string" && <p className="mt-3 whitespace-pre-wrap break-words border-l border-white/15 pl-3 text-sm leading-6 text-white/45">{target.parentBody}</p>}
+                <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-white/80">{value(target, "body", "Content unavailable.")}</p>
+                {target.type === "comment" && <p className="mt-3 text-xs text-white/40">Comment visibility: {value(target, "moderationState")}</p>}
+                {target.type === "post" && <p className="mt-3 text-xs text-white/40">Post visibility: {value(target, "status")}</p>}
+              </div>}
+              {row.status === "open" && <div>
+                {pendingAction ? <div role="group" aria-labelledby={"moderation-confirm-" + id} className="rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4">
+                  <p id={"moderation-confirm-" + id} className="text-sm text-amber-100">{pendingAction === "remove" ? "Remove this community content from ordinary readers? The content is soft-hidden and retained for audit." : "Dismiss this report without changing the community content?"}</p>
+                  <div className="mt-4 flex flex-wrap gap-2"><button type="button" className={button} disabled={!!busy} onClick={() => setPendingModeration(null)}>Cancel</button><button type="button" className={button} disabled={!!busy || (pendingAction === "remove" && !target)} onClick={() => void update(id, async () => {
+                    const result = await api.adminResolveModerationReport(id, pendingAction);
+                    setPendingModeration(null);
+                    return result;
+                  }, "Moderation outcome saved or recovered; refresh the status filter to review closed reports.")}>{busy === id ? "Saving…" : pendingAction === "remove" ? "Confirm removal" : "Confirm dismissal"}</button></div>
+                </div> : <div className="flex flex-wrap gap-2">
+                  <button type="button" className={button} disabled={!!busy || !target} onClick={() => setPendingModeration({ reportId: id, action: "remove" })}>Review removal</button>
+                  <button type="button" className={button} disabled={!!busy} onClick={() => setPendingModeration({ reportId: id, action: "dismiss" })}>Dismiss report</button>
+                </div>}
+              </div>}
+            </div>}
             {tab === "users" && <div><h3 className="font-medium">{value(row, "display_name", "Unnamed author")}</h3><p className="mt-2 break-all font-mono text-xs text-white/45">{id}</p><p className="mt-2 text-xs text-white/40">Joined {stamp}</p></div>}
             {tab === "jobs" && <div><div className="flex flex-wrap justify-between gap-4"><div><h3 className="text-sm font-medium">{value(row, "job_type", value(row, "channel", jobType === "ai" ? value(row, "agent_type", "AI generation") : "Publishing package"))}</h3><p className="mt-2 break-all font-mono text-xs text-white/40">{id}</p><p className="mt-2 text-xs text-white/40">{stamp} · Attempts: {value(row, "attempts", "0")}</p>{typeof row.error_code === "string" && row.error_code && <p className="mt-2 text-xs text-amber-200">{row.error_code}</p>}</div><span className="h-fit rounded-full border border-white/15 px-3 py-1.5 text-xs capitalize text-white/70">{value(row, "status")}</span></div>
               {jobType === "ai" && row.status === "running" && ["illustrator", "cover_designer"].includes(String(row.agent_type)) && <div className="mt-4">

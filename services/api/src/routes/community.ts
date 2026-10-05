@@ -21,9 +21,9 @@ const reactionSchema = z.object({ kind: z.enum(["like", "love", "insightful", "c
 
 const reportSchema = z.object({
   entityType: z.enum(["post", "comment"]),
-  entityId: z.string().min(1), // not .uuid(): entity ids come from the entity row
-  reason: z.string().min(1).max(1000),
-});
+  entityId: z.string().uuid(),
+  reason: z.string().trim().min(1).max(1000),
+}).strict();
 
 // ponytail: in-memory fixed-window rate limits — per-instance, reset on
 // restart. Ceiling: multi-instance deploys under-count. Upgrade path: Redis
@@ -175,10 +175,12 @@ export function communityRoutes(app: FastifyInstance) {
     const { postId } = req.params as { postId: string };
     const svc = app.supabaseFactory();
     const post = await getPost(svc, postId);
+    requirePublishedPost(post);
     const role = await memberRole(svc, post.community_id, req.userId);
     requireReadable(post.community, role, req.userId);
-    const { data, error } = await svc.from("community_comments").select("*").eq("post_id", postId).order("created_at");
-    if (error) throw new AppError(500, error.message);
+    const { data, error } = await app.supabaseFactory(req.userToken).from("community_comments").select("*")
+      .eq("post_id", postId).eq("moderation_state", "visible").order("created_at");
+    if (error) throw new AppError(503, "Discussion replies could not be loaded. Refresh before trying again.");
     return { comments: data };
   });
 
@@ -188,110 +190,119 @@ export function communityRoutes(app: FastifyInstance) {
     if (!parsed.success) throw new AppError(422, "invalid comment", { issues: parsed.error.issues });
     const svc = app.supabaseFactory();
     const post = await getPost(svc, postId);
+    requirePublishedPost(post);
     await requireMember(svc, post.community_id, req.userId);
-    const { data, error } = await svc
+    const { data, error } = await app.supabaseFactory(req.userToken)
       .from("community_comments")
-      .insert({ post_id: postId, author_id: req.userId, body: parsed.data.body })
+      .insert({ post_id: postId, author_id: req.userId, body: parsed.data.body, moderation_state: "visible" })
       .select()
       .single();
-    if (error) throw new AppError(500, error.message);
+    discussionWriteError(error);
     return reply.status(201).send(data);
   });
 
   // Toggle: react again with the same kind to unreact.
-  app.post("/posts/:postId/reactions", async (req) => {
+  app.post("/posts/:postId/reactions", async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
     const { postId } = req.params as { postId: string };
     const parsed = reactionSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid reaction", { issues: parsed.error.issues });
     const svc = app.supabaseFactory();
     const post = await getPost(svc, postId);
+    requirePublishedPost(post);
     await requireMember(svc, post.community_id, req.userId);
-    const { data: existing } = await svc
-      .from("community_post_reactions")
-      .select("kind")
-      .eq("post_id", postId)
-      .eq("user_id", req.userId)
-      .eq("kind", parsed.data.kind)
-      .maybeSingle();
-    if (existing) {
-      await svc.from("community_post_reactions").delete().eq("post_id", postId).eq("user_id", req.userId).eq("kind", parsed.data.kind);
-      return { postId, kind: parsed.data.kind, active: false };
-    }
-    const { error } = await svc.from("community_post_reactions").insert({ post_id: postId, user_id: req.userId, kind: parsed.data.kind });
-    if (error) throw new AppError(500, error.message);
-    return { postId, kind: parsed.data.kind, active: true };
+    const { data, error } = await app.supabaseFactory(req.userToken).rpc("toggle_community_reaction", {
+      p_post_id: postId, p_kind: parsed.data.kind,
+    });
+    discussionWriteError(error);
+    const receipt = z.object({ postId: z.literal(postId), kind: z.literal(parsed.data.kind), active: z.boolean() }).safeParse(data);
+    if (!receipt.success) throw new AppError(503, "Reaction outcome could not be verified. Refresh before trying again.");
+    return receipt.data;
   });
 
   app.post("/reports", async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
     const parsed = reportSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid report", { issues: parsed.error.issues });
     if (!allowReport(req.userId)) throw new AppError(429, "report rate limit exceeded");
-    const svc = app.supabaseFactory();
-    const { data, error } = await svc
+    const { data, error } = await app.supabaseFactory(req.userToken)
       .from("reports")
       .insert({ reporter_id: req.userId, entity_type: parsed.data.entityType, entity_id: parsed.data.entityId, reason: parsed.data.reason, status: "open" })
       .select()
       .single();
-    if (error) throw new AppError(500, error.message);
-    return reply.status(201).send(data);
+    if (error?.code === "42501") throw new AppError(403, "This content is not available to report.");
+    if (error && ["23514", "22023", "22P02"].includes(error.code)) throw new AppError(422, "Choose a valid report target and reason.");
+    if (error) throw new AppError(503, "Report save could not be confirmed. Refresh before trying again.");
+    const receipt = z.object({ id: z.string().uuid(), reporter_id: z.literal(req.userId),
+      entity_type: z.literal(parsed.data.entityType), entity_id: z.literal(parsed.data.entityId),
+      reason: z.literal(parsed.data.reason), status: z.literal("open"), created_at: z.string().datetime({ offset: true }),
+    }).safeParse(data);
+    if (!receipt.success) throw new AppError(503, "Report save could not be verified. Refresh before trying again.");
+    return reply.status(201).send(receipt.data);
   });
 
   // Moderation queue: open reports for communities the user moderates.
-  app.get("/moderation/queue", async (req) => {
-    const svc = app.supabaseFactory();
-    const { data: memberships } = await svc
-      .from("community_members")
-      .select("community_id")
-      .eq("user_id", req.userId)
-      .in("role", ["owner", "moderator"])
-      .eq("status", "active");
-    const communityIds = (memberships ?? []).map((m: { community_id: string }) => m.community_id);
-    if (!communityIds.length) return { reports: [] };
-    const { data: posts } = await svc.from("community_posts").select("id").in("community_id", communityIds);
-    const postIds = (posts ?? []).map((p: { id: string }) => p.id);
-    if (!postIds.length) return { reports: [] };
-    const { data: reports, error } = await svc
-      .from("reports")
-      .select("*")
-      .eq("entity_type", "post")
-      .in("entity_id", postIds)
-      .eq("status", "open")
-      .order("created_at");
-    if (error) throw new AppError(500, error.message);
-    return { reports };
+  app.get("/moderation/queue", async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
+    const query = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50),
+      offset: z.coerce.number().int().min(0).max(1000000).default(0),
+    }).strict().safeParse(req.query ?? {});
+    if (!query.success) throw new AppError(422, "Choose a valid moderation queue window.");
+    const { data, error } = await app.supabaseFactory(req.userToken).rpc("community_moderation_queue", {
+      p_limit: query.data.limit + 1, p_offset: query.data.offset,
+    });
+    if (error?.code === "42501") throw new AppError(403, "Community access required.");
+    if (error) throw new AppError(503, "The moderation queue could not be loaded. Refresh before trying again.");
+    const reports = z.array(z.object({ id: z.string().uuid(), entity_type: z.enum(["post", "comment"]),
+      entity_id: z.string().uuid(), reason: z.string().min(1).max(1000), status: z.literal("open"),
+      created_at: z.string().datetime({ offset: true }),
+      target: z.union([
+        z.object({ type: z.literal("post"), title: z.string().nullable(), body: z.string(), status: z.string(), communityName: z.string().nullable() }).strip(),
+        z.object({ type: z.literal("comment"), body: z.string(), moderationState: z.enum(["visible","removed"]),
+          parentTitle: z.string().nullable(), parentBody: z.string().nullable(), communityName: z.string().nullable() }).strip(),
+      ]).nullable(),
+    }).strip()).max(query.data.limit + 1).safeParse(data ?? []);
+    if (!reports.success) throw new AppError(503, "The moderation queue returned invalid report data.");
+    return { reports: reports.data.slice(0,query.data.limit), ...query.data, hasMore: reports.data.length > query.data.limit };
   });
 
-  // action=remove -> post status removed, report actioned; action=dismiss.
-  app.post("/moderation/:reportId/:action", async (req) => {
-    const { reportId, action } = req.params as { reportId: string; action: string };
-    if (action !== "remove" && action !== "dismiss") throw new AppError(422, "action must be remove|dismiss");
-    const svc = app.supabaseFactory();
-    const { data: report } = await svc.from("reports").select("*").eq("id", reportId).maybeSingle();
-    if (!report) throw new AppError(404, "report not found");
-    const r = report as { status: string; entity_type: string; entity_id: string };
-    if (r.status !== "open") return { reportId, action, status: r.status, alreadyResolved: true };
-    if (r.entity_type !== "post") throw new AppError(422, "only post reports are supported");
-    const post = await getPost(svc, r.entity_id);
-    await requireModerator(svc, post.community_id, req.userId);
-    if (action === "remove") {
-      const { error } = await svc.from("community_posts").update({ status: "removed" }).eq("id", r.entity_id);
-      if (error) throw new AppError(500, error.message);
-    }
-    const { data, error } = await svc
-      .from("reports")
-      .update({ status: action === "remove" ? "actioned" : "dismissed" })
-      .eq("id", reportId)
-      .select()
-      .single();
-    if (error) throw new AppError(500, error.message);
-    return data;
+  app.post("/moderation/:reportId/:action", async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
+    const parsed = z.object({ reportId: z.string().uuid(), action: z.enum(["remove", "dismiss"]) }).safeParse(req.params);
+    if (!parsed.success) throw new AppError(422, "Choose a valid report and moderation action.");
+    const { reportId, action } = parsed.data;
+    const { data, error } = await app.supabaseFactory(req.userToken).rpc("moderate_community_report", {
+      p_report_id: reportId, p_action: action,
+    });
+    if (error?.code === "42501") throw new AppError(403, "moderator required");
+    if (error?.code === "P0002") throw new AppError(404, "Report or reported content not found.");
+    if (error?.code === "22023") throw new AppError(422, "This report cannot be resolved with that action.");
+    if (error) throw new AppError(503, "Moderation outcome unclear. Refresh the queue before retrying.");
+    const parsedReceipt = z.object({ report_id: z.literal(reportId), status: z.enum(["actioned", "dismissed"]),
+      resolution_action: z.enum(["remove", "dismiss"]).nullable(), already_resolved: z.boolean(),
+    }).refine((row) => row.already_resolved && row.resolution_action === null
+      || (row.status === "actioned" ? row.resolution_action === "remove" : row.resolution_action === "dismiss")
+        && (row.already_resolved || row.resolution_action === action)).safeParse(Array.isArray(data) ? data[0] : data);
+    if (!parsedReceipt.success) throw new AppError(503, "Moderation outcome could not be verified. Refresh the queue.");
+    return { reportId, status: parsedReceipt.data.status, action: parsedReceipt.data.resolution_action,
+      alreadyResolved: parsedReceipt.data.already_resolved };
   });
 }
 
 async function getPost(svc: SupabaseClient, postId: string) {
-  const { data } = await svc.from("community_posts").select("id,community_id").eq("id", postId).maybeSingle();
+  const { data } = await svc.from("community_posts").select("id,community_id,status").eq("id", postId).maybeSingle();
   if (!data) throw new AppError(404, "post not found");
-  const post = data as { id: string; community_id: string };
+  const post = data as { id: string; community_id: string; status: string };
   const community = await getCommunity(svc, post.community_id);
   return { ...post, community };
+}
+
+function requirePublishedPost(post: { status: string }) {
+  if (post.status !== "published") throw new AppError(404, "post not found");
+}
+
+function discussionWriteError(error: { code?: string } | null) {
+  if (error?.code === "42501") throw new AppError(403, "Discussion access changed. Refresh before trying again.");
+  if (error?.code === "22023" || error?.code === "22P02") throw new AppError(422, "Choose a valid discussion and content.");
+  if (error) throw new AppError(503, "The discussion update could not be confirmed. Refresh before trying again.");
 }

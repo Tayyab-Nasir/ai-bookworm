@@ -2,6 +2,49 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createClient } from "@bookworm/api-client";
 
+test("community queue pagination and original decision recovery preserve cookie auth", async () => {
+  const original = globalThis.fetch;
+  const calls: { url:string; init?:RequestInit }[] = [];
+  globalThis.fetch = async (input,init) => { calls.push({ url:String(input),init }); return Response.json({ reports:[],limit:50,offset:50,hasMore:false,
+    reportId:"report",status:"dismissed",action:"dismiss",alreadyResolved:true }); };
+  try {
+    const api = createClient({ baseUrl:"/api/backend" });
+    await api.moderationQueue({ limit:50,offset:50 });
+    const decision = await api.moderateReport("report/id","remove");
+    assert.equal(calls[0].url,"/api/backend/v1/moderation/queue?limit=50&offset=50");
+    assert.equal(calls[1].url,"/api/backend/v1/moderation/report%2Fid/remove");
+    assert.equal(decision.action,"dismiss"); assert.equal(decision.alreadyResolved,true);
+    for (const call of calls) { assert.equal(call.init?.credentials,"same-origin"); assert.equal(new Headers(call.init?.headers).has("authorization"),false); }
+  } finally { globalThis.fetch=original; }
+});
+
+test("admin moderation client uses bounded filters and same-origin recovery-safe resolution", async () => {
+  const original = globalThis.fetch;
+  const calls: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), init });
+    return String(input).includes("/moderation/reports?")
+      ? Response.json({ reports: [{ id: "report-1", entity_type: "comment", status: "open", target: null }], limit: 25, offset: 25 })
+      : Response.json({ reportId: "report-1", status: "actioned", action: "remove", alreadyResolved: false });
+  };
+  try {
+    const api = createClient({ baseUrl: "/api/backend" });
+    const page = await api.adminModerationReports({ status: "open", entityType: "comment", offset: 25, limit: 25 });
+    assert.equal(page.reports[0].entity_type, "comment");
+    assert.equal(calls[0].url, "/api/backend/v1/admin/moderation/reports?status=open&entityType=comment&offset=25&limit=25");
+    assert.equal(calls[0].init?.credentials, "same-origin");
+    assert.equal(new Headers(calls[0].init?.headers).has("authorization"), false);
+
+    const resolution = await api.adminResolveModerationReport("report/id", "remove");
+    assert.deepEqual(resolution, { reportId: "report-1", status: "actioned", action: "remove", alreadyResolved: false });
+    assert.equal(calls[1].url, "/api/backend/v1/admin/moderation/reports/report%2Fid/resolve");
+    assert.equal(calls[1].init?.method, "POST");
+    assert.equal(calls[1].init?.credentials, "same-origin");
+    assert.deepEqual(JSON.parse(String(calls[1].init?.body)), { action: "remove" });
+    assert.equal(new Headers(calls[1].init?.headers).has("authorization"), false);
+  } finally { globalThis.fetch = original; }
+});
+
 test("admin client preserves cookie auth, flag scope/config, and job pagination", async () => {
   const original = globalThis.fetch;
   const calls: { url: string; init?: RequestInit }[] = [];

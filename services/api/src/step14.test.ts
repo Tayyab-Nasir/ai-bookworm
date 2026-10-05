@@ -152,6 +152,110 @@ test("admin routes: 403 for non-admin, 401 without token", async () => {
   await app.close();
 });
 
+test("platform moderation queue is global, admin-only, and strips reporter/private fields", async () => {
+  const ids = {
+    postReport: "a1400000-0000-4000-8000-000000000001",
+    commentReport: "a1400000-0000-4000-8000-000000000002",
+    closedReport: "a1400000-0000-4000-8000-000000000003",
+    post: "b1400000-0000-4000-8000-000000000001",
+    parentPost: "b1400000-0000-4000-8000-000000000002",
+    comment: "c1400000-0000-4000-8000-000000000001",
+  };
+  const store: Store = { tables: {
+    reports: [
+      { id: ids.postReport, reporter_id: "d1400000-0000-4000-8000-000000000001", entity_type: "post", entity_id: ids.post, reason: "Spam", status: "open", created_at: "2026-09-01T00:00:00Z", internal_note: "must not leak" },
+      { id: ids.commentReport, reporter_id: "d1400000-0000-4000-8000-000000000002", entity_type: "comment", entity_id: ids.comment, reason: "Abuse", status: "open", created_at: "2026-09-02T00:00:00Z" },
+      { id: ids.closedReport, reporter_id: "d1400000-0000-4000-8000-000000000003", entity_type: "post", entity_id: ids.post, reason: "Resolved", status: "dismissed", created_at: "2026-08-01T00:00:00Z" },
+    ],
+    community_posts: [
+      { id: ids.post, community_id: "e1400000-0000-4000-8000-000000000001", title: "Public post", body: "Community text only", status: "published", author_id: "f1400000-0000-4000-8000-000000000001" },
+      { id: "e1400000-0000-4000-8000-000000000002", community_id: "e1400000-0000-4000-8000-000000000002", title: "Unrelated", body: "Not selected", status: "published" },
+      { id: ids.parentPost, community_id: "e1400000-0000-4000-8000-000000000002", title: "Context post", body: "Parent context only", status: "published" },
+    ],
+    community_comments: [{ id: ids.comment, post_id: ids.parentPost, body: "Reported comment", moderation_state: "visible", author_id: "f1400000-0000-4000-8000-000000000002" }],
+    communities: [
+      { id: "e1400000-0000-4000-8000-000000000001", name: "Writer Circle" },
+      { id: "e1400000-0000-4000-8000-000000000002", name: "Fantasy Lab" },
+    ],
+    books: [{ id: "private-book", title: "Private manuscript must never be queried" }],
+  } };
+  const app = await appWith(store);
+  const denied = await app.inject({ method: "GET", url: "/v1/admin/moderation/reports", headers: as("good") });
+  assert.equal(denied.statusCode, 403);
+
+  const listed = await app.inject({ method: "GET", url: "/v1/admin/moderation/reports?status=open&limit=20", headers: as("admin") });
+  assert.equal(listed.statusCode, 200, listed.body);
+  const reports = listed.json().reports;
+  assert.equal(reports.length, 2, "admin queue crosses community boundaries and filters to open reports");
+  assert.deepEqual(new Set(reports.map((item: Row) => item.entity_type)), new Set(["post", "comment"]));
+  assert.equal(reports.some((item: Row) => item.id === ids.closedReport), false);
+  assert.equal(reports.find((item: Row) => item.entity_type === "post").target.communityName, "Writer Circle");
+  assert.equal(reports.find((item: Row) => item.entity_type === "comment").target.communityName, "Fantasy Lab");
+  assert.equal(reports.find((item: Row) => item.entity_type === "comment").target.parentTitle, "Context post");
+  const serialized = JSON.stringify(reports);
+  for (const forbidden of ["reporter_id", "author_id", "internal_note", "Private manuscript", "books"]) {
+    assert.equal(serialized.includes(forbidden), false, "queue leaked " + forbidden);
+  }
+
+  const filtered = await app.inject({ method: "GET", url: "/v1/admin/moderation/reports?entityType=post&status=all&offset=0&limit=1", headers: as("admin") });
+  assert.equal(filtered.statusCode, 200, filtered.body);
+  assert.equal(filtered.json().reports.length, 1);
+  assert.equal(filtered.json().reports[0].entity_type, "post");
+  const invalid = await app.inject({ method: "GET", url: "/v1/admin/moderation/reports?entityType=book", headers: as("admin") });
+  assert.equal(invalid.statusCode, 422);
+  await app.close();
+});
+
+test("platform report resolution is admin-only, validated, and idempotent on reply recovery", async () => {
+  const reportId = "a1400000-0000-4000-8000-000000000011";
+  let state: "open" | "actioned" | "dismissed" = "open";
+  let resolutionAction: "remove" | "dismiss" | null = null;
+  let effectCount = 0;
+  const store: Store = {
+    tables: { reports: [{ id: reportId, status: "open", entity_type: "comment", entity_id: "c1400000-0000-4000-8000-000000000011" }] },
+    rpc(name, args) {
+      assert.equal(name, "admin_resolve_community_report");
+      assert.equal(args.p_report_id, reportId);
+      assert.equal(args.p_actor_id, "admin-1");
+      const alreadyResolved = state !== "open";
+      if (!alreadyResolved) {
+        state = args.p_action === "remove" ? "actioned" : "dismissed";
+        resolutionAction = args.p_action as "remove" | "dismiss";
+        effectCount++;
+      }
+      return { data: [{ report_id: reportId, status: state, resolution_action: resolutionAction, already_resolved: alreadyResolved }], error: null };
+    },
+  };
+  const app = await appWith(store);
+  const denied = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("good"), payload: { action: "remove" } });
+  assert.equal(denied.statusCode, 403);
+  const invalid = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("admin"), payload: { action: "remove", extra: true } });
+  assert.equal(invalid.statusCode, 422);
+  const resolved = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("admin"), payload: { action: "remove" } });
+  assert.equal(resolved.statusCode, 200, resolved.body);
+  assert.deepEqual(resolved.json(), { reportId, status: "actioned", action: "remove", alreadyResolved: false });
+  const replay = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("admin"), payload: { action: "dismiss" } });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.deepEqual(replay.json(), { reportId, status: "actioned", action: "remove", alreadyResolved: true });
+  assert.equal(effectCount, 1, "a lost response replay must not repeat or change the original resolution");
+  await app.close();
+});
+
+test("platform moderation cannot confirm a foreign or inconsistent resolution receipt", async () => {
+  const reportId = "a1400000-0000-4000-8000-000000000011";
+  for (const receipt of [
+    { report_id: "a1400000-0000-4000-8000-000000000099", status: "actioned", resolution_action: "remove", already_resolved: false },
+    { report_id: reportId, status: "dismissed", resolution_action: "remove", already_resolved: false },
+  ]) {
+    const app = await appWith({ tables: {}, rpc: () => ({ data: [receipt], error: null }) });
+    try {
+      const result = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("admin"), payload: { action: "remove" } });
+      assert.equal(result.statusCode, 503, result.body);
+      assert.match(result.json().error.message, /could not be verified/i);
+    } finally { await app.close(); }
+  }
+});
+
 test("admin users list + suspend sets status and writes audit", async () => {
   const store: Store = {
     tables: {

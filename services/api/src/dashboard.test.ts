@@ -17,6 +17,7 @@ function fakeSupabase(tables: Record<string, Row[]>, rpcHandler?: (name: string,
   return {
     rpc: async (name: string, args: Record<string, unknown>) => {
       if (rpcHandler) return rpcHandler(name, args);
+      if (name === "retailer_sales_analytics") return { data: null, error: { code: "PGRST202" } };
       assert.equal(name, "retailer_sales_summary");
       return { data: { status: "not_connected", imports: 0, latestImportedAt: null, units: null, reportedProceedsCents: null, royaltyCents: null, currency: null, currencies: [] }, error: null };
     },
@@ -146,6 +147,20 @@ test("retailer import rejects impossible ISO calendar dates before calling the w
   await app.close();
 });
 
+test("retailer import cannot confirm a receipt for a different row count", async () => {
+  const app = await buildApp(() => fakeSupabase(dashboardTables(), () => ({
+    data: [{ import_id: "66666666-6666-6666-6666-666666666666", row_count: 99, duplicate: false }], error: null,
+  })));
+  try {
+    const result = await app.inject({ method: "POST", url: "/v1/sales/imports", headers: { authorization: "Bearer good" }, payload: {
+      workspaceId, source: "other", fileName: "report.csv", rows: [{ soldOn: "2026-09-01", title: "Book", units: 1, royaltyCents: 1, currency: "USD" }],
+    } });
+    assert.equal(result.statusCode, 503, result.body);
+    assert.match(result.body, /Refresh reports or retry the same file/i);
+    assert.equal(result.headers["cache-control"], "private, no-store");
+  } finally { await app.close(); }
+});
+
 test("sales history returns an explicit unavailable read model before its migration is installed", async () => {
   const app = await buildApp(() => fakeSupabase(dashboardTables(), undefined, { retailer_sales_imports: { code: "PGRST205" } }));
   const response = await app.inject({ method: "GET", url: `/v1/sales/imports?workspaceId=${workspaceId}`, headers: { authorization: "Bearer good" } });
@@ -154,6 +169,8 @@ test("sales history returns an explicit unavailable read model before its migrat
   assert.deepEqual(response.json().imports, []);
   assert.equal(response.json().summary.available, false);
   assert.match(response.json().summary.message, /not installed/i);
+  assert.equal(response.json().analytics.available, false);
+  assert.equal(response.json().analytics.windowStart, null);
   await app.close();
 });
 

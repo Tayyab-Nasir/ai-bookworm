@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import type { CommunityPost, CommunityComment, Report } from "@bookworm/api-client";
+import type { CommunityPost, CommunityComment, CommunityModerationReport } from "@bookworm/api-client";
 import { apiClient } from "../../../components/api";
 import { AuthorHeader } from "../../../components/AuthorShell";
 
@@ -21,7 +21,10 @@ function CommunityDiscussion({ id }: { id: string }) {
   const [body, setBody] = useState("");
   const [comments, setComments] = useState<Record<string, CommunityComment[]>>({});
   const [commentDraft, setCommentDraft] = useState<Record<string, string>>({});
-  const [queue, setQueue] = useState<Report[]>([]);
+  const [queue, setQueue] = useState<CommunityModerationReport[]>([]);
+  const [queueOffset, setQueueOffset] = useState(0);
+  const [queueHasMore, setQueueHasMore] = useState(false);
+  const [review, setReview] = useState<{ report: CommunityModerationReport; action: "remove" | "dismiss" } | null>(null);
   const [showQueue, setShowQueue] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -50,6 +53,7 @@ function CommunityDiscussion({ id }: { id: string }) {
       setPosts(r.posts);
       setRole(r.role);
       setComments({});
+      setReview(null);
       if (r.role !== "owner" && r.role !== "moderator") { setQueue([]); setShowQueue(false); }
     } catch (e) {
       if (live.current) { setRole(null); setPosts([]); setComments({}); setQueue([]); setShowQueue(false); setError(e instanceof Error ? e.message : "Discussion could not be loaded."); }
@@ -69,6 +73,13 @@ function CommunityDiscussion({ id }: { id: string }) {
 
   const isMod = role === "owner" || role === "moderator";
 
+  async function loadQueue(offset = 0) {
+    const result = await api.moderationQueue({ limit: 50, offset });
+    if (!live.current) return;
+    setQueue(previous => offset ? [...previous, ...result.reports.filter(row => !previous.some(saved => saved.id === row.id))] : result.reports);
+    setQueueOffset(result.offset + result.reports.length); setQueueHasMore(result.hasMore); setReview(null);
+  }
+
   return (
     <div className="min-h-screen bg-black pb-16">
       <AuthorHeader />
@@ -83,9 +94,8 @@ function CommunityDiscussion({ id }: { id: string }) {
             <button
               disabled={busy || loading}
               onClick={() => void act(async () => {
-                if (showQueue) { setShowQueue(false); return; }
-                const result = await api.moderationQueue();
-                setQueue(result.reports); setShowQueue(true);
+                if (showQueue) { setShowQueue(false); setReview(null); return; }
+                await loadQueue(); if (live.current) setShowQueue(true);
               })}
               className="glass-ghost metal-shine"
             >
@@ -108,35 +118,32 @@ function CommunityDiscussion({ id }: { id: string }) {
           <div className="mb-8 rounded-2xl border border-white/10 bg-white/[0.025] p-6">
             <h3 className="mb-4 text-lg font-semibold text-white">Open Reports</h3>
             <p className="mb-4 text-xs text-white/60">Reports across all communities you moderate.</p>
+            <button type="button" disabled={busy || loading} onClick={() => void act(() => loadQueue())} className="mb-4 glass-ghost text-xs">Refresh reports</button>
             {queue.length === 0 ? (
               <p className="text-[#6f6f6f]">No open reports.</p>
             ) : (
               <div className="space-y-3">
                 {queue.map((r) => (
-                  <div key={r.id} className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
+                  <div key={r.id} className="rounded-lg border border-white/10 bg-white/[0.04] p-4 break-words">
                     <p className="text-sm text-[#d8d8d8]">
                       <span className="font-medium">{r.entity_type}</span> {r.entity_id}: {r.reason}
                     </p>
-                    <div className="mt-3 flex gap-2">
+                    {r.target && <div className="mt-3 space-y-2 text-sm text-white/75">
+                      <p>{r.target.communityName ?? "Community"}: {r.target.type === "post" ? r.target.title ?? "Reported post" : "Reported reply"}</p>
+                      <blockquote className="max-h-36 overflow-auto whitespace-pre-wrap rounded-lg border border-white/10 p-3">{r.target.body}</blockquote>
+                      {r.target.type === "comment" && r.target.parentBody && <details><summary>Parent post context</summary><p className="whitespace-pre-wrap mt-2">{r.target.parentBody}</p></details>}
+                    </div>}
+                    <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         disabled={busy || loading}
-                        onClick={() => void act(async () => {
-                          await api.moderateReport(r.id, "remove");
-                          setQueue((q) => q.filter((x) => x.id !== r.id));
-                          setComments({}); setNotice("Reported content removed.");
-                          await load();
-                        })}
+                        onClick={() => setReview({ report: r, action: "remove" })}
                         className="glass-ghost text-xs"
                       >
                         Remove
                       </button>
                       <button
                         disabled={busy || loading}
-                        onClick={() => void act(async () => {
-                          await api.moderateReport(r.id, "dismiss");
-                          setQueue((q) => q.filter((x) => x.id !== r.id));
-                          setNotice("Report dismissed.");
-                        })}
+                        onClick={() => setReview({ report: r, action: "dismiss" })}
                         className="glass-ghost text-xs"
                       >
                         Dismiss
@@ -146,6 +153,22 @@ function CommunityDiscussion({ id }: { id: string }) {
                 ))}
               </div>
             )}
+            {queueHasMore && <button type="button" disabled={busy || loading} onClick={() => void act(() => loadQueue(queueOffset))} className="mt-4 glass-ghost text-xs">Load more reports</button>}
+            {review && <section aria-label="Review moderation decision" className="mt-5 rounded-xl border border-amber-200/30 bg-amber-200/5 p-4 space-y-3">
+              <h4 className="font-medium text-white">Confirm {review.action === "remove" ? "removal" : "dismissal"}</h4>
+              <p className="text-sm text-white/75 break-words">{review.report.reason}</p>
+              <p className="text-xs text-white/60">{review.action === "remove" ? "This soft-hides the reported content and preserves its audit history." : "This closes the report without removing the content."} The first saved decision cannot be replaced by a retry.</p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" disabled={busy} onClick={() => setReview(null)} className="glass-ghost text-xs">Cancel</button>
+                <button type="button" disabled={busy || loading} onClick={() => void act(async () => {
+                  const decision = review; setReview(null);
+                  const result = await api.moderateReport(decision.report.id,decision.action);
+                  if (!live.current) return;
+                  await load(); await loadQueue();
+                  if (live.current) setNotice(result.alreadyResolved ? "Original moderation decision recovered." : result.status === "actioned" ? "Reported content removed." : "Report dismissed.");
+                })} className="glass-solid text-xs">Confirm {review.action === "remove" ? "removal" : "dismissal"}</button>
+              </div>
+            </section>}
           </div>
         )}
 

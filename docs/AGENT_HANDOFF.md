@@ -5,6 +5,10 @@
 This is the full AI-native publishing application, not only its landing page.
 Shared vault: `C:/Users/Asus/Memory-Ai`.
 
+- Current analytics/community moderation workflow and verification boundaries:
+  `docs/ANALYTICS_MODERATION_CHECKPOINT.md` (2026-10-05).
+- Latest analytics/moderation acceptance and continuation note:
+  `Codex Sessions/2026-10/2026-10-05-analytics-moderation-checkpoint.md`.
 - Current paid author workflow and verification boundaries:
   `docs/PAID_GENERATION_CHECKPOINT.md` (2026-10-05).
 - Latest committed paid workflow, isolated build and native CI checkpoint:

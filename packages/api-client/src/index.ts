@@ -599,6 +599,21 @@ export interface RetailerSalesSummary {
   available: boolean;
   message: string;
 }
+export interface RetailerSalesMonthlyAggregate {
+  month: string; currency: string; units: number; reportedProceedsCents: number | null; royaltyCents: number;
+}
+export interface RetailerSalesBookAggregate {
+  bookId: string | null; title: string; currency: string; units: number;
+  reportedProceedsCents: number | null; royaltyCents: number; firstSoldOn: string; lastSoldOn: string;
+}
+export interface RetailerSalesSourceAggregate {
+  source: RetailerSource; currency: string; units: number; reportedProceedsCents: number | null; royaltyCents: number;
+}
+export interface RetailerSalesAnalytics {
+  windowStart: string | null; windowEnd: string | null; monthCount: number;
+  monthly: RetailerSalesMonthlyAggregate[]; books: RetailerSalesBookAggregate[]; bookCount: number; booksTruncated: boolean;
+  sources: RetailerSalesSourceAggregate[]; available: boolean; message: string;
+}
 export interface RetailerSalesImport {
   id: string; workspace_id: string; source: RetailerSource; file_name: string; row_count: number;
   period_start: string; period_end: string; supersedes_import_id: string | null; superseded_at: string | null;
@@ -657,6 +672,37 @@ export interface Report {
   status: "open" | "actioned" | "dismissed";
   created_at: string;
 }
+
+export type AdminModerationAction = "remove" | "dismiss";
+export type AdminModerationStatus = "open" | "actioned" | "dismissed";
+export interface AdminModerationReport {
+  id: string;
+  entity_type: "post" | "comment";
+  entity_id: string;
+  reason: string;
+  status: AdminModerationStatus;
+  created_at: string;
+  resolution_action: AdminModerationAction | null;
+  target:
+    | {
+        type: "post";
+        title: string | null;
+        body: string;
+        status: string;
+        communityName: string | null;
+      }
+    | {
+        type: "comment";
+        body: string;
+        moderationState: "visible" | "removed";
+        communityName: string | null;
+        parentTitle: string | null;
+        parentBody: string | null;
+      }
+    | null;
+}
+
+export type CommunityModerationReport = Omit<AdminModerationReport, "status" | "resolution_action"> & { status: "open" };
 
 export interface ReferralCode {
   id: string;
@@ -719,7 +765,7 @@ export function createClient(opts: ClientOptions) {
     getDashboardOverview: (workspaceId: string) =>
       call<DashboardOverview>("GET", `/v1/dashboard?workspaceId=${encodeURIComponent(workspaceId)}`),
     listRetailerSalesImports: (workspaceId: string) =>
-      call<{ imports: RetailerSalesImport[]; summary: RetailerSalesSummary }>("GET", `/v1/sales/imports?workspaceId=${encodeURIComponent(workspaceId)}`),
+      call<{ imports: RetailerSalesImport[]; summary: RetailerSalesSummary; analytics: RetailerSalesAnalytics }>("GET", `/v1/sales/imports?workspaceId=${encodeURIComponent(workspaceId)}`),
     importRetailerSales: (body: { workspaceId: string; source: RetailerSource; fileName: string; supersedeImportId?: string | null; rows: RetailerSalesRowInput[] }) =>
       call<{ importId: string; rowCount: number; duplicate: boolean }>("POST", "/v1/sales/imports", body, false),
     createWorkspace: (body: { name: string; orgName?: string; slug?: string }) =>
@@ -797,6 +843,17 @@ export function createClient(opts: ClientOptions) {
     },
     getAssetAccess: (workspaceId: string) => call<{ canEdit: boolean }>("GET", `/v1/assets/access?${new URLSearchParams({ workspaceId })}`),
     listImageGenerationJobs: (workspaceId: string) => call<{ jobs: ImageGenerationJob[] }>("GET", `/v1/assets/generation-jobs?${new URLSearchParams({ workspaceId })}`),
+    listImageQuoteModels: (workspaceId: string) => call<{ catalogVersion: string; pricingBasis: "maximum_token_budget"; purchaseAvailable: boolean; models: ImageQuoteModel[] }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-models`),
+    recoverImageQuote: (workspaceId: string, idempotencyKey: string) =>
+      call<{ quoteId: string; purchaseAvailable: false }>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/recover`, { idempotencyKey }),
+    createImageQuote: (workspaceId: string, body: { modelId: string; idempotencyKey: string; bookId?: string; kind: "illustration" | "cover"; prompt: string; referenceAssetIds: string[]; consentToQuoteStorage: true }) =>
+      call<{ quoteId: string; purchaseAvailable: false }>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes`, body),
+    getImageQuote: (workspaceId: string, quoteId: string) =>
+      call<{ quote: ImageQuote }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/${encodeURIComponent(quoteId)}`),
+    acceptImageQuote: (workspaceId: string, quoteId: string, expectedCredits: string) =>
+      call<{ quoteId: string; jobId: string; status: string }>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/${encodeURIComponent(quoteId)}/accept`, { expectedCredits, consentToGenerate: true }),
+    getImageQuoteJob: (workspaceId: string, quoteId: string) =>
+      call<{ quoteId: string; accepted: boolean; job: ImageQuoteJob | null }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/${encodeURIComponent(quoteId)}/job`),
     finalizeImageJob: (jobId: string) => call<{ jobId: string; status: string }>("POST", `/v1/assets/generation-jobs/${encodeURIComponent(jobId)}/finalize`),
     getAssetDownloadUrl: (assetId: string, versionNumber?: number) =>
       call<{ url: string; expiresIn: number }>("GET", `/v1/assets/${assetId}/download-url${versionNumber === undefined ? "" : `?versionNumber=${encodeURIComponent(String(versionNumber))}`}`),
@@ -841,17 +898,6 @@ export function createClient(opts: ClientOptions) {
         "GET", `/v1/workspaces/${workspaceId}/members`),
     listInvitations: (workspaceId: string) =>
       call<{ invitations: WorkspaceInvitation[] }>("GET", `/v1/workspaces/${workspaceId}/invitations`),
-    listImageQuoteModels: (workspaceId: string) => call<{ catalogVersion: string; pricingBasis: "maximum_token_budget"; purchaseAvailable: boolean; models: ImageQuoteModel[] }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-models`),
-    recoverImageQuote: (workspaceId: string, idempotencyKey: string) =>
-      call<{ quoteId: string; purchaseAvailable: false }>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/recover`, { idempotencyKey }),
-    createImageQuote: (workspaceId: string, body: { modelId: string; idempotencyKey: string; bookId?: string; kind: "illustration" | "cover"; prompt: string; referenceAssetIds: string[]; consentToQuoteStorage: true }) =>
-      call<{ quoteId: string; purchaseAvailable: false }>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes`, body),
-    getImageQuote: (workspaceId: string, quoteId: string) =>
-      call<{ quote: ImageQuote }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/${encodeURIComponent(quoteId)}`),
-    acceptImageQuote: (workspaceId: string, quoteId: string, expectedCredits: string) =>
-      call<{ quoteId: string; jobId: string; status: string }>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/${encodeURIComponent(quoteId)}/accept`, { expectedCredits, consentToGenerate: true }),
-    getImageQuoteJob: (workspaceId: string, quoteId: string) =>
-      call<{ quoteId: string; accepted: boolean; job: ImageQuoteJob | null }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-quotes/${encodeURIComponent(quoteId)}/job`),
     inviteMember: (workspaceId: string, body: { email: string; role?: Exclude<WorkspaceMember["role"], "owner"> }) =>
       call<{ invitation: WorkspaceInvitation; acceptanceUrl: string }>("POST", `/v1/workspaces/${workspaceId}/invitations`, body),
     revokeInvitation: (workspaceId: string, invitationId: string) =>
@@ -971,9 +1017,16 @@ export function createClient(opts: ClientOptions) {
       call<{ postId: string; kind: string; active: boolean }>("POST", `/v1/posts/${postId}/reactions`, { kind }),
     createReport: (body: { entityType: "post" | "comment"; entityId: string; reason: string }) =>
       call<Report>("POST", "/v1/reports", body),
-    moderationQueue: () => call<{ reports: Report[] }>("GET", "/v1/moderation/queue"),
+    moderationQueue: (filter: { limit?: number; offset?: number } = {}) => {
+      const query = new URLSearchParams();
+      if (filter.limit !== undefined) query.set("limit",String(filter.limit));
+      if (filter.offset !== undefined) query.set("offset",String(filter.offset));
+      return call<{ reports: CommunityModerationReport[]; limit: number; offset: number; hasMore: boolean }>("GET",
+        "/v1/moderation/queue" + (query.size ? "?" + query.toString() : ""));
+    },
     moderateReport: (reportId: string, action: "remove" | "dismiss") =>
-      call<Report>("POST", `/v1/moderation/${reportId}/${action}`),
+      call<{ reportId: string; status: "actioned" | "dismissed"; action: "remove" | "dismiss" | null; alreadyResolved: boolean }>(
+        "POST", `/v1/moderation/${encodeURIComponent(reportId)}/${action}`),
     // Step 12: referrals
     getReferralCode: () => call<ReferralCode>("GET", "/v1/referrals/code"),
     claimReferral: (code: string) =>
@@ -990,6 +1043,24 @@ export function createClient(opts: ClientOptions) {
       callService<{ qualified: boolean; held?: boolean; rewarded?: boolean }>("/v1/referrals/qualify", { referredUserId }, serviceToken),
     // Step 14: admin console (403 for non-admins)
     adminAccess: () => call<{ admin: boolean }>("GET", "/v1/admin/access"),
+    adminModerationReports: (filter: {
+      status?: AdminModerationStatus | "all";
+      entityType?: "post" | "comment";
+      offset?: number;
+      limit?: number;
+    } = {}) => {
+      const query = new URLSearchParams();
+      for (const [key, value] of Object.entries(filter)) {
+        if (value !== undefined) query.set(key, String(value));
+      }
+      return call<{ reports: AdminModerationReport[]; limit: number; offset: number }>(
+        "GET",
+        "/v1/admin/moderation/reports?" + query.toString(),
+      );
+    },
+    adminResolveModerationReport: (reportId: string, action: AdminModerationAction) =>
+      call<{ reportId: string; status: Exclude<AdminModerationStatus, "open">; action: AdminModerationAction | null; alreadyResolved: boolean }>(
+        "POST", "/v1/admin/moderation/reports/" + encodeURIComponent(reportId) + "/resolve", { action }),
     adminList: (tab: "users" | "jobs" | "flags" | "support" | "audit", filter: { type?: "ai" | "publishing" | "document"; status?: string; search?: string; action?: string; offset?: number; limit?: number } = {}) => {
       const paths: Record<string, string> = {
         users: "/v1/admin/users", jobs: "/v1/admin/jobs", flags: "/v1/admin/flags",
