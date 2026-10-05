@@ -13,7 +13,7 @@ const run = (...args) => spawnSync(process.execPath, ['workers/run.mjs', ...args
 test('worker inventory is inspectable without app secrets or a TypeScript loader', () => {
   const list = run('--list'); assert.equal(list.status, 0, list.stderr);
   const { workers } = JSON.parse(list.stdout);
-  assert.equal(Object.keys(workers).length, 13);
+  assert.equal(Object.keys(workers).length, 14);
   assert.deepEqual(workers.translation.slice(1), ['--quoted']);
   assert.deepEqual(workers['translation-quotes'].slice(1), ['--prepare-quotes']);
   assert.deepEqual(workers.blueprint.slice(1), ['--quoted']);
@@ -22,10 +22,12 @@ test('worker inventory is inspectable without app secrets or a TypeScript loader
   assert.deepEqual(workers['ai-review-quotes'], ['workers/ai-review/worker.ts']);
   assert.deepEqual(workers['book-bible-quotes'], ['workers/book-bible/worker.ts']);
   assert.deepEqual(workers['image-quotes'], ['workers/image/worker.ts']);
+  assert.deepEqual(workers['narration-quotes'], ['workers/narration/worker.ts']);
   const check = run('--check'); assert.equal(check.status, 0, check.stderr);
-  assert.equal(check.stdout.trim().split('\n').length, 13);
+  assert.equal(check.stdout.trim().split('\n').length, 14);
   const target = readFileSync(new URL('../ops/systemd/bookworm-workers.target', import.meta.url), 'utf8');
-  for (const name of Object.keys(workers)) assert(target.includes(`bookworm-worker@${name}.service`));
+  for (const name of Object.keys(workers).filter(name => name !== 'audiobook')) assert(target.includes(`bookworm-worker@${name}.service`));
+  assert(!target.includes('bookworm-worker@audiobook.service'), 'retired unquoted narrator must not start with the fleet');
 });
 
 test('launcher rejects paths and mode overrides before loading any worker', () => {

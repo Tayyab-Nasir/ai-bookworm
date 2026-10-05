@@ -1,5 +1,6 @@
 import array
 import hashlib
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -187,3 +188,58 @@ def test_child_timeout_cleans_files_and_releases_capacity(tones, tmp_path, monke
         audio.assemble_audio(tones)
     assert list(tmp_path.iterdir()) == []
     assert not audio._ASSEMBLY_LOCK.locked()
+
+
+def narration_pcm():
+    values = array.array("h", (int(6000 * math.sin(2 * math.pi * 440 * index / 24000)) for index in range(12000)))
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values.tobytes()
+
+
+def test_native_narration_pcm_encoding_is_bound_deterministic_and_decoded(tmp_path):
+    pcm = narration_pcm()
+    artifact, checksum, profile = audio.encode_narration_pcm(pcm)
+    assert audio.encode_narration_pcm(pcm) == (artifact, checksum, profile)
+    assert checksum == hashlib.sha256(artifact).hexdigest()
+    assert profile == {"encodingVersion": "narration-mp3-1.0.0", "pcmSha256": hashlib.sha256(pcm).hexdigest(),
+        "sampleRateHz": 44100, "channels": 1, "bitRateKbps": 192, "bitRateMode": "cbr",
+        "durationSeconds": pytest.approx(0.5, abs=0.004)}
+    decoded = samples(artifact, tmp_path)
+    assert len(decoded) / 44100 == pytest.approx(0.5, abs=0.004)
+    assert frequency(decoded[2205:-2205]) == pytest.approx(440, abs=8)
+    header = int.from_bytes(artifact[:4], "big")
+    assert (header >> 19) & 3 == 3 and (header >> 10) & 3 == 0
+    assert (header >> 6) & 3 == 3 and (header >> 12) & 15 == 11
+
+
+@pytest.mark.parametrize("value", [b"", b"x", "not bytes"])
+def test_narration_encoder_rejects_incomplete_pcm(value):
+    with pytest.raises(ValueError):
+        audio.encode_narration_pcm(value)
+
+
+def test_narration_encoder_bounds_capacity_output_and_cleanup(tmp_path, monkeypatch):
+    pcm = narration_pcm()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    audio._ASSEMBLY_LOCK.acquire()
+    try:
+        with pytest.raises(RuntimeError, match="busy"):
+            audio.encode_narration_pcm(pcm)
+    finally:
+        audio._ASSEMBLY_LOCK.release()
+    monkeypatch.setattr(audio, "MAX_NARRATION_PCM_BYTES", len(pcm) - 2)
+    with pytest.raises(ValueError):
+        audio.encode_narration_pcm(pcm)
+    monkeypatch.setattr(audio, "MAX_NARRATION_PCM_BYTES", 12 * 1024 * 1024)
+    monkeypatch.setattr(audio, "MAX_NARRATION_MP3_BYTES", 100)
+    with pytest.raises(ValueError):
+        audio.encode_narration_pcm(pcm)
+    assert list(tmp_path.iterdir()) == [] and not audio._ASSEMBLY_LOCK.locked()
+    monkeypatch.setattr(audio, "MAX_NARRATION_MP3_BYTES", 8 * 1024 * 1024)
+    def timeout(*arguments, **kwargs):
+        raise subprocess.TimeoutExpired("ffmpeg", kwargs["timeout"])
+    monkeypatch.setattr(audio.subprocess, "run", timeout)
+    with pytest.raises(RuntimeError, match="time limit"):
+        audio.encode_narration_pcm(pcm)
+    assert list(tmp_path.iterdir()) == [] and not audio._ASSEMBLY_LOCK.locked()

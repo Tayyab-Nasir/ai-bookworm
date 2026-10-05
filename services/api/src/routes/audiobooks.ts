@@ -2,23 +2,11 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 import { requireWorkspaceApprover, requireWorkspaceMember } from "../lib/authorize.js";
-import { segmentSpeechText } from "../lib/speech-generation.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { assembleChapterAudio, loadChapterAudio } from "../lib/audio-download.js";
 import { googlePlayIdentifierSchemaSafe } from "../lib/google-play-audio-export.js";
 
 const BUCKET = "book-assets";
-const createSchema = z.object({
-  chapterId: z.string().uuid(),
-  idempotencyKey: z.string().trim().min(8).max(200),
-  aiDisclosureAccepted: z.literal(true),
-}).strict();
-const configSchema = z.object({
-  kind: z.literal("audiobook"),
-  voice: z.enum(["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"]).default("marin"),
-  instructions: z.string().trim().min(1).max(2_000).nullable().default(null),
-  speed: z.number().min(0.25).max(4).default(1),
-}).passthrough();
 const signoffSchema = z.object({ reportId: z.string().uuid(), listenedToExactAudio: z.literal(true) }).strict();
 const googlePlayExportSchema = z.object({
   identifier: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u)
@@ -40,6 +28,9 @@ function publicExportJob(job: Record<string, unknown>, downloadUrl: string | nul
 }
 
 async function hydrateProject(sb: SupabaseClient, project: Record<string, unknown>) {
+  // Missing mode is compatible with history from the pre-quote schema, not corrupt modes.
+  const billingMode = project.billing_mode === undefined ? "operational" : project.billing_mode;
+  if (billingMode !== "quoted" && billingMode !== "operational") throw new AppError(503, "Could not verify narration billing mode.");
   const { data: segments, error } = await sb.from("audiobook_segments").select("*")
     .eq("project_id", project.id).order("segment_index");
   if (error) throw new AppError(500, "Could not load narration segments.");
@@ -70,6 +61,7 @@ async function hydrateProject(sb: SupabaseClient, project: Record<string, unknow
     documentVersionId: project.document_version_id,
     voice: project.voice,
     speed: Number(project.speed),
+    billingMode,
     status: project.status,
     segmentCount: project.segment_count,
     creditUnits: project.credit_units,
@@ -274,17 +266,22 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
     reply.header("cache-control", "private, no-store");
     return reply.status(201).send({ reportId: report.id, signedAt, listenedToExactAudio: true });
   });
-  app.get("/editions/:editionId/audiobook-jobs", async (req) => {
+  app.get("/editions/:editionId/audiobook-jobs", async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
     const { editionId } = req.params as { editionId: string };
+    if (!z.string().uuid().safeParse(editionId).success) throw new AppError(404, "Audiobook edition not found.");
     const sb = app.supabaseFactory(req.userToken);
     const { data, error } = await sb.from("audiobook_projects").select("*")
       .eq("edition_id", editionId).order("created_at", { ascending: false }).limit(100);
     if (error) throw new AppError(500, "Could not load audiobook history.");
+    reply.header("cache-control", "private, no-store");
     return { projects: await Promise.all((data ?? []).map((project) => hydrateProject(sb, project))) };
   });
 
   app.get("/audiobook-jobs/:projectId", async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
     const { projectId } = req.params as { projectId: string };
+    if (!z.string().uuid().safeParse(projectId).success) throw new AppError(404, "Audiobook job not found.");
     const sb = app.supabaseFactory(req.userToken);
     const { data, error } = await sb.from("audiobook_projects").select("*").eq("id", projectId).maybeSingle();
     if (error) throw new AppError(500, "Could not load audiobook job.");
@@ -293,46 +290,8 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
     return hydrateProject(sb, data);
   });
 
-  app.post("/editions/:editionId/audiobook-jobs", async (req, reply) => {
-    const { editionId } = req.params as { editionId: string };
-    const parsed = createSchema.safeParse(req.body);
-    if (!parsed.success) throw new AppError(422, "Confirm AI narration and choose a valid chapter.", { issues: parsed.error.issues });
-    const sb = app.supabaseFactory(req.userToken);
-    const [{ data: edition, error: editionError }, { data: chapter, error: chapterError }] = await Promise.all([
-      sb.from("editions").select("id,book_id,type,edition_metadata_json").eq("id", editionId).maybeSingle(),
-      sb.from("chapters").select("id,book_id,current_document_version_id").eq("id", parsed.data.chapterId).maybeSingle(),
-    ]);
-    if (editionError || chapterError) throw new AppError(500, "Could not load the saved narration source.");
-    if (!edition || edition.type !== "audiobook" || !chapter || chapter.book_id !== edition.book_id || !chapter.current_document_version_id) {
-      throw new AppError(404, "Audiobook edition or chapter not found.");
-    }
-    const config = configSchema.safeParse(edition.edition_metadata_json);
-    if (!config.success) throw new AppError(422, "Save valid audiobook voice settings before generating.");
-    const { data: document, error: documentError } = await sb.from("document_versions").select("id,plain_text")
-      .eq("id", chapter.current_document_version_id).eq("chapter_id", chapter.id).maybeSingle();
-    if (documentError) throw new AppError(500, "Could not load the saved chapter version.");
-    if (!document) throw new AppError(404, "The saved chapter version was not found.");
-    const segments = segmentSpeechText(document.plain_text, 4_096, config.data.instructions)
-      .map(({ text: _text, ...segment }) => segment);
-    const queued = await sb.rpc("queue_audiobook_project", {
-      p_edition_id: editionId,
-      p_chapter_id: chapter.id,
-      p_voice: config.data.voice,
-      p_instructions: config.data.instructions,
-      p_speed: config.data.speed,
-      p_idempotency_key: parsed.data.idempotencyKey,
-      p_segments: segments,
-    });
-    if (queued.error) {
-      if (queued.error.code === "23514") throw new AppError(422, "Your audio credits are used or reserved. No narration was started.", undefined, "audio_credit_capacity_exhausted");
-      if (queued.error.code === "42501") throw new AppError(403, "Editing access is required to generate narration.");
-      if (queued.error.code === "P0002") throw new AppError(404, "Audiobook edition or chapter not found.");
-      if (queued.error.code === "23505") throw new AppError(409, "This narration request key is already in use.");
-      if (queued.error.code === "22023") throw new AppError(422, "The saved narration request is invalid.");
-      throw new AppError(500, "Could not queue audiobook narration.");
-    }
-    const project = Array.isArray(queued.data) ? queued.data[0] : queued.data;
-    if (!project) throw new AppError(500, "Audiobook queue returned no job.");
-    return reply.status(202).send(await hydrateProject(sb, project));
+  app.post("/editions/:editionId/audiobook-jobs", async (_req, reply) => {
+    reply.header("cache-control", "private, no-store");
+    throw new AppError(410, "Direct narration creation is retired. Review and confirm a funded chapter quote before generating audio.", undefined, "narration_quote_required");
   });
 }

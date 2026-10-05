@@ -11,6 +11,9 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { verifyPaidQuoteFixtures } from "./native-paid-quote-lifecycle.mjs";
 import { verifyAudiobookSegmentationFixtures } from "./audiobook-segmentation-lifecycle.mjs";
+import { verifyNarrationQuoteFixtures, verifyNarrationChapterQuoteFixtures } from "./narration-quote-lifecycle.mjs";
+import { verifyNarrationFundedFixtures } from "./narration-funded-lifecycle.mjs";
+import { verifyNarrationRaceFixtures } from "./native-narration-lifecycle.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const db = new PGlite({ extensions: { citext, pgcrypto } });
@@ -45,6 +48,30 @@ try {
   await verifyAudiobookSegmentationFixtures(async statement => {
     const results = await db.exec(statement);
     return String(results.findLast(result => result.rows.length)?.rows[0]?.["?column?"] ?? "");
+  });
+  currentFile = "narration quote SQL serial gate";
+  await verifyNarrationQuoteFixtures(async statement => {
+    const results = await db.exec(statement);
+    return String(results.findLast(result => result.rows.length)?.rows[0]?.["?column?"] ?? "");
+  });
+  currentFile = "narration whole-chapter quote SQL serial gate";
+  await verifyNarrationChapterQuoteFixtures(async statement => {
+    const results = await db.exec(statement);
+    return String(results.findLast(result => result.rows.length)?.rows[0]?.["?column?"] ?? "");
+  });
+  currentFile = "narration funded whole-chapter SQL serial gate";
+  await verifyNarrationFundedFixtures(async statement => {
+    const results = await db.exec(statement);
+    return String(results.findLast(result => result.rows.length)?.rows[0]?.["?column?"] ?? "");
+  });
+  currentFile = "narration native-fixture serial gate";
+  await verifyNarrationRaceFixtures(async statement => {
+    const results = await db.exec(statement);
+    const result = results.findLast(value => value.rows.length), row = result?.rows[0];
+    if (!row) return "";
+    const value = Object.values(row)[0];
+    return [114, 3802].includes(result.fields[0].dataTypeID) ? JSON.stringify(value)
+      : typeof value === "boolean" ? value ? "t" : "f" : String(value);
   });
   console.log("Not covered: GoTrue, PostgREST, Storage HTTP, native Supabase configuration, or multi-connection races.");
 } catch (error) {

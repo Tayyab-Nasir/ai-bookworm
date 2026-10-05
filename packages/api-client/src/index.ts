@@ -311,6 +311,42 @@ export interface ImageQuote { id: string; status: "ready" | "expired"; model: st
   reservedCredits: string; expiresAt: string; pricingBasis: "maximum_token_budget"; purchaseAvailable: false }
 export interface ImageQuoteJob { id: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled"; assetId: string | null }
 
+export type NarrationModel = "gpt-realtime-2.1-mini" | "gpt-realtime-2.1";
+export type NarrationVoice = Exclude<AudiobookVoice, "fable" | "onyx" | "nova">;
+export interface NarrationQuoteModel { id: string; label: string; model: NarrationModel; priceVersion: string; policyVersion: string; maxOutputTokens: number }
+export interface NarrationModelOptions {
+  catalogVersion: string; pricingBasis: "maximum_token_budget"; purchaseAvailable: boolean;
+  models: NarrationQuoteModel[]; voices: NarrationVoice[]; minSpeed: 0.25; maxSpeed: 1.5;
+}
+/** Immutable saved segment offer only, not acceptance or funding. */
+export interface NarrationQuote {
+  quoteId: string; purchaseAvailable: false; pricingBasis: "maximum_token_budget";
+  modelId: string; model: NarrationModel; voice: NarrationVoice; speed: number;
+  source: { bookId: string; editionId: string; chapterId: string; documentVersionId: string; segmentIndex: number; textStart: number; textEnd: number };
+  reservedCredits: string; priceVersion: string; policyVersion: string; expiresAt: string; expired: boolean;
+}
+export interface CreateNarrationQuoteRequest {
+  editionId: string; chapterId: string; modelId: string; idempotencyKey: string; segmentIndex: number;
+  voice: NarrationVoice; speed: number; instructions?: string | null; consentToQuoteStorage: true;
+}
+/** One saved chapter offer with every pinned segment; no funding or dispatch. */
+export interface NarrationChapterQuote extends Omit<NarrationQuote, "source" | "purchaseAvailable"> {
+  purchaseAvailable: boolean;
+  source: Pick<NarrationQuote["source"], "bookId" | "editionId" | "chapterId" | "documentVersionId">;
+  segmentCount: number;
+  segments: { quoteId: string; segmentIndex: number; textStart: number; textEnd: number; reservedCredits: string }[];
+}
+export type CreateNarrationChapterQuoteRequest = Omit<CreateNarrationQuoteRequest, "segmentIndex">;
+export interface AcceptNarrationChapterQuoteRequest {
+  expectedCredits: string; consentToAiVoice: true; consentToGenerate: true;
+}
+/** Confirmed original project; the maximum held budget is not an actual charge. */
+export interface NarrationChapterAccepted {
+  quoteId: string; accepted: true;
+  project: { id: string; billingMode: "quoted"; status: "queued" | "running" | "succeeded" | "failed"; reservedCredits: string };
+}
+export type NarrationChapterAcceptance = { quoteId: string; accepted: false; project: null } | NarrationChapterAccepted;
+
 export interface EditionCoverConfig {
   asset_id?: string | null;
   title_on_cover?: boolean;
@@ -374,6 +410,7 @@ export type AudiobookVoice = "alloy" | "ash" | "ballad" | "coral" | "echo" | "fa
 export interface AudiobookSegmentResult {
   index: number;
   status: string;
+  failureCode: string | null;
   asset: Asset | null;
   download: { url: string; expiresIn: number } | null;
 }
@@ -385,11 +422,13 @@ export interface AudiobookProjectResult {
   documentVersionId: string;
   voice: AudiobookVoice;
   speed: number;
+  billingMode: "quoted" | "operational";
   status: string;
   segmentCount: number;
   creditUnits: number;
   createdAt: string;
   completedAt: string | null;
+  aiVoiceDisclosureRequired: true;
   segments: AudiobookSegmentResult[];
 }
 
@@ -946,8 +985,24 @@ export function createClient(opts: ClientOptions) {
       call<{ reportId: string; signedAt: string; listenedToExactAudio: true }>("POST", `/v1/audiobook-jobs/${projectId}/qc-signoffs`, { reportId, listenedToExactAudio: true }),
     getAudiobookProject: (projectId: string) =>
       call<AudiobookProjectResult>("GET", `/v1/audiobook-jobs/${projectId}`),
-    createAudiobookProject: (editionId: string, body: { chapterId: string; idempotencyKey: string; aiDisclosureAccepted: true }) =>
-      call<AudiobookProjectResult>("POST", `/v1/editions/${editionId}/audiobook-jobs`, body),
+    listNarrationModels: (workspaceId: string) =>
+      call<NarrationModelOptions>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-models`),
+    createNarrationQuote: (workspaceId: string, body: CreateNarrationQuoteRequest) =>
+      call<NarrationQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-quotes`, body),
+    recoverNarrationQuote: (workspaceId: string, idempotencyKey: string) =>
+      call<NarrationQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-quotes/recover`, { idempotencyKey }),
+    getNarrationQuote: (workspaceId: string, quoteId: string) =>
+      call<NarrationQuote>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-quotes/${encodeURIComponent(quoteId)}`),
+    createNarrationChapterQuote: (workspaceId: string, body: CreateNarrationChapterQuoteRequest) =>
+      call<NarrationChapterQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes`, body),
+    recoverNarrationChapterQuote: (workspaceId: string, idempotencyKey: string) =>
+      call<NarrationChapterQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/recover`, { idempotencyKey }),
+    getNarrationChapterQuote: (workspaceId: string, quoteId: string) =>
+      call<NarrationChapterQuote>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/${encodeURIComponent(quoteId)}`),
+    acceptNarrationChapterQuote: (workspaceId: string, quoteId: string, body: AcceptNarrationChapterQuoteRequest) =>
+      call<NarrationChapterAccepted>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/${encodeURIComponent(quoteId)}/accept`, body),
+    getNarrationChapterAcceptance: (workspaceId: string, quoteId: string) =>
+      call<NarrationChapterAcceptance>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/${encodeURIComponent(quoteId)}/project`),
     listAudiobookGooglePlayExports: (editionId: string) =>
       call<{ jobs: AudiobookGooglePlayExportJob[] }>("GET", `/v1/editions/${editionId}/audiobook-google-play-exports`),
     createAudiobookGooglePlayExport: (editionId: string, body: { identifier: string; coverAssetId: string; idempotencyKey: string }) =>

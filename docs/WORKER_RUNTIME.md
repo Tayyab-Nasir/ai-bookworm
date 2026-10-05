@@ -1,10 +1,12 @@
 # Worker runtime
 
-The Next.js app can run on Vercel. These thirteen persistent queue consumers need
+The Next.js app can run on Vercel. Persistent queue consumers need
 a separate host with Node.js 22, private service connectivity and server-side
 credentials. The repository now includes a shared allowlisted launcher and a
 systemd worker template for Linux. Installing these files does not configure
-the API, Python services, Supabase, pricing or alerts.
+the API, Python services, Supabase, pricing or alerts. There are fourteen
+allowlisted entrypoints; the fleet excludes the retired unquoted `audiobook`
+consumer, leaving thirteen supervised roles.
 
 ## Inspect without processing jobs
 
@@ -28,7 +30,7 @@ environment and verifies configuration refusal before any network work.
 | document | Manuscript imports |
 | publishing | Edition rendering, validation and export packages |
 | ai | Paid authoring/review jobs |
-| audiobook | Paid chapter narration |
+| audiobook | Retired unquoted narration; retained for inspection, not fleet activation |
 | audiobook-export | Private Google Play archives; no generation charge |
 | translation-quotes | Translation quote preparation |
 | translation | Accepted funded translation jobs |
@@ -38,6 +40,7 @@ environment and verifies configuration refusal before any network work.
 | ai-review-quotes | Accepted funded writer/proofreader/copyeditor/consistency jobs |
 | book-bible-quotes | Accepted funded Book Bible extraction and measured settlement |
 | image-quotes | Accepted funded illustrations/covers, private receipts and measured atomic settlement |
+| narration-quotes | Accepted funded chapter narration, original PCM/MP3 recovery and receipt-derived settlement |
 
 `npm run worker -- <role> [--once]` starts real processing. It may call OpenAI
 and consume paid usage for queued work. Translation and Blueprint execution
@@ -50,6 +53,15 @@ have been reviewed and installed/configured.
 Book Bible quotes require `BOOK_BIBLE_PRICING_CATALOG_JSON`; keep this worker
 stopped until its quote migration is reviewed/applied and the server-only price
 catalog is explicitly approved/configured.
+Quoted narration requires its reviewed quote/funding/lease/receipt/completion
+migrations, `NARRATION_PRICING_CATALOG_JSON`, the approved
+`AUDIOBOOK_QUOTE_PURCHASE_ENABLED` gate, server-only OpenAI credentials and the
+private rendering service/token. New dispatch remains disabled without the gate;
+original evidence can be recovered without fresh provider work. Keep this role
+stopped until native database/Storage/provider and worker recovery acceptance.
+The source-only units do not enable any catalog or perform that acceptance.
+The old `audiobook` role cannot create/claim quoted work and is not in the fleet;
+saved history/download/export do not require its activation.
 
 ## Linux installation and activation
 
@@ -88,7 +100,12 @@ use encrypted disks with enough free space for the 3.75 GiB archive cap plus
 assembly overhead. State directories survive restarts. Crash-left temporary
 files need operator reconciliation; no broad automatic deletion is installed.
 
-Workers stop claiming new jobs on SIGTERM and finish their current operation.
+Workers stop claiming new jobs on SIGTERM. Existing consumers finish their
+current operation; `narration-quotes` aborts provider, encoding and private
+transport waits, retaining ambiguous dispatched work for original-evidence
+recovery rather than refunding or regenerating it. Its SDK retries are disabled;
+private requests have a 60-second headers/body deadline and 12-MiB Storage /
+16-MiB metadata response limits. Encoding has a separate 130-second deadline.
 systemd allows six minutes before killing remaining processes; interrupted
 leases can subsequently expire and be reclaimed. SIGKILL, power-loss and real
 host recovery acceptance are still required. Failures restart after five
@@ -111,7 +128,7 @@ and dependencies, then start the approved roles. Monitor queue age, expired
 leases, terminal failures, scratch disk capacity and provider settlement
 separately; no monitoring or paging destination is installed by these units.
 
-CI validates service syntax and all thirteen launcher entrypoints on Linux without
+CI validates service syntax and all fourteen launcher entrypoints on Linux without
 starting system services or supplying credentials. Host permissions, network,
 secret storage, worker supervision/recovery, backup and alerts still require
 acceptance on the deployment host. The service settings follow the official

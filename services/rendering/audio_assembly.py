@@ -24,6 +24,9 @@ MAX_SECONDS = 2 * 60 * 60
 TIMEOUT_SECONDS = 120
 SAMPLE_RATE = 44100
 PCM_BYTES_PER_SECOND = SAMPLE_RATE * 2  # Mono, signed 16-bit PCM.
+NARRATION_ENCODING_VERSION = "narration-mp3-1.0.0"
+MAX_NARRATION_PCM_BYTES = 12 * 1024 * 1024
+MAX_NARRATION_MP3_BYTES = 8 * 1024 * 1024
 # ponytail: one operation per process; use worker-level admission for more capacity.
 _ASSEMBLY_LOCK = threading.Lock()
 
@@ -234,3 +237,51 @@ def assemble_audio(segments: list[bytes]) -> tuple[bytes, str]:
     """Compatibility wrapper for existing internal callers that need no QC payload."""
     artifact, checksum, _quality = assemble_audio_with_quality(segments)
     return artifact, checksum
+
+
+def encode_narration_pcm(pcm: bytes) -> tuple[bytes, str, dict[str, object]]:
+    """Convert bound 24-kHz mono signed 16-bit PCM without another AI request.
+
+    Verify complete MP3 frames and native decoded duration before returning.
+    This preserves an encoding profile, not pronunciation/mastering approval.
+    """
+    if not isinstance(pcm, bytes) or not 2 <= len(pcm) <= MAX_NARRATION_PCM_BYTES or len(pcm) % 2:
+        raise ValueError("Narration requires bounded complete 16-bit PCM samples.")
+    if not _ASSEMBLY_LOCK.acquire(blocking=False):
+        raise RuntimeError("Audio encoding is busy. Try again shortly.")
+    try:
+        deadline = time.monotonic() + TIMEOUT_SECONDS
+        executable = ffmpeg_executable()
+        with tempfile.TemporaryDirectory(prefix="bookworm-narration-") as directory:
+            source, output, decoded = (Path(directory) / name for name in ("source.pcm", "encoded.mp3", "verified.pcm"))
+            source.write_bytes(pcm)
+            _run(executable, [
+                "-protocol_whitelist", "file", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", str(source),
+                "-map", "0:a:0", "-map_metadata", "-1", "-map_chapters", "-1",
+                "-c:a", "libmp3lame", "-b:a", "192k", "-ar", str(SAMPLE_RATE), "-ac", "1", "-threads", "1",
+                "-fflags", "+bitexact", "-flags:a", "+bitexact", "-write_xing", "1", "-id3v2_version", "0",
+                "-f", "mp3", "-fs", str(MAX_NARRATION_MP3_BYTES + 1), str(output),
+            ], deadline, decoding=False)
+            if not 0 < output.stat().st_size <= MAX_NARRATION_MP3_BYTES:
+                raise ValueError("Narration MP3 exceeds its output limit.")
+            artifact = output.read_bytes()
+            _validate_mp3(artifact, deadline)
+            _run(executable, [
+                "-protocol_whitelist", "file", "-f", "mp3", "-err_detect", "explode", "-threads", "1",
+                "-i", str(output), "-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "-1",
+                "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", "-threads", "1",
+                "-f", "s16le", "-fs", str(len(pcm) + 12002), str(decoded),
+            ], deadline, decoding=True)
+            size = decoded.stat().st_size
+            if size < 2 or size % 2 or abs(size - len(pcm)) > 12000:
+                raise ValueError("Encoded narration duration differs from original PCM.")
+            _remaining(deadline)
+            return artifact, hashlib.sha256(artifact).hexdigest(), {
+                "encodingVersion": NARRATION_ENCODING_VERSION, "pcmSha256": hashlib.sha256(pcm).hexdigest(),
+                "sampleRateHz": SAMPLE_RATE, "channels": 1, "bitRateKbps": 192, "bitRateMode": "cbr",
+                "durationSeconds": size / 48000,
+            }
+    except OSError as error:
+        raise RuntimeError("Audio encoding temporary storage is unavailable.") from error
+    finally:
+        _ASSEMBLY_LOCK.release()

@@ -18,6 +18,7 @@ const roles = Object.freeze({
   'ai-review-quotes': ['workers/ai-review/worker.ts'],
   'book-bible-quotes': ['workers/book-bible/worker.ts'],
   'image-quotes': ['workers/image/worker.ts'],
+  'narration-quotes': ['workers/narration/worker.ts'],
 });
 
 async function main() {

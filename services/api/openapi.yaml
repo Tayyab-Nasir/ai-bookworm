@@ -8,6 +8,181 @@ servers:
 tags:
   - name: v1
 paths:
+  /v1/workspaces/{workspaceId}/narration-models:
+    get:
+      operationId: listNarrationQuoteModels
+      summary: Discover approved narration offer options without generation
+      description: Requires active membership. Private no-store discovery exposes supported delivery settings but no internal prices. Availability follows the default-closed operator gate and approved catalog; it is not purchase authorization. Single-segment purchases remain unsupported.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Approved server-owned narration options, not purchase authorization
+          headers:
+            Cache-Control: { schema: { type: string, const: "private, no-store" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NarrationModelOptions" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/narration-chapter-quotes/{quoteId}/accept:
+    post:
+      operationId: acceptNarrationChapterQuote
+      summary: Explicitly accept and fund the exact original whole-chapter maximum
+      description: Current writing access, original author ownership, exact credits and separate AI-voice and generation consent required. New funding also requires the actual operator gate and matching approved catalog; the service-only RPC atomically checks source, access and wallet. Same-confirmation replay returns the original project even after prices close. Recover unknown replies with read-only GET project, never a replacement quote or automatic purchase retry. No HTTP provider dispatch or caller-estimated settlement.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: quoteId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AcceptNarrationChapterQuoteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/NarrationChapterAccepted" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/narration-chapter-quotes/{quoteId}/project:
+    get:
+      operationId: getNarrationChapterAcceptance
+      summary: Read the verified original accepted project without another purchase
+      description: Active membership and original author ownership required. Read-only lookup independent of current catalog, operator gate and mutable manuscript. Validates immutable quote/project identity and exact maximum; omits private instructions, billing evidence and signed URLs. Unconfirmed original state is an error, not permission to purchase again. No funding, provider dispatch, write, refund or signing.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: quoteId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/NarrationChapterAcceptance" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/narration-quotes:
+    post:
+      operationId: createNarrationQuoteSnapshot
+      summary: Save one source-pinned narration segment offer without generation or funding
+      description: Requires current writing access and separate storage consent. The server reads the saved audiobook chapter, derives its segment and uses approved prices. It never accepts client manuscript, pricing, identity or output budgets. Repeat the original key and exact settings after an uncertain reply; do not issue a replacement request.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateNarrationQuoteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/NarrationOffer" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/narration-quotes/recover:
+    post:
+      operationId: recoverNarrationQuoteByRequestKey
+      summary: Recover the caller's original narration offer using only its private request key
+      description: Read-only, active-member and author-scoped lookup independent of current source or catalog availability. No save, new quote, funding or generation. Keep the request key outside URLs.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [idempotencyKey]
+              properties:
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+      responses:
+        "200": { $ref: "#/components/responses/NarrationOffer" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/narration-quotes/{quoteId}:
+    get:
+      operationId: getNarrationQuoteSnapshot
+      summary: Read the caller's verified immutable narration segment offer
+      description: Requires current membership and original author ownership. Omits manuscript, instructions, raw rates and private approval references. Expiry does not destroy read-only recovery. No acceptance or job is created.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: quoteId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/NarrationOffer" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/narration-chapter-quotes:
+    post:
+      operationId: createNarrationChapterQuoteSnapshot
+      summary: Save one complete saved-chapter offer atomically, without funding or generation
+      description: Current writing access and explicit quote-storage consent required. Server segments the entire pinned saved chapter and sums every maximum-credit budget. No client manuscript, segment selection, rates, identity or output budgets. After an uncertain reply, recover the original private key before another request. Saving an offer never funds or generates; acceptance requires a separate gated purchase and two explicit consents.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateNarrationChapterQuoteRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/NarrationChapterOffer" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/narration-chapter-quotes/recover:
+    post:
+      operationId: recoverNarrationChapterQuoteByRequestKey
+      summary: Read-only recovery of all original chapter offers using only the private retry key
+      description: Active member and original author scope required. No current manuscript/catalog read, new quote, acceptance, funding or generation. Request key stays outside URLs; original source versions and prices remain pinned even after expiry.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [idempotencyKey]
+              properties:
+                idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+      responses:
+        "200": { $ref: "#/components/responses/NarrationChapterOffer" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/{workspaceId}/narration-chapter-quotes/{quoteId}:
+    get:
+      operationId: getNarrationChapterQuoteSnapshot
+      summary: Read a verified immutable full-chapter offer and every ordered child budget
+      description: Current active membership and original author ownership required. Omits manuscript, instructions, raw rates, retry keys and private receipts. Creates no acceptance, generation job or funded hold.
+      parameters:
+        - { name: workspaceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: quoteId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/NarrationChapterOffer" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/workspaces/{workspaceId}/image-quotes/recover:
     post:
       operationId: recoverImageQuoteByRequestKey
@@ -2881,6 +3056,60 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/editions/{editionId}/audiobook-jobs:
+    get:
+      operationId: listSavedAudiobookProjects
+      summary: Read existing private narration history without new generation
+      description: Caller-scoped history includes quoted and legacy operational narration. Quoted creditUnits is the original maximum token-credit budget, not the measured charge; operational creditUnits is legacy audio units. Missing pre-quote billing mode is normalized to operational; corrupt modes fail before segment access or signing. Does not accept a quote, reserve credits or call a provider.
+      parameters:
+        - { in: path, name: editionId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Up to 100 saved projects in descending creation order, visible through the caller's RLS scope.
+          headers:
+            Cache-Control: { schema: { type: string, const: "private, no-store" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AudiobookProjectHistory" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: retiredDirectNarrationCreation
+      deprecated: true
+      summary: Retired unquoted narration creation endpoint
+      description: Always returns 410 before database, manuscript or queue access. New narration requires explicit review and funded chapter acceptance. Existing narration history, private downloads, listening review and export remain available.
+      parameters:
+        - { name: editionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "410":
+          description: Narration quote confirmation is required (narration_quote_required)
+          headers:
+            Cache-Control: { schema: { type: string, const: "private, no-store" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApiError" }
+        "401": { $ref: "#/components/responses/Error" }
+  /v1/audiobook-jobs/{projectId}:
+    get:
+      operationId: getSavedAudiobookProject
+      summary: Read an existing caller-visible narration project and private segment links
+      description: Read-only private history; unavailable or foreign projects return 404. Segment links expire after 300 seconds. Quote snapshots, voice instructions, funded receipts and raw provider usage are not projected. No new generation or credit reservation.
+      parameters:
+        - { in: path, name: projectId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Existing caller-visible narration and its original billing identity.
+          headers:
+            Cache-Control: { schema: { type: string, const: "private, no-store" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AudiobookProject" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/audiobook-jobs/{projectId}/audio-download:
     get:
       tags: [v1]
@@ -3026,6 +3255,189 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    NarrationModel:
+      type: string
+      enum: [gpt-realtime-2.1-mini, gpt-realtime-2.1]
+    NarrationVoice:
+      type: string
+      enum: [alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar]
+    NarrationSpeed:
+      type: number
+      minimum: 0.25
+      maximum: 1.5
+      multipleOf: 0.01
+    CreateNarrationQuoteRequest:
+      type: object
+      additionalProperties: false
+      required: [editionId, chapterId, modelId, idempotencyKey, segmentIndex, voice, speed, consentToQuoteStorage]
+      properties:
+        editionId: { type: string, format: uuid }
+        chapterId: { type: string, format: uuid }
+        modelId: { type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,63}$' }
+        idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+        segmentIndex: { type: integer, minimum: 0, maximum: 249 }
+        voice: { $ref: "#/components/schemas/NarrationVoice" }
+        speed: { $ref: "#/components/schemas/NarrationSpeed" }
+        instructions:
+          type: [string, "null"]
+          default: null
+          minLength: 1
+          maxLength: 2000
+          pattern: '^(?!\s)(?![\s\S]*\s$)(?:[^\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])+$'
+          description: Exact already-trimmed scalar Unicode delivery preferences, at most 2000 UTF-16 code units. Never silently normalized. Combined source and preferences must fit the server's 1800-byte UTF-8 segment budget.
+        consentToQuoteStorage: { type: boolean, const: true }
+    CreateNarrationChapterQuoteRequest:
+      type: object
+      additionalProperties: false
+      required: [editionId, chapterId, modelId, idempotencyKey, voice, speed, consentToQuoteStorage]
+      properties:
+        editionId: { $ref: "#/components/schemas/CreateNarrationQuoteRequest/properties/editionId" }
+        chapterId: { $ref: "#/components/schemas/CreateNarrationQuoteRequest/properties/chapterId" }
+        modelId: { $ref: "#/components/schemas/CreateNarrationQuoteRequest/properties/modelId" }
+        idempotencyKey: { $ref: "#/components/schemas/CreateNarrationQuoteRequest/properties/idempotencyKey" }
+        voice: { $ref: "#/components/schemas/NarrationVoice" }
+        speed: { $ref: "#/components/schemas/NarrationSpeed" }
+        instructions: { $ref: "#/components/schemas/CreateNarrationQuoteRequest/properties/instructions" }
+        consentToQuoteStorage: { type: boolean, const: true }
+    NarrationChapterQuote:
+      type: object
+      additionalProperties: false
+      required: [quoteId, purchaseAvailable, pricingBasis, modelId, model, voice, speed, source, reservedCredits, segmentCount, segments, priceVersion, policyVersion, expiresAt, expired]
+      properties:
+        quoteId: { type: string, format: uuid }
+        purchaseAvailable: { type: boolean }
+        pricingBasis: { type: string, const: maximum_token_budget }
+        modelId: { $ref: "#/components/schemas/CreateNarrationQuoteRequest/properties/modelId" }
+        model: { $ref: "#/components/schemas/NarrationModel" }
+        voice: { $ref: "#/components/schemas/NarrationVoice" }
+        speed: { $ref: "#/components/schemas/NarrationSpeed" }
+        source:
+          type: object
+          additionalProperties: false
+          required: [bookId, editionId, chapterId, documentVersionId]
+          properties:
+            bookId: { type: string, format: uuid }
+            editionId: { type: string, format: uuid }
+            chapterId: { type: string, format: uuid }
+            documentVersionId: { type: string, format: uuid }
+        reservedCredits: { $ref: "#/components/schemas/NarrationQuote/properties/reservedCredits" }
+        segmentCount: { type: integer, minimum: 1, maximum: 250 }
+        segments:
+          type: array
+          minItems: 1
+          maxItems: 250
+          description: Complete, ordered, non-overlapping saved source ranges. Segment count and exact sum of child maximum budgets are verified by the server; whitespace-only gaps are allowed. No manuscript text or generation IDs.
+          items:
+            type: object
+            additionalProperties: false
+            required: [quoteId, segmentIndex, textStart, textEnd, reservedCredits]
+            properties:
+              quoteId: { type: string, format: uuid }
+              segmentIndex: { type: integer, minimum: 0, maximum: 249 }
+              textStart: { type: integer, minimum: 0, maximum: 999999 }
+              textEnd: { type: integer, minimum: 1, maximum: 1000000 }
+              reservedCredits: { $ref: "#/components/schemas/NarrationQuote/properties/reservedCredits" }
+        priceVersion: { type: string, minLength: 1, maxLength: 128 }
+        policyVersion: { type: string, minLength: 1, maxLength: 128 }
+        expiresAt: { type: string, format: date-time }
+        expired: { type: boolean }
+    NarrationQuote:
+      type: object
+      additionalProperties: false
+      required: [quoteId, purchaseAvailable, pricingBasis, modelId, model, voice, speed, source, reservedCredits, priceVersion, policyVersion, expiresAt, expired]
+      properties:
+        quoteId: { type: string, format: uuid }
+        purchaseAvailable: { type: boolean, const: false }
+        pricingBasis: { type: string, const: maximum_token_budget }
+        modelId: { type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,63}$' }
+        model: { $ref: "#/components/schemas/NarrationModel" }
+        voice: { $ref: "#/components/schemas/NarrationVoice" }
+        speed: { $ref: "#/components/schemas/NarrationSpeed" }
+        source:
+          type: object
+          additionalProperties: false
+          required: [bookId, editionId, chapterId, documentVersionId, segmentIndex, textStart, textEnd]
+          properties:
+            bookId: { type: string, format: uuid }
+            editionId: { type: string, format: uuid }
+            chapterId: { type: string, format: uuid }
+            documentVersionId: { type: string, format: uuid }
+            segmentIndex: { type: integer, minimum: 0, maximum: 249 }
+            textStart: { type: integer, minimum: 0, maximum: 999999 }
+            textEnd: { type: integer, minimum: 1, maximum: 1000000 }
+          description: Unicode-code-point range of one verified saved segment; end is exclusive and exceeds start by at most 4096.
+        reservedCredits:
+          $ref: "#/components/schemas/NarrationCredits"
+          description: Positive maximum credit budget, bounded to 2147483647 by the server; no hold has been reserved.
+        priceVersion: { type: string, minLength: 1, maxLength: 128 }
+        policyVersion: { type: string, minLength: 1, maxLength: 128 }
+        expiresAt: { type: string, format: date-time }
+        expired: { type: boolean }
+    NarrationModelOptions:
+      type: object
+      additionalProperties: false
+      required: [catalogVersion, pricingBasis, purchaseAvailable, models, voices, minSpeed, maxSpeed]
+      properties:
+        catalogVersion: { type: string, minLength: 1, maxLength: 128 }
+        pricingBasis: { type: string, const: maximum_token_budget }
+        purchaseAvailable: { type: boolean }
+        models:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, label, model, priceVersion, policyVersion, maxOutputTokens]
+            properties:
+              id: { type: string, pattern: '^[a-z0-9][a-z0-9_-]{0,63}$' }
+              label: { type: string, minLength: 1, maxLength: 100 }
+              model: { $ref: "#/components/schemas/NarrationModel" }
+              priceVersion: { type: string, minLength: 1, maxLength: 128 }
+              policyVersion: { type: string, minLength: 1, maxLength: 128 }
+              maxOutputTokens: { type: integer, minimum: 1, maximum: 4096 }
+        voices: { type: array, minItems: 10, maxItems: 10, uniqueItems: true, items: { $ref: "#/components/schemas/NarrationVoice" } }
+        minSpeed: { type: number, const: 0.25 }
+        maxSpeed: { type: number, const: 1.5 }
+    NarrationCredits:
+      type: string
+      pattern: '^(?:[1-9][0-9]{0,8}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])$'
+      description: Canonical positive integer maximum-credit string bounded to 2147483647; not an actual measured charge.
+    AcceptNarrationChapterQuoteRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedCredits, consentToAiVoice, consentToGenerate]
+      properties:
+        expectedCredits: { $ref: "#/components/schemas/NarrationCredits" }
+        consentToAiVoice: { type: boolean, const: true }
+        consentToGenerate: { type: boolean, const: true }
+    NarrationAcceptedProject:
+      type: object
+      additionalProperties: false
+      required: [id, billingMode, status, reservedCredits]
+      properties:
+        id: { type: string, format: uuid }
+        billingMode: { type: string, const: quoted }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        reservedCredits: { $ref: "#/components/schemas/NarrationCredits" }
+    NarrationChapterAccepted:
+      type: object
+      additionalProperties: false
+      required: [quoteId, accepted, project]
+      properties:
+        quoteId: { type: string, format: uuid }
+        accepted: { type: boolean, const: true }
+        project: { $ref: "#/components/schemas/NarrationAcceptedProject" }
+    NarrationChapterAcceptance:
+      oneOf:
+        - $ref: "#/components/schemas/NarrationChapterAccepted"
+        - type: object
+          additionalProperties: false
+          required: [quoteId, accepted, project]
+          properties:
+            quoteId: { type: string, format: uuid }
+            accepted: { type: boolean, const: false }
+            project: { type: "null" }
     CommunityModerationReport:
       type: object
       additionalProperties: false
@@ -3059,6 +3471,61 @@ components:
                 parentTitle: { type: [string, "null"] }
                 parentBody: { type: [string, "null"] }
                 communityName: { type: [string, "null"] }
+    AudiobookProjectHistory:
+      type: object
+      additionalProperties: false
+      required: [projects]
+      properties:
+        projects: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/AudiobookProject" } }
+    AudiobookProject:
+      type: object
+      additionalProperties: false
+      required: [id, editionId, chapterId, documentVersionId, voice, speed, billingMode, status, segmentCount, creditUnits, createdAt, completedAt, aiVoiceDisclosureRequired, segments]
+      properties:
+        id: { type: string, format: uuid }
+        editionId: { type: string, format: uuid }
+        chapterId: { type: string, format: uuid }
+        documentVersionId: { type: string, format: uuid }
+        voice: { type: string, enum: [alloy, ash, ballad, coral, echo, fable, onyx, nova, sage, shimmer, verse, marin, cedar] }
+        speed:
+          type: number
+          minimum: 0.25
+          maximum: 4
+          description: Saved legacy speeds remain readable; new paid quotes use the narrower NarrationSpeed admission contract.
+        billingMode: { type: string, enum: [quoted, operational] }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        segmentCount: { type: integer, minimum: 1, maximum: 250 }
+        creditUnits:
+          type: integer
+          minimum: 1
+          maximum: 2147483647
+          description: Quoted mode means the original maximum token-credit budget, not measured usage or final charge. Operational mode means legacy audio units.
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: [string, "null"], format: date-time }
+        aiVoiceDisclosureRequired: { type: boolean, const: true }
+        segments:
+          type: array
+          maxItems: 250
+          items:
+            type: object
+            additionalProperties: false
+            required: [index, status, failureCode, asset, download]
+            properties:
+              index: { type: integer, minimum: 0, maximum: 249 }
+              status: { type: string }
+              failureCode: { type: [string, "null"] }
+              asset:
+                type: [object, "null"]
+                description: Existing caller-visible asset row, not a provider or funded-quote receipt.
+              download:
+                oneOf:
+                  - { type: "null" }
+                  - type: object
+                    additionalProperties: false
+                    required: [url, expiresIn]
+                    properties:
+                      url: { type: string, format: uri, pattern: '^https?://[^\s]+$' }
+                      expiresIn: { type: integer, const: 300 }
     AudiobookGooglePlayExportJob:
       type: object
       additionalProperties: false
@@ -3722,6 +4189,34 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
   responses:
+    NarrationChapterAccepted:
+      description: Authoritatively confirmed original funded chapter project, not provider completion or measured billing
+      headers:
+        Cache-Control: { schema: { type: string, const: "private, no-store" } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/NarrationChapterAccepted" }
+    NarrationChapterAcceptance:
+      description: Verified read-only acceptance state of the original chapter quote
+      headers:
+        Cache-Control: { schema: { type: string, const: "private, no-store" } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/NarrationChapterAcceptance" }
+    NarrationChapterOffer:
+      description: Verified private immutable complete chapter offer, not acceptance or funding
+      headers:
+        Cache-Control: { schema: { type: string, const: "private, no-store" } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/NarrationChapterQuote" }
+    NarrationOffer:
+      description: Verified private immutable segment offer, not acceptance or funding
+      headers:
+        Cache-Control: { schema: { type: string, const: "private, no-store" } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/NarrationQuote" }
     Error:
       description: Standard error envelope
       content:

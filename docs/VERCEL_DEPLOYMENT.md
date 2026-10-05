@@ -101,6 +101,21 @@ Do not pull production secrets to a developer machine solely for a build check;
 the repository's isolated Next.js build plus the Vercel preview is the safer
 review path.
 
+## Build-branch checkpoint guard
+
+Both possible project roots (`vercel.json` and `apps/web/vercel.json`) disable
+automatic Git deployments for `codex/**` only. This preserves the user's
+build-before-hosting boundary while allowing reviewed GitHub checkpoints and
+GitHub Actions acceptance. It does not start a deployment, change hosted
+settings, disable unrelated release branches or prevent an explicitly invoked
+manual deployment. A preview/production deployment still requires the release
+checks and user authorization below.
+
+This is Vercel's documented branch-specific
+[`git.deploymentEnabled`](https://vercel.com/docs/project-configuration/git-configuration#gitdeploymentenabled)
+control, not an assumed commit-message skip marker. Regression:
+`node scripts/run-python.mjs -m unittest discover -s tests/security -p test_vercel_checkpoint.py`.
+
 ## Git-driven deployments
 
 Connect the GitHub repository to the Vercel project, retain deployment

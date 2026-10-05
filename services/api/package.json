@@ -18,6 +18,7 @@
     "worker:ai-review-quotes": "tsx ../../workers/ai-review/worker.ts",
     "worker:book-bible-quotes": "tsx ../../workers/book-bible/worker.ts",
     "worker:image-quotes": "tsx ../../workers/image/worker.ts",
+    "worker:narration-quotes": "tsx ../../workers/narration/worker.ts",
     "storage:orphan-report": "tsx ../../workers/maintenance/storage-orphan-report.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts"

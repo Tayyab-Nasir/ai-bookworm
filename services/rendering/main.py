@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import UUID
 from threading import BoundedSemaphore
+from typing import Literal
 import warnings
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
@@ -31,7 +32,7 @@ from rules import load_ruleset  # noqa: E402
 from print_fonts import print_font_issues  # noqa: E402
 from wrap_cover import VERSION as WRAP_VERSION, render_wrap_cover  # noqa: E402
 from preflight import Finding  # noqa: E402
-from audio_assembly import assemble_audio_with_quality  # noqa: E402
+from audio_assembly import assemble_audio_with_quality, encode_narration_pcm  # noqa: E402
 
 app = FastAPI(title="bookworm-rendering")
 
@@ -65,6 +66,15 @@ class PreflightRequest(BaseModel):
 
 class AudioAssemblyRequest(BaseModel):
     segmentsBase64: list[str] = Field(min_length=1, max_length=250)
+
+
+class NarrationEncodingRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    pcmBase64: str = Field(min_length=4, max_length=16777216)
+    pcmSha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    sampleRateHz: Literal[24000]
+    channels: Literal[1]
+    bitDepth: Literal[16]
 
 
 class ImageInspectionRequest(BaseModel):
@@ -137,6 +147,21 @@ def inspect_cover(req: ImageInspectionRequest):
         raise HTTPException(422, "cover must be a complete single-frame JPEG or PNG, 1024 to 7200 pixels per side") from error
     finally:
         _image_inspection_slot.release()
+
+
+@app.post("/audio/encode-narration", dependencies=[Depends(require_service_token)])
+def encode_narration(req: NarrationEncodingRequest):
+    try:
+        pcm = base64.b64decode(req.pcmBase64, validate=True)
+        if not 2 <= len(pcm) <= 12 * 1024 * 1024 or len(pcm) % 2 or hashlib.sha256(pcm).hexdigest() != req.pcmSha256:
+            raise ValueError("unbound PCM")
+        audio, checksum, profile = encode_narration_pcm(pcm)
+    except ValueError as error:
+        raise HTTPException(422, "invalid, oversized or unbound narration audio") from error
+    except RuntimeError as error:
+        raise HTTPException(503, "narration encoding is unavailable or busy") from error
+    return Response(audio, media_type="audio/mpeg", headers={"x-artifact-sha256": checksum,
+        "x-bookworm-narration-encoding": json.dumps(profile, separators=(",", ":")), "cache-control": "no-store"})
 
 
 def _composed_cover(req, edition) -> tuple[bytes | None, str | None]:

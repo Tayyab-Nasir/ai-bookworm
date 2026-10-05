@@ -1,5 +1,6 @@
 {
   "version": 2,
+  "git": { "deploymentEnabled": { "codex/**": false } },
   "builds": [
     {
       "src": "apps/web/package.json",

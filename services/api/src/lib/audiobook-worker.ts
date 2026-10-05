@@ -6,6 +6,7 @@ import { openAiSpeechGenerator, type SpeechGenerator } from "./speech-generation
 const BUCKET = "book-assets";
 const claimSchema = z.object({
   id: z.string().uuid(), workspace_id: z.string().uuid(), lease_token: z.string().uuid(),
+  billing_mode: z.literal("operational"),
   input_ref: z.object({
     audiobookProjectId: z.string().uuid(), documentVersionId: z.string().uuid(),
     segmentIndex: z.number().int().min(0).max(249), textStart: z.number().int().nonnegative(),
@@ -15,6 +16,7 @@ const claimSchema = z.object({
 }).passthrough();
 const projectSchema = z.object({
   id: z.string().uuid(), voice: z.enum(["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"]),
+  billing_mode: z.literal("operational"),
   instructions: z.string().nullable(), speed: z.coerce.number().min(0.25).max(4), status: z.string(),
 }).passthrough();
 const receiptSchema = z.object({
@@ -50,6 +52,10 @@ export async function runOneAudiobookJob(
   if (claim.error) throw new Error("audiobook claim failed");
   const raw = row(claim.data);
   if (!raw) return { status: "idle" };
+  // The SQL grant is retired and its dormant claim also filters operational
+  // rows. A stale/misconfigured transport must not fail, refund, read receipts
+  // or dispatch a quoted job through this legacy character-tariff worker.
+  if (raw.billing_mode !== "operational") return { status: "completion_unknown", jobId: String(raw.id) };
   const parsed = claimSchema.safeParse(raw);
   const jobId = String(raw.id);
   const leaseToken = String(raw.lease_token);

@@ -17,7 +17,7 @@ test("fixed EPUB page controls survive saving and switching flow", () => {
   const reflowable = toConfig({ ...form, flow: "reflowable" }, saved);
   assert.deepEqual(toConfig({ ...formFromEdition({ ...edition, edition_metadata_json: reflowable }), flow: "fixed" }, reflowable), saved);
 });
-import { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../components/PublishingStudio";
+import { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
 import type { Edition } from "@bookworm/types";
 
 test("front matter survives save and reload for both book formats", () => {

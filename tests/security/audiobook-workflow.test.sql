@@ -1,5 +1,10 @@
 begin;
 
+-- Historical queue/worker fixtures only. Production grants stay revoked;
+-- restore them below even when the native runner retains this fixture data.
+grant execute on function public.queue_audiobook_project(uuid,uuid,text,text,numeric,text,jsonb) to authenticated;
+grant execute on function public.claim_audiobook_job(integer) to service_role;
+
 insert into auth.users(id,email) values('a6000000-0000-4000-8000-000000000001','audio-editor@local.test');
 insert into public.organizations(id,name,slug,owner_user_id)
   values('a6000000-0000-4000-8000-000000000002','Audio Org','audio-org','a6000000-0000-4000-8000-000000000001');
@@ -305,4 +310,6 @@ reset role;
 update public.workspace_members set role='editor'
   where workspace_id='a6000000-0000-4000-8000-000000000003' and user_id='a6000000-0000-4000-8000-000000000001';
 
+revoke all on function public.queue_audiobook_project(uuid,uuid,text,text,numeric,text,jsonb),public.claim_audiobook_job(integer)
+  from public,anon,authenticated,service_role;
 rollback;

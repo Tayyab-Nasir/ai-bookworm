@@ -9,6 +9,9 @@ import { artworkCompletionRaces } from './native-artwork-completion.mjs';
 import { paidQuoteLifecycleRaces } from './native-paid-quote-lifecycle.mjs';
 import { moderationResolutionRaces } from './native-moderation-resolution.mjs';
 import { verifyAudiobookSegmentationFixtures } from './audiobook-segmentation-lifecycle.mjs';
+import { verifyNarrationQuoteFixtures, verifyNarrationChapterQuoteFixtures } from './narration-quote-lifecycle.mjs';
+import { verifyNarrationFundedFixtures } from './narration-funded-lifecycle.mjs';
+import { verifyNarrationRaceFixtures, narrationLifecycleRaces } from './native-narration-lifecycle.mjs';
 
 if (process.env.BOOKWORM_NATIVE_TEST !== '1' || !process.env.BOOKWORM_NATIVE_TEST_PASSWORD) {
   throw new Error('Requires explicit BOOKWORM_NATIVE_TEST=1 and a disposable test password.');
@@ -578,6 +581,11 @@ try {
     console.log(`PASS native assertions ${file}`);
   }
   await verifyAudiobookSegmentationFixtures(sql);
+  await verifyNarrationQuoteFixtures(sql);
+  await verifyNarrationChapterQuoteFixtures(sql);
+  await verifyNarrationFundedFixtures(sql);
+  await verifyNarrationRaceFixtures(sql);
+  await narrationLifecycleRaces({ sql, session, until, database });
   for (const media of [
     { label: 'text', meter: 'ai_credits', first: 'writer', second: 'metadata' },
     { label: 'image', meter: 'image_credits', first: 'illustrator', second: 'cover_designer' },

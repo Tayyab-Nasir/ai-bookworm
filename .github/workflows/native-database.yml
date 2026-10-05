@@ -30,6 +30,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: node tests/security/run-native-postgres.mjs
         env:

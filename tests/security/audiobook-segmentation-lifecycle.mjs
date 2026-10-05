@@ -25,6 +25,8 @@ export async function verifyAudiobookSegmentationFixtures(sql) {
     // The fixture rolls back, so every case uses a clean account with exactly
     // enough paid operational audio allowance. It does not fund provider calls.
     const result = await sql(`begin;
+      -- A transaction-scoped historical fixture, never a runtime queue grant.
+      grant execute on function public.queue_audiobook_project(uuid,uuid,text,text,numeric,text,jsonb) to authenticated;
       insert into auth.users(id,email) values
         ('a6100000-0000-4000-8000-000000000001','audio-segments@local.test'),
         ('a6100000-0000-4000-8000-000000000010','audio-segments-outsider@local.test');
@@ -100,6 +102,7 @@ export async function verifyAudiobookSegmentationFixtures(sql) {
         exception when insufficient_privilege then null; end;
       end $$;
       reset role;
+      revoke all on function public.queue_audiobook_project(uuid,uuid,text,text,numeric,text,jsonb) from public,anon,authenticated,service_role;
       select 'verified';
       rollback;`);
     assert.equal(result, "verified");

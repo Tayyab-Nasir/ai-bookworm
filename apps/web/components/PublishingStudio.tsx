@@ -2,193 +2,18 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AudiobookGooglePlayExportJob, AudiobookProjectResult, AudiobookVoice, EditionConfig, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel } from "@bookworm/api-client";
+import type { AudiobookGooglePlayExportJob, AudiobookProjectResult, AudiobookVoice, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel } from "@bookworm/api-client";
 import type { Asset, Book, Chapter, Edition } from "@bookworm/types";
 import { apiClient } from "./api";
 import ChapterAudioDownload from "./ChapterAudioDownload";
+import NarrationQuoteStudio from "./NarrationQuoteStudio";
+
+import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
+export { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
-const FONTS = ["BookwormVera", "BookwormVera-Bold", "Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"] as const;
-const fontLabel = (font: string) => font === "BookwormVera" ? "Bitstream Vera · embedded" : font === "BookwormVera-Bold" ? "Bitstream Vera Bold · embedded" : font;
-type Kind = "ebook" | "print" | "audiobook";
 type Channel = PreflightResult["requestedChannel"];
 const CHANNEL_FORMATS: Record<RetailerChannel, Kind[]> = { kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"] };
-const RTL_LANGUAGES = new Set(["ar", "arc", "dv", "fa", "he", "iw", "nqo", "ps", "sd", "ug", "ur", "yi"]);
-const RTL_SCRIPTS = new Set(["arab", "hebr", "nkoo", "thaa"]);
-
-export function resolveEditionTextDirection(language: string, preference: "auto" | "ltr" | "rtl"): "ltr" | "rtl" {
-  if (preference === "ltr" || preference === "rtl") return preference;
-  const parts = language.replaceAll("_", "-").split("-").filter(Boolean).map((part) => part.toLowerCase());
-  return RTL_LANGUAGES.has(parts[0] ?? "") || parts.slice(1).some((part) => RTL_SCRIPTS.has(part)) ? "rtl" : "ltr";
-}
-
-interface FormState {
-  kind: Kind; language: string; textDirection: "auto" | "ltr" | "rtl"; flow: "reflowable" | "fixed"; navigation: "toc" | "toc+landmarks" | "none";
-  trimSize: "5x8" | "5.5x8.5" | "6x9" | "7x10" | "8.5x11"; bleed: number; bleedEdges: "all" | "outer";
-  top: number; bottom: number; inner: number; outer: number;
-  bodyFont: typeof FONTS[number]; bodySize: number; headingFont: typeof FONTS[number]; headingSize: number;
-  leading: number; paragraphSpacing: number; firstLineIndent: number; textAlign: "left" | "justify";
-  numbering: "arabic" | "roman" | "none"; numberPosition: "bottom-center" | "bottom-outer" | "top-center"; startAt: number;
-  coverAssetId: string; titleOnCover: boolean; subtitleOnCover: boolean; authorOnCover: boolean;
-  textColor: string; overlay: number; qrEnabled: boolean; qrUrl: string; qrLabel: string;
-  qrPosition: "bottom-left" | "bottom-right"; qrSize: number;
-  voice: AudiobookVoice; narrationInstructions: string; narrationSpeed: number;
-  wrapEnabled: boolean; wrapProfile: "kdp-white" | "kdp-cream" | "kdp-standard-color" | "kdp-premium-color" | "custom";
-  spineWidth: number; templatePages: number; backText: string; spineText: string; wrapBackground: string; wrapTextColor: string;
-  copyrightNotice: string; publisher: string; ebookTitlePage: boolean; printContents: boolean;
-}
-
-export type LayoutPresetId = "trade-paperback" | "large-print" | "poetry";
-
-type LayoutPresetFields = Pick<FormState,
-  "trimSize" | "top" | "bottom" | "inner" | "outer" | "bodyFont" | "bodySize" | "headingFont" | "headingSize"
-  | "leading" | "paragraphSpacing" | "firstLineIndent" | "textAlign"
->;
-
-const LAYOUT_PRESETS: Record<LayoutPresetId, LayoutPresetFields> = {
-  "trade-paperback": {
-    trimSize: "6x9", top: 0.75, bottom: 0.75, inner: 0.8, outer: 0.6,
-    bodyFont: "BookwormVera", bodySize: 11, headingFont: "BookwormVera-Bold", headingSize: 16,
-    leading: 14.5, paragraphSpacing: 4, firstLineIndent: 0.25, textAlign: "justify",
-  },
-  "large-print": {
-    trimSize: "6x9", top: 0.9, bottom: 0.9, inner: 0.9, outer: 0.7,
-    bodyFont: "BookwormVera", bodySize: 16, headingFont: "BookwormVera-Bold", headingSize: 20,
-    leading: 20, paragraphSpacing: 8, firstLineIndent: 0, textAlign: "left",
-  },
-  poetry: {
-    trimSize: "6x9", top: 1, bottom: 1, inner: 0.9, outer: 0.65,
-    bodyFont: "BookwormVera", bodySize: 12, headingFont: "BookwormVera-Bold", headingSize: 18,
-    leading: 18, paragraphSpacing: 12, firstLineIndent: 0, textAlign: "left",
-  },
-};
-
-const LAYOUT_PRESET_LABELS: Record<LayoutPresetId, string> = {
-  "trade-paperback": "Trade paperback",
-  "large-print": "Large print (16 pt)",
-  poetry: "Poetry (open spacing)",
-};
-
-function isLayoutPresetId(value: string): value is LayoutPresetId {
-  return Object.prototype.hasOwnProperty.call(LAYOUT_PRESETS, value);
-}
-
-export function applyLayoutPreset(form: FormState, presetId: LayoutPresetId): FormState {
-  return { ...form, ...LAYOUT_PRESETS[presetId] };
-}
-
-const DEFAULT_FORM: FormState = {
-  kind: "ebook", language: "en", textDirection: "auto", flow: "reflowable", navigation: "toc+landmarks",
-  trimSize: "6x9", bleed: 0, bleedEdges: "outer", top: 0.75, bottom: 0.75, inner: 0.75, outer: 0.5,
-  bodyFont: "BookwormVera", bodySize: 11, headingFont: "BookwormVera-Bold", headingSize: 16,
-  leading: 14, paragraphSpacing: 6, firstLineIndent: 0.25, textAlign: "justify",
-  numbering: "arabic", numberPosition: "bottom-outer", startAt: 1, coverAssetId: "", titleOnCover: true,
-  subtitleOnCover: true, authorOnCover: true, textColor: "#ffffff", overlay: 0.28,
-  qrEnabled: false, qrUrl: "", qrLabel: "", qrPosition: "bottom-right", qrSize: 180,
-  voice: "marin", narrationInstructions: "Narrate naturally with clear chapter pacing and faithful pronunciation.", narrationSpeed: 1,
-  wrapEnabled: false, wrapProfile: "kdp-white", spineWidth: 0.25, templatePages: 0,
-  backText: "", spineText: "", wrapBackground: "#182528", wrapTextColor: "#ffffff",
-  copyrightNotice: "", publisher: "", ebookTitlePage: false, printContents: false,
-};
-
-function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function number(value: unknown, fallback: number) {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-export function formFromEdition(edition: Edition): FormState {
-  const config = object(edition.edition_metadata_json);
-  const cover = object(config.cover);
-  const qr = object(cover.qr_code);
-  const layout = edition.type === "ebook" ? object(config.fixed_layout) : config;
-  const margins = object(layout.margins);
-  const typography = object(layout.typography);
-  const embeddedDefaults = edition.type === "ebook" && !layout.typography;
-  const page = object(config.page_numbering);
-  const wrap = object(config.wrap_cover);
-  const front = object(config.front_matter);
-  return {
-    ...DEFAULT_FORM,
-    copyrightNotice: typeof front.copyright_notice === "string" ? front.copyright_notice : "",
-    ebookTitlePage: config.include_title_page === true,
-    printContents: config.include_table_of_contents === true,
-    publisher: typeof front.publisher === "string" ? front.publisher : "",
-    kind: edition.type === "print" || edition.type === "audiobook" ? edition.type : "ebook",
-    language: edition.language ?? "en",
-    textDirection: config.text_direction === "ltr" || config.text_direction === "rtl" ? config.text_direction : "auto",
-    flow: config.flow === "fixed" ? "fixed" : "reflowable",
-    navigation: config.navigation === "none" || config.navigation === "toc" ? config.navigation : "toc+landmarks",
-    trimSize: ["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"].includes(String(layout.trim_size)) ? layout.trim_size as FormState["trimSize"] : "6x9",
-    bleed: number(config.bleed_in, 0),
-    bleedEdges: config.bleed_edges === "outer" ? "outer" : "all",
-    top: number(margins.top, 0.75), bottom: number(margins.bottom, 0.75), inner: number(margins.inner, 0.75), outer: number(margins.outer, 0.5),
-    bodyFont: FONTS.includes(typography.body_font as FormState["bodyFont"]) ? typography.body_font as FormState["bodyFont"] : embeddedDefaults ? "BookwormVera" : "Times-Roman",
-    bodySize: number(typography.body_size_pt, 11),
-    headingFont: FONTS.includes(typography.heading_font as FormState["headingFont"]) ? typography.heading_font as FormState["headingFont"] : embeddedDefaults ? "BookwormVera-Bold" : "Helvetica-Bold",
-    headingSize: number(typography.heading_size_pt, 16), leading: number(typography.leading, 14),
-    paragraphSpacing: number(typography.paragraph_spacing_pt, 6), firstLineIndent: number(typography.first_line_indent_in, 0.25),
-    textAlign: typography.text_align === "left" ? "left" : "justify",
-    numbering: page.style === "roman" || page.style === "none" ? page.style : "arabic",
-    startAt: number(page.start_at, 1),
-    numberPosition: page.position === "bottom-center" || page.position === "top-center" ? page.position : "bottom-outer",
-    coverAssetId: typeof cover.asset_id === "string" ? cover.asset_id : "",
-    titleOnCover: cover.title_on_cover !== false, subtitleOnCover: cover.subtitle_on_cover !== false, authorOnCover: cover.author_on_cover !== false,
-    textColor: typeof cover.text_color === "string" ? cover.text_color : "#ffffff", overlay: number(cover.overlay_opacity, 0.28),
-    qrEnabled: qr.enabled === true, qrUrl: typeof qr.url === "string" ? qr.url : "", qrLabel: typeof qr.label === "string" ? qr.label : "",
-    qrPosition: qr.position === "bottom-left" ? "bottom-left" : "bottom-right", qrSize: number(qr.size_px, 180),
-    voice: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"].includes(String(config.voice)) ? config.voice as AudiobookVoice : "marin",
-    narrationInstructions: typeof config.instructions === "string" ? config.instructions : DEFAULT_FORM.narrationInstructions,
-    narrationSpeed: number(config.speed, 1),
-    wrapEnabled: wrap.enabled === true,
-    wrapProfile: ["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"].includes(String(wrap.profile)) ? wrap.profile as FormState["wrapProfile"] : "kdp-white",
-    spineWidth: number(wrap.spine_width_in, 0.25), templatePages: number(wrap.expected_page_count, 0),
-    backText: typeof wrap.back_text === "string" ? wrap.back_text : "", spineText: typeof wrap.spine_text === "string" ? wrap.spine_text : "",
-    wrapBackground: typeof wrap.background_color === "string" ? wrap.background_color : "#182528",
-    wrapTextColor: typeof wrap.text_color === "string" ? wrap.text_color : "#ffffff",
-  };
-}
-
-export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig {
-  const saved = object(savedConfig);
-  const front_matter = { copyright_notice: form.copyrightNotice, publisher: form.publisher };
-  const layout = {
-    trim_size: form.trimSize,
-    margins: { top: form.top, bottom: form.bottom, inner: form.inner, outer: form.outer },
-    typography: {
-      body_font: form.bodyFont, body_size_pt: form.bodySize, heading_font: form.headingFont, heading_size_pt: form.headingSize,
-      leading: form.leading, paragraph_spacing_pt: form.paragraphSpacing, first_line_indent_in: form.firstLineIndent, text_align: form.textAlign,
-    },
-  };
-  const cover = {
-    asset_id: form.coverAssetId || null,
-    title_on_cover: form.titleOnCover, subtitle_on_cover: form.subtitleOnCover, author_on_cover: form.authorOnCover,
-    text_color: form.textColor, overlay_opacity: form.overlay,
-    qr_code: { enabled: form.qrEnabled, url: form.qrEnabled ? form.qrUrl : null, label: form.qrLabel || null, position: form.qrPosition, size_px: form.qrSize },
-  };
-  if (form.kind === "ebook") return {
-    kind: "ebook", schema_version: "1.1.0", text_direction: form.textDirection, flow: form.flow, navigation: form.navigation, cover, front_matter,
-    include_title_page: form.ebookTitlePage,
-    fixed_layout: layout,
-    image_policy: { max_width_px: 1600, max_bytes: 5 * 1024 * 1024, embed: true, allowed_formats: ["jpeg", "png", "gif"], ...(saved.kind === "ebook" ? object(saved.image_policy) : {}) },
-    ...(saved.kind === "ebook" && saved.metadata_overrides ? { metadata_overrides: Object.fromEntries(Object.entries(object(saved.metadata_overrides)).filter((entry): entry is [string, string] => typeof entry[1] === "string")) } : {}),
-  };
-  if (form.kind === "audiobook") return {
-    kind: "audiobook", schema_version: "1.0.0", voice: form.voice,
-    instructions: form.narrationInstructions.trim() || null, speed: form.narrationSpeed,
-  };
-  return {
-    kind: "print", schema_version: "1.1.0", text_direction: form.textDirection, ...layout, bleed_in: form.bleed, bleed_edges: form.bleedEdges,
-    include_table_of_contents: form.printContents,
-    front_matter,
-    page_numbering: { style: form.numbering, start_at: form.startAt, position: form.numberPosition }, cover,
-    wrap_cover: { enabled: form.wrapEnabled, profile: form.wrapProfile, spine_width_in: form.spineWidth,
-      expected_page_count: form.templatePages || null, back_text: form.backText, spine_text: form.spineText,
-      background_color: form.wrapBackground, text_color: form.wrapTextColor },
-  };
-}
 
 const fieldClass = "mt-2 block w-full rounded-xl border border-white/10 bg-black/60 px-3 py-2.5 text-white outline-none focus:border-white/35";
 const cardClass = "rounded-2xl border border-white/10 bg-white/[0.035] p-5";
@@ -206,7 +31,6 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const exportRequestKey = useRef<string | null>(null);
   const [googlePlayIdentifier, setGooglePlayIdentifier] = useState("");
   const [googlePlayCoverId, setGooglePlayCoverId] = useState("");
-  const [aiDisclosureAccepted, setAiDisclosureAccepted] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [dirty, setDirty] = useState(false);
@@ -217,6 +41,9 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [publishingJobs, setPublishingJobs] = useState<PublishingPackageJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const currentBook = useRef(bookId); currentBook.current = bookId;
+  const currentEdition = useRef(activeId); currentEdition.current = activeId;
+  const viewEpoch = useRef(0);
 
   const activeEdition = editions.find((edition) => edition.id === activeId) ?? null;
   const editable = EDIT_ROLES.has(role);
@@ -234,29 +61,38 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const renderBlocked = rtlPrintUnsupported || rtlCoverTextUnsupported;
 
   const load = useCallback(async () => {
+    const version = ++viewEpoch.current;
+    const valid = () => viewEpoch.current === version && currentBook.current === bookId;
     setBusy("load");
+    setBook(null); setRole("viewer"); setEditions([]); setAssets([]); setChapters([]); setPublishingJobs([]);
+    setAudiobookProjects([]); setGooglePlayExports([]); setNarrationChapterId("");
+    setRendered(null); setPreflight(null); setNotice(null); exportRequestKey.current = null;
     setGooglePlayIdentifier(""); setGooglePlayCoverId("");
     try {
       const [identity, editionResult, packageHistory, chapterResult] = await Promise.all([api.getBook(bookId), api.listEditions(bookId), api.listPublishingJobs(bookId), api.listChapters(bookId)]);
+      if (!valid()) return;
       const assetResult = await api.listAssets(identity.book.workspace_id);
+      if (!valid()) return;
       setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setPublishingJobs(packageHistory.jobs); setChapters(chapterResult.chapters);
       setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
       if (editionResult.editions[0]) {
+        currentEdition.current = editionResult.editions[0].id;
         setActiveId(editionResult.editions[0].id); setForm(formFromEdition(editionResult.editions[0]));
         if (editionResult.editions[0].type === "audiobook") {
           const [projects, exports] = await Promise.all([
             api.listAudiobookProjects(editionResult.editions[0].id), api.listAudiobookGooglePlayExports(editionResult.editions[0].id),
           ]);
+          if (!valid()) return;
           setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs);
         } else { setAudiobookProjects([]); setGooglePlayExports([]); }
       }
-      else { setActiveId(null); setForm({ ...DEFAULT_FORM, language: identity.book.language }); setGooglePlayExports([]); }
+      else { currentEdition.current = null; setActiveId(null); setForm({ ...DEFAULT_FORM, language: identity.book.language }); setGooglePlayExports([]); }
       setDirty(false); setError(null);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load publishing settings."); }
-    finally { setBusy(null); }
+    } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not load publishing settings."); }
+    finally { if (valid()) setBusy(null); }
   }, [api, bookId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); return () => { ++viewEpoch.current; }; }, [load]);
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
@@ -287,19 +123,24 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const selectEdition = (edition: Edition) => {
     if (busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
+    const version = ++viewEpoch.current;
+    currentEdition.current = edition.id;
+    const valid = () => version === viewEpoch.current && currentBook.current === bookId && currentEdition.current === edition.id;
     exportRequestKey.current = null;
-    setActiveId(edition.id); setForm(formFromEdition(edition)); setDirty(false); setRendered(null); setPreflight(null); setError(null); setAiDisclosureAccepted(false);
+    setActiveId(edition.id); setForm(formFromEdition(edition)); setDirty(false); setRendered(null); setPreflight(null); setError(null);
+    setAudiobookProjects([]); setGooglePlayExports([]);
     if (edition.type === "audiobook") void Promise.all([api.listAudiobookProjects(edition.id), api.listAudiobookGooglePlayExports(edition.id)])
-      .then(([projects, exports]) => { setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs); })
-      .catch(() => setError("Could not load audiobook history."));
+      .then(([projects, exports]) => { if (valid()) { setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs); } })
+      .catch(() => { if (valid()) setError("Could not load audiobook history."); });
     else { setAudiobookProjects([]); setGooglePlayExports([]); }
   };
 
   const newEdition = (kind: Kind) => {
     if (!editable || busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
+    ++viewEpoch.current; currentEdition.current = null;
     exportRequestKey.current = null;
-    setActiveId(null); setForm({ ...DEFAULT_FORM, kind, language: book?.language ?? "en" }); setDirty(true); setRendered(null); setPreflight(null); setError(null); setAudiobookProjects([]); setGooglePlayExports([]); setAiDisclosureAccepted(false);
+    setActiveId(null); setForm({ ...DEFAULT_FORM, kind, language: book?.language ?? "en" }); setDirty(true); setRendered(null); setPreflight(null); setError(null); setAudiobookProjects([]); setGooglePlayExports([]);
   };
 
   const save = async () => {
@@ -358,23 +199,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     finally { setBusy(null); }
   };
 
-  const generateAudiobook = async () => {
-    if (!editable || !activeId || form.kind !== "audiobook" || dirty || busy || !narrationChapterId || !aiDisclosureAccepted) return;
-    setBusy("audiobook"); setError(null); setNotice(null);
-    try {
-      const project = await api.createAudiobookProject(activeId, { chapterId: narrationChapterId, idempotencyKey: crypto.randomUUID(), aiDisclosureAccepted: true });
-      setAudiobookProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]);
-      setNotice(`Narration queued in ${project.segmentCount} private segment${project.segmentCount === 1 ? "" : "s"}.`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not queue audiobook narration."); }
-    finally { setBusy(null); }
-  };
-
   const refreshAudiobooks = async () => {
     if (!activeId || busy) return;
+    const editionId = activeId, version = viewEpoch.current;
+    const valid = () => version === viewEpoch.current && currentBook.current === bookId && currentEdition.current === editionId;
     setBusy("audiobook"); setError(null);
-    try { setAudiobookProjects((await api.listAudiobookProjects(activeId)).projects); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Could not refresh audiobook progress."); }
-    finally { setBusy(null); }
+    try { const result = await api.listAudiobookProjects(editionId); if (valid()) setAudiobookProjects(result.projects); }
+    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh audiobook progress."); }
+    finally { if (valid()) setBusy(null); }
   };
 
   const exportGooglePlayAudiobook = async () => {
@@ -480,8 +312,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
               <label className="text-sm text-white/65">Number position<select value={form.numberPosition} onChange={(event) => update("numberPosition", event.target.value as FormState["numberPosition"])} className={fieldClass}><option value="bottom-outer">Bottom outer</option><option value="bottom-center">Bottom center</option><option value="top-center">Top center</option></select></label></>}
             </>}
             {form.kind === "audiobook" && <>
-              <label className="text-sm text-white/65">Narrator voice<select value={form.voice} onChange={(event) => update("voice", event.target.value as AudiobookVoice)} className={fieldClass}>{["marin", "cedar", "coral", "ballad", "verse", "alloy", "ash", "echo", "fable", "onyx", "nova", "sage", "shimmer"].map((voice) => <option key={voice} value={voice}>{voice}</option>)}</select></label>
-              <label className="text-sm text-white/65">Narration speed ({form.narrationSpeed.toFixed(2)}×)<input type="range" min={0.25} max={4} step={0.05} value={form.narrationSpeed} onChange={(event) => update("narrationSpeed", Number(event.target.value))} className="mt-4 w-full" /></label>
+              <label className="text-sm text-white/65">Narrator voice<select value={form.voice} disabled={!editable} onChange={(event) => update("voice", event.target.value as AudiobookVoice)} className={fieldClass}>{["marin", "cedar", "coral", "ballad", "verse", "alloy", "ash", "echo", "sage", "shimmer"].map((voice) => <option key={voice} value={voice}>{voice}</option>)}{["fable", "onyx", "nova"].includes(form.voice) && <option value={form.voice}>{form.voice} · saved legacy voice (choose a supported voice for new narration)</option>}</select></label>
+              <label className="text-sm text-white/65">Narration speed ({form.narrationSpeed.toFixed(2)}×)<input type="number" min={0.25} max={1.5} step={0.01} value={form.narrationSpeed} disabled={!editable} onChange={(event) => update("narrationSpeed", Number(event.target.value))} className={fieldClass} /></label>
               <label className="text-sm text-white/65 sm:col-span-2">Voice direction<textarea value={form.narrationInstructions} onChange={(event) => update("narrationInstructions", event.target.value)} maxLength={2000} rows={3} className={fieldClass} placeholder="Describe pacing, tone, and pronunciation." /></label>
             </>}
           </div>
@@ -529,13 +361,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           </div>}
         </section>}
 
+        {form.kind === "audiobook" && book && <NarrationQuoteStudio workspaceId={book.workspace_id} bookId={bookId} editionId={activeId ?? ""}
+          chapterId={narrationChapterId} chapters={chapters} voice={form.voice} speed={form.narrationSpeed} instructions={form.narrationInstructions}
+          onChapterChange={setNarrationChapterId}
+          onAccepted={() => void refreshAudiobooks()}
+          canEdit={["owner", "admin", "editor", "writer"].includes(role)} disabled={!activeId || dirty || Boolean(busy)} />}
         {form.kind === "audiobook" && <section className={cardClass} aria-labelledby="audiobook-title">
-          <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="audiobook-title" className="text-xl font-semibold">Chapter narration</h2><p className="mt-1 max-w-2xl text-sm text-white/45">Narration uses the exact saved chapter version, splits it into provider-safe segments, and stores every MP3 privately. One audio credit covers up to 1,000 source characters.</p></div><button type="button" onClick={() => void refreshAudiobooks()} disabled={!activeId || Boolean(busy)} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "audiobook" ? "Working…" : "Refresh progress"}</button></div>
-          <div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm text-white/65">Saved chapter<select value={narrationChapterId} onChange={(event) => setNarrationChapterId(event.target.value)} className={fieldClass}><option value="">Choose a chapter</option>{chapters.map((chapter) => <option key={chapter.id} value={chapter.id}>{chapter.order_index + 1}. {chapter.title}</option>)}</select></label><div className="rounded-xl border border-white/10 bg-black/30 p-4 text-sm text-white/55"><p>Voice: <span className="capitalize text-white">{form.voice}</span> · {form.narrationSpeed.toFixed(2)}×</p><p className="mt-1">Model: gpt-4o-mini-tts</p></div></div>
-          <label className="mt-5 flex items-start gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.07] p-4 text-sm text-amber-50"><input type="checkbox" checked={aiDisclosureAccepted} onChange={(event) => setAiDisclosureAccepted(event.target.checked)} className="mt-1" /><span>I understand this is an AI-generated voice and will disclose that to listeners wherever required. Generation consumes paid audio credits and starts only after the server reserves enough capacity.</span></label>
-          <button type="button" onClick={() => void generateAudiobook()} disabled={!editable || !activeId || dirty || Boolean(busy) || !narrationChapterId || !aiDisclosureAccepted} className="glass-solid mt-5 rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{busy === "audiobook" ? "Queuing…" : "Generate chapter narration"}</button>
-          {dirty && <p className="mt-3 text-xs text-amber-200">Save the voice settings before generating narration.</p>}
-          <div className="mt-7 border-t border-white/10 pt-5"><h3 className="font-medium">Narration history</h3>{audiobookProjects.length ? <ul className="mt-4 space-y-4">{audiobookProjects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/30 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium">{chapters.find((chapter) => chapter.id === project.chapterId)?.title ?? "Saved chapter"}</p><p className="mt-1 text-xs text-white/40">{project.segmentCount} segments · {project.creditUnits} audio credits · {project.voice}</p></div><span className={`rounded-full px-3 py-1 text-xs ${project.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : project.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{project.status}</span></div><ChapterAudioDownload projectId={project.id} ready={project.status === "succeeded"} /><div className="mt-4 grid gap-3 md:grid-cols-2">{project.segments.map((segment) => <div key={segment.index} className="rounded-lg border border-white/10 p-3"><p className="text-xs text-white/45">Part {segment.index + 1} · {segment.status}</p>{segment.download ? <><audio controls preload="none" src={segment.download.url} className="mt-2 w-full" /><a href={segment.download.url} download className="mt-2 inline-block text-xs underline">Download private MP3</a></> : <p className="mt-2 text-xs text-white/35">Audio will appear after the worker completes this segment.</p>}</div>)}</div></li>)}</ul> : <p className="mt-3 text-sm text-white/45">No narration has been queued for this edition.</p>}
+          <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="audiobook-title" className="text-xl font-semibold">Saved audio & delivery</h2><p className="mt-1 max-w-2xl text-sm text-white/45">Existing private narration, listening review and export history remain available. Prepare new narration through the chapter price review above; unquoted creation is retired.</p></div><button type="button" onClick={() => void refreshAudiobooks()} disabled={!activeId || Boolean(busy)} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "audiobook" ? "Working…" : "Refresh progress"}</button></div>
+          <div className="mt-7 border-t border-white/10 pt-5"><h3 className="font-medium">Narration history</h3>{audiobookProjects.length ? <ul className="mt-4 space-y-4">{audiobookProjects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/30 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium">{chapters.find((chapter) => chapter.id === project.chapterId)?.title ?? "Saved chapter"}</p><p className="mt-1 text-xs text-white/40">{project.segmentCount} segments · {project.billingMode === "quoted" ? `Maximum budget: ${project.creditUnits.toLocaleString()} token credits` : `${project.creditUnits.toLocaleString()} legacy audio units`} · {project.voice}</p></div><span className={`rounded-full px-3 py-1 text-xs ${project.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : project.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{project.status}</span></div><ChapterAudioDownload projectId={project.id} ready={project.status === "succeeded"} /><div className="mt-4 grid gap-3 md:grid-cols-2">{project.segments.map((segment) => <div key={segment.index} className="rounded-lg border border-white/10 p-3"><p className="text-xs text-white/45">Part {segment.index + 1} · {segment.status}</p>{segment.download ? <><audio controls preload="none" src={segment.download.url} className="mt-2 w-full" /><a href={segment.download.url} download className="mt-2 inline-block text-xs underline">Download private MP3</a></> : <p className="mt-2 text-xs text-white/35">Audio will appear after the worker completes this segment.</p>}</div>)}</div></li>)}</ul> : <p className="mt-3 text-sm text-white/45">No narration has been queued for this edition.</p>}
             <div className="mt-6 rounded-xl border border-white/10 bg-black/20 p-4"><h3 className="font-medium">Google Play export · private download</h3><p className="mt-1 text-sm text-white/45">Queue a durable, ordered ZIP for manual Partner Center upload. You can leave this page while it builds. Every current chapter must have narration, a saved QC report, and an approver’s exact-audio listening sign-off.</p>
               <div className="mt-4 grid gap-3 md:grid-cols-2"><label className="text-sm text-white/65">ISBN-13 or publisher book ID<input value={googlePlayIdentifier} onChange={(event) => { setGooglePlayIdentifier(event.target.value); exportRequestKey.current = null; }} maxLength={64} autoComplete="off" className={fieldClass} placeholder="978… or your Google book ID" /></label>
                 <label className="text-sm text-white/65">Audiobook cover<select value={googlePlayCoverId} onChange={(event) => { setGooglePlayCoverId(event.target.value); exportRequestKey.current = null; }} className={fieldClass}><option value="">Choose JPEG or PNG artwork</option>{coverAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label></div>

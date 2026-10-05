@@ -10,15 +10,16 @@ const WORKSPACE = "b6000000-0000-4000-8000-000000000004";
 const LEASE = "b6000000-0000-4000-8000-000000000005";
 const text = "A saved narration segment.";
 
-function fakeSupabase() {
+function fakeSupabase(billingMode: unknown = "operational", omitBillingMode = false) {
   const objects = new Map<string, Buffer>();
   const receipts: Record<string, unknown>[] = [];
   const rpcCalls: { name: string; args: Record<string, unknown> }[] = [];
+  const reads: string[] = [];
   const client = {
     rpc: async (name: string, args: Record<string, unknown>) => {
       rpcCalls.push({ name, args });
       if (name === "claim_audiobook_job") return { data: [{
-        id: JOB, workspace_id: WORKSPACE, lease_token: LEASE,
+        id: JOB, workspace_id: WORKSPACE, lease_token: LEASE, ...(omitBillingMode ? {} : { billing_mode: billingMode }),
         input_ref: { audiobookProjectId: PROJECT, documentVersionId: DOCUMENT, segmentIndex: 0,
           textStart: 0, textEnd: Array.from(text).length, textSha256: createHash("sha256").update(text).digest("hex"), creditUnits: 1 },
       }], error: null };
@@ -27,13 +28,14 @@ function fakeSupabase() {
       return { data: null, error: null };
     },
     from: (table: string) => {
+      reads.push(table);
       let inserted: Record<string, unknown> | null = null;
       const builder: Record<string, unknown> = {};
       builder.select = () => builder;
       builder.eq = () => builder;
       builder.maybeSingle = async () => {
         if (table === "audiobook_completion_receipts") return { data: receipts[0] ?? null, error: null };
-        if (table === "audiobook_projects") return { data: { id: PROJECT, voice: "marin", instructions: "Warm.", speed: 1, status: "running" }, error: null };
+        if (table === "audiobook_projects") return { data: { id: PROJECT, voice: "marin", instructions: "Warm.", speed: 1, status: "running", billing_mode: "operational" }, error: null };
         if (table === "document_versions") return { data: { id: DOCUMENT, plain_text: text }, error: null };
         return { data: null, error: null };
       };
@@ -53,8 +55,22 @@ function fakeSupabase() {
       upload: async (path: string, bytes: Buffer) => { objects.set(path, bytes); return { data: { path }, error: null }; },
     }) },
   };
-  return { client: client as never, objects, receipts, rpcCalls };
+  return { client: client as never, objects, receipts, rpcCalls, reads };
 }
+
+test("legacy narrator refuses quoted or unidentified claims before any downstream access", async () => {
+  for (const mode of ["quoted", undefined, null, "unknown"]) {
+    const fake = fakeSupabase(mode, mode === undefined);
+    let providerCalls = 0;
+    const result = await runOneAudiobookJob(fake.client, { speechGenerator: async () => {
+      providerCalls++; throw new Error("legacy narrator must not dispatch this claim");
+    } });
+    assert.deepEqual(result, { status: "completion_unknown", jobId: JOB });
+    assert.equal(providerCalls, 0); assert.equal(fake.objects.size, 0); assert.equal(fake.receipts.length, 0);
+    assert.deepEqual(fake.reads, []);
+    assert.deepEqual(fake.rpcCalls.map(call => call.name), ["claim_audiobook_job"]);
+  }
+});
 
 test("audiobook worker rehydrates pinned text, stores a receipt, and completes once", async () => {
   const fake = fakeSupabase();

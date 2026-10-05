@@ -30,6 +30,7 @@ import { aiReviewQuoteRoutes } from "./routes/ai-review-quotes.js";
 import { bookBibleGenerationRoutes } from "./routes/book-bible-generation.js";
 import { bookBibleQuoteRoutes } from "./routes/book-bible-quotes.js";
 import { audiobookRoutes } from "./routes/audiobooks.js";
+import { narrationQuoteRoutes } from "./routes/narration-quotes.js";
 import { translationRoutes } from "./routes/translations.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { salesRoutes } from "./routes/sales.js";
@@ -74,6 +75,7 @@ export async function buildApp(
     bookBibleGenerationRoutes(v1, { fetcher: opts.aiFetch });
     aiRoutes(v1, { fetcher: opts.aiFetch, enableLegacyGeneration: opts.enableLegacyAiReviewForTests === true });
     audiobookRoutes(v1, { fetcher: opts.renderFetch });
+    narrationQuoteRoutes(v1);
     translationRoutes(v1);
     assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner });
     imageQuoteRoutes(v1);

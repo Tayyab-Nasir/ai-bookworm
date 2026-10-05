@@ -60,19 +60,118 @@ workspace lint gate. Exact-index isolated build/verification and source adoption
 must be recorded in the shared continuation note before calling the bundle
 accepted. Earlier native CI covers only its exact earlier committed source.
 
-## Required funded integration
+## Funded worker integration — 2026-10-05
 
-Reuse the existing exact integer pricing and funded-usage primitives. Complete
-immutable model/rate/source quotes, approved dated catalogs, explicit author
-maximum-credit consent, funded holds, current membership/lease checks, one-way
-dispatch, measured settlement and durable receipt/recovery before connecting the
-adapter to a queue or author UI. No post-dispatch refund or regeneration may be
-inferred from timeouts, expired leases or lost replies. Unsupported usage needs
-retained evidence and operator review, not manufactured estimates.
+The uncommitted integration now includes immutable segment/whole-chapter
+offers, private quote review/recovery, atomic all-segment exact-credit/AI-voice
+funding, legacy generation retirement, current writer/source-fenced dispatch,
+service leases, original dispatch-lease PCM receipts, private encoded MP3
+receipts and database-derived measured atomic completion. The actual
+`narration-quotes` worker verifies private bytes/hashes, original strict usage
+and transcript agreement, renews/aborts on lease loss and recovers lost
+upload/receipt/completion replies without fresh generation or caller billing.
+Missing/corrupt/unsupported original evidence stays held/unknown for review.
+No post-dispatch refund or redispatch is inferred from a timeout or lost reply.
 
-Then finish deterministic bounded PCM-to-MP3 processing, source fidelity,
-pronunciation/mastering/QC, historical voice compatibility and retailer audio
-packaging. Continue the full authoring, illustration/cover, layout/preflight,
+The private native encoder uses bounded fixed-profile PCM-to-MP3 conversion.
+Its TypeScript adapter checks returned checksum/profile/duration and caps the
+body. The worker's real Supabase SDK transport now disables SDK retries, bounds
+headers and body consumption to 60 seconds, rejects redirects, caps Storage at
+12 MiB / metadata at 16 MiB and aborts on shutdown. SDK body failures can reject
+after headers rather than return an error object; tested recovery preserves
+original evidence in either case. Fourteen launcher roles exist; the fleet
+excludes the retired unquoted narrator. See `docs/WORKER_RUNTIME.md`.
+
+Executed current-source evidence: `narration-completion-recovery-sql-second-20261005.log`
+passes 105 migrations/67 SQL assertion files and all paid/segmentation/offer/
+funded fixtures, including Unicode normalization, expired encoded leases,
+replacement-worker recovery and an actual late after-settlement rollback.
+This supersedes the JavaScript Unicode-escape parser failure, not native race
+acceptance. `narration-network-worker-coverage-20261005.log` passes 27 focused
+adapter/worker/real-SDK-with-injected-fetch tests; scoped aggregate coverage is
+98.19% lines / 85.00% branches / 80.56% functions. The adapter alone has 62.50%
+function coverage and the shared transport 71.43%; these are not global coverage.
+
+`narration-network-full-verify-20261005.log` completed with exit 0 using explicit
+project Python: all workspace types, three launcher checks, 617 API/155 web
+tests, 105 disposable migrations/67 SQL suites and linked fixtures, 425 Python
+services/12 E2E/40 security, 50-request no-5xx load smoke and six deterministic
+evals. Live-provider evals were skipped. This is historical network-phase
+evidence, superseded for the author bundle by the executed checks below.
+
+## Paid author acceptance and history
+
+Whole-chapter acceptance/status HTTP, client and strict OpenAPI contracts now
+exist. New purchases require the default-closed operator gate, a matching
+approved catalog, current writing access, exact original maximum token credits
+and separate AI-voice/generation consents. Single-part purchases are unsupported.
+Read-only recovery does not need current prices or new acceptance. The author
+checkpoint stores only scoped opaque offer/retry identities and persists an
+attempt marker before POST. Uncertain replies remain recover-only across reloads,
+without automatic re-POST, replacement offers or private billing/source copies.
+
+Publishing Studio refreshes history on confirmed acceptance, fencing late data,
+error and finally callbacks by book/edition/view. API/client history exposes
+quoted versus operational billing; only an absent legacy mode falls back.
+Unknown/null modes fail before segment reads or signing. Quoted history displays
+the original maximum token-credit budget, not measured charges; legacy units
+are labeled separately. Existing private audio/QC/download/export is retained.
+History/detail now have documented strict public project/download contracts,
+including mandatory AI disclosure, legacy voices/speeds and 300-second links.
+Malformed IDs return private/no-store 404s before client/database access.
+
+The earlier author integration passes 53 focused checks and 24 mounted browser
+checks (cold accepted/read-only, lost/uncertain replies, storage failure, late
+book/edition/unmount, parent/manual history and 375/768/1440px consent/focus).
+Saved actual narrow/desktop screenshots were inspected; fixtures are not a
+hosted/full Next author journey. Its isolated 812-file source snapshot builds
+22/22 static pages; manifest and exact limitations are in the vault checkpoint.
+
+## Native race preparation and latest verification
+
+`tests/security/native-narration-lifecycle.mjs` uses production quote arithmetic
+and real complete-chapter save/fund/lease/dispatch/release RPCs. Both disposable
+runners execute four serial fixture gates: all-child funding and replay with
+competing-wallet rollback, pre-dispatch release, stale-lease reclaim and one-way
+post-dispatch recovery/no refund. No provider or Storage evidence is fabricated.
+The native runner additionally wires sixteen real multi-session schedules:
+three acceptance/wallet/replay orders, eight member/source change and rollback
+orders, and five dispatch/release/reclaim orders. These require actual observed
+PostgreSQL lock waits; serial success is not execution of those schedules.
+`psql` and Docker are absent locally. Native CI acceptance remains pending.
+
+`narration-native-contract-full-verify-20261005.log` completed with exit 0:
+all workspace types, 633 API/158 web tests, 105 disposable migrations/67 SQL
+suites plus four new serial fixture gates, 425 Python services/12 E2E/43 security,
+50-request no-5xx load smoke and six deterministic evals. Live-provider evals
+were explicitly skipped in the verification process, not globally disabled.
+Focused history/UUID tests pass 13/13 and contract tests pass 13/13. No configured
+workspace lint gate or whole-product coverage percentage is claimed.
+
+The exact-current-source isolated build completed with exit 0: Next 15.5.25,
+22/22 static pages and completed traces. Its manifest captured 813 source files
+at `2026-10-05T10:53:57.877Z`, digest
+`a8a91907c3c27172a75b784a865f839dcccbbfee3c60e76db2c57f82ed0397f5`;
+all source fingerprints were independently rechecked before this documentation
+update. All eight workspace aliases resolve inside the snapshot. Only the
+candidate's generated `next-env.d.ts` changed; the shared generated files were
+not adopted. The AST refresh also completed with exit 0: 6,020 nodes, 11,270
+edges, 495 communities and zero dangling endpoints. Two Gradle partial-extraction
+warnings remain indexing limitations, not app-build failures. Neither result is
+native concurrency, provider, hosted runtime or full-product acceptance.
+
+GitHub readback shows the preceding commit's native run failed before database
+testing because `tsx` was not installed. The reviewed workflow fix installs
+locked Node dependencies before invoking the existing disposable PostgreSQL 16
+runner. Fresh native execution is still required; no success is inferred from
+the workflow change. The build branch's Vercel Git deployment guard keeps a
+source checkpoint separate from hosting.
+
+Next: selective reviewed secret-free Git checkpoint and an exact staged-tree
+build; actually execute and inspect native race/Storage/provider/worker
+acceptance. Native bounded PCM-to-MP3 already exists; finish real speech source
+fidelity, pronunciation/mastering/listening-QC and retailer audio acceptance.
+Continue the full authoring, Bible/canon, illustration/cover/QR, layout/preflight,
 translation, dashboard, hosted/operator and retailer release requirements. No
 catalog/purchase activation, deployment, migration or provider/payment spending
 is authorized by this document. Do not work around the denied test-server launch.
