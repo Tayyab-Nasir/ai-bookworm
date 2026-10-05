@@ -7,6 +7,8 @@ Shared vault: `C:/Users/Asus/Memory-Ai`.
 
 - Current paid author workflow and verification boundaries:
   `docs/PAID_GENERATION_CHECKPOINT.md` (2026-10-05).
+- Latest committed paid workflow, isolated build and native CI checkpoint:
+  `Codex Sessions/2026-10/2026-10-05-paid-author-quote-checkpoint.md`.
 - Current detailed Codex handoff:
   `Codex Sessions/2026-08/2026-08-31-ai-bookworm-codex-handoff.md`.
 - Latest supplemental checkpoint:

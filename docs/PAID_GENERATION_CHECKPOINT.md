@@ -65,6 +65,31 @@ PostgreSQL Lock waits: 28 billing primitives, eight image, four metadata,
 eight AI-review and eight Bible receipt/lease/completion orderings. At this
 document's initial creation those schedules are not yet natively executed.
 
+### Completed isolated and native acceptance
+
+The final adopted source at `bdd52c40911ded90e38a9522fa7bcf74c5336ef5`
+passed an isolated production build (22 static pages), full verification
+(463 API, 144 web, 97 migrations/65 SQL suites, eight serial paid fixture
+gates, 417 services, 12 E2E, 30 security, types/unit/launcher/load/mock evals)
+and all 19 mounted component checks. All 113 staged file blobs matched that
+isolated snapshot; unrelated shared analytics/admin/audio/config/graph work
+was not adopted. No configured lint script exists.
+
+Native PostgreSQL 16.15 run
+[37255633569](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/37255633569),
+job `111591974399`, completed successfully on that exact commit. Decoded logs
+confirm 97 migrations, 65 SQL suites, all 56 unique expected paid schedules
+and all 108 unique expected artwork schedules, with no missing or extra
+schedule names. Worker-runtime run
+[37255633541](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/37255633541)
+also passed launcher tests and systemd template validation without starting
+services. This supersedes only the initial unexecuted-native status above.
+
+These are actual database lock/commit/rollback checks, but the provider
+receipts and claims are synthetic. Hosted Auth/PostgREST/Storage, real OpenAI
+delivery/cost/quality, supervised worker-loop recovery, production catalogs
+and complete author/retailer acceptance remain separate release gates.
+
 Before release, verify the coherent isolated source/build and inspect actual
 native CI logs. Then accept hosted Auth/Storage/scanning, provider cost/quality,
 supervised worker recovery, approved commercial rates, complete author/export
