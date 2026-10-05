@@ -92,6 +92,108 @@ async function leasedFixture(sql) {
       select to_jsonb(j) from public.claim_quoted_narration_job(600) j;` };
 }
 
+// Synthetic metadata is deliberately not proof of Storage bytes or speech.
+// Use the production calculator for the exact expected customer settlement.
+async function evidenceFixture(sql, { leased = null, pcm = true, encoded = true } = {}) {
+  const scope = leased ?? await leasedFixture(sql);
+  const { f, expected, claimed } = scope, request = expected.request;
+  assert.equal(await sql(scope.dispatch), "t");
+  const source = JSON.parse(await sql(`select to_json(substring(plain_text from ${request.textStart + 1}
+    for ${request.textEnd - request.textStart})) from public.document_versions where id='${request.documentVersionId}';`));
+  const location = JSON.parse(await sql(`select json_build_object('project',project_id,'index',segment_index)
+    from public.audiobook_segments where ai_job_id='${claimed.id}';`));
+  const rawUsage = { input_tokens: 37, output_tokens: 10, total_tokens: 47,
+    input_token_details: { text_tokens: 37, audio_tokens: 0, cached_tokens: 11,
+      cached_tokens_details: { text_tokens: 11, audio_tokens: 0 } },
+    output_token_details: { text_tokens: 2, audio_tokens: 8 } };
+  const original = { version: "bookworm-narration-pcm-v1", provider: "openai", model: request.model,
+    requestId: `synthetic-original-${claimed.id}`, sourceSha256: request.textSha256,
+    storagePath: `private/narration/${f.offers[0].workspace}/${claimed.id}/${claimed.lease_token}.pcm`,
+    mimeType: "audio/pcm", sizeBytes: 48000, checksum: "a".repeat(64), sampleRateHz: 24000, channels: 1,
+    bitDepth: 16, durationSeconds: 1, transcript: source, rawUsage, latencyMs: 10 };
+  const originalHash = await sql(`select encode(public.digest(convert_to(${json(original)}::text,'UTF8'),'sha256'),'hex');`);
+  const converted = { version: "bookworm-narration-mp3-v1", pcmReceiptSha256: originalHash, assetId: claimed.id,
+    storagePath: `workspaces/${request.workspaceId}/audiobooks/${location.project}/${location.index}.mp3`,
+    mimeType: "audio/mpeg", sizeBytes: 1024, checksum: "b".repeat(64), durationSeconds: 1,
+    encodingVersion: "narration-mp3-1.0.0", sampleRateHz: 44100, channels: 1, bitRateKbps: 192, bitRateMode: "cbr" };
+  const convertedHash = await sql(`select encode(public.digest(convert_to(${json(converted)}::text,'UTF8'),'sha256'),'hex');`);
+  const savePcm = (lease = claimed.lease_token, receipt = original) => `${service} select
+    (public.save_quoted_narration_receipt('${claimed.id}','${lease}','${expected.quote.scope.inputSha256}',${json(receipt)})).receipt_sha256;`;
+  const saveEncoding = (lease = claimed.lease_token, receipt = converted) => `${service} select
+    (public.save_quoted_narration_encoding('${claimed.id}','${lease}','${originalHash}',${json(receipt)})).receipt_sha256;`;
+  const complete = (lease = claimed.lease_token) => `${service} select (public.complete_quoted_narration_job('${claimed.id}','${lease}')).id;`;
+  const reclaim = `${service} update public.ai_jobs set lease_expires_at=clock_timestamp()-interval '1 second'
+    where id='${claimed.id}' and status='running'; select to_jsonb(j) from public.claim_quoted_narration_job(600) j;`;
+  const { reconcileNarrationUsage } = await tsImport("../../services/api/src/lib/narration-pricing.ts", import.meta.url);
+  const measured = reconcileNarrationUsage(expected.quote, { request, sourceText: source, receipt: {
+    jobId: claimed.id, userId: f.user, workspaceId: request.workspaceId, requestSha256: expected.quote.scope.inputSha256,
+    sourceSha256: request.textSha256, provider: "openai", model: request.model, responseId: original.requestId,
+    transcript: source, rawUsage } });
+  assert.equal(measured.status, "settle"); assert(Number(measured.releaseCredits) > 0);
+  if (pcm) assert.equal(await sql(savePcm()), originalHash);
+  if (encoded) { assert(pcm); assert.equal(await sql(saveEncoding()), convertedHash); }
+  return { ...scope, original, originalHash, converted, convertedHash, savePcm, saveEncoding, complete, reclaim,
+    project: location.project, measured };
+}
+
+async function evidenceState(sql, e, { pcm = true, encoded = true, completed = false, parent = "running" } = {}) {
+  const job = e.claimed.id, actual = JSON.parse(await sql(`select json_build_object(
+    'job',(select status from public.ai_jobs where id='${job}'),
+    'fund',(select status from public.funded_usage_quotes where job_id='${job}'),
+    'parent',(select status from public.audiobook_projects where id='${e.project}'),
+    'pcm',(select receipt_sha256 from public.quoted_narration_receipts where job_id='${job}'),
+    'encoding',(select receipt_sha256 from public.quoted_narration_encodings where job_id='${job}'),
+    'assets',(select count(*) from public.assets where id='${job}'),
+    'versions',(select count(*) from public.asset_versions where asset_id='${job}' and version_number=1 and scan_status='trusted_generated'),
+    'links',(select count(*) from public.asset_links where asset_id='${job}' and entity_id='${e.project}' and usage_role='narration_segment'),
+    'runs',(select count(*) from public.ai_runs where ai_job_id='${job}'),
+    'usage',(select count(*) from public.usage_events where ai_job_id='${job}'),
+    'debit',(select quantity from public.usage_events where ai_job_id='${job}' and meter='token_credits'),
+    'releases',(select count(*) from public.credit_ledger where reference_id='${job}' and source='generation_release'),
+    'balance',(select sum(amount) from public.credit_ledger where user_id='${e.f.user}'),
+    'settlement',(select settlement_json from public.funded_usage_quotes where job_id='${job}'));`));
+  const count = Number(completed);
+  assert.deepEqual(actual, { job: completed ? "succeeded" : "running", fund: completed ? "settled" : "held", parent,
+    pcm: pcm ? e.originalHash : null, encoding: encoded ? e.convertedHash : null,
+    assets: count, versions: count, links: count, runs: count, usage: count,
+    debit: completed ? Number(e.measured.debitCredits) : null, releases: count,
+    balance: completed ? Number(e.measured.releaseCredits) : 0, settlement: completed ? e.measured : null });
+}
+
+async function siblingEvidence(sql, e, index) {
+  const expected = e.f.offers[0].prepared.offers[index]; assert(expected);
+  await sql(`${service} update public.ai_jobs set available_at=clock_timestamp() where id='${expected.request.jobId}';`);
+  const claimed = JSON.parse(await sql(`${service} select to_jsonb(j) from public.claim_quoted_narration_job(600) j;`));
+  assert.equal(claimed.id, expected.request.jobId); assert.ok(claimed.lease_token);
+  const dispatchWith = lease => `${service} select public.claim_funded_dispatch('${claimed.id}','${lease}','${expected.quote.scope.inputSha256}','${expected.request.model}');`;
+  return await evidenceFixture(sql, { leased: { f: e.f, expected, claimed, dispatchWith, dispatch: dispatchWith(claimed.lease_token) } });
+}
+
+async function verifyNarrationEvidenceFixtures(sql) {
+  for (const mode of ["completion", "reclaim", "failed-parent"]) {
+    await sql("begin;");
+    try {
+      const e = await evidenceFixture(sql); await evidenceState(sql, e);
+      let lease = e.claimed.lease_token, parent = "running";
+      if (mode === "reclaim") {
+        const next = JSON.parse(await sql(e.reclaim));
+        assert.equal(next.id, e.claimed.id); assert.notEqual(next.lease_token, lease); lease = next.lease_token;
+        assert.equal(await sql(e.dispatchWith(lease)), "f");
+        assert.equal(await sql(e.savePcm(lease)), e.originalHash); assert.equal(await sql(e.saveEncoding(lease)), e.convertedHash);
+      } else if (mode === "failed-parent") {
+        const sibling = await siblingEvidence(sql, e, 1);
+        assert.equal(await sql(`${service} select public.hold_quoted_narration_for_review('${sibling.claimed.id}',
+          '${sibling.claimed.lease_token}','storage_unconfirmed','synthetic-review');`), "t"); parent = "failed";
+      }
+      assert.equal(await sql(e.complete(lease)), e.claimed.id);
+      await evidenceState(sql, e, { completed: true, parent });
+      // A lost completion reply may replay the original result, never its bill.
+      assert.equal(await sql(e.complete()), e.claimed.id); await evidenceState(sql, e, { completed: true, parent });
+      await cleanup(sql, e.f); console.log(`PASS narration evidence serial gate: ${mode}`);
+    } finally { await sql("rollback;"); }
+  }
+}
+
 export async function verifyNarrationRaceFixtures(sql) {
   await sql("begin;");
   try {
@@ -146,6 +248,7 @@ export async function verifyNarrationRaceFixtures(sql) {
       console.log(`PASS narration native-fixture serial gate: ${action}, current lease and no ambiguous refund`);
     } finally { await sql("rollback;"); }
   }
+  await verifyNarrationEvidenceFixtures(sql);
 }
 
 export async function narrationLifecycleRaces({ sql, session, until, database }) {
@@ -219,5 +322,101 @@ export async function narrationLifecycleRaces({ sql, session, until, database })
       'usage',(select count(*) from public.usage_events where ai_job_id='${claimed.id}')) from public.funded_usage_quotes where job_id='${claimed.id}';`));
     assert.deepEqual(observed, { status: released ? "cancelled" : "held", dispatched: mode !== "release-first-dispatch" && mode !== "reclaim-first-dispatch", releases: Number(released), usage: 0 });
     await cleanup(sql, f); console.log(`PASS native narration fenced ${mode}`);
+  }
+
+  for (const kind of ["PCM", "encoding"]) {
+    for (const mode of ["replay", "conflict", "rollback"]) {
+      const e = await evidenceFixture(sql, { pcm: kind !== "PCM", encoded: false });
+      const save = kind === "PCM" ? e.savePcm : e.saveEncoding;
+      const receipt = kind === "PCM" ? e.original : e.converted;
+      const conflicting = kind === "PCM" ? { ...receipt, transcript: "Conflicting original evidence" }
+        : { ...receipt, checksum: "c".repeat(64) };
+      const { holder, result } = await concurrent(save(), save(e.claimed.lease_token, mode === "conflict" ? conflicting : receipt), mode === "rollback");
+      if (mode === "conflict") { assert.notEqual(result.code, 0); assert.match(result.stderr, /23505.*receipt conflict/s); }
+      else { assert.equal(result.code, 0, result.stderr); assert.equal(result.stdout.trim(), holder); }
+      assert.equal(holder, kind === "PCM" ? e.originalHash : e.convertedHash);
+      await evidenceState(sql, e, { encoded: kind === "encoding" }); await cleanup(sql, e.f);
+      console.log(`PASS native narration ${kind} receipt ${mode}`);
+    }
+    for (const first of ["receipt", "reclaim"]) {
+      const e = await evidenceFixture(sql, { pcm: kind !== "PCM", encoded: false });
+      const save = kind === "PCM" ? e.savePcm : e.saveEncoding;
+      const { holder, result } = await concurrent(first === "receipt" ? save() : e.reclaim, first === "receipt" ? e.reclaim : save());
+      const reclaimed = JSON.parse(first === "receipt" ? result.stdout.trim() : holder);
+      assert.equal(reclaimed.id, e.claimed.id); assert.notEqual(reclaimed.lease_token, e.claimed.lease_token);
+      if (first === "reclaim") { assert.notEqual(result.code, 0); assert.match(result.stderr, /40001.*lease lost/s); }
+      else assert.equal(result.code, 0, result.stderr);
+      await evidenceState(sql, e, { pcm: kind !== "PCM" || first === "receipt", encoded: kind === "encoding" && first === "receipt" });
+      assert.equal(await sql(e.dispatchWith(reclaimed.lease_token)), "f", "Evidence recovery redispatched provider work");
+      if (kind === "PCM" && first === "reclaim") {
+        await sql(`${service} do $$ begin begin ${save(reclaimed.lease_token).replace(service, "").replace("select", "perform")}
+          raise exception 'Replacement manufactured missing original'; exception when serialization_failure then null; end; end $$;`);
+        await evidenceState(sql, e, { pcm: false, encoded: false });
+      } else {
+        assert.equal(await sql(e.savePcm(reclaimed.lease_token)), e.originalHash);
+        assert.equal(await sql(e.saveEncoding(reclaimed.lease_token)), e.convertedHash);
+        assert.equal(await sql(e.complete(reclaimed.lease_token)), e.claimed.id); await evidenceState(sql, e, { completed: true });
+      }
+      await cleanup(sql, e.f); console.log(`PASS native narration ${kind} ${first}-first reclaim`);
+    }
+  }
+  for (const rollback of [false, true]) {
+    const e = await evidenceFixture(sql), { holder, result } = await concurrent(e.complete(), e.complete(), rollback);
+    assert.equal(holder, e.claimed.id); assert.equal(result.code, 0, result.stderr); assert.equal(result.stdout.trim(), e.claimed.id);
+    await evidenceState(sql, e, { completed: true });
+    assert.equal(await sql(e.complete()), e.claimed.id); await evidenceState(sql, e, { completed: true });
+    await cleanup(sql, e.f); console.log(`PASS native narration measured completion ${rollback ? "rollback" : "replay"}`);
+  }
+  for (const first of ["completion", "reclaim"]) {
+    const e = await evidenceFixture(sql), { holder, result } = await concurrent(first === "completion" ? e.complete() : e.reclaim,
+      first === "completion" ? e.reclaim : e.complete());
+    if (first === "completion") {
+      assert.equal(holder, e.claimed.id); assert.equal(result.code, 0, result.stderr); assert.equal(result.stdout.trim(), "");
+    } else {
+      assert.notEqual(result.code, 0); assert.match(result.stderr, /40001.*lease lost/s);
+      const next = JSON.parse(holder); assert.notEqual(next.lease_token, e.claimed.lease_token);
+      await evidenceState(sql, e); assert.equal(await sql(e.dispatchWith(next.lease_token)), "f");
+      assert.equal(await sql(e.complete(next.lease_token)), e.claimed.id);
+    }
+    await evidenceState(sql, e, { completed: true }); await cleanup(sql, e.f);
+    console.log(`PASS native narration measured ${first}-first reclaim`);
+  }
+  for (const first of ["review", "completion"]) {
+    for (const rollback of [false, true]) {
+      const e = await evidenceFixture(sql), sibling = await siblingEvidence(sql, e, 1);
+      const review = `${service} select public.hold_quoted_narration_for_review('${sibling.claimed.id}',
+        '${sibling.claimed.lease_token}','storage_unconfirmed','synthetic-review');`;
+      const { result } = await concurrent(first === "review" ? review : e.complete(), first === "review" ? e.complete() : review, rollback);
+      assert.equal(result.code, 0, result.stderr);
+      const failed = first === "completion" || !rollback, completed = first === "review" || !rollback;
+      await evidenceState(sql, e, { completed, parent: failed ? "failed" : "running" });
+      assert.equal(await sql(`select status from public.funded_usage_quotes where job_id='${sibling.claimed.id}';`), failed ? "requires_review" : "held");
+      // Completing a recovered original must not revive its failed chapter.
+      assert.equal(await sql(e.complete()), e.claimed.id);
+      await evidenceState(sql, e, { completed: true, parent: failed ? "failed" : "running" });
+      await cleanup(sql, e.f); console.log(`PASS native narration failed-parent ${first}-first ${rollback ? "rollback" : "commit"}`);
+    }
+  }
+  for (const rollback of [false, true]) {
+    const e = await evidenceFixture(sql), remaining = [];
+    for (let index = 1; index < e.f.offers[0].prepared.offers.length; index++) remaining.push(await siblingEvidence(sql, e, index));
+    assert.equal(remaining.length, 2, "Final-sibling fixture must exercise two independent current jobs");
+    assert.equal(await sql(e.complete()), e.claimed.id);
+    const { result } = await concurrent(remaining[0].complete(), remaining[1].complete(), rollback);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(await sql(`select status from public.audiobook_projects where id='${e.project}';`), rollback ? "running" : "succeeded");
+    assert.equal(await sql(remaining[0].complete()), remaining[0].claimed.id);
+    const parts = [e, ...remaining], credits = parts.reduce((sum, part) => sum + Number(part.measured.debitCredits), 0);
+    const actual = JSON.parse(await sql(`select json_build_object('status',status,
+      'assets',(select count(*) from public.assets where created_by='${e.f.user}'),
+      'usage',(select count(*) from public.usage_events where user_id='${e.f.user}'),
+      'balance',(select sum(amount) from public.credit_ledger where user_id='${e.f.user}'),
+      'settled',(select count(*) from public.funded_usage_quotes where user_id='${e.f.user}' and status='settled'))
+      from public.audiobook_projects where id='${e.project}';`));
+    assert.deepEqual(actual, { status: "succeeded", assets: parts.length, usage: parts.length,
+      balance: e.f.credits - credits, settled: parts.length });
+    for (const part of parts) assert.equal(await sql(part.complete()), part.claimed.id);
+    assert.equal(await sql(`select sum(amount) from public.credit_ledger where user_id='${e.f.user}';`), String(e.f.credits - credits));
+    console.log(`PASS native narration final-sibling ${rollback ? "rollback" : "commit"}`);
   }
 }

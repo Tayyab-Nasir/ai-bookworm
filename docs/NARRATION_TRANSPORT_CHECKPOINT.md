@@ -62,7 +62,7 @@ accepted. Earlier native CI covers only its exact earlier committed source.
 
 ## Funded worker integration — 2026-10-05
 
-The uncommitted integration now includes immutable segment/whole-chapter
+The funded integration now includes immutable segment/whole-chapter
 offers, private quote review/recovery, atomic all-segment exact-credit/AI-voice
 funding, legacy generation retirement, current writer/source-fenced dispatch,
 service leases, original dispatch-lease PCM receipts, private encoded MP3
@@ -160,16 +160,51 @@ edges, 495 communities and zero dangling endpoints. Two Gradle partial-extractio
 warnings remain indexing limitations, not app-build failures. Neither result is
 native concurrency, provider, hosted runtime or full-product acceptance.
 
-GitHub readback shows the preceding commit's native run failed before database
+GitHub readback showed the preceding commit's native run failed before database
 testing because `tsx` was not installed. The reviewed workflow fix installs
 locked Node dependencies before invoking the existing disposable PostgreSQL 16
-runner. Fresh native execution is still required; no success is inferred from
-the workflow change. The build branch's Vercel Git deployment guard keeps a
-source checkpoint separate from hosting.
+runner. The executed native acceptance below supersedes that failure; no success
+is inferred from the workflow change alone. The build branch's Vercel Git
+deployment guard keeps a source checkpoint separate from hosting.
 
-Next: selective reviewed secret-free Git checkpoint and an exact staged-tree
-build; actually execute and inspect native race/Storage/provider/worker
-acceptance. Native bounded PCM-to-MP3 already exists; finish real speech source
+## Committed author bundle and executed native acceptance
+
+The reviewed 57-file narration bundle is committed and non-force pushed as
+`2481c78257b88d8219da7c0322150f4c599bcb80` on the authorized
+`codex/paid-story-blueprint-20260923` branch; remote HEAD was checked to match.
+Shared unrelated Next-generated/config/documentation/graph edits were excluded.
+Its exact staged-tree production build completed with exit 0: 814 source files,
+tree `0898ea0b8e92abc9b74b5a533c3db0d0640a985a`, digest
+`3d784ff2f11d970bb01f90c0c9ead2264569de549577cac1198424aad44d7cf9`,
+22/22 static pages and eight snapshot-scoped workspace aliases. The complete
+verification reports 633 API/158 web, 105 disposable migrations/67 SQL suites,
+425 services/12 E2E/44 security plus two subtests; live-provider evals skipped.
+This supersedes the earlier source/build identity, not full-product acceptance.
+
+[Native database acceptance for that exact commit](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/37304097744)
+completed successfully. Job `111743476298` logs independently confirm all four
+serial narration setup gates and all sixteen actual multi-session narration
+wallet/acceptance/member/source/dispatch/release/reclaim schedules passed.
+Their contender gate requires an observed PostgreSQL lock wait. The exact
+commit's worker-runtime and processing-container workflows also completed
+successfully. Native SQL acceptance still uses disposable auth/Storage schemas
+and synthetic quotes/evidence, not hosted Supabase or real provider audio.
+
+The current continuation adds twenty more native narration schedules covering
+immutable PCM/encoding replay/conflict/rollback, capture/encoding versus reclaim,
+one-time measured completion versus replay/rollback/reclaim, failed-parent
+review versus sibling completion, and two final siblings racing to complete a
+chapter. Three new serial evidence gates (completion/reclaim/failed-parent)
+actually pass in the local disposable runner, comparing settlement against the
+production calculator and asserting assets/versions/links/runs/usage/ledger
+effects. The twenty additional multi-session schedules are authored, not yet
+executed in the above commit's CI; inspect fresh exact-commit CI before claiming
+all thirty-six native schedules pass. Synthetic metadata is never Storage-byte
+or speech-fidelity proof.
+
+Next: execute and inspect the extended native receipt/completion/recovery
+schedules, then Storage/provider/supervised-worker acceptance. Native bounded
+PCM-to-MP3 already exists; finish real speech source
 fidelity, pronunciation/mastering/listening-QC and retailer audio acceptance.
 Continue the full authoring, Bible/canon, illustration/cover/QR, layout/preflight,
 translation, dashboard, hosted/operator and retailer release requirements. No
