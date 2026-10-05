@@ -132,6 +132,26 @@ def test_submit_and_status_not_supported():
     assert caps.can_submit is False and caps.can_check_status is False
 
 
+def test_export_preserves_located_preflight_warnings_and_binds_report_checksum(monkeypatch):
+    import hashlib
+    adapter = get_adapter("kdp")
+    ctx = _ctx()
+    report = {"channel": "kdp", "ruleVersion": "fixture-rule-1", "errors": 0, "warnings": 1,
+              "findings": [{"code": "FIXTURE-WARNING", "message": "Review café artwork",
+                            "location": "chapters/1/nodes/2", "severity": "warning",
+                            "category": "images", "rule_id": "fixture.image", "rule_version": "fixture-rule-1"}]}
+    monkeypatch.setattr(adapter, "validate", lambda _: report)
+    first = adapter.build_package(ctx, {"book.epub": ctx["artifact"]})[0]
+    assert first.data == adapter.build_package(ctx, {"book.epub": ctx["artifact"]})[0].data
+    with zipfile.ZipFile(BytesIO(first.data)) as archive:
+        saved = archive.read("preflight.json")
+        assert json.loads(saved) == {"schemaVersion": "1.0", **report}
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["files"]["preflight.json"] == hashlib.sha256(saved).hexdigest()
+        assert manifest["warnings"] == 1
+        assert b"review all warnings" in archive.read("README.txt")
+
+
 def test_package_metadata_is_exact_allowlisted_unicode_and_checksum_bound():
     import hashlib
     ctx = _ctx()
@@ -160,7 +180,7 @@ def test_package_metadata_is_exact_allowlisted_unicode_and_checksum_bound():
             assert hashlib.sha256(archive.read(name)).hexdigest() == checksum
 
 
-@pytest.mark.parametrize("name", ["manifest.json", "metadata.json", "README.txt"])
+@pytest.mark.parametrize("name", ["manifest.json", "metadata.json", "preflight.json", "README.txt"])
 def test_package_rejects_reserved_artifact_names(name):
     ctx = _ctx()
     with pytest.raises(ValueError, match="reserved"):
@@ -280,7 +300,7 @@ def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geom
     with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
         assert archive.read("book.pdf") == interior
         assert archive.read("cover.pdf") == cover
-        assert set(json.loads(archive.read("manifest.json"))["files"]) == {"book.pdf", "cover.pdf", "metadata.json", "README.txt"}
+        assert set(json.loads(archive.read("manifest.json"))["files"]) == {"book.pdf", "cover.pdf", "metadata.json", "preflight.json", "README.txt"}
     config["wrap_cover"]["profile"] = "kdp-white"
     with pytest.raises(Exception, match="no longer pass"):
         build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts))

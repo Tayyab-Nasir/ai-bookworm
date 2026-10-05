@@ -312,7 +312,8 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
       .eq("id", chapter.current_document_version_id).eq("chapter_id", chapter.id).maybeSingle();
     if (documentError) throw new AppError(500, "Could not load the saved chapter version.");
     if (!document) throw new AppError(404, "The saved chapter version was not found.");
-    const segments = segmentSpeechText(document.plain_text).map(({ text: _text, ...segment }) => segment);
+    const segments = segmentSpeechText(document.plain_text, 4_096, config.data.instructions)
+      .map(({ text: _text, ...segment }) => segment);
     const queued = await sb.rpc("queue_audiobook_project", {
       p_edition_id: editionId,
       p_chapter_id: chapter.id,

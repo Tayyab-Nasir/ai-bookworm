@@ -35,10 +35,12 @@
     "fastify-plugin": "^6.0.0",
     "openai": "^6.49.0",
     "stripe": "^22.5.0",
+    "ws": "8.22.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "@types/ws": "8.18.2",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"
   }

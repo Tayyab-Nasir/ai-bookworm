@@ -5,6 +5,10 @@
 This is the full AI-native publishing application, not only its landing page.
 Shared vault: `C:/Users/Asus/Memory-Ai`.
 
+- Current narration transport, SQL segmentation and package-preflight boundaries:
+  `docs/NARRATION_TRANSPORT_CHECKPOINT.md` (2026-10-05).
+- Latest narration bundle acceptance and funded-integration continuation:
+  `Codex Sessions/2026-10/2026-10-05-narration-transport-checkpoint.md`.
 - Current analytics/community moderation workflow and verification boundaries:
   `docs/ANALYTICS_MODERATION_CHECKPOINT.md` (2026-10-05).
 - Latest analytics/moderation acceptance and continuation note:

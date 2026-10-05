@@ -98,9 +98,11 @@ class ExportAdapter:
                 not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name)
                 for name in artifacts):
             raise ValueError("package artifacts must use safe flat filenames")
-        if set(artifacts) & {"manifest.json", "metadata.json", "README.txt"}:
+        if set(artifacts) & {"manifest.json", "metadata.json", "preflight.json", "README.txt"}:
             raise ValueError("package artifact name is reserved")
         files = {**artifacts,
+                 "preflight.json": json.dumps({"schemaVersion": "1.0", **result},
+                                              indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8"),
                  "metadata.json": json.dumps(publishing_metadata(ctx.get("book", {})),
                                              indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8"),
                  "README.txt": (
@@ -109,6 +111,7 @@ class ExportAdapter:
                      "Use book.epub or book.pdf and the included cover, when present, in the retailer's own upload form.\n"
                      "metadata.json contains the saved listing text for manual entry, not a retailer import schema.\n"
                      "Review description, keywords and categories against the current retailer form.\n"
+                     "preflight.json contains the validation findings and their locations for this snapshot; review all warnings before uploading.\n"
                      + ("For Google Play Books, upload book.epub in an existing single-book Partner Center Content tab; this generic filename is not for bulk upload.\n"
                         "Run EpubCheck and review Google's processing result, pricing, territories and Review tab before you click Publish.\n"
                         if self.CHANNEL == "googleplay" else "")

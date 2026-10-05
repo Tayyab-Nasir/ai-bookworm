@@ -7,6 +7,7 @@ export const AUDIOBOOK_VOICES = [
   "sage", "shimmer", "verse", "marin", "cedar",
 ] as const;
 export type AudiobookVoice = typeof AUDIOBOOK_VOICES[number];
+export const MAX_TTS_INPUT_BYTES = 1_800;
 
 export interface SpeechSegment {
   index: number;
@@ -54,17 +55,32 @@ function preferredBreak(chars: string[], start: number, hardEnd: number) {
   return hardEnd;
 }
 
-export function segmentSpeechText(value: string, maxCharacters = 4_096): SpeechSegment[] {
+function speechInputBytes(text: string, instructions?: string | null) {
+  return Buffer.byteLength(text, "utf8") + Buffer.byteLength(instructions ?? "", "utf8");
+}
+
+export function segmentSpeechText(value: string, maxCharacters = 4_096, instructions?: string | null): SpeechSegment[] {
   if (!Number.isInteger(maxCharacters) || maxCharacters < 256 || maxCharacters > 4_096) {
     throw new Error("speech segment limit must be between 256 and 4096 characters");
   }
+  const instructionBytes = Buffer.byteLength(instructions ?? "", "utf8");
+  const maxTextBytes = MAX_TTS_INPUT_BYTES - instructionBytes;
+  if (maxTextBytes < 1) throw new AppError(422, "Narration instructions exceed the supported speech input limit.");
   const chars = Array.from(value);
   const segments: SpeechSegment[] = [];
   let start = 0;
   while (start < chars.length) {
     while (start < chars.length && /\s/u.test(chars[start] ?? "")) start++;
     if (start >= chars.length) break;
-    const hardEnd = Math.min(chars.length, start + maxCharacters);
+    let hardEnd = start;
+    let textBytes = 0;
+    while (hardEnd < chars.length && hardEnd - start < maxCharacters) {
+      const nextBytes = Buffer.byteLength(chars[hardEnd] ?? "", "utf8");
+      if (textBytes + nextBytes > maxTextBytes) break;
+      textBytes += nextBytes;
+      hardEnd++;
+    }
+    if (hardEnd === start) throw new AppError(422, "Narration text exceeds the supported speech input limit.");
     let end = hardEnd === chars.length ? hardEnd : preferredBreak(chars, start, hardEnd);
     while (end > start && /\s/u.test(chars[end - 1] ?? "")) end--;
     if (end <= start) end = hardEnd;
@@ -75,6 +91,7 @@ export function segmentSpeechText(value: string, maxCharacters = 4_096): SpeechS
       end,
       text,
       sha256: createHash("sha256").update(text, "utf8").digest("hex"),
+      // Keep the queue's authoritative per-segment operational quota tariff.
       creditUnits: Math.ceil((end - start) / 1_000),
     });
     if (segments.length > 250) throw new AppError(422, "This chapter requires more than 250 narration segments.");
@@ -87,8 +104,8 @@ export function segmentSpeechText(value: string, maxCharacters = 4_096): SpeechS
 // The Speech endpoint returns audio bytes rather than a token receipt. This
 // estimate uses 150 spoken words/minute and 20 audio tokens/second; exact
 // provider spend must be reconciled later from OpenAI organization usage.
-export function estimatedSpeechUsage(text: string, speed: number) {
-  const inputCharacters = Array.from(text).length;
+export function estimatedSpeechUsage(text: string, speed: number, instructions?: string | null) {
+  const inputCharacters = Array.from(text).length + Array.from(instructions ?? "").length;
   const inputTokens = Math.ceil(inputCharacters / 4);
   const words = text.trim().split(/\s+/u).filter(Boolean).length;
   const seconds = words / 2.5 / speed;
@@ -103,9 +120,12 @@ function hasMp3Signature(bytes: Buffer) {
 }
 
 export const openAiSpeechGenerator: SpeechGenerator = async ({ text, voice, instructions, speed }) => {
+  if (Array.from(text).length > 4_096) throw new AppError(422, "Narration input exceeds 4096 characters.");
+  if (speechInputBytes(text, instructions) > MAX_TTS_INPUT_BYTES) {
+    throw new AppError(422, "Narration input exceeds the supported speech model limit.");
+  }
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) throw new AppError(503, "Audiobook generation is not configured.", undefined, "speech_provider_not_configured");
-  if (Array.from(text).length > 4_096) throw new AppError(422, "Narration input exceeds 4096 characters.");
   const model = process.env.OPENAI_TTS_MODEL?.trim() || "gpt-4o-mini-tts";
   const client = new OpenAI({ apiKey, timeout: 130_000, maxRetries: 0 });
   const started = Date.now();
@@ -127,6 +147,6 @@ export const openAiSpeechGenerator: SpeechGenerator = async ({ text, voice, inst
     provider: "openai",
     model,
     requestId: (response as unknown as { _request_id?: string })._request_id ?? null,
-    usage: { ...estimatedSpeechUsage(text, speed), latencyMs: Date.now() - started },
+    usage: { ...estimatedSpeechUsage(text, speed, instructions), latencyMs: Date.now() - started },
   };
 };

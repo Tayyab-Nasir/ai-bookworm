@@ -10,6 +10,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { verifyPaidQuoteFixtures } from "./native-paid-quote-lifecycle.mjs";
+import { verifyAudiobookSegmentationFixtures } from "./audiobook-segmentation-lifecycle.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const db = new PGlite({ extensions: { citext, pgcrypto } });
@@ -40,6 +41,11 @@ try {
       : typeof value === "boolean" ? value ? "t" : "f" : String(value);
   });
   console.log(`Executed ${migrations.length} migrations and ${tests.length} SQL assertion files in disposable PostgreSQL.`);
+  currentFile = "audiobook segmentation SQL serial gate";
+  await verifyAudiobookSegmentationFixtures(async statement => {
+    const results = await db.exec(statement);
+    return String(results.findLast(result => result.rows.length)?.rows[0]?.["?column?"] ?? "");
+  });
   console.log("Not covered: GoTrue, PostgREST, Storage HTTP, native Supabase configuration, or multi-connection races.");
 } catch (error) {
   console.error(`FAIL ${currentFile}: ${error.message}`);

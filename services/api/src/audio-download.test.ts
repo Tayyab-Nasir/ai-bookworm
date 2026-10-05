@@ -5,6 +5,7 @@ import Fastify from "fastify";
 import { loadChapterAudio, assembleChapterAudio } from "./lib/audio-download.js";
 import { audiobookRoutes } from "./routes/audiobooks.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
+import { MAX_TTS_INPUT_BYTES } from "./lib/speech-generation.js";
 
 const PROJECT = "b6000000-0000-4000-8000-000000000001";
 const WORKSPACE = "b6000000-0000-4000-8000-000000000002";
@@ -85,6 +86,16 @@ function fixture() {
         else if (job.status === "running") Object.assign(job, { cancellation_requested_at: "2026-09-23T00:03:00Z" });
         return { data: job, error: null };
       }
+      if (name === "queue_audiobook_project") {
+        const segments = Array.isArray(args.p_segments) ? args.p_segments as Record<string, number>[] : [];
+        if (segments.some(segment => segment.creditUnits !== Math.ceil((segment.end - segment.start) / 1_000))) {
+          return { data: null, error: { code: "22023" } };
+        }
+        return { data: [{ id: PROJECT, edition_id: EDITION, chapter_id: args.p_chapter_id,
+          document_version_id: VERSION, voice: args.p_voice, speed: args.p_speed, status: "queued",
+          segment_count: segments.length, credit_units: segments.reduce((total, segment) => total + segment.creditUnits, 0),
+          created_at: "2026-09-29T00:00:00Z", completed_at: null }], error: null };
+      }
       return { data: null, error: { code: "42883" } };
     },
   } as never;
@@ -102,6 +113,52 @@ test("chapter assembly reads exact, ordered, RLS-scoped private segments", async
   assert.deepEqual(data.reads, data.tables.assets.slice(0, 2).map((asset) => asset.storage_path));
   await assert.rejects(loadChapterAudio(data.sb, USER), /not found/);
   await assert.rejects(loadChapterAudio(data.sb, "invalid"), /not found/);
+});
+
+test("narration queue accounts for saved voice instructions in multilingual request limits", async () => {
+  const data = fixture();
+  const source = "界".repeat(2_400);
+  const instructions = "style ".repeat(120);
+  data.tables.editions[0].edition_metadata_json = { kind: "audiobook", voice: "marin", instructions, speed: 1 };
+  data.tables.document_versions[0].plain_text = source;
+  data.tables.audiobook_segments = [];
+  const app = Fastify(); app.decorate("supabaseFactory", () => data.sb);
+  app.addHook("onRequest", async (req) => { req.userId = USER; req.userToken = "fixture"; });
+  await app.register(errorHandlerPlugin); audiobookRoutes(app);
+  const response = await app.inject({ method: "POST", url: `/editions/${EDITION}/audiobook-jobs`,
+    payload: { chapterId: ids[0], idempotencyKey: "speech-safe-segmentation", aiDisclosureAccepted: true } });
+  assert.equal(response.statusCode, 202, response.body);
+  const queued = data.rpcCalls.find((call) => call.name === "queue_audiobook_project");
+  assert.ok(queued);
+  const segments = queued.args.p_segments as { start: number; end: number; creditUnits: number }[];
+  assert.ok(segments.length > 2);
+  for (const segment of segments) {
+    const text = Array.from(source).slice(segment.start, segment.end).join("");
+    assert.ok(Buffer.byteLength(text, "utf8") + Buffer.byteLength(instructions, "utf8") <= MAX_TTS_INPUT_BYTES);
+  }
+  assert.equal(segments.reduce((total, segment) => total + segment.creditUnits, 0),
+    segments.reduce((total, segment) => total + Math.ceil((segment.end - segment.start) / 1_000), 0));
+  await app.close();
+});
+
+test("ASCII narration queue sends exactly the credits accepted by the real SQL tariff", async () => {
+  const data = fixture();
+  data.tables.editions[0].edition_metadata_json = { kind: "audiobook", voice: "marin", speed: 1 };
+  data.tables.document_versions[0].plain_text = "A".repeat(4_000);
+  data.tables.audiobook_segments = [];
+  const app = Fastify(); app.decorate("supabaseFactory", () => data.sb);
+  app.addHook("onRequest", async (req) => { req.userId = USER; req.userToken = "fixture"; });
+  await app.register(errorHandlerPlugin); audiobookRoutes(app);
+  try {
+    const response = await app.inject({ method: "POST", url: `/editions/${EDITION}/audiobook-jobs`,
+      payload: { chapterId: ids[0], idempotencyKey: "speech-ascii-tariff", aiDisclosureAccepted: true } });
+    assert.equal(response.statusCode, 202, response.body);
+    assert.equal(response.json().creditUnits, 5);
+    const queued = data.rpcCalls.find(call => call.name === "queue_audiobook_project");
+    assert.ok(queued);
+    assert.deepEqual((queued.args.p_segments as { creditUnits: number }[]).map(segment => segment.creditUnits), [2, 2, 1]);
+    assert.equal(JSON.stringify(queued.args).includes("AAAA"), false, "queue must carry ranges/hashes, not manuscript text");
+  } finally { await app.close(); }
 });
 
 test("Google Play export progress is member-safe, history refreshes and cancellation is checkpointed", async () => {

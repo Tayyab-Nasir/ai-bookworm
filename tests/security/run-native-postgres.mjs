@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { artworkCompletionRaces } from './native-artwork-completion.mjs';
 import { paidQuoteLifecycleRaces } from './native-paid-quote-lifecycle.mjs';
 import { moderationResolutionRaces } from './native-moderation-resolution.mjs';
+import { verifyAudiobookSegmentationFixtures } from './audiobook-segmentation-lifecycle.mjs';
 
 if (process.env.BOOKWORM_NATIVE_TEST !== '1' || !process.env.BOOKWORM_NATIVE_TEST_PASSWORD) {
   throw new Error('Requires explicit BOOKWORM_NATIVE_TEST=1 and a disposable test password.');
@@ -576,6 +577,7 @@ try {
     await sql(await readFile(join(root, 'tests/security', file), 'utf8'));
     console.log(`PASS native assertions ${file}`);
   }
+  await verifyAudiobookSegmentationFixtures(sql);
   for (const media of [
     { label: 'text', meter: 'ai_credits', first: 'writer', second: 'metadata' },
     { label: 'image', meter: 'image_credits', first: 'illustrator', second: 'cover_designer' },
