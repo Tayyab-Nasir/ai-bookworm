@@ -58,6 +58,13 @@ validating the constraint. Do not silently truncate reported evidence.
 
 ## Contract and verification
 
+Accepted source checkpoint: `c37dbcd58517692fe096e89e8224d4826c72eea3`,
+pushed and remote-verified on `codex/paid-story-blueprint-20260923`.
+All 25 staged file hashes matched the independently tested snapshot after Git
+normalization; the committed tree is `976b7760e3a5f12223e0a64169a956c3b2fcf8c6`.
+Only this checkpoint's four-line navigation addition was adopted from the
+shared handoff; unrelated work was preserved.
+
 The joint client/OpenAPI adoption also repairs earlier misplaced chapter,
 Book Bible, metadata/Story Blueprint and artwork-approval blocks. Strict
 contract tests reject duplicate mapping keys, missing/duplicate operation
@@ -80,14 +87,33 @@ node --test apps/web/tests/analytics-admin-mounted.mjs
 node --test apps/web/tests/quote-recovery-mounted.mjs
 ```
 
-Mounted tests use actual React components with intercepted local transport,
-not a complete Next/mobile/hosted journey. Acceptance still requires an exact
-index-isolated production build/full verification and inspection of native
-database logs. The native source defines 38 moderation schedules: sixteen
-post/comment decision races, four moderator revocations, sixteen
-comment/reaction parent or membership changes, and two atomic-toggle cases.
-Also require the prior 56 paid and 108 artwork schedules on the same accepted
-source. Enumeration alone is not executed concurrency proof.
+The exact-index isolated snapshot independently passed production build with
+22 static pages, full verification (483 API, 150 web, 99 migrations/67 SQL
+assertion files/eight serial paid gates, 417 services, 12 E2E, 35 security,
+types/unit/launcher/load/mock evals), seven analytics/moderation mounted cases
+and nineteen paid-author mounted cases, all exit 0. Shared-tree verification
+separately passed 489 API, 150 web and 419 service tests plus the same remaining
+gates. Provider evals were skipped without a key. Mounted tests use actual
+React components with intercepted transport, not a complete Next/mobile or
+hosted journey.
+
+[Native PostgreSQL 16.15 acceptance](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/37260987702)
+completed successfully on the exact accepted source, job `111607978519`.
+Decoded logs contain 99 migration passes, 67 SQL assertion passes, all 38
+moderation schedules, all 56 paid schedules and all 108 artwork schedules.
+Expected and actual names match without missing, extra or duplicate cases.
+The new moderation cases cover sixteen post/comment decision races, four
+moderator revocations, sixteen comment/reaction parent or membership changes
+and two atomic-toggle cases. Contenders must exhibit actual PostgreSQL Lock
+waits; enumeration or timer assumptions are not the evidence.
+
+Local metadata proof:
+`.git/bookworm-tracking/analytics-index-proof-20261005.json` and
+`.git/bookworm-tracking/analytics-native-proof-20261005.json`.
+This is real native database concurrency acceptance, not hosted GoTrue,
+PostgREST, Storage/scanner HTTP, real-provider or supervised worker-loop
+acceptance. No production deployment, hosted migration, catalog/purchase
+activation, provider spending, payment or retailer publication was initiated.
 
 ## Adoption boundary and continuation
 
