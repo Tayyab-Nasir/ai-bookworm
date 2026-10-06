@@ -51,6 +51,14 @@ function putChapter(book: BookModel, chapter: Chapter): BookModel {
   };
 }
 
+function validateTextRange(text: string, from: number, to: number) {
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from > to || to > text.length)
+    throw new ValidationError(`range [${from}, ${to}] out of bounds for length ${text.length}`);
+  // Offsets use JavaScript/DOM UTF-16 units, but must not bisect a surrogate pair.
+  if ([from, to].some((offset) => (text.codePointAt(offset - 1) ?? 0) > 0xffff))
+    throw new ValidationError("Text range must not split a Unicode character");
+}
+
 /**
  * Pure: applies one validated operation to an immutable copy of the book.
  * Throws VersionConflictError before any work when expectedVersion is stale.
@@ -123,10 +131,9 @@ export function applyOperation(
 
     case "replace_text": {
       const { chapter, index, node, text } = requireText(book, op.payload.nodeId);
-      if (op.payload.from > op.payload.to || op.payload.to > text.length)
-        throw new ValidationError(
-          `range [${op.payload.from}, ${op.payload.to}] out of bounds for length ${text.length}`,
-        );
+      validateTextRange(text, op.payload.from, op.payload.to);
+      if (/[\uD800-\uDFFF]/u.test(op.payload.text))
+        throw new ValidationError("Replacement must contain valid Unicode text");
       next = putChapter(book, {
         ...chapter,
         nodes: setAt(chapter.nodes, index, replaceNodeText(node, op.payload.from, op.payload.to, op.payload.text)),
@@ -185,8 +192,7 @@ export function applyOperation(
 
     case "split_node": {
       const { chapter, index, node, text } = requireText(book, op.payload.nodeId);
-      if (op.payload.offset > text.length)
-        throw new ValidationError(`offset ${op.payload.offset} out of bounds`);
+      validateTextRange(text, op.payload.offset, op.payload.offset);
       const right = { ...replaceNodeText(node, 0, op.payload.offset, ""), id: randomUUID() };
       next = putChapter(book, {
         ...chapter,

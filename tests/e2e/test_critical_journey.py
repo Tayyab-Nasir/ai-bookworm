@@ -3,11 +3,11 @@
 Drives all four FastAPI services via TestClient (in-process, no ports):
 create book payload -> document parse (import) -> AI job (mock provider) ->
 apply suggestion -> render EPUB -> deterministic preflight -> deterministic
-exact-artifact package. Durable job idempotency is tested in API/SQL suites.
+exact-artifact package. Document operations use the real TypeScript engine.
+Durable job idempotency is tested in API/SQL suites.
 The artifact matrix carries parsed text into real EPUB/PDF bytes
-and checks the exact bytes inside retailer ZIPs. AI operation application is
-simulated here; database persistence, live providers and retailer submission
-are not covered by this in-process suite.
+and checks the exact bytes inside retailer ZIPs. Database persistence, live
+providers and retailer submission are not covered by this in-process suite.
 
 Run: pytest tests/e2e -q
 """
@@ -21,6 +21,7 @@ import os
 import sys
 import zipfile
 import shutil
+import subprocess
 from io import BytesIO
 from pathlib import Path
 
@@ -87,6 +88,24 @@ BOOK_MODEL = {
 }
 
 EDITION = {"kind": "ebook", "flow": "reflowable", "navigation": "toc"}
+
+
+def _apply_operations(model, operations, version):
+    """Cross the Python/JS boundary without reimplementing canonical edit semantics."""
+    node = shutil.which("node")
+    assert node, "Node.js is required for canonical document operations"
+    environment = {key: value for key, value in os.environ.items() if key.upper() in {
+        "PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA",
+        "APPDATA", "PATHEXT", "COMSPEC",
+    }}
+    result = subprocess.run(
+        [node, "--import", "tsx", str(REPO / "tests/e2e/author-pipeline-operations.ts")],
+        cwd=REPO, env=environment, input=json.dumps({
+            "bookModel": model, "operations": operations, "version": version,
+        }), text=True, encoding="utf-8", capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
 
 
 @pytest.mark.skipif(not shutil.which("pdftoppm"), reason="native Poppler required")
@@ -277,12 +296,12 @@ def test_p0_journey(monkeypatch, tmp_path):
     applied = ai.post(f"/v1/ai/suggestions/{sid}/apply")
     assert applied.status_code == 200, applied.text
     assert applied.json()["operation"]["type"] == "replace_text"
-    # Simulate the API's text application, not its database/concurrency layer.
+    # Use the same canonical operation engine as the API, not Python slicing.
     operation = applied.json()["operation"]
     assert operation["target"] == {"chapterId": CHAPTER_ID, "nodeId": "n1"}
-    replacement = operation["payload"]
-    node = chapter["nodes"][0]
-    node["text"] = node["text"][:replacement["from"]] + replacement["text"] + node["text"][replacement["to"]:]
+    committed = _apply_operations(model, [operation], version=1)
+    assert committed["version"] == 2
+    model = committed["bookModel"]
     # Second apply conflicts (already accepted).
     assert ai.post(f"/v1/ai/suggestions/{sid}/apply").status_code == 409
 
