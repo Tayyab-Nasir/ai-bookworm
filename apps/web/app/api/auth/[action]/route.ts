@@ -32,6 +32,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ac
       return finish(NextResponse.json({ ok: true, redirectTo: "/login" }));
     }
     if (action === "google") {
+      if (!(await auth.googleProviderEnabled())) return finish(authError(503, "Google sign-in is temporarily unavailable. Try email sign-in or contact support."));
       const { data, error } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${callback}&from=google`, skipBrowserRedirect: true } });
       if (error || !data.url) return finish(authError(503, "Google sign-in is temporarily unavailable. Try email sign-in or contact support."));
       return finish(NextResponse.json({ redirectTo: data.url }));

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ReactNode, type FormEvent } from "react";
 import Link from "next/link";
 import { rememberReferral } from "../lib/referrals";
 
@@ -37,6 +37,7 @@ export function AuthCard({
   const [error, setError] = useState<string | null>(null);
   const [errorAction, setErrorAction] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const googleButton = useRef<HTMLButtonElement>(null);
   const passwordOnly = mode === "reset-password";
   const emailOnly = mode === "forgot-password";
 
@@ -47,6 +48,14 @@ export function AuthCard({
       setError("Google sign-in didn't complete. Try again or use email sign-in. If Google is unavailable, the app owner must finish OAuth setup.");
     }
   }, []);
+
+  useEffect(() => {
+    // A disabled loading button loses browser focus. Restore its retry target
+    // after failure, but never steal focus from an email field or another link.
+    if (!busy && error && errorAction === "google" && document.activeElement === document.body) {
+      googleButton.current?.focus({ preventScroll: true });
+    }
+  }, [busy, error, errorAction]);
 
   async function submit(action: string, values: Record<string, unknown>) {
     setBusy(true);
@@ -209,6 +218,7 @@ export function AuthCard({
           </div>
 
           <button
+            ref={googleButton}
             type="button"
             disabled={busy}
             onClick={() => void submit("google", {})}

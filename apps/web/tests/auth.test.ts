@@ -21,6 +21,7 @@ beforeEach(() => {
   delete process.env.SUPABASE_PUBLISHABLE_KEY;
   calls.length = 0;
   provider = (url) => {
+    if (url.pathname === "/auth/v1/settings") return Response.json({ external: { google: true } });
     if (url.pathname === "/auth/v1/token") return Response.json(authSession());
     if (url.pathname === "/auth/v1/user") return Response.json(user);
     if (url.pathname === "/auth/v1/logout") return new Response(null, { status: 204 });
@@ -194,6 +195,73 @@ test("Google sign-in uses the active app origin and Supabase callback flow", asy
   assert.equal(redirect.pathname, "/auth/v1/authorize");
   assert.equal(redirect.searchParams.get("provider"), "google");
   assert.equal(redirect.searchParams.get("redirect_to"), "http://localhost:3000/auth/callback?next=%2Fdashboard&from=google");
+});
+
+test("disabled Google stays in the app without creating OAuth cookies or a redirect", async () => {
+  provider = () => Response.json({ external: { google: false } });
+  const response = await invoke("google", { next: "/books/new" });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).redirectTo, undefined);
+  assert.equal(response.cookies.getAll().length, 0);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/auth/v1/settings"]);
+  assert.match(response.headers.get("cache-control")!, /no-store/);
+});
+
+test("unknown or failed Google settings cannot authorize an OAuth redirect", async () => {
+  for (const settings of [null, {}, { external: { google: "true" } }, { external: { google: 1 } }]) {
+    provider = () => Response.json(settings);
+    const response = await invoke("google", {});
+    assert.equal(response.status, 503);
+    assert.equal(response.cookies.getAll().length, 0);
+  }
+  for (const status of [302, 401, 429, 503]) {
+    provider = () => new Response("private-provider-detail", { status, headers: { location: "https://evil.test" } });
+    const response = await invoke("google", {});
+    assert.equal(response.status, 503);
+    assert.ok(!(await response.text()).includes("private-provider-detail"));
+    assert.equal(response.cookies.getAll().length, 0);
+  }
+});
+
+test("Google settings use only the public key, no cookies, no redirects and a deadline", async () => {
+  process.env.SUPABASE_PUBLISHABLE_KEY = "sb_publishable_fixture";
+  provider = (url, init) => {
+    assert.equal(url.pathname, "/auth/v1/settings");
+    assert.equal(init?.method, "GET");
+    assert.equal(init?.cache, "no-store");
+    assert.equal(init?.redirect, "error");
+    assert.ok(init?.signal instanceof AbortSignal);
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("apikey"), "sb_publishable_fixture");
+    assert.equal(headers.get("authorization"), null);
+    assert.equal(headers.get("cookie"), null);
+    return Response.json({ external: { google: true } });
+  };
+  const response = await invoke("google", {});
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+});
+
+test("Google settings network failures return a neutral retryable app error", async () => {
+  provider = () => { throw new Error("private-provider-detail"); };
+  const response = await invoke("google", {});
+  assert.equal(response.status, 503);
+  assert.ok(!(await response.text()).includes("private-provider-detail"));
+  assert.equal(response.cookies.getAll().length, 0);
+});
+
+test("Gmail email signup does not depend on Google OAuth availability", async () => {
+  provider = (url, init) => {
+    assert.equal(url.pathname, "/auth/v1/signup");
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.email, "reader@gmail.com");
+    assert.deepEqual(body.data, { display_name: "Reader" });
+    return Response.json({ ...user, identities: [] });
+  };
+  const response = await invoke("signup", { name: "Reader", email: " READER@gmail.com ", password: "fixture-password" });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).confirmationRequired, true);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/auth/v1/signup"]);
 });
 
 test("BFF accepts empty streamed actions but rejects non-JSON payloads", async () => {

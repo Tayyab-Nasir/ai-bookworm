@@ -39,7 +39,7 @@
     "verify": "npm run typecheck && npm run test:worker-launcher && npm run test:unit && npm run test:web && npm run test:db && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "fast-uri": "^3.1.7"

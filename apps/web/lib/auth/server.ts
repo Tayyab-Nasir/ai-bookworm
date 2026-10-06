@@ -64,5 +64,14 @@ export function createAuthContext(request: NextRequest) {
     response.headers.set("Referrer-Policy", "no-referrer");
     return response;
   }
-  return { supabase, finish };
+  const googleProviderEnabled = async () => {
+    const response = await fetch(`${url.replace(/\/+$/, "")}/auth/v1/settings`, {
+      method: "GET", headers: { apikey: key }, cache: "no-store",
+      redirect: "error", signal: AbortSignal.timeout(12_000),
+    });
+    if (!response.ok) return false;
+    const settings = await response.json();
+    return settings?.external?.google === true;
+  };
+  return { supabase, finish, googleProviderEnabled };
 }
