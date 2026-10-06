@@ -19,6 +19,7 @@ const aiReviews = new Map();
 const aiKeys = new Map();
 const aiReviewQuotes = new Map();
 const aiReviewQuoteKeys = new Map();
+const populatedDashboardReads = new Map();
 const publishingEditions = new Map();
 const publishingPackages = [];
 const publishingRenders = new Map();
@@ -263,6 +264,46 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/v1/workspaces' && req.method === 'POST') {
     const workspace = { id: randomUUID(), organization_id: randomUUID(), name: body.name, slug: 'fixture-workspace', created_by: user.id, created_at: new Date().toISOString() };
     workspaces.push(workspace); return json(201, workspace);
+  }
+  if (url.pathname === '/v1/dashboard' && req.method === 'GET') {
+    const workspace = workspaces.find(entry => entry.id === url.searchParams.get('workspaceId'));
+    if (!workspace) return json(403, { error: { message: 'Fixture workspace access denied' } });
+    const books = setupBooks.filter(book => book.workspace_id === workspace.id);
+    const bookIds = new Set(books.map(book => book.id));
+    const jobs = [...aiReviews.values()].filter(job => bookIds.has(job.book_id));
+    if (jobs.length) {
+      const count = (populatedDashboardReads.get(workspace.id) ?? 0) + 1;
+      populatedDashboardReads.set(workspace.id, count);
+      if (process.env.FIXTURE_DASHBOARD_RECOVERY === 'true' && count === 2) {
+        return json(503, { error: { message: 'Fixture dashboard summary unavailable. Retry the requested workspace.' } });
+      }
+    }
+    const assets = [...setupUploads.values()].filter(asset => asset.workspaceId === workspace.id);
+    const quotes = [...aiReviewQuotes.values()].filter(quote => quote.acceptedJobId);
+    // Synthetic quote-hold projection, not proof of native ledger settlement.
+    const reserved = quotes.reduce((total, quote) => total + quote.reservedCredits, 0);
+    const workspaceCredits = quotes.filter(quote => bookIds.has(quote.bookId)).reduce((total, quote) => total + quote.reservedCredits, 0);
+    return json(200, {
+      workspace: { id: workspace.id, name: workspace.name, organizationId: workspace.organization_id, role: 'owner' }, books,
+      summary: { activeBooks: books.filter(book => book.status !== 'archived').length,
+        inProductionBooks: books.filter(book => ['draft', 'in_review'].includes(book.status)).length,
+        publishedBooks: books.filter(book => book.status === 'published').length, assets: assets.length,
+        visualAssets: assets.filter(asset => ['illustration', 'front_cover'].includes(asset.type)).length,
+        pendingJobs: jobs.filter(job => ['queued', 'running'].includes(job.status)).length,
+        failedJobs: jobs.filter(job => job.status === 'failed').length, readyPackages: 0 },
+      usage: { entitlements: { plan: { id: 'fixture-paid-plan', name: 'fixture paid' },
+        subscription: { id: 'fixture-subscription', status: 'active', current_period_end: null },
+        entitlements: { seats: 1, workspaces: 1, books: 3, ai_credits_monthly: 120, image_credits_monthly: 0,
+          audio_credits_monthly: 0, translation_credits_monthly: 0, storage_gb: 1, rendering: true, publishing_channels: ['export'] } },
+        usage: { ai_credits: workspaceCredits, image_credits: 0, audio_credits: 0, translation_credits: 0, storage_gb: 0, seats: 1, rendering: 0, publishing: 0 },
+        creditBalance: 120 - reserved },
+      recentJobs: jobs.slice().reverse().map(job => ({ id: job.id, kind: 'ai', label: 'AI writing', status: job.status,
+        bookId: job.book_id, bookTitle: books.find(book => book.id === job.book_id)?.title ?? null,
+        createdAt: job.created_at, completedAt: job.status === 'succeeded' ? job.created_at : null })),
+      activity: [], sales: { available: true, status: 'not_connected', imports: 0, latestImportedAt: null, units: null,
+        reportedProceedsCents: null, royaltyCents: null, currency: null, currencies: [],
+        message: 'No retailer sales reports have been imported in this fixture. Package creation is not a sale.' },
+    });
   }
   if (url.pathname === '/v1/books' && req.method === 'POST') {
     if (process.env.FIXTURE_REFUSE_BOOK_BEFORE_ACCEPTANCE === 'true' && !refusedBookBeforeAcceptance) {

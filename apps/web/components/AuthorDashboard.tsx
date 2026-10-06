@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { DashboardOverview, DashboardRecentJob } from "@bookworm/api-client";
 import type { Book, Workspace } from "@bookworm/types";
 import { apiClient } from "./api";
@@ -50,52 +50,79 @@ export default function AuthorDashboard() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const currentLoad = useRef<object | null>(null);
+  const requestedWorkspace = useRef<string | null>(null);
 
   const load = useCallback(async (requestedId?: string) => {
+    const request = {};
+    currentLoad.current = request;
+    const current = () => currentLoad.current === request;
+    if (requestedId !== undefined) requestedWorkspace.current = requestedId;
+    if (!requestedWorkspace.current) {
+      requestedWorkspace.current = new URLSearchParams(window.location.search).get("ws");
+      if (!requestedWorkspace.current) {
+        try { requestedWorkspace.current = window.localStorage.getItem("bookworm:workspaceId"); }
+        catch { /* A browser preference is not required for authorized API reads. */ }
+      }
+    }
     setLoading(true);
     setError(null);
+    setWorkspace(null);
+    setWorkspaces([]);
+    setBooks([]);
+    setOverview(null);
     try {
       const spaces = await api.listWorkspaces();
+      if (!current()) return;
       setWorkspaces(spaces.workspaces);
-      const workspaceId = requestedId ?? new URLSearchParams(window.location.search).get("ws") ?? window.localStorage.getItem("bookworm:workspaceId");
-      const selected = spaces.workspaces.find((item) => item.id === workspaceId) ?? spaces.workspaces[0] ?? null;
+      const workspaceId = requestedWorkspace.current;
+      const selected = workspaceId ? spaces.workspaces.find((item) => item.id === workspaceId) : spaces.workspaces[0];
       if (!selected) {
-        setBooks([]);
-        setWorkspace(null);
-        setOverview(null);
+        if (spaces.workspaces.length) setError("Requested workspace is no longer available. Choose another workspace.");
+        else requestedWorkspace.current = null;
         return;
       }
 
-      window.localStorage.setItem("bookworm:workspaceId", selected.id);
+      requestedWorkspace.current = selected.id;
       const result = await api.getDashboardOverview(selected.id);
+      if (!current()) return;
+      if (result.workspace.id !== selected.id || result.books.some((book) => book.workspace_id !== selected.id)) {
+        throw new Error("Dashboard response does not match the requested workspace. Reload before continuing.");
+      }
       setWorkspace(selected);
       setBooks(result.books);
       setOverview(result);
       setError(null);
+      try { window.localStorage.setItem("bookworm:workspaceId", selected.id); }
+      catch { /* Keep the current selection in memory when preference storage is blocked. */ }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not load your library.");
+      if (current()) {
+        setWorkspaces([]);
+        setError(reason instanceof Error ? reason.message : "Could not load your library.");
+      }
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }, [api]);
 
   async function createWorkspace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setCreating(true); setError(null);
+    const request = currentLoad.current;
     const values = new FormData(event.currentTarget);
     try {
       const created = await api.createWorkspace({ name: String(values.get("name") ?? "").trim() });
-      window.localStorage.setItem("bookworm:workspaceId", created.id);
+      if (currentLoad.current !== request) return;
+      setCreating(false);
       await load(created.id);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Workspace creation failed."); }
-    finally { setCreating(false); }
+    } catch (reason) { if (currentLoad.current === request) setError(reason instanceof Error ? reason.message : "Workspace creation failed."); }
+    finally { if (currentLoad.current === request) setCreating(false); }
   }
 
   useEffect(() => {
     void load();
+    return () => { currentLoad.current = null; };
   }, [load]);
 
-  const activeBooks = books.filter((book) => book.status !== "archived").length;
-  const inProduction = books.filter((book) => ["draft", "in_review"].includes(book.status)).length;
   const createHref = workspace?.id ? `/books/new?ws=${encodeURIComponent(workspace.id)}` : "/books/new";
   const usageMeters = [
     ["Writing & editing", "ai_credits", "ai_credits_monthly"],
@@ -105,7 +132,7 @@ export default function AuthorDashboard() {
   ].map(([label, meter, quota]) => ({ label, ...dashboardMeter(overview, meter, quota) }));
 
   return (
-    <main className="mx-auto max-w-7xl px-4 pb-16 pt-8 sm:px-6 lg:px-8 lg:pt-12">
+    <main aria-busy={loading} className="mx-auto min-w-0 max-w-7xl [overflow-wrap:anywhere] px-4 pb-16 pt-8 sm:px-6 lg:px-8 lg:pt-12">
       <section className="flex flex-col justify-between gap-6 border-b border-white/[0.09] pb-8 sm:flex-row sm:items-end">
         <div>
           <p className="mb-3 text-[11px] font-medium uppercase tracking-[0.18em] text-[#8f8f8f]">Author workspace</p>
@@ -117,6 +144,9 @@ export default function AuthorDashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
+          <button type="button" aria-label="Reload dashboard" aria-disabled={loading || creating} onClick={() => { if (!loading && !creating) void load(); }} className="glass-ghost inline-flex min-h-12 items-center rounded-full px-5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 aria-disabled:opacity-50">
+            {loading ? "Refreshing…" : "Reload dashboard"}
+          </button>
           <Link href="/assets" className="glass-ghost metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-medium text-white">
             Manage assets
           </Link>
@@ -128,7 +158,8 @@ export default function AuthorDashboard() {
 
       {workspaces.length > 0 && <div className="mt-6 flex flex-wrap items-center gap-3">
         <label htmlFor="workspace" className="text-sm text-[#aaa]">Workspace</label>
-        <select id="workspace" disabled={loading} value={workspace?.id ?? ""} onChange={(event) => void load(event.target.value)} className="rounded-xl border border-white/15 bg-black px-4 py-2 text-sm">
+        <select id="workspace" disabled={loading || creating} value={workspace?.id ?? ""} onChange={(event) => void load(event.target.value)} className="min-h-11 min-w-0 max-w-full rounded-xl border border-white/15 bg-black px-4 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300">
+          <option value="" disabled>Select a workspace</option>
           {workspaces.map((space) => <option key={space.id} value={space.id}>{space.name}</option>)}
         </select>
       </div>}
@@ -146,18 +177,18 @@ export default function AuthorDashboard() {
       {error && (
         <div role="alert" className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-400/20 bg-red-400/[0.08] px-5 py-4 text-sm text-red-100">
           <span>{error}</span>
-          <button type="button" onClick={() => void load()} className="rounded-full border border-red-200/30 px-3 py-1.5 text-xs font-semibold hover:bg-red-200/10">
+          <button type="button" disabled={loading || creating} onClick={() => void load()} className="min-h-11 rounded-full border border-red-200/30 px-4 py-2 text-xs font-semibold hover:bg-red-200/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 disabled:opacity-50">
             Try again
           </button>
         </div>
       )}
 
-      <section aria-label="Workspace summary" className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {overview && <section aria-label="Workspace summary" className="mt-8 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {[
-          ["Active books", loading ? "…" : String(overview?.summary.activeBooks ?? activeBooks), `${overview?.summary.publishedBooks ?? 0} published`],
-          ["In production", loading ? "…" : String(overview?.summary.inProductionBooks ?? inProduction), "Drafts and review-ready books"],
-          ["Open jobs", loading ? "…" : String(overview?.summary.pendingJobs ?? 0), overview?.summary.failedJobs ? `${overview.summary.failedJobs} need attention` : "Generation and publishing pipeline"],
-          ["Library assets", loading ? "…" : String(overview?.summary.assets ?? 0), `${overview?.summary.visualAssets ?? 0} cover and illustration assets`],
+          ["Active books", String(overview.summary.activeBooks), `${overview.summary.publishedBooks} published`],
+          ["In production", String(overview.summary.inProductionBooks), "Drafts and review-ready books"],
+          ["Open jobs", String(overview.summary.pendingJobs), overview.summary.failedJobs ? `${overview.summary.failedJobs} need attention` : "Generation and publishing pipeline"],
+          ["Library assets", String(overview.summary.assets), `${overview.summary.visualAssets} cover and illustration assets`],
         ].map(([label, value, detail]) => (
           <div key={label} className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5">
             <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#777]">{label}</p>
@@ -165,7 +196,7 @@ export default function AuthorDashboard() {
             <p className="mt-2 text-[13px] leading-5 text-[#888]">{detail}</p>
           </div>
         ))}
-      </section>
+      </section>}
 
       {overview && <section className="mt-8 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]" aria-label="Publishing operations">
         <div className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5 sm:p-6">
@@ -215,7 +246,7 @@ export default function AuthorDashboard() {
         </div>
 
         {loading ? (
-          <div className="rounded-2xl border border-white/[0.09] bg-white/[0.025] px-5 py-12 text-center text-sm text-[#969696]">Loading your library…</div>
+          <div role="status" className="rounded-2xl border border-white/[0.09] bg-white/[0.025] px-5 py-12 text-center text-sm text-[#969696]">Loading your library…</div>
         ) : !workspace ? null : books.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-white/[0.16] bg-white/[0.02] px-6 py-14 text-center">
             <h3 className="text-xl font-medium tracking-[-0.035em]">Your library is ready for its first book.</h3>
