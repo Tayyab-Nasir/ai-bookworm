@@ -135,6 +135,75 @@ test("BFF forwards only the verified session token, not caller authorization or 
   assert.match(response.headers.get("cache-control")!, /no-store/);
 });
 
+test("BFF fails closed when production has no separate API URL", async () => {
+  const signedIn = await login();
+  Object.assign(process.env, { NODE_ENV: "production", APP_URL: "http://localhost:3001" });
+  delete process.env.API_URL;
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    return new Response("private-upstream-html", { status: 404, headers: { "content-type": "text/html" } });
+  };
+  const response = await backendGet(new NextRequest("http://localhost:3001/api/backend/v1/workspaces", {
+    headers: { cookie: cookies(signedIn) },
+  }), { params: Promise.resolve({ path: ["v1", "workspaces"] }) });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, "dependency_unavailable");
+  assert.equal(calls.filter((call) => new URL(call.url).pathname === "/v1/workspaces").length, 0);
+});
+
+test("BFF cannot send a verified token back to the web server, including loopback aliases", async () => {
+  const signedIn = await login();
+  Object.assign(process.env, { APP_URL: "http://localhost:3001" });
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    return Response.json({ workspaces: [] });
+  };
+  for (const apiUrl of ["http://localhost:3001", "http://127.0.0.1:3001", "http://[::1]:3001"]) {
+    process.env.API_URL = apiUrl;
+    const response = await backendGet(new NextRequest("http://localhost:3001/api/backend/v1/workspaces", {
+      headers: { cookie: cookies(signedIn) },
+    }), { params: Promise.resolve({ path: ["v1", "workspaces"] }) });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error.message, /separate/i);
+  }
+  assert.equal(calls.filter((call) => new URL(call.url).pathname === "/v1/workspaces").length, 0);
+});
+
+test("BFF preserves the development API-port fallback when the ports are separate", async () => {
+  const signedIn = await login();
+  delete process.env.API_URL;
+  process.env.API_PORT = "3002";
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    assert.equal(url.href, "http://127.0.0.1:3002/v1/workspaces");
+    return Response.json({ workspaces: [] });
+  };
+  const response = await backendGet(new NextRequest("http://localhost:3001/api/backend/v1/workspaces", {
+    headers: { cookie: cookies(signedIn) },
+  }), { params: Promise.resolve({ path: ["v1", "workspaces"] }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { workspaces: [] });
+});
+
+test("BFF converts HTML dependency responses to private JSON errors, never raw HTML", async () => {
+  const signedIn = await login();
+  for (const status of [200, 404, 503]) {
+    provider = (url) => {
+      if (url.pathname === "/auth/v1/user") return Response.json(user);
+      return new Response("private-upstream-html", { status, headers: { "content-type": "text/html; charset=utf-8" } });
+    };
+    const response = await backendGet(new NextRequest("http://localhost:3000/api/backend/v1/workspaces", {
+      headers: { cookie: cookies(signedIn) },
+    }), { params: Promise.resolve({ path: ["v1", "workspaces"] }) });
+    assert.equal(response.status, 502);
+    assert.match(response.headers.get("content-type")!, /application\/json/);
+    assert.match(response.headers.get("cache-control")!, /no-store/);
+    const body = await response.json();
+    assert.equal(body.error.code, "dependency_unavailable");
+    assert.ok(!JSON.stringify(body).includes("private-upstream-html"));
+  }
+});
+
 test("BFF forwards only validated audiobook QC metadata with the private MP3", async () => {
   const signedIn = await login();
   const reportId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";

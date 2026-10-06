@@ -16,8 +16,17 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     if (error || !identity.user) return auth.finish(authError(401, "Your session has expired. Please sign in.", "unauthenticated"));
     const { data } = await auth.supabase.auth.getSession();
     if (!data.session) return auth.finish(authError(401, "Please sign in.", "unauthenticated"));
+    if (process.env.NODE_ENV === "production" && !process.env.API_URL) {
+      throw new AuthConfigurationError("The workspace service is not configured. Set API_URL to the separate Bookworm API server.");
+    }
     const base = new URL(process.env.API_URL ?? `http://127.0.0.1:${process.env.API_PORT ?? "3001"}`);
     if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new AuthConfigurationError("Invalid API_URL configuration.");
+    const web = new URL(appOrigin(request));
+    const loopback = (url: URL) => ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    const port = (url: URL) => url.port || (url.protocol === "https:" ? "443" : "80");
+    if (base.origin === web.origin || (loopback(base) && loopback(web) && port(base) === port(web))) {
+      throw new AuthConfigurationError("The workspace service must use a separate API server and port, not the Bookworm web server.");
+    }
     const target = new URL(`${base.pathname.replace(/\/$/, "")}/${path.join("/")}`, base.origin);
     target.search = request.nextUrl.search;
     const headers = new Headers({ authorization: `Bearer ${data.session.access_token}`, accept: "application/json" });
@@ -45,7 +54,13 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     }
     const upstream = await fetch(target, { method: request.method, headers, body: body as BodyInit | undefined, cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(180_000) });
     if (upstream.status >= 300 && upstream.status < 400) return auth.finish(authError(502, "Unexpected API redirect."));
-    const contentType = upstream.headers.get("content-type") ?? "application/json";
+    const contentType = upstream.headers.get("content-type") ?? "";
+    const mediaType = contentType.split(";", 1)[0].trim().toLowerCase();
+    if (upstream.status !== 204 && !["application/json", "audio/mpeg", "application/zip"].includes(mediaType)
+      && !/^application\/[a-z0-9!#$&^_.+-]+\+json$/u.test(mediaType)) {
+      await upstream.body?.cancel().catch(() => {});
+      return auth.finish(authError(502, "The workspace service returned an unexpected response. Your changes have not been confirmed saved.", "dependency_unavailable"));
+    }
     const response = new NextResponse(upstream.body, { status: upstream.status, headers: { "content-type": contentType, "cache-control": "private, no-store" } });
     if (contentType.split(";", 1)[0].trim().toLowerCase() === "audio/mpeg" && upstream.headers.get("content-disposition") === 'attachment; filename="chapter.mp3"') {
       response.headers.set("content-disposition", 'attachment; filename="chapter.mp3"');

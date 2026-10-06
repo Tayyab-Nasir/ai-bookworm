@@ -786,7 +786,14 @@ export function createClient(opts: ClientOptions) {
       credentials: "same-origin",
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const json = (res.status === 204 ? {} : await res.json().catch(() => ({ error: { code: "invalid_response", message: "The service returned an unreadable response.", requestId: "" } }))) as { error?: { code: string; message: string; requestId: string; details?: Record<string, unknown> } } & T;
+    let parsed: unknown;
+    try {
+      parsed = res.status === 204 ? {} : await res.json();
+      if (parsed === null || typeof parsed !== "object") throw new Error("Invalid JSON result.");
+    } catch {
+      throw new ApiClientError(res.ok ? 502 : res.status, "invalid_response", "The service returned an unreadable response.", "");
+    }
+    const json = parsed as { error?: { code: string; message: string; requestId: string; details?: Record<string, unknown> } } & T;
     if (!res.ok) {
       const e = json.error ?? { code: "internal", message: res.statusText, requestId: "" };
       throw new ApiClientError(res.status, e.code, e.message, e.requestId, e.details);
