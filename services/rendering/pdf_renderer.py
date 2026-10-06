@@ -34,7 +34,7 @@ from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
 from print_layout import NUMBER_SIZE_PT, NUMBER_TRIM_INSET_IN, number_metrics, print_layout_issues
 
-RENDERER_VERSION = "pdf-1.16.0"
+RENDERER_VERSION = "pdf-1.17.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -208,11 +208,34 @@ def render_pdf(book: dict, edition: PrintEdition,
     list_body = ParagraphStyle("list-body", parent=body, firstLineIndent=0)
 
     def render_list(group):
+        labels = []
+        if group["style"] == "ordered":
+            step = -1 if group["reversed"] else 1
+            for index in range(len(group["items"])):
+                number = group["start"] + index * step
+                if not 1 <= number <= 1_000_000:
+                    raise ValueError("List numbering must remain between 1 and 1000000. Change the starting number or list direction.")
+                style = group["numberStyle"]
+                if style in {"lower-roman", "upper-roman"}:
+                    if number > 3999:
+                        raise ValueError("Roman list numbering above 3999 is not supported in print. Choose decimal or alphabetic numbering.")
+                    label = _roman(number)
+                    label = label.lower() if style == "lower-roman" else label
+                elif style in {"lower-alpha", "upper-alpha"}:
+                    label, value = "", number
+                    while value:
+                        value, digit = divmod(value - 1, 26)
+                        label = chr(65 + digit) + label
+                    label = label.lower() if style == "lower-alpha" else label
+                else:
+                    label = str(number)
+                labels.append(label + ".")
+        indent = max(18, max((pdfmetrics.stringWidth(label, typo.body_font, typo.body_size_pt) for label in labels), default=0) + 6)
         return ListFlowable([
             ListItem([Paragraph(inline_markup(item["node"], pdf=True, pdf_code_font=code_font(typo.body_font)), list_body),
-                      *(render_list(child) for child in item["children"])])
-            for item in group["items"]
-        ], bulletType="1" if group["style"] == "ordered" else "bullet", start=1 if group["style"] == "ordered" else "bullet", leftIndent=18,
+                      *(render_list(child) for child in item["children"])], **({"value": labels[index]} if labels else {}))
+            for index, item in enumerate(group["items"])
+        ], bulletType="bullet", start="bullet", leftIndent=indent, bulletDedent=indent,
            bulletFontName=typo.body_font, bulletFontSize=typo.body_size_pt)
 
     # Explicit cycle avoids autoNextPageTemplate retaining a stale next index.

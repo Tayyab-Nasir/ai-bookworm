@@ -58,6 +58,30 @@ def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None) -> list
                     "u": "underline", "s": "strike", "del": "strike", "code": "code"}
     containers = {"body", "div", "section", "article", "main", "header", "footer",
                   "figure", "aside", "ul", "ol", "table", "tbody", "thead", "tr", "td", "th"}
+    list_numbers = {}
+    number_styles = {"1": "decimal", "a": "lower-alpha", "A": "upper-alpha", "i": "lower-roman", "I": "upper-roman"}
+
+    def ordinal(value, default):
+        return int(value) if isinstance(value, str) and len(value) <= 7 and value.isascii() and value.isdecimal() and 1 <= int(value) <= 1_000_000 else default
+
+    def numbering_attributes(parent, child):
+        if parent is None or parent.name != "ol":
+            return {}
+        if id(parent) not in list_numbers:
+            items = parent.find_all("li", recursive=False)
+            reversed_list = parent.has_attr("reversed")
+            current = ordinal(parent.get("start"), len(items) if reversed_list else 1)
+            values = {}
+            for item in items:
+                current = ordinal(item.get("value"), current)
+                if not 1 <= current <= 1_000_000:
+                    raise ParseError("EPUB list numbering exceeds safe import limit")
+                values[id(item)] = current
+                current += -1 if reversed_list else 1
+            list_numbers[id(parent)] = values
+        return {"listStart": list_numbers[id(parent)].get(id(child), 1),
+                "listNumberStyle": number_styles.get(parent.get("type"), "decimal"),
+                **({"listReversed": True} if parent.has_attr("reversed") else {})}
 
     def walk(el, kind="paragraph", attrs=None, nesting=0):
         if nesting > 128:
@@ -103,7 +127,7 @@ def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None) -> list
                 parent_list = child.find_parent(["ol", "ul"])
                 list_depth = len(child.find_parents(["ol", "ul"])) - 1
                 walk(child, "listItem", {"listStyle": "ordered" if parent_list and parent_list.name == "ol" else "bullet",
-                                         "listDepth": min(6, max(0, list_depth))}, nesting + level + 1)
+                                         "listDepth": min(6, max(0, list_depth)), **numbering_attributes(parent_list, child)}, nesting + level + 1)
             elif tag == "table":
                 flush()
                 caption = child.find("caption", recursive=False)

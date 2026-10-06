@@ -12,6 +12,7 @@ from . import (ParseError, check_size, make_book, make_report, new_chapter,
                node, safe_zip_members)
 from .embedded_images import EmbeddedImages
 from .table_grid import span_attributes
+from .docx_numbering import WordNumbering
 
 _HEADING_LEVELS = {f"Heading {i}": i for i in range(1, 7)}
 
@@ -84,6 +85,7 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
         raise ParseError(f"not a readable DOCX: {e}") from e
 
     images, warnings = _extract_images(doc)
+    numbering = WordNumbering(doc, warnings)
     chapters: list[dict] = []
     current: dict | None = None
     assets: list[dict] = []
@@ -131,6 +133,7 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
             continue
         style = para.style.name if para.style else ""
         level = _HEADING_LEVELS.get(style)
+        list_attributes = numbering.attributes(para)
         rich_text = _paragraph_runs(para)
         text = "".join("\n" if r["type"] == "hardBreak" else r.get("text", "") for r in rich_text)
         if level == 1:
@@ -155,11 +158,14 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
                         kind = "heading"
                     elif style.lower().startswith(("quote", "block")):
                         kind = "quote"
-                    elif style.lower().startswith("list"):
+                    elif list_attributes or (list_attributes is None and style.lower().startswith("list")):
                         kind = "listItem"
-                        suffix = style.rsplit(" ", 1)[-1]
-                        attrs.update(listStyle="ordered" if "number" in style.lower() else "bullet",
-                                     listDepth=min(6, max(0, int(suffix) - 1)) if suffix.isdigit() else 0)
+                        if list_attributes:
+                            attrs.update(list_attributes)
+                        else:
+                            suffix = style.rsplit(" ", 1)[-1]
+                            attrs.update(listStyle="ordered" if "number" in style.lower() else "bullet",
+                                         listDepth=min(6, max(0, int(suffix) - 1)) if suffix.isdigit() else 0)
                 current["nodes"].append(node(kind, value, attributes=attrs, **({"level": level} if kind == "heading" else {})))
                 text_blocks += 1
             pending.clear()

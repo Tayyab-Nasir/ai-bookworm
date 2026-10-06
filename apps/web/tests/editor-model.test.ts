@@ -56,3 +56,52 @@ test("stale formatting cannot overwrite accepted AI text when the chapter is ope
   const nodes: BookNode[] = [{ id: "p", type: "paragraph", text: "Accepted change\nNew line", attributes: { richText: [null, { type: "text", text: "Old draft" }] } }];
   assert.equal(editorToNodes(nodesToEditor(nodes), () => "unused")[0].text, nodes[0].text);
 });
+
+test("ordered starts, styles, nesting and explicit restarts survive edits and repeated saves", () => {
+  const item = (id: string, start: number, depth = 0): BookNode => ({ id, type: "listItem", text: id,
+    attributes: { listStyle: "ordered", listDepth: depth, listStart: start, listNumberStyle: "lower-roman" } });
+  const nodes = [item("first", 7), item("child", 3, 1), item("next", 8), item("restart", 2)];
+  const doc = nodesToEditor(nodes);
+  assert.equal(doc.content?.length, 2);
+  assert.equal(doc.content?.[0].attrs?.start, 7);
+  assert.equal(doc.content?.[1].attrs?.start, 2);
+  assert.equal(doc.content?.[0].attrs?.type, "i");
+  let saved = nodes;
+  for (let i = 0; i < 3; i++) saved = editorToNodes(nodesToEditor(saved), () => "unused");
+  assert.deepEqual(saved.map(n => [n.id, n.attributes?.listStart, n.attributes?.listNumberStyle, n.attributes?.listDepth]),
+    nodes.map(n => [n.id, n.attributes?.listStart, n.attributes?.listNumberStyle, n.attributes?.listDepth]));
+  doc.content![0].attrs = { start: 12, type: "A" };
+  const changed = editorToNodes(doc, () => "unused");
+  assert.equal(changed[0].attributes?.listStart, 12);
+  assert.equal(changed[2].attributes?.listStart, 13);
+  assert.equal(changed[2].attributes?.listNumberStyle, "upper-alpha");
+  doc.content![0].type = "bulletList";
+  const bullets = editorToNodes(doc, () => "unused");
+  assert.equal(bullets[0].attributes?.listStart, undefined);
+  assert.equal(bullets[0].attributes?.listNumberStyle, undefined);
+});
+
+test("unsafe numbering metadata is normalized and an overflowing edited list is not silently truncated", () => {
+  const node: BookNode = { id: "safe", type: "listItem", text: "Safe", attributes: {
+    listStyle: "ordered", listStart: "javascript:alert(1)", listNumberStyle: "__proto__" } };
+  const doc = nodesToEditor([node]);
+  assert.deepEqual(doc.content?.[0].attrs, { start: 1, type: "1" });
+  doc.content![0].attrs!.start = 1_000_000;
+  doc.content![0].content!.push({ type: "listItem", content: [{ type: "paragraph", content: [{ type: "text", text: "Overflow" }] }] });
+  assert.throws(() => editorToNodes(doc, () => "new"), /numbering exceeds/);
+  doc.content![0].type = "bulletList";
+  const saved = editorToNodes(doc, () => "new");
+  assert.equal(saved[0].attributes?.listStart, undefined);
+  assert.equal(saved[0].attributes?.listNumberStyle, undefined);
+});
+
+test("reversed list direction survives a save and invalid countdown cannot erase source content", () => {
+  const nodes: BookNode[] = [3, 2, 1].map((listStart, index) => ({ id: String(index), type: "listItem", text: "Countdown",
+    attributes: { listStyle: "ordered", listStart, listNumberStyle: "upper-alpha", listReversed: true } }));
+  const doc = nodesToEditor(nodes);
+  assert.equal(doc.content?.length, 1); assert.equal(doc.content?.[0].attrs?.reversed, true);
+  const saved = editorToNodes(doc, () => "unused");
+  assert.deepEqual(saved.map(n => [n.attributes?.listStart, n.attributes?.listReversed]), [[3, true], [2, true], [1, true]]);
+  doc.content![0].attrs!.start = 2;
+  assert.throws(() => editorToNodes(doc, () => "unused"), /numbering exceeds/);
+});

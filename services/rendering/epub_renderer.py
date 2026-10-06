@@ -12,7 +12,7 @@ from html import escape
 from editions import EbookEdition, resolve_text_direction
 from manuscript import block_tree, image_width, inline_markup, table_header_rows, table_rows, table_spans
 
-RENDERER_VERSION = "epub-1.12.0"
+RENDERER_VERSION = "epub-1.13.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"
@@ -96,8 +96,11 @@ def _chapter_xhtml(book: dict, chapter: dict, lang: str, direction: str, image_i
         if "node" in block:
             return _node_html(block["node"], image_ids)
         tag = "ol" if block["style"] == "ordered" else "ul"
+        numbering = (f' start="{block["start"]}" type="' + {"decimal": "1", "lower-alpha": "a", "upper-alpha": "A", "lower-roman": "i", "upper-roman": "I"}[block["numberStyle"]] + '"') if tag == "ol" else ""
+        if tag == "ol" and block["reversed"]:
+            numbering += ' reversed="reversed"'
         items = "".join("<li>" + inline_markup(item["node"]) + "".join(block_html(child) for child in item["children"]) + "</li>" for item in block["items"])
-        return f"<{tag}>{items}</{tag}>"
+        return f"<{tag}{numbering}>{items}</{tag}>"
     body = "".join(block_html(block) for block in block_tree(chapter.get("nodes", [])))
     lang = escape(lang)
     title = escape(chapter.get("title") or "")

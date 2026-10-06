@@ -7,7 +7,7 @@ import type { Book, Chapter } from "@bookworm/types";
 import type { BookNode } from "@bookworm/book-model";
 import { apiClient } from "./api";
 import BookTree from "./BookTree";
-import RichBookEditor, { type EditorDocument } from "./RichBookEditor";
+import RichBookEditor, { type EditorDocument, type EditorValidationError } from "./RichBookEditor";
 import VersionTimeline from "./VersionTimeline";
 import AiAssistantPanel from "./AiAssistantPanel";
 import { storyBlueprintWriterBrief } from "../lib/story-blueprint-draft";
@@ -23,6 +23,8 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   const [versions, setVersions] = useState<DocumentVersionSummary[]>([]);
   const [role, setRole] = useState("viewer");
   const [dirty, setDirty] = useState(false);
+  const [editorValidation, setEditorValidation] = useState<EditorValidationError | null>(null);
+  const hasUnsavedChanges = dirty || editorValidation !== null;
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +52,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       const [content, history] = await Promise.all([api.getChapterDocument(chapterId), api.listDocumentVersions(chapterId)]);
       if (sequence !== loadSequence.current) return;
       setDocument(content.document); setDraft(content.document.nodes); setRole(content.role); setVersions(history.versions);
-      setDirty(false); setConflict(false); setError(null); setPendingRestore(null); pendingSave.current = null; setReloadKey((v) => v + 1);
+      setDirty(false); setEditorValidation(null); setConflict(false); setError(null); setPendingRestore(null); pendingSave.current = null; setReloadKey((v) => v + 1);
     } catch (reason) {
       if (sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : "Could not load manuscript");
       if (reportFailure) throw reason;
@@ -84,9 +86,9 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   }, [api, bookId, initialChapterId, initialDraftPlanItemId, loadChapter]);
 
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (dirty || pendingRestore) { event.preventDefault(); event.returnValue = ""; } };
+    const warn = (event: BeforeUnloadEvent) => { if (hasUnsavedChanges || pendingRestore) { event.preventDefault(); event.returnValue = ""; } };
     const guardNavigation = (event: globalThis.MouseEvent) => {
-      if ((!dirty && !pendingRestore) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      if ((!hasUnsavedChanges && !pendingRestore) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
       if (!(anchor instanceof HTMLAnchorElement) || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
       const destination = new URL(anchor.href, window.location.href);
@@ -96,10 +98,10 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
     window.addEventListener("beforeunload", warn);
     window.document.addEventListener("click", guardNavigation, true);
     return () => { window.removeEventListener("beforeunload", warn); window.document.removeEventListener("click", guardNavigation, true); };
-  }, [dirty, pendingRestore]);
+  }, [hasUnsavedChanges, pendingRestore]);
 
   const save = useCallback(async () => {
-    if (!document || saving || conflict || !dirty || pendingRestore) return;
+    if (!document || saving || conflict || !dirty || pendingRestore || editorValidation) return;
     setSaving(true); setError(null); setNotice(null);
     const request = pendingSave.current ?? { operationId: crypto.randomUUID(), nodes: draft, expectedVersion: document.version };
     pendingSave.current = request;
@@ -112,7 +114,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       if (reason instanceof ApiClientError && reason.status === 409) setConflict(true);
       setError(reason instanceof Error ? reason.message : "Save failed. Your draft remains in this editor.");
     } finally { setSaving(false); }
-  }, [api, document, draft, saving, conflict, dirty, pendingRestore]);
+  }, [api, document, draft, saving, conflict, dirty, pendingRestore, editorValidation]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } };
@@ -121,13 +123,13 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
 
   const selectChapter = (id: string) => {
     if (saving || loading || id === document?.chapterId) return;
-    if ((dirty || pendingRestore) && !window.confirm("This chapter has unsaved changes or an unresolved restore. Leave it and open another chapter?")) return;
+    if ((hasUnsavedChanges || pendingRestore) && !window.confirm("This chapter has unsaved changes or an unresolved restore. Leave it and open another chapter?")) return;
     setActiveAiJobId(undefined);
     void loadChapter(id);
   };
 
   const createChapter = async () => {
-    if (!newTitle.trim() || saving || loading || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role) || (dirty && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
+    if (!newTitle.trim() || saving || loading || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role) || (hasUnsavedChanges && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
     creatingChapter.current = true;
     setSaving(true); setError(null);
     const creation = pendingCreation.current ?? { title: newTitle.trim(), brief: newChapterBrief.trim(), idempotencyKey: crypto.randomUUID() };
@@ -167,7 +169,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
     if (!document || saving || loading || restoring.current || !EDIT_ROLES.has(role)) return;
     if (pendingRestore && (pendingRestore.versionId !== versionId || pendingRestore.chapterId !== document.chapterId)) return;
     if (!pendingRestore && !window.confirm("Restore this version as a new saved version? Current saved history will remain available.")) return;
-    if (!pendingRestore && dirty && !window.confirm("Your unsaved draft will be replaced. Continue?")) return;
+    if (!pendingRestore && hasUnsavedChanges && !window.confirm("Your unsaved draft will be replaced. Continue?")) return;
     const request = pendingRestore ?? { chapterId: document.chapterId, versionId, body: { expectedVersion: document.version, operationId: crypto.randomUUID() } };
     restoring.current = true;
     setPendingRestore(request); setSaving(true); setError(null); setNotice(null);
@@ -175,7 +177,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       const result = await api.restoreDocumentVersion(request.chapterId, request.versionId, request.body);
       // Adopt the confirmed receipt before refreshing history. A failed history
       // request must not leave the old draft marked as the restored manuscript.
-      setDocument(result.document); setDraft(result.document.nodes); setDirty(false);
+      setDocument(result.document); setDraft(result.document.nodes); setDirty(false); setEditorValidation(null);
       setPendingRestore(null); setConflict(false); pendingSave.current = null; setReloadKey((v) => v + 1);
       setNotice(`Restored as version ${result.version}.`);
       try { const history = await api.listDocumentVersions(request.chapterId); setVersions(history.versions); }
@@ -188,15 +190,18 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   };
 
   const downloadDraft = () => {
-    const blob = new Blob([draft.map((n) => n.text ?? "").join("\n\n")], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([editorValidation?.draftText ?? draft.map((n) => n.text ?? "").join("\n\n")], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob); const link = window.document.createElement("a"); link.href = url; link.download = "unsaved-manuscript.txt"; link.click(); URL.revokeObjectURL(url);
   };
   const editable = EDIT_ROLES.has(role) && !pendingRestore;
+  const wordCount = editorValidation ? (editorValidation.draftText.match(/\S+/gu)?.length ?? 0)
+    : draft.reduce((count, node) => count + (node.text?.trim() ? node.text.trim().split(/\s+/u).length : 0), 0);
   return <main className="mx-auto min-h-[calc(100dvh-84px)] max-w-[1680px] bg-black p-4 text-white sm:p-6">
     <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
       <div><Link href="/dashboard" className="text-xs text-white/50 hover:text-white">← Library</Link><h1 className="mt-2 text-2xl font-medium">{book?.title ?? "Manuscript"}</h1></div>
-      <div className="flex flex-wrap items-center gap-3 text-sm"><Link href={`/books/${bookId}/plan`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Plan</Link><Link href={`/books/${bookId}/translate`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Translate</Link><Link href={`/books/${bookId}/publish`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Layout & publish</Link><span role="status" className="text-white/50">{saving ? "Saving…" : dirty ? "Unsaved changes" : document ? `Saved · v${document.version}` : ""}</span>
-        {editable && <button type="button" onClick={() => void save()} disabled={!dirty || saving || conflict || loading} className="rounded-full bg-white px-5 py-2 font-medium text-black disabled:opacity-40">Save chapter</button>}
+      <div className="flex flex-wrap items-center gap-3 text-sm"><Link href={`/books/${bookId}/plan`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Plan</Link><Link href={`/books/${bookId}/translate`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Translate</Link><Link href={`/books/${bookId}/publish`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Layout & publish</Link><span role="status" className="text-white/50">{editorValidation ? "Unsaved · correct numbering before saving" : saving ? "Saving…" : dirty ? "Unsaved changes" : document ? `Saved · v${document.version}` : ""}</span>
+        {editable && <button type="button" onClick={() => void save()} disabled={!dirty || saving || conflict || loading || editorValidation !== null} className="rounded-full bg-white px-5 py-2 font-medium text-black disabled:opacity-40">Save chapter</button>}
+        {editorValidation && <button type="button" onClick={downloadDraft} className="rounded-full border border-white/20 px-4 py-2">Download draft text</button>}
       </div>
     </div>
     {error && <div role="alert" className="mb-4 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}</div>}
@@ -220,11 +225,11 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
         </div>
       </aside>
       <section className="min-w-0">
-        {document && <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1"><h2 className="text-sm text-white/75">{chapters.find((chapter) => chapter.id === document.chapterId)?.title ?? "Chapter"}</h2><span className="text-xs tabular-nums text-white/45">{draft.reduce((count, node) => count + (node.text?.trim() ? node.text.trim().split(/\s+/u).length : 0), 0).toLocaleString()} words</span></div>}
-        {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={document} workspaceId={book.workspace_id} permissions={editable && !saving ? "editor" : "viewer"} onChange={(nodes) => { setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border border-dashed border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
+        {document && <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1"><h2 className="text-sm text-white/75">{chapters.find((chapter) => chapter.id === document.chapterId)?.title ?? "Chapter"}</h2><span className="text-xs tabular-nums text-white/45">{wordCount.toLocaleString()} words</span></div>}
+        {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={document} workspaceId={book.workspace_id} permissions={editable && !saving ? "editor" : "viewer"} onValidationChange={setEditorValidation} onChange={(nodes) => { setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border border-dashed border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
       </section>
       <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">
-        <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} initialDraftInstruction={document?.chapterId === draftPlanTargetChapterId ? initialDraftInstruction : undefined} dirty={dirty} editable={editable && !saving && !loading} onApplied={async () => { if (document) await loadChapter(document.chapterId, true); }} />
+        <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} initialDraftInstruction={document?.chapterId === draftPlanTargetChapterId ? initialDraftInstruction : undefined} dirty={hasUnsavedChanges} editable={editable && !saving && !loading} onApplied={async () => { if (document) await loadChapter(document.chapterId, true); }} />
         <div className="rounded-2xl border border-white/10 p-2"><VersionTimeline key={document?.chapterId ?? "empty"} versions={versions} onRestore={(id) => void restore(id)} readOnly={!editable || saving || loading} /></div>
       </div>
     </div>

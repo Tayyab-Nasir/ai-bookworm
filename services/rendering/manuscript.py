@@ -132,9 +132,18 @@ def block_tree(nodes: list[dict]) -> list[dict]:
         raw_depth = attrs.get("listDepth", 0)
         depth = min(max(0, int(raw_depth)), len(lists), 6) if type(raw_depth) in (int, float) and isfinite(raw_depth) else 0
         style = "ordered" if attrs.get("listStyle") == "ordered" else "bullet"
+        number_style = attrs.get("listNumberStyle", "decimal")
+        if not isinstance(number_style, str) or number_style not in {"decimal", "lower-alpha", "upper-alpha", "lower-roman", "upper-roman"}:
+            number_style = "decimal"
+        value = attrs.get("listStart")
+        start = value if type(value) is int and 1 <= value <= 1_000_000 else None
+        reversed_list = attrs.get("listReversed") is True
         lists = lists[:depth + 1]
-        if len(lists) <= depth or lists[depth]["style"] != style:
-            group = {"style": style, "items": []}
+        if (len(lists) <= depth or lists[depth]["style"] != style
+                or (style == "ordered" and (lists[depth]["numberStyle"] != number_style
+                    or lists[depth]["reversed"] != reversed_list
+                    or (start is not None and start != lists[depth]["start"] + len(lists[depth]["items"]) * (-1 if reversed_list else 1))))):
+            group = {"style": style, "items": [], "start": start or 1, "numberStyle": number_style, "reversed": reversed_list}
             if depth:
                 lists[depth - 1]["items"][-1]["children"].append(group)
             else:
