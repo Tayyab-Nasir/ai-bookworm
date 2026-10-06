@@ -14,6 +14,7 @@ export default function BibleSourcePassage({ bookId, citation, title }: { bookId
   const [previousOffsets, setPreviousOffsets] = useState<number[]>([]);
 
   async function read(offset?: number) {
+    if (loading) return;
     if (passage && offset === undefined) { setOpen((value) => !value); return; }
     const requestedOffset = offset ?? 0;
     setLoading(true); setError(null);
@@ -39,9 +40,9 @@ export default function BibleSourcePassage({ bookId, citation, title }: { bookId
     finally { setLoading(false); }
   }
 
-  return <div className="rounded-lg border border-white/10 p-3 text-xs leading-5 text-[#aaa]">
+  return <div aria-busy={loading} className="min-w-0 rounded-lg border border-white/10 p-3 text-xs leading-5 text-[#aaa] [overflow-wrap:anywhere]">
     <span className="font-medium text-[#ddd]">{title}</span>
-    <button type="button" disabled={loading} aria-expanded={open} onClick={() => void read()} className="ml-3 min-h-9 rounded-lg px-2 text-sky-100 underline underline-offset-4 outline-none hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50">
+    <button type="button" aria-disabled={loading} aria-expanded={open} onClick={() => void read()} className="ml-3 min-h-11 rounded-lg px-2 text-sky-100 underline underline-offset-4 outline-none hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-white aria-disabled:cursor-not-allowed aria-disabled:opacity-50">
       {loading ? "Loading passage…" : open ? "Hide source passage" : "Read source passage"}
     </button>
     {error && <p role="alert" className="mt-2 text-red-200">{error}</p>}
@@ -52,8 +53,8 @@ export default function BibleSourcePassage({ bookId, citation, title }: { bookId
       <blockquote key={passage.startOffset} className="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap break-words border-l-2 border-sky-200/30 pl-3 text-sm leading-6 text-[#ddd]">{passage.text}</blockquote>
       <p aria-live="polite" className="mt-2 text-[#999]">Text positions {passage.startOffset.toLocaleString()}–{passage.endOffset.toLocaleString()} of {passage.totalLength.toLocaleString()} · saved passage</p>
       {(previousOffsets.length > 0 || passage.nextOffset !== null) && <div className="mt-2 flex flex-wrap gap-3">
-        <button type="button" disabled={loading || !previousOffsets.length} onClick={() => void read(previousOffsets[previousOffsets.length - 1])} className="min-h-10 rounded-lg border border-white/15 px-3 text-sky-100 disabled:opacity-40">Previous passage section</button>
-        <button type="button" disabled={loading || passage.nextOffset === null} onClick={() => passage.nextOffset !== null && void read(passage.nextOffset)} className="min-h-10 rounded-lg border border-white/15 px-3 text-sky-100 disabled:opacity-40">Next passage section</button>
+        <button type="button" aria-disabled={loading || !previousOffsets.length} onClick={() => previousOffsets.length > 0 && void read(previousOffsets[previousOffsets.length - 1])} className="min-h-11 rounded-lg border border-white/15 px-3 text-sky-100 outline-none focus-visible:ring-2 focus-visible:ring-white aria-disabled:cursor-not-allowed aria-disabled:opacity-40">Previous passage section</button>
+        <button type="button" aria-disabled={loading || passage.nextOffset === null} onClick={() => passage.nextOffset !== null && void read(passage.nextOffset)} className="min-h-11 rounded-lg border border-white/15 px-3 text-sky-100 outline-none focus-visible:ring-2 focus-visible:ring-white aria-disabled:cursor-not-allowed aria-disabled:opacity-40">Next passage section</button>
       </div>}
     </div>}
   </div>;

@@ -108,10 +108,14 @@ type EntryDraft = {
 };
 
 const types = ["character", "location", "place", "organization", "fact", "object", "event", "term", "timeline", "style"];
-const inputClass = "mt-2 w-full rounded-xl border border-white/15 bg-black px-3.5 py-3 text-sm text-white outline-none placeholder:text-[#737373] focus:border-white/50 focus:ring-2 focus:ring-white/15 disabled:opacity-60";
+const inputClass = "mt-2 min-w-0 w-full max-w-full rounded-xl border border-white/15 bg-black px-3.5 py-3 text-sm text-white outline-none placeholder:text-[#737373] focus:border-white/50 focus:ring-2 focus:ring-white/15 disabled:opacity-60";
 const primaryClass = "inline-flex min-h-11 items-center justify-center rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black outline-none transition hover:bg-[#dedede] focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black disabled:cursor-not-allowed disabled:opacity-50";
 const secondaryClass = "inline-flex min-h-11 items-center justify-center rounded-full border border-white/20 px-4 py-2 text-sm text-[#ddd] outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50";
-const panelClass = "rounded-2xl border border-white/10 bg-white/[0.025] p-5 sm:p-6";
+const panelClass = "min-w-0 rounded-2xl border border-white/10 bg-white/[0.025] p-5 sm:p-6";
+const isPinnedSourceRef = (ref: SourceRef): ref is SourceRef & { documentVersionId: string; nodeId: string; textHash: string } =>
+  Boolean(ref.chapterId) && typeof ref.documentVersionId === "string" && Boolean(ref.documentVersionId)
+  && typeof ref.nodeId === "string" && Boolean(ref.nodeId)
+  && typeof ref.textHash === "string" && /^[a-f0-9]{64}$/u.test(ref.textHash);
 
 async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(`/api/backend/v1${path}`, {
@@ -310,12 +314,27 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   }
 
   const load = useCallback(async () => {
-    const scope = bookScope.current;
+    const scope = { bookId };
+    bookScope.current = scope;
     quoteInFlight.current = false; setGeneratingMetadata(false); setGeneratingBible(false); setSaving(null);
     setMetadataRecoveryBlocked(true); setBibleRecoveryBlocked(true);
-    setLoading(true); setError(null);
+    // Revalidate access before retaining private content or editable permissions.
+    // Session recovery pointers stay intact; this does not cancel accepted jobs.
+    setMemory(null); setDraft(null); setDeleting(null); setNotice(null);
+    setLoading(true); setError(null); setFilter("all"); setQuery("");
     setPendingMetadata(null);
     setPendingBible(null);
+    setMetadataFields({ description: "", keywords: "", categories: "" });
+    setMetadataCandidate(null); setMetadataGenerationError(null); setMetadataHistory(null);
+    setMetadataModels(null); setMetadataModelId(""); setMetadataQuote(null); setMetadataQuoteIntent(null);
+    setMetadataQuoteStage("idle"); setMetadataChapterIds([]); setMetadataTone("compelling"); setMetadataAudience("");
+    setMetadataCountConsent(false); setMetadataAcceptConsent(false); setMetadataAcceptanceUncertain(false);
+    setMetadataRecoveryNotFound(false);
+    setBibleCandidates(null); setBibleHistory(null); setBibleQuoteIntent(null); setBibleQuote(null); setBibleQuoteJob(null);
+    setBibleQuoteStage("idle"); setBibleGenerationError(null); setBibleModels(null); setBibleModelId("");
+    setBibleCountConsent(false); setBibleAcceptConsent(false); setBibleAcceptanceUncertain(false);
+    setBibleReadingPlan(null); setBiblePageIndex(0); setBibleChapterIds([]);
+    setIdentityDirty(false); setMetadataDirty(false); setEntryDirty(false);
     try {
       const result = await request<Memory>(`${endpoint}/memory`);
       if (bookScope.current !== scope) return;
@@ -325,19 +344,8 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         keywords: result.metadata?.keywords.join("\n") ?? "",
         categories: result.metadata?.categories.join("\n") ?? "",
       });
-      setMetadataCandidate(null); setMetadataGenerationError(null);
-      setMetadataModels(null); setMetadataModelId(""); setMetadataQuote(null); setMetadataQuoteIntent(null);
-      setMetadataQuoteStage("idle"); setMetadataChapterIds(result.chapters.filter((chapter) => chapter.current_document_version_id).slice(0, 5).map((chapter) => chapter.id));
-      setMetadataCountConsent(false); setMetadataAcceptConsent(false);
-      setMetadataAcceptanceUncertain(false);
-      setMetadataRecoveryNotFound(false);
-      setMetadataHistory(null);
-      setBibleCandidates(null); setBibleHistory(null); setBibleQuoteIntent(null); setBibleQuote(null); setBibleQuoteJob(null); setBibleQuoteStage("idle"); setBibleGenerationError(null);
-      setBibleModels(null); setBibleModelId(""); setBibleCountConsent(false); setBibleAcceptConsent(false);
-      setBibleAcceptanceUncertain(false);
-      setBibleReadingPlan(null); setBiblePageIndex(0);
+      setMetadataChapterIds(result.chapters.filter((chapter) => chapter.current_document_version_id).slice(0, 5).map((chapter) => chapter.id));
       setBibleChapterIds(result.chapters.filter((chapter) => chapter.current_document_version_id).slice(0, 3).map((chapter) => chapter.id));
-      setIdentityDirty(false); setMetadataDirty(false); setEntryDirty(false);
       setFormRevision((value) => value + 1);
       if (result.canEdit) {
         try {
@@ -413,7 +421,10 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     finally { if (bookScope.current === scope) setLoading(false); }
   }, [bookId, endpoint]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { if (bookScope.current.bookId === bookId) bookScope.current = { bookId }; };
+  }, [bookId, load]);
   useEffect(() => {
     if (!dirty) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
@@ -813,7 +824,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         </div>
         {memory.canEdit && <div className="mt-5 rounded-2xl border border-sky-300/20 bg-sky-300/[0.045] p-4 sm:p-5" aria-labelledby="bible-ai-title">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div><h3 id="bible-ai-title" className="font-medium text-sky-50">AI candidate shelf</h3><p id="bible-ai-help" className="mt-1 max-w-2xl text-xs leading-5 text-[#aaa]">Choose up to three saved chapters and prepare a free reading plan. New AI extraction will return when an exact token-priced quote and funded acceptance are available. Existing candidate drafts remain reviewable; nothing is saved to your Book Bible until you choose Save.</p></div>
+            <div><h3 id="bible-ai-title" className="font-medium text-sky-50">AI candidate shelf</h3><p id="bible-ai-help" className="mt-1 max-w-2xl text-xs leading-5 text-[#aaa]">Choose up to three saved chapters and prepare reading batches without generation credits. When approved pricing is available, consent to token counting, inspect the exact quote, then separately approve one paid extraction. Existing drafts remain reviewable; nothing is saved to your Book Bible until you choose Save.</p></div>
             <span className="rounded-full border border-sky-200/20 px-3 py-2 text-xs text-sky-100">Token-priced quote flow</span>
           </div>
           <fieldset disabled={busy || Boolean(bibleQuoteIntent) || bibleGenerationBlocked(pendingBible)} className="mt-4">
@@ -900,7 +911,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           <label className="text-xs text-[#aaa]">Search memory<input value={query} onChange={(event) => setQuery(event.target.value)} className={inputClass} placeholder="Name or description" type="search" /></label>
           <label className="text-xs text-[#aaa]">Entry type<select value={filter} onChange={(event) => setFilter(event.target.value)} className={inputClass}><option value="all">All types</option>{types.map((type) => <option key={type} value={type}>{type[0].toUpperCase() + type.slice(1)}</option>)}</select></label>
         </div>
-        <div className="mt-5 grid items-start gap-5 lg:grid-cols-[minmax(230px,0.8fr)_minmax(0,1.6fr)]">
+        <div className="mt-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(230px,0.8fr)_minmax(0,1.6fr)]">
           <div className="space-y-3">
             {!visibleItems.length && <div className={panelClass}><h3 className="font-medium">{memory.items.length ? "No matching entries" : "Start with a character or a fact"}</h3><p className="mt-2 text-sm leading-6 text-[#999]">{memory.items.length ? "Try a different name or type." : "Record appearance, personality, locations, and facts you want to keep consistent."}</p></div>}
             {visibleItems.map((item) => <button type="button" key={item.id} disabled={!!saving} onClick={() => chooseEntry(item)} aria-pressed={draft?.id === item.id} className={`block w-full rounded-2xl border p-5 text-left outline-none focus-visible:ring-2 focus-visible:ring-white ${draft?.id === item.id ? "border-white/50 bg-white/[0.08]" : "border-white/10 bg-white/[0.025] hover:border-white/25"}`}>
@@ -909,7 +920,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           </div>
           {draft ? <form id="bible-entry-details" onSubmit={saveEntry} className={panelClass}>
             <h3 className="text-xl font-medium">{draft.id ? "Memory details" : "New memory entry"}</h3>
-            <fieldset disabled={!memory.canEdit || busy} className="mt-5 space-y-4">
+            <fieldset disabled={!memory.canEdit || busy} className="mt-5 min-w-0 space-y-4">
               <div className="grid gap-4 sm:grid-cols-[1fr_150px]">
                 <label className="text-xs text-[#bbb]">Name<input required maxLength={160} value={draft.name} onChange={(event) => changeDraft({ name: event.target.value })} className={inputClass} placeholder="e.g. Elara Vale" /></label>
                 <label className="text-xs text-[#bbb]">Type<select value={draft.type} onChange={(event) => changeDraft({ type: event.target.value })} className={inputClass}>{!types.includes(draft.type) && <option value={draft.type}>{draft.type}</option>}{types.map((type) => <option key={type}>{type}</option>)}</select></label>
@@ -942,15 +953,23 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               </div>
               {memory.canEdit && <div className="flex flex-wrap items-center gap-3 border-t border-white/10 pt-5"><button type="submit" className={primaryClass}>{saving === "entry" ? "Saving…" : "Save memory entry"}</button>{entryDirty && <span className="text-xs text-amber-200">Unsaved changes</span>}{selected && <button type="button" onClick={() => setDeleting(selected.id)} className="ml-auto text-sm text-red-200 underline underline-offset-4">Delete entry</button>}</div>}
             </fieldset>
+            {draft.sourceRefs.length > 0 && <section aria-label="Saved manuscript evidence" className="mt-6 border-t border-white/10 pt-5">
+              <h4 className="text-[11px] uppercase tracking-widest text-[#999]">Saved manuscript evidence</h4>
+              <p className="mt-2 text-xs leading-5 text-[#aaa]">Read the exact passage behind an entry, including earlier versions. Reading evidence does not edit your book, generate content, or use credits.</p>
+              <ul className="mt-3 space-y-3">{draft.sourceRefs.map((ref, index) => <li key={JSON.stringify([bookId, ref.chapterId, ref.documentVersionId, ref.nodeId, ref.textHash, index])}>
+                {isPinnedSourceRef(ref) ? <BibleSourcePassage bookId={bookId} citation={ref} title={memory.chapters.find((chapter) => chapter.id === ref.chapterId)?.title ?? "Referenced chapter"} />
+                  : <div className="rounded-lg border border-white/10 p-3 text-xs leading-5 text-[#aaa]"><p className="font-medium text-[#ddd]">{memory.chapters.find((chapter) => chapter.id === ref.chapterId)?.title ?? "Referenced chapter"}</p><p className="mt-1">Chapter reference only. No exact passage has been pinned.</p></div>}
+              </li>)}</ul>
+            </section>}
             {deleting === selected?.id && selected && <div role="alert" className="mt-5 rounded-xl border border-red-400/30 p-4 text-sm text-red-100"><p>Delete “{selected.name}” from this book’s memory? This cannot be undone. Manuscript chapters and image files will remain.</p><div className="mt-3 flex flex-wrap gap-3"><button type="button" disabled={!!saving} onClick={() => void deleteEntry(selected)} className="rounded-full bg-red-100 px-4 py-2 text-sm font-semibold text-red-950">{saving === "delete" ? "Deleting…" : "Confirm delete"}</button><button type="button" disabled={!!saving} onClick={() => setDeleting(null)} className={secondaryClass}>Keep entry</button></div></div>}
           </form> : <div className={`${panelClass} flex min-h-60 items-center justify-center text-center`}><div><h3 className="text-lg font-medium">Your story’s reference shelf</h3><p className="mt-3 max-w-sm text-sm leading-6 text-[#999]">Select an entry to review its details, or add a new character, location, or established fact.</p></div></div>}
         </div>
       </section>
 
-      <section className="mt-12 grid items-start gap-5 lg:grid-cols-2" aria-label="Publishing metadata">
+      <section className="mt-12 grid grid-cols-1 items-start gap-5 lg:grid-cols-2" aria-label="Publishing metadata">
         <form key={`identity-${formRevision}`} onSubmit={saveIdentity} onChange={() => setIdentityDirty(true)} className={panelClass}>
           <h2 className="text-xl font-medium">Book details</h2><p className="mt-2 text-sm leading-6 text-[#999]">The title and author shown throughout your workspace.</p>
-          <fieldset disabled={!memory.canEdit || busy} className="mt-5 space-y-4">
+          <fieldset disabled={!memory.canEdit || busy} className="mt-5 min-w-0 space-y-4">
             <label className="block text-xs text-[#bbb]">Title<input name="title" defaultValue={memory.book.title} required maxLength={300} className={inputClass} /></label>
             <label className="block text-xs text-[#bbb]">Subtitle<input name="subtitle" defaultValue={memory.book.subtitle ?? ""} maxLength={300} className={inputClass} /></label>
             <label className="block text-xs text-[#bbb]">Author or pen name<input name="authorName" defaultValue={memory.book.author_name} required maxLength={160} className={inputClass} /></label>
@@ -1015,12 +1034,16 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               {metadataCandidate.rationale && <div className="mt-4"><h5 className="text-[11px] uppercase tracking-widest text-[#888]">Why this draft</h5><p className="mt-1 text-sm leading-6 text-[#aaa]">{metadataCandidate.rationale}</p></div>}
               <div className="mt-4 border-t border-white/10 pt-4"><h5 className="text-[11px] uppercase tracking-widest text-[#888]">Manuscript evidence</h5>{metadataCandidate.sourceRefs.length ? <ul className="mt-2 space-y-2">{metadataCandidate.sourceRefs.map((ref, index) => {
                 const chapter = memory.chapters.find((item) => item.id === ref.chapterId);
-                return <li key={`${ref.chapterId}-${ref.nodeId ?? index}`} className="rounded-lg border border-white/10 p-3 text-xs leading-5 text-[#aaa]"><span className="font-medium text-[#ddd]">{chapter?.title ?? "Referenced chapter"}</span>{ref.note && <span> · {ref.note}</span>}<span className="block text-[#777]">{ref.documentVersionId ? "Pinned saved version" : "Chapter reference"}{ref.textHash ? ` · evidence ${ref.textHash.slice(0, 12)}…` : ""}</span></li>;
+                return <li key={JSON.stringify([bookId, ref.chapterId, ref.documentVersionId, ref.nodeId, ref.textHash, index])} className="min-w-0 text-xs leading-5 text-[#aaa]">
+                  {isPinnedSourceRef(ref) ? <BibleSourcePassage bookId={bookId} citation={ref} title={chapter?.title ?? "Referenced chapter"} />
+                    : <div className="rounded-lg border border-white/10 p-3"><p className="font-medium text-[#ddd]">{chapter?.title ?? "Referenced chapter"}</p><p className="mt-1">Chapter reference only. No exact passage has been pinned.</p></div>}
+                  {ref.note && <p className="mt-1 break-words px-3">{ref.note}</p>}
+                </li>;
               })}</ul> : <p className="mt-2 text-xs leading-5 text-amber-100">No source references were returned. Review the wording carefully against your manuscript before using it.</p>}</div>
               <div className="mt-5 flex flex-wrap items-center gap-3"><button type="button" disabled={busy} onClick={useMetadataCandidate} className={primaryClass}>Use this draft</button><button type="button" disabled={busy} onClick={() => setMetadataCandidate(null)} className={secondaryClass}>Dismiss</button><span className="text-xs text-[#888]">Using a draft does not save it.</span></div>
             </article>}
           </div>}
-          <fieldset disabled={!memory.canEdit || busy} onChange={() => setMetadataDirty(true)} className="mt-5 space-y-4">
+          <fieldset disabled={!memory.canEdit || busy} onChange={() => setMetadataDirty(true)} className="mt-5 min-w-0 space-y-4">
             <label className="block text-xs text-[#bbb]">Book description<textarea name="description" value={metadataFields.description} onChange={(event) => setMetadataFields((current) => ({ ...current, description: event.target.value }))} maxLength={20000} rows={6} className={inputClass} placeholder="Introduce the book to a potential reader." /></label>
             <div className="grid gap-4 sm:grid-cols-2"><label className="text-xs text-[#bbb]">Keywords · one per line<textarea name="keywords" value={metadataFields.keywords} onChange={(event) => setMetadataFields((current) => ({ ...current, keywords: event.target.value }))} rows={4} className={inputClass} placeholder={"cozy fantasy\nfound family"} /></label><label className="text-xs text-[#bbb]">Categories · one per line<textarea name="categories" value={metadataFields.categories} onChange={(event) => setMetadataFields((current) => ({ ...current, categories: event.target.value }))} rows={4} className={inputClass} placeholder="Fiction / Fantasy" /></label></div>
             <label className="block text-xs text-[#bbb]">ISBN-13 · optional<input name="isbn13" defaultValue={memory.metadata?.isbn13 ?? ""} inputMode="numeric" pattern="[0-9]{13}" maxLength={13} className={inputClass} placeholder="13 digits, without hyphens" /><span className="mt-2 block leading-5 text-[#888]">Enter an ISBN you are entitled to use. A checksum check does not establish ownership or registration.</span></label>

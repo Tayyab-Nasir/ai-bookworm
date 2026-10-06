@@ -2,9 +2,13 @@
 // Run: node --test apps/web/tests/quote-recovery-mounted.mjs
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile, mkdtemp, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { build } from "esbuild";
 import { chromium, expect } from "@playwright/test";
+import postcss from "postcss";
+import tailwind from "@tailwindcss/postcss";
 
 const bundle = await build({
   stdin: { contents: `import React from "react"; import { createRoot } from "react-dom/client";
@@ -17,7 +21,10 @@ const bundle = await build({
     window.renderPanel = props => root.render(React.createElement(Panel, {...props, onApplied: async () => {
       window.appliedCallbacks.push(props.chapterId); if (window.onApplied) await window.onApplied(); }}));
     window.renderImage = props => root.render(React.createElement(Image, {...props, onCompleted: async () => {}}));
-    window.renderMemory = props => root.render(React.createElement(Memory, props));`, resolveDir: process.cwd(), loader: "tsx" },
+    window.renderMemory = props => root.render(React.createElement(Memory, props));
+    window.clearComponent = () => root.render(null);
+    window.renderMemoryStrict = props => root.render(React.createElement(React.StrictMode, null,
+      React.createElement(Memory, { key: props.bookId, ...props })));`, resolveDir: process.cwd(), loader: "tsx" },
   bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
   plugins: [{ name: "local-component-fixtures", setup(builder) {
     builder.onResolve({ filter: /^\.\/api$/ }, args => args.importer.replaceAll("\\", "/").includes(resolve("apps/web/components").replaceAll("\\", "/")) ? { path: "api", namespace: "fixture" } : undefined);
@@ -29,15 +36,24 @@ const bundle = await build({
   } }],
 });
 const script = bundle.outputFiles[0].text;
+const stylePath = resolve("apps/web/styles/globals.css");
+const styles = await postcss([tailwind({ base: resolve("apps/web"), optimize: false })]).process(await readFile(stylePath, "utf8"), { from: stylePath });
+const instrument = (await readFile(resolve("apps/web/app/fonts/instrument-serif-italic.ttf"))).toString("base64");
+const artifacts = await mkdtemp(resolve(tmpdir(), "bookworm-memory-mounted-"));
 const browser = await chromium.launch({ headless: true, channel: process.env.BROWSER_TEST_CHANNEL || "msedge" });
-test.after(() => browser.close());
+test.after(async () => { await browser.close(); console.log(JSON.stringify({ bookMemoryArtifacts: artifacts })); });
 
-async function fixture() {
-  const page = await browser.newPage();
+async function fixture({ width = 1280, styled = false } = {}) {
+  const page = await browser.newPage({ viewport: { width, height: 980 } });
   page.setDefaultTimeout(6000);
   // Every request is fulfilled in memory, including the initial trusted origin.
-  await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' }));
+  await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><div id="root"></div></body></html>' }));
   await page.goto("http://127.0.0.1/bookworm-component-fixture");
+  // ponytail: the display font is real; body uses local Inter/sans-serif. Verify exact font loading on a native Next route.
+  if (styled) await page.addStyleTag({ content: styles.css + `
+    @font-face {font-family:BookwormInstrument;src:url(data:font/ttf;base64,${instrument});font-style:italic;font-weight:400;font-display:swap}
+    :root {--font-inter:Inter,sans-serif;--font-instrument-serif:BookwormInstrument,serif}
+    body {font-family:var(--font-inter);color:#fff}` });
   await page.evaluate(() => {
     window.appliedCallbacks = [];
     window.calls = [];
@@ -84,6 +100,11 @@ async function memoryFixture(page) {
       chapters: [{ id: "a-chapter", title: "Saved chapter", current_document_version_id: "a-version" }], imageAssets: [], canEdit: true };
     window.metadataQuote = { id: "quote", status: "ready", model: "approved", reservedCredits: 31, expiresAt: "2030-01-01T00:00:00.000Z", acceptedJobId: null };
     window.metadataStatus = { request: { id: "saved-request", status: "ready" }, quote: window.metadataQuote, job: null };
+    window.passageResponse = (text, startOffset = 0, totalLength = startOffset + text.length) => {
+      const endOffset = startOffset + text.length;
+      return Response.json({ chapterTitle: "Saved chapter", versionNumber: 1, isCurrentVersion: false,
+        text, truncated: endOffset < totalLength, startOffset, endOffset, totalLength, nextOffset: endOffset < totalLength ? endOffset : null });
+    };
     window.fetchFixture = async (path, init) => {
       if (window.memoryFetch) { const response = await window.memoryFetch(path, init); if (response) return response; }
       if (path.endsWith("/memory")) return Response.json(window.memory);
@@ -94,6 +115,333 @@ async function memoryFixture(page) {
     };
   });
 }
+
+const canonItem = { id: "canon-item", book_id: "a-book", type: "character", name: "Private Elara canon",
+  description: "Private established character appearance", updated_at: "2026-10-06T01:00:00.000Z",
+  attributes_json: { traits: ["patient", "observant"], imageAssetIds: [] },
+  source_refs_json: [{ chapterId: "a-chapter", documentVersionId: "a-version", nodeId: "n1", textHash: "a".repeat(64) }] };
+
+test("paid Book Bible recovery reviews evidence then saves structured canon and image links across remount", async () => {
+  const page = await fixture({ styled: true });
+  try {
+    await memoryFixture(page);
+    await page.evaluate(ref => {
+      window.memory.imageAssets = [{ id: "00000000-0000-4000-8000-000000000011", name: "Silver cloak reference", mime_type: "image/png" }];
+      window.extracted = { suggestionKind: "book_bible_candidate", status: "pending", type: "character", name: "Elara Vale",
+        description: "Elara keeps a silver cloak and watches the northern archive.", attributes: { traits: ["patient", "observant"], timeline: { arrival: 3 } },
+        confidence: 0.87, sourceRefs: [ref] };
+      window.bibleStatus = { request: { id: "paid-bible-request", status: "ready" }, quote: { requestId: "paid-bible-request", status: "ready", model: "approved",
+        countedInputTokens: 1200, maxOutputTokens: 6000, reservedCredits: 23, expiresAt: "2030-01-01T00:00:00Z" }, job: null };
+      window.memoryFetch = (path, init) => {
+        if (path.endsWith("/bible/quotes")) return Response.json(window.bibleStatus);
+        if (path.endsWith("/paid-bible-request/accept")) {
+          window.bibleStatus = { ...window.bibleStatus, quote: { ...window.bibleStatus.quote, status: "accepted" }, job: { id: "paid-bible-job", status: "succeeded" } };
+          throw new Error("Accepted reply lost after the paid job was saved");
+        }
+        if (path.endsWith("/bible/quotes/paid-bible-request")) return Response.json(window.bibleStatus);
+        if (path.endsWith("/bible/jobs/paid-bible-job/recover")) return Response.json({ candidates: [window.extracted] });
+        if (path.endsWith("/bible/evidence")) return window.passageResponse("Elara wore a silver cloak.");
+        if (path.endsWith("/bible") && init?.method === "POST") {
+          const body = JSON.parse(init.body);
+          const item = { id: "persisted-canon", book_id: "a-book", type: body.type, name: body.name, description: body.description,
+            attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs, updated_at: "2026-10-06T01:00:00Z" };
+          window.memory.items.push(item); return Response.json({ item });
+        }
+      };
+      window.renderMemory({ bookId: "a-book" });
+    }, canonItem.source_refs_json[0]);
+    await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.method !== "GET").length), 0);
+    await expect(page.getByRole("button", { name: "Count tokens and request quote" })).toBeDisabled();
+    await page.getByRole("checkbox", { name: /I agree to send the selected saved manuscript batch/ }).check();
+    await page.getByRole("button", { name: "Count tokens and request quote" }).click();
+    const quote = page.getByRole("region", { name: "Book Bible token quote" });
+    await expect(quote).toContainText("1,200 tokens"); await expect(quote).toContainText("6,000 tokens"); await expect(quote).toContainText("23 credits");
+    const accept = page.getByRole("button", { name: "Accept quote and start extraction" });
+    await expect(accept).toBeDisabled();
+    await page.getByRole("checkbox", { name: /I approve this quote and authorize one candidate extraction/ }).check();
+    await accept.click();
+    await page.getByText(/Acceptance is unconfirmed. Resume this quote/).waitFor(); await expect(accept).toBeDisabled();
+    await page.getByRole("button", { name: "Check quote/job status" }).click();
+    await page.getByRole("button", { name: "Recover existing result" }).click();
+    await expect(page.getByText("0 saved entries · changes are saved only when you choose Save.", { exact: true })).toHaveCount(1);
+    await page.getByRole("button", { name: "Open as unsaved entry" }).click();
+    const evidence = page.getByRole("region", { name: "Saved manuscript evidence" });
+    await evidence.getByRole("button", { name: "Read source passage" }).click();
+    await expect(evidence.locator("blockquote")).toHaveText("Elara wore a silver cloak.");
+    await expect(page.getByRole("textbox", { name: "Attribute 1 value" })).toHaveValue('["patient","observant"]');
+    await page.getByRole("checkbox", { name: "Silver cloak reference" }).check();
+    assert.equal(await page.evaluate(() => window.memory.items.length), 0, "review, reading and image selection must not write canon");
+    await page.getByRole("button", { name: "Save memory entry" }).click();
+    await page.getByText("“Elara Vale” saved to this book’s memory.", { exact: true }).waitFor();
+    const calls = await page.evaluate(() => window.calls);
+    const writes = calls.filter(call => call.path.endsWith("/bible") && call.method === "POST");
+    assert.equal(writes.length, 1);
+    assert.deepEqual(JSON.parse(writes[0].body), { type: "character", name: "Elara Vale", description: "Elara keeps a silver cloak and watches the northern archive.",
+      attributes: { traits: ["patient", "observant"], timeline: { arrival: 3 } }, imageAssetIds: ["00000000-0000-4000-8000-000000000011"], sourceRefs: canonItem.source_refs_json });
+    assert.equal(calls.filter(call => call.path.endsWith("/bible/quotes") && call.method === "POST").length, 1);
+    const acceptance = calls.filter(call => call.path.endsWith("/accept"));
+    assert.equal(acceptance.length, 1); assert.deepEqual(JSON.parse(acceptance[0].body), { expectedCredits: 23 });
+    assert.equal(await page.evaluate(() => JSON.stringify(sessionStorage).includes(window.extracted.description)), false);
+    await page.evaluate(() => { window.clearComponent(); window.memory.chapters[0].current_document_version_id = "new-version"; });
+    await expect(page.getByRole("heading", { name: "Book Bible", exact: true })).toHaveCount(0);
+    await page.evaluate(() => window.renderMemory({ bookId: "a-book" }));
+    await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
+    await page.getByRole("button", { name: /character Elara Vale/ }).click();
+    await expect(page.getByRole("textbox", { name: "Attribute 1 value" })).toHaveValue('["patient","observant"]');
+    await expect(page.getByRole("checkbox", { name: "Silver cloak reference" })).toBeChecked();
+    await page.getByRole("region", { name: "Saved manuscript evidence" }).getByRole("button", { name: "Read source passage" }).click();
+    await expect(page.getByText(/Saved version 1 · an earlier version/)).toHaveCount(1);
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Saved metadata");
+    await page.screenshot({ path: resolve(artifacts, "book-memory-paid-canon-desktop.png"), fullPage: true });
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.path.endsWith("/accept")).length), 1);
+  } finally { await page.close(); }
+});
+
+for (const change of ["select another entry", "change source chapter", "remove source"]) test(`late saved passage cannot return after ${change}`, async () => {
+  const page = await fixture();
+  try {
+    await memoryFixture(page);
+    await page.evaluate(item => {
+      window.memory.items = [item, { ...item, id: "other-canon", name: "Other canon", source_refs_json: [{ chapterId: "second-chapter", documentVersionId: "second-version", nodeId: "n2", textHash: "b".repeat(64) }] }];
+      window.memory.chapters.push({ id: "second-chapter", title: "Other chapter", current_document_version_id: "second-version" });
+      window.memoryFetch = (path, init) => {
+        if (!path.endsWith("/bible/evidence")) return;
+        return JSON.parse(init.body).nodeId === "n1" ? window.defer("old-passage") : window.passageResponse("Current entry evidence.");
+      };
+      window.renderMemory({ bookId: "a-book" });
+    }, canonItem);
+    await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
+    await page.getByRole("button", { name: /Private Elara canon/ }).click();
+    await page.getByRole("button", { name: "Read source passage" }).click();
+    await page.waitForFunction(() => !!window.gates["old-passage"]);
+    await page.evaluate(() => {
+      const button = [...document.querySelectorAll("button")].find(button => button.textContent === "Loading passage…");
+      button.click(); button.click();
+    });
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.path.endsWith("/bible/evidence")).length), 1, "the loading guard must block repeated read handlers");
+    if (change === "select another entry") await page.getByRole("button", { name: /Other canon/ }).click();
+    else if (change === "change source chapter") await page.getByRole("combobox", { name: "Source chapter", exact: true }).selectOption("second-chapter");
+    else await page.getByRole("button", { name: "Remove source", exact: true }).click();
+    await page.evaluate(() => window.gates["old-passage"].resolve(window.passageResponse("Old private passage must stay closed.")));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.getByText("Old private passage must stay closed.", { exact: true })).toHaveCount(0);
+    if (change === "select another entry") {
+      await page.getByRole("button", { name: "Read source passage" }).click();
+      await expect(page.locator("blockquote")).toHaveText("Current entry evidence.");
+    } else await expect(page.getByRole("button", { name: "Read source passage" })).toHaveCount(0);
+    const posts = await page.evaluate(() => window.calls.filter(call => call.method !== "GET"));
+    assert.equal(posts.every(call => call.path.endsWith("/bible/evidence")), true, "changing the draft must not save or generate");
+  } finally { await page.close(); }
+});
+
+test("mobile saved evidence keeps verified offsets through failures, keyboard paging and denied reload", async () => {
+  const page = await fixture({ width: 375, styled: true });
+  try {
+    await memoryFixture(page);
+    await page.evaluate(item => {
+      window.memory.canEdit = false; window.memory.items = [item]; window.memory.chapters[0].title = "EvidenceChapter".repeat(12);
+      window.firstSection = "Elara’s silver cloak 😀 was recorded in the northern archive. ";
+      window.secondSection = "The saved passage confirms the character’s first appearance.";
+      window.evidenceReads = 0; window.pageFailure = false;
+      window.memoryFetch = (path, init) => {
+        if (path.endsWith("/memory") && window.pageFailure) return Response.json({ error: { message: "Workspace access was revoked" } }, { status: 403 });
+        if (!path.endsWith("/bible/evidence")) return;
+        const offset = JSON.parse(init.body).offset;
+        if (++window.evidenceReads === 1) throw new Error("Reader temporarily offline");
+        if (window.evidenceReads === 3) return Response.json({ text: "Unverified replacement must not appear", isCurrentVersion: false,
+          startOffset: 0, endOffset: 38, totalLength: 999, nextOffset: 999 });
+        return window.passageResponse(offset === 0 ? window.firstSection : window.secondSection, offset, window.firstSection.length + window.secondSection.length);
+      };
+      window.renderMemory({ bookId: "a-book" });
+    }, canonItem);
+    await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
+    await page.getByRole("button", { name: /Private Elara canon/ }).click();
+    const evidence = page.getByRole("region", { name: "Saved manuscript evidence" });
+    const read = evidence.getByRole("button", { name: "Read source passage" });
+    await read.focus(); await page.keyboard.press("Enter");
+    await expect(evidence.getByRole("alert")).toHaveText("Reader temporarily offline"); await expect(read).toBeEnabled();
+    await read.focus(); await page.keyboard.press("Enter");
+    await expect(evidence.locator("blockquote")).toHaveText("Elara’s silver cloak 😀 was recorded in the northern archive.");
+    const next = evidence.getByRole("button", { name: "Next passage section" });
+    const previous = evidence.getByRole("button", { name: "Previous passage section" });
+    await expect(previous).toBeDisabled(); await next.focus(); await page.keyboard.press("Enter");
+    await expect(evidence.getByRole("alert")).toHaveText("The saved passage position could not be verified.");
+    await expect(evidence.locator("blockquote")).not.toContainText("Unverified replacement"); await expect(previous).toBeDisabled();
+    assert.equal(await next.evaluate(button => button.matches(":focus-visible") && getComputedStyle(button).boxShadow !== "none"), true, "keyboard paging needs a visible focus ring");
+    await next.focus(); await page.keyboard.press("Enter");
+    await expect(evidence.locator("blockquote")).toHaveText("The saved passage confirms the character’s first appearance.");
+    await expect(next).toBeDisabled(); await expect(previous).toBeEnabled();
+    await previous.focus(); await page.keyboard.press("Enter");
+    await expect(evidence.locator("blockquote")).toContainText("Elara’s silver cloak");
+    await page.evaluate(async () => document.fonts.ready);
+    const metrics = await evidence.getByRole("button").evaluateAll(buttons => buttons.map(button => ({ label: button.textContent, height: button.getBoundingClientRect().height, width: button.getBoundingClientRect().width })));
+    assert(metrics.every(button => button.height >= 44 && button.width >= 44), JSON.stringify(metrics));
+    assert.equal(await page.evaluate(() => document.compatMode), "CSS1Compat");
+    const bounds = await page.evaluate(() => ({ viewport: window.innerWidth, scrollWidth: document.documentElement.scrollWidth,
+      overflow: [...document.querySelectorAll("body *")].map(element => {
+        const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
+        return { tag: element.tagName, classes: element.className, right: rect.right, width: rect.width, minWidth: style.minWidth,
+          overflowWrap: style.overflowWrap, text: element.textContent?.slice(0, 100) };
+      }).filter(element => element.right > window.innerWidth + 1).slice(0, 14) }));
+    await writeFile(resolve(artifacts, "book-memory-mobile-bounds.json"), JSON.stringify({ ...bounds, evidenceButtons: metrics }, null, 2), "utf8");
+    if (bounds.scrollWidth > bounds.viewport) await page.screenshot({ path: resolve(artifacts, "book-memory-mobile-overflow.png") });
+    assert.equal(bounds.scrollWidth <= bounds.viewport, true, "375px evidence must not overflow, including unbroken chapter titles");
+    await evidence.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: resolve(artifacts, "book-memory-source-viewer-mobile.png") });
+    const offsets = await page.evaluate(() => window.calls.filter(call => call.path.endsWith("/bible/evidence")).map(call => JSON.parse(call.body).offset));
+    const firstLength = await page.evaluate(() => window.firstSection.length);
+    assert.deepEqual(offsets, [0, 0, firstLength, firstLength, 0]);
+    await page.evaluate(() => { window.pageFailure = true; });
+    await page.getByRole("button", { name: "Reload saved data" }).click();
+    await page.getByRole("heading", { name: "Book memory is unavailable" }).waitFor();
+    await expect(page.getByRole("region", { name: "Saved manuscript evidence" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Private Elara canon/ })).toHaveCount(0);
+    await page.screenshot({ path: resolve(artifacts, "book-memory-revalidation-failure-mobile.png") });
+  } finally { await page.close(); }
+});
+
+for (const status of [401, 403, 503]) test(`Book Bible reload ${status} clears private memory and permissions without losing paid recovery`, async () => {
+  const page = await fixture();
+  try {
+    await memoryFixture(page);
+    await page.evaluate(item => { window.memory.items = [item]; window.renderMemory({ bookId: "a-book" }); }, canonItem);
+    await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
+    await page.getByRole("button", { name: /Private Elara canon/ }).click();
+    await expect(page.getByRole("button", { name: "Save memory entry" })).toBeEnabled();
+    const pointers = await page.evaluate(() => {
+      const key = "original-paid-memory-key";
+      const body = { modelId: "approved", idempotencyKey: key, allowProviderTokenCounting: true, chapterIds: ["a-chapter"], maxTokens: 12000 };
+      const pointers = ["bookworm:metadata-quote:v1:a-book", "bookworm:bible-quote:v1:a-book"].map(keyName => [keyName, JSON.stringify({ idempotencyKey: key, body })]);
+      for (const [keyName, value] of pointers) sessionStorage.setItem(keyName, value);
+      window.memoryFetch = path => path.endsWith("/memory") ? window.defer("memory-reload") : undefined;
+      return pointers;
+    });
+    await page.getByRole("button", { name: "Reload saved data" }).click();
+    await page.waitForFunction(() => !!window.gates["memory-reload"]);
+    await expect(page.getByRole("button", { name: /Private Elara canon/ })).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Save memory entry" })).toHaveCount(0);
+    await page.evaluate(status => window.gates["memory-reload"].resolve(Response.json({ error: { message: "Memory access could not be revalidated" } }, { status })), status);
+    await page.getByRole("heading", { name: "Book memory is unavailable" }).waitFor();
+    await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Save book details" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Save metadata" })).toHaveCount(0);
+    await expect(page.getByRole("alert")).toContainText(status === 401 ? "Your session expired" : "Memory access could not be revalidated");
+    await page.evaluate(() => {
+      window.memoryFetch = undefined; window.memory.canEdit = false; window.memory.items = [];
+      window.memory.book.title = "Revalidated read-only book"; window.memory.metadata.description = "Current viewer-approved metadata";
+    });
+    await page.getByRole("button", { name: "Reload saved data" }).click();
+    const description = page.getByRole("textbox", { name: "Book description", exact: true });
+    await expect(description).toHaveValue("Current viewer-approved metadata"); await expect(description).toBeDisabled();
+    await expect(page.getByText(/You have read-only access/)).toHaveCount(1);
+    await expect(page.getByRole("button", { name: /Private Elara canon/ })).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(pointers => pointers.map(([key]) => [key, sessionStorage.getItem(key)]), pointers), pointers);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.method !== "GET").length), 0, "reload must not accept, cancel, regenerate or save");
+  } finally { await page.close(); }
+});
+
+test("Book Bible StrictMode latest load wins over an older editable response", async () => {
+  const page = await fixture();
+  try {
+    await memoryFixture(page);
+    await page.evaluate(item => {
+      const oldMemory = structuredClone(window.memory); oldMemory.items = [item];
+      window.memoryReads = 0;
+      window.memoryFetch = path => {
+        if (!path.endsWith("/memory")) return;
+        if (++window.memoryReads === 1) { window.oldMemory = oldMemory; return window.defer("strict-old-memory"); }
+        return Response.json({ ...window.memory, canEdit: false, metadata: { ...window.memory.metadata, description: "Latest authorized viewer memory" } });
+      };
+      window.renderMemoryStrict({ bookId: "a-book" });
+    }, canonItem);
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Latest authorized viewer memory");
+    await page.evaluate(() => window.gates["strict-old-memory"].resolve(Response.json(window.oldMemory)));
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Latest authorized viewer memory");
+    await expect(page.getByRole("button", { name: "Save metadata" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Private Elara canon/ })).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.path.endsWith("/models") || call.path.endsWith("/drafts")).length), 0);
+  } finally { await page.close(); }
+});
+
+test("saved Book Bible evidence is readable to viewers and chapter-only notes are not passage proof", async () => {
+  const page = await fixture();
+  try {
+    await memoryFixture(page);
+    await page.evaluate(item => {
+      window.memory.canEdit = false;
+      window.memory.items = [item, { ...item, id: "chapter-note", name: "Chapter-only note", source_refs_json: [{ chapterId: "a-chapter", documentVersionId: "a-version", note: "Opening scene" }] }];
+      window.memoryFetch = (path, init) => {
+        if (path.endsWith("/bible/evidence")) {
+          const text = "Elara wore a silver cloak.";
+          return Response.json({ chapterTitle: "Saved chapter", versionNumber: 1, isCurrentVersion: false,
+            text, truncated: false, startOffset: 0, endOffset: text.length, totalLength: text.length, nextOffset: null });
+        }
+      };
+      window.renderMemory({ bookId: "a-book" });
+    }, canonItem);
+    await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
+    await page.getByRole("button", { name: /Private Elara canon/ }).click();
+    const read = page.getByRole("button", { name: "Read source passage" });
+    await expect(read).toBeEnabled(); await read.click();
+    await expect(page.locator("blockquote")).toHaveText("Elara wore a silver cloak.");
+    await expect(page.getByText(/Saved version 1 · an earlier version/)).toHaveCount(1);
+    await expect(page.getByRole("button", { name: "Save memory entry" })).toHaveCount(0);
+    await page.getByRole("button", { name: /Chapter-only note/ }).click();
+    await expect(page.getByRole("button", { name: "Read source passage" })).toHaveCount(0);
+    await expect(page.getByText("Chapter reference only. No exact passage has been pinned.", { exact: true })).toHaveCount(1);
+    const posts = await page.evaluate(() => window.calls.filter(call => call.method !== "GET"));
+    assert.equal(posts.length, 1); assert.equal(posts[0].path, "/api/backend/v1/books/a-book/bible/evidence");
+    assert.deepEqual(JSON.parse(posts[0].body), { ...canonItem.source_refs_json[0], offset: 0 });
+  } finally { await page.close(); }
+});
+
+test("metadata draft proof reads exact historical evidence before explicit use and save", async () => {
+  const page = await fixture();
+  try {
+    await memoryFixture(page);
+    await page.evaluate(ref => {
+      window.metadataCandidate = { description: "An evidence-backed publisher description about Elara and her silver cloak.",
+        keywords: ["silver cloak"], categories: ["Fiction / Fantasy"], sourceRefs: [ref] };
+      window.memoryFetch = (path, init) => {
+        if (path.endsWith("/metadata/drafts")) return Response.json({ drafts: [{ id: "saved-proof", createdAt: "2026-10-06T01:00:00Z", candidate: window.metadataCandidate }], pending: [] });
+        if (path.endsWith("/bible/evidence")) {
+          const text = "Elara wore a silver cloak.";
+          return Response.json({ chapterTitle: "Saved chapter", versionNumber: 1, isCurrentVersion: false,
+            text, truncated: false, startOffset: 0, endOffset: text.length, totalLength: text.length, nextOffset: null });
+        }
+        if (path.endsWith("/metadata") && init?.method === "PUT") {
+          const body = JSON.parse(init.body);
+          window.memory.metadata = { ...window.memory.metadata, ...body, updated_at: "2026-10-06T01:30:00Z" };
+          return Response.json({ metadata: window.memory.metadata });
+        }
+      };
+      window.renderMemory({ bookId: "a-book" });
+    }, canonItem.source_refs_json[0]);
+    await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
+    await page.getByRole("button", { name: /An evidence-backed publisher description/ }).click();
+    const proof = page.locator('article[aria-labelledby="metadata-preview-title"]');
+    await proof.getByRole("button", { name: "Read source passage" }).click();
+    await expect(proof.locator("blockquote")).toHaveText("Elara wore a silver cloak.");
+    const description = page.getByRole("textbox", { name: "Book description", exact: true });
+    await expect(description).toHaveValue("Saved metadata");
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.method !== "GET").length), 1, "only evidence reading may have occurred");
+    await proof.getByRole("button", { name: "Use this draft" }).click();
+    await expect(description).toHaveValue("An evidence-backed publisher description about Elara and her silver cloak.");
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.method === "PUT").length), 0);
+    await page.getByRole("button", { name: "Save metadata", exact: true }).click();
+    await page.getByText("Publishing metadata saved.", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Reload saved data" }).click();
+    await expect(description).toHaveValue("An evidence-backed publisher description about Elara and her silver cloak.");
+    const writes = await page.evaluate(() => window.calls.filter(call => call.method === "PUT"));
+    assert.equal(writes.length, 1);
+    assert.deepEqual(JSON.parse(writes[0].body), { expectedUpdatedAt: null, description: "An evidence-backed publisher description about Elara and her silver cloak.",
+      keywords: ["silver cloak"], categories: ["Fiction / Fantasy"], isbn13: null, edition: null, publicationDate: null });
+    assert.equal(await page.evaluate(() => window.calls.filter(call => /quotes|\/accept|\/generate/.test(call.path)).length), 0);
+  } finally { await page.close(); }
+});
 
 test("late recent-review reply cannot replace another book's list", async () => {
   const page = await fixture();
