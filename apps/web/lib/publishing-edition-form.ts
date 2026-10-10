@@ -1,5 +1,5 @@
 import type { AudiobookVoice, EditionConfig } from "@bookworm/api-client";
-import type { Edition } from "@bookworm/types";
+import type { Book, Edition } from "@bookworm/types";
 
 export const FONTS = ["BookwormVera", "BookwormVera-Bold", "Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"] as const;
 export const fontLabel = (font: string) => font === "BookwormVera" ? "Bitstream Vera · embedded" : font === "BookwormVera-Bold" ? "Bitstream Vera Bold · embedded" : font;
@@ -90,7 +90,27 @@ function number(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-export function formFromEdition(edition: Edition): FormState {
+export function resolveEditionRenderSafety(form: FormState, book: Pick<Book, "title" | "subtitle" | "author_name" | "language"> | null, savedConfig?: unknown) {
+  const config = toConfig(form, savedConfig);
+  const editionLanguage = form.language.trim();
+  const metadata = {
+    title: book?.title, subtitle: book?.subtitle, author: book?.author_name,
+    language: editionLanguage.length >= 2 && editionLanguage.length <= 35 ? editionLanguage : book?.language,
+    ...(config.kind === "ebook" ? config.metadata_overrides : {}),
+  };
+  // Direction preference cannot waive shaping required by the effective language.
+  const requiresShaping = form.kind !== "audiobook" && (resolveEditionTextDirection(metadata.language ?? "", "auto") === "rtl" || form.textDirection === "rtl");
+  const paginated = form.kind === "print" || (form.kind === "ebook" && form.flow === "fixed");
+  const rtlPrintUnsupported = paginated && requiresShaping;
+  const rtlCoverTextUnsupported = requiresShaping && Boolean(form.coverAssetId) && (
+    (form.titleOnCover && Boolean(metadata.title))
+    || (form.subtitleOnCover && Boolean(metadata.subtitle))
+    || (form.authorOnCover && Boolean(metadata.author))
+  );
+  return { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, renderBlocked: rtlPrintUnsupported || rtlCoverTextUnsupported };
+}
+
+export function formFromEdition(edition: Edition, fallbackLanguage = "en"): FormState {
   const config = object(edition.edition_metadata_json);
   const cover = object(config.cover);
   const qr = object(cover.qr_code);
@@ -108,7 +128,7 @@ export function formFromEdition(edition: Edition): FormState {
     printContents: config.include_table_of_contents === true,
     publisher: typeof front.publisher === "string" ? front.publisher : "",
     kind: edition.type === "print" || edition.type === "audiobook" ? edition.type : "ebook",
-    language: edition.language ?? "en",
+    language: edition.language ?? fallbackLanguage,
     textDirection: config.text_direction === "ltr" || config.text_direction === "rtl" ? config.text_direction : "auto",
     flow: config.flow === "fixed" ? "fixed" : "reflowable",
     navigation: config.navigation === "none" || config.navigation === "toc" ? config.navigation : "toc+landmarks",

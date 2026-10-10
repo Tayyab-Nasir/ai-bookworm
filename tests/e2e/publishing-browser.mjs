@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
 const fixtureOrigin = process.env.BROWSER_TEST_FIXTURE_ORIGIN ?? 'http://127.0.0.1:4399';
 const appOrigin = process.env.BROWSER_TEST_ORIGIN ?? 'http://127.0.0.1:4398';
+for (const origin of [fixtureOrigin, appOrigin]) assert.ok(['127.0.0.1', 'localhost'].includes(new URL(origin).hostname), 'publishing acceptance must remain loopback-only');
 assert.equal((await fetch(`${fixtureOrigin}/health`).then((r) => r.json())).fixture, true);
 const browser = await chromium.launch({ headless: true, ...(process.env.BROWSER_TEST_CHANNEL ? { channel: process.env.BROWSER_TEST_CHANNEL } : {}) });
 try {
@@ -197,6 +198,78 @@ try {
   await archiveLink.waitFor();
   assert.notEqual(await archiveLink.getAttribute('href'), archiveUrl, 'export history did not refresh private download URL');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'audiobook mobile overflow');
+  // Seed saved string overrides only in the authenticated local fixture. Native
+  // shaping and PNG/EPUB bytes are covered by Python tests, not these UI files.
+  const editionsUrl = `${appOrigin}/api/backend/v1/books/88888888-8888-4888-8888-888888888888/editions`;
+  // Chromium sends the real HttpOnly secure cookie on the trusted loopback
+  // origin. Playwright's separate API client filters it on HTTP 127.0.0.1;
+  // use the authenticated browser without copying or relaxing those cookies.
+  const editionRequest = (method, body) => page.evaluate(async ({ url, method, body }) => {
+    if (new URL(url).origin !== location.origin) throw new Error('Fixture request must stay same-origin');
+    const response = await fetch(url, { method, credentials: 'same-origin',
+      ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) });
+    return { status: response.status, payload: await response.json() };
+  }, { url: editionsUrl, method, body });
+  let selectedSafetyEditionId;
+  await page.route(editionsUrl, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const response = await route.fetch();
+    const payload = await response.json();
+    const selected = payload.editions.find((edition) => edition.id === selectedSafetyEditionId);
+    assert.ok(selected, 'saved safety fixture edition missing on reload');
+    await route.fulfill({ response, json: { ...payload, editions: [selected, ...payload.editions.filter((edition) => edition.id !== selected.id)] } });
+  });
+  const renderRequests = [];
+  page.on('request', (request) => { if (/\/api\/backend\/v1\/editions\/[^/]+\/render$/.test(new URL(request.url()).pathname)) renderRequests.push(request.url()); });
+  const artwork = { asset_id: '55555555-5555-4555-8555-555555555555', title_on_cover: true, subtitle_on_cover: true, author_on_cover: true };
+  const emptyText = { title: '', subtitle: '', author: '' };
+  const safetyCases = [
+    { name: 'override RTL after English edition', language: 'en', config: { kind: 'ebook', flow: 'reflowable', cover: artwork, metadata_overrides: { language: 'ar' } }, coverBlocked: true, printBlocked: false },
+    { name: 'explicit LTR does not waive override shaping', language: 'en', config: { kind: 'ebook', text_direction: 'ltr', cover: artwork, metadata_overrides: { language: 'ar' } }, coverBlocked: true, printBlocked: false },
+    { name: 'empty overlays retain artwork-only RTL render', language: 'ar', config: { kind: 'ebook', cover: artwork, metadata_overrides: { ...emptyText, language: 'ar' } }, coverBlocked: false, printBlocked: false, saveReload: true },
+    { name: 'English override wins over RTL edition', language: 'ar', config: { kind: 'ebook', cover: artwork, metadata_overrides: { language: 'en' } }, coverBlocked: false, printBlocked: false },
+    { name: 'fixed layout still requires shaping without visible cover text', language: 'en', config: { kind: 'ebook', flow: 'fixed', text_direction: 'ltr', cover: artwork, metadata_overrides: { ...emptyText, language: 'ar' } }, coverBlocked: false, printBlocked: true },
+    { name: 'print explicit LTR does not waive base typography', language: 'ar', config: { kind: 'print', text_direction: 'ltr', cover: artwork }, coverBlocked: true, printBlocked: true },
+    { name: 'legacy English cover remains renderable', language: 'en', config: { kind: 'ebook', cover: artwork }, coverBlocked: false, printBlocked: false },
+  ];
+  for (const safety of safetyCases) {
+    const saved = await editionRequest('POST', { language: safety.language, config: safety.config });
+    assert.equal(saved.status, 201, `${safety.name}: fixture save failed`);
+    selectedSafetyEditionId = saved.payload.id;
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector('fieldset')?.disabled === false);
+    assert.equal(await page.getByLabel('Language', { exact: true }).inputValue(), safety.language);
+    const renderButton = page.getByRole('button', { name: safety.config.kind === 'print' ? 'Render PDF' : 'Render EPUB', exact: true });
+    const blocked = safety.coverBlocked || safety.printBlocked;
+    assert.equal(await renderButton.isEnabled(), !blocked, safety.name);
+    assert.equal(await page.getByText('RTL cover text cannot be safely composed with the current cover renderer.', { exact: true }).count(), Number(safety.coverBlocked), `${safety.name}: cover guidance mismatch`);
+    assert.equal(await page.getByText('RTL print PDF and fixed EPUB are not available with the current fonts.', { exact: true }).count(), Number(safety.printBlocked), `${safety.name}: pagination guidance mismatch`);
+    assert.equal(await page.getByRole('button', { name: 'Run preflight', exact: true }).isEnabled(), true, `${safety.name}: preflight should remain available`);
+    if (safety.saveReload) {
+      await page.getByLabel('Publisher or imprint', { exact: true }).fill('Fixture Imprint');
+      await page.getByRole('button', { name: 'Save edition', exact: true }).click();
+      await page.getByText('Edition settings saved.', { exact: true }).waitFor();
+      const savedSettings = await editionRequest('GET');
+      assert.equal(savedSettings.status, 200, 'saved override settings could not be read');
+      const persisted = savedSettings.payload.editions.find((edition) => edition.id === selectedSafetyEditionId);
+      assert.deepEqual(persisted.edition_metadata_json.metadata_overrides, safety.config.metadata_overrides, 'saving artwork settings dropped explicit empty text overrides');
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('fieldset')?.disabled === false);
+      assert.equal(await renderButton.isEnabled(), true, 'saved artwork-only override safety changed on reload');
+    }
+    const beforeRender = renderRequests.length;
+    if (blocked) {
+      await renderButton.evaluate((button) => button.click());
+      assert.equal(renderRequests.length, beforeRender, `${safety.name}: disabled render sent a request`);
+      assert.equal(await renderButton.getAttribute('aria-describedby'), 'rtl-render-guidance');
+    } else {
+      await renderButton.click();
+      await page.getByText('Private render completed.', { exact: true }).waitFor();
+      assert.equal(renderRequests.length, beforeRender + 1, `${safety.name}: expected one fixture render request`);
+    }
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${safety.name}: mobile overflow`);
+  }
+  await page.unroute(editionsUrl);
   assert.deepEqual(errors, []);
-  console.log('PASS publishing browser: layout starters for fixed EPUB and print, preserved settings, save/reload, render/preflight/package, audio QC/sign-off, async export response-loss retry identity, reload recovery, cancellation, polled progress, refreshed download URL, disclosure and mobile. Artifact bytes remain fixtures.');
+  console.log('PASS publishing browser: layout starters for fixed EPUB and print, preserved settings, save/reload, render/preflight/package, audio QC/sign-off, async export response-loss retry identity, reload recovery, cancellation, polled progress, refreshed download URL, disclosure, effective RTL metadata/empty overrides/explicit-LTR shaping guards and mobile. Artifact bytes remain fixtures.');
 } finally { await browser.close(); }

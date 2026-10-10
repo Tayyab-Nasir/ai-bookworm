@@ -11,6 +11,7 @@ from html import escape
 
 from editions import EbookEdition, resolve_text_direction
 from manuscript import block_tree, image_width, inline_markup, table_header_rows, table_rows, table_spans
+from publication_metadata import effective_publication_metadata
 
 RENDERER_VERSION = "epub-1.13.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
@@ -154,8 +155,7 @@ def _cover_xhtml(asset_id: str, title: str, lang: str, direction: str) -> str:
 
 def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], lang: str,
          cover_asset_id: str | None, image_asset_ids: list[str]) -> str:
-    md = dict(book["metadata"])
-    md.update(edition.metadata_overrides)  # edition-level overrides win
+    md = effective_publication_metadata(book["metadata"], edition.metadata_overrides)
     uid = f"urn:uuid:{book['bookId']}"
     manifest_items = [
         '<item href="nav.xhtml" id="nav" media-type="application/xhtml+xml" properties="nav"/>',
@@ -190,6 +190,9 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
     ]
     if md.get("description"):
         meta.append(f"<dc:description>{escape(md['description'])}</dc:description>")
+    saved_date = md.get("publicationDate")
+    if saved_date is not None:
+        meta.append(f"<dc:date>{saved_date}</dc:date>")
     if edition.front_matter.publisher.strip():
         meta.append(f"<dc:publisher>{escape(edition.front_matter.publisher)}</dc:publisher>")
     if edition.front_matter.copyright_notice.strip():
@@ -210,7 +213,7 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
 
 
 def _front_pages(book: dict, edition: EbookEdition) -> list[tuple[str, list[str]]]:
-    md = {**book["metadata"], **edition.metadata_overrides}
+    md = effective_publication_metadata(book["metadata"], edition.metadata_overrides)
     pages = [("title-page", [md.get(key) or "" for key in ("title", "subtitle", "author")])] if edition.include_title_page else []
     front = edition.front_matter
     if front.copyright_notice.strip() or front.publisher.strip():
@@ -222,6 +225,8 @@ def _front_pages(book: dict, edition: EbookEdition) -> list[tuple[str, list[str]
 def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = None,
                 image_bytes: dict[str, bytes] | None = None) -> tuple[bytes, str]:
     """Render to EPUB3. Returns (zip_bytes, sha256_hex). Pure/deterministic."""
+    # Validate before native rasterization; all EPUB consumers see one listing.
+    book = {**book, "metadata": effective_publication_metadata(book["metadata"], edition.metadata_overrides)}
     if edition.flow == "fixed":
         from fixed_epub import render_fixed_epub
         return render_fixed_epub(book, edition, cover_bytes, image_bytes)

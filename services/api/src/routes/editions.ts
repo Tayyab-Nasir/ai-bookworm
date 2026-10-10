@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { BookMetadataSchema } from "@bookworm/book-model";
 import { AppError } from "../errors.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "../lib/authoring.js";
 import { logActivity } from "../lib/activity.js";
@@ -122,6 +123,10 @@ const audiobookSchema = z.object({
 }).strict();
 
 export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, printSchema, audiobookSchema]).superRefine((config, ctx) => {
+  if (config.kind === "ebook" && Object.hasOwn(config.metadata_overrides, "publicationDate")
+    && !BookMetadataSchema.shape.publicationDate.safeParse(config.metadata_overrides.publicationDate).success) {
+    ctx.addIssue({ code: "custom", path: ["metadata_overrides", "publicationDate"], message: "Enter a valid YYYY-MM-DD publication date." });
+  }
   if (config.kind === "print" && config.wrap_cover.enabled) {
     if (!config.cover.asset_id) ctx.addIssue({ code: "custom", path: ["cover", "asset_id"], message: "Choose front cover artwork for a full paperback cover." });
     if (config.wrap_cover.profile === "custom" && !config.wrap_cover.expected_page_count) ctx.addIssue({ code: "custom", path: ["wrap_cover", "expected_page_count"], message: "Enter the printer template's page count." });
@@ -158,6 +163,21 @@ export const renderResponseSchema = z.object({
   coverRendererVersion: z.string().min(1).max(200).nullable().optional(),
 }).strict();
 
+export const EFFECTIVE_EBOOK_COVER_POLICY = "effective-ebook-metadata-v1";
+export const EFFECTIVE_EBOOK_COVER_RENDERER_VERSION = "cover-1.4.0";
+
+export function requiresEffectiveEbookCoverPolicy(config: z.infer<typeof editionConfigSchema>) {
+  if (config.kind !== "ebook" || !config.cover.asset_id) return false;
+  const overlays = [
+    [config.cover.title_on_cover, "title"],
+    [config.cover.subtitle_on_cover, "subtitle"],
+    [config.cover.author_on_cover, "author"],
+  ] as const;
+  // An explicit empty override removes visible text; it is not an absent override.
+  return overlays.some(([enabled, key]) => enabled && Object.hasOwn(config.metadata_overrides, key))
+    || (Object.hasOwn(config.metadata_overrides, "language") && overlays.some(([enabled]) => enabled));
+}
+
 export function decodeRenderedCover(config: z.infer<typeof editionConfigSchema>, rendered: z.infer<typeof renderResponseSchema>) {
   const expected = config.kind === "print" && config.wrap_cover.enabled ? "pdf" : "png";
   if (Boolean(rendered.coverArtifactBase64) !== Boolean(rendered.coverSha256)) throw new AppError(503, "The renderer returned incomplete cover output.");
@@ -166,11 +186,20 @@ export function decodeRenderedCover(config: z.infer<typeof editionConfigSchema>,
     return null;
   }
   if ((rendered.coverFormat ?? "png") !== expected) throw new AppError(503, "The renderer returned the wrong cover format.");
+  const affected = requiresEffectiveEbookCoverPolicy(config);
+  if (affected && rendered.coverRendererVersion !== EFFECTIVE_EBOOK_COVER_RENDERER_VERSION) {
+    throw new AppError(503, "The renderer does not support this edition's cover metadata. Update the renderer, then render again with a new request key.",
+      undefined, "cover_metadata_policy_unsupported");
+  }
   return {
     bytes: decodeArtifact(rendered.coverArtifactBase64, rendered.coverSha256, 25 * 1024 * 1024,
       expected === "pdf" ? Buffer.from("%PDF-") : Buffer.from([0x89, 0x50, 0x4e, 0x47]), `cover ${expected}`),
     filename: `cover.${expected}`, mimeType: expected === "pdf" ? "application/pdf" : "image/png",
     checksum: rendered.coverSha256.toLowerCase(),
+    usage: {
+      ...(rendered.coverRendererVersion ? { coverRendererVersion: rendered.coverRendererVersion } : {}),
+      ...(affected ? { coverMetadataPolicy: EFFECTIVE_EBOOK_COVER_POLICY } : {}),
+    },
   };
 }
 
@@ -480,6 +509,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       const usage = {
         renderedBytes: artifacts.reduce((sum, artifact) => sum + Number(artifact.sizeBytes), 0),
         illustrationCount: model.assets.length,
+        ...decodedCover?.usage,
       };
       await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
         model.chapters.flatMap(chapter => chapter.nodes), imageSha256);

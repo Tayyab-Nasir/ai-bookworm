@@ -29,6 +29,56 @@ EBOOK = {"kind": "ebook"}
 PRINT = {"kind": "print", "trim_size": "6x9"}
 
 
+@pytest.fixture
+def publication_date_render_client(monkeypatch):
+    import importlib.util
+    from fastapi.testclient import TestClient
+    spec = importlib.util.spec_from_file_location("bookworm_render_date_boundary", RENDERING / "main.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("RENDERING_SERVICE_TOKEN", "publication-date-fixture")
+    with TestClient(module.app, raise_server_exceptions=False) as client:
+        yield client
+
+
+@pytest.mark.parametrize("value", ["0000-01-01", "2026-02-30"])
+@pytest.mark.parametrize("source", ["base", "override"])
+@pytest.mark.parametrize("include_artifact", [False, True])
+def test_preflight_http_rejects_malformed_effective_publication_dates(publication_date_render_client, value, source, include_artifact):
+    book = copy.deepcopy(VALID)
+    config = copy.deepcopy(EBOOK)
+    book["metadata"]["publicationDate"] = value if source == "base" else "2024-02-29"
+    if source == "override":
+        config["metadata_overrides"] = {"publicationDate": value}
+    response = publication_date_render_client.post("/preflight", headers={"x-service-token": "publication-date-fixture"}, json={
+        "bookModel": book, "editionConfig": config, "channel": "kdp", "includeArtifact": include_artifact})
+    assert response.status_code == 422, response.text
+    assert response.json() == {"detail": "publicationDate must be a valid YYYY-MM-DD calendar date."}
+
+
+@pytest.mark.parametrize("case", ["absent", "null", "base", "override", "override-masks-base"])
+@pytest.mark.parametrize("include_artifact", [False, True])
+def test_preflight_http_preserves_valid_effective_publication_dates(publication_date_render_client, case, include_artifact):
+    book = copy.deepcopy(VALID)
+    config = copy.deepcopy(EBOOK)
+    if case != "absent":
+        book["metadata"]["publicationDate"] = None if case == "null" else (
+            "0000-01-01" if case == "override-masks-base" else "2024-02-29")
+    if case.startswith("override"):
+        config["metadata_overrides"] = {"publicationDate": "2026-11-01"}
+    payload = {"bookModel": book, "editionConfig": config, "channel": "kdp", "includeArtifact": include_artifact}
+    original = copy.deepcopy(payload)
+    response = publication_date_render_client.post("/preflight", headers={"x-service-token": "publication-date-fixture"}, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["errors"] == 0
+    assert payload == original
+    if case in ("absent", "null"):
+        baseline = publication_date_render_client.post("/preflight", headers={"x-service-token": "publication-date-fixture"}, json={
+            **payload, "bookModel": VALID, "editionConfig": EBOOK})
+        assert baseline.status_code == 200, baseline.text
+        assert response.json() == baseline.json()
+
+
 @pytest.mark.parametrize("image_format", ["JPEG", "GIF", "WEBP"])
 def test_importable_raster_formats_are_normalized_to_real_pngs_in_export(image_format, monkeypatch):
     import base64
@@ -219,6 +269,177 @@ def test_rtl_print_and_cover_refuse_base_fonts_that_cannot_shape_the_script():
     edition = parse_edition({"kind": "ebook", "cover": {"asset_id": "11111111-1111-1111-1111-111111111111"}})
     with pytest.raises(ValueError, match="RTL cover text"):
         compose_front_cover(_artwork(), book, edition)
+
+
+def _effective_cover_config(**overrides):
+    return {"kind": "ebook", "metadata_overrides": overrides,
+            "cover": {"asset_id": "11111111-1111-1111-1111-111111111111",
+                      "qr_code": {"enabled": True, "url": "https://author.example/the-fixture", "label": "Learn more"}}}
+
+
+def test_effective_ebook_cover_http_png_matches_listing_and_exact_embedded_epub(publication_date_render_client):
+    book = copy.deepcopy(VALID)
+    book["metadata"]["subtitle"] = "Original subtitle"
+    config = _effective_cover_config(title="The edition title", subtitle="Edition subtitle", author="Edition Author")
+    config["include_title_page"] = True
+    payload = {"bookModel": book, "editionConfig": config, "coverBase64": base64.b64encode(_artwork()).decode()}
+    original = copy.deepcopy(payload)
+    response = publication_date_render_client.post("/render", headers={"x-service-token": "publication-date-fixture"}, json=payload)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    control_book = {**book, "metadata": {**book["metadata"], **config["metadata_overrides"]}}
+    control_edition = parse_edition({**config, "metadata_overrides": {}})
+    expected_png, expected_sha = compose_front_cover(_artwork(), control_book, control_edition)
+    png = base64.b64decode(result["coverArtifactBase64"])
+    assert result["coverSha256"] == expected_sha
+    assert png == expected_png
+    assert result["coverRendererVersion"] == "cover-1.4.0"
+    epub = base64.b64decode(result["artifactBase64"])
+    assert (epub, result["sha256"]) == render_epub(control_book, control_edition, expected_png)
+    with zipfile.ZipFile(io.BytesIO(epub)) as archive:
+        assert archive.read("OEBPS/images/11111111-1111-1111-1111-111111111111.png") == png
+        metadata = ET.fromstring(archive.read("OEBPS/content.opf"))
+        ns = {"dc": "http://purl.org/dc/elements/1.1/"}
+        assert metadata.find(".//dc:title", ns).text == "The edition title"
+        assert metadata.find(".//dc:creator", ns).text == "Edition Author"
+        assert b"Edition subtitle" in archive.read("OEBPS/title-page.xhtml")
+        assert b"Cover of The edition title" in archive.read("OEBPS/cover.xhtml")
+    assert payload == original
+
+
+@pytest.mark.parametrize("include_artifact", [False, True])
+@pytest.mark.parametrize("base_language, effective_language", [("en", "ar"), ("ar", "en")])
+def test_effective_ebook_cover_http_preflight_checks_language_before_composition(
+        publication_date_render_client, monkeypatch, base_language, effective_language, include_artifact):
+    book = copy.deepcopy(VALID)
+    book["metadata"]["language"] = base_language
+    config = _effective_cover_config(language=effective_language)
+    compositions = []
+    # Observe the actual compositor; don't replace native rendering or rules.
+    endpoint = next(route.endpoint for route in publication_date_render_client.app.routes if route.path == "/preflight")
+    original_compose = endpoint.__globals__["compose_front_cover"]
+
+    def record_composition(*args):
+        compositions.append(True)
+        return original_compose(*args)
+
+    monkeypatch.setitem(endpoint.__globals__, "compose_front_cover", record_composition)
+    response = publication_date_render_client.post("/preflight", headers={"x-service-token": "publication-date-fixture"}, json={
+        "bookModel": book, "editionConfig": config, "includeArtifact": include_artifact,
+        "coverBase64": base64.b64encode(_artwork()).decode()})
+    assert response.status_code == 200, response.text
+    findings = {finding["code"] for finding in response.json()["findings"]}
+    assert ("RTL_COVER_FONT_UNSUPPORTED" in findings) == (effective_language == "ar")
+    assert len(compositions) == (0 if effective_language == "ar" else 1)
+
+
+@pytest.mark.parametrize("path, include_artifact", [("/render", True), ("/preflight", False), ("/preflight", True)])
+@pytest.mark.parametrize("visible", [True, False])
+def test_effective_ebook_cover_http_visible_override_glyph_safety(publication_date_render_client, path, include_artifact, visible):
+    config = _effective_cover_config(title="漢字")
+    config["cover"]["title_on_cover"] = visible
+    response = publication_date_render_client.post(path, headers={"x-service-token": "publication-date-fixture"}, json={
+        "bookModel": VALID, "editionConfig": config, "includeArtifact": include_artifact,
+        "coverBase64": base64.b64encode(_artwork()).decode()})
+    assert response.status_code == (422 if visible else 200), f"unexpected status {response.status_code} for visible={visible}"
+    if visible:
+        assert response.json() == {"detail": "cover title contains characters unsupported by the cover font"}
+    elif path == "/preflight":
+        assert response.json()["errors"] == 0
+
+
+@pytest.mark.parametrize("path", ["/render", "/preflight"])
+@pytest.mark.parametrize("source", ["base", "override", "malformed-metadata"])
+def test_effective_ebook_cover_http_malformed_metadata_is_safe_422(publication_date_render_client, path, source):
+    book = copy.deepcopy(VALID)
+    config = _effective_cover_config()
+    if source == "malformed-metadata":
+        book["metadata"] = ["not an object"]
+        expected = "publishing metadata must be an object"
+    else:
+        book["metadata"]["publicationDate"] = "0000-01-01" if source == "base" else "2024-02-29"
+        if source == "override":
+            config["metadata_overrides"] = {"publicationDate": "2026-02-30"}
+        expected = "publicationDate must be a valid YYYY-MM-DD calendar date."
+    response = publication_date_render_client.post(path, headers={"x-service-token": "publication-date-fixture"}, json={
+        "bookModel": book, "editionConfig": config, "coverBase64": base64.b64encode(_artwork()).decode()})
+    assert response.status_code == 422, response.text
+    assert response.json() == {"detail": expected}
+
+
+@pytest.mark.parametrize("path", ["/render", "/preflight"])
+def test_effective_ebook_cover_http_hidden_rtl_overrides_are_allowed(publication_date_render_client, path):
+    config = _effective_cover_config(language="ar", title="عنوان", subtitle="副題", author="كاتب")
+    config["cover"].update({"title_on_cover": False, "subtitle_on_cover": False, "author_on_cover": False})
+    response = publication_date_render_client.post(path, headers={"x-service-token": "publication-date-fixture"}, json={
+        "bookModel": VALID, "editionConfig": config, "coverBase64": base64.b64encode(_artwork()).decode()})
+    assert response.status_code == 200, response.text
+    if path == "/preflight":
+        assert response.json()["errors"] == 0
+
+
+@pytest.mark.parametrize("base_language, effective_language", [("en", "ar"), ("ar", "en")])
+@pytest.mark.parametrize("visible", [True, False])
+def test_effective_ebook_cover_native_preflight_uses_override_language(base_language, effective_language, visible):
+    book = copy.deepcopy(VALID)
+    book["metadata"]["language"] = base_language
+    config = _effective_cover_config(language=effective_language)
+    config["cover"].update({"title_on_cover": visible, "subtitle_on_cover": visible, "author_on_cover": visible})
+    original = copy.deepcopy((book, config))
+    findings = run_preflight(_ctx(book, config), load_ruleset())
+    codes = {finding.code for finding in findings}
+    assert ("RTL_COVER_FONT_UNSUPPORTED" in codes) == (effective_language == "ar" and visible)
+    assert "RTL_PRINT_FONT_UNSUPPORTED" not in codes
+    assert (book, config) == original
+
+
+@pytest.mark.parametrize("base_language, effective_language", [("en", "ar"), ("ar", "en")])
+def test_effective_ebook_cover_http_render_uses_override_language(publication_date_render_client, base_language, effective_language):
+    book = copy.deepcopy(VALID)
+    book["metadata"]["language"] = base_language
+    config = _effective_cover_config(language=effective_language)
+    response = publication_date_render_client.post("/render", headers={"x-service-token": "publication-date-fixture"}, json={
+        "bookModel": book, "editionConfig": config, "coverBase64": base64.b64encode(_artwork()).decode()})
+    assert response.status_code == (422 if effective_language == "ar" else 200)
+    if effective_language == "ar":
+        assert "RTL cover text" in response.json()["detail"]
+    else:
+        result = response.json()
+        control_book = {**book, "metadata": {**book["metadata"], "language": "en"}}
+        control_edition = parse_edition({**config, "metadata_overrides": {}})
+        expected_png, expected_sha = compose_front_cover(_artwork(), control_book, control_edition)
+        assert result["coverSha256"] == expected_sha
+        assert base64.b64decode(result["coverArtifactBase64"]) == expected_png
+        assert (base64.b64decode(result["artifactBase64"]), result["sha256"]) == render_epub(control_book, control_edition, expected_png)
+
+
+@pytest.mark.parametrize("path", ["/render", "/preflight"])
+@pytest.mark.parametrize("case", ["absent", "null", "override-masks-base"])
+def test_effective_ebook_cover_http_preserves_date_identity_and_precedence(publication_date_render_client, path, case):
+    book = copy.deepcopy(VALID)
+    config = _effective_cover_config()
+    if case != "absent":
+        book["metadata"]["publicationDate"] = None if case == "null" else "0000-01-01"
+    if case == "override-masks-base":
+        config["metadata_overrides"] = {"publicationDate": "2024-02-29"}
+    payload = {"bookModel": book, "editionConfig": config, "coverBase64": base64.b64encode(_artwork()).decode()}
+    original = copy.deepcopy(payload)
+    response = publication_date_render_client.post(path, headers={"x-service-token": "publication-date-fixture"}, json=payload)
+    assert response.status_code == 200, response.text
+    if path == "/preflight":
+        assert response.json()["errors"] == 0
+    else:
+        # An unset date keeps legacy bytes; a valid override masks an invalid base.
+        control_book = copy.deepcopy(VALID)
+        if case == "override-masks-base":
+            control_book["metadata"]["publicationDate"] = "2024-02-29"
+        control_edition = parse_edition({**config, "metadata_overrides": {}})
+        expected_png, expected_sha = compose_front_cover(_artwork(), control_book, control_edition)
+        result = response.json()
+        assert result["coverSha256"] == expected_sha
+        assert base64.b64decode(result["coverArtifactBase64"]) == expected_png
+        assert (base64.b64decode(result["artifactBase64"]), result["sha256"]) == render_epub(control_book, control_edition, expected_png)
+    assert payload == original
 
 
 # ---- PDF determinism -------------------------------------------------------------

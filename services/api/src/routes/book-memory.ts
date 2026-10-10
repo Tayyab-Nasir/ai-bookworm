@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { BookMetadataSchema } from "@bookworm/book-model";
 import { AppError } from "../errors.js";
 import { parseNodes } from "../lib/authoring.js";
 import { requireWorkspaceEditor, requireWorkspaceMember } from "../lib/authorize.js";
@@ -48,10 +49,7 @@ const metadataSchema = z.object({
   categories: z.array(z.string().trim().min(1).max(180)).max(20).default([]),
   isbn13: z.string().refine(isbnChecksum, "Enter a valid 13-digit ISBN checksum.").nullable().default(null),
   edition: z.string().trim().max(100).nullable().default(null),
-  publicationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
-    const date = new Date(`${value}T00:00:00.000Z`);
-    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
-  }, "Enter a valid calendar date.").nullable().default(null),
+  publicationDate: BookMetadataSchema.shape.publicationDate.default(null),
 }).strict();
 
 function parse<T extends z.ZodTypeAny>(schema: T, value: unknown): z.output<T> {

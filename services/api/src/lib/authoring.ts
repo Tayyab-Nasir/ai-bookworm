@@ -150,6 +150,9 @@ export async function assembleBookModel(sb: SupabaseClient, book: Record<string,
       categories: Array.isArray(metadata?.categories) ? metadata.categories : [],
       isbn13: metadata?.isbn13 ?? null,
       edition: metadata?.edition ?? null,
+      // Keep legacy null/absent dates out of the model so their proofs do not
+      // change. An actual saved date is part of the render/package identity.
+      ...(metadata?.publication_date == null ? {} : { publicationDate: metadata.publication_date }),
     },
     styleGuide: {
       ...(style?.spelling_variant ? { spellingVariant: style.spelling_variant } : {}),

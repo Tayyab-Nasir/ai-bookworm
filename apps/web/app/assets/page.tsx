@@ -10,6 +10,7 @@ import AssetBrowser from "../../components/AssetBrowser";
 import ImageQuoteStudio from "../../components/ImageQuoteStudio";
 import { apiClient } from "../../components/api";
 import type { ImageGenerationJob } from "@bookworm/api-client";
+import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../../lib/workspace-selection";
 
 interface VersionRow {
   id: string;
@@ -24,14 +25,17 @@ interface VersionRow {
 function AssetsPageInner() {
   const requestedWorkspaceId = useSearchParams().get("ws");
   const api = apiClient();
-  const [workspaceId, setWorkspaceId] = useState(requestedWorkspaceId ?? "");
+  const [workspaceId, setWorkspaceId] = useState("");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [assetAccess, setAssetAccess] = useState<{ workspaceId: string; canEdit: boolean } | null>(null);
   const [accessError, setAccessError] = useState(false);
   const [accessRevision, setAccessRevision] = useState(0);
-  const canEdit = assetAccess?.workspaceId === workspaceId && assetAccess.canEdit;
+  const [libraryWorkspaceId, setLibraryWorkspaceId] = useState("");
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const dataReady = Boolean(workspaceId && libraryWorkspaceId === workspaceId && !libraryLoading);
+  const canEdit = dataReady && !accessError && assetAccess?.workspaceId === workspaceId && assetAccess.canEdit;
   const [books, setBooks] = useState<Book[]>([]);
   const [open, setOpen] = useState<Asset | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -47,56 +51,110 @@ function AssetsPageInner() {
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeDialogRef = useRef<HTMLButtonElement>(null);
+  const activeWorkspace = useRef("");
+  const scopeVersion = useRef(0);
+  const libraryRequest = useRef(0);
+  const detailRequest = useRef(0);
+  const editReady = useRef(false);
+  editReady.current = Boolean(canEdit);
+
+  const resetWorkspaceScope = useCallback((id: string) => {
+    activeWorkspace.current = id; scopeVersion.current++; libraryRequest.current++; detailRequest.current++;
+    editReady.current = false;
+    setWorkspaceId(id); setLibraryWorkspaceId(""); setLibraryLoading(Boolean(id));
+    setBooks([]); setFolders([]); setAssets([]); setOpen(null); setPreviewUrl(null); setVersions([]); setUsage([]);
+    setAssetAccess(null); setAccessError(false); setImageJobs([]); setHistoryError(null); setHistoryLoading(false);
+    setError(null); setUploadNotice(null); setUploadStage(null); setFinalizingImage(null);
+  }, []);
+
+  function changeWorkspace(id: string) {
+    try {
+      const selected = resolveWorkspace(workspaces, id)!;
+      resetWorkspaceScope(selected.id); rememberWorkspace(workspaces, selected.id); replaceWorkspaceQuery(selected.id);
+    } catch (reason) {
+      resetWorkspaceScope(""); setError(reason instanceof Error ? reason.message : "Choose an available workspace.");
+    }
+  }
+
+  const permissionScope = scopeVersion.current;
+  function retryAssetAccess() {
+    if (!workspaceId || activeWorkspace.current !== workspaceId || scopeVersion.current !== permissionScope) return;
+    editReady.current = false;
+    setAssetAccess(null); setAccessError(false);
+    setAccessRevision(value => value + 1);
+  }
+
+  function closeAsset() {
+    detailRequest.current++; setOpen(null); setPreviewUrl(null); setVersions([]); setUsage([]);
+  }
 
   useEffect(() => {
     let live = true;
+    const version = scopeVersion.current;
+    const current = () => live && version === scopeVersion.current && activeWorkspace.current === workspaceId;
     setAssetAccess(null); setAccessError(false);
     if (workspaceId) void api.getAssetAccess(workspaceId).then(access => {
-      if (live) setAssetAccess({ workspaceId, canEdit: access.canEdit });
-    }).catch(() => { if (live) setAccessError(true); });
+      if (current()) setAssetAccess({ workspaceId, canEdit: access.canEdit });
+    }).catch(() => { if (current()) setAccessError(true); });
     return () => { live = false; };
   }, [api, workspaceId, accessRevision]);
 
   useEffect(() => {
     let live = true;
+    const version = scopeVersion.current;
+    const current = () => live && version === scopeVersion.current && activeWorkspace.current === workspaceId;
     setImageJobs([]); setHistoryError(null);
     if (!workspaceId) return;
     setHistoryLoading(true);
     void api.listImageGenerationJobs(workspaceId).then(result => {
-      if (live) setImageJobs(result.jobs);
+      if (current()) setImageJobs(result.jobs);
     }).catch(() => {
-      if (live) setHistoryError("Image request history is temporarily unavailable. Your asset files are unchanged.");
-    }).finally(() => { if (live) setHistoryLoading(false); });
+      if (current()) setHistoryError("Image request history is temporarily unavailable. Your asset files are unchanged.");
+    }).finally(() => { if (current()) setHistoryLoading(false); });
     return () => { live = false; };
   }, [api, workspaceId, historyRevision]);
 
   useEffect(() => {
     let live = true;
+    resetWorkspaceScope("");
     void api.listWorkspaces().then(({ workspaces: available }) => {
       if (!live) return;
       setWorkspaces(available);
-      if (!requestedWorkspaceId) setWorkspaceId(available[0]?.id ?? "");
+      const selected = resolveWorkspace(available, requestedWorkspaceId);
+      resetWorkspaceScope(selected?.id ?? "");
+      if (selected) rememberWorkspace(available, selected.id);
     }).catch((e: unknown) => {
       if (live) setError(e instanceof Error ? e.message : "Could not load workspaces");
     });
-    return () => { live = false; };
-  }, [api, requestedWorkspaceId]);
+    return () => { live = false; activeWorkspace.current = ""; scopeVersion.current++; libraryRequest.current++; detailRequest.current++; editReady.current = false; };
+  }, [api, requestedWorkspaceId, resetWorkspaceScope]);
 
   const load = useCallback(async () => {
-    if (!workspaceId) return;
+    if (!workspaceId || activeWorkspace.current !== workspaceId) return;
+    const version = scopeVersion.current;
+    const request = ++libraryRequest.current;
+    const current = () => version === scopeVersion.current && request === libraryRequest.current && activeWorkspace.current === workspaceId;
+    editReady.current = false;
+    setLibraryLoading(true); setLibraryWorkspaceId("");
     try {
       const [f, a, b] = await Promise.all([api.listFolders(workspaceId), api.listAssets(workspaceId), api.listBooks(workspaceId)]);
+      if (!current()) return;
+      if (f.folders.some(folder => folder.workspace_id !== workspaceId) || a.assets.some(asset => asset.workspace_id !== workspaceId) || b.books.some(book => book.workspace_id !== workspaceId)) {
+        throw new Error("Asset library does not match the requested workspace. Reload before continuing.");
+      }
       setFolders(f.folders);
       setAssets(a.assets);
       setBooks(b.books);
+      setLibraryWorkspaceId(workspaceId);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "load failed");
-    }
+      if (current()) setError(e instanceof Error ? e.message : "load failed");
+    } finally { if (current()) setLibraryLoading(false); }
   }, [api, workspaceId]);
 
   useEffect(() => {
     void load();
+    return () => { libraryRequest.current++; detailRequest.current++; };
   }, [load]);
 
   useEffect(() => {
@@ -105,8 +163,7 @@ function AssetsPageInner() {
     closeDialogRef.current?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setOpen(null);
-        setPreviewUrl(null);
+        closeAsset();
       }
       if (event.key === "Tab") {
         const focusable = dialogRef.current?.querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
@@ -129,39 +186,37 @@ function AssetsPageInner() {
     };
   }, [open]);
 
-  useEffect(() => {
-    setBooks([]);
-    setFolders([]);
-    setAssets([]);
-    setOpen(null);
-    setPreviewUrl(null);
-  }, [workspaceId]);
-
   const openAsset = async (a: Asset) => {
+    if (!dataReady || activeWorkspace.current !== workspaceId || a.workspace_id !== workspaceId || !assets.some(asset => asset.id === a.id)) return;
+    const version = scopeVersion.current; const request = ++detailRequest.current;
+    const current = () => version === scopeVersion.current && request === detailRequest.current && activeWorkspace.current === workspaceId;
     setOpen(a);
-    setPreviewUrl(null);
+    setPreviewUrl(null); setVersions([]); setUsage([]);
     try {
       const [v, u, preview] = await Promise.all([
         api.listAssetVersions(a.id),
         api.getAssetUsage(a.id),
         a.mime_type.startsWith("image/") && a.checksum !== "pending" ? api.getAssetDownloadUrl(a.id) : Promise.resolve(null),
       ]);
+      if (!current()) return;
       setVersions(v.versions);
       setUsage(u.links);
       setPreviewUrl(preview?.url ?? null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not open asset");
+      if (current()) setError(e instanceof Error ? e.message : "Could not open asset");
     }
   };
 
   const upload = (folderId: string | null) => {
-    if (!workspaceId || !canEdit || uploadStage) return;
+    if (!workspaceId || !editReady.current || activeWorkspace.current !== workspaceId || uploadStage) return;
+    const version = scopeVersion.current;
+    const current = () => version === scopeVersion.current && activeWorkspace.current === workspaceId;
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".txt,.md,.markdown,.pdf,.docx,.epub,.png,.jpg,.jpeg,.webp,.gif";
     input.onchange = async () => {
       const file = input.files?.[0];
-      if (!file) return;
+      if (!file || !current() || !editReady.current) return;
       setUploadStage("uploading");
       setUploadNotice(null);
       setError(null);
@@ -178,32 +233,40 @@ function AssetsPageInner() {
         if (!uploaded.ok) throw new Error("Upload failed before verification.");
         const digest = await crypto.subtle.digest("SHA-256", buf);
         const checksumSha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-        setUploadStage("scanning");
+        if (current()) setUploadStage("scanning");
         await api.confirmAssetUpload(assetId, { checksumSha256, sizeBytes: file.size });
-        await load();
-        setUploadNotice(`${file.name} passed integrity checks and malware screening.`);
+        if (current()) await load();
+        if (current()) setUploadNotice(`${file.name} passed integrity checks and malware screening.`);
       } catch (e) {
         const message = e instanceof Error ? e.message : "Upload failed";
-        await load();
-        setError(message);
+        if (current()) await load();
+        if (current()) setError(message);
       } finally {
-        setUploadStage(null);
+        if (current()) setUploadStage(null);
       }
     };
     input.click();
   };
 
+  const mutateLibrary = async (action: () => Promise<unknown>) => {
+    if (!editReady.current || activeWorkspace.current !== workspaceId) return;
+    const version = scopeVersion.current;
+    await action();
+    if (version === scopeVersion.current && activeWorkspace.current === workspaceId) await load();
+  };
+
   return (
     <AuthorPage>
-      <AuthorHeader />
+      <AuthorHeader workspaceId={workspaceId || undefined} />
       <div className="mx-auto max-w-7xl px-4 pb-16 pt-10 sm:px-6 lg:px-8">
         <div className="mb-8 flex flex-col items-start justify-between gap-5 border-b border-white/[0.09] pb-8 sm:flex-row sm:items-end">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Visual library</p>
             <h1 className="mt-2 text-4xl font-medium tracking-[-0.055em] text-white">Assets</h1>
-            {workspaces.length > 1 && (
+            {workspaces.length > 0 && (
               <label className="mt-3 block text-sm text-[#9a9a9a]">Workspace
-                <select disabled={!!finalizingImage} value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)} className="ml-3 rounded-lg border border-white/10 bg-black px-3 py-2 text-white">
+                <select disabled={!!finalizingImage || Boolean(uploadStage)} value={workspaceId} onChange={(event) => changeWorkspace(event.target.value)} className="ml-3 rounded-lg border border-white/10 bg-black px-3 py-2 text-white">
+                  <option value="" disabled>Select a workspace</option>
                   {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
                 </select>
               </label>
@@ -230,7 +293,21 @@ function AssetsPageInner() {
           </div>
         )}
 
-        <ImageQuoteStudio workspaceId={workspaceId} books={books} assets={assets} canEdit={Boolean(canEdit)} onCompleted={load} />
+        {workspaceId && accessError && (
+          <div role="alert" className="mb-6 rounded-lg border border-amber-200/20 bg-amber-200/[0.04] px-6 py-4 text-sm text-amber-100">
+            <p>Editing permissions are unavailable. Your files remain viewable; changes are disabled.</p>
+            <button type="button" onClick={retryAssetAccess} className="mt-3 min-h-11 text-sm underline">Retry permission check</button>
+          </div>
+        )}
+        {workspaceId && !accessError && assetAccess?.workspaceId !== workspaceId && (
+          <p role="status" className="mb-6 text-sm text-[#999]">Checking edit permissions…</p>
+        )}
+        {workspaceId && !accessError && assetAccess?.workspaceId === workspaceId && !assetAccess.canEdit && (
+          <p role="status" className="mb-6 rounded-lg border border-white/10 bg-white/[0.04] px-6 py-4 text-sm text-[#c5c5c5]">Read-only access: you can view assets, but cannot upload, generate, or change them.</p>
+        )}
+
+        {workspaceId && <ImageQuoteStudio key={`image-quote:${workspaceId}`} workspaceId={workspaceId} books={books} assets={assets} canEdit={Boolean(canEdit)} onCompleted={load} />}
+        {libraryLoading && <p role="status" className="mb-5 text-sm text-[#999]">Loading asset library…</p>}
         <section className="mb-8 rounded-2xl border border-white/10 p-5" aria-labelledby="image-history-title">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 id="image-history-title" className="text-lg font-semibold">Your recent image requests</h2>
@@ -243,34 +320,33 @@ function AssetsPageInner() {
             <div className="flex flex-wrap justify-between gap-2"><span>{job.kind === "front_cover" ? "Cover artwork" : "Illustration"}</span><span>{job.status === "succeeded" ? "Saved to asset library" : job.status === "failed" ? "Failed — review before starting again" : job.billingMode === "quoted" ? `${job.status} · token-priced request` : "Pending confirmation"}</span></div>
             <p className="mt-1 break-all text-xs text-[#888]">{job.createdAt} · Request {job.id}</p>
             {job.status === "running" && job.billingMode !== "quoted" && canEdit && <div className="mt-2"><button type="button" disabled={!!finalizingImage} className="text-sm underline disabled:opacity-50" onClick={async () => {
+              if (!editReady.current || activeWorkspace.current !== workspaceId) return;
               setFinalizingImage(job.id); setHistoryError(null);
-              try { await api.finalizeImageJob(job.id); await load(); setHistoryRevision(value => value + 1); }
-              catch (reason) { setHistoryError(reason instanceof Error ? reason.message : "Image finalization is unavailable."); }
-              finally { setFinalizingImage(null); }
+              const version = scopeVersion.current;
+              try { await mutateLibrary(() => api.finalizeImageJob(job.id)); if (version === scopeVersion.current) setHistoryRevision(value => value + 1); }
+              catch (reason) { if (version === scopeVersion.current) setHistoryError(reason instanceof Error ? reason.message : "Image finalization is unavailable."); }
+              finally { if (version === scopeVersion.current) setFinalizingImage(null); }
             }}>{finalizingImage === job.id ? "Finalizing…" : "Finalize saved image"}</button><p className="mt-1 text-xs text-[#999]">Uses the existing generated file, if available. Records the original image credit once; never starts another AI generation.</p></div>}
           </li>)}</ul>
         </section>
         <AssetBrowser
+          key={`asset-browser:${workspaceId}`}
           folders={folders}
           assets={assets}
           permissions={{ edit: canEdit, approve: canEdit, manage: canEdit }}
           onMove={async (assetId, folderId) => {
-            await api.updateAsset(assetId, { folderId });
-            await load();
+            await mutateLibrary(() => api.updateAsset(assetId, { folderId }));
           }}
           onOpen={(a) => void openAsset(a)}
           onUpload={upload}
           onNewFolder={async (parentId, name) => {
-            await api.createFolder(workspaceId, { name, parentFolderId: parentId });
-            await load();
+            await mutateLibrary(() => api.createFolder(workspaceId, { name, parentFolderId: parentId }));
           }}
           onSeedTemplate={async () => {
-            await api.seedFolderTemplate(workspaceId);
-            await load();
+            await mutateLibrary(() => api.seedFolderTemplate(workspaceId));
           }}
           onDelete={async (assetId) => {
-            await api.deleteAsset(assetId);
-            await load();
+            await mutateLibrary(() => api.deleteAsset(assetId));
           }}
         />
       </div>
@@ -283,7 +359,7 @@ function AssetsPageInner() {
               <button
                 ref={closeDialogRef}
                 type="button"
-                onClick={() => { setOpen(null); setPreviewUrl(null); }}
+                onClick={closeAsset}
                 className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 text-xl text-[#9a9a9a] transition-colors hover:border-white/25 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
                 aria-label="Close asset details"
               >
@@ -351,7 +427,7 @@ function AssetsPageInner() {
             </div>
 
             <div className="mt-6 pt-4 border-t border-white/10">
-              <button onClick={() => { setOpen(null); setPreviewUrl(null); }} className="w-full btn-primary">
+              <button onClick={closeAsset} className="w-full btn-primary">
                 Close
               </button>
             </div>

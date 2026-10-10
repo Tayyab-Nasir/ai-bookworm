@@ -121,6 +121,9 @@ const server = createServer(async (req, res) => {
     res.writeHead(204); return res.end();
   }
   if (!authorized) return json(401, { error: { code: 'unauthenticated', message: 'Fixture requires authentication' } });
+  // Other journeys have no actual EPUB bytes. The reader-specific harness
+  // supplies real parser results; never invent a saved proof here.
+  if (req.method === 'GET' && /^\/v1\/editions\/[a-f0-9-]{36}\/renders$/iu.test(url.pathname)) return json(200, { renders: [] });
   if (process.env.FIXTURE_PUBLISHING === 'true') {
     if (url.pathname === `/v1/books/${memoryBookId}/editions`) {
       if (req.method === 'GET') return json(200, { editions: [...publishingEditions.values()] });

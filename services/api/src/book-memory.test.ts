@@ -701,6 +701,28 @@ test("invalid input and unknown fields never mutate records", async (t) => {
   assert.equal(store.book_bible_items?.length ?? 0, 0);
 });
 
+test("metadata rejects year zero before insert or update and preserves optional dates", async (t) => {
+  const store = initialStore(); const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/metadata`;
+  const rejectedInsert = await app.inject({ method: "PUT", url, headers: auth,
+    payload: { expectedUpdatedAt: null, publicationDate: "0000-01-01" } });
+  assert.equal(rejectedInsert.statusCode, 422, rejectedInsert.body);
+  assert.equal(store.book_metadata?.length ?? 0, 0, "invalid date created metadata");
+  const saved = { book_id: BOOK, description: "Saved listing", publication_date: "2024-02-29", updated_at: TIME };
+  store.book_metadata = [{ ...saved }];
+  const rejectedUpdate = await app.inject({ method: "PUT", url, headers: auth,
+    payload: { expectedUpdatedAt: TIME, publicationDate: "0000-01-01" } });
+  assert.equal(rejectedUpdate.statusCode, 422, rejectedUpdate.body);
+  assert.deepEqual(store.book_metadata, [saved], "invalid date overwrote saved metadata");
+  for (const publicationDate of [undefined, null, "0001-01-01", "2024-02-29", "9999-12-31"]) {
+    store.book_metadata = [];
+    const response = await app.inject({ method: "PUT", url, headers: auth,
+      payload: { expectedUpdatedAt: null, ...(publicationDate === undefined ? {} : { publicationDate }) } });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().metadata.publication_date, publicationDate ?? null);
+  }
+});
+
 test("database failures return errors without claiming saved data", async (t) => {
   const store = initialStore(); const app = await appWith(store, "book_bible_items"); t.after(() => app.close());
   assert.equal((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth })).statusCode, 500);

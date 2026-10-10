@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 
 process.env.SUPABASE_URL ??= "http://localhost:54321";
 process.env.SUPABASE_ANON_KEY ??= "test-anon";
@@ -27,6 +27,25 @@ interface Store {
 function fakeSupabase(store: Store) {
   const client = {
     rpc: async (name: string, p: Record<string, unknown>) => {
+      if (name === "claim_stripe_subscription_event") {
+        const events = (store.tables.stripe_events ??= []);
+        const event = events.find(r => r.id === p.p_event_id);
+        if (event?.processing_state === "processed") return { data: { state: "duplicate" }, error: null };
+        const sub = store.tables.subscriptions?.find(r => r.provider_subscription_id === p.p_subscription_id);
+        const token = randomUUID();
+        if (!event) events.push({ id: p.p_event_id, processing_state: "pending" });
+        return { data: { state: "claimed", leaseToken: token, binding: sub ? {
+          organizationId: sub.organization_id, planId: sub.plan_id, customerId: sub.provider_customer_id } : null }, error: null };
+      }
+      if (name === "complete_stripe_subscription_event") {
+        const m = p.p_mutation as Record<string, unknown>;
+        const row = { organization_id: m.organizationId, plan_id: m.planId, provider_customer_id: m.customerId,
+          provider_subscription_id: m.subscriptionId, status: m.status, current_period_end: m.periodEnd };
+        const subs = (store.tables.subscriptions ??= []), prior = subs.find(r => r.provider_subscription_id === m.subscriptionId);
+        if (prior) Object.assign(prior, row); else subs.push(row);
+        Object.assign(store.tables.stripe_events.find(r => r.id === p.p_event_id)!, { processing_state: "processed" });
+        return { data: { state: "processed" }, error: null };
+      }
       assert.equal(name, "deduct_job_credits");
       const receipts = (store.tables.credit_deduction_receipts ??= []);
       const prior = receipts.find((r) => r.job === p.p_job_id);
@@ -156,10 +175,12 @@ test("webhook: bad signature -> 401, missing -> 400", async () => {
 
 test("webhook: subscription.updated upserts row; duplicate event id no-ops", async () => {
   const store = storeWithMembership();
-  const app = await appWith(store);
+  const current = { id: "sub_1", livemode: false, customer: "cus_1", status: "past_due", metadata: { organizationId: ORG, planId: PLAN } };
+  const app = await appWith(store, { subscriptions: { retrieve: async () => current } });
   const event = {
     id: "evt_upd",
     type: "customer.subscription.updated",
+    livemode: false,
     data: { object: { id: "sub_1", customer: "cus_1", status: "past_due", metadata: { organizationId: ORG, planId: PLAN } } },
   };
   const body = JSON.stringify(event);
@@ -179,19 +200,21 @@ test("webhook: subscription.updated upserts row; duplicate event id no-ops", asy
   await app.close();
 });
 
-test("webhook: checkout.session.completed maps to active; deleted -> canceled", async () => {
+test("webhook: checkout reconciles current incomplete state; deletion reconciles canceled", async () => {
   const store = storeWithMembership();
-  const app = await appWith(store);
+  const current = { id: "sub_9", livemode: false, customer: "cus_9", status: "incomplete", metadata: { organizationId: ORG, planId: PLAN } };
+  const app = await appWith(store, { subscriptions: { retrieve: async () => current } });
   const checkout = JSON.stringify({
-    id: "evt_co", type: "checkout.session.completed",
+    id: "evt_co", type: "checkout.session.completed", livemode: false,
     data: { object: { subscription: "sub_9", customer: "cus_9", metadata: { organizationId: ORG, planId: PLAN } } },
   });
   await app.inject({ method: "POST", url: "/v1/webhooks/stripe", headers: { "content-type": "application/json", "stripe-signature": sign(checkout) }, payload: checkout });
-  assert.equal(store.tables.subscriptions[0].status, "active");
+  assert.equal(store.tables.subscriptions[0].status, "incomplete");
   assert.equal(store.tables.subscriptions[0].provider_subscription_id, "sub_9");
 
+  current.status = "canceled";
   const del = JSON.stringify({
-    id: "evt_del", type: "customer.subscription.deleted",
+    id: "evt_del", type: "customer.subscription.deleted", livemode: false,
     data: { object: { id: "sub_9", customer: "cus_9", status: "canceled", metadata: { organizationId: ORG, planId: PLAN } } },
   });
   await app.inject({ method: "POST", url: "/v1/webhooks/stripe", headers: { "content-type": "application/json", "stripe-signature": sign(del) }, payload: del });

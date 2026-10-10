@@ -40,6 +40,11 @@ export const BookMetadataSchema = z
     categories: z.array(z.string()).optional(),
     isbn13: z.string().nullable().optional(),
     edition: z.string().nullable().optional(),
+    publicationDate: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/u).refine((value) => {
+      const date = new Date(`${value}T00:00:00.000Z`);
+      return Number(value.slice(0, 4)) >= 1 && !Number.isNaN(date.getTime())
+        && date.toISOString().slice(0, 10) === value;
+    }, "Enter a valid YYYY-MM-DD publication date.").nullable().optional(),
   })
   .passthrough();
 export type BookMetadata = z.infer<typeof BookMetadataSchema>;

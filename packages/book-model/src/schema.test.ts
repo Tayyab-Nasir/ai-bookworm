@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { BookModelSchema, BookNodeSchema } from "./schema.js";
+import { BookMetadataSchema, BookModelSchema, BookNodeSchema } from "./schema.js";
 import { DocumentOperationSchema } from "./operations.js";
 import { validateBookModel } from "./validate.js";
 import { sampleBook, CH1, ASSET1 } from "./fixture.js";
@@ -16,6 +16,18 @@ test("schema validates a sample 2-chapter book", () => {
   const parsed = BookModelSchema.parse(sampleBook());
   assert.equal(parsed.chapters.length, 2);
   assert.equal(parsed.chapters[0].nodes[0].type, "heading");
+});
+
+test("publication dates are exact calendar dates and remain optional for legacy books", () => {
+  const metadata = sampleBook().metadata;
+  assert.equal(Object.hasOwn(BookMetadataSchema.parse(metadata), "publicationDate"), false);
+  assert.equal(BookMetadataSchema.parse({ ...metadata, publicationDate: null }).publicationDate, null);
+  for (const publicationDate of ["2024-02-29", "0001-01-01", "9999-12-31"]) {
+    assert.equal(BookMetadataSchema.parse({ ...metadata, publicationDate }).publicationDate, publicationDate);
+  }
+  for (const publicationDate of ["2026-02-29", "2026-02-30", "1900-02-29", "2026-04-31", "0000-01-01", "2026-1-01", "2026-01-01T00:00:00Z", "", 20260101]) {
+    assert.equal(BookMetadataSchema.safeParse({ ...metadata, publicationDate }).success, false, String(publicationDate));
+  }
 });
 
 test("schema rejects unknown node type and bad schemaVersion", () => {

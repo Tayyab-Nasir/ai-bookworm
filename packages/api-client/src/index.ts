@@ -614,6 +614,22 @@ export interface BillingUsageSummary {
   creditBalance: number;
 }
 
+export interface SavedEpubSource {
+  bookId: string; editionId: string; jobId: string; assetId: string; version: 1; sha256: string; sizeBytes: number;
+}
+export interface SavedEpubRender { jobId: string; createdAt: string; source: SavedEpubSource }
+export interface EpubReaderResource {
+  index: number; mimeType: "image/png" | "image/jpeg"; sha256: string; sizeBytes: number; width: number; height: number;
+}
+export interface EpubReaderResult {
+  source: SavedEpubSource; formatVersion: "epub-reader-1.0.0"; layout: "reflowable" | "pre-paginated";
+  spine: { index: number; title: string; layout: "reflowable" | "pre-paginated" }[];
+  document: { index: number; title: string; layout: "reflowable" | "pre-paginated"; direction: "ltr" | "rtl";
+    html: string; width?: number; height?: number; resources: EpubReaderResource[] };
+  warnings: string[];
+}
+export interface EpubResourceResult { source: SavedEpubSource; resource: EpubReaderResource & { base64: string } }
+
 export interface DashboardRecentJob {
   id: string;
   kind: "ai" | "publishing";
@@ -984,6 +1000,12 @@ export function createClient(opts: ClientOptions) {
       call<Edition>("PATCH", `/v1/editions/${editionId}`, body),
     renderEdition: (editionId: string, body: { idempotencyKey: string }) =>
       call<RenderedEditionResult>("POST", `/v1/editions/${editionId}/render`, body),
+    listEditionRenders: (editionId: string) =>
+      call<{ renders: SavedEpubRender[] }>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders`),
+    readEpubSection: (editionId: string, jobId: string, spineIndex: number, sha256: string) =>
+      call<EpubReaderResult>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders/${encodeURIComponent(jobId)}/reader?spine=${encodeURIComponent(spineIndex)}&sha256=${encodeURIComponent(sha256)}`),
+    readEpubResource: (editionId: string, jobId: string, resourceIndex: number, sha256: string) =>
+      call<EpubResourceResult>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders/${encodeURIComponent(jobId)}/reader/resources/${encodeURIComponent(resourceIndex)}?sha256=${encodeURIComponent(sha256)}`),
     listAudiobookProjects: (editionId: string) =>
       call<{ projects: AudiobookProjectResult[] }>("GET", `/v1/editions/${editionId}/audiobook-jobs`),
     listAudiobookQcReports: (projectId: string) =>

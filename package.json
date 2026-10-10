@@ -18,6 +18,7 @@
     "test:unit": "npm test -w @bookworm/book-model -w @bookworm/config -w @bookworm/validation -w @bookworm/api -w @bookworm/types --if-present",
     "test:web": "node --import tsx --test apps/web/tests/*.test.ts",
     "test:db": "node tests/security/run-local-postgres.mjs",
+    "test:db:upgrade": "node tests/security/run-populated-upgrade.mjs",
     "test:services": "node scripts/run-python.mjs -m pytest services/ai services/document services/rendering services/publishing services/scanning -q",
     "test:e2e": "node scripts/run-python.mjs -m pytest tests/e2e -q",
     "test:security": "node scripts/run-python.mjs -m pytest tests/security -q",
@@ -36,7 +37,7 @@
     "worker:image-quotes": "npm run worker:image-quotes -w @bookworm/api --",
     "worker:narration-quotes": "npm run worker:narration-quotes -w @bookworm/api --",
     "storage:orphan-report": "npm run storage:orphan-report -w @bookworm/api --",
-    "verify": "npm run typecheck && npm run test:worker-launcher && npm run test:unit && npm run test:web && npm run test:db && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
+    "verify": "npm run typecheck && npm run test:worker-launcher && npm run test:unit && npm run test:web && npm run test:db && npm run test:db:upgrade && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
   },
   "engines": {
     "node": ">=22"

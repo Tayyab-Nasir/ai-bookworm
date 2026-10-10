@@ -9,10 +9,15 @@ try {
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   page.on('dialog', dialog => dialog.dismiss());
   let saves = 0, quoteRequests = 0, acceptances = 0, statusReads = 0;
+  const savedMetadataBodies = [];
   page.on('request', request => {
-    if (request.url().endsWith('/metadata') && request.method() === 'PUT') saves++;
+    if (request.url().endsWith('/metadata') && request.method() === 'PUT') {
+      saves++;
+      savedMetadataBodies.push(request.postDataJSON());
+    }
   });
   const description = 'An unexpected arrival leads a young traveler into a world of found family and hidden magic.';
+  const publicationDate = '2024-02-29';
   const requestId = '77777777-7777-4777-8777-777777777777';
   const jobId = '99999999-9999-4999-8999-999999999999';
   const candidate = { suggestionKind: 'metadata_candidate', status: 'pending', description, keywords: ['found family'], categories: ['Fiction / Fantasy'], audience: 'Adult fantasy readers', rationale: 'Grounded in the saved opening.', confidence: 0.9, sourceRefs: [{ chapterId: '44444444-4444-4444-8444-444444444444', documentVersionId: '66666666-6666-4666-8666-666666666666', nodeId: 'n1', textHash: 'a'.repeat(64) }] };
@@ -57,13 +62,16 @@ try {
   await page.getByRole('button', { name: 'Use this draft' }).click();
   await expect(page.getByRole('textbox', { name: 'Book description', exact: true })).toHaveValue(description);
   assert.equal(saves, 0, 'adopting AI draft implicitly persisted metadata');
+  await page.getByLabel('Planned publication date', { exact: true }).fill(publicationDate);
   await page.getByRole('button', { name: 'Save metadata', exact: true }).click();
   await page.getByText('Publishing metadata saved.', { exact: true }).waitFor();
   assert.equal(saves, 1); assert.equal(quoteRequests, 1); assert.equal(acceptances, 1);
+  assert.equal(savedMetadataBodies[0].publicationDate, publicationDate);
   await page.reload();
   await expect(page.getByRole('textbox', { name: 'Book description', exact: true })).toHaveValue(description);
+  await expect(page.getByLabel('Planned publication date', { exact: true })).toHaveValue(publicationDate);
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
-  console.log('PASS metadata browser: explicit counting consent, exact credit acceptance, read-only paid result recovery, explicit adoption/save, reload persistence and mobile containment. Provider/database outcomes remain fixtures.');
+  console.log('PASS metadata browser: explicit counting consent, exact credit acceptance, read-only paid result recovery, explicit adoption/save, exact saved publication date, reload persistence and mobile containment. Provider/database outcomes remain fixtures.');
 } finally { await browser.close(); }

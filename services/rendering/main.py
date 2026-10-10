@@ -13,7 +13,7 @@ from threading import BoundedSemaphore
 from typing import Literal
 import warnings
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,8 @@ from print_fonts import print_font_issues  # noqa: E402
 from wrap_cover import VERSION as WRAP_VERSION, render_wrap_cover  # noqa: E402
 from preflight import Finding  # noqa: E402
 from audio_assembly import assemble_audio_with_quality, encode_narration_pcm  # noqa: E402
+from publication_metadata import effective_publication_metadata  # noqa: E402
+from epub_preview_transport import preview_epub_request  # noqa: E402
 
 app = FastAPI(title="bookworm-rendering")
 
@@ -224,13 +226,19 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+@app.post("/epub/preview", dependencies=[Depends(require_service_token)])
+async def preview_saved_epub(request: Request) -> Response:
+    return await preview_epub_request(request)
+
+
 @app.post("/render", response_model=RenderResponse, dependencies=[Depends(require_service_token)])
 def render(req: RenderRequest) -> RenderResponse:
     try:
         edition = parse_edition(req.editionConfig)
+        metadata = effective_publication_metadata(req.bookModel.get("metadata", {}),
+                                                  edition.metadata_overrides if edition.kind == "ebook" else None)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
-    metadata = req.bookModel.get("metadata") or {}
     if edition.kind == "print" and print_requires_unsupported_rtl_typography(edition, metadata):
         raise HTTPException(422, "RTL print PDF requires an embedded shaping-capable font; the base-font renderer cannot produce it safely")
     if cover_requires_unsupported_rtl_typography(edition, metadata):
@@ -271,10 +279,11 @@ def render(req: RenderRequest) -> RenderResponse:
 def preflight(req: PreflightRequest) -> dict:
     try:
         edition = parse_edition(req.editionConfig)
+        metadata = effective_publication_metadata(req.bookModel.get("metadata", {}),
+                                                  edition.metadata_overrides if edition.kind == "ebook" else None)
         ruleset = load_ruleset(req.channel)
     except (ValueError, KeyError) as e:
         raise HTTPException(422, str(e)) from e
-    metadata = req.bookModel.get("metadata") or {}
     rtl_render_blocked = (
         (edition.kind == "print" and print_requires_unsupported_rtl_typography(edition, metadata))
         or cover_requires_unsupported_rtl_typography(edition, metadata)

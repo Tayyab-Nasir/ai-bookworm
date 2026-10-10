@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BillingUsageSummary, Plan } from "@bookworm/api-client";
 import type { Workspace } from "@bookworm/types";
 import { apiClient } from "./api";
+import { AuthorHeader } from "./AuthorShell";
+import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../lib/workspace-selection";
 
 const cardClass = "rounded-2xl border border-white/10 bg-white/[0.035] p-5";
 
@@ -18,6 +20,13 @@ function meter(summary: BillingUsageSummary | null, key: string, quotaKey?: stri
   return { used, limit, percent: limit && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0 };
 }
 
+function billingReturnUrl(workspaceId: string, checkout?: "success" | "cancelled") {
+  const url = new URL("/billing", window.location.origin);
+  url.searchParams.set("ws", workspaceId);
+  if (checkout) url.searchParams.set("checkout", checkout);
+  return url.href;
+}
+
 export default function BillingCenter() {
   const api = apiClient();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -28,27 +37,34 @@ export default function BillingCenter() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const currentLoad = useRef<{ workspaceId?: string } | null>(null);
+  const currentAction = useRef<object | null>(null);
 
   const load = useCallback(async (requestedWorkspaceId?: string) => {
-    setLoading(true); setError(null);
+    const request: { workspaceId?: string } = {}; currentLoad.current = request; currentAction.current = null;
+    const current = () => currentLoad.current === request;
+    setLoading(true); setBusy(null); setError(null); setWorkspace(null); setSummary(null); setNotice(null);
     try {
       const [workspaceResult, planResult] = await Promise.all([api.listWorkspaces(), api.listPlans()]);
-      const requested = requestedWorkspaceId ?? new URLSearchParams(window.location.search).get("ws")
-        ?? window.localStorage.getItem("bookworm:workspaceId");
-      const selected = workspaceResult.workspaces.find((item) => item.id === requested) ?? workspaceResult.workspaces[0] ?? null;
+      if (!current()) return;
       setWorkspaces(workspaceResult.workspaces); setPlans(planResult.plans);
+      const selected = resolveWorkspace(workspaceResult.workspaces, requestedWorkspaceId ?? new URLSearchParams(window.location.search).get("ws"));
       setWorkspace(selected);
       if (selected) {
-        window.localStorage.setItem("bookworm:workspaceId", selected.id);
-        setSummary(await api.getUsage(selected.organization_id));
+        rememberWorkspace(workspaceResult.workspaces, selected.id);
+        if (requestedWorkspaceId !== undefined) replaceWorkspaceQuery(selected.id);
+        const usage = await api.getUsage(selected.organization_id);
+        if (!current()) return;
+        request.workspaceId = selected.id;
+        setSummary(usage);
       } else setSummary(null);
       const result = new URLSearchParams(window.location.search).get("checkout");
       setNotice(result === "success" ? "Checkout returned successfully. Subscription status updates after Stripe confirms the webhook." : null);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not load billing details."); }
-    finally { setLoading(false); }
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "Could not load billing details."); }
+    finally { if (current()) setLoading(false); }
   }, [api]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); return () => { currentLoad.current = null; currentAction.current = null; }; }, [load]);
 
   const currentPlan = summary?.entitlements.plan.name.toLowerCase() ?? "free";
   const sortedPlans = useMemo(() => [...plans].sort((a, b) => a.price_cents - b.price_cents), [plans]);
@@ -58,34 +74,43 @@ export default function BillingCenter() {
   const translations = meter(summary, "translation_credits", "translation_credits_monthly");
 
   const checkout = async (plan: Plan) => {
-    if (!workspace || busy || plan.price_cents <= 0) return;
+    const loadRequest = currentLoad.current;
+    if (!workspace || !summary || loading || busy || currentAction.current || loadRequest?.workspaceId !== workspace.id || plan.price_cents <= 0) return;
+    const request = {}; currentAction.current = request;
+    const current = () => currentLoad.current === loadRequest && currentAction.current === request;
     setBusy(plan.id); setError(null); setNotice(null);
     try {
-      const origin = window.location.origin;
       const result = await api.createBillingCheckout({
         organizationId: workspace.organization_id, planId: plan.id,
-        successUrl: `${origin}/billing?checkout=success`, cancelUrl: `${origin}/billing?checkout=cancelled`,
+        successUrl: billingReturnUrl(workspace.id, "success"), cancelUrl: billingReturnUrl(workspace.id, "cancelled"),
       });
-      window.location.assign(result.checkoutUrl);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Checkout could not be started."); setBusy(null); }
+      if (current()) window.location.assign(result.checkoutUrl);
+    } catch (reason) {
+      if (current()) { currentAction.current = null; setError(reason instanceof Error ? reason.message : "Checkout could not be started."); setBusy(null); }
+    }
   };
 
   const portal = async () => {
-    if (!workspace || busy) return;
+    const loadRequest = currentLoad.current;
+    if (!workspace || !summary || loading || busy || currentAction.current || loadRequest?.workspaceId !== workspace.id) return;
+    const request = {}; currentAction.current = request;
+    const current = () => currentLoad.current === loadRequest && currentAction.current === request;
     setBusy("portal"); setError(null); setNotice(null);
     try {
-      const result = await api.createBillingPortal({ organizationId: workspace.organization_id, returnUrl: `${window.location.origin}/billing` });
-      window.location.assign(result.portalUrl);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "The billing portal could not be opened."); setBusy(null); }
+      const result = await api.createBillingPortal({ organizationId: workspace.organization_id, returnUrl: billingReturnUrl(workspace.id) });
+      if (current()) window.location.assign(result.portalUrl);
+    } catch (reason) {
+      if (current()) { currentAction.current = null; setError(reason instanceof Error ? reason.message : "The billing portal could not be opened."); setBusy(null); }
+    }
   };
 
-  return <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
+  return <><AuthorHeader workspaceId={workspace?.id} /><main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
     <div className="flex flex-wrap items-end justify-between gap-4 border-b border-white/10 pb-8">
       <div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#8f8f8f]">Plans & usage</p><h1 className="mt-2 text-4xl font-medium tracking-[-0.055em]">Billing and credits</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-white/55">See the active plan, monthly AI/image consumption, publishing access, and Stripe-managed subscription controls for the selected organization.</p></div>
       <div className="flex flex-wrap gap-2"><Link href="/referrals" className="glass-ghost rounded-full px-5 py-2.5 text-sm">Referral credits</Link>{summary?.entitlements.subscription && <button type="button" onClick={() => void portal()} disabled={Boolean(busy)} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "portal" ? "Opening…" : "Manage subscription"}</button>}</div>
     </div>
 
-    {workspaces.length > 0 && <label className="mt-6 block max-w-sm text-sm text-white/60">Workspace<select value={workspace?.id ?? ""} disabled={loading || Boolean(busy)} onChange={(event) => void load(event.target.value)} className="mt-2 block w-full rounded-xl border border-white/15 bg-black px-4 py-2.5 text-white">{workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+    {workspaces.length > 0 && <label className="mt-6 block max-w-sm text-sm text-white/60">Workspace<select value={workspace?.id ?? ""} disabled={loading || Boolean(busy)} onChange={(event) => void load(event.target.value)} className="mt-2 block w-full rounded-xl border border-white/15 bg-black px-4 py-2.5 text-white"><option value="" disabled>Select a workspace</option>{workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
     {error && <div role="alert" className="mt-6 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}</div>}
     {notice && <p role="status" className="mt-6 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{notice}</p>}
 
@@ -105,5 +130,5 @@ export default function BillingCenter() {
         <div className="mt-5 grid gap-4 lg:grid-cols-3">{sortedPlans.map((plan) => { const ent = plan.entitlements_json; const active = plan.name.toLowerCase() === currentPlan; const channels = Array.isArray(ent.publishing_channels) ? ent.publishing_channels.filter((item): item is string => typeof item === "string") : []; return <article key={plan.id} className={`${cardClass} flex min-h-80 flex-col ${active ? "border-white/35 bg-white/[0.07]" : ""}`}><div className="flex items-center justify-between gap-3"><h3 className="text-xl font-medium capitalize">{plan.name}</h3>{active && <span className="rounded-full bg-white px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-black">Current</span>}</div><p className="mt-5 text-4xl font-medium tracking-[-0.06em]">${(plan.price_cents / 100).toFixed(0)}<span className="text-sm font-normal tracking-normal text-white/45">/{plan.billing_period}</span></p><ul className="mt-6 space-y-2 text-sm text-white/60"><li>{Number(ent.books ?? 0)} books</li><li>{Number(ent.ai_credits_monthly ?? 0).toLocaleString()} AI credits/month</li><li>{Number(ent.image_credits_monthly ?? 0).toLocaleString()} image credits/month</li><li>{Number(ent.audio_credits_monthly ?? 0).toLocaleString()} audio credits/month</li><li>{Number(ent.translation_credits_monthly ?? 0).toLocaleString()} translation credits/month</li><li>{Number(ent.storage_gb ?? 0)} GB storage</li><li>{channels.map(channelName).join(", ") || "Universal export"}</li></ul><button type="button" onClick={() => void checkout(plan)} disabled={active || plan.price_cents <= 0 || Boolean(busy)} className="glass-solid mt-auto rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{active ? "Current plan" : plan.price_cents <= 0 ? "Account tier" : busy === plan.id ? "Starting checkout…" : `Choose ${plan.name}`}</button></article>; })}</div>
       </section>
     </>}
-  </main>;
+  </main></>;
 }

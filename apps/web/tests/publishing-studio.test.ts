@@ -17,7 +17,7 @@ test("fixed EPUB page controls survive saving and switching flow", () => {
   const reflowable = toConfig({ ...form, flow: "reflowable" }, saved);
   assert.deepEqual(toConfig({ ...formFromEdition({ ...edition, edition_metadata_json: reflowable }), flow: "fixed" }, reflowable), saved);
 });
-import { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
+import { applyLayoutPreset, DEFAULT_FORM, resolveEditionRenderSafety, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
 import type { Edition } from "@bookworm/types";
 
 test("front matter survives save and reload for both book formats", () => {
@@ -171,4 +171,106 @@ test("trade and poetry layout presets have different composition and survive edi
   assert.equal(saved.typography?.body_size_pt, 12);
   assert.equal(saved.typography?.leading, 18);
   assert.equal(saved.typography?.paragraph_spacing_pt, 12);
+});
+
+const coverBook = { title: "Base title", subtitle: "Base subtitle", author_name: "Base author", language: "en" };
+const coverForm = { ...DEFAULT_FORM, coverAssetId: "cover-asset" };
+
+test("render safety uses ebook language override after edition language", () => {
+  const overrides = { kind: "ebook", metadata_overrides: { language: "ar" } };
+  assert.equal(resolveEditionRenderSafety(coverForm, coverBook, overrides).rtlCoverTextUnsupported, true);
+  assert.equal(resolveEditionRenderSafety({ ...coverForm, language: "ar" }, coverBook, { kind: "ebook", metadata_overrides: { language: "en" } }).renderBlocked, false);
+  assert.equal(resolveEditionRenderSafety(coverForm, { ...coverBook, language: "ar" }).renderBlocked, false, "edition language must precede base book language");
+});
+
+test("explicit LTR direction does not waive RTL shaping safety", () => {
+  assert.equal(resolveEditionTextDirection("ar", "ltr"), "ltr", "direction preference remains explicit");
+  for (const language of ["ar", "fa-IR", "az_Arab", "en-Hebr"]) {
+    const form = { ...coverForm, language, textDirection: "ltr" as const };
+    assert.equal(resolveEditionRenderSafety(form, coverBook).rtlCoverTextUnsupported, true, language);
+    assert.equal(resolveEditionRenderSafety({ ...form, kind: "print" }, coverBook).rtlPrintUnsupported, true, language);
+    assert.equal(resolveEditionRenderSafety({ ...form, flow: "fixed", coverAssetId: "" }, coverBook).rtlPrintUnsupported, true, language);
+  }
+});
+
+test("saved empty ebook overrides clear enabled cover text and survive saving", () => {
+  const config = { kind: "ebook", metadata_overrides: { title: "", subtitle: "", author: "", language: "ar", publisher: "Harbor Press" } };
+  const saved = toConfig({ ...coverForm, language: "ar" }, config);
+  assert.equal(saved.kind, "ebook");
+  if (saved.kind !== "ebook") throw new Error("wrong format");
+  assert.deepEqual(saved.metadata_overrides, config.metadata_overrides);
+  assert.equal(resolveEditionRenderSafety({ ...coverForm, language: "ar" }, coverBook, saved).renderBlocked, false);
+  assert.equal(resolveEditionRenderSafety({ ...coverForm, language: "ar", flow: "fixed" }, coverBook, saved).rtlPrintUnsupported, true, "cleared cover text must not waive fixed-layout typography safety");
+});
+
+test("render safety checks each enabled effective overlay, not cleared base text", () => {
+  for (const [key, enabled] of [["title", "titleOnCover"], ["subtitle", "subtitleOnCover"], ["author", "authorOnCover"]] as const) {
+    const form = { ...coverForm, language: "ar", titleOnCover: false, subtitleOnCover: false, authorOnCover: false, [enabled]: true };
+    const cleared = { kind: "ebook", metadata_overrides: { [key]: "" } };
+    assert.equal(resolveEditionRenderSafety(form, coverBook, cleared).renderBlocked, false, `${key} cleared`);
+    const visible = { kind: "ebook", metadata_overrides: { [key]: "Edition text" } };
+    assert.equal(resolveEditionRenderSafety(form, { ...coverBook, title: "", subtitle: null, author_name: "" }, visible).rtlCoverTextUnsupported, true, `${key} override visible`);
+    assert.equal(resolveEditionRenderSafety({ ...form, [enabled]: false }, coverBook, visible).renderBlocked, false, `${key} hidden`);
+  }
+});
+
+test("render safety preserves reflowable artwork-only and no-cover paths", () => {
+  const rtl = { ...coverForm, language: "ar" };
+  assert.equal(resolveEditionRenderSafety({ ...rtl, coverAssetId: "" }, coverBook).renderBlocked, false);
+  assert.equal(resolveEditionRenderSafety({ ...rtl, titleOnCover: false, subtitleOnCover: false, authorOnCover: false }, coverBook).renderBlocked, false);
+  assert.equal(resolveEditionRenderSafety(coverForm, coverBook).renderBlocked, false);
+  assert.equal(resolveEditionRenderSafety({ ...coverForm, textDirection: "rtl" }, coverBook).renderBlocked, true);
+});
+
+test("print ignores ebook overrides and audiobook does not use render typography guards", () => {
+  const config = { kind: "ebook", metadata_overrides: { language: "ar", title: "", subtitle: "", author: "" } };
+  const print = { ...coverForm, kind: "print" as const };
+  assert.equal(resolveEditionRenderSafety(print, coverBook, config).renderBlocked, false);
+  assert.equal(resolveEditionRenderSafety({ ...print, language: "ar" }, coverBook, config).rtlPrintUnsupported, true);
+  assert.equal(resolveEditionRenderSafety({ ...coverForm, kind: "audiobook", language: "ar" }, coverBook, config).renderBlocked, false);
+});
+
+test("render safety preserves inputs and ignores non-string saved overrides like save transport", () => {
+  const form = { ...coverForm, language: "ar" };
+  const config = { kind: "ebook", metadata_overrides: { title: null, subtitle: 3, author: false, language: "en" } };
+  const before = JSON.stringify({ form, coverBook, config });
+  assert.equal(resolveEditionRenderSafety(form, coverBook, config).renderBlocked, false);
+  assert.equal(JSON.stringify({ form, coverBook, config }), before);
+  for (const malformed of [null, [], { kind: "print", metadata_overrides: { language: "ar" } }, { kind: "ebook", metadata_overrides: [] }]) {
+    assert.equal(resolveEditionRenderSafety(coverForm, coverBook, malformed).renderBlocked, false);
+  }
+});
+
+test("render safety trims valid edition language and retains base language for invalid legacy values", () => {
+  const rtlBook = { ...coverBook, language: "ar" };
+  assert.equal(resolveEditionRenderSafety({ ...coverForm, language: " en " }, rtlBook).renderBlocked, false);
+  for (const language of ["", "a", "e".repeat(36)]) {
+    assert.equal(resolveEditionRenderSafety({ ...coverForm, language }, rtlBook).renderBlocked, true);
+    assert.equal(resolveEditionRenderSafety({ ...coverForm, language }, rtlBook, { kind: "ebook", metadata_overrides: { language: "en" } }).renderBlocked, false);
+  }
+});
+
+test("explicit RTL blocks paginated typography even when effective cover text is empty", () => {
+  const config = { kind: "ebook", metadata_overrides: { language: "en", title: "", subtitle: "", author: "" } };
+  const form = { ...coverForm, textDirection: "rtl" as const };
+  assert.equal(resolveEditionRenderSafety(form, coverBook, config).renderBlocked, false);
+  const fixed = resolveEditionRenderSafety({ ...form, flow: "fixed" }, coverBook, config);
+  assert.equal(fixed.rtlPrintUnsupported, true);
+  assert.equal(fixed.rtlCoverTextUnsupported, false);
+});
+
+test("legacy null edition language retains the base book language for every format", () => {
+  for (const kind of ["ebook", "print", "audiobook"] as const) {
+    const edition = { type: kind, language: null, edition_metadata_json: { kind } } as unknown as Edition;
+    assert.equal(formFromEdition(edition).language, "en", "standalone callers retain their compatibility default");
+    assert.equal(formFromEdition(edition, "ar").language, "ar", kind);
+  }
+});
+
+test("null-language ebook shaping uses the base language before a saved language override", () => {
+  const edition = { type: "ebook", language: null, edition_metadata_json: { kind: "ebook" } } as unknown as Edition;
+  const form = { ...formFromEdition(edition, "ar"), coverAssetId: "cover-asset" };
+  const book = { ...coverBook, language: "ar" };
+  assert.equal(resolveEditionRenderSafety(form, book, edition.edition_metadata_json).rtlCoverTextUnsupported, true);
+  assert.equal(resolveEditionRenderSafety(form, book, { kind: "ebook", metadata_overrides: { language: "en" } }).renderBlocked, false);
 });

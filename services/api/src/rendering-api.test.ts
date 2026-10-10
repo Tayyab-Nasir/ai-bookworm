@@ -16,6 +16,7 @@ type Row = Record<string, unknown>;
 interface Store {
   tables: Record<string, Row[]>;
   objects: Map<string, Buffer>;
+  downloads?: string[];
   rpcError?: { code: string; message?: string; details?: string };
 }
 
@@ -31,6 +32,7 @@ function fakeSupabase(store: Store) {
         return { data: { path }, error: null };
       },
       download: async (path: string) => {
+        store.downloads?.push(path);
         const bytes = store.objects.get(path);
         return bytes
           ? { data: new Blob([new Uint8Array(bytes)]), error: null }
@@ -186,14 +188,14 @@ function baseStore(role = "editor"): Store {
   };
 }
 
-function successfulRenderer(requests: unknown[]) {
+function successfulRenderer(requests: unknown[], coverRendererVersion: string | null = "cover-test") {
   return async (_input: string | URL | Request, init?: RequestInit) => {
     requests.push(JSON.parse(String(init?.body)));
     const artifact = Buffer.from("PK\u0003\u0004deterministic-epub");
     const cover = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]);
     return new Response(JSON.stringify({
       format: "epub", artifactBase64: artifact.toString("base64"), sha256: sha(artifact), rendererVersion: "epub-test",
-      coverArtifactBase64: cover.toString("base64"), coverSha256: sha(cover), coverRendererVersion: "cover-test",
+      coverArtifactBase64: cover.toString("base64"), coverSha256: sha(cover), coverRendererVersion,
     }), { status: 200, headers: { "content-type": "application/json" } });
   };
 }
@@ -204,7 +206,7 @@ function enableRetailerPackages(store: Store) {
   store.tables.plans.push({ id: planId, name: "team", entitlements_json: { publishing_channels: ["export", "kdp", "apple_books", "barnes_noble", "lulu", "google_play"] } });
 }
 
-function successfulRenderAndPreflight(requests: unknown[], channel = "kdp") {
+function successfulRenderAndPreflight(requests: unknown[], channel = "kdp", coverRendererVersion = "cover-test") {
   return async (input: string | URL | Request, init?: RequestInit) => {
     requests.push({ url: String(input), body: JSON.parse(String(init?.body)) });
     if (String(input).endsWith("/preflight")) {
@@ -212,7 +214,7 @@ function successfulRenderAndPreflight(requests: unknown[], channel = "kdp") {
         ruleVersion: `core-test+${channel}-test`, channel, errors: 0, warnings: 1, findings: [],
       }), { status: 200, headers: { "content-type": "application/json" } });
     }
-    return successfulRenderer([])(input, init);
+    return successfulRenderer([], coverRendererVersion)(input, init);
   };
 }
 
@@ -236,6 +238,35 @@ async function createReadySources(app: Awaited<ReturnType<typeof buildApp>>, cha
   assert.equal(preflight.statusCode, 201, preflight.body);
   return { renderJobId: render.json().jobId as string, preflightJobId: preflight.json().jobId as string };
 }
+
+test("invalid publication-date overrides fail before edition creation or replacement", async (t) => {
+  const store = baseStore();
+  let dispatches = 0;
+  const forbidden = async () => { dispatches++; throw new Error("Saving metadata must not dispatch processing"); };
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: forbidden, publishingFetch: forbidden });
+  t.after(() => app.close());
+  const saved = structuredClone(store.tables.editions);
+  for (const publicationDate of ["0000-01-01", "2026-02-30", "1900-02-29", "2026-1-01", "", "2026-01-01T00:00:00Z", null]) {
+    const config = { kind: "ebook", metadata_overrides: { publicationDate } };
+    const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: { config } });
+    assert.equal(created.statusCode, 422, created.body);
+    const updated = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth,
+      payload: { expectedUpdatedAt: saved[0].updated_at, config } });
+    assert.equal(updated.statusCode, 422, updated.body);
+    assert.deepEqual(store.tables.editions, saved, "invalid override mutated editions");
+  }
+  assert.equal(store.tables.activity_events.length, 0);
+  assert.equal(store.tables.publishing_jobs.length, 0);
+  assert.equal(store.tables.usage_events.length, 0);
+  assert.equal(store.objects.size, 2);
+  assert.equal(dispatches, 0);
+  const overrides = { publicationDate: "2024-02-29", title: "Edition title", customNote: "Generic text remains supported" };
+  const updated = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth,
+    payload: { expectedUpdatedAt: saved[0].updated_at, config: { kind: "ebook", metadata_overrides: overrides } } });
+  assert.equal(updated.statusCode, 200, updated.body);
+  assert.deepEqual(updated.json().edition_metadata_json.metadata_overrides, overrides);
+  assert.equal(dispatches, 0);
+});
 
 test("editor renders the saved edition into private durable artifacts and one usage event", async () => {
   const store = baseStore();
@@ -586,4 +617,77 @@ test("package persistence failure removes the uploaded ZIP and records no publis
   assert.equal(store.tables.usage_events.filter((row) => row.meter === "publishing").length, 0);
   assert.equal(store.tables.publishing_jobs.at(-1)?.status, "failed");
   await app.close();
+});
+
+test("synchronous ebook rendering retains verified cover policy and rejects unsupported completion versions", async (t) => {
+  for (const coverRendererVersion of ["cover-1.4.0", "cover-1.3.0", null]) {
+    const store = baseStore();
+    store.tables.editions[0].edition_metadata_json = { kind: "ebook", cover: { asset_id: COVER }, metadata_overrides: { title: "" } };
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderer([], coverRendererVersion) });
+    t.after(() => app.close());
+    const initialObjects = store.objects.size;
+    const response = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth,
+      payload: { idempotencyKey: crypto.randomUUID() } });
+    if (coverRendererVersion === "cover-1.4.0") {
+      assert.equal(response.statusCode, 201, response.body);
+      const usage = (store.tables.publishing_jobs[0].response_json as Row).usage as Row;
+      assert.equal(usage.coverRendererVersion, coverRendererVersion);
+      assert.equal(usage.coverMetadataPolicy, "effective-ebook-metadata-v1");
+      assert.equal(store.tables.usage_events.length, 1);
+    } else {
+      assert.equal(response.statusCode, 503, response.body);
+      assert.match(response.body, /cover metadata.*render again/iu);
+      assert.equal(store.objects.size, initialObjects);
+      assert.equal(store.tables.usage_events.length, 0);
+      assert.equal(store.tables.publishing_jobs[0].status, "failed");
+    }
+  }
+});
+
+test("saved ebook cover policy blocks package dispatch and private bytes without rewriting history", async (t) => {
+  const store = baseStore();
+  store.tables.editions[0].edition_metadata_json = { kind: "ebook", cover: { asset_id: COVER }, metadata_overrides: { author: "" } };
+  enableRetailerPackages(store);
+  const packageRequests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([], "kdp", "cover-1.4.0"), publishingFetch: successfulPackager(packageRequests),
+  });
+  t.after(() => app.close());
+  const sources = await createReadySources(app);
+  const sourceJob = store.tables.publishing_jobs.find(row => row.id === sources.renderJobId)!;
+  const sourceResponse = sourceJob.response_json as Row;
+  const originalUsage = sourceResponse.usage as Row;
+  // A synthetic reviewed receipt isolates package enforcement from completion retention.
+  sourceResponse.usage = { ...originalUsage, coverRendererVersion: "cover-1.4.0", coverMetadataPolicy: "effective-ebook-metadata-v1" };
+  const good = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: {
+    bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID(),
+  } });
+  assert.equal(good.statusCode, 201, good.body);
+  const packageId = good.json().id;
+  const sent = packageRequests[0] as { artifactsBase64: Record<string, string> };
+  const coverDescriptor = (sourceResponse.artifacts as Row[]).find(artifact => artifact.role === "rendered_cover")!;
+  assert.equal(sent.artifactsBase64["cover.png"], store.objects.get(String(coverDescriptor.storagePath))!.toString("base64"));
+  const legacyUsage = { ...originalUsage };
+  delete legacyUsage.coverRendererVersion;
+  delete legacyUsage.coverMetadataPolicy;
+  for (const usage of [legacyUsage, { ...originalUsage, coverRendererVersion: "cover-1.3.0", coverMetadataPolicy: "effective-ebook-metadata-v1" },
+    { ...originalUsage, coverRendererVersion: "cover-1.4.0", coverMetadataPolicy: "old-policy" }]) {
+    sourceResponse.usage = usage;
+    store.downloads = [];
+    const history = structuredClone(store.tables.publishing_jobs);
+    const objects = [...store.objects].map(([path, value]) => [path, value.toString("base64")]);
+    const calls = packageRequests.length;
+    const response = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: {
+      bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID(),
+    } });
+    assert.equal(response.statusCode, 422, response.body);
+    assert.match(response.body, /cover metadata.*render again/iu);
+    assert.deepEqual(store.downloads, [], "an unsupported saved cover must fail before any private byte read");
+    assert.equal(packageRequests.length, calls);
+    assert.deepEqual(store.tables.publishing_jobs, history);
+    assert.deepEqual([...store.objects].map(([path, value]) => [path, value.toString("base64")]), objects);
+    const historicalPackage = await app.inject({ method: "GET", url: `/v1/publishing/jobs/${packageId}`, headers: auth });
+    assert.equal(historicalPackage.statusCode, 200, historicalPackage.body);
+    assert.equal(historicalPackage.json().id, packageId, "existing package recovery must remain available");
+  }
 });

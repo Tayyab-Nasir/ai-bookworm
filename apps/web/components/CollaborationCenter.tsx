@@ -7,12 +7,17 @@ import type { ActivityEvent, TaskPriority, WorkspaceInvitation, WorkspaceTargetT
 import type { Approval, Asset, Book, MemberRole, Task, Workspace, WorkspaceMember } from "@bookworm/types";
 import { getOrCreateApprovalRequestKey, getRequestableArtwork } from "../lib/approved-artwork";
 import { apiClient } from "./api";
+import { AuthorHeader } from "./AuthorShell";
+import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../lib/workspace-selection";
 
 type View = "tasks" | "approvals" | "team";
 type MemberProfile = { id: string; display_name: string; avatar_url: string | null };
 type SessionUser = { id: string; email: string | null; displayName: string | null };
 type InviteRole = Exclude<MemberRole, "owner">;
 type ArtworkApprovalIntent = { reviewerId: string; comment: string };
+type CollaborationScope = { workspaceId: string; view: View; userId: string | undefined };
+type CollaborationAction = { scope: CollaborationScope; generation: number };
+type ActionGuard = () => boolean;
 
 const card = "rounded-2xl border border-white/10 bg-white/[0.035]";
 const input = "mt-2 block w-full rounded-xl border border-white/15 bg-black px-3 py-2.5 text-sm text-white outline-none focus:border-white/40";
@@ -76,6 +81,17 @@ export default function CollaborationCenter({ view }: { view: View }) {
   const artworkRequestIntents = useRef(new Map<string, ArtworkApprovalIntent>());
   const artworkResolutionIntents = useRef(new Map<string, string>());
   const requestGeneration = useRef(0);
+  const mounted = useRef(true);
+  const currentScope = useRef<CollaborationScope>({ workspaceId, view, userId: sessionUser?.id });
+  const currentAction = useRef<CollaborationAction | null>(null);
+  const loadedScope = useRef<CollaborationScope | null>(null);
+  if (currentScope.current.workspaceId !== workspaceId || currentScope.current.view !== view || currentScope.current.userId !== sessionUser?.id) {
+    currentScope.current = { workspaceId, view, userId: sessionUser?.id };
+  }
+  const scope = currentScope.current;
+  const renderedGeneration = requestGeneration.current;
+  const actionIsCurrent = (action: CollaborationAction) => mounted.current && currentAction.current === action
+    && currentScope.current === action.scope && requestGeneration.current === action.generation;
 
   useEffect(() => {
     let live = true;
@@ -84,10 +100,9 @@ export default function CollaborationCenter({ view }: { view: View }) {
       fetch("/api/auth/session").then(async (response) => response.ok ? response.json() as Promise<{ user: SessionUser }> : { user: null }),
     ]).then(([workspaceResult, session]) => {
       if (!live) return;
-      const requested = new URLSearchParams(window.location.search).get("ws") ?? window.localStorage.getItem("bookworm:workspaceId");
-      const selected = workspaceResult.workspaces.find((item) => item.id === requested) ?? workspaceResult.workspaces[0];
       setWorkspaces(workspaceResult.workspaces);
       setSessionUser(session.user);
+      const selected = resolveWorkspace(workspaceResult.workspaces, new URLSearchParams(window.location.search).get("ws"));
       setWorkspaceId(selected?.id ?? "");
     }).catch((reason: unknown) => {
       if (live) { setError(reason instanceof Error ? reason.message : "Could not load collaboration workspace."); setLoading(false); }
@@ -95,9 +110,15 @@ export default function CollaborationCenter({ view }: { view: View }) {
     return () => { live = false; };
   }, [api]);
 
-  const load = useCallback(async (): Promise<boolean> => {
-    if (!workspaceId) { setLoading(false); return false; }
+  const load = useCallback(async (owner?: CollaborationAction): Promise<boolean> => {
+    if (!mounted.current || scope !== currentScope.current || (owner && !actionIsCurrent(owner))) return false;
+    if (!owner) { currentAction.current = null; setBusy(null); }
+    loadedScope.current = null;
     const generation = ++requestGeneration.current;
+    // A current accepted action owns its reload; unrelated loads supersede it.
+    if (owner) owner.generation = generation;
+    const isCurrent = () => mounted.current && scope === currentScope.current && generation === requestGeneration.current;
+    if (!workspaceId) { setLoading(false); return false; }
     setLoading(true); setError(null);
     try {
       const [memberResult, taskResult, approvalBundle, activityResult] = await Promise.all([
@@ -106,12 +127,12 @@ export default function CollaborationCenter({ view }: { view: View }) {
         view === "approvals" ? Promise.all([api.listApprovals(workspaceId), api.listBooks(workspaceId), api.listAssets(workspaceId)]) : Promise.resolve(null),
         api.listActivity(workspaceId, 20),
       ]);
-      if (generation !== requestGeneration.current) return false;
+      if (!isCurrent()) return false;
       const currentRole = memberResult.members.find((member) => member.user_id === sessionUser?.id && member.status === "active")?.role;
       const invitationResult = view === "team" && (currentRole === "owner" || currentRole === "admin")
         ? await api.listInvitations(workspaceId)
         : null;
-      if (generation !== requestGeneration.current) return false;
+      if (!isCurrent()) return false;
       setMembers(memberResult.members);
       setProfiles(memberResult.profiles);
       setInvitations(invitationResult?.invitations ?? []);
@@ -125,17 +146,18 @@ export default function CollaborationCenter({ view }: { view: View }) {
         setAssets(assetResult.assets.filter((asset) => asset.status !== "archived"));
       } else { setApprovals([]); setBooks([]); setAssets([]); }
       setLoadedWorkspaceId(workspaceId);
-      window.localStorage.setItem("bookworm:workspaceId", workspaceId);
+      loadedScope.current = scope;
+      rememberWorkspace(workspaces, workspaceId);
       return true;
     } catch (reason) {
-      if (generation === requestGeneration.current) setError(reason instanceof Error ? reason.message : "Could not load collaboration data.");
+      if (isCurrent()) setError(reason instanceof Error ? reason.message : "Could not load collaboration data.");
       return false;
     } finally {
-      if (generation === requestGeneration.current) setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [api, sessionUser?.id, view, workspaceId]);
+  }, [api, sessionUser?.id, view, workspaceId, workspaces]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { mounted.current = true; void load(); return () => { mounted.current = false; requestGeneration.current++; currentAction.current = null; loadedScope.current = null; }; }, [load]);
 
   const membership = members.find((member) => member.user_id === sessionUser?.id && member.status === "active");
   const role = membership?.role;
@@ -182,25 +204,36 @@ export default function CollaborationCenter({ view }: { view: View }) {
   }, [assets, books]);
 
   function changeWorkspace(nextId: string) {
+    // Empty reads can advance their ref without a React state change/rerender.
+    // Selection belongs to the current logical scope, not its read generation.
+    if (!mounted.current || scope !== currentScope.current) return;
+    try { resolveWorkspace(workspaces, nextId); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Choose an available workspace."); return; }
     requestGeneration.current += 1;
+    currentScope.current = { workspaceId: nextId, view, userId: sessionUser?.id };
+    currentAction.current = null; loadedScope.current = null; setBusy(null);
     artworkRequestKeys.current.clear(); artworkRequestIntents.current.clear(); artworkResolutionIntents.current.clear();
     setLoadedWorkspaceId("");
     setMembers([]); setProfiles([]); setTasks([]); setApprovals([]); setBooks([]); setAssets([]); setInvitations([]); setActivity([]);
     setTaskAssignee(""); setApprovalTarget(""); setApprovalReviewer(""); setArtworkApprovalTarget(""); setArtworkReviewer(""); setArtworkComment(""); setArtworkRetryIdentity(null); setRejectionNotes({}); setRejectionRetryIds({}); setInviteLink(""); setNotice(null); setError(null);
     setWorkspaceId(nextId);
-    const url = new URL(window.location.href); url.searchParams.set("ws", nextId); window.history.replaceState(null, "", url);
+    replaceWorkspaceQuery(nextId);
   }
 
-  async function perform(key: string, action: () => Promise<void>, success: string) {
-    if (busy || loadedWorkspaceId !== workspaceId || loading) return;
+  async function perform(key: string, action: (isCurrent: ActionGuard) => Promise<void>, success: string) {
+    if (!mounted.current || scope !== currentScope.current || renderedGeneration !== requestGeneration.current || loadedScope.current !== scope
+      || currentAction.current || busy || loadedWorkspaceId !== workspaceId || loading) return;
+    const owner: CollaborationAction = { scope, generation: requestGeneration.current };
+    currentAction.current = owner;
+    const isCurrent = () => actionIsCurrent(owner);
     setBusy(key); setError(null); setNotice(null);
-    try { await action(); if (await load()) setNotice(success); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "The action could not be completed."); }
-    finally { setBusy(null); }
+    try { await action(isCurrent); if (!isCurrent()) return; if (await load(owner) && isCurrent()) setNotice(success); }
+    catch (reason) { if (isCurrent()) setError(reason instanceof Error ? reason.message : "The action could not be completed."); }
+    finally { if (isCurrent()) { currentAction.current = null; setBusy(null); } }
   }
 
-  async function submitArtworkApproval() {
-    if (!selectedArtwork || !selectedArtworkVersion || !sessionUser?.id || !artworkReviewer || artworkReviewer === sessionUser.id) return;
+  async function submitArtworkApproval(isCurrent: ActionGuard) {
+    if (!isCurrent() || !selectedArtwork || !selectedArtworkVersion || !sessionUser?.id || !artworkReviewer || artworkReviewer === sessionUser.id) return;
     const identity = `${workspaceId}:${sessionUser.id}:${selectedArtwork.id}:${selectedArtworkVersion}`;
     const idempotencyKey = getOrCreateApprovalRequestKey(artworkRequestKeys.current, identity, () => crypto.randomUUID());
     const saved = artworkRequestIntents.current.get(identity);
@@ -216,6 +249,7 @@ export default function CollaborationCenter({ view }: { view: View }) {
         entityVersionNumber: selectedArtworkVersion,
         idempotencyKey,
       });
+      if (!isCurrent()) return;
       artworkRequestKeys.current.delete(identity);
       artworkRequestIntents.current.delete(identity);
       setArtworkRetryIdentity(null);
@@ -223,6 +257,7 @@ export default function CollaborationCenter({ view }: { view: View }) {
       setArtworkReviewer("");
       setArtworkComment("");
     } catch (reason) {
+      if (!isCurrent()) throw reason;
       if (reason instanceof ApiClientError && reason.status >= 400 && reason.status < 500) {
         artworkRequestKeys.current.delete(identity);
         artworkRequestIntents.current.delete(identity);
@@ -236,9 +271,11 @@ export default function CollaborationCenter({ view }: { view: View }) {
     }
   }
 
-  async function resolveArtworkApproval(approval: Approval, action: "approve" | "reject") {
+  async function resolveArtworkApproval(approval: Approval, action: "approve" | "reject", isCurrent: ActionGuard) {
+    if (!isCurrent()) return;
     if (action === "approve") {
       await api.resolveApproval(approval.id, action);
+      if (!isCurrent()) return;
       setRejectionNotes((current) => ({ ...current, [approval.id]: "" }));
       return;
     }
@@ -249,10 +286,12 @@ export default function CollaborationCenter({ view }: { view: View }) {
     if (savedNote === undefined) artworkResolutionIntents.current.set(approval.id, comment);
     try {
       await api.resolveApproval(approval.id, action, comment);
+      if (!isCurrent()) return;
       artworkResolutionIntents.current.delete(approval.id);
       setRejectionNotes((current) => ({ ...current, [approval.id]: "" }));
       setRejectionRetryIds((current) => ({ ...current, [approval.id]: false }));
     } catch (reason) {
+      if (!isCurrent()) throw reason;
       if (reason instanceof ApiClientError && reason.status >= 400 && reason.status < 500) {
         artworkResolutionIntents.current.delete(approval.id);
         setRejectionRetryIds((current) => ({ ...current, [approval.id]: false }));
@@ -264,22 +303,31 @@ export default function CollaborationCenter({ view }: { view: View }) {
     }
   }
 
+  function copyInvitationLink() {
+    const isCurrent = () => mounted.current && scope === currentScope.current && renderedGeneration === requestGeneration.current;
+    if (!isCurrent()) return;
+    void navigator.clipboard.writeText(inviteLink).then(
+      () => { if (isCurrent()) setNotice("Invitation link copied."); },
+      () => { if (isCurrent()) setError("Copy failed. Select and copy the link manually."); },
+    );
+  }
+
   const workspaceQuery = workspaceId ? `?ws=${encodeURIComponent(workspaceId)}` : "";
-  const scopeReady = Boolean(workspaceId && loadedWorkspaceId === workspaceId && !loading);
-  return <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
+  const scopeReady = Boolean(workspaceId && loadedWorkspaceId === workspaceId && loadedScope.current === scope && !loading);
+  return <><AuthorHeader workspaceId={workspaceId || undefined} /><main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
     <div className="flex flex-wrap items-end justify-between gap-5 border-b border-white/10 pb-7">
       <div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#8f8f8f]">Workspace operations</p><h1 className="mt-2 text-4xl font-medium tracking-[-0.055em]">{titleCase(view)}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-white/55">Coordinate assignments, review decisions, and access without leaving the publishing workspace.</p></div>
-      {workspaces.length > 0 && <label className="text-xs text-white/50">Workspace<select value={workspaceId} onChange={(event) => changeWorkspace(event.target.value)} disabled={Boolean(busy)} className="mt-2 block min-w-56 rounded-xl border border-white/15 bg-black px-3 py-2.5 text-sm text-white">{workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select></label>}
+      {workspaces.length > 0 && <label className="text-xs text-white/50">Workspace<select value={workspaceId} onChange={(event) => changeWorkspace(event.target.value)} disabled={Boolean(busy)} className="mt-2 block min-w-56 rounded-xl border border-white/15 bg-black px-3 py-2.5 text-sm text-white"><option value="" disabled>Select a workspace</option>{workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select></label>}
     </div>
     <nav aria-label="Collaboration sections" className="mt-5 flex flex-wrap gap-2">{(["tasks", "approvals", "team"] as View[]).map((item) => <Link key={item} href={`/${item}${workspaceQuery}`} aria-current={view === item ? "page" : undefined} className={`rounded-full px-4 py-2 text-sm ${view === item ? "bg-white text-black" : "border border-white/10 text-white/55 hover:text-white"}`}>{titleCase(item)}</Link>)}</nav>
     {role && <p className="mt-4 text-xs text-white/40">Your workspace role: <span className="capitalize text-white/70">{role}</span></p>}
     {error && <div role="alert" className="mt-5 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}</div>}
     {notice && <div role="status" className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{notice}</div>}
     {workspaceId && !scopeReady && <section aria-live="polite" className={`${card} mt-8 p-8 text-center text-sm text-white/45`}>Loading workspace collaboration data…</section>}
-    {!loading && !workspaceId && <section className={`${card} mt-8 p-6`}><h2 className="text-xl font-medium">No workspace yet</h2><p className="mt-2 text-sm text-white/50">Create a workspace from the dashboard before coordinating a team.</p><Link href="/dashboard" className="mt-4 inline-block underline">Go to dashboard</Link></section>}
+    {!loading && !workspaceId && <section className={`${card} mt-8 p-6`}><h2 className="text-xl font-medium">{workspaces.length ? "Choose an available workspace" : "No workspace yet"}</h2><p className="mt-2 text-sm text-white/50">{workspaces.length ? "Select a workspace above to load its team and workflow." : "Create a workspace from the dashboard before coordinating a team."}</p><Link href="/dashboard" className="mt-4 inline-block underline">Go to dashboard</Link></section>}
 
     {scopeReady && view === "tasks" && <div className="mt-8 space-y-6">
-      {canEdit && <form className={`${card} grid gap-4 p-5 lg:grid-cols-6`} onSubmit={(event) => { event.preventDefault(); if (!taskTitle.trim()) return; void perform("create-task", async () => { await api.createTask({ workspaceId, title: taskTitle.trim(), description: taskDescription.trim() || undefined, priority: taskPriority, assigneeId: taskAssignee || null, dueAt: taskDue ? new Date(taskDue).toISOString() : null }); setTaskTitle(""); setTaskDescription(""); setTaskDue(""); }, "Task created."); }}>
+      {canEdit && <form className={`${card} grid gap-4 p-5 lg:grid-cols-6`} onSubmit={(event) => { event.preventDefault(); if (!taskTitle.trim()) return; void perform("create-task", async (isCurrent) => { await api.createTask({ workspaceId, title: taskTitle.trim(), description: taskDescription.trim() || undefined, priority: taskPriority, assigneeId: taskAssignee || null, dueAt: taskDue ? new Date(taskDue).toISOString() : null }); if (!isCurrent()) return; setTaskTitle(""); setTaskDescription(""); setTaskDue(""); }, "Task created."); }}>
         <label className="text-xs text-white/55 lg:col-span-2">Task title<input required maxLength={256} value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} className={input} placeholder="Review chapter opening" /></label>
         <label className="text-xs text-white/55 lg:col-span-2">Description<input maxLength={10000} value={taskDescription} onChange={(event) => setTaskDescription(event.target.value)} className={input} placeholder="Optional context" /></label>
         <label className="text-xs text-white/55">Assignee<select value={taskAssignee} onChange={(event) => setTaskAssignee(event.target.value)} className={input}><option value="">Unassigned</option>{activeMembers.map((member) => <option key={member.user_id} value={member.user_id}>{nameOf(member.user_id)}</option>)}</select></label>
@@ -291,7 +339,7 @@ export default function CollaborationCenter({ view }: { view: View }) {
     </div>}
 
     {scopeReady && view === "approvals" && <div className="mt-8 grid gap-6 lg:grid-cols-[0.8fr_1.2fr]">
-      <div className="space-y-6">{canEdit && <form className={`${card} p-5`} onSubmit={(event) => { event.preventDefault(); const [entityType, entityId] = approvalTarget.split(":"); if (!entityType || !entityId) return; void perform("request-approval", async () => { await api.createApproval({ workspaceId, entityType: entityType as WorkspaceTargetType, entityId, reviewerId: approvalReviewer || null, comment: approvalComment.trim() || undefined }); setApprovalTarget(""); setApprovalComment(""); setApprovalReviewer(""); }, "Book review requested."); }}><h2 className="text-lg font-medium">Request a book review</h2><p className="mt-1 text-xs leading-5 text-white/45">Book approvals stay in the general review queue; illustration review is version-pinned below.</p><label className="mt-5 block text-xs text-white/55">Review target<select required value={approvalTarget} onChange={(event) => setApprovalTarget(event.target.value)} className={input}><option value="">Select a book</option>{targets.map((target) => <option key={target.value} value={target.value}>{target.label}</option>)}</select></label><label className="mt-4 block text-xs text-white/55">Reviewer<select value={approvalReviewer} onChange={(event) => setApprovalReviewer(event.target.value)} className={input}><option value="">Any eligible reviewer</option>{activeMembers.filter((member) => approveRoles.has(member.role)).map((member) => <option key={member.user_id} value={member.user_id}>{nameOf(member.user_id)} · {member.role}</option>)}</select></label><label className="mt-4 block text-xs text-white/55">Review note<textarea rows={4} maxLength={2000} value={approvalComment} onChange={(event) => setApprovalComment(event.target.value)} className={input} placeholder="What should the reviewer check?" /></label><button disabled={!approvalTarget || busy === "request-approval"} className="glass-solid mt-5 min-h-10 w-full rounded-full px-5 text-sm font-semibold text-black disabled:opacity-40">{busy === "request-approval" ? "Requesting…" : "Request approval"}</button></form>}
+      <div className="space-y-6">{canEdit && <form className={`${card} p-5`} onSubmit={(event) => { event.preventDefault(); const [entityType, entityId] = approvalTarget.split(":"); if (!entityType || !entityId) return; void perform("request-approval", async (isCurrent) => { await api.createApproval({ workspaceId, entityType: entityType as WorkspaceTargetType, entityId, reviewerId: approvalReviewer || null, comment: approvalComment.trim() || undefined }); if (!isCurrent()) return; setApprovalTarget(""); setApprovalComment(""); setApprovalReviewer(""); }, "Book review requested."); }}><h2 className="text-lg font-medium">Request a book review</h2><p className="mt-1 text-xs leading-5 text-white/45">Book approvals stay in the general review queue; illustration review is version-pinned below.</p><label className="mt-5 block text-xs text-white/55">Review target<select required value={approvalTarget} onChange={(event) => setApprovalTarget(event.target.value)} className={input}><option value="">Select a book</option>{targets.map((target) => <option key={target.value} value={target.value}>{target.label}</option>)}</select></label><label className="mt-4 block text-xs text-white/55">Reviewer<select value={approvalReviewer} onChange={(event) => setApprovalReviewer(event.target.value)} className={input}><option value="">Any eligible reviewer</option>{activeMembers.filter((member) => approveRoles.has(member.role)).map((member) => <option key={member.user_id} value={member.user_id}>{nameOf(member.user_id)} · {member.role}</option>)}</select></label><label className="mt-4 block text-xs text-white/55">Review note<textarea rows={4} maxLength={2000} value={approvalComment} onChange={(event) => setApprovalComment(event.target.value)} className={input} placeholder="What should the reviewer check?" /></label><button disabled={!approvalTarget || busy === "request-approval"} className="glass-solid mt-5 min-h-10 w-full rounded-full px-5 text-sm font-semibold text-black disabled:opacity-40">{busy === "request-approval" ? "Requesting…" : "Request approval"}</button></form>}
         <section className={`${card} p-5`}><h2 className="text-lg font-medium">Resolved</h2><div className="mt-4 space-y-2">{resolved.map((approval) => <article key={approval.id} className="flex items-center justify-between gap-3 rounded-xl border border-white/10 p-3 text-sm"><div><p>{titleCase(approval.entity_type)} · {targetName(approval.entity_type, approval.entity_id)}</p><p className="mt-1 text-xs text-white/35">Requested by {nameOf(approval.requested_by)}</p></div><span className={`rounded-full border px-2.5 py-1 text-[10px] ${statusTone(approval.status)}`}>{titleCase(approval.status)}</span></article>)}{!loading && resolved.length === 0 && <p className="py-4 text-sm text-white/35">No resolved decisions yet.</p>}</div></section>
       </div>
       <section className={`${card} p-5`}><div className="flex items-center justify-between"><h2 className="text-xl font-medium">Pending review</h2><span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/45">{pending.length}</span></div><div className="mt-5 space-y-3">{pending.map((approval) => { const assignedElsewhere = Boolean(approval.reviewer_id && approval.reviewer_id !== sessionUser?.id); return <article key={approval.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="font-medium">{titleCase(approval.entity_type)} · {targetName(approval.entity_type, approval.entity_id)}</h3><p className="mt-1 text-xs text-white/40">Requested by {nameOf(approval.requested_by)} · {new Date(approval.created_at).toLocaleString()}</p></div><span className={`rounded-full border px-2.5 py-1 text-[10px] ${statusTone(approval.status)}`}>Pending</span></div>{approval.comment && <p className="mt-4 rounded-lg bg-white/[0.04] p-3 text-sm leading-6 text-white/60">{approval.comment}</p>}<p className="mt-3 text-xs text-white/35">Reviewer: {approval.reviewer_id ? nameOf(approval.reviewer_id) : "Any eligible reviewer"}</p>{canApprove && !assignedElsewhere && <div className="mt-4 flex gap-2"><button disabled={Boolean(busy)} onClick={() => void perform(`approve-${approval.id}`, () => api.resolveApproval(approval.id, "approve").then(() => undefined), "Approval accepted.")} className="glass-solid rounded-full px-4 py-2 text-xs font-semibold text-black disabled:opacity-40">Approve</button><button disabled={Boolean(busy)} onClick={() => void perform(`reject-${approval.id}`, () => api.resolveApproval(approval.id, "reject").then(() => undefined), "Approval rejected.")} className="rounded-full border border-white/15 px-4 py-2 text-xs disabled:opacity-40">Reject</button></div>}{assignedElsewhere && <p className="mt-3 text-xs text-amber-100/60">This decision is assigned to {nameOf(approval.reviewer_id)}.</p>}</article>; })}{!loading && pending.length === 0 && <div className="py-16 text-center"><p className="text-lg">Queue is clear</p><p className="mt-2 text-sm text-white/35">New review requests will appear here.</p></div>}</div></section>
@@ -327,7 +375,7 @@ export default function CollaborationCenter({ view }: { view: View }) {
             return <article key={approval.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-medium">{targetName("asset", approval.entity_id)}</h4><p className="mt-1 text-xs text-white/40">Version {approval.entity_version_number ?? "unknown"} · requested by {nameOf(approval.requested_by)}</p><p className="mt-1 text-[11px] text-white/30">{new Date(approval.created_at).toLocaleString()}</p></div><span className={`rounded-full border px-2.5 py-1 text-[10px] ${statusTone(approval.status)}`}>Pending</span></div>
               {approval.comment && <p className="mt-4 rounded-lg bg-white/[0.04] p-3 text-sm leading-6 text-white/60">{approval.comment}</p>}
               <p className="mt-3 text-xs text-white/35">Assigned to {approval.reviewer_id ? nameOf(approval.reviewer_id) : "no reviewer"}</p>
-              {canDecide && <div className="mt-4 space-y-3"><label className="block text-xs text-white/55">Required note when rejecting<textarea rows={3} maxLength={2000} value={note} disabled={noteLocked} onChange={(event) => setRejectionNotes((current) => ({ ...current, [approval.id]: event.target.value }))} className={input} placeholder="Explain what needs to change…" /></label>{noteLocked && <p role="status" className="text-xs text-amber-100/70">The reject response was uncertain. Retry uses the same saved note.</p>}<div className="flex flex-wrap gap-2"><button disabled={Boolean(busy)} onClick={() => void perform(`approve-artwork-${approval.id}`, () => resolveArtworkApproval(approval, "approve"), "Artwork version approved.")} className="glass-solid rounded-full px-4 py-2 text-xs font-semibold text-black disabled:opacity-40">Approve version</button><button disabled={Boolean(busy) || !note.trim()} onClick={() => void perform(`reject-artwork-${approval.id}`, () => resolveArtworkApproval(approval, "reject"), "Artwork revision requested.")} className="rounded-full border border-white/15 px-4 py-2 text-xs disabled:opacity-40">Request a revision</button></div></div>}
+              {canDecide && <div className="mt-4 space-y-3"><label className="block text-xs text-white/55">Required note when rejecting<textarea rows={3} maxLength={2000} value={note} disabled={noteLocked} onChange={(event) => setRejectionNotes((current) => ({ ...current, [approval.id]: event.target.value }))} className={input} placeholder="Explain what needs to change…" /></label>{noteLocked && <p role="status" className="text-xs text-amber-100/70">The reject response was uncertain. Retry uses the same saved note.</p>}<div className="flex flex-wrap gap-2"><button disabled={Boolean(busy)} onClick={() => void perform(`approve-artwork-${approval.id}`, (isCurrent) => resolveArtworkApproval(approval, "approve", isCurrent), "Artwork version approved.")} className="glass-solid rounded-full px-4 py-2 text-xs font-semibold text-black disabled:opacity-40">Approve version</button><button disabled={Boolean(busy) || !note.trim()} onClick={() => void perform(`reject-artwork-${approval.id}`, (isCurrent) => resolveArtworkApproval(approval, "reject", isCurrent), "Artwork revision requested.")} className="rounded-full border border-white/15 px-4 py-2 text-xs disabled:opacity-40">Request a revision</button></div></div>}
               {requestedByMe && <p className="mt-3 text-xs text-white/35">You requested this review and cannot decide it.</p>}
               {!requestedByMe && !canDecide && assignedElsewhere && <p className="mt-3 text-xs text-amber-100/60">Only the assigned reviewer can decide this artwork version.</p>}
             </article>;
@@ -337,11 +385,11 @@ export default function CollaborationCenter({ view }: { view: View }) {
     </section>}
 
     {scopeReady && view === "team" && <div className="mt-8 grid gap-6 lg:grid-cols-[0.75fr_1.25fr]">
-      <div className="space-y-6"><section className={`${card} p-5`}><h2 className="text-lg font-medium">Invite a collaborator</h2><p className="mt-2 text-xs leading-5 text-white/45">Links expire after seven days and can be accepted only by the invited email. Until email delivery is connected, share the generated link directly.</p>{canManage ? <form className="mt-5 space-y-4" onSubmit={(event) => { event.preventDefault(); if (!inviteEmail.trim()) return; void perform("invite", async () => { const result = await api.inviteMember(workspaceId, { email: inviteEmail.trim(), role: inviteRole }); setInviteLink(result.acceptanceUrl); setInviteEmail(""); }, "Secure invitation created."); }}><label className="block text-xs text-white/55">Email<input required type="email" maxLength={254} value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} className={input} placeholder="editor@example.com" /></label><label className="block text-xs text-white/55">Role<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as InviteRole)} className={input}>{roles.filter((item): item is InviteRole => item !== "owner").map((item) => <option key={item} value={item}>{titleCase(item)}</option>)}</select></label><button disabled={busy === "invite"} className="glass-solid min-h-10 w-full rounded-full px-5 text-sm font-semibold text-black disabled:opacity-40">{busy === "invite" ? "Creating…" : "Create invite link"}</button></form> : <p className="mt-5 rounded-xl border border-white/10 p-4 text-sm text-white/45">Only workspace owners and admins can invite or change roles.</p>}{inviteLink && <div className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3"><label className="text-xs text-emerald-100">Copy this link now<input readOnly value={inviteLink} className={`${input} border-emerald-400/20 text-xs`} onFocus={(event) => event.currentTarget.select()} /></label><button type="button" onClick={() => void navigator.clipboard.writeText(inviteLink).then(() => setNotice("Invitation link copied."), () => setError("Copy failed. Select and copy the link manually."))} className="mt-3 rounded-full border border-emerald-200/20 px-4 py-2 text-xs text-emerald-50">Copy link</button></div>}</section>
+      <div className="space-y-6"><section className={`${card} p-5`}><h2 className="text-lg font-medium">Invite a collaborator</h2><p className="mt-2 text-xs leading-5 text-white/45">Links expire after seven days and can be accepted only by the invited email. Until email delivery is connected, share the generated link directly.</p>{canManage ? <form className="mt-5 space-y-4" onSubmit={(event) => { event.preventDefault(); if (!inviteEmail.trim()) return; void perform("invite", async (isCurrent) => { const result = await api.inviteMember(workspaceId, { email: inviteEmail.trim(), role: inviteRole }); if (!isCurrent()) return; setInviteLink(result.acceptanceUrl); setInviteEmail(""); }, "Secure invitation created."); }}><label className="block text-xs text-white/55">Email<input required type="email" maxLength={254} value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} className={input} placeholder="editor@example.com" /></label><label className="block text-xs text-white/55">Role<select value={inviteRole} onChange={(event) => setInviteRole(event.target.value as InviteRole)} className={input}>{roles.filter((item): item is InviteRole => item !== "owner").map((item) => <option key={item} value={item}>{titleCase(item)}</option>)}</select></label><button disabled={busy === "invite"} className="glass-solid min-h-10 w-full rounded-full px-5 text-sm font-semibold text-black disabled:opacity-40">{busy === "invite" ? "Creating…" : "Create invite link"}</button></form> : <p className="mt-5 rounded-xl border border-white/10 p-4 text-sm text-white/45">Only workspace owners and admins can invite or change roles.</p>}{inviteLink && <div className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-3"><label className="text-xs text-emerald-100">Copy this link now<input readOnly value={inviteLink} className={`${input} border-emerald-400/20 text-xs`} onFocus={(event) => event.currentTarget.select()} /></label><button type="button" onClick={copyInvitationLink} className="mt-3 rounded-full border border-emerald-200/20 px-4 py-2 text-xs text-emerald-50">Copy link</button></div>}</section>
       {canManage && <section className={`${card} p-5`}><h2 className="text-lg font-medium">Pending invitations</h2><div className="mt-4 space-y-2">{invitations.filter((invitation) => invitation.status === "pending").map((invitation) => <article key={invitation.id} className="rounded-xl border border-white/10 p-3"><p className="truncate text-sm">{invitation.email}</p><p className="mt-1 text-xs capitalize text-white/40">{invitation.role} · expires {new Date(invitation.expires_at).toLocaleDateString()}</p><button type="button" disabled={Boolean(busy)} onClick={() => void perform(`revoke-${invitation.id}`, () => api.revokeInvitation(workspaceId, invitation.id).then(() => undefined), "Invitation revoked.")} className="mt-3 text-xs text-red-200 underline disabled:opacity-40">Revoke</button></article>)}{!loading && invitations.every((invitation) => invitation.status !== "pending") && <p className="text-sm text-white/35">No pending invitations.</p>}</div></section>}</div>
       <section className={`${card} overflow-hidden`}><div className="flex items-center justify-between border-b border-white/10 p-5"><h2 className="text-xl font-medium">Members</h2><span className="text-xs text-white/40">{members.length} total</span></div><div className="divide-y divide-white/10">{members.map((member) => <article key={member.user_id} className="flex flex-wrap items-center justify-between gap-4 p-5"><div className="flex min-w-0 items-center gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-sm">{nameOf(member.user_id).slice(0, 1).toUpperCase()}</div><div className="min-w-0"><p className="truncate text-sm font-medium">{nameOf(member.user_id)}</p><p className="mt-1 text-xs text-white/35">{shortId(member.user_id)}</p></div></div><div className="flex items-center gap-3">{canManage ? <select aria-label={`Role for ${nameOf(member.user_id)}`} value={member.role} disabled={Boolean(busy)} onChange={(event) => void perform(`member-${member.user_id}`, () => api.updateMemberRole(workspaceId, member.user_id, event.target.value as MemberRole).then(() => undefined), "Member role updated.")} className="rounded-lg border border-white/10 bg-black px-3 py-2 text-xs text-white">{roles.map((item) => <option key={item} value={item}>{titleCase(item)}</option>)}</select> : <span className="text-xs capitalize text-white/55">{member.role}</span>}<span className={`rounded-full border px-2.5 py-1 text-[10px] ${statusTone(member.status)}`}>{titleCase(member.status)}</span></div></article>)}{!loading && members.length === 0 && <p className="p-8 text-center text-sm text-white/35">No members found.</p>}</div></section>
     </div>}
 
     {scopeReady && <section className={`${card} mt-8 overflow-hidden`} aria-labelledby="workspace-activity-title"><div className="flex items-center justify-between border-b border-white/10 p-5"><div><p className="text-[10px] uppercase tracking-[0.16em] text-white/35">Audit trail</p><h2 id="workspace-activity-title" className="mt-1 text-lg font-medium">Recent workspace activity</h2></div><button type="button" disabled={loading || Boolean(busy)} onClick={() => void load()} className="rounded-full border border-white/10 px-3 py-2 text-xs text-white/55 disabled:opacity-40">Refresh</button></div><div className="divide-y divide-white/10">{activity.map((event) => <article key={event.id} className="grid gap-2 p-4 sm:grid-cols-[1fr_auto] sm:items-center"><div><p className="text-sm"><span className="text-white/75">{nameOf(event.actor_id)}</span> <span className="text-white/45">{titleCase(event.event_type).toLowerCase()}</span></p><p className="mt-1 text-xs text-white/30">{event.entity_type ? `${titleCase(event.entity_type)}${event.entity_id ? ` · ${shortId(event.entity_id)}` : ""}` : "Workspace"}</p></div><time dateTime={event.created_at} className="text-xs text-white/30">{new Date(event.created_at).toLocaleString()}</time></article>)}{activity.length === 0 && <p className="p-8 text-center text-sm text-white/35">No activity has been recorded yet.</p>}</div></section>}
-  </main>;
+  </main></>;
 }

@@ -1,5 +1,6 @@
 """Fit checks exercise measured ink and the exact output QR module grid."""
 import io
+import copy
 import sys
 from pathlib import Path
 
@@ -125,3 +126,98 @@ def test_qr_too_dense_over_capacity_or_unfit_label_fails_clearly():
         cover_renderer.compose_front_cover(artwork(), {"metadata": {}}, config)
     config.cover.qr_code.enabled = False
     assert cover_renderer.compose_front_cover(artwork(), {"metadata": {}}, config)[0]
+
+
+def _cover_book():
+    return {"metadata": {"title": "The original title", "subtitle": "Original subtitle",
+                         "author": "Original Author", "language": "en"}}
+
+
+@pytest.mark.parametrize("kind, expected", [
+    ("ebook", "3df9f923a5c48710f3e62474a38f1b3944e8a2bf053c515733ac15d6672c908c"),
+    ("print", "20a633744c51dae17df0549a40d1e086bfe00dd21c693a603a6f934a0470308c"),
+])
+def test_effective_ebook_cover_preserves_legacy_no_override_and_print_png(kind, expected):
+    # Captured with cover-1.3.0 before changing the effective-metadata policy.
+    book = _cover_book()
+    config = edition(kind, label="Discover more")
+    original = copy.deepcopy((book, config.model_dump()))
+    data, checksum = cover_renderer.compose_front_cover(artwork(), book, config)
+    assert checksum == expected
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    assert (book, config.model_dump()) == original
+
+
+@pytest.mark.parametrize("overrides", [
+    {"title": "The edition title", "subtitle": "An edition subtitle", "author": "Edition Author"},
+    {"title": ""}, {"subtitle": ""}, {"author": ""},
+    {"title": "", "subtitle": "", "author": "", "language": "ar"},
+])
+def test_effective_ebook_cover_png_matches_equivalent_base_metadata_with_qr(overrides):
+    book = _cover_book()
+    control = {"metadata": {**book["metadata"], **overrides}}
+    control_edition = edition(label="Discover more")
+    config = parse_edition({**control_edition.model_dump(), "metadata_overrides": overrides})
+    original = copy.deepcopy((book, config.model_dump()))
+    actual = cover_renderer.compose_front_cover(artwork(), book, config)
+    expected = cover_renderer.compose_front_cover(artwork(), control, control_edition)
+    assert actual[1] == expected[1]
+    assert actual[0] == expected[0]  # Exact PNG, including text and QR pixels.
+    assert (book, config.model_dump()) == original
+
+
+@pytest.mark.parametrize("field", ["title", "subtitle", "author"])
+@pytest.mark.parametrize("visible", [True, False])
+def test_effective_ebook_cover_checks_only_visible_override_glyphs(field, visible):
+    book = _cover_book()
+    config = edition()
+    config.metadata_overrides = {field: "漢字"}
+    setattr(config.cover, f"{field}_on_cover", visible)
+    original = copy.deepcopy((book, config.model_dump()))
+    if visible:
+        with pytest.raises(ValueError, match=f"cover {field} contains characters unsupported"):
+            cover_renderer.compose_front_cover(artwork(), book, config)
+    else:
+        control = {"metadata": {**book["metadata"], **config.metadata_overrides}}
+        control_edition = parse_edition({**config.model_dump(), "metadata_overrides": {}})
+        assert cover_renderer.compose_front_cover(artwork(), book, config) == (
+            cover_renderer.compose_front_cover(artwork(), control, control_edition))
+    assert (book, config.model_dump()) == original
+
+
+@pytest.mark.parametrize("field", ["title", "subtitle", "author"])
+def test_effective_ebook_cover_valid_override_masks_unsupported_base_glyphs(field):
+    book = _cover_book()
+    book["metadata"][field] = "漢字"
+    config = edition()
+    config.metadata_overrides = {field: "Readable edition text"}
+    control = {"metadata": {**book["metadata"], **config.metadata_overrides}}
+    control_edition = parse_edition({**config.model_dump(), "metadata_overrides": {}})
+    assert cover_renderer.compose_front_cover(artwork(), book, config) == (
+        cover_renderer.compose_front_cover(artwork(), control, control_edition))
+
+
+@pytest.mark.parametrize("base_language, effective_language", [("en", "ar"), ("ar", "en")])
+def test_effective_ebook_cover_rtl_guard_uses_override_language(base_language, effective_language):
+    book = _cover_book()
+    book["metadata"]["language"] = base_language
+    config = edition()
+    config.metadata_overrides = {"language": effective_language}
+    if effective_language == "ar":
+        with pytest.raises(ValueError, match="RTL cover text"):
+            cover_renderer.compose_front_cover(artwork(), book, config)
+    else:
+        control = {"metadata": {**book["metadata"], "language": "en"}}
+        assert cover_renderer.compose_front_cover(artwork(), book, config) == (
+            cover_renderer.compose_front_cover(artwork(), control, edition()))
+
+
+def test_effective_ebook_cover_all_hidden_rtl_overlays_do_not_block_artwork_or_qr():
+    book = _cover_book()
+    config = edition(label="Discover more")
+    config.metadata_overrides = {"language": "ar", "title": "عنوان", "subtitle": "副題", "author": "كاتب"}
+    config.cover.title_on_cover = config.cover.subtitle_on_cover = config.cover.author_on_cover = False
+    control = {"metadata": {**book["metadata"], **config.metadata_overrides}}
+    control_edition = parse_edition({**config.model_dump(), "metadata_overrides": {}})
+    assert cover_renderer.compose_front_cover(artwork(), book, config) == (
+        cover_renderer.compose_front_cover(artwork(), control, control_edition))

@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 from adapters import get_adapter  # noqa: E402
 from editions import parse_edition  # noqa: E402
 from epub_renderer import render_epub  # noqa: E402
+from publication_metadata import effective_publication_metadata  # noqa: E402
 
 app = FastAPI(title="bookworm-publishing")
 
@@ -59,6 +60,8 @@ def validate(req: ValidateRequest) -> dict:
     try:
         adapter = get_adapter(req.channel)
         edition = parse_edition(req.editionConfig)
+        effective_publication_metadata(req.bookModel.get("metadata", {}),
+                                       edition.metadata_overrides if edition.kind == "ebook" else None)
     except (KeyError, ValueError) as e:
         raise HTTPException(422, str(e)) from e
     artifact = None
@@ -79,6 +82,8 @@ def build_package(req: PackageRequest) -> dict:
     try:
         adapter = get_adapter(req.channel)
         edition = parse_edition(req.editionConfig)
+        effective_publication_metadata(req.bookModel.get("metadata", {}),
+                                       edition.metadata_overrides if edition.kind == "ebook" else None)
     except (KeyError, ValueError) as error:
         raise HTTPException(422, str(error)) from error
 

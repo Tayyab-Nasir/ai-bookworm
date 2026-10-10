@@ -6,7 +6,8 @@ import { AppError } from "../errors.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "../lib/authoring.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import type { SupabaseClient } from "../lib/supabase.js";
-import { editionConfigSchema, loadRenderImages, withEditionLanguage } from "./editions.js";
+import { editionConfigSchema, loadRenderImages, withEditionLanguage, requiresEffectiveEbookCoverPolicy,
+  EFFECTIVE_EBOOK_COVER_POLICY, EFFECTIVE_EBOOK_COVER_RENDERER_VERSION } from "./editions.js";
 
 const channelSchema = z.enum(["export", "kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
 const retailerChannelSchema = z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
@@ -129,7 +130,10 @@ export async function loadRenderedPackageInputs(
   workspaceId: string,
   kind: "ebook" | "print",
   renderJob: Record<string, unknown>,
+  config: z.infer<typeof editionConfigSchema>,
 ) {
+  if (config.kind !== kind) throw new AppError(422, "The selected render format does not match these saved edition settings.");
+  assertSavedRenderedCoverPolicy(config, renderJob);
   const response = renderJobResponseSchema.safeParse(renderJob.response_json);
   if (!response.success) throw new AppError(422, "The selected render has no valid stored artifacts. Render this edition again.");
   const primaryRole = kind === "ebook" ? "rendered_ebook" : "rendered_print";
@@ -183,6 +187,18 @@ export async function loadRenderedPackageInputs(
     encoded[descriptor.role === "rendered_cover" ? descriptor.filename : primaryName] = bytes.toString("base64");
   }
   return encoded;
+}
+
+export function assertSavedRenderedCoverPolicy(config: z.infer<typeof editionConfigSchema>, renderJob: Record<string, unknown> | null) {
+  if (!requiresEffectiveEbookCoverPolicy(config)) return;
+  const response = renderJobResponseSchema.safeParse(renderJob?.response_json);
+  const covers = response.success ? response.data.artifacts.filter(artifact => artifact.role === "rendered_cover") : [];
+  if (!response.success || response.data.usage.coverRendererVersion !== EFFECTIVE_EBOOK_COVER_RENDERER_VERSION
+    || response.data.usage.coverMetadataPolicy !== EFFECTIVE_EBOOK_COVER_POLICY
+    || covers.length !== 1 || covers[0].type !== "rendered_cover" || covers[0].filename !== "cover.png" || covers[0].mimeType !== "image/png") {
+    throw new AppError(422, "The selected render uses unsupported cover metadata. Render again with the updated renderer and a new request key before creating a package.",
+      undefined, "saved_cover_metadata_policy_unsupported");
+  }
 }
 
 export function decodePackage(encoded: string, checksum: string) {
@@ -393,15 +409,19 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
     const model = withEditionLanguage(await assembleBookModel(user, book), edition.language);
     const modelSha256 = bookModelFingerprint(model);
-    const images = await loadRenderImages(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
-      model.chapters.flatMap(chapter => chapter.nodes));
-    const { artworkSnapshot } = images;
-    const imageSha256 = renderImagesFingerprint(images);
     const [{ data: renderJob, error: renderError }, { data: preflightJob, error: preflightError }] = await Promise.all([
       service.from("publishing_jobs").select("*").eq("id", body.renderJobId).maybeSingle(),
       service.from("publishing_jobs").select("*").eq("id", body.preflightJobId).maybeSingle(),
     ]);
     if (renderError || preflightError) throw new AppError(500, "Could not verify the source publishing jobs.");
+    const earlySource = { bookId: body.bookId, editionId: body.editionId, editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256 };
+    assertSourceJob(renderJob, { ...earlySource, action: "render", channel: "render" });
+    assertSourceJob(preflightJob, { ...earlySource, action: "validate", channel: body.channel });
+    assertSavedRenderedCoverPolicy(config, renderJob);
+    const images = await loadRenderImages(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
+      model.chapters.flatMap(chapter => chapter.nodes));
+    const { artworkSnapshot } = images;
+    const imageSha256 = renderImagesFingerprint(images);
     const source = { bookId: body.bookId, editionId: body.editionId, editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256 };
     assertSourceJob(renderJob, { ...source, action: "render", channel: "render" });
     assertSourceJob(preflightJob, { ...source, action: "validate", channel: body.channel });
@@ -410,7 +430,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       throw new AppError(422, "Resolve all channel preflight errors and run preflight again before creating a package.");
     }
 
-    const artifactsBase64 = await loadRenderedPackageInputs(service, book.workspace_id, config.kind, renderJob!);
+    const artifactsBase64 = await loadRenderedPackageInputs(service, book.workspace_id, config.kind, renderJob!, config);
     const jobId = randomUUID();
     const requestJson = {
       action: "export_package", editionUpdatedAt: edition.updated_at,

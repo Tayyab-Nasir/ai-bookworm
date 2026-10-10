@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import type { DashboardOverview, DashboardRecentJob } from "@bookworm/api-client";
 import type { Book, Workspace } from "@bookworm/types";
 import { apiClient } from "./api";
+import { AuthorHeader } from "./AuthorShell";
+import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../lib/workspace-selection";
 
 function statusLabel(status: Book["status"]) {
   return status.replace("_", " ");
@@ -58,12 +60,8 @@ export default function AuthorDashboard() {
     currentLoad.current = request;
     const current = () => currentLoad.current === request;
     if (requestedId !== undefined) requestedWorkspace.current = requestedId;
-    if (!requestedWorkspace.current) {
+    if (requestedWorkspace.current === null) {
       requestedWorkspace.current = new URLSearchParams(window.location.search).get("ws");
-      if (!requestedWorkspace.current) {
-        try { requestedWorkspace.current = window.localStorage.getItem("bookworm:workspaceId"); }
-        catch { /* A browser preference is not required for authorized API reads. */ }
-      }
     }
     setLoading(true);
     setError(null);
@@ -75,15 +73,14 @@ export default function AuthorDashboard() {
       const spaces = await api.listWorkspaces();
       if (!current()) return;
       setWorkspaces(spaces.workspaces);
-      const workspaceId = requestedWorkspace.current;
-      const selected = workspaceId ? spaces.workspaces.find((item) => item.id === workspaceId) : spaces.workspaces[0];
+      const selected = resolveWorkspace(spaces.workspaces, requestedWorkspace.current);
       if (!selected) {
-        if (spaces.workspaces.length) setError("Requested workspace is no longer available. Choose another workspace.");
-        else requestedWorkspace.current = null;
+        requestedWorkspace.current = null;
         return;
       }
 
       requestedWorkspace.current = selected.id;
+      if (requestedId !== undefined) replaceWorkspaceQuery(selected.id);
       const result = await api.getDashboardOverview(selected.id);
       if (!current()) return;
       if (result.workspace.id !== selected.id || result.books.some((book) => book.workspace_id !== selected.id)) {
@@ -93,11 +90,9 @@ export default function AuthorDashboard() {
       setBooks(result.books);
       setOverview(result);
       setError(null);
-      try { window.localStorage.setItem("bookworm:workspaceId", selected.id); }
-      catch { /* Keep the current selection in memory when preference storage is blocked. */ }
+      rememberWorkspace(spaces.workspaces, selected.id);
     } catch (reason) {
       if (current()) {
-        setWorkspaces([]);
         setError(reason instanceof Error ? reason.message : "Could not load your library.");
       }
     } finally {
@@ -132,6 +127,8 @@ export default function AuthorDashboard() {
   ].map(([label, meter, quota]) => ({ label, ...dashboardMeter(overview, meter, quota) }));
 
   return (
+    <>
+    <AuthorHeader workspaceId={workspace?.id} />
     <main aria-busy={loading} className="mx-auto min-w-0 max-w-7xl [overflow-wrap:anywhere] px-4 pb-16 pt-8 sm:px-6 lg:px-8 lg:pt-12">
       <section className="flex flex-col justify-between gap-6 border-b border-white/[0.09] pb-8 sm:flex-row sm:items-end">
         <div>
@@ -147,7 +144,7 @@ export default function AuthorDashboard() {
           <button type="button" aria-label="Reload dashboard" aria-disabled={loading || creating} onClick={() => { if (!loading && !creating) void load(); }} className="glass-ghost inline-flex min-h-12 items-center rounded-full px-5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 aria-disabled:opacity-50">
             {loading ? "Refreshing…" : "Reload dashboard"}
           </button>
-          <Link href="/assets" className="glass-ghost metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-medium text-white">
+          <Link href={workspace ? `/assets?ws=${encodeURIComponent(workspace.id)}` : "/assets"} className="glass-ghost metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-medium text-white">
             Manage assets
           </Link>
           <Link href={createHref} className="glass-solid metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-semibold text-black">
@@ -202,7 +199,7 @@ export default function AuthorDashboard() {
         <div className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5 sm:p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Monthly usage</p><h2 className="mt-2 text-2xl font-medium tracking-[-0.04em]">AI studio capacity</h2></div>
-            <Link href="/billing" className="rounded-full border border-white/15 px-4 py-2 text-xs font-semibold text-white/70 hover:border-white/30 hover:text-white">Manage billing</Link>
+            <Link href={workspace ? `/billing?ws=${encodeURIComponent(workspace.id)}` : "/billing"} className="rounded-full border border-white/15 px-4 py-2 text-xs font-semibold text-white/70 hover:border-white/30 hover:text-white">Manage billing</Link>
           </div>
           <div className="mt-7 grid gap-6 sm:grid-cols-2">
             {usageMeters.map((item) => <div key={item.label}>
@@ -224,7 +221,7 @@ export default function AuthorDashboard() {
 
       {overview && <section className="mt-4 grid gap-4 lg:grid-cols-2" aria-label="Recent workspace state">
         <div className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5 sm:p-6">
-          <div className="flex items-center justify-between gap-4"><div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Pipeline</p><h2 className="mt-2 text-xl font-medium">Recent jobs</h2></div><Link href="/tasks" className="text-xs text-white/50 underline underline-offset-4 hover:text-white">Open workflow</Link></div>
+          <div className="flex items-center justify-between gap-4"><div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Pipeline</p><h2 className="mt-2 text-xl font-medium">Recent jobs</h2></div><Link href={workspace ? `/tasks?ws=${encodeURIComponent(workspace.id)}` : "/tasks"} className="text-xs text-white/50 underline underline-offset-4 hover:text-white">Open workflow</Link></div>
           {overview.recentJobs.length ? <ul className="mt-5 divide-y divide-white/[0.08]">{overview.recentJobs.slice(0, 6).map((job) => <li key={`${job.kind}:${job.id}`} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{job.label}</p><p className="mt-1 truncate text-xs text-white/40">{job.bookTitle ?? "Workspace task"} · {new Date(job.createdAt).toLocaleDateString()}</p></div><span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider ${jobStatusClass(job.status)}`}>{job.status}</span></li>)}</ul> : <p className="mt-5 text-sm text-white/40">No generation or publishing jobs yet.</p>}
         </div>
 
@@ -282,5 +279,6 @@ export default function AuthorDashboard() {
         )}
       </section>
     </main>
+    </>
   );
 }

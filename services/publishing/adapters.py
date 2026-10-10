@@ -6,25 +6,28 @@ import json
 import re
 import sys
 import zipfile
+import zlib
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol
+from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
+from publication_metadata import effective_publication_metadata  # noqa: E402
 
 
 class NotSupportedError(Exception):
     """Raised for submit/getStatus: export-first mode, no live retailer integration."""
 
 
-def publishing_metadata(book: dict) -> dict:
+def publishing_metadata(book: dict, edition: dict | None = None) -> dict:
     """Project public listing fields only; never serialize the full book model."""
-    source = book.get("metadata", {})
-    if not isinstance(source, dict):
-        raise ValueError("publishing metadata must be an object")
+    config = edition or {}
+    overrides = config.get("metadata_overrides") if config.get("kind") == "ebook" else None
+    source = effective_publication_metadata(book.get("metadata", {}), overrides)
     result = {}
     for field in ("title", "subtitle", "author", "language", "description", "isbn13", "edition"):
         value = source.get(field)
@@ -37,7 +40,52 @@ def publishing_metadata(book: dict) -> dict:
         if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
             raise ValueError(f"publishing metadata {field} must be a text list")
         result[field] = value
+    if "publicationDate" in source:
+        result["publicationDate"] = source["publicationDate"]
     return {"schemaVersion": "1.0", "metadata": result}
+
+
+def _assert_saved_epub_metadata(blob: bytes, metadata: dict) -> None:
+    """Check the exact saved artifact, including proofs made before this policy."""
+    unreadable = "Saved EPUB publication metadata cannot be verified. Render again before packaging."
+    mismatch = "Saved EPUB publication date or language does not match this edition. Render again before packaging."
+    max_opf_bytes = 1_000_000  # Same inspection bound used by Google Play OPF checks.
+    try:
+        with zipfile.ZipFile(BytesIO(blob)) as archive:
+            matches = [info for info in archive.infolist() if info.filename == "OEBPS/content.opf"]
+            if len(matches) != 1 or matches[0].file_size > max_opf_bytes:
+                raise ValueError(unreadable)
+            with archive.open(matches[0]) as document:
+                raw = document.read(max_opf_bytes + 1)
+            if len(raw) > max_opf_bytes:
+                raise ValueError(unreadable)
+        text = raw.decode("utf-8-sig")
+        # Worker-generated OPFs are UTF-8 and never need DTD/entity expansion.
+        if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+            raise ValueError(unreadable)
+        declaration = re.match(r"<\?xml\b.*?\?>", text, re.DOTALL)
+        encoding = re.search(r"\bencoding\s*=\s*(['\"])(.*?)\1", declaration.group()) if declaration else None
+        if encoding and encoding.group(2).upper() not in ("UTF-8", "UTF8"):
+            raise ValueError(unreadable)
+        # Parse the same UTF-8 text we validated, not bytes with another declared codec.
+        root = ET.fromstring(text)
+    except (zipfile.BadZipFile, KeyError, OSError, RuntimeError, NotImplementedError,
+            EOFError, zlib.error, UnicodeDecodeError, ET.ParseError) as error:
+        raise ValueError(unreadable) from error
+    opf_namespace = "{http://www.idpf.org/2007/opf}"
+    dc_namespace = "{http://purl.org/dc/elements/1.1/}"
+    entries = root.findall(opf_namespace + "metadata")
+    if root.tag != opf_namespace + "package" or len(entries) != 1:
+        raise ValueError(unreadable)
+    dates = entries[0].findall(dc_namespace + "date")
+    languages = entries[0].findall(dc_namespace + "language")
+    if any(len(element) or (element.tail or "").strip() for element in dates + languages):
+        raise ValueError(unreadable)
+    expected_date = metadata.get("publicationDate")
+    if (len(dates) != (1 if expected_date is not None else 0)
+            or (dates and dates[0].text != expected_date)
+            or len(languages) != 1 or languages[0].text != (metadata.get("language") or "en")):
+        raise ValueError(mismatch)
 
 
 @dataclass(frozen=True)
@@ -100,10 +148,15 @@ class ExportAdapter:
             raise ValueError("package artifacts must use safe flat filenames")
         if set(artifacts) & {"manifest.json", "metadata.json", "preflight.json", "README.txt"}:
             raise ValueError("package artifact name is reserved")
+        listing = publishing_metadata(ctx.get("book", {}), ctx.get("edition"))
+        if (ctx.get("edition") or {}).get("kind") == "ebook":
+            if "book.epub" not in artifacts:
+                raise ValueError("A saved book.epub is required. Render again before packaging.")
+            _assert_saved_epub_metadata(artifacts["book.epub"], listing["metadata"])
         files = {**artifacts,
                  "preflight.json": json.dumps({"schemaVersion": "1.0", **result},
                                               indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8"),
-                 "metadata.json": json.dumps(publishing_metadata(ctx.get("book", {})),
+                 "metadata.json": json.dumps(listing,
                                              indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8"),
                  "README.txt": (
                      f"AI Bookworm - {self.CHANNEL} author handoff\n\n"

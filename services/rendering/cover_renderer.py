@@ -9,8 +9,9 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 from editions import EbookEdition, PrintEdition, cover_requires_unsupported_rtl_typography
 from print_fonts import _missing
+from publication_metadata import effective_publication_metadata
 
-COVER_RENDERER_VERSION = "cover-1.3.0"
+COVER_RENDERER_VERSION = "cover-1.4.0"
 
 
 def _font(size: int, bold: bool = False):
@@ -114,9 +115,10 @@ def compose_front_cover(
     edition: EbookEdition | PrintEdition,
 ) -> tuple[bytes, str]:
     """Return a deterministic PNG and sha256. Artwork is never written to disk."""
-    if cover_requires_unsupported_rtl_typography(edition, book.get("metadata") or {}):
+    metadata = effective_publication_metadata(
+        book.get("metadata", {}), edition.metadata_overrides if edition.kind == "ebook" else None)
+    if cover_requires_unsupported_rtl_typography(edition, metadata):
         raise ValueError("RTL cover text requires an embedded shaping-capable font; the base-font cover renderer cannot produce it safely")
-    metadata = book.get("metadata") or {}
     for enabled, key in ((edition.cover.title_on_cover, "title"),
                          (edition.cover.subtitle_on_cover, "subtitle"),
                          (edition.cover.author_on_cover, "author")):

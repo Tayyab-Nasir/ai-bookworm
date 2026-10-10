@@ -11,6 +11,7 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 from typing import Callable, Literal
+from publication_metadata import effective_publication_metadata
 
 RULE_ENGINE_VERSION = "1.0.0"
 
@@ -92,4 +93,6 @@ def _open_epub(ctx: dict) -> zipfile.ZipFile | None:
 
 
 def _meta(ctx: dict) -> dict:
-    return ctx["book"].get("metadata", {})
+    edition = ctx.get("edition") or {}
+    overrides = edition.get("metadata_overrides") if edition.get("kind") == "ebook" else None
+    return effective_publication_metadata(ctx["book"].get("metadata", {}), overrides)

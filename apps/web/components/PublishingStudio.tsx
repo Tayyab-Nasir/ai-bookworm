@@ -7,8 +7,9 @@ import type { Asset, Book, Chapter, Edition } from "@bookworm/types";
 import { apiClient } from "./api";
 import ChapterAudioDownload from "./ChapterAudioDownload";
 import NarrationQuoteStudio from "./NarrationQuoteStudio";
+import SavedEpubReader from "./SavedEpubReader";
 
-import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
+import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
 export { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
@@ -37,6 +38,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [busy, setBusy] = useState<"load" | "save" | "render" | "preflight" | "package" | "history" | "audiobook" | null>("load");
   const [channel, setChannel] = useState<Channel>("export");
   const [rendered, setRendered] = useState<RenderedEditionResult | null>(null);
+  const [readerRefreshKey, setReaderRefreshKey] = useState("");
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [publishingJobs, setPublishingJobs] = useState<PublishingPackageJob[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -56,15 +58,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const coverAssets = useMemo(() => assets.filter((asset) => asset.mime_type.startsWith("image/") && asset.checksum !== "pending" && !asset.deleted_at), [assets]);
   const activePublishingJobs = useMemo(() => publishingJobs.filter((job) => !activeId || job.editionId === activeId), [publishingJobs, activeId]);
   const channelCompatible = form.kind !== "audiobook" && (channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind));
-  const resolvedDirection = resolveEditionTextDirection(form.language, form.textDirection);
-  const paginated = form.kind === "print" || (form.kind === "ebook" && form.flow === "fixed");
-  const rtlPrintUnsupported = paginated && resolvedDirection === "rtl";
-  const rtlCoverTextUnsupported = resolvedDirection === "rtl" && Boolean(form.coverAssetId) && (
-    (form.titleOnCover && Boolean(book?.title))
-    || (form.subtitleOnCover && Boolean(book?.subtitle))
-    || (form.authorOnCover && Boolean(book?.author_name))
-  );
-  const renderBlocked = rtlPrintUnsupported || rtlCoverTextUnsupported;
+  const { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, renderBlocked } = resolveEditionRenderSafety(form, book, activeEdition?.edition_metadata_json);
 
   const load = useCallback(async () => {
     const version = ++viewEpoch.current;
@@ -84,7 +78,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
       if (editionResult.editions[0]) {
         currentEdition.current = editionResult.editions[0].id;
-        setActiveId(editionResult.editions[0].id); setForm(formFromEdition(editionResult.editions[0]));
+        setActiveId(editionResult.editions[0].id); setForm(formFromEdition(editionResult.editions[0], identity.book.language));
         if (editionResult.editions[0].type === "audiobook") {
           const [projects, exports] = await Promise.all([
             api.listAudiobookProjects(editionResult.editions[0].id), api.listAudiobookGooglePlayExports(editionResult.editions[0].id),
@@ -136,7 +130,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const valid = () => version === viewEpoch.current && currentBook.current === bookId && currentEdition.current === edition.id;
     exportRequestKey.current = null;
     setGooglePlayIdentifier(""); setGooglePlayCoverId(""); setNotice(null);
-    setActiveId(edition.id); setForm(formFromEdition(edition)); setDirty(false); setRendered(null); setPreflight(null); setError(null);
+    setActiveId(edition.id); setForm(formFromEdition(edition, book?.language)); setDirty(false); setRendered(null); setPreflight(null); setError(null);
     setAudiobookProjects([]); setGooglePlayExports([]);
     if (edition.type === "audiobook") void Promise.all([api.listAudiobookProjects(edition.id), api.listAudiobookGooglePlayExports(edition.id)])
       .then(([projects, exports]) => { if (valid()) { setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs); } })
@@ -164,7 +158,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       if (!valid()) return;
       currentEdition.current = saved.id;
       setEditions((current) => [saved, ...current.filter((edition) => edition.id !== saved.id)]);
-      setActiveId(saved.id); setForm(formFromEdition(saved)); setDirty(false); setNotice("Edition settings saved.");
+      setActiveId(saved.id); setForm(formFromEdition(saved, book?.language)); setDirty(false); setNotice("Edition settings saved.");
       if (saved.type === "audiobook") {
         const [projects, exports] = await Promise.all([api.listAudiobookProjects(saved.id), api.listAudiobookGooglePlayExports(saved.id)]);
         if (!valid()) return;
@@ -178,7 +172,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     if (!editable || !activeId || dirty || busy || renderBlocked) return;
     const valid = captureView(); if (!valid()) return;
     setBusy("render"); setError(null); setNotice(null); setRendered(null);
-    try { const result = await api.renderEdition(activeId, { idempotencyKey: crypto.randomUUID() }); if (valid()) { setRendered(result); setNotice("Private render completed."); } }
+    try { const result = await api.renderEdition(activeId, { idempotencyKey: crypto.randomUUID() }); if (valid()) { setRendered(result); setReaderRefreshKey(result.jobId); setNotice("Private render completed."); } }
     catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Rendering failed."); }
     finally { if (valid()) setBusy(null); }
   };
@@ -279,7 +273,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     </div>}
     {notice && <p role="status" className="mb-5 text-sm text-emerald-200">{notice}</p>}
 
-    <fieldset disabled={Boolean(busy) || !currentIdentity} className="grid min-w-0 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+    <fieldset disabled={Boolean(busy) || !currentIdentity} className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
       <aside className={`${cardClass} h-fit`}>
         <div className="flex items-center justify-between"><h2 className="font-semibold">Editions</h2><span className="text-xs text-white/40">{editions.length}</span></div>
         <div className="mt-4 space-y-2">
@@ -295,7 +289,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
         </div>}
       </aside>
 
-      <div className="space-y-6">
+      <div className="min-w-0 space-y-6">
         <section className={cardClass} aria-labelledby="edition-settings">
           <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 id="edition-settings" className="text-xl font-semibold">Edition settings</h2><p className="mt-1 text-sm text-white/45">Changes are saved before rendering or validation.</p></div>
             <button type="button" onClick={() => void save()} disabled={!editable || Boolean(busy) || (!dirty && Boolean(activeId))} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "save" ? "Saving…" : "Save edition"}</button>
@@ -303,7 +297,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-white/65">Format<select value={form.kind} onChange={(event) => update("kind", event.target.value as Kind)} disabled={Boolean(activeId)} className={fieldClass}><option value="ebook">EPUB ebook</option><option value="print">Print PDF</option><option value="audiobook">AI-narrated audiobook</option></select></label>
             <label className="text-sm text-white/65">Language<input value={form.language} onChange={(event) => update("language", event.target.value)} maxLength={35} className={fieldClass} /></label>
-            {form.kind !== "audiobook" && <label className="text-sm text-white/65">Text direction<select value={form.textDirection} onChange={(event) => update("textDirection", event.target.value as FormState["textDirection"])} className={fieldClass}><option value="auto">Auto from edition language</option><option value="ltr">Left to right</option><option value="rtl">Right to left</option></select></label>}
+            {form.kind !== "audiobook" && <label className="text-sm text-white/65">Text direction<select value={form.textDirection} onChange={(event) => update("textDirection", event.target.value as FormState["textDirection"])} className={fieldClass}><option value="auto">Auto from effective language</option><option value="ltr">Left to right</option><option value="rtl">Right to left</option></select></label>}
             {form.kind === "ebook" && <>
               <label className="text-sm text-white/65">Flow<select value={form.flow} onChange={(event) => update("flow", event.target.value as FormState["flow"])} className={fieldClass}><option value="reflowable">Reflowable</option><option value="fixed">Fixed layout</option></select></label>
               <label className="text-sm text-white/65">Navigation<select value={form.navigation} onChange={(event) => update("navigation", event.target.value as FormState["navigation"])} className={fieldClass}><option value="toc+landmarks">Contents page + section landmarks</option><option value="toc">Contents page</option><option value="none">Reader navigation only (no contents page)</option></select></label>
@@ -430,6 +424,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           {channel === "googleplay" && channelCompatible && <p className="mt-3 text-xs leading-5 text-white/45">Single-title Partner Center handoff only. Run EpubCheck and inspect Google’s processed preview, pricing, territories, and Review tab before publishing. This does not submit the book.</p>}
           {preflight && <div className="mt-5"><div className="flex flex-wrap gap-3 text-sm"><span className={`rounded-full px-3 py-1 ${preflight.errors ? "bg-red-400/15 text-red-100" : "bg-emerald-400/15 text-emerald-100"}`}>{preflight.errors} errors</span><span className="rounded-full bg-amber-300/10 px-3 py-1 text-amber-100">{preflight.warnings} warnings</span><span className="px-2 py-1 text-white/40">Rules {preflight.ruleVersion}</span></div>{preflight.findings.length ? <ul className="mt-4 space-y-2">{preflight.findings.map((finding, index) => <li key={`${finding.rule_id}:${finding.location}:${index}`} className="rounded-xl border border-white/10 p-3 text-sm"><span className="font-medium uppercase text-white/60">{finding.severity}</span> · {finding.message}<span className="mt-1 block text-xs text-white/35">{finding.rule_id}{finding.location ? ` · ${finding.location}` : ""}</span></li>)}</ul> : <p className="mt-4 text-sm text-emerald-200">No preflight findings for this target.</p>}</div>}
         </section>}
+
+        {currentIdentity && activeId && form.kind === "ebook" && <SavedEpubReader key={`${bookId}:${activeId}`} bookId={bookId} editionId={activeId} dirty={dirty} refreshKey={readerRefreshKey} />}
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="package-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="package-title" className="text-xl font-semibold">Retailer export packages</h2><p className="mt-1 max-w-2xl text-sm text-white/45">Create a private ZIP from the exact saved render after a zero-error retailer preflight. The package is downloaded and submitted manually; this does not publish or track retailer review status.</p></div>

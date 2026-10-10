@@ -9,11 +9,13 @@ import { AuthorHeader, AuthorPage } from "../../components/AuthorShell";
 import { apiClient } from "../../components/api";
 import { parseRetailerSalesCsv } from "../../lib/sales-csv";
 import { buildSalesTrend } from "../../lib/sales-analytics";
+import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../../lib/workspace-selection";
 
 const sources = [
   ["amazon_kdp", "Amazon KDP"], ["barnes_noble", "Barnes & Noble Press"], ["apple_books", "Apple Books"],
   ["google_play", "Google Play Books"], ["lulu", "Lulu"], ["other", "Other retailer"],
 ] as const;
+type ImportAction = { generation: number; context: { requested: string | null }; workspaceId: string };
 
 function formatCents(cents: number | null, currency: string | null) {
   if (cents === null || !currency) return "—";
@@ -32,30 +34,46 @@ function AnalyticsPageInner() {
   const [salesCurrency, setSalesCurrency] = useState("");
   const [bookId, setBookId] = useState(""); const [supersedeImportId, setSupersedeImportId] = useState(""); const [file, setFile] = useState<File | null>(null); const [rows, setRows] = useState<RetailerSalesRowInput[]>([]); const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false); const [notice, setNotice] = useState<string | null>(null); const [error, setError] = useState<string | null>(null);
+  const mounted = useRef(true); const currentAction = useRef<ImportAction | null>(null);
+  const readyVersion = useRef<number | null>(null); const activeWorkspace = useRef("");
+  const currentContext = useRef({ requested });
+  if (currentContext.current.requested !== requested) currentContext.current = { requested };
+  const context = currentContext.current; const renderedVersion = requestVersion.current;
+  const actionIsCurrent = (action: ImportAction) => mounted.current && currentAction.current === action
+    && action.context === currentContext.current && action.generation === requestVersion.current;
 
-  const load = useCallback(async (nextWorkspaceId?: string) => {
+  const load = useCallback(async (nextWorkspaceId?: string, owner?: ImportAction): Promise<boolean> => {
+    if (!mounted.current || context !== currentContext.current || (owner && !actionIsCurrent(owner))) return false;
+    if (!owner) { currentAction.current = null; setBusy(false); }
     const current = ++requestVersion.current;
+    // The accepted import retains ownership through its own receipt reload.
+    if (owner) owner.generation = current;
+    const isCurrent = () => mounted.current && context === currentContext.current && current === requestVersion.current;
+    readyVersion.current = null; activeWorkspace.current = "";
+    selectionVersion.current++; if (input.current) input.current.value = "";
+    setBookId(""); setSupersedeImportId(""); setFile(null); setRows([]); setNotice(null);
     setLoading(true); setError(null);
-    setBooks([]); setRole(""); setImports([]); setSummary(null); setAnalytics(null);
+    setWorkspaceId(""); setBooks([]); setRole(""); setImports([]); setSummary(null); setAnalytics(null);
     try {
       const spaces = await api.listWorkspaces();
-      if (current !== requestVersion.current) return;
+      if (!isCurrent()) return false;
       setWorkspaces(spaces.workspaces);
-      let remembered: string | null = null;
-      try { remembered = window.localStorage.getItem("bookworm:workspaceId"); } catch { /* The preference is optional; workspace authorization is not. */ }
-      const selected = nextWorkspaceId ?? requested ?? remembered ?? spaces.workspaces[0]?.id ?? "";
-      const id = spaces.workspaces.some((space) => space.id === selected) ? selected : spaces.workspaces[0]?.id ?? "";
-      setWorkspaceId(id); if (!id) { setBooks([]); setRole(""); setImports([]); setSummary(null); setAnalytics(null); return; }
-      try { window.localStorage.setItem("bookworm:workspaceId", id); } catch { /* Keep the authorized view usable without browser storage. */ }
+      const selected = resolveWorkspace(spaces.workspaces, nextWorkspaceId ?? requested);
+      const id = selected?.id ?? "";
+      setWorkspaceId(id); activeWorkspace.current = id;
+      if (!id) { setBooks([]); setRole(""); setImports([]); setSummary(null); setAnalytics(null); return false; }
+      rememberWorkspace(spaces.workspaces, id);
+      if (nextWorkspaceId !== undefined) replaceWorkspaceQuery(id);
       const [dashboard, salesResult] = await Promise.all([api.getDashboardOverview(id), api.listRetailerSalesImports(id)]);
-      if (current !== requestVersion.current) return;
+      if (!isCurrent()) return false;
       setBooks(dashboard.books); setRole(dashboard.workspace.role); setImports(salesResult.imports); setSummary(salesResult.summary); setAnalytics(salesResult.analytics);
-    } catch (reason) { if (current === requestVersion.current) setError(reason instanceof Error ? reason.message : "Could not load sales data."); }
-    finally { if (current === requestVersion.current) setLoading(false); }
+      readyVersion.current = current;
+      return true;
+    } catch (reason) { if (isCurrent()) setError(reason instanceof Error ? reason.message : "Could not load sales data."); return false; }
+    finally { if (isCurrent()) setLoading(false); }
   }, [api, requested]);
 
-  useEffect(() => { void load(); return () => { requestVersion.current++; selectionVersion.current++; }; }, [load]);
-  useEffect(() => { selectionVersion.current += 1; if (input.current) input.current.value = ""; setBookId(""); setSupersedeImportId(""); setFile(null); setRows([]); setNotice(null); }, [workspaceId]);
+  useEffect(() => { mounted.current = true; void load(); return () => { mounted.current = false; requestVersion.current++; selectionVersion.current++; currentAction.current = null; readyVersion.current = null; }; }, [load]);
 
   const salesAvailable = summary?.available !== false;
   const canImport = salesAvailable && ["owner", "admin", "editor", "writer"].includes(role);
@@ -75,45 +93,51 @@ function AnalyticsPageInner() {
   const maxRoyaltyMagnitude = Math.max(1, ...trend.map((item) => Math.abs(item.royaltyCents ?? 0)));
 
   async function chooseFile(next: File | null) {
+    const scopeIsCurrent = () => mounted.current && context === currentContext.current && renderedVersion === requestVersion.current
+      && readyVersion.current === renderedVersion && activeWorkspace.current === workspaceId;
+    if (!scopeIsCurrent() || currentAction.current || loading || !canImport) return;
     const selection = ++selectionVersion.current;
     setFile(next); setRows([]); setError(null); setNotice(null);
     if (!next) return;
     try {
       const parsed = parseRetailerSalesCsv(await next.text());
-      if (selectionVersion.current !== selection) return;
+      if (!scopeIsCurrent() || selectionVersion.current !== selection) return;
       setRows(parsed);
     } catch (reason) {
-      if (selectionVersion.current !== selection) return;
+      if (!scopeIsCurrent() || selectionVersion.current !== selection) return;
       setFile(null); if (input.current) input.current.value = ""; setError(reason instanceof Error ? reason.message : "Could not read this CSV.");
     }
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault(); if (!workspaceId || !file || !rows.length || busy || !canImport) return;
-    const current = requestVersion.current;
+    event.preventDefault(); if (!mounted.current || context !== currentContext.current || renderedVersion !== requestVersion.current
+      || readyVersion.current !== renderedVersion || activeWorkspace.current !== workspaceId || currentAction.current
+      || !workspaceId || !file || !rows.length || busy || loading || !canImport) return;
+    const owner: ImportAction = { generation: requestVersion.current, context, workspaceId };
+    currentAction.current = owner;
+    const isCurrent = () => actionIsCurrent(owner);
     setBusy(true); setError(null); setNotice(null);
     try {
       const importedRows = rows.map((row) => ({ ...row, bookId: bookId || null }));
       const result = await api.importRetailerSales({ workspaceId, source, fileName: file.name, supersedeImportId: supersedeImportId || null, rows: importedRows });
-      if (current !== requestVersion.current) return;
-      setNotice(result.duplicate ? `This report was already imported (${result.rowCount} rows).` : `${result.rowCount} retailer sales rows imported.`);
-      setFile(null); setRows([]); if (input.current) input.current.value = ""; await load(workspaceId);
-    } catch (reason) { if (current === requestVersion.current) setError(reason instanceof Error ? reason.message : "Could not import retailer report. Refresh or retry the same report to recover its receipt."); }
-    finally { setBusy(false); }
+      if (!isCurrent()) return;
+      if (await load(owner.workspaceId, owner) && isCurrent()) setNotice(result.duplicate ? `This report was already imported (${result.rowCount} rows).` : `${result.rowCount} retailer sales rows imported.`);
+    } catch (reason) { if (isCurrent()) setError(reason instanceof Error ? reason.message : "Could not import retailer report. Refresh or retry the same report to recover its receipt."); }
+    finally { if (isCurrent()) { currentAction.current = null; setBusy(false); } }
   }
 
   const multiCurrency = Boolean(summary?.currencies.length && !summary.currency);
-  return <AuthorPage><AuthorHeader /><main className="mx-auto max-w-7xl px-4 pb-20 pt-8 sm:px-6 lg:px-8 lg:pt-12">
+  return <AuthorPage><AuthorHeader workspaceId={workspaceId || undefined} /><main className="mx-auto max-w-7xl px-4 pb-20 pt-8 sm:px-6 lg:px-8 lg:pt-12">
     <section className="relative overflow-hidden border-b border-white/[0.11] pb-10">
       <div className="pointer-events-none absolute -right-10 top-0 select-none font-instrument text-[13rem] italic leading-none text-white/[0.035]">$</div>
       <p className="relative text-[11px] font-medium uppercase tracking-[0.22em] text-[#8f8f8f]">Retailer ledger</p>
       <div className="relative mt-3 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between"><div>
         <h1 className="max-w-[11ch] text-5xl font-medium leading-[0.88] tracking-[-0.065em] sm:text-6xl">Sales, <span className="font-instrument font-normal italic text-[#c5c5c5]">with receipts.</span></h1>
         <p className="mt-5 max-w-xl text-[15px] leading-6 text-[#989898]">Import retailer reports. Bookworm preserves source-backed totals and keeps currencies separate instead of guessing at conversion.</p>
-      </div><Link href="/dashboard" className="glass-ghost relative inline-flex h-11 items-center rounded-full px-5 text-sm text-white/75">Back to desk</Link></div>
+      </div><Link href={workspaceId ? `/dashboard?ws=${encodeURIComponent(workspaceId)}` : "/dashboard"} className="glass-ghost relative inline-flex h-11 items-center rounded-full px-5 text-sm text-white/75">Back to desk</Link></div>
     </section>
 
-    {workspaces.length > 1 && <label className="mt-6 inline-flex items-center gap-3 text-sm text-white/60">Workspace <select value={workspaceId} disabled={loading || busy} onChange={(event) => void load(event.target.value)} className="rounded-xl border border-white/15 bg-black px-4 py-2 text-white">{workspaces.map((space) => <option key={space.id} value={space.id}>{space.name}</option>)}</select></label>}
+    {workspaces.length > 0 && <label className="mt-6 inline-flex items-center gap-3 text-sm text-white/60">Workspace <select value={workspaceId} disabled={loading || busy} onChange={(event) => void load(event.target.value)} className="rounded-xl border border-white/15 bg-black px-4 py-2 text-white"><option value="" disabled>Select a workspace</option>{workspaces.map((space) => <option key={space.id} value={space.id}>{space.name}</option>)}</select></label>}
     {error && <div role="alert" className="mt-6 rounded-2xl border border-red-400/20 bg-red-400/[0.08] px-5 py-4 text-sm text-red-100">{error}</div>}
     {notice && <div role="status" className="mt-6 rounded-2xl border border-emerald-400/20 bg-emerald-400/[0.08] px-5 py-4 text-sm text-emerald-100">{notice}</div>}
 

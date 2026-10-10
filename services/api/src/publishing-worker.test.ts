@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { assembleBookModel, bookModelFingerprint } from "./lib/authoring.js";
 import { buildPublishingOutput, runOnePublishingJob } from "./lib/publishing-worker.js";
 import { loadRenderImages, renderImagesFingerprint } from "./lib/render-images.js";
+import { editionConfigSchema, withEditionLanguage } from "./routes/editions.js";
 
 type Row = Record<string, unknown>;
 const USER = "ca000000-0000-4000-8000-000000000001";
@@ -18,7 +19,7 @@ const LEASE = "ca800000-0000-4000-8000-000000000001";
 const UPDATED = "2026-09-05T12:00:00.000Z";
 const IMAGE = "ca900000-0000-4000-8000-000000000001";
 
-function dataClient(tables: Record<string, Row[]>, uploads: { path: string; bytes: Buffer }[], objects = new Map<string, Buffer>(), removed: string[] = []) {
+function dataClient(tables: Record<string, Row[]>, uploads: { path: string; bytes: Buffer }[], objects = new Map<string, Buffer>(), removed: string[] = [], reads: string[] = []) {
   return {
     from(table: string) {
       const filters: [string, unknown][] = [];
@@ -37,7 +38,7 @@ function dataClient(tables: Record<string, Row[]>, uploads: { path: string; byte
       builder.then = (resolve: (value: unknown) => unknown) => resolve({ data: selected(), error: null });
       return builder;
     },
-    storage: { from: () => ({ download: async (path: string) => ({ data: objects.has(path) ? new Blob([new Uint8Array(objects.get(path)!)]) : null, error: null }), upload: async (path: string, bytes: Buffer) => {
+    storage: { from: () => ({ download: async (path: string) => { reads.push(path); return { data: objects.has(path) ? new Blob([new Uint8Array(objects.get(path)!)]) : null, error: null }; }, upload: async (path: string, bytes: Buffer) => {
       uploads.push({ path, bytes }); return { data: { path }, error: null };
     }, remove: async (paths: string[]) => { removed.push(...paths); return { data: paths, error: null }; } }) },
   } as never;
@@ -169,3 +170,156 @@ for (const scenario of ["stale", "permission", "invalid", "lease", "unknown", "c
     } else assert.equal(failure, undefined, "lost leases and uncertain/committed completion must not be failed");
   });
 }
+
+async function savedCoverWorkerFixture(selectedCover = false, language = "en") {
+  const config = editionConfigSchema.parse({ kind: "ebook", cover: { asset_id: selectedCover ? IMAGE : null },
+    metadata_overrides: selectedCover ? { title: "" } : {} });
+  const epub = Buffer.from("PK\u0003\u0004saved-worker-epub");
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 11]);
+  const digest = (value: Buffer) => createHash("sha256").update(value).digest("hex");
+  const imagePath = `workspaces/${WORKSPACE}/assets/${IMAGE}/v1/art.png`;
+  const imageMetadata = { storage_path: imagePath, checksum: digest(png), mime_type: "image/png", size_bytes: png.length };
+  const tables: Record<string, Row[]> = {
+    books: [{ id: BOOK, workspace_id: WORKSPACE, title: "Worker Book", author_name: "Author", language: "en", created_by: USER }],
+    workspace_members: [{ workspace_id: WORKSPACE, user_id: USER, role: "editor", status: "active" }],
+    workspaces: [{ id: WORKSPACE, organization_id: ORG }],
+    editions: [{ id: EDITION, book_id: BOOK, type: "ebook", language, edition_metadata_json: config, updated_at: UPDATED }],
+    subscriptions: [{ id: ORG, organization_id: ORG, plan_id: ORG, status: "active" }],
+    plans: [{ id: ORG, name: "fixture", entitlements_json: { publishing_channels: ["kdp"] } }],
+    chapters: [], document_versions: [], book_metadata: [], style_guides: [], book_bible_items: [],
+    assets: selectedCover ? [{ id: IMAGE, workspace_id: WORKSPACE, ...imageMetadata, status: "approved", deleted_at: null }] : [],
+    asset_versions: selectedCover ? [{ asset_id: IMAGE, version_number: 1, ...imageMetadata, scan_status: "clean" }] : [],
+  };
+  const uploads: { path: string; bytes: Buffer }[] = [], reads: string[] = [];
+  const objects = new Map(selectedCover ? [[imagePath, png]] : []);
+  const sb = dataClient(tables, uploads, objects, [], reads);
+  const model = withEditionLanguage(await assembleBookModel(sb, tables.books[0]), language);
+  const images = await loadRenderImages(sb, WORKSPACE, [], selectedCover ? IMAGE : null);
+  const request = { editionUpdatedAt: UPDATED, bookModelSha256: bookModelFingerprint(model),
+    imageSha256: renderImagesFingerprint(images), artworkSnapshot: images.artworkSnapshot };
+  const artifacts = [{ bytes: epub, role: "rendered_ebook", type: "rendered_book", mimeType: "application/epub+zip", filename: "book.epub" },
+    ...(selectedCover ? [{ bytes: png, role: "rendered_cover", type: "rendered_cover", mimeType: "image/png", filename: "cover.png" }] : [])]
+    .map(({ bytes: value, ...artifact }) => {
+      const assetId = crypto.randomUUID();
+      const storagePath = `workspaces/${WORKSPACE}/assets/${assetId}/v1/${artifact.filename}`;
+      objects.set(storagePath, value);
+      tables.assets.push({ id: assetId, workspace_id: WORKSPACE, storage_path: storagePath, mime_type: artifact.mimeType,
+        size_bytes: value.length, checksum: digest(value), deleted_at: null });
+      return { ...artifact, assetId, storagePath, name: artifact.filename, sizeBytes: value.length, checksum: digest(value) };
+    });
+  const sourceRenderJobId = crypto.randomUUID(), sourcePreflightJobId = crypto.randomUUID();
+  const renderJob = { id: sourceRenderJobId, book_id: BOOK, edition_id: EDITION, channel: "render", status: "succeeded",
+    request_json: { ...request, action: "render" }, response_json: { artifacts, rendererVersion: "fixture", usage: {} as Row } };
+  tables.publishing_jobs = [renderJob, { id: sourcePreflightJobId, book_id: BOOK, edition_id: EDITION, channel: "kdp", status: "succeeded",
+    request_json: { ...request, action: "validate" }, response_json: { ruleVersion: "fixture", channel: "kdp", requestedChannel: "kdp", errors: 0, warnings: 0, findings: [] } }];
+  const job = { id: JOB, book_id: BOOK, edition_id: EDITION, created_by: USER, channel: "render", lease_token: LEASE,
+    request_json: { ...request, action: "render" as const, sourceRenderJobId, sourcePreflightJobId } };
+  reads.length = 0;
+  return { sb, tables, uploads, reads, objects, renderJob, job, epub, png, digest };
+}
+
+test("publishing worker fingerprints and dispatches the saved edition language for every action", async () => {
+  for (const action of ["render", "validate", "export_package"] as const) {
+    const fixture = await savedCoverWorkerFixture(false, "fr");
+    const job = { ...fixture.job, channel: action === "render" ? "render" : "kdp", request_json: { ...fixture.job.request_json, action } };
+    let dispatches = 0;
+    await buildPublishingOutput(fixture.sb, job, async (_url, init) => {
+      dispatches++;
+      const body = JSON.parse(String(init?.body));
+      assert.equal(body.bookModel.metadata.language, "fr");
+      if (action === "validate") return Response.json({ ruleVersion: "fixture", channel: "kdp", errors: 0, warnings: 0, findings: [] });
+      if (action === "export_package") return Response.json({ channel: "kdp", ruleVersion: "fixture", errors: 0,
+        packages: [{ path: "kdp-export.zip", sha256: fixture.digest(fixture.epub), dataBase64: fixture.epub.toString("base64") }] });
+      return Response.json({ format: "epub", artifactBase64: fixture.epub.toString("base64"), sha256: fixture.digest(fixture.epub), rendererVersion: "fixture" });
+    }, new AbortController().signal, []);
+    assert.equal(dispatches, 1);
+    assert.equal(fixture.tables.books[0].language, "en", "edition language must not mutate the source book");
+  }
+});
+
+test("publishing worker rejects unsupported saved cover policy before private reads or package dispatch", async () => {
+  for (const usage of [{}, { coverRendererVersion: "cover-1.3.0", coverMetadataPolicy: "effective-ebook-metadata-v1" },
+    { coverRendererVersion: "cover-1.4.0", coverMetadataPolicy: "old-policy" }]) {
+    const fixture = await savedCoverWorkerFixture(true);
+    fixture.renderJob.response_json.usage = usage;
+    const saved = structuredClone(fixture.tables.publishing_jobs);
+    const job = { ...fixture.job, channel: "kdp", request_json: { ...fixture.job.request_json, action: "export_package" as const } };
+    let dispatches = 0;
+    await assert.rejects(buildPublishingOutput(fixture.sb, job, async () => { dispatches++; assert.fail("old cover must not be packaged"); },
+      new AbortController().signal, []), /cover metadata.*render again/iu);
+    assert.equal(dispatches, 0);
+    assert.deepEqual(fixture.reads, []);
+    assert.deepEqual(fixture.uploads, []);
+    assert.deepEqual(fixture.tables.publishing_jobs, saved);
+  }
+});
+
+test("leased render completion persists verified cover version and policy", async () => {
+  const fixture = await savedCoverWorkerFixture(true, "fr");
+  let completed: Row | undefined;
+  const sb = Object.assign(fixture.sb, { rpc: async (name: string, args: Row) => {
+    if (name === "claim_publishing_job") return { data: [fixture.job], error: null };
+    if (name === "complete_leased_publishing_job") { completed = args.p_result as Row; return { data: { status: "succeeded" }, error: null }; }
+    if (name === "fail_leased_publishing_job") return { data: { status: "failed" }, error: null };
+    throw new Error(`Unexpected fixture RPC ${name}`);
+  } }) as never;
+  const result = await runOnePublishingJob(sb, { fetcher: async () => Response.json({ format: "epub",
+    artifactBase64: fixture.epub.toString("base64"), sha256: fixture.digest(fixture.epub), rendererVersion: "fixture",
+    coverArtifactBase64: fixture.png.toString("base64"), coverSha256: fixture.digest(fixture.png), coverFormat: "png", coverRendererVersion: "cover-1.4.0" }) });
+  assert.deepEqual(result, { status: "succeeded", jobId: JOB });
+  assert.equal((completed?.usage as Row).coverRendererVersion, "cover-1.4.0");
+  assert.equal((completed?.usage as Row).coverMetadataPolicy, "effective-ebook-metadata-v1");
+  assert.deepEqual(fixture.uploads.map(upload => upload.bytes), [fixture.epub, fixture.png]);
+});
+
+test("publishing worker terminally rejects incompatible cover versions without redispatch", async () => {
+  for (const coverRendererVersion of [null, "cover-1.3.0", "cover-1.5.0"]) {
+    const fixture = await savedCoverWorkerFixture(true);
+    let terminal = false, dispatches = 0, completions = 0;
+    const failures: Row[] = [];
+    const sb = Object.assign(fixture.sb, { rpc: async (name: string, args: Row) => {
+      if (name === "claim_publishing_job") return { data: terminal ? [] : [fixture.job], error: null };
+      if (name === "complete_leased_publishing_job") { completions++; return { data: { status: "succeeded" }, error: null }; }
+      if (name === "fail_leased_publishing_job") {
+        failures.push(args);
+        terminal = args.p_retryable === false;
+        return { data: { status: terminal ? "failed" : "queued" }, error: null };
+      }
+      throw new Error(`Unexpected fixture RPC ${name}`);
+    } }) as never;
+    const fetcher = async (url: string | URL | Request) => {
+      assert.ok(String(url).endsWith("/render"), "an incompatible render must never dispatch package creation");
+      dispatches++;
+      return Response.json({ format: "epub", artifactBase64: fixture.epub.toString("base64"), sha256: fixture.digest(fixture.epub), rendererVersion: "fixture",
+        coverArtifactBase64: fixture.png.toString("base64"), coverSha256: fixture.digest(fixture.png), coverFormat: "png", coverRendererVersion });
+    };
+    assert.deepEqual(await runOnePublishingJob(sb, { fetcher }), { status: "failed", jobId: JOB });
+    assert.equal(failures[0].p_retryable, false);
+    assert.equal(failures[0].p_error_code, "worker_cover_policy_unsupported");
+    assert.deepEqual(fixture.uploads, []);
+    assert.equal(completions, 0);
+    assert.deepEqual(await runOnePublishingJob(sb, { fetcher }), { status: "idle" });
+    assert.equal(dispatches, 1, "terminal failure must not queue an automatic replacement render");
+  }
+});
+
+test("publishing worker packages reviewed affected cover bytes without regeneration", async () => {
+  const fixture = await savedCoverWorkerFixture(true, "fr");
+  fixture.renderJob.response_json.usage = { coverRendererVersion: "cover-1.4.0", coverMetadataPolicy: "effective-ebook-metadata-v1" };
+  const saved = structuredClone(fixture.tables.publishing_jobs);
+  const job = { ...fixture.job, channel: "kdp", request_json: { ...fixture.job.request_json, action: "export_package" as const } };
+  let dispatches = 0;
+  await buildPublishingOutput(fixture.sb, job, async (url, init) => {
+    dispatches++;
+    assert.ok(String(url).endsWith("/v1/publishing/package"));
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.artifactsBase64["book.epub"], fixture.epub.toString("base64"));
+    assert.equal(body.artifactsBase64["cover.png"], fixture.png.toString("base64"));
+    return Response.json({ channel: "kdp", ruleVersion: "fixture", errors: 0,
+      packages: [{ path: "kdp-export.zip", sha256: fixture.digest(fixture.epub), dataBase64: fixture.epub.toString("base64") }] });
+  }, new AbortController().signal, []);
+  assert.equal(dispatches, 1);
+  assert.deepEqual(fixture.tables.publishing_jobs, saved);
+  assert.equal(fixture.uploads.length, 1);
+  assert.ok(fixture.uploads[0].path.endsWith("/kdp-export.zip"));
+});

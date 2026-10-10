@@ -23,6 +23,7 @@ import { healthRoutes } from "./routes/health.js";
 import { aiRoutes } from "./routes/ai.js";
 import { editionRoutes } from "./routes/editions.js";
 import { publishingRoutes } from "./routes/publishing.js";
+import { readerRoutes } from "./routes/reader.js";
 import { accountRoutes } from "./routes/account.js";
 import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
 import { metadataQuoteRoutes } from "./routes/metadata-quotes.js";
@@ -81,6 +82,7 @@ export async function buildApp(
     imageQuoteRoutes(v1);
     editionRoutes(v1, { fetcher: opts.renderFetch });
     publishingRoutes(v1, { renderFetcher: opts.renderFetch, publishingFetcher: opts.publishingFetch });
+    readerRoutes(v1, { fetcher: opts.renderFetch });
     folderRoutes(v1);
     collabRoutes(v1);
     teamRoutes(v1);
@@ -89,7 +91,7 @@ export async function buildApp(
     referralRoutes(v1);
     accountRoutes(v1);
     adminRoutes(v1);
-    stripeWebhookRoutes(v1); // own JSON parser keeps raw body for sig check
+    stripeWebhookRoutes(v1, opts); // own JSON parser keeps raw body for sig check
   }, { prefix: "/v1" });
 
   return app;

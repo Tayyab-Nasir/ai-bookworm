@@ -5,9 +5,9 @@ import { assembleBookModel, bookModelFingerprint, loadBook } from "./authoring.j
 import { currentEntitlements } from "./entitlements.js";
 import type { SupabaseClient } from "./supabase.js";
 import { artworkSnapshotSchema, renderImagesFingerprint, assertRenderImagesCurrent } from "./render-images.js";
-import { decodeArtifact, decodeRenderedCover, editionConfigSchema, loadRenderImages, renderResponseSchema } from "../routes/editions.js";
+import { decodeArtifact, decodeRenderedCover, editionConfigSchema, loadRenderImages, renderResponseSchema, withEditionLanguage } from "../routes/editions.js";
 import {
-  assertSourceJob, decodePackage, loadRenderedPackageInputs, packageServiceResponseSchema,
+  assertSourceJob, assertSavedRenderedCoverPolicy, decodePackage, loadRenderedPackageInputs, packageServiceResponseSchema,
   preflightResponseSchema, storedPreflightResponseSchema,
 } from "../routes/publishing.js";
 
@@ -65,7 +65,7 @@ export async function loadPublishingInputs(sb: SupabaseClient, job: Job) {
     const entitlement = { kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu", googleplay: "google_play" }[job.channel];
     if (!entitlement || !entitlements.publishing_channels.includes(entitlement)) throw new WorkerFailure("worker_plan_changed", false);
   } else if (entitlements.rendering !== true) throw new WorkerFailure("worker_plan_changed", false);
-  const model = await assembleBookModel(sb, book);
+  const model = withEditionLanguage(await assembleBookModel(sb, book), edition.language);
   if (bookModelFingerprint(model) !== job.request_json.bookModelSha256) throw new WorkerFailure("worker_book_changed", false);
   return { book, config, model };
 }
@@ -105,6 +105,22 @@ async function serviceRequest(fetcher: typeof fetch, kind: "RENDERING" | "PUBLIS
 export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetcher: typeof fetch,
   signal: AbortSignal, uploadedPaths: string[]) {
   const { book, config, model } = await loadPublishingInputs(sb, job);
+  let sourceJobs: { render: Record<string, unknown>; preflight: Record<string, unknown> } | undefined;
+  if (job.request_json.action === "export_package") {
+    const { sourceRenderJobId, sourcePreflightJobId } = job.request_json;
+    if (!sourceRenderJobId || !sourcePreflightJobId) throw new WorkerFailure("worker_invalid_source_jobs", false);
+    const [render, preflight] = await Promise.all([
+      sb.from("publishing_jobs").select("*").eq("id", sourceRenderJobId).maybeSingle(),
+      sb.from("publishing_jobs").select("*").eq("id", sourcePreflightJobId).maybeSingle(),
+    ]);
+    if (render.error || preflight.error) throw new WorkerFailure("worker_database_unavailable", true);
+    const source = { bookId: job.book_id, editionId: job.edition_id,
+      editionUpdatedAt: job.request_json.editionUpdatedAt, bookModelSha256: job.request_json.bookModelSha256 };
+    assertSourceJob(render.data, { ...source, action: "render", channel: "render" });
+    assertSourceJob(preflight.data, { ...source, action: "validate", channel: job.channel });
+    assertSavedRenderedCoverPolicy(config, render.data);
+    sourceJobs = { render: render.data!, preflight: preflight.data! };
+  }
   const imageIds = model.assets.map(asset => asset.id);
   const imageReferences = model.chapters.flatMap(chapter => chapter.nodes);
   const loadedImages = await loadRenderImages(sb, book.workspace_id, imageIds, config.cover.asset_id, imageReferences);
@@ -132,22 +148,16 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
     return artifact;
   }
   if (job.request_json.action === "export_package") {
-    const { sourceRenderJobId, sourcePreflightJobId } = job.request_json;
-    if (!sourceRenderJobId || !sourcePreflightJobId) throw new WorkerFailure("worker_invalid_source_jobs", false);
-    const [render, preflight] = await Promise.all([
-      sb.from("publishing_jobs").select("*").eq("id", sourceRenderJobId).maybeSingle(),
-      sb.from("publishing_jobs").select("*").eq("id", sourcePreflightJobId).maybeSingle(),
-    ]);
-    if (render.error || preflight.error) throw new WorkerFailure("worker_database_unavailable", true);
+    const { render, preflight } = sourceJobs!;
     const source = { bookId: job.book_id, editionId: job.edition_id,
       editionUpdatedAt: job.request_json.editionUpdatedAt, bookModelSha256: job.request_json.bookModelSha256, imageSha256 };
-    assertSourceJob(render.data, { ...source, action: "render", channel: "render" });
-    assertSourceJob(preflight.data, { ...source, action: "validate", channel: job.channel });
-    const validation = storedPreflightResponseSchema.safeParse(preflight.data?.response_json);
+    assertSourceJob(render, { ...source, action: "render", channel: "render" });
+    assertSourceJob(preflight, { ...source, action: "validate", channel: job.channel });
+    const validation = storedPreflightResponseSchema.safeParse(preflight.response_json);
     if (!validation.success || validation.data.errors !== 0 || validation.data.requestedChannel !== job.channel) {
       throw new WorkerFailure("worker_preflight_failed", false);
     }
-    const artifactsBase64 = await loadRenderedPackageInputs(sb, book.workspace_id, config.kind, render.data!);
+    const artifactsBase64 = await loadRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config);
     const raw = await serviceRequest(fetcher, "PUBLISHING", "/v1/publishing/package",
       { channel: job.channel, editionConfig: config, bookModel: model, artifactsBase64 }, 280_000_000, signal);
     const parsed = packageServiceResponseSchema.safeParse(raw);
@@ -184,6 +194,7 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
   }
   return { artifacts, rendererVersion: rendered.rendererVersion, imageSha256, usage: {
     renderedBytes: artifacts.reduce((total, artifact) => total + Number(artifact.sizeBytes), 0), illustrationCount: model.assets.length,
+    ...decodedCover?.usage,
   } };
 }
 
@@ -253,6 +264,7 @@ export async function runOnePublishingJob(sb: SupabaseClient, options: {
     }
     if (abort.signal.aborted || (error instanceof WorkerFailure && error.code === "worker_lease_lost")) return { status: "lease_lost", jobId };
     const failure = error instanceof WorkerFailure ? error
+      : error instanceof AppError && error.code === "cover_metadata_policy_unsupported" ? new WorkerFailure("worker_cover_policy_unsupported", false)
       : error instanceof AppError ? new WorkerFailure(error.status < 500 ? "worker_input_rejected" : "worker_dependency_failed", error.status >= 500)
         : new WorkerFailure("worker_execution_failed", true);
     const failed = await sb.rpc("fail_leased_publishing_job", {

@@ -5,7 +5,9 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ApiClientError, type AiReviewModelChoice, type AiReviewUsageQuote, type ManuscriptImportJob, type ManuscriptImportResult } from "@bookworm/api-client";
 import { apiClient } from "./api";
+import { AuthorHeader } from "./AuthorShell";
 import { readSetupCheckpoint, recoverManuscriptReport, runManuscriptSetup, setupKey, type SetupCheckpoint, type SetupStage } from "../lib/manuscript-setup";
+import { rememberWorkspace, resolveWorkspace } from "../lib/workspace-selection";
 
 type SetupMode = "blank" | "import" | "ai";
 const stageLabels: Record<SetupStage, string> = { creating: "Creating book...", uploading: "Uploading source...", scanning: "Checking source...", importing: "Importing chapters...", drafting: "Queuing first draft..." };
@@ -47,9 +49,12 @@ export default function BookSetupClient() {
       if (!session.ok) throw new Error("Sign in again before creating a book.");
       const { user } = await session.json();
       if (typeof user?.id !== "string") throw new Error("Session verification failed. Sign in again.");
-      let workspace = new URLSearchParams(window.location.search).get("ws");
-      if (!workspace) { try { workspace = window.localStorage.getItem("bookworm:workspaceId"); } catch { /* The URL can still select a workspace. */ } }
-      if (!workspace || !/^[0-9a-f-]{36}$/i.test(workspace)) throw new Error("Choose a workspace from your library before creating a book.");
+      const available = await api.listWorkspaces();
+      if (cancelled) return;
+      const selected = resolveWorkspace(available.workspaces, new URLSearchParams(window.location.search).get("ws"));
+      if (!selected) throw new Error("Choose a workspace from your library before creating a book.");
+      const workspace = selected.id;
+      rememberWorkspace(available.workspaces, workspace);
       let saved = null;
       try { saved = readSetupCheckpoint(window.sessionStorage.getItem(setupKey(user.id, workspace)), user.id, workspace); }
       catch { if (!cancelled) setNotice("Browser recovery storage is unavailable. Keep this tab open until import finishes."); }
@@ -279,8 +284,10 @@ export default function BookSetupClient() {
   };
 
   return (
+    <>
+    <AuthorHeader workspaceId={workspaceId || undefined} />
     <main className="mx-auto max-w-4xl px-4 pb-16 pt-8 sm:px-6 lg:px-8 lg:pt-12">
-      <Link href="/dashboard" className="text-sm font-medium text-[#b8b8b8] underline decoration-white/25 underline-offset-4 hover:text-white">← Back to library</Link>
+      <Link href={workspaceId ? `/dashboard?ws=${encodeURIComponent(workspaceId)}` : "/dashboard"} className="text-sm font-medium text-[#b8b8b8] underline decoration-white/25 underline-offset-4 hover:text-white">← Back to library</Link>
       <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_250px]">
         <section>
           <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#8f8f8f]">New project</p>
@@ -426,5 +433,6 @@ export default function BookSetupClient() {
         </aside>
       </div>
     </main>
+    </>
   );
 }
