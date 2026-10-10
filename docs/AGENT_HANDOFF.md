@@ -5,6 +5,10 @@
 This is the full AI-native publishing application, not only its landing page.
 Shared vault: `C:/Users/Asus/Memory-Ai`.
 
+- Current workspace, publication proof desk and local gstack setup checkpoint:
+  `docs/WORKSPACE_PUBLICATION_CHECKPOINT.md` (2026-10-10).
+- Exact frozen-candidate evidence, excluded drafts and continuation artifacts:
+  `Codex Sessions/2026-10/2026-10-10-workspace-publication-gstack-checkpoint.md`.
 - Current narration transport, SQL segmentation and package-preflight boundaries:
   `docs/NARRATION_TRANSPORT_CHECKPOINT.md` (2026-10-05).
 - Latest narration bundle acceptance and funded-integration continuation:
