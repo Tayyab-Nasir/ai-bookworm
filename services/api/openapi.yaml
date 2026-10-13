@@ -8,6 +8,110 @@ servers:
 tags:
   - name: v1
 paths:
+  /v1/books/{bookId}/bible:
+    post:
+      operationId: createManualBookBibleItem
+      summary: Commit one durable manual canon creation with an original request UUID
+      description: Requires current editing membership and X-Bookworm-Actor matching the authenticated user. Body requestId is a durable actor-global UUID bound to its original book; no automatic request replacement. Static fields are normalized before SQL, while original-request replay precedes current source/image validation and version pinning. The SQL transaction validates and saves canon plus an immutable receipt together. Same original intent replays without another item; mismatched intent or a durably closed UUID conflicts. Missing workflow migration fails closed without direct-write fallback. No provider, quote, credit, Stripe or retailer action occurs.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/BookBibleActor" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BookBibleMutationBody" }
+      responses:
+        "201": { $ref: "#/components/responses/BookBibleMutation" }
+        "200": { $ref: "#/components/responses/BookBibleMutation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/{itemId}:
+    put:
+      operationId: updateManualBookBibleItem
+      summary: Replace an exact current canon revision through a durable request
+      description: Requires original requestId, exact expectedUpdatedAt, expectedIncarnationId and actor header. Both server-owned revision tokens are part of immutable intent and must match the current target for a first write; direct edits advance updated_at and recreation always gets a new incarnation even if the UUID and other fields are copied. SQL replays the original normalized intent before mutable source/image/target validation. Recovery describes current state; an old accepted update never overwrites later edits on replay. Missing migration or an unverifiable result returns unavailable without direct-write fallback.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: itemId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/BookBibleActor" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateBookBibleMutationBody" }
+      responses:
+        "200": { $ref: "#/components/responses/BookBibleMutation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    delete:
+      operationId: deleteManualBookBibleItem
+      summary: Delete one exact canon revision once and retain its immutable receipt
+      description: Requires original requestId, exact expectedUpdatedAt, expectedIncarnationId, current editing access and actor binding. Both server-owned revision tokens must match for a first deletion and are included in immutable request intent. The receipt preserves the removed row hash and prior updated_at. A replay never deletes a later replacement. If the target UUID has been recreated, disposition is changed with its current row; unchanged is never a valid delete disposition. No asset or manuscript is deleted.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: itemId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/BookBibleActor" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeleteBookBibleMutationBody" }
+      responses:
+        "200": { $ref: "#/components/responses/BookBibleMutation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/requests/{requestId}:
+    get:
+      operationId: recoverManualBookBibleMutation
+      summary: Read the original actor-owned manual mutation receipt and current canon state
+      description: Read-only recovery requires current editing membership and the original actor header matching authenticated identity. No query fields, body, source repinning, writes or provider calls. Missing receipt returns receipt/disposition/item null, replayed false, closed false and closure null; this is not proof that an in-flight mutation cannot commit. A durable closure returns the empty envelope with closed true and closure requestId/bookId/closedAt bound to the exact route, fencing that original key from future canon writes. A found receipt returns closed false, closure null, replayed true and current unchanged, changed or deleted disposition. Does not replay a write automatically.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/BookBibleActor" }
+      responses:
+        "200": { $ref: "#/components/responses/BookBibleMutation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/bible/requests/{requestId}/close:
+    post:
+      operationId: closeManualBookBibleMutation
+      summary: Durably fence an uncommitted original request before correcting its canon intent
+      description: Requires current editing membership and the original actor header. Explicitly closes only the actor's original request under the same database request lock as mutation. If that request already committed, returns its immutable receipt and current canon projection with closed false, closure null and replayed true, without another canon write. Otherwise saves metadata-only immutable closure and returns the empty closed true envelope plus closure requestId/bookId/closedAt; callers must verify it against their original pointer. The closed key subsequently conflicts with code book_bible_request_closed. A lost closure reply must be recovered with GET before starting a fresh request. Repeating this POST cannot create a second closure. No canon payload, automatic retry, direct-write fallback, provider, payment or publishing action.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/BookBibleActor" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        "200": { $ref: "#/components/responses/BookBibleMutation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/editions/{editionId}/print-renders:
     get:
       operationId: listSavedPrintRenders
@@ -3287,6 +3391,12 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
+    BookBibleActor:
+      name: X-Bookworm-Actor
+      in: header
+      required: true
+      description: Original author UUID, compared with authenticated identity before any manual mutation/recovery RPC. This header never supplies database authority. Missing/invalid is 422; changed account is 409.
+      schema: { type: string, format: uuid }
     AdminLimit:
       name: limit
       in: query
@@ -3301,6 +3411,127 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    BookBibleSourceRef:
+      type: object
+      additionalProperties: false
+      required: [chapterId]
+      dependentRequired: { textHash: [nodeId] }
+      properties:
+        chapterId: { type: string, format: uuid }
+        documentVersionId: { type: string, format: uuid }
+        nodeId: { type: string, minLength: 1, maxLength: 200 }
+        textHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        note: { type: string, maxLength: 500 }
+    BookBibleMutationBody:
+      type: object
+      additionalProperties: false
+      required: [requestId, type, name]
+      properties:
+        requestId: { type: string, format: uuid }
+        type: { type: string, enum: [character, location, place, organization, fact, object, event, term, timeline, style] }
+        name: { type: string, minLength: 1, maxLength: 160, pattern: '\S' }
+        description: { type: string, maxLength: 12000, default: "" }
+        attributes:
+          type: object
+          maxProperties: 40
+          default: {}
+          propertyNames:
+            minLength: 1
+            maxLength: 80
+            not: { enum: [imageAssetIds, __proto__, constructor, prototype] }
+          description: Bounded JSON attributes, at most 24000 serialized UTF-16 units. Image links use the separate imageAssetIds field.
+        imageAssetIds: { type: array, maxItems: 20, default: [], items: { type: string, format: uuid } }
+        sourceRefs: { type: array, maxItems: 30, default: [], items: { $ref: "#/components/schemas/BookBibleSourceRef" } }
+    UpdateBookBibleMutationBody:
+      type: object
+      additionalProperties: false
+      required: [requestId, type, name, expectedUpdatedAt, expectedIncarnationId]
+      properties:
+        requestId: { $ref: "#/components/schemas/BookBibleMutationBody/properties/requestId" }
+        type: { $ref: "#/components/schemas/BookBibleMutationBody/properties/type" }
+        name: { $ref: "#/components/schemas/BookBibleMutationBody/properties/name" }
+        description: { $ref: "#/components/schemas/BookBibleMutationBody/properties/description" }
+        attributes: { $ref: "#/components/schemas/BookBibleMutationBody/properties/attributes" }
+        imageAssetIds: { $ref: "#/components/schemas/BookBibleMutationBody/properties/imageAssetIds" }
+        sourceRefs: { $ref: "#/components/schemas/BookBibleMutationBody/properties/sourceRefs" }
+        expectedUpdatedAt: { type: string, format: date-time }
+        expectedIncarnationId: { type: string, format: uuid, description: Exact server-owned mutation_incarnation_id of the current row read by this author. }
+    DeleteBookBibleMutationBody:
+      type: object
+      additionalProperties: false
+      required: [requestId, expectedUpdatedAt, expectedIncarnationId]
+      properties:
+        requestId: { type: string, format: uuid }
+        expectedUpdatedAt: { type: string, format: date-time }
+        expectedIncarnationId: { type: string, format: uuid }
+    BookBibleItem:
+      type: object
+      description: Current canonical snake-case row. mutation_incarnation_id and updated_at are server-owned; every insert gets a new incarnation and each update advances its revision. Additional server-owned fields are preserved.
+      required: [id, book_id, mutation_incarnation_id, type, name, description, attributes_json, source_refs_json, confidence, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        book_id: { type: string, format: uuid }
+        mutation_incarnation_id: { type: string, format: uuid }
+        type: { $ref: "#/components/schemas/BookBibleMutationBody/properties/type" }
+        name: { type: string, minLength: 1, maxLength: 160 }
+        description: { type: [string, "null"], maxLength: 12000 }
+        attributes_json: { type: object }
+        source_refs_json: { type: array, maxItems: 30, items: { $ref: "#/components/schemas/BookBibleSourceRef" } }
+        confidence: { type: [number, "null"] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    BookBibleMutationReceipt:
+      type: object
+      additionalProperties: false
+      required: [requestId, bookId, action, itemId, intentHash, resultHash, resultUpdatedAt, committedAt]
+      properties:
+        requestId: { type: string, format: uuid }
+        bookId: { type: string, format: uuid }
+        action: { type: string, enum: [create, update, delete] }
+        itemId: { type: string, format: uuid }
+        intentHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        resultHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        resultUpdatedAt: { type: string, format: date-time, description: Saved result timestamp; for delete this is the removed row's prior updated_at. }
+        committedAt: { type: string, format: date-time }
+    BookBibleMutationClosure:
+      type: object
+      additionalProperties: false
+      required: [requestId, bookId, closedAt]
+      properties:
+        requestId: { type: string, format: uuid }
+        bookId: { type: string, format: uuid }
+        closedAt: { type: string, format: date-time, pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$' }
+    BookBibleMutationResult:
+      type: object
+      description: Manual mutation, recovery and closure RPC transport requires PostgreSQL READ COMMITTED (READ UNCOMMITTED is its equivalent and is also accepted). Stronger transaction isolation is refused before any write and surfaced as unavailable, not as closure; preserve the original request UUID. A missing receipt is never permission to mint a fresh UUID without bound durable closure proof.
+      additionalProperties: false
+      required: [receipt, disposition, item, replayed, closed, closure]
+      properties:
+        receipt: { oneOf: [{ $ref: "#/components/schemas/BookBibleMutationReceipt" }, { type: "null" }] }
+        disposition: { type: [string, "null"], enum: [unchanged, changed, deleted, null] }
+        item: { oneOf: [{ $ref: "#/components/schemas/BookBibleItem" }, { type: "null" }] }
+        replayed: { type: boolean }
+        closed: { type: boolean, description: True only after an immutable closure fences this actor's original request from ever creating another canon mutation. Missing evidence is not closure. }
+        closure: { oneOf: [{ $ref: "#/components/schemas/BookBibleMutationClosure" }, { type: "null" }] }
+      allOf:
+        - if: { properties: { closed: { const: true } } }
+          then: { properties: { closure: { $ref: "#/components/schemas/BookBibleMutationClosure" } } }
+          else: { properties: { closure: { type: "null" } } }
+        - if: { properties: { receipt: { type: "null" } } }
+          then: { properties: { disposition: { type: "null" }, item: { type: "null" }, replayed: { const: false } } }
+          else:
+            properties: { disposition: { type: string }, closed: { const: false } }
+            allOf:
+              - if: { properties: { disposition: { const: deleted } } }
+                then: { properties: { item: { type: "null" } } }
+                else: { properties: { item: { $ref: "#/components/schemas/BookBibleItem" } } }
+              - if: { properties: { receipt: { properties: { action: { const: delete } } } } }
+                then: { properties: { disposition: { enum: [changed, deleted] } } }
+              - if: { properties: { replayed: { const: false } } }
+                then:
+                  if: { properties: { receipt: { properties: { action: { const: delete } } } } }
+                  then: { properties: { disposition: { const: deleted } } }
+                  else: { properties: { disposition: { const: unchanged } } }
     SavedPrintSource:
       type: object
       additionalProperties: false
@@ -4329,6 +4560,13 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/NarrationQuote" }
+    BookBibleMutation:
+      description: Verified manual receipt plus current canonical disposition. A found recovery receipt always has replayed true. Fresh create/update is unchanged; fresh delete is deleted. Error responses also use private no-store caching.
+      headers:
+        Cache-Control: { schema: { type: string, const: "private, no-store" } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/BookBibleMutationResult" }
     Error:
       description: Standard error envelope
       content:

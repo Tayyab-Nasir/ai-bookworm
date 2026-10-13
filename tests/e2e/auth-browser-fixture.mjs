@@ -3,7 +3,7 @@
  * flow. This does NOT prove live provider or production database integration.
  */
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 const user = { id: '11111111-1111-4111-8111-111111111111', aud: 'authenticated', role: 'authenticated', email: 'author@example.test', app_metadata: {}, user_metadata: { display_name: 'Fixture author' }, created_at: '2026-01-01T00:00:00Z' };
 const tokens = new Set();
@@ -44,6 +44,21 @@ let lostReviewReply = false;
 const memoryBookId = '88888888-8888-4888-8888-888888888888';
 const memoryBook = { id: memoryBookId, workspace_id: '33333333-3333-4333-8333-333333333333', title: 'The Long Way Home', subtitle: null, author_name: 'Fixture author', language: 'en', genre: 'Fantasy', status: 'draft', updated_at: '2026-08-31T08:00:00.000Z' };
 const memoryItems = [];
+const memoryMutationReceipts = new Map();
+const memoryRequestClosures = new Map();
+// Browser-only transport simulation. Native SQL tests establish atomicity and
+// locks; this state only exercises the real author's receipt/recovery controls.
+function canonicalJson(value) {
+  return JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+}
+const memoryHash = value => createHash('sha256').update(canonicalJson(value)).digest('hex');
+function memoryMutationResult(saved, replayed = true) {
+  const item = memoryItems.find(value => value.id === saved.receipt.itemId) ?? null;
+  const unchanged = saved.receipt.action !== 'delete' && item && memoryHash(item) === saved.receipt.resultHash
+    && item.updated_at === saved.receipt.resultUpdatedAt;
+  return { receipt: saved.receipt, disposition: item ? unchanged ? 'unchanged' : 'changed' : 'deleted', item, replayed, closed: false, closure: null };
+}
 let memoryMetadata = null;
 const adminFlags = [{ id: 'flag-preview', key: 'editor-preview', scope_type: 'workspace', scope_id: 'workspace-fixture', enabled: false, config_json: { rollout: 50 } }];
 const adminTickets = [{ id: 'ticket-fixture', subject: 'Export help', body: 'Please help me prepare my print edition.', category: 'publishing', priority: 'normal', status: 'open', user_id: user.id, created_at: '2026-09-05T00:00:00Z' }];
@@ -564,17 +579,57 @@ const server = createServer(async (req, res) => {
     memoryBook.updated_at = new Date().toISOString();
     return json(200, { book: memoryBook });
   }
-  if (url.pathname === `${memoryBase}/bible` && req.method === 'POST') {
-    const now = new Date().toISOString();
-    const item = { id: randomUUID(), book_id: memoryBookId, type: body.type, name: body.name, description: body.description, attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs, confidence: null, created_at: now, updated_at: now };
-    memoryItems.push(item); return json(201, { item });
+  if (url.pathname.startsWith(`${memoryBase}/bible/requests/`) && req.method === 'GET') {
+    if (req.headers['x-bookworm-actor'] !== user.id) return json(403, { error: { message: 'The saved request belongs to a different signed-in account.' } });
+    const saved = memoryMutationReceipts.get(url.pathname.split('/').pop());
+    const closure = memoryRequestClosures.get(url.pathname.split('/').pop()) ?? null;
+    return json(200, saved ? memoryMutationResult(saved) : { receipt: null, disposition: null, item: null, replayed: false, closed: !!closure, closure });
   }
-  if (url.pathname.startsWith(`${memoryBase}/bible/`) && ['PUT', 'DELETE'].includes(req.method)) {
-    const item = memoryItems.find((entry) => entry.id === url.pathname.split('/').pop());
-    if (!item || item.updated_at !== body.expectedUpdatedAt) return json(409, { error: { message: 'This entry changed or was removed. Reload before saving your changes.' } });
-    if (req.method === 'DELETE') { memoryItems.splice(memoryItems.indexOf(item), 1); return json(200, { deleted: true, itemId: item.id }); }
-    Object.assign(item, { type: body.type, name: body.name, description: body.description, attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs, updated_at: new Date(Math.max(Date.now(), Date.parse(item.updated_at) + 1)).toISOString() });
-    return json(200, { item });
+  if (url.pathname.startsWith(`${memoryBase}/bible/requests/`) && url.pathname.endsWith('/close') && req.method === 'POST') {
+    if (req.headers['x-bookworm-actor'] !== user.id) return json(409, { error: { message: 'The saved request belongs to a different signed-in account.' } });
+    if (Object.keys(body).length) return json(422, { error: { message: 'Closure accepts only an empty JSON object.' } });
+    const requestId = url.pathname.split('/').at(-2);
+    if (!/^[a-f0-9-]{36}$/iu.test(requestId)) return json(422, { error: { message: 'Original request UUID required.' } });
+    const saved = memoryMutationReceipts.get(requestId);
+    if (saved) return json(200, memoryMutationResult(saved));
+    if (!memoryRequestClosures.has(requestId)) memoryRequestClosures.set(requestId, { requestId, bookId: memoryBookId, closedAt: new Date().toISOString() });
+    return json(200, { receipt: null, disposition: null, item: null, replayed: false, closed: true, closure: memoryRequestClosures.get(requestId) });
+  }
+  const createMemory = url.pathname === `${memoryBase}/bible` && req.method === 'POST';
+  const changeMemory = /^\/v1\/books\/[a-f0-9-]{36}\/bible\/[a-f0-9-]{36}$/u.test(url.pathname)
+    && url.pathname.startsWith(`${memoryBase}/bible/`) && ['PUT', 'DELETE'].includes(req.method);
+  if (createMemory || changeMemory) {
+    if (req.headers['x-bookworm-actor'] !== user.id) return json(403, { error: { message: 'The saved request belongs to a different signed-in account.' } });
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(body.requestId ?? '')) {
+      return json(422, { error: { message: 'An original request UUID is required.' } });
+    }
+    const action = createMemory ? 'create' : req.method === 'PUT' ? 'update' : 'delete';
+    const target = createMemory ? null : url.pathname.split('/').pop();
+    const { requestId, ...intent } = body;
+    const intentHash = memoryHash({ version: 1, bookId: memoryBookId, action, target, body: intent });
+    const saved = memoryMutationReceipts.get(requestId);
+    if (saved) return saved.receipt.intentHash === intentHash ? json(200, memoryMutationResult(saved))
+      : json(409, { error: { message: 'This request UUID belongs to a different intent.' } });
+    if (memoryRequestClosures.has(requestId)) return json(409, { error: { code: 'book_bible_request_closed', message: 'Original request permanently closed.' } });
+    const now = new Date().toISOString();
+    let item = memoryItems.find(entry => entry.id === target);
+    if (createMemory) {
+      item = { id: randomUUID(), book_id: memoryBookId, type: body.type, name: body.name, description: body.description || null,
+        attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs,
+        confidence: null, created_at: now, updated_at: now, mutation_incarnation_id: randomUUID() };
+      memoryItems.push(item);
+    } else {
+      if (!/^[a-f0-9-]{36}$/iu.test(body.expectedIncarnationId ?? '')) return json(422, { error: { message: 'Original entry incarnation required.' } });
+      if (!item || item.updated_at !== body.expectedUpdatedAt || item.mutation_incarnation_id !== body.expectedIncarnationId) return json(409, { error: { message: 'This entry changed or was removed. Reload before saving your changes.' } });
+      if (action === 'delete') memoryItems.splice(memoryItems.indexOf(item), 1);
+      else Object.assign(item, { type: body.type, name: body.name, description: body.description || null,
+        attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs,
+        updated_at: new Date(Math.max(Date.now(), Date.parse(item.updated_at) + 1)).toISOString() });
+    }
+    const receipt = { requestId, bookId: memoryBookId, action, itemId: item.id, intentHash,
+      resultHash: memoryHash(item), resultUpdatedAt: item.updated_at, committedAt: now };
+    memoryMutationReceipts.set(requestId, { receipt });
+    return json(createMemory ? 201 : 200, memoryMutationResult({ receipt }, false));
   }
   if (url.pathname === `${memoryBase}/metadata` && req.method === 'PUT') {
     if (body.expectedUpdatedAt !== (memoryMetadata?.updated_at ?? null)) return json(409, { error: { message: 'Metadata changed since you loaded it. Reload before saving.' } });

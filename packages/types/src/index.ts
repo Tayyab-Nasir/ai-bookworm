@@ -121,6 +121,7 @@ export interface StyleGuide extends Timestamps {
 export interface BookBibleItem extends Timestamps {
   id: string;
   book_id: string;
+  mutation_incarnation_id: string;
   type: string;
   name: string;
   description: string | null;

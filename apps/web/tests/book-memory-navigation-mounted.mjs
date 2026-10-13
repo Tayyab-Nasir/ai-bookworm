@@ -11,7 +11,7 @@ const bundle = await build({
     import Memory from "./apps/web/components/BookMemoryClient";
     import { AuthorHeader } from "./apps/web/components/AuthorShell";
     const root = createRoot(document.getElementById("root"));
-    window.renderMemory = (bookId = "first-book") => root.render(React.createElement(React.Fragment, null,
+    window.renderMemory = (bookId = "11111111-1111-4111-8111-111111111111") => root.render(React.createElement(React.Fragment, null,
       React.createElement(AuthorHeader, {workspaceId: "workspace"}),
       React.createElement(Memory, { key: bookId, bookId })));
     window.clearMemory = () => root.render(null);`, loader: "tsx", resolveDir: process.cwd() },
@@ -41,7 +41,7 @@ async function fixture() {
   const page = await browser.newPage({ viewport: { width: 1280, height: 980 } });
   page.setDefaultTimeout(6000);
   await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: '<!doctype html><html><body><div id="root"></div></body></html>' }));
-  await page.goto("http://127.0.0.1/books/first-book/memory");
+  await page.goto("http://127.0.0.1/books/11111111-1111-4111-8111-111111111111/memory");
   await page.evaluate(() => {
     window.prompts = []; window.confirmAnswer = false; window.navigations = 0; window.writes = [];
     window.confirm = message => { window.prompts.push(message); return window.confirmAnswer; };
@@ -52,7 +52,7 @@ async function fixture() {
       items: [], chapters: [], imageAssets: [], canEdit: true,
     });
     window.fetch = async (path, init) => {
-      if (path === "/api/auth/session") return Response.json({ user: { id: "fixture-author", email: "author@example.test" } });
+      if (path === "/api/auth/session") return Response.json({ user: { id: "33333333-3333-4333-8333-333333333333", email: "author@example.test" } });
       const method = init?.method ?? "GET";
       const url = new URL(path, window.location.origin);
       const bookId = url.pathname.split("/")[5];
@@ -61,9 +61,12 @@ async function fixture() {
       if (method === "GET" && url.pathname.endsWith("/drafts")) return Response.json({ drafts: [], pending: [] });
       const body = JSON.parse(init.body);
       window.writes.push({ path: url.pathname, method, body });
-      if (method === "POST" && url.pathname.endsWith("/bible")) return Response.json({ item: {
-        id: "saved-entry", book_id: bookId, type: body.type, name: body.name, description: body.description,
-        attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs,
+      if (method === "POST" && url.pathname.endsWith("/bible")) return Response.json({ receipt: {
+        requestId: body.requestId, bookId, action: "create", itemId: "44444444-4444-4444-8444-444444444444",
+        intentHash: "a".repeat(64), resultHash: "b".repeat(64), resultUpdatedAt: "2026-10-13T00:01:00.000Z", committedAt: "2026-10-13T00:01:00.000Z",
+      }, disposition: "unchanged", replayed: false, closed: false, item: {
+        id: "44444444-4444-4444-8444-444444444444", book_id: bookId, type: body.type, name: body.name, description: body.description,
+        attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs, mutation_incarnation_id: "55555555-5555-4555-8555-555555555555",
         updated_at: "2026-10-13T00:01:00.000Z",
       } });
       if (method === "PUT" && url.pathname.endsWith("/metadata")) {
@@ -87,7 +90,7 @@ test("cancelled manuscript navigation keeps an unsaved Book Bible entry availabl
     await page.getByRole("textbox", { name: "Name", exact: true }).fill("Elara Vale");
     await page.getByRole("textbox", { name: "Description", exact: true }).fill("The unsaved character description.");
     await page.getByRole("link", { name: "← Back to manuscript", exact: true }).click();
-    assert.equal(page.url(), "http://127.0.0.1/books/first-book/memory");
+    assert.equal(page.url(), "http://127.0.0.1/books/11111111-1111-4111-8111-111111111111/memory");
     await expect(page.getByRole("textbox", { name: "Name", exact: true })).toHaveValue("Elara Vale");
     assert.deepEqual(await page.evaluate(() => window.prompts), ["Leave Book Bible and discard your unsaved changes?"]);
     assert.equal(await page.evaluate(() => window.writes.length), 0);
@@ -110,7 +113,7 @@ test("header navigation protects metadata during an in-flight save and releases 
     await page.getByRole("button", { name: "Save metadata", exact: true }).click();
     await expect(page.getByRole("button", { name: "Saving…", exact: true })).toBeDisabled();
     await page.getByRole("link", { name: "Dashboard", exact: true }).click();
-    assert.equal(page.url(), "http://127.0.0.1/books/first-book/memory");
+    assert.equal(page.url(), "http://127.0.0.1/books/11111111-1111-4111-8111-111111111111/memory");
     await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Unsaved publishing description");
     await page.evaluate(() => window.releaseMetadataSave());
     await expect(page.getByRole("status").filter({ hasText: "Publishing metadata saved." })).toBeVisible();
@@ -132,11 +135,11 @@ test("author can explicitly discard unsaved book details while pristine navigati
     assert.equal(page.url(), "http://127.0.0.1/dashboard?ws=workspace");
     assert.deepEqual(await page.evaluate(() => window.prompts), ["Leave Book Bible and discard your unsaved changes?"]);
     assert.equal(await page.evaluate(() => window.writes.length), 0);
-    await page.evaluate(() => { window.history.replaceState({}, "", "/books/fresh-book/memory"); window.renderMemory("fresh-book"); });
+    await page.evaluate(() => { window.history.replaceState({}, "", "/books/22222222-2222-4222-8222-222222222222/memory"); window.renderMemory("22222222-2222-4222-8222-222222222222"); });
     await expect(page.getByRole("button", { name: "Reload saved data", exact: true })).toBeEnabled();
-    await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Saved fresh-book");
+    await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Saved 22222222-2222-4222-8222-222222222222");
     await page.getByRole("link", { name: "← Back to manuscript", exact: true }).click();
-    assert.equal(page.url(), "http://127.0.0.1/books/fresh-book");
+    assert.equal(page.url(), "http://127.0.0.1/books/22222222-2222-4222-8222-222222222222");
     assert.equal(await page.evaluate(() => window.prompts.length), 1);
   } finally { await page.close(); }
 });
@@ -150,7 +153,7 @@ test("modified, new-tab, download and same-destination links retain the draft wi
       const cases = [
         { options: { ctrlKey: true } }, { options: { metaKey: true } }, { options: { shiftKey: true } }, { options: { altKey: true } },
         { options: { button: 1 } }, { attributes: { target: "_blank" } }, { attributes: { download: "draft.txt" } },
-        { href: "/books/first-book/memory#bible-title" }, { prevented: true },
+        { href: "/books/11111111-1111-4111-8111-111111111111/memory#bible-title" }, { prevented: true },
       ];
       for (const item of cases) {
         const anchor = document.createElement("a"); anchor.href = item.href ?? "/dashboard";
@@ -169,6 +172,6 @@ test("modified, new-tab, download and same-destination links retain the draft wi
     assert.equal(outcomes.every(Boolean), true);
     assert.equal(await page.evaluate(() => window.prompts.length), 0);
     await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Keep this metadata draft");
-    assert.equal(page.url(), "http://127.0.0.1/books/first-book/memory");
+    assert.equal(page.url(), "http://127.0.0.1/books/11111111-1111-4111-8111-111111111111/memory");
   } finally { await page.close(); }
 });

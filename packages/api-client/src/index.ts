@@ -1,7 +1,7 @@
 // Typed fetch client for the /v1 API (spec section 9 paths).
 // ponytail: hand-written minimal client — will be replaced by a generated
 // client from services/api/openapi.yaml (e.g. openapi-typescript) later.
-import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task, Approval, WorkspaceMember, Edition } from "@bookworm/types";
+import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task, Approval, WorkspaceMember, Edition, BookBibleItem as CanonicalBookBibleItem } from "@bookworm/types";
 import type { BookNode } from "@bookworm/book-model";
 
 export interface ChapterDocument { chapterId: string; version: number; nodes: BookNode[] }
@@ -19,6 +19,28 @@ export interface ManuscriptImportJob {
   status: "queued" | "running" | "succeeded" | "failed"; attempts: number;
   error_code: string | null; created_at: string; available_at: string; completed_at: string | null;
 }
+
+export type BookBibleItemType = "character" | "location" | "place" | "organization" | "fact" | "object" | "event" | "term" | "timeline" | "style";
+export interface BookBibleSourceRef {
+  chapterId: string; documentVersionId?: string; nodeId?: string; textHash?: string; note?: string;
+}
+export interface BookBibleMutationBody {
+  requestId: string; type: BookBibleItemType; name: string; description?: string;
+  attributes?: Record<string, unknown>; imageAssetIds?: string[]; sourceRefs?: BookBibleSourceRef[];
+}
+export interface BookBibleItem extends Omit<CanonicalBookBibleItem, "type" | "attributes_json" | "source_refs_json"> {
+  type: BookBibleItemType; attributes_json: Record<string, unknown>; source_refs_json: BookBibleSourceRef[]; mutation_incarnation_id: string;
+}
+export interface BookBibleMutationReceipt {
+  requestId: string; bookId: string; action: "create" | "update" | "delete"; itemId: string;
+  intentHash: string; resultHash: string; resultUpdatedAt: string; committedAt: string;
+}
+export interface BookBibleMutationClosure { requestId: string; bookId: string; closedAt: string }
+export type BookBibleMutationResult =
+  | { receipt: null; disposition: null; item: null; replayed: false; closed: false; closure: null }
+  | { receipt: null; disposition: null; item: null; replayed: false; closed: true; closure: BookBibleMutationClosure }
+  | { receipt: BookBibleMutationReceipt; disposition: "unchanged" | "changed"; item: BookBibleItem; replayed: boolean; closed: false; closure: null }
+  | { receipt: BookBibleMutationReceipt; disposition: "deleted"; item: null; replayed: boolean; closed: false; closure: null };
 
 export interface ManuscriptImportResult {
   chapters: Chapter[]; sourceAssetId: string; assetIds?: string[];
@@ -818,8 +840,8 @@ export function createClient(opts: ClientOptions) {
     return json;
   }
 
-  const call = <T>(method: string, path: string, body?: unknown, useIdempotencyKey = true) =>
-    request<T>(method, path, opts.token ? { authorization: `Bearer ${opts.token}` } : {}, body, useIdempotencyKey);
+  const call = <T>(method: string, path: string, body?: unknown, useIdempotencyKey = true, extraHeaders: Record<string, string> = {}) =>
+    request<T>(method, path, { ...extraHeaders, ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}) }, body, useIdempotencyKey);
   const callService = <T>(path: string, body: unknown, serviceToken: string) =>
     request<T>("POST", path, { "x-service-token": serviceToken }, body);
 
@@ -839,6 +861,16 @@ export function createClient(opts: ClientOptions) {
     getBook: (bookId: string) => call<{ book: Book; role: string }>("GET", `/v1/books/${bookId}`),
     updateBook: (bookId: string, body: Partial<Omit<CreateBookRequest, "workspaceId" | "requestId" | "subtitle" | "genre">> & { subtitle?: string | null; genre?: string | null; expectedUpdatedAt: string }) =>
       call<{ book: Book }>("PATCH", `/v1/books/${bookId}`, body),
+    createBookBibleItem: (bookId: string, body: BookBibleMutationBody, expectedActorId: string) =>
+      call<BookBibleMutationResult>("POST", `/v1/books/${encodeURIComponent(bookId)}/bible`, body, false, { "x-bookworm-actor": expectedActorId }),
+    updateBookBibleItem: (bookId: string, itemId: string, body: BookBibleMutationBody & { expectedUpdatedAt: string; expectedIncarnationId: string }, expectedActorId: string) =>
+      call<BookBibleMutationResult>("PUT", `/v1/books/${encodeURIComponent(bookId)}/bible/${encodeURIComponent(itemId)}`, body, true, { "x-bookworm-actor": expectedActorId }),
+    deleteBookBibleItem: (bookId: string, itemId: string, body: { requestId: string; expectedUpdatedAt: string; expectedIncarnationId: string }, expectedActorId: string) =>
+      call<BookBibleMutationResult>("DELETE", `/v1/books/${encodeURIComponent(bookId)}/bible/${encodeURIComponent(itemId)}`, body, true, { "x-bookworm-actor": expectedActorId }),
+    recoverBookBibleMutation: (bookId: string, requestId: string, expectedActorId: string) =>
+      call<BookBibleMutationResult>("GET", `/v1/books/${encodeURIComponent(bookId)}/bible/requests/${encodeURIComponent(requestId)}`, undefined, true, { "x-bookworm-actor": expectedActorId }),
+    closeBookBibleMutation: (bookId: string, requestId: string, expectedActorId: string) =>
+      call<BookBibleMutationResult>("POST", `/v1/books/${encodeURIComponent(bookId)}/bible/requests/${encodeURIComponent(requestId)}/close`, {}, false, { "x-bookworm-actor": expectedActorId }),
     getStoryBlueprint: (bookId: string) =>
       call<{ blueprint: StoryBlueprint | null; role: string }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint`),
     saveStoryBlueprint: (bookId: string, body: SaveStoryBlueprintRequest) =>

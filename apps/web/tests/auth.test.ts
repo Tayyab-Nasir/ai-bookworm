@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { NextRequest, type NextResponse } from "next/server";
 import { POST } from "../app/api/auth/[action]/route";
 import { GET as session } from "../app/api/auth/session/route";
-import { GET as backendGet, POST as backendPost } from "../app/api/backend/[...path]/route";
+import { GET as backendGet, POST as backendPost, PUT as backendPut, DELETE as backendDelete } from "../app/api/backend/[...path]/route";
 import { GET as callback } from "../app/auth/callback/route";
 import { safeNext, sameOrigin } from "../lib/auth/policy";
 import { appOrigin } from "../lib/auth/server";
@@ -46,6 +46,34 @@ function request(action: string, body: unknown, cookie?: string, origin = "http:
 const invoke = (action: string, body: unknown, cookie?: string) => POST(request(action, body, cookie), { params: Promise.resolve({ action }) });
 const cookies = (response: NextResponse) => response.cookies.getAll().map(({ name, value }) => `${name}=${value}`).join("; ");
 const login = () => invoke("login", { email: user.email, password: "fixture-password" });
+
+test("manual Book Bible requests preserve their expected actor and reject account crossover before forwarding", async () => {
+  const signedIn = await login();
+  const authProvider = provider;
+  const upstream = "http://api.example.test/v1/books/88888888-8888-4888-8888-888888888888/bible";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  const cases = [
+    { method: "POST", suffix: "", handler: backendPost },
+    { method: "PUT", suffix: "/33333333-3333-4333-8333-333333333333", handler: backendPut },
+    { method: "DELETE", suffix: "/33333333-3333-4333-8333-333333333333", handler: backendDelete },
+    { method: "GET", suffix: "/requests/22222222-2222-4222-8222-222222222222", handler: backendGet },
+    { method: "POST", suffix: "/requests/22222222-2222-4222-8222-222222222222/close", handler: backendPost },
+  ];
+  for (const current of cases) {
+    const path = ["v1", "books", "88888888-8888-4888-8888-888888888888", "bible", ...current.suffix.split("/").filter(Boolean)];
+    for (const [actor, status] of [[undefined, 422], ["not-an-id", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await current.handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method: current.method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) },
+      }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, status);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + (status === 200 ? 1 : 0));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+      assert.match(response.headers.get("cache-control")!, /no-store/);
+    }
+  }
+});
 
 test("redirects stay inside author routes and same-origin is required", () => {
   for (const path of ["https://evil.test", "//evil.test", "/\\evil.test", "/%5cevil.test", "/%0aevil", "/auth/callback", "/api/backend/v1/books"]) assert.equal(safeNext(path), "/dashboard");

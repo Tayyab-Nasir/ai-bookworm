@@ -95,7 +95,7 @@ async function imageFixture(page, saved = true) {
 }
 async function memoryFixture(page) {
   await page.evaluate(() => {
-    window.memory = { book: { id: "a-book", title: "Saved book", author_name: "Author", language: "en" },
+    window.memory = { book: { id: "11111111-1111-4111-8111-111111111111", title: "Saved book", author_name: "Author", language: "en" },
       metadata: { description: "Saved metadata", keywords: ["saved"], categories: ["fiction"] }, items: [],
       chapters: [{ id: "a-chapter", title: "Saved chapter", current_document_version_id: "a-version" }], imageAssets: [], canEdit: true };
     window.metadataQuote = { id: "quote", status: "ready", model: "approved", reservedCredits: 31, expiresAt: "2030-01-01T00:00:00.000Z", acceptedJobId: null };
@@ -116,9 +116,9 @@ async function memoryFixture(page) {
   });
 }
 
-const canonItem = { id: "canon-item", book_id: "a-book", type: "character", name: "Private Elara canon",
+const canonItem = { id: "33333333-3333-4333-8333-333333333333", book_id: "11111111-1111-4111-8111-111111111111", type: "character", name: "Private Elara canon",
   description: "Private established character appearance", updated_at: "2026-10-06T01:00:00.000Z",
-  attributes_json: { traits: ["patient", "observant"], imageAssetIds: [] },
+  attributes_json: { traits: ["patient", "observant"], imageAssetIds: [] }, mutation_incarnation_id: "55555555-5555-4555-8555-555555555555",
   source_refs_json: [{ chapterId: "a-chapter", documentVersionId: "a-version", nodeId: "n1", textHash: "a".repeat(64) }] };
 
 test("paid Book Bible recovery reviews evidence then saves structured canon and image links across remount", async () => {
@@ -143,12 +143,14 @@ test("paid Book Bible recovery reviews evidence then saves structured canon and 
         if (path.endsWith("/bible/evidence")) return window.passageResponse("Elara wore a silver cloak.");
         if (path.endsWith("/bible") && init?.method === "POST") {
           const body = JSON.parse(init.body);
-          const item = { id: "persisted-canon", book_id: "a-book", type: body.type, name: body.name, description: body.description,
-            attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs, updated_at: "2026-10-06T01:00:00Z" };
-          window.memory.items.push(item); return Response.json({ item });
+          if (new Headers(init.headers).get("X-Bookworm-Actor") !== "00000000-0000-4000-8000-000000000001") throw new Error("Manual request actor missing");
+          const item = { id: "44444444-4444-4444-8444-444444444444", book_id: "11111111-1111-4111-8111-111111111111", type: body.type, name: body.name, description: body.description,
+            attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs, updated_at: "2026-10-06T01:00:00Z", mutation_incarnation_id: "66666666-6666-4666-8666-666666666666" };
+          window.memory.items.push(item); return Response.json({ receipt: { requestId: body.requestId, bookId: item.book_id, action: "create", itemId: item.id,
+            intentHash: "a".repeat(64), resultHash: "b".repeat(64), resultUpdatedAt: item.updated_at, committedAt: item.updated_at }, disposition: "unchanged", replayed: false, closed: false, item });
         }
       };
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     }, canonItem.source_refs_json[0]);
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     assert.equal(await page.evaluate(() => window.calls.filter(call => call.method !== "GET").length), 0);
@@ -177,7 +179,9 @@ test("paid Book Bible recovery reviews evidence then saves structured canon and 
     const calls = await page.evaluate(() => window.calls);
     const writes = calls.filter(call => call.path.endsWith("/bible") && call.method === "POST");
     assert.equal(writes.length, 1);
-    assert.deepEqual(JSON.parse(writes[0].body), { type: "character", name: "Elara Vale", description: "Elara keeps a silver cloak and watches the northern archive.",
+    const { requestId, ...savedDetails } = JSON.parse(writes[0].body);
+    assert.match(requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    assert.deepEqual(savedDetails, { type: "character", name: "Elara Vale", description: "Elara keeps a silver cloak and watches the northern archive.",
       attributes: { traits: ["patient", "observant"], timeline: { arrival: 3 } }, imageAssetIds: ["00000000-0000-4000-8000-000000000011"], sourceRefs: canonItem.source_refs_json });
     assert.equal(calls.filter(call => call.path.endsWith("/bible/quotes") && call.method === "POST").length, 1);
     const acceptance = calls.filter(call => call.path.endsWith("/accept"));
@@ -185,7 +189,7 @@ test("paid Book Bible recovery reviews evidence then saves structured canon and 
     assert.equal(await page.evaluate(() => JSON.stringify(sessionStorage).includes(window.extracted.description)), false);
     await page.evaluate(() => { window.clearComponent(); window.memory.chapters[0].current_document_version_id = "new-version"; });
     await expect(page.getByRole("heading", { name: "Book Bible", exact: true })).toHaveCount(0);
-    await page.evaluate(() => window.renderMemory({ bookId: "a-book" }));
+    await page.evaluate(() => window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" }));
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: /character Elara Vale/ }).click();
     await expect(page.getByRole("textbox", { name: "Attribute 1 value" })).toHaveValue('["patient","observant"]');
@@ -209,7 +213,7 @@ for (const change of ["select another entry", "change source chapter", "remove s
         if (!path.endsWith("/bible/evidence")) return;
         return JSON.parse(init.body).nodeId === "n1" ? window.defer("old-passage") : window.passageResponse("Current entry evidence.");
       };
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     }, canonItem);
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: /Private Elara canon/ }).click();
@@ -253,7 +257,7 @@ test("mobile saved evidence keeps verified offsets through failures, keyboard pa
           startOffset: 0, endOffset: 38, totalLength: 999, nextOffset: 999 });
         return window.passageResponse(offset === 0 ? window.firstSection : window.secondSection, offset, window.firstSection.length + window.secondSection.length);
       };
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     }, canonItem);
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: /Private Elara canon/ }).click();
@@ -305,14 +309,14 @@ for (const status of [401, 403, 503]) test(`Book Bible reload ${status} clears p
   const page = await fixture();
   try {
     await memoryFixture(page);
-    await page.evaluate(item => { window.memory.items = [item]; window.renderMemory({ bookId: "a-book" }); }, canonItem);
+    await page.evaluate(item => { window.memory.items = [item]; window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" }); }, canonItem);
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: /Private Elara canon/ }).click();
     await expect(page.getByRole("button", { name: "Save memory entry" })).toBeEnabled();
     const pointers = await page.evaluate(() => {
       const key = "original-paid-memory-key";
       const body = { modelId: "approved", idempotencyKey: key, allowProviderTokenCounting: true, chapterIds: ["a-chapter"], maxTokens: 12000 };
-      const pointers = ["bookworm:metadata-quote:v1:a-book", "bookworm:bible-quote:v1:a-book"].map(keyName => [keyName, JSON.stringify({ idempotencyKey: key, body })]);
+      const pointers = ["bookworm:metadata-quote:v1:11111111-1111-4111-8111-111111111111", "bookworm:bible-quote:v1:11111111-1111-4111-8111-111111111111"].map(keyName => [keyName, JSON.stringify({ idempotencyKey: key, body })]);
       for (const [keyName, value] of pointers) sessionStorage.setItem(keyName, value);
       window.memoryFetch = path => path.endsWith("/memory") ? window.defer("memory-reload") : undefined;
       return pointers;
@@ -354,8 +358,12 @@ test("Book Bible StrictMode latest load wins over an older editable response", a
         if (++window.memoryReads === 1) { window.oldMemory = oldMemory; return window.defer("strict-old-memory"); }
         return Response.json({ ...window.memory, canEdit: false, metadata: { ...window.memory.metadata, description: "Latest authorized viewer memory" } });
       };
-      window.renderMemoryStrict({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     }, canonItem);
+    // Verify that the earlier authenticated read is actually in flight before
+    // remounting. StrictMode's first auth check can be fenced before a read starts.
+    await page.waitForFunction(() => !!window.gates["strict-old-memory"]);
+    await page.evaluate(() => window.renderMemoryStrict({ bookId: "11111111-1111-4111-8111-111111111111" }));
     await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Latest authorized viewer memory");
     await page.evaluate(() => window.gates["strict-old-memory"].resolve(Response.json(window.oldMemory)));
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -380,7 +388,7 @@ test("saved Book Bible evidence is readable to viewers and chapter-only notes ar
             text, truncated: false, startOffset: 0, endOffset: text.length, totalLength: text.length, nextOffset: null });
         }
       };
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     }, canonItem);
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: /Private Elara canon/ }).click();
@@ -393,7 +401,7 @@ test("saved Book Bible evidence is readable to viewers and chapter-only notes ar
     await expect(page.getByRole("button", { name: "Read source passage" })).toHaveCount(0);
     await expect(page.getByText("Chapter reference only. No exact passage has been pinned.", { exact: true })).toHaveCount(1);
     const posts = await page.evaluate(() => window.calls.filter(call => call.method !== "GET"));
-    assert.equal(posts.length, 1); assert.equal(posts[0].path, "/api/backend/v1/books/a-book/bible/evidence");
+    assert.equal(posts.length, 1); assert.equal(posts[0].path, "/api/backend/v1/books/11111111-1111-4111-8111-111111111111/bible/evidence");
     assert.deepEqual(JSON.parse(posts[0].body), { ...canonItem.source_refs_json[0], offset: 0 });
   } finally { await page.close(); }
 });
@@ -418,7 +426,7 @@ test("metadata draft proof reads exact historical evidence before explicit use a
           return Response.json({ metadata: window.memory.metadata });
         }
       };
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     }, canonItem.source_refs_json[0]);
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: /An evidence-backed publisher description/ }).click();
@@ -556,7 +564,7 @@ test("metadata storage failure prevents even the first counting POST", async () 
   const page = await fixture();
   try {
     await memoryFixture(page);
-    await page.evaluate(() => window.renderMemory({ bookId: "a-book" }));
+    await page.evaluate(() => window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" }));
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("checkbox", { name: /I agree to send the selected saved chapters/ }).check();
     await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("Storage blocked"); }; });
@@ -578,7 +586,7 @@ test("metadata lost-create 404 cannot count again until explicit same-key retry"
           return Response.json(window.metadataStatus);
         }
       };
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     });
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("checkbox", { name: /I agree to send the selected saved chapters/ }).check();
@@ -608,7 +616,7 @@ test("metadata uncertain acceptance requires GET recovery and a new explicit con
         if (path.endsWith("/accept")) throw new Error("Acceptance reply lost");
         if (path.endsWith("/metadata/quotes") || path.includes("/metadata/quote-requests/")) return Response.json(window.metadataStatus);
       };
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     });
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("checkbox", { name: /I agree to send the selected saved chapters/ }).check();
@@ -633,16 +641,16 @@ test("verified metadata pre-dispatch cancellation releases the UI lock and never
     await memoryFixture(page);
     await page.evaluate(() => {
       const key = "original-metadata-key";
-      sessionStorage.setItem("bookworm:metadata-quote:v1:a-book", JSON.stringify({ idempotencyKey: key,
+      sessionStorage.setItem("bookworm:metadata-quote:v1:11111111-1111-4111-8111-111111111111", JSON.stringify({ idempotencyKey: key,
         body: { modelId: "approved", idempotencyKey: key, allowProviderTokenCounting: true, chapterIds: ["a-chapter"], maxTokens: 12000 } }));
       window.memoryFetch = async path => path.endsWith("/metadata/quotes/recover") ? Response.json({ ...window.metadataStatus,
         job: { id: "cancelled-job", status: "failed", errorCode: "metadata_permission_revoked_before_dispatch" } }) : undefined;
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     });
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: "Resume same quote request" }).click();
     await page.getByText(/Editing permission was revoked before generation.*released the reserved credits/).waitFor();
-    assert.equal(await page.evaluate(() => sessionStorage.getItem("bookworm:metadata-quote:v1:a-book")), null);
+    assert.equal(await page.evaluate(() => sessionStorage.getItem("bookworm:metadata-quote:v1:11111111-1111-4111-8111-111111111111")), null);
     await expect(page.getByText(/This accepted request needs review/)).toHaveCount(0);
     assert.equal(await page.evaluate(() => window.calls.filter(call => call.method === "POST").length), 1);
   } finally { await page.close(); }
@@ -689,7 +697,7 @@ test("Book Bible uncertain acceptance reads the existing quote before another ex
         if (path.endsWith("/accept")) throw new Error("Book Bible acceptance reply lost");
         if (path.endsWith("/bible/quotes") || path.endsWith("/bible/quotes/bible-request")) return Response.json(window.bibleStatus);
       };
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     });
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("checkbox", { name: /I agree to send the selected saved manuscript batch/ }).check();
@@ -714,14 +722,14 @@ test("accepted metadata recovery exposes a draft without changing or saving the 
     await memoryFixture(page);
     await page.evaluate(() => {
       const key = "original-metadata-key";
-      sessionStorage.setItem("bookworm:metadata-quote:v1:a-book", JSON.stringify({ idempotencyKey: key,
+      sessionStorage.setItem("bookworm:metadata-quote:v1:11111111-1111-4111-8111-111111111111", JSON.stringify({ idempotencyKey: key,
         body: { modelId: "approved", idempotencyKey: key, allowProviderTokenCounting: true, chapterIds: ["a-chapter"], maxTokens: 12000 } }));
       window.candidateDescription = "A recovered author-reviewed description with sufficient saved evidence.";
       window.memoryFetch = async path => path.endsWith("/metadata/quotes/recover") ? Response.json({ ...window.metadataStatus,
         quote: { ...window.metadataQuote, status: "accepted", acceptedJobId: "saved-job" }, job: { id: "saved-job", status: "succeeded" },
         candidate: { description: window.candidateDescription, keywords: ["recovered"], categories: ["fantasy"],
           sourceRefs: [{ chapterId: "a-chapter", documentVersionId: "a-version", nodeId: "n1", textHash: "a".repeat(64) }] } }) : undefined;
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     });
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: "Resume same quote request" }).click();
@@ -849,15 +857,15 @@ test("late Book Bible reading plan cannot attach another book's saved chapter ba
     await memoryFixture(page);
     await page.evaluate(() => {
       window.memoryFetch = path => path.endsWith("/bible/reading-plan") ? window.defer("reading-a") : undefined;
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     });
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: "Prepare reading batches · no credits" }).click();
     await page.waitForFunction(() => !!window.gates["reading-a"]);
     await page.evaluate(() => {
-      window.memory.book.id = "b-book"; window.memory.metadata.description = "Saved metadata for book B";
+      window.memory.book.id = "22222222-2222-4222-8222-222222222222"; window.memory.metadata.description = "Saved metadata for book B";
       window.memory.chapters = [{ id: "b-chapter", title: "Book B chapter", current_document_version_id: "b-version" }];
-      window.renderMemory({ bookId: "b-book" });
+      window.renderMemory({ bookId: "22222222-2222-4222-8222-222222222222" });
     });
     await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Saved metadata for book B");
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
@@ -875,14 +883,14 @@ test("late Book Bible acceptance cannot revoke a newly selected book's explicit 
     await page.evaluate(() => {
       window.memoryFetch = async path => {
         if (path.endsWith("/bible/quotes")) {
-          const requestId = path.includes("/a-book/") ? "a-request" : "b-request";
+          const requestId = path.includes("/11111111-1111-4111-8111-111111111111/") ? "a-request" : "b-request";
           return Response.json({ request: { id: requestId, status: "ready" }, quote: { requestId, status: "ready", model: "approved",
             countedInputTokens: 1200, maxOutputTokens: 6000, reservedCredits: 23, expiresAt: "2030-01-01T00:00:00.000Z" }, job: null });
         }
         if (path.endsWith("/bible/quotes/a-request/accept")) return window.defer("accept-a");
         if (path.endsWith("/bible/quotes/a-request")) return Response.json({ request: { id: "a-request", status: "ready" }, quote: null, job: { id: "a-job", status: "queued" } });
       };
-      window.renderMemory({ bookId: "a-book" });
+      window.renderMemory({ bookId: "11111111-1111-4111-8111-111111111111" });
     });
     const countConsent = page.getByRole("checkbox", { name: /I agree to send the selected saved manuscript batch/ });
     const consent = page.getByRole("checkbox", { name: /I approve this quote and authorize one candidate extraction/ });
@@ -891,9 +899,9 @@ test("late Book Bible acceptance cannot revoke a newly selected book's explicit 
     await countConsent.check(); await page.getByRole("button", { name: "Count tokens and request quote" }).click();
     await consent.check(); await accept.click(); await page.waitForFunction(() => !!window.gates["accept-a"]);
     await page.evaluate(() => {
-      window.memory.book.id = "b-book"; window.memory.metadata.description = "Saved metadata for book B";
+      window.memory.book.id = "22222222-2222-4222-8222-222222222222"; window.memory.metadata.description = "Saved metadata for book B";
       window.memory.chapters = [{ id: "b-chapter", title: "Book B chapter", current_document_version_id: "b-version" }];
-      window.renderMemory({ bookId: "b-book" });
+      window.renderMemory({ bookId: "22222222-2222-4222-8222-222222222222" });
     });
     await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Saved metadata for book B");
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();

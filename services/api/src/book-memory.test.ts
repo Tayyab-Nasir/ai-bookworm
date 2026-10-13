@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import Fastify from "fastify";
+import Fastify, { type InjectOptions, type LightMyRequestResponse } from "fastify";
 import { makeAuthPlugin } from "./plugins/auth.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
 import { bookMemoryRoutes } from "./routes/book-memory.js";
@@ -18,16 +18,75 @@ const USER = "77777777-7777-4777-8777-777777777777";
 const TIME = "2026-08-31T08:00:00.000Z";
 const SOURCE_TEXT = "Elara carries a silver compass.";
 const SOURCE_HASH = createHash("sha256").update(SOURCE_TEXT).digest("hex");
-const auth = { authorization: "Bearer good" };
+const auth = { authorization: "Bearer good", "x-bookworm-actor": USER };
 type Row = Record<string, unknown>;
 type Store = Record<string, Row[]>;
 
-// Stateful query fake checks route filters and mutations, but intentionally
-// does not simulate RLS. Database policy tests are a separate acceptance gate.
+// Stateful query/RPC fixture checks the public contract. Canon mutation source
+// and image validation now belongs to SQL, simulated here for old composed
+// journeys; actual SQL assertions, concurrency and RLS are separate gates.
 function fakeSupabase(store: Store, failTable?: string) {
   return {
     auth: { getUser: async (token: string) => ({ data: { user: token === "good" ? { id: USER } : null }, error: null }) },
     async rpc(name: string, args: Record<string, unknown>) {
+      if (name === "mutate_book_bible_item" || name === "recover_book_bible_mutation") {
+        const receipts = store.book_bible_mutation_receipts ??= [];
+        const existing = receipts.find(row => row.book_id === args.p_book_id && row.request_id === args.p_request_id);
+        const items = store.book_bible_items ??= [];
+        const project = (receipt: Row | undefined, replayed: boolean) => {
+          if (!receipt) return { receipt: null, disposition: null, item: null, replayed: false, closed: false, closure: null };
+          const item = items.find(row => row.id === receipt.item_id && row.book_id === receipt.book_id) ?? null;
+          const proof = receipt.public_receipt as Row;
+          return { receipt: proof, item: item ? { ...item } : null,
+            disposition: !item ? "deleted" : proof.action === "delete" || proof.resultHash !== hashRow(item) ? "changed" : "unchanged", replayed, closed: false, closure: null };
+        };
+        if (name === "recover_book_bible_mutation") return { data: project(existing, !!existing), error: null };
+        if (existing) return existing.original === JSON.stringify(args) ? { data: project(existing, true), error: null } : { data: null, error: { code: "40001" } };
+        if (failTable === "book_bible_items") return { data: null, error: { code: "XX000", message: "deliberate database failure" } };
+        const action = String(args.p_action); const body = args.p_body as Row | null;
+        const target = items.find(row => row.id === args.p_item_id && row.book_id === args.p_book_id);
+        if (action !== "create" && (!target || target.updated_at !== args.p_expected_updated_at
+          || target.mutation_incarnation_id !== args.p_expected_incarnation_id)) return { data: null, error: { code: "40001" } };
+        let refs: Row[] = [];
+        if (action !== "delete") {
+          if (["assets", "asset_versions", "chapters", "document_versions"].includes(failTable ?? "")) return { data: null, error: { code: "XX000" } };
+          const imageIds = [...new Set(body!.imageAssetIds as string[])];
+          for (const imageId of imageIds) {
+            const asset = (store.assets ?? []).find(row => row.id === imageId && row.workspace_id === WORKSPACE && row.deleted_at === null);
+            if (!asset || !String(asset.mime_type).startsWith("image/") || !/^[a-f0-9]{64}$/u.test(String(asset.checksum))
+              || !(store.asset_versions ?? []).some(version => version.asset_id === imageId && version.storage_path === asset.storage_path
+                && version.checksum === asset.checksum && version.mime_type === asset.mime_type && version.size_bytes === asset.size_bytes
+                && ["clean", "trusted_generated"].includes(String(version.scan_status)))) return { data: null, error: { code: "22023" } };
+          }
+          for (const reference of body!.sourceRefs as Row[]) {
+            const chapter = (store.chapters ?? []).find(row => row.id === reference.chapterId && row.book_id === args.p_book_id);
+            if (!chapter) return { data: null, error: { code: "22023" } };
+            const versionId = reference.documentVersionId ?? (reference.nodeId ? chapter.current_document_version_id : null);
+            const version = versionId ? (store.document_versions ?? []).find(row => row.id === versionId && row.chapter_id === chapter.id) : null;
+            if (versionId && !version || reference.nodeId && !version) return { data: null, error: { code: "22023" } };
+            if (reference.nodeId) {
+              const node = ((version!.content_json as { nodes: Row[] }).nodes ?? []).find(row => row.id === reference.nodeId);
+              if (!node) return { data: null, error: { code: "22023" } };
+              const textHash = typeof node.text === "string" ? createHash("sha256").update(node.text).digest("hex") : undefined;
+              if (reference.textHash && reference.textHash !== textHash) return { data: null, error: { code: "22023" } };
+              refs.push({ ...reference, documentVersionId: versionId, ...(textHash ? { textHash } : {}) });
+            } else refs.push(reference);
+          }
+        }
+        let resultRow = target;
+        if (action === "delete") items.splice(items.indexOf(target!), 1);
+        else {
+          const fields = { type: body!.type, name: body!.name, description: body!.description || null,
+            attributes_json: { ...body!.attributes as Row, imageAssetIds: [...new Set(body!.imageAssetIds as string[])] }, source_refs_json: refs };
+          if (action === "create") { resultRow = { id: randomUUID(), book_id: args.p_book_id, mutation_incarnation_id: randomUUID(), created_at: TIME, updated_at: TIME, confidence: null, ...fields }; items.push(resultRow); }
+          else { Object.assign(target!, fields, { updated_at: new Date(Math.max(Date.now(), Date.parse(String(target!.updated_at)) + 1)).toISOString() }); }
+        }
+        const receipt = { requestId: args.p_request_id, bookId: args.p_book_id, action, itemId: resultRow!.id,
+          intentHash: hashRow(args), resultHash: hashRow(resultRow), resultUpdatedAt: resultRow!.updated_at, committedAt: TIME };
+        const savedReceipt = { book_id: args.p_book_id, request_id: args.p_request_id, item_id: resultRow!.id, original: JSON.stringify(args), public_receipt: receipt };
+        receipts.push(savedReceipt);
+        return { data: project(savedReceipt, false), error: null };
+      }
       if (name !== "complete_book_bible_ai_job") return { data: null, error: { code: "42883" } };
       const job = (store.ai_jobs ?? []).find((row) => row.id === args.p_job_id);
       if (!job) return { data: null, error: { code: "P0002" } };
@@ -81,6 +140,8 @@ function fakeSupabase(store: Store, failTable?: string) {
   } as never;
 }
 
+function hashRow(value: unknown) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+
 function initialStore(role = "editor"): Store {
   return {
     books: [{ id: BOOK, workspace_id: WORKSPACE, title: "The Long Way Home", author_name: "Ada", updated_at: TIME }],
@@ -99,6 +160,16 @@ async function appWith(store: Store, failTable?: string, aiFetch?: typeof fetch,
   await app.register(async (v1) => bookMemoryRoutes(v1), { prefix: "/v1" });
   await app.register(async (v1) => metadataGenerationRoutes(v1, { fetcher: async () => { throw new Error("History must never call an AI provider"); } }), { prefix: "/v1" });
   await app.register(async (v1) => bookBibleGenerationRoutes(v1, { fetcher: aiFetch ?? (async () => { throw new Error("Test transport must not dispatch AI"); }), enableLegacyGeneration }), { prefix: "/v1" });
+  // Existing composed tests use a new explicit mutation identity per user action.
+  // Same-key replay/lost-reply behavior is covered by book-bible-mutation.test.ts.
+  const inject = app.inject.bind(app) as (options: InjectOptions | string) => Promise<LightMyRequestResponse>;
+  app.inject = ((options: InjectOptions | string) => {
+    if (typeof options === "object" && options && "method" in options && "url" in options && typeof options.url === "string"
+      && ["POST", "PUT", "DELETE"].includes(String(options.method)) && /^\/v1\/books\/[^/]+\/bible(?:\/[a-f0-9-]{36})?$/u.test(options.url)) {
+      return inject({ ...options, payload: { requestId: randomUUID(), ...(options.payload as Row) } });
+    }
+    return inject(options);
+  }) as typeof app.inject;
   return app;
 }
 
@@ -559,11 +630,11 @@ test("pinned Bible evidence remains editable after the current chapter version c
   const saved = created.json().item;
   store.chapters[0].current_document_version_id = randomUUID();
   const updated = await app.inject({ method: "PUT", url: `${url}/${saved.id}`, headers: auth,
-    payload: { ...entry, name: "Elara the mapmaker", sourceRefs: saved.source_refs_json, expectedUpdatedAt: saved.updated_at } });
+    payload: { ...entry, name: "Elara the mapmaker", sourceRefs: saved.source_refs_json, expectedUpdatedAt: saved.updated_at, expectedIncarnationId: saved.mutation_incarnation_id } });
   assert.equal(updated.statusCode, 200, updated.body);
   assert.deepEqual(updated.json().item.source_refs_json, saved.source_refs_json);
   const stale = await app.inject({ method: "PUT", url: `${url}/${saved.id}`, headers: auth,
-    payload: { ...entry, sourceRefs: [{ ...saved.source_refs_json[0], textHash: "0".repeat(64) }], expectedUpdatedAt: updated.json().item.updated_at } });
+    payload: { ...entry, sourceRefs: [{ ...saved.source_refs_json[0], textHash: "0".repeat(64) }], expectedUpdatedAt: updated.json().item.updated_at, expectedIncarnationId: saved.mutation_incarnation_id } });
   assert.equal(stale.statusCode, 422, stale.body);
   assert.equal(store.book_bible_items[0].name, "Elara the mapmaker");
 });
@@ -573,8 +644,8 @@ test("viewer can read saved memory but cannot create, replace, delete or edit me
   assert.equal((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth })).json().canEdit, false);
   const calls = [
     { method: "POST" as const, url: `/v1/books/${BOOK}/bible`, payload: entry },
-    { method: "PUT" as const, url: `/v1/books/${BOOK}/bible/${IMAGE}`, payload: { ...entry, expectedUpdatedAt: TIME } },
-    { method: "DELETE" as const, url: `/v1/books/${BOOK}/bible/${IMAGE}`, payload: { expectedUpdatedAt: TIME } },
+    { method: "PUT" as const, url: `/v1/books/${BOOK}/bible/${IMAGE}`, payload: { ...entry, expectedUpdatedAt: TIME, expectedIncarnationId: IMAGE } },
+    { method: "DELETE" as const, url: `/v1/books/${BOOK}/bible/${IMAGE}`, payload: { expectedUpdatedAt: TIME, expectedIncarnationId: IMAGE } },
     { method: "PUT" as const, url: `/v1/books/${BOOK}/metadata`, payload: { expectedUpdatedAt: null, description: "New description" } },
   ];
   for (const call of calls) assert.equal((await app.inject({ ...call, headers: auth })).statusCode, 403);
@@ -632,7 +703,7 @@ test("reference clearance is rechecked on save without deleting historical memor
   assert.deepEqual(changed.json().imageAssets, []);
   assert.deepEqual(changed.json().items[0].attributes_json.imageAssetIds, [IMAGE]);
   const url = `/v1/books/${BOOK}/bible/${item.id}`;
-  const payload = { ...entry, expectedUpdatedAt: item.updated_at };
+  const payload = { ...entry, expectedUpdatedAt: item.updated_at, expectedIncarnationId: item.mutation_incarnation_id };
   assert.equal((await app.inject({ method: "PUT", url, headers: auth, payload })).statusCode, 422);
   assert.equal((await app.inject({ method: "PUT", url, headers: auth, payload: { ...payload, imageAssetIds: [] } })).statusCode, 200);
   assert.equal(store.assets.length, 1);
@@ -648,7 +719,7 @@ test("missing versions hide images and clearance lookup errors fail closed", asy
   for (const call of [{ method: "GET" as const, url: `/v1/books/${BOOK}/memory` },
     { method: "POST" as const, url: `/v1/books/${BOOK}/bible`, payload: entry }]) {
     const result = await failed.inject({ ...call, headers: auth });
-    assert.equal(result.statusCode, 500, result.body);
+    assert.equal(result.statusCode, call.method === "GET" ? 500 : 503, result.body);
     assert.equal(result.body.includes("deliberate database failure"), false);
   }
   assert.equal(failedStore.book_bible_items?.length ?? 0, 0);
@@ -659,15 +730,15 @@ test("Bible update and delete scope by book and prevent stale overwrites", async
   const create = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
   const item = create.json().item;
   const url = `/v1/books/${BOOK}/bible/${item.id}`;
-  const update = await app.inject({ method: "PUT", url, headers: auth, payload: { ...entry, name: "Elara Vale", expectedUpdatedAt: item.updated_at } });
+  const update = await app.inject({ method: "PUT", url, headers: auth, payload: { ...entry, name: "Elara Vale", expectedUpdatedAt: item.updated_at, expectedIncarnationId: item.mutation_incarnation_id } });
   assert.equal(update.statusCode, 200, update.body);
   assert.equal(update.json().item.name, "Elara Vale");
   assert.notEqual(update.json().item.updated_at, item.updated_at);
-  assert.equal((await app.inject({ method: "PUT", url, headers: auth, payload: { ...entry, name: "Stale", expectedUpdatedAt: item.updated_at } })).statusCode, 409);
-  assert.equal((await app.inject({ method: "DELETE", url, headers: auth, payload: { expectedUpdatedAt: item.updated_at } })).statusCode, 409);
+  assert.equal((await app.inject({ method: "PUT", url, headers: auth, payload: { ...entry, name: "Stale", expectedUpdatedAt: item.updated_at, expectedIncarnationId: item.mutation_incarnation_id } })).statusCode, 409);
+  assert.equal((await app.inject({ method: "DELETE", url, headers: auth, payload: { expectedUpdatedAt: item.updated_at, expectedIncarnationId: item.mutation_incarnation_id } })).statusCode, 409);
   store.books.push({ id: OTHER_BOOK, workspace_id: WORKSPACE });
-  assert.equal((await app.inject({ method: "DELETE", url: `/v1/books/${OTHER_BOOK}/bible/${item.id}`, headers: auth, payload: { expectedUpdatedAt: update.json().item.updated_at } })).statusCode, 409);
-  assert.equal((await app.inject({ method: "DELETE", url, headers: auth, payload: { expectedUpdatedAt: update.json().item.updated_at } })).statusCode, 200);
+  assert.equal((await app.inject({ method: "DELETE", url: `/v1/books/${OTHER_BOOK}/bible/${item.id}`, headers: auth, payload: { expectedUpdatedAt: update.json().item.updated_at, expectedIncarnationId: item.mutation_incarnation_id } })).statusCode, 409);
+  assert.equal((await app.inject({ method: "DELETE", url, headers: auth, payload: { expectedUpdatedAt: update.json().item.updated_at, expectedIncarnationId: item.mutation_incarnation_id } })).statusCode, 200);
   assert.equal(store.book_bible_items.length, 0);
   assert.equal(store.assets.length, 1);
   assert.equal(store.chapters.length, 1);
@@ -727,6 +798,6 @@ test("database failures return errors without claiming saved data", async (t) =>
   const store = initialStore(); const app = await appWith(store, "book_bible_items"); t.after(() => app.close());
   assert.equal((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/memory`, headers: auth })).statusCode, 500);
   const res = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible`, headers: auth, payload: entry });
-  assert.equal(res.statusCode, 500);
+  assert.equal(res.statusCode, 503);
   assert.equal(res.body.includes("deliberate database failure"), false);
 });

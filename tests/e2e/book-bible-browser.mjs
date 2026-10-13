@@ -23,8 +23,25 @@ try {
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   page.on('dialog', dialog => dialog.dismiss());
-  let pending = [job], drafts = [], generations = 0, quoteRequests = 0, acceptances = 0, recoveries = 0, saves = 0, evidenceReads = 0;
-  page.on('request', request => { if (request.url().endsWith('/bible') && request.method() === 'POST') saves++; });
+  let pending = [job], drafts = [], generations = 0, quoteRequests = 0, acceptances = 0, recoveries = 0, saves = 0, evidenceReads = 0, canonRecoveries = 0;
+  let originalCanonRequest;
+  page.on('request', request => {
+    if (request.url().endsWith('/bible') && request.method() === 'POST') saves++;
+    if (/\/bible\/requests\/[a-f0-9-]{36}$/iu.test(request.url()) && request.method() === 'GET') canonRecoveries++;
+  });
+  await page.route('**/v1/books/*/bible', async route => {
+    assert.equal(route.request().method(), 'POST');
+    const body = route.request().postDataJSON();
+    assert.match(body.requestId, /^[a-f0-9-]{36}$/iu);
+    assert.equal(originalCanonRequest, undefined, 'no second canon create may follow the lost reply');
+    originalCanonRequest = body.requestId;
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    const committed = await response.json();
+    assert.equal(committed.receipt.requestId, originalCanonRequest);
+    assert.equal(committed.disposition, 'unchanged');
+    await route.fulfill({ status: 503, json: { error: { message: 'Fixture lost canon reply after commit.' } } });
+  });
   await page.route('**/v1/books/*/memory', async route => {
     const response = await route.fetch();
     const memory = await response.json();
@@ -141,7 +158,10 @@ try {
   await page.getByRole('button', { name: 'Open as unsaved entry' }).click();
   assert.equal(saves, 0, 'candidate review must not persist canon');
   await page.getByRole('button', { name: 'Save memory entry', exact: true }).click();
+  await expect(page.getByText('Fixture lost canon reply after commit.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Recover saved request', exact: true }).click();
   await expect(page.getByText('1 saved entry · changes are saved only when you choose Save.', { exact: true })).toBeVisible();
+  assert.equal(canonRecoveries, 1, 'recovery reads the original committed receipt without another write');
   await page.reload();
   await expect(page.getByText('1 saved entry · changes are saved only when you choose Save.', { exact: true })).toBeVisible();
   await bible.getByRole('checkbox', { name: 'Crossing', exact: true }).uncheck();
@@ -166,5 +186,5 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
-  console.log('PASS Book Bible browser: chapter selection, pending legacy recovery, historical source reading, explicit save, token quote consent, exact credit acceptance, no fixed-credit generation, reload persistence, mobile containment. AI/evidence/storage are fixtures.');
+  console.log('PASS Book Bible browser: chapter selection, pending legacy recovery, historical source reading, explicit canon save with lost-reply GET recovery and no second create, token quote consent, exact credit acceptance, no fixed-credit generation, reload persistence, mobile containment. AI/evidence/storage are fixtures.');
 } finally { await browser.close(); }

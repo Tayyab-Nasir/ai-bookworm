@@ -16,6 +16,21 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     if (error || !identity.user) return auth.finish(authError(401, "Your session has expired. Please sign in.", "unauthenticated"));
     const { data } = await auth.supabase.auth.getSession();
     if (!data.session) return auth.finish(authError(401, "Please sign in.", "unauthenticated"));
+    const manualBible = path[1] === "books" && path[3] === "bible" && (
+      (path.length === 4 && request.method === "POST")
+      || (path.length === 5 && ["PUT", "DELETE"].includes(request.method))
+      || (path.length === 6 && path[4] === "requests" && request.method === "GET")
+      || (path.length === 7 && path[4] === "requests" && path[6] === "close" && request.method === "POST")
+    );
+    const actor = manualBible ? request.headers.get("x-bookworm-actor") : null;
+    if (manualBible && (!actor || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor))) {
+      return auth.finish(authError(422, "An original Book Bible account identity is required."));
+    }
+    // Never replace the expected actor with the new signed-in account. That
+    // would turn an old user's recovery pointer into a different user's write.
+    if (manualBible && (actor !== identity.user.id || actor !== data.session.user.id)) {
+      return auth.finish(authError(409, "Your account changed. Reload saved data before recovering this Book Bible request."));
+    }
     if (process.env.NODE_ENV === "production" && !process.env.API_URL) {
       throw new AuthConfigurationError("The workspace service is not configured. Set API_URL to the separate Bookworm API server.");
     }
@@ -30,6 +45,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     const target = new URL(`${base.pathname.replace(/\/$/, "")}/${path.join("/")}`, base.origin);
     target.search = request.nextUrl.search;
     const headers = new Headers({ authorization: `Bearer ${data.session.access_token}`, accept: "application/json" });
+    if (actor) headers.set("x-bookworm-actor", actor);
     const idempotencyKey = request.headers.get("idempotency-key");
     if (idempotencyKey && idempotencyKey.length <= 200) headers.set("idempotency-key", idempotencyKey);
     let body: Uint8Array | undefined;

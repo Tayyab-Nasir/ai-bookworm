@@ -5,6 +5,10 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import type { Book, BookBibleItem, BookMetadata } from "@bookworm/types";
 import BookSearchPanel from "./BookSearchPanel";
 import BibleSourcePassage from "./BibleSourcePassage";
+import {
+  clearManualBiblePointer, manualBibleIntentDigest, manualBibleRecoveryKey, manualBibleRetryAllowed, parseManualBiblePointer,
+  persistManualBiblePointer, validateManualBibleResult, type ManualBibleAction, type ManualBiblePointer,
+} from "../lib/manual-bible-recovery";
 
 type SourceRef = { chapterId: string; documentVersionId?: string; nodeId?: string; textHash?: string; note?: string };
 type GeneratedSourceRef = SourceRef & { nodeId: string };
@@ -99,6 +103,7 @@ type Memory = {
 type EntryDraft = {
   id?: string;
   expectedUpdatedAt?: string;
+  expectedIncarnationId?: string;
   type: string;
   name: string;
   description: string;
@@ -117,10 +122,14 @@ const isPinnedSourceRef = (ref: SourceRef): ref is SourceRef & { documentVersion
   && typeof ref.nodeId === "string" && Boolean(ref.nodeId)
   && typeof ref.textHash === "string" && /^[a-f0-9]{64}$/u.test(ref.textHash);
 
-async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+async function request<T>(path: string, method = "GET", body?: unknown, expectedActorId?: string): Promise<T> {
   const response = await fetch(`/api/backend/v1${path}`, {
     method, credentials: "same-origin", cache: "no-store",
-    ...(body === undefined ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+    ...((body !== undefined || expectedActorId) ? { headers: {
+      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(expectedActorId ? { "X-Bookworm-Actor": expectedActorId } : {}),
+    } } : {}),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
@@ -210,7 +219,7 @@ export function parseBookBibleCandidates(value: unknown): BookBibleCandidate[] {
 function entryDraft(item: BookBibleItem): EntryDraft {
   const images = item.attributes_json?.imageAssetIds;
   return {
-    id: item.id, expectedUpdatedAt: item.updated_at, type: item.type, name: item.name,
+    id: item.id, expectedUpdatedAt: item.updated_at, expectedIncarnationId: item.mutation_incarnation_id, type: item.type, name: item.name,
     description: item.description ?? "",
     attributes: Object.entries(item.attributes_json ?? {}).filter(([key]) => key !== "imageAssetIds").map(([key, value]) => {
       const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -275,9 +284,31 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const [biblePageIndex, setBiblePageIndex] = useState(0);
   const [entryDirty, setEntryDirty] = useState(false);
   const [formRevision, setFormRevision] = useState(0);
+  const [manualUserId, setManualUserId] = useState<string | null>(null);
+  const [manualPointer, setManualPointer] = useState<ManualBiblePointer | null>(null);
+  const [manualReady, setManualReady] = useState(false);
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const [manualStage, setManualStage] = useState<"uncertain" | "missing" | "reenter" | "confirmed">("uncertain");
+  const [manualCloseConfirmation, setManualCloseConfirmation] = useState(false);
+  const [manualClosureUncertain, setManualClosureUncertain] = useState(false);
+  const manualIdentity = useRef<{ bookId: string; userId: string } | null>(null);
+  const manualEpoch = useRef(0);
+  const manualOperation = useRef<object | null>(null);
+  const manualPointerRef = useRef<ManualBiblePointer | null>(null);
+  const manualBody = useRef<{ requestId: string; serialized: string } | null>(null);
   const endpoint = `/books/${encodeURIComponent(bookId)}`;
   const dirty = identityDirty || metadataDirty || entryDirty;
-  const busy = loading || !!saving || generatingMetadata || generatingBible;
+  const busy = loading || !!saving || generatingMetadata || generatingBible || manualBusy;
+  const manualLocked = Boolean(manualPointer && manualStage !== "reenter");
+
+  async function authenticatedManualUser() {
+    const response = await fetch("/api/auth/session", { credentials: "same-origin", cache: "no-store" });
+    const session = await response.json().catch(() => null);
+    if (!response.ok || typeof session?.user?.id !== "string") throw new Error("Your account could not be verified. Sign in and reload before changing Book Bible entries.");
+    manualBibleRecoveryKey(session.user.id, bookId);
+    return session.user.id as string;
+  }
 
   function saveBibleQuoteIntent(intent: BibleQuoteIntent | null) {
     persistPaidQuoteIntent(window.sessionStorage, bibleQuoteIntentKey(bookId), intent);
@@ -317,6 +348,9 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     const scope = { bookId };
     bookScope.current = scope;
     quoteInFlight.current = false; setGeneratingMetadata(false); setGeneratingBible(false); setSaving(null);
+    manualEpoch.current++; manualOperation.current = null; manualIdentity.current = null; manualPointerRef.current = null; manualBody.current = null;
+    setManualUserId(null); setManualPointer(null); setManualReady(false); setManualBusy(false); setManualError(null); setManualStage("uncertain");
+    setManualCloseConfirmation(false); setManualClosureUncertain(false);
     setMetadataRecoveryBlocked(true); setBibleRecoveryBlocked(true);
     // Revalidate access before retaining private content or editable permissions.
     // Session recovery pointers stay intact; this does not cancel accepted jobs.
@@ -336,8 +370,23 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setBibleReadingPlan(null); setBiblePageIndex(0); setBibleChapterIds([]);
     setIdentityDirty(false); setMetadataDirty(false); setEntryDirty(false);
     try {
+      const userId = await authenticatedManualUser();
+      if (bookScope.current !== scope) return;
+      manualIdentity.current = { bookId, userId }; setManualUserId(userId);
+      try {
+        const pending = parseManualBiblePointer(window.sessionStorage.getItem(manualBibleRecoveryKey(userId, bookId)), userId, bookId);
+        manualPointerRef.current = pending; setManualPointer(pending); setManualReady(true);
+      } catch (reason) { setManualError(messageOf(reason)); }
       const result = await request<Memory>(`${endpoint}/memory`);
       if (bookScope.current !== scope) return;
+      const currentUserId = await authenticatedManualUser();
+      if (bookScope.current !== scope) return;
+      if (currentUserId !== userId) {
+        manualEpoch.current++; manualIdentity.current = null; manualPointerRef.current = null; manualBody.current = null;
+        setManualUserId(null); setManualPointer(null); setManualReady(false);
+        throw new Error("Your account changed while saved memory was loading. No earlier account’s book details were adopted. Reload to verify this account.");
+      }
+      if (result.book.id !== bookId) throw new Error("The saved memory does not match this book. Reload before continuing.");
       setMemory(result); setDraft(null); setDeleting(null);
       setMetadataFields({
         description: result.metadata?.description ?? "",
@@ -448,7 +497,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   }
 
   function chooseEntry(item?: BookBibleItem): boolean {
-    if (busy) return false;
+    if (busy || manualPointerRef.current) return false;
     if (entryDirty && !window.confirm("Discard the unsaved changes to this memory entry?")) return false;
     setDraft(item ? entryDraft(item) : emptyDraft());
     setEntryDirty(false); setDeleting(null); setError(null); setNotice(null);
@@ -462,39 +511,205 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   }
 
   function changeDraft(change: Partial<EntryDraft>) {
+    if (manualPointerRef.current && manualStage !== "reenter") return;
     setDraft((current) => current ? { ...current, ...change } : current);
     setEntryDirty(true);
   }
 
-  async function saveEntry(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!draft || !memory?.canEdit || busy) return;
-    setSaving("entry"); setError(null); setNotice(null);
+  function entryPayload(value: EntryDraft) {
+    const keys = value.attributes.map(entry => entry.key.trim());
+    if (keys.some(key => !key) || new Set(keys).size !== keys.length) throw new Error("Each attribute needs a unique, nonempty name.");
+    if (!value.name.trim() || value.name.length > 160 || value.description.length > 12000 || !types.includes(value.type)) throw new Error("Check the entry name, type and description before saving.");
+    return {
+      type: value.type, name: value.name, description: value.description,
+      attributes: Object.fromEntries(value.attributes.map(entry => [entry.key.trim(), entry.originalText === entry.value ? entry.original : entry.value])),
+      imageAssetIds: [...value.imageAssetIds], sourceRefs: value.sourceRefs.map(ref => ({ ...ref })),
+      ...(value.id ? { expectedUpdatedAt: value.expectedUpdatedAt, expectedIncarnationId: value.expectedIncarnationId } : {}),
+    };
+  }
+
+  function manualContext() {
+    const identity = manualIdentity.current;
+    const scope = bookScope.current; const epoch = manualEpoch.current; const owner = {};
+    if (!identity || identity.bookId !== bookId || identity.userId !== manualUserId || scope.bookId !== bookId || manualOperation.current) return null;
+    manualOperation.current = owner;
+    const current = () => manualOperation.current === owner && manualIdentity.current === identity && manualEpoch.current === epoch && bookScope.current === scope;
+    return { identity, owner, current };
+  }
+
+  async function verifyManualIdentity(context: NonNullable<ReturnType<typeof manualContext>>) {
+    const userId = await authenticatedManualUser();
+    if (!context.current()) return false;
+    if (userId !== context.identity.userId) {
+      manualEpoch.current++; manualOperation.current = null; manualIdentity.current = null; manualPointerRef.current = null; manualBody.current = null;
+      bookScope.current = { bookId }; setManualUserId(null); setManualPointer(null); setManualReady(false); setManualBusy(false);
+      setMemory(null); setDraft(null); setEntryDirty(false); setError("Your account changed. Reload saved data to verify this account. The original request pointer remains with its owner.");
+      return false;
+    }
+    return true;
+  }
+
+  function confirmManualResult(value: unknown, pointer: ManualBiblePointer) {
+    const result = validateManualBibleResult(value, pointer);
+    if (!result.receipt && !result.closed) {
+      setManualStage("missing"); setNotice("No saved receipt was found. The original request pointer is retained. Recovery did not send a write.");
+      return;
+    }
+    setManualStage("confirmed"); setManualCloseConfirmation(false); setManualClosureUncertain(false);
+    if (result.closed) {
+      // Closure is a durable tombstone, not a canon edit. Keep any on-page draft
+      // so the author can correct it before preparing an entirely new request.
+      setDeleting(null);
+      setNotice("Saved request closed. Its late retries are blocked. Any draft still on this page was kept; you can correct it and prepare a new manual save.");
+    } else {
+      const item = result.item; const itemId = result.receipt!.itemId;
+      setMemory(current => current && current.book.id === pointer.bookId ? {
+        ...current, items: item ? [...current.items.filter(entry => entry.id !== itemId), item] : current.items.filter(entry => entry.id !== itemId),
+      } : current);
+      setDraft(item ? entryDraft(item) : null); setEntryDirty(false); setDeleting(null);
+      if (!item) setNotice("Request confirmed. This entry is currently deleted; it was not recreated. Manuscript chapters and image files were kept.");
+      else if (pointer.action === "delete") setNotice("Deletion request confirmed. An entry now exists at that identity; current details are shown and were not deleted again.");
+      else if (result.disposition === "changed") setNotice("Request confirmed. This entry has changed since that save; current Book Bible details are shown. The original details were not reapplied.");
+      else setNotice(`“${item.name}” saved to this book’s memory.`);
+    }
+    manualBody.current = null;
     try {
-      const keys = draft.attributes.map((entry) => entry.key.trim());
-      if (keys.some((key) => !key) || new Set(keys).size !== keys.length) throw new Error("Each attribute needs a unique, nonempty name.");
-      const attributes = Object.fromEntries(draft.attributes.map((entry) => [entry.key.trim(), entry.originalText === entry.value ? entry.original : entry.value]));
-      const payload = {
-        type: draft.type, name: draft.name, description: draft.description, attributes,
-        imageAssetIds: draft.imageAssetIds, sourceRefs: draft.sourceRefs,
-        ...(draft.id ? { expectedUpdatedAt: draft.expectedUpdatedAt } : {}),
+      clearManualBiblePointer(window.sessionStorage, pointer);
+      manualPointerRef.current = null; setManualPointer(null);
+    } catch { setManualError("The request is confirmed, but browser recovery could not be cleared. Recover its saved receipt again before starting another manual change."); }
+  }
+
+  async function dispatchManual(action: ManualBibleAction, targetId: string | null, body: Record<string, unknown>, retry = false) {
+    if (!memory?.canEdit || memory.book.id !== bookId || busy || !manualReady || (manualPointerRef.current && !retry)) return;
+    const context = manualContext(); if (!context) return;
+    setManualBusy(true); setManualError(null); setError(null); setNotice(null);
+    try {
+      if (!await verifyManualIdentity(context)) return;
+      const intentDigest = await manualBibleIntentDigest(action, targetId, body);
+      if (!context.current()) return;
+      const original = manualPointerRef.current;
+      if (retry && (!original || !manualBibleRetryAllowed(original))) throw new Error("This older checkpoint cannot be retried without its original entry-version identifier. Recover or explicitly close the saved request; no guessed write was sent.");
+      const pointer: ManualBiblePointer = retry && original ? original : {
+        schema: 2, userId: context.identity.userId, bookId, requestId: crypto.randomUUID(), action, targetId,
+        expectedUpdatedAt: typeof body.expectedUpdatedAt === "string" ? body.expectedUpdatedAt : null, intentDigest,
+        expectedIncarnationId: action === "create" ? null : typeof body.expectedIncarnationId === "string" ? body.expectedIncarnationId : null,
       };
-      const { item } = await request<{ item: BookBibleItem }>(`${endpoint}/bible${draft.id ? `/${draft.id}` : ""}`, draft.id ? "PUT" : "POST", payload);
-      setMemory((current) => current ? { ...current, items: draft.id ? current.items.map((entry) => entry.id === item.id ? item : entry) : [...current.items, item] } : current);
-      setDraft(entryDraft(item)); setEntryDirty(false); setNotice(`“${item.name}” saved to this book’s memory.`);
-    } catch (reason) { setError(messageOf(reason)); }
-    finally { setSaving(null); }
+      if (pointer.action !== action || pointer.targetId !== targetId || pointer.intentDigest !== intentDigest) throw new Error("The original details do not match this saved request. No retry was sent.");
+      const serialized = retry ? manualBody.current?.serialized : JSON.stringify({ ...body, requestId: pointer.requestId });
+      if (!serialized || (retry && manualBody.current?.requestId !== pointer.requestId)) throw new Error("Re-enter and check the original details before retrying this saved request.");
+      persistManualBiblePointer(window.sessionStorage, pointer);
+      if (!context.current()) return;
+      manualPointerRef.current = pointer; manualBody.current = { requestId: pointer.requestId, serialized }; setManualPointer(pointer); setManualStage("uncertain");
+      if (!await verifyManualIdentity(context)) return;
+      const result = await request<unknown>(`${endpoint}/bible${targetId ? `/${encodeURIComponent(targetId)}` : ""}`, action === "create" ? "POST" : action === "update" ? "PUT" : "DELETE", JSON.parse(serialized), pointer.userId);
+      if (!context.current() || !await verifyManualIdentity(context)) return;
+      if (!(result as { receipt?: unknown } | null)?.receipt) throw new Error("The write result did not contain a saved receipt. Recover this original request before continuing.");
+      confirmManualResult(result, pointer);
+    } catch (reason) {
+      if (context.current()) {
+        try { await verifyManualIdentity(context); } catch { /* An unavailable identity check cannot discard the original pointer. */ }
+        if (context.current()) {
+          if ((reason as { status?: number } | null)?.status === 403) setMemory(current => current ? { ...current, canEdit: false } : current);
+          setManualError(`${messageOf(reason)}${manualPointerRef.current ? " The outcome is unconfirmed. Keep this saved request; recover it or explicitly retry its original details." : ""}`);
+        }
+      }
+    } finally { if (context.current()) { manualOperation.current = null; setManualBusy(false); } }
+  }
+
+  async function recoverManual() {
+    const pointer = manualPointerRef.current;
+    if (!pointer || busy) return;
+    const context = manualContext(); if (!context) return;
+    setManualBusy(true); setManualError(null); setNotice(null);
+    try {
+      if (!await verifyManualIdentity(context)) return;
+      const result = await request<unknown>(`${endpoint}/bible/requests/${encodeURIComponent(pointer.requestId)}`, "GET", undefined, pointer.userId);
+      if (!context.current() || !await verifyManualIdentity(context)) return;
+      confirmManualResult(result, pointer);
+    } catch (reason) {
+      if (context.current()) {
+        try { await verifyManualIdentity(context); } catch { /* Keep the durable owner-scoped pointer when identity checks are unavailable. */ }
+        if (context.current()) {
+          if ((reason as { status?: number } | null)?.status === 403) setMemory(current => current ? { ...current, canEdit: false } : current);
+          setManualError(`${messageOf(reason)} The original request pointer is retained; recovery did not send another write.`);
+        }
+      }
+    }
+    finally { if (context.current()) { manualOperation.current = null; setManualBusy(false); } }
+  }
+
+  async function retryManual() {
+    const pointer = manualPointerRef.current; const original = manualBody.current;
+    if (!pointer || !manualBibleRetryAllowed(pointer) || !original || original.requestId !== pointer.requestId || manualStage === "confirmed" || manualClosureUncertain) return;
+    await dispatchManual(pointer.action, pointer.targetId, JSON.parse(original.serialized), true);
+  }
+
+  async function closeManual() {
+    const pointer = manualPointerRef.current;
+    if (!pointer || !manualCloseConfirmation || busy || !memory?.canEdit || !manualReady) return;
+    const context = manualContext(); if (!context) return;
+    setManualBusy(true); setManualError(null); setNotice(null);
+    try {
+      if (!await verifyManualIdentity(context)) return;
+      persistManualBiblePointer(window.sessionStorage, pointer);
+      if (!context.current()) return;
+      setManualClosureUncertain(true); setManualCloseConfirmation(false);
+      const result = await request<unknown>(`${endpoint}/bible/requests/${encodeURIComponent(pointer.requestId)}/close`, "POST", {}, pointer.userId);
+      if (!context.current() || !await verifyManualIdentity(context)) return;
+      const confirmed = validateManualBibleResult(result, pointer);
+      if (!confirmed.receipt && !confirmed.closed) throw new Error("The closure was not confirmed. Keep its original pointer and recover this same request.");
+      confirmManualResult(confirmed, pointer);
+    } catch (reason) {
+      if (context.current()) {
+        try { await verifyManualIdentity(context); } catch { /* Keep the durable pointer if identity verification is unavailable. */ }
+        if (context.current()) {
+          if ((reason as { status?: number } | null)?.status === 403) setMemory(current => current ? { ...current, canEdit: false } : current);
+          setManualError(`${messageOf(reason)} The closure outcome is unconfirmed. The pointer is retained; recover its saved status before another original-body retry.`);
+        }
+      }
+    } finally { if (context.current()) { manualOperation.current = null; setManualBusy(false); } }
+  }
+
+  function reenterManual() {
+    const pointer = manualPointerRef.current;
+    if (!pointer || !manualBibleRetryAllowed(pointer) || manualStage !== "missing" || !memory?.canEdit || busy) return;
+    setManualError(null); setNotice(null);
+    if (pointer.action === "delete") {
+      setManualStage("reenter"); return;
+    }
+    const item = memory.items.find(entry => entry.id === pointer.targetId);
+    if (pointer.action === "update" && !item) { setManualError("The original target is no longer available. Keep its request pointer and recover again; no replacement entry will be created."); return; }
+    setDraft(pointer.action === "create" ? emptyDraft() : { ...entryDraft(item!), expectedUpdatedAt: pointer.expectedUpdatedAt!, expectedIncarnationId: pointer.expectedIncarnationId! });
+    setDeleting(null); setEntryDirty(false); setManualStage("reenter");
+  }
+
+  async function checkReenteredManual(body: Record<string, unknown>) {
+    const pointer = manualPointerRef.current;
+    if (!pointer || !manualBibleRetryAllowed(pointer) || manualStage !== "reenter" || busy || !memory?.canEdit) return;
+    const context = manualContext(); if (!context) return;
+    setManualBusy(true); setManualError(null);
+    try {
+      if (!await verifyManualIdentity(context)) return;
+      const hash = await manualBibleIntentDigest(pointer.action, pointer.targetId, body);
+      if (!context.current()) return;
+      if (hash !== pointer.intentDigest) throw new Error("These details do not match the original request. Re-enter its exact original details; no write was sent.");
+      manualBody.current = { requestId: pointer.requestId, serialized: JSON.stringify({ ...body, requestId: pointer.requestId }) };
+      setManualStage("missing"); setNotice("The original details match the saved request. Choose Retry same saved request to send that same action and key.");
+    } catch (reason) { if (context.current()) setManualError(messageOf(reason)); }
+    finally { if (context.current()) { manualOperation.current = null; setManualBusy(false); } }
+  }
+
+  async function saveEntry(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!draft || !memory?.canEdit || busy || !manualReady) return;
+    try {
+      const body = entryPayload(draft);
+      if (manualPointerRef.current) { await checkReenteredManual(body); return; }
+      await dispatchManual(draft.id ? "update" : "create", draft.id ?? null, body);
+    } catch (reason) { setManualError(messageOf(reason)); }
   }
 
   async function deleteEntry(item: BookBibleItem) {
-    if (!memory?.canEdit || busy) return;
-    setSaving("delete"); setError(null); setNotice(null);
-    try {
-      await request(`${endpoint}/bible/${item.id}`, "DELETE", { expectedUpdatedAt: item.updated_at });
-      setMemory((current) => current ? { ...current, items: current.items.filter((entry) => entry.id !== item.id) } : current);
-      setDraft(null); setEntryDirty(false); setDeleting(null); setNotice("Memory entry deleted. Linked images and manuscript chapters were kept.");
-    } catch (reason) { setError(messageOf(reason)); }
-    finally { setSaving(null); }
+    await dispatchManual("delete", item.id, { expectedUpdatedAt: item.updated_at, expectedIncarnationId: item.mutation_incarnation_id });
   }
 
   async function saveIdentity(event: FormEvent<HTMLFormElement>) {
@@ -820,6 +1035,28 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
 
     {error && <div role="alert" className="mt-5 rounded-xl border border-red-400/30 bg-red-400/10 p-4 text-sm text-red-100">{error} <Link href="/login" className="ml-2 underline">Sign in</Link></div>}
     {notice && <p role="status" className="mt-5 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{notice}</p>}
+    {manualError && <p role="alert" className="mt-5 rounded-xl border border-amber-200/25 bg-amber-100/[0.04] p-4 text-sm text-amber-50">{manualError}</p>}
+    {manualPointer && <section aria-label="Manual Book Bible request recovery" className={`${panelClass} mt-5 border-amber-200/25`}>
+      <h2 className="text-lg font-medium">Your saved Book Bible request</h2>
+      <p className="mt-2 text-sm leading-6 text-[#bbb]">{manualStage === "confirmed" ? "The request is confirmed. Recover its receipt to clear the remaining browser checkpoint." : "The result of your original change is unconfirmed. Its target is fixed until you confirm that request. Recovery checks saved status without saving, deleting or reapplying an entry."}</p>
+      <p className="mt-2 text-xs leading-5 text-[#999]">Only this account’s book, request, target and a details digest are kept in session recovery. Your entry text and attributes are held only on this page.</p>
+      {!memory?.canEdit && <p className="mt-3 text-sm text-[#ccc]">Editing access is unavailable. The original pointer is retained. Restore editor access before recovering its saved receipt or retrying.</p>}
+      <div className="mt-4 flex flex-wrap gap-3">
+        <button type="button" disabled={busy} onClick={() => void recoverManual()} className={secondaryClass}>{manualBusy ? "Checking saved request…" : "Recover saved request"}</button>
+        {manualStage !== "confirmed" && <button type="button" disabled={busy || !memory?.canEdit || !manualBibleRetryAllowed(manualPointer) || !manualBody.current || manualStage === "reenter" || manualClosureUncertain} onClick={() => void retryManual()} className={primaryClass}>Retry same saved request</button>}
+        {manualStage === "missing" && manualBibleRetryAllowed(manualPointer) && !manualBody.current && memory?.canEdit && <button type="button" disabled={busy} onClick={reenterManual} className={secondaryClass}>{manualPointer.action === "delete" ? "Review original deletion intent" : "Re-enter original details"}</button>}
+        {manualStage !== "confirmed" && <button type="button" disabled={busy || !memory?.canEdit} onClick={() => setManualCloseConfirmation(true)} className={secondaryClass}>Close unresolved request</button>}
+      </div>
+      {manualClosureUncertain && <p role="status" className="mt-3 text-sm text-amber-100">Closure has not been confirmed. Recover saved status or explicitly retry closing this request; its original-body retry remains paused.</p>}
+      {!manualBibleRetryAllowed(manualPointer) && <p role="status" className="mt-3 text-sm leading-6 text-amber-100">This older checkpoint predates entry-version protection. It can be recovered or explicitly closed, but cannot be retried. No current entry version will be guessed.</p>}
+      {manualCloseConfirmation && <section aria-label="Confirm request closure" className="mt-4 rounded-xl border border-amber-200/25 p-4">
+        <h3 className="font-medium">Close this unresolved request?</h3><p className="mt-2 text-sm leading-6 text-[#bbb]">If the original change was saved, its current entry will be recovered. Otherwise this permanently closes that request so late retries cannot save it. Any on-page draft stays available for correction after confirmed closure. Closing does not delete an entry.</p>
+        <div className="mt-3 flex flex-wrap gap-3"><button type="button" disabled={busy || !memory?.canEdit} onClick={() => void closeManual()} className={primaryClass}>Confirm close request</button><button type="button" disabled={busy} onClick={() => setManualCloseConfirmation(false)} className={secondaryClass}>Keep request open</button></div>
+      </section>}
+      {manualStage === "missing" && manualBibleRetryAllowed(manualPointer) && !manualBody.current && <p className="mt-3 text-sm leading-6 text-[#bbb]">No receipt was found. This page no longer holds the original details. Re-enter them and check their digest before an explicit retry; a replacement request will not be created.</p>}
+      {manualStage === "reenter" && manualPointer.action !== "delete" && <p className="mt-3 text-sm leading-6 text-[#bbb]">Enter the exact original name, description, attributes, image links and sources below. Check original details only compares their digest; it never sends a write.</p>}
+      {manualStage === "reenter" && manualPointer.action === "delete" && <div className="mt-4 rounded-xl border border-red-200/20 p-4"><p className="text-sm text-red-100">This checks the original deletion target and saved version. A later retry keeps that same target, timestamp and incarnation; it never switches to a newer entry.</p><button type="button" disabled={busy || !memory?.canEdit} onClick={() => void checkReenteredManual({ expectedUpdatedAt: manualPointer.expectedUpdatedAt, expectedIncarnationId: manualPointer.expectedIncarnationId })} className={`${secondaryClass} mt-3`}>Confirm original deletion intent</button></div>}
+    </section>}
     {loading && !memory && <p role="status" className="py-16 text-center text-[#aaa]">Loading saved book memory…</p>}
     {!loading && !memory && <div className={`${panelClass} mt-6`}><h2 className="text-lg font-medium">Book memory is unavailable</h2><p className="mt-2 text-sm text-[#aaa]">Check your session and workspace access, then reload. No sample book data is substituted.</p></div>}
 
@@ -829,7 +1066,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       <section className="mt-9" aria-labelledby="bible-title">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div><h2 id="bible-title" className="text-2xl font-medium tracking-tight">Book Bible</h2><p className="mt-2 text-sm text-[#999]">{memory.items.length} saved {memory.items.length === 1 ? "entry" : "entries"} · changes are saved only when you choose Save.</p></div>
-          {memory.canEdit && <button type="button" disabled={!!saving} onClick={() => chooseEntry()} className={primaryClass}>Add memory entry</button>}
+          {memory.canEdit && <button type="button" disabled={busy || !!manualPointer || !manualReady} onClick={() => chooseEntry()} className={primaryClass}>Add memory entry</button>}
         </div>
         {memory.canEdit && <div className="mt-5 rounded-2xl border border-sky-300/20 bg-sky-300/[0.045] p-4 sm:p-5" aria-labelledby="bible-ai-title">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -923,13 +1160,13 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         <div className="mt-5 grid grid-cols-1 items-start gap-5 lg:grid-cols-[minmax(230px,0.8fr)_minmax(0,1.6fr)]">
           <div className="space-y-3">
             {!visibleItems.length && <div className={panelClass}><h3 className="font-medium">{memory.items.length ? "No matching entries" : "Start with a character or a fact"}</h3><p className="mt-2 text-sm leading-6 text-[#999]">{memory.items.length ? "Try a different name or type." : "Record appearance, personality, locations, and facts you want to keep consistent."}</p></div>}
-            {visibleItems.map((item) => <button type="button" key={item.id} disabled={!!saving} onClick={() => chooseEntry(item)} aria-pressed={draft?.id === item.id} className={`block w-full rounded-2xl border p-5 text-left outline-none focus-visible:ring-2 focus-visible:ring-white ${draft?.id === item.id ? "border-white/50 bg-white/[0.08]" : "border-white/10 bg-white/[0.025] hover:border-white/25"}`}>
+            {visibleItems.map((item) => <button type="button" key={item.id} disabled={busy || !!manualPointer} onClick={() => chooseEntry(item)} aria-pressed={draft?.id === item.id} className={`block w-full rounded-2xl border p-5 text-left outline-none focus-visible:ring-2 focus-visible:ring-white ${draft?.id === item.id ? "border-white/50 bg-white/[0.08]" : "border-white/10 bg-white/[0.025] hover:border-white/25"}`}>
               <span className="text-[10px] uppercase tracking-widest text-[#aaa]">{item.type}</span><h3 className="mt-2 break-words text-lg font-medium">{item.name}</h3><p className="mt-2 line-clamp-3 break-words text-sm leading-6 text-[#999]">{item.description || "No description yet."}</p>
             </button>)}
           </div>
           {draft ? <form id="bible-entry-details" onSubmit={saveEntry} className={panelClass}>
             <h3 className="text-xl font-medium">{draft.id ? "Memory details" : "New memory entry"}</h3>
-            <fieldset disabled={!memory.canEdit || busy} className="mt-5 min-w-0 space-y-4">
+            <fieldset disabled={!memory.canEdit || busy || !manualReady || manualLocked} className="mt-5 min-w-0 space-y-4">
               <div className="grid gap-4 sm:grid-cols-[1fr_150px]">
                 <label className="text-xs text-[#bbb]">Name<input required maxLength={160} value={draft.name} onChange={(event) => changeDraft({ name: event.target.value })} className={inputClass} placeholder="e.g. Elara Vale" /></label>
                 <label className="text-xs text-[#bbb]">Type<select value={draft.type} onChange={(event) => changeDraft({ type: event.target.value })} className={inputClass}>{!types.includes(draft.type) && <option value={draft.type}>{draft.type}</option>}{types.map((type) => <option key={type}>{type}</option>)}</select></label>
@@ -960,7 +1197,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
                 {memory.canEdit && <button type="button" disabled={!memory.chapters.length || draft.sourceRefs.length >= 30} onClick={() => changeDraft({ sourceRefs: [...draft.sourceRefs, { chapterId: "" }] })} className="mt-3 text-sm text-[#ddd] underline underline-offset-4 disabled:opacity-40">+ Add chapter source</button>}
                 {!memory.chapters.length && <p className="mt-2 text-xs text-[#888]">Create a chapter in the manuscript first.</p>}
               </div>
-              {memory.canEdit && <div className="flex flex-wrap items-center gap-3 border-t border-white/10 pt-5"><button type="submit" className={primaryClass}>{saving === "entry" ? "Saving…" : "Save memory entry"}</button>{entryDirty && <span className="text-xs text-amber-200">Unsaved changes</span>}{selected && <button type="button" onClick={() => setDeleting(selected.id)} className="ml-auto text-sm text-red-200 underline underline-offset-4">Delete entry</button>}</div>}
+              {memory.canEdit && <div className="flex flex-wrap items-center gap-3 border-t border-white/10 pt-5"><button type="submit" className={primaryClass}>{manualStage === "reenter" && manualPointer ? "Check original details" : manualBusy ? "Saving…" : "Save memory entry"}</button>{entryDirty && <span className="text-xs text-amber-200">Unsaved changes</span>}{selected && !manualPointer && <button type="button" onClick={() => setDeleting(selected.id)} className="ml-auto text-sm text-red-200 underline underline-offset-4">Delete entry</button>}</div>}
             </fieldset>
             {draft.sourceRefs.length > 0 && <section aria-label="Saved manuscript evidence" className="mt-6 border-t border-white/10 pt-5">
               <h4 className="text-[11px] uppercase tracking-widest text-[#999]">Saved manuscript evidence</h4>
@@ -970,7 +1207,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
                   : <div className="rounded-lg border border-white/10 p-3 text-xs leading-5 text-[#aaa]"><p className="font-medium text-[#ddd]">{memory.chapters.find((chapter) => chapter.id === ref.chapterId)?.title ?? "Referenced chapter"}</p><p className="mt-1">Chapter reference only. No exact passage has been pinned.</p></div>}
               </li>)}</ul>
             </section>}
-            {deleting === selected?.id && selected && <div role="alert" className="mt-5 rounded-xl border border-red-400/30 p-4 text-sm text-red-100"><p>Delete “{selected.name}” from this book’s memory? This cannot be undone. Manuscript chapters and image files will remain.</p><div className="mt-3 flex flex-wrap gap-3"><button type="button" disabled={!!saving} onClick={() => void deleteEntry(selected)} className="rounded-full bg-red-100 px-4 py-2 text-sm font-semibold text-red-950">{saving === "delete" ? "Deleting…" : "Confirm delete"}</button><button type="button" disabled={!!saving} onClick={() => setDeleting(null)} className={secondaryClass}>Keep entry</button></div></div>}
+            {deleting === selected?.id && selected && <div role="alert" className="mt-5 rounded-xl border border-red-400/30 p-4 text-sm text-red-100"><p>Delete “{selected.name}” from this book’s memory? This cannot be undone. Manuscript chapters and image files will remain.</p><div className="mt-3 flex flex-wrap gap-3"><button type="button" disabled={busy || !!manualPointer} onClick={() => void deleteEntry(selected)} className="rounded-full bg-red-100 px-4 py-2 text-sm font-semibold text-red-950">{manualBusy ? "Deleting…" : "Confirm delete"}</button><button type="button" disabled={busy || !!manualPointer} onClick={() => setDeleting(null)} className={secondaryClass}>Keep entry</button></div></div>}
           </form> : <div className={`${panelClass} flex min-h-60 items-center justify-center text-center`}><div><h3 className="text-lg font-medium">Your story’s reference shelf</h3><p className="mt-3 max-w-sm text-sm leading-6 text-[#999]">Select an entry to review its details, or add a new character, location, or established fact.</p></div></div>}
         </div>
       </section>

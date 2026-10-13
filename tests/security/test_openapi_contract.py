@@ -48,6 +48,77 @@ def test_duplicate_contract_keys_are_not_silently_overwritten():
         load_contract("post:\n  responses: {200: first}\n  responses: {200: second}\n")
 
 
+def test_manual_book_bible_contract_binds_actor_request_and_exact_current_disposition():
+    document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
+    root = "/v1/books/{bookId}/bible"
+    operations = [document["paths"][root]["post"], document["paths"][root + "/{itemId}"]["put"],
+                  document["paths"][root + "/{itemId}"]["delete"], document["paths"][root + "/requests/{requestId}"]["get"],
+                  document["paths"][root + "/requests/{requestId}/close"]["post"]]
+    actor = document["components"]["parameters"]["BookBibleActor"]
+    assert actor["name"] == "X-Bookworm-Actor" and actor["in"] == "header" and actor["required"] is True
+    assert actor["schema"] == {"type": "string", "format": "uuid"}
+    for operation in operations:
+        assert {"401", "403", "409", "422", "503"} <= operation["responses"].keys()
+        assert {"$ref": "#/components/parameters/BookBibleActor"} in operation["parameters"]
+        assert operation["responses"]["200"] == {"$ref": "#/components/responses/BookBibleMutation"}
+    assert "requestBody" not in operations[3]
+    close_validator = Draft202012Validator(operations[4]["requestBody"]["content"]["application/json"]["schema"])
+    assert operations[4]["requestBody"]["required"] is True
+    assert not list(close_validator.iter_errors({}))
+    for payload in (None, {"requestId": "must stay in original path"}, {"name": "Never save canon on closure"}):
+        assert list(close_validator.iter_errors(payload))
+    assert document["components"]["responses"]["BookBibleMutation"]["headers"]["Cache-Control"]["schema"]["const"] == "private, no-store"
+    identity = "b1000000-0000-4000-8000-000000000001"
+    create_validator = Draft202012Validator({**document, "$ref": "#/components/schemas/BookBibleMutationBody"}, format_checker=FormatChecker())
+    body = {"requestId": identity, "type": "character", "name": "Elara", "attributes": {"role": "Mapmaker"}}
+    assert not list(create_validator.iter_errors(body))
+    for patch in ({"requestId": "bad"}, {"requestId": None}, {"name": "  "}, {"expectedUpdatedAt": "2026-10-13T00:00:00Z"},
+                  {"actorId": identity}, {"book_id": identity}, {"confidence": 1}, {"mutation_incarnation_id": identity}, {"expectedIncarnationId": identity},
+                  {"attributes": {"imageAssetIds": [identity]}}, {"sourceRefs": [{"chapterId": identity, "textHash": "a" * 64}]}):
+        assert list(create_validator.iter_errors({**body, **patch})), patch
+    assert list(create_validator.iter_errors({"type": "character", "name": "Elara"}))
+    for schema, payload in [("UpdateBookBibleMutationBody", body), ("DeleteBookBibleMutationBody", {"requestId": identity})]:
+        validator = Draft202012Validator({**document, "$ref": f"#/components/schemas/{schema}"}, format_checker=FormatChecker())
+        assert list(validator.iter_errors(payload)), schema
+        valid = {**payload, "expectedUpdatedAt": "2026-10-13T00:00:00Z", "expectedIncarnationId": identity}
+        assert not list(validator.iter_errors(valid))
+        assert list(validator.iter_errors({key: value for key, value in valid.items() if key != "expectedIncarnationId"}))
+        assert list(validator.iter_errors({key: value for key, value in valid.items() if key != "expectedUpdatedAt"}))
+        for incarnation in (None, "bad"):
+            assert list(validator.iter_errors({**valid, "expectedIncarnationId": incarnation}))
+    validator = Draft202012Validator({**document, "$ref": "#/components/schemas/BookBibleMutationResult"}, format_checker=FormatChecker())
+    receipt = {"requestId": identity, "bookId": identity, "action": "create", "itemId": identity, "intentHash": "a" * 64,
+               "resultHash": "b" * 64, "resultUpdatedAt": "2026-10-13T00:00:00Z", "committedAt": "2026-10-13T00:01:00Z"}
+    item = {"id": identity, "book_id": identity, "type": "character", "name": "Elara", "description": None,
+            "attributes_json": {}, "source_refs_json": [], "confidence": None, "created_at": "2026-10-13T00:00:00Z",
+            "updated_at": "2026-10-13T00:00:00Z", "mutation_incarnation_id": identity, "additional_server_field": "preserved"}
+    result = {"receipt": receipt, "disposition": "unchanged", "item": item, "replayed": False, "closed": False, "closure": None}
+    assert not list(validator.iter_errors(result))
+    assert list(validator.iter_errors({**result, "item": {key: value for key, value in item.items() if key != "mutation_incarnation_id"}}))
+    assert list(validator.iter_errors({**result, "item": {**item, "mutation_incarnation_id": "bad"}}))
+    missing = {"receipt": None, "disposition": None, "item": None, "replayed": False, "closed": False, "closure": None}
+    closure = {"requestId": identity, "bookId": identity, "closedAt": "2026-10-13T00:01:00Z"}
+    assert not list(validator.iter_errors(missing))
+    closed = {**missing, "closed": True, "closure": closure}
+    assert not list(validator.iter_errors(closed))
+    for patch in ({"closed": True, "receipt": receipt}, {"closed": True, "disposition": "deleted"},
+                  {"closed": True, "item": item}, {"closed": True, "replayed": True}, {"closed": None}):
+        assert list(validator.iter_errors({**missing, **patch})), patch
+    assert list(validator.iter_errors({key: value for key, value in missing.items() if key != "closed"}))
+    for proof in (None, {**closure, "requestId": "bad"}, {**closure, "bookId": "bad"}, {**closure, "closedAt": "bad"}, {**closure, "actorId": identity}):
+        assert list(validator.iter_errors({**closed, "closure": proof})), proof
+    assert list(validator.iter_errors({**missing, "closure": closure}))
+    assert list(validator.iter_errors({key: value for key, value in closed.items() if key != "closure"}))
+    for patch in ({"resultHash": "bad"}, {"resultUpdatedAt": None}, {"actorId": identity}, {"action": "replace"}):
+        assert list(validator.iter_errors({**result, "receipt": {**receipt, **patch}})), patch
+    for patch in ({"disposition": "changed"}, {"disposition": "deleted"}, {"item": None},
+                  {"receipt": None}, {"receipt": {**receipt, "action": "delete"}}, {"closed": True}):
+        assert list(validator.iter_errors({**result, **patch})), patch
+    deleted = {"receipt": {**receipt, "action": "delete"}, "disposition": "deleted", "item": None, "replayed": False, "closed": False, "closure": None}
+    assert not list(validator.iter_errors(deleted))
+    assert not list(validator.iter_errors({**deleted, "disposition": "changed", "item": item, "replayed": True}))
+
+
 def test_saved_print_history_and_renewal_contract_preserve_exact_private_read_only_sources():
     document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
     root = "/v1/editions/{editionId}/print-renders"
