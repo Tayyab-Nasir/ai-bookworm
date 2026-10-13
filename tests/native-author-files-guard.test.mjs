@@ -8,12 +8,14 @@ import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles,
 test('native manifest preserves every original numbered and timestamped migration', () => {
   const names = readdirSync(new URL('../supabase/migrations/', import.meta.url));
   const files = migrationFiles(names);
-  assert.ok(files.length >= 108);
+  assert.ok(files.length >= 109);
   assert.equal(files.length, names.filter(name => name.endsWith('.sql')).length);
   assert.equal(files[0], '0001_extensions.sql');
   assert.ok(files.includes('0013_admin_ops.sql'));
+  assert.equal(files[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.deepEqual(migrationFiles([...names].reverse()), files);
   assert.throws(() => migrationFiles(names.filter(name => name !== '0001_extensions.sql')));
+  assert.throws(() => migrationFiles(names.filter(name => name !== '20260912175000_pgcrypto_digest_compatibility.sql')));
   assert.throws(() => migrationFiles([...names, '0001_duplicate.sql']));
   assert.throws(() => migrationFiles([...names, 'bad-name.sql']));
 });

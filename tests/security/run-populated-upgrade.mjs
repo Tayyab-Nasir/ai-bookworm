@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 108 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 109 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -108,16 +108,17 @@ async function expectedReadingTextGuard(migration, fixture, historical, signatur
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 108, 'This reviewed rehearsal pins the 45 -> 108 target; review before extending');
+  assert.equal(names.length, 109, 'This reviewed rehearsal pins the 45 -> 109 target; review before extending');
   assert.equal(names[44], baselineEnd);
-  assert.equal(names[45], '20260912180000_translation_workflow.sql');
+  assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
+  assert.equal(names[46], '20260912180000_translation_workflow.sql');
   assert.equal(names.at(-1), targetEnd);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
   }));
   const manifest = migrations.map(({ name, sha256 }) => `${name} ${sha256}`).join('\n');
-  console.log(`Ordered source manifest sha256=${createHash('sha256').update(manifest).digest('hex')} baseline=45 upgrade=63`);
+  console.log(`Ordered source manifest sha256=${createHash('sha256').update(manifest).digest('hex')} baseline=45 upgrade=64`);
   await db.exec(await readFile(join(root, 'tests/security/local-supabase-fixture.sql'), 'utf8'));
   for (const migration of migrations.slice(0, 45)) await migrate(migration, 'baseline');
   step = 'committed populated historical fixture';
@@ -193,7 +194,7 @@ try {
       : typeof value === 'boolean' ? value ? 't' : 'f' : String(value);
   });
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Reused paid lifecycle fixtures roll back without changing historical rows');
-  console.log('PASS populated upgrade: 45 historical migrations + committed rows + 63 upgrades + five guarded aborts + reused synthetic paid lifecycle helpers.');
+  console.log(`PASS populated upgrade: 45 historical migrations + committed rows + ${migrations.length - 45} upgrades + five guarded aborts + reused synthetic paid lifecycle helpers.`);
   console.log('NOT PROVEN: hosted history/drift, real backup/restore, native concurrency, GoTrue/PostgREST/Storage HTTP, provider receipts, worker drain or production rollout authority.');
 } catch (error) {
   // Never print SQL, function definitions, row contents or raw database error detail.

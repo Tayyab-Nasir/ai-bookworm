@@ -47,6 +47,40 @@ application's entitlement, quote or consent controls.
 
 ## Evidence boundary
 
+### pgcrypto portability repair
+
+Native run `38384612896` reached the narration snapshot migration and exposed
+an actual schema dependency: Supabase keeps pgcrypto in `extensions`, while
+the SQL-only fixtures had installed it in `public`. Functions with a fixed
+`public, pg_temp` search path could not resolve their existing digest calls.
+
+`20260912175000_pgcrypto_digest_compatibility.sql` is additive and deliberately
+ordered immediately after the deployed 45-migration baseline, before any
+pending SQL-language function resolves `public.digest` during creation. The CLI
+generated its empty file on October 13; only the new, undeployed filename was
+ordered at this prerequisite boundary. None of the 45 historical files changed.
+There are now 109 migrations locally (64 beyond that baseline).
+
+On a public pgcrypto install the migration makes no changes. On an alternate
+schema install it adds two immutable, strict, invoker-only digest overloads,
+calling the verified extension-owned functions by qualified name. It never
+moves the extension, replaces a collision, rewrites hashes or grants table
+access. Existing extension-schema/function access is required; unexpected
+permissions or overloads abort atomically for operator review. Anonymous
+execution of the new bridges is revoked.
+
+`npm run test:db:crypto` checks public, extensions and quoted-schema layouts,
+Unicode/bytea/text hash parity, grants, extension preservation, collision/access
+guards and rollback. Full fresh/populated/native tests remain necessary.
+
+Rollback: before deployment, remove only this unapplied migration if the design
+is withdrawn. After deployment, use a reviewed forward repair; do not drop the
+bridges while existing routines depend on them or relocate pgcrypto. Failed
+transactional application rolls back both bridge creation and grants, with no
+data changes. A live upgrade still requires explicit approval, drift review
+and usable backup; earlier approval questions about 63 pending files do not
+silently authorize the expanded 64-file sequence.
+
 This is an acceptance harness, not a claim that its first CI execution passed.
 Record the exact source SHA, run/job, terminal outcome and assertions before
 promoting it to release evidence. Local syntax/guard checks do not substitute

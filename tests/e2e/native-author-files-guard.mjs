@@ -7,8 +7,9 @@ export function migrationFiles(names) {
     if (!match || versions.has(match[1])) throw new Error('Invalid or duplicate repository migration version.');
     versions.add(match[1]);
   }
-  if (!files.includes('0001_extensions.sql') || !files.includes('20261013110000_canonical_import_reading_text.sql')) {
-    throw new Error('Missing original or canonical import migration.');
+  if (!files.includes('0001_extensions.sql') || !files.includes('20260912175000_pgcrypto_digest_compatibility.sql')
+    || !files.includes('20261013110000_canonical_import_reading_text.sql')) {
+    throw new Error('Missing original, pgcrypto compatibility or canonical import migration.');
   }
   return files;
 }

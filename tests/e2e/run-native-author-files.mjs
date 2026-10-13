@@ -48,7 +48,7 @@ async function command(label, executable, args, { input, timeout = 120_000, chil
 
 async function migrationDigest() {
   const files = migrationFiles(await readdir(join(root, 'supabase/migrations')));
-  assert.ok(files.length >= 108, 'Missing manuscript import migrations');
+  assert.ok(files.length >= 109, 'Missing manuscript import migrations');
   const hash = createHash('sha256');
   for (const name of files) {
     const bytes = await readFile(join(root, 'supabase/migrations', name));
