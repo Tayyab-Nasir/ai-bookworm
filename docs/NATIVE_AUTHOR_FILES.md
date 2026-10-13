@@ -20,6 +20,13 @@ project only. Private processing containers use a separate internal network.
 Published ports must bind to loopback. Operator credentials, proxy/Docker
 overrides and dotenv hooks are not inherited by child processes.
 
+The processing network stays Docker-internal, with no published ports or
+external route. Two byte-transparent Node TCP relays bind only to host loopback
+and reach inspected, running containers on that exact network. They do not
+replace HTTP responses or service implementations. The project ID is a full
+random UUID under a short prefix, below the pinned CLI's 40-character cap;
+inspected container labels must match the cleanup identity exactly.
+
 Native service credentials exist only in process memory/environment and are
 never printed. The journey's fetch guard allows only the exact owned loopback
 origins, refuses redirects, and bounds requests. OpenAI and Stripe credentials
@@ -42,10 +49,28 @@ application's entitlement, quote or consent controls.
   preservation and idempotent replay are checked.
 - A rows-only manual chapter and a real edit/reload verify initial projections,
   stale-write refusal and foreign-write denial. AI jobs/usage remain empty.
+- Book Bible create/update/reload links a real scanned image and a pinned saved
+  passage. Durable replay/recovery, changed-intent refusal, actor/tenant scope,
+  stale edits and evidence retrieval use the actual API and database.
 - Ordered migration source digests must be unchanged after the run; owned
   containers, networks and local database volumes are removed in `finally`.
 
 ## Evidence boundary
+
+Native run `38386967571` on `6dc20cd` successfully started Supabase with all
+109 migrations, resolving the earlier pgcrypto error. It then exposed two
+harness defects: internal-only Docker containers have no published host port,
+and the 48-character project ID was truncated by `start` but not the explicit
+`stop --project-id` filter. Owned-network removal correctly failed rather than
+claiming cleanup success. The relay and short-ID repairs above have local
+guard coverage; the complete author/Book Bible journey still needs terminal
+native acceptance. Separate native database run `38386967711` passed on that
+same source SHA; SQL-only acceptance does not certify Auth/Storage HTTP.
+
+The pinned [CLI project-ID implementation](https://github.com/supabase/cli/blob/v2.120.0/apps/cli/src/command-internal/docker-ids.ts)
+and [stop handler](https://github.com/supabase/cli/blob/v2.120.0/apps/cli/src/commands/stop/stop.handler.ts)
+explain the cleanup mismatch. Docker documents host access to an internal
+bridge separately from [port publishing](https://docs.docker.com/engine/network/port-publishing/).
 
 ### pgcrypto portability repair
 

@@ -6,15 +6,17 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { childEnvironment, localOrigin, localStatus, migrationFiles, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
+import { childEnvironment, localStatus, migrationFiles, nativeProjectId, ownedInternalAddress, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
+import { loopbackRelay } from './native-author-files-relay.mjs';
 
 requireNativeAuthorRunner();
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const env = childEnvironment();
-const project = `bookworm-author-${randomUUID().replaceAll('-', '')}`;
+const project = nativeProjectId(randomUUID());
 const directory = await mkdtemp(join(tmpdir(), `${project}-`));
 const serviceToken = randomUUID() + randomUUID();
 const containers = [];
+const relays = [];
 let network;
 let supabaseNetwork;
 let startingStack = false;
@@ -67,9 +69,10 @@ async function runContainer(image, options = []) {
 }
 
 async function containerOrigin(id, port) {
-  const mapping = await command('read owned port', 'docker', ['port', id, `${port}/tcp`]);
-  assert.match(mapping, /^127\.0\.0\.1:\d+$/);
-  return localOrigin(`http://${mapping}`);
+  const [container] = JSON.parse(await command('inspect owned internal service', 'docker', ['inspect', id]));
+  const relay = await loopbackRelay(ownedInternalAddress(container, network), port);
+  relays.push(relay);
+  return relay.origin;
 }
 
 async function waitReady(url, headers = {}) {
@@ -105,6 +108,7 @@ try {
   for (const id of members) {
     assert.match(id, /^[a-f0-9]{64}$/);
     const [container] = JSON.parse(await command('verify local port exposure', 'docker', ['inspect', id]));
+    assert.equal(container.Config.Labels['com.supabase.cli.project'], project, 'Native project cleanup identity mismatch');
     for (const bindings of Object.values(container.NetworkSettings.Ports ?? {})) {
       for (const binding of bindings ?? []) assert.equal(binding.HostIp, '127.0.0.1', 'Native stack must not expose ports off loopback');
     }
@@ -114,10 +118,12 @@ try {
 
   network = await command('create private processing network', 'docker', ['network', 'create', '--internal', project]);
   assert.match(network, /^[a-f0-9]{64}$/);
+  const [privateNetwork] = JSON.parse(await command('verify private network', 'docker', ['network', 'inspect', network]));
+  assert.equal(privateNetwork.Internal, true);
   await runContainer('bookworm-ci-clamd', ['--network-alias', 'clamd', '--memory', '4g']);
-  const scanner = await runContainer('bookworm-ci-scanner', ['--memory', '256m', '--publish', '127.0.0.1::8004',
+  const scanner = await runContainer('bookworm-ci-scanner', ['--memory', '256m',
     '-e', `SCANNING_SERVICE_TOKEN=${serviceToken}`, '-e', 'CLAMD_HOST=clamd']);
-  const document = await runContainer('bookworm-ci-document', ['--memory', '512m', '--publish', '127.0.0.1::8000',
+  const document = await runContainer('bookworm-ci-document', ['--memory', '512m',
     '-e', `SERVICE_AUTH_TOKEN=${serviceToken}`]);
   const scannerUrl = await containerOrigin(scanner, 8004);
   const documentUrl = await containerOrigin(document, 8000);
@@ -159,6 +165,9 @@ out=BytesIO(); doc.save(out); print(base64.b64encode(out.getvalue()).decode())`]
   throw error;
 } finally {
   const cleanupErrors = [];
+  for (const relay of relays) {
+    try { await relay.close(); } catch (error) { cleanupErrors.push(error); }
+  }
   for (const id of containers.reverse()) {
     try { await command('remove owned private container', 'docker', ['rm', '-f', '-v', id]); }
     catch (error) { cleanupErrors.push(error); }
@@ -169,7 +178,7 @@ out=BytesIO(); doc.save(out); print(base64.b64encode(out.getvalue()).decode())`]
   }
   if (startingStack) {
     // Exact generated project only, never --all or the repository's linked project.
-    assert.match(project, /^bookworm-author-[a-f0-9]{32}$/);
+    assert.match(project, /^bwk-[a-f0-9]{32}$/);
     try { await command('remove owned Supabase stack and volumes', 'supabase',
       ['stop', '--workdir', directory, '--project-id', project, '--no-backup'], { timeout: 120_000 }); }
     catch (error) { cleanupErrors.push(error); }

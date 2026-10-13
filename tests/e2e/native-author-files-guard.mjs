@@ -1,4 +1,27 @@
 /** Guards shared by the disposable runner and its real HTTP journey. No app imports. */
+import { isIP } from 'node:net';
+
+export function nativeProjectId(uuid) {
+  if (typeof uuid !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(uuid)) {
+    throw new Error('Expected a generated UUID for the disposable project.');
+  }
+  // CLI 2.120 truncates configured IDs to 40 characters, but not stop's explicit filter.
+  return `bwk-${uuid.replaceAll('-', '')}`;
+}
+
+export function ownedInternalAddress(container, networkId) {
+  const networks = Object.values(container?.NetworkSettings?.Networks ?? {});
+  const host = networks[0]?.IPAddress;
+  if (!/^[a-f0-9]{64}$/.test(networkId) || container?.State?.Running !== true
+    || networks.length !== 1 || networks[0].NetworkID !== networkId
+    || typeof host !== 'string' || isIP(host) !== 4
+    || !/^(?:10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.)/.test(host)
+    || Object.values(container.NetworkSettings.Ports ?? {}).some(bindings => bindings?.length)) {
+    throw new Error('Expected a running, unexposed container on the exact owned internal network.');
+  }
+  return host;
+}
+
 export function migrationFiles(names) {
   const files = names.filter(name => name.endsWith('.sql')).sort();
   const versions = new Set();

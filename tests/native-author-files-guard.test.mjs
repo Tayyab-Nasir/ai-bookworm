@@ -3,7 +3,59 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { loopbackRelay } from './e2e/native-author-files-relay.mjs';
+import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeProjectId, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+
+test('generated project identity fits the CLI without truncating cleanup labels', () => {
+  const id = randomUUID(), project = nativeProjectId(id);
+  assert.equal(project, `bwk-${id.replaceAll('-', '')}`);
+  assert.ok(project.length <= 40);
+  for (const value of ['', 'operator-project', '../project', id + '-extra', undefined]) assert.throws(() => nativeProjectId(value));
+});
+
+test('relay targets require one running, unexposed, owned private-network container', () => {
+  const network = 'a'.repeat(64);
+  const container = { State: { Running: true }, NetworkSettings: { Networks: { owned: { NetworkID: network, IPAddress: '172.20.0.2' } }, Ports: { '8004/tcp': null } } };
+  assert.equal(ownedInternalAddress(container, network), '172.20.0.2');
+  for (const host of ['127.0.0.1', '8.8.8.8', 'localhost', '172.32.0.2', '172.20.0.999', '::1']) {
+    const changed = structuredClone(container); changed.NetworkSettings.Networks.owned.IPAddress = host;
+    assert.throws(() => ownedInternalAddress(changed, network));
+  }
+  assert.throws(() => ownedInternalAddress(container, 'b'.repeat(64)));
+  const published = structuredClone(container); published.NetworkSettings.Ports['8004/tcp'] = [{ HostIp: '0.0.0.0', HostPort: '8004' }];
+  assert.throws(() => ownedInternalAddress(published, network));
+  const stopped = structuredClone(container); stopped.State.Running = false;
+  assert.throws(() => ownedInternalAddress(stopped, network));
+  const connected = structuredClone(container); connected.NetworkSettings.Networks.second = { NetworkID: network, IPAddress: '10.0.0.2' };
+  assert.throws(() => ownedInternalAddress(connected, network));
+});
+
+test('loopback relay preserves real HTTP bytes and closes its listening socket', async () => {
+  const target = createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    assert.equal(req.headers['x-fixture'], 'native-bytes');
+    res.writeHead(201, { 'content-type': 'application/octet-stream', 'x-fixture': 'native-response' });
+    res.end(Buffer.concat(chunks));
+  });
+  await new Promise(resolve => target.listen(0, '127.0.0.1', resolve));
+  let relay;
+  try {
+    relay = await loopbackRelay('127.0.0.1', target.address().port);
+    assert.equal(new URL(relay.origin).hostname, '127.0.0.1');
+    const bytes = Buffer.from([0, 1, 2, 10, 127, 128, 255]);
+    const response = await fetch(relay.origin + '/real-http', { method: 'POST', headers: { 'x-fixture': 'native-bytes' }, body: bytes });
+    assert.equal(response.status, 201); assert.equal(response.headers.get('x-fixture'), 'native-response');
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+    await relay.close(); const origin = relay.origin; relay = null;
+    await assert.rejects(fetch(origin, { signal: AbortSignal.timeout(2000) }));
+    await assert.rejects(loopbackRelay('8.8.8.8', 80));
+  } finally {
+    if (relay) await relay.close(); target.closeAllConnections();
+    await new Promise(resolve => target.close(resolve));
+  }
+});
 
 test('native manifest preserves every original numbered and timestamped migration', () => {
   const names = readdirSync(new URL('../supabase/migrations/', import.meta.url));

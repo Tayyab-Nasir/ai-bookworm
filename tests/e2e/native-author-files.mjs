@@ -33,9 +33,9 @@ function data(result, label) {
   assert.ok(result.data != null, `${label}: no data returned`);
   return result.data;
 }
-async function request(token, method, path, body, expected = 200) {
+async function request(token, method, path, body, expected = 200, headers = {}) {
   const response = await fetch(address + '/v1' + path, { method,
-    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type': 'application/json' } : {}) },
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type': 'application/json' } : {}), ...headers },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   const result = await response.json();
@@ -62,7 +62,7 @@ async function upload(author, name, mimeType, bytes) {
   const replay = await request(author.token, 'POST', '/assets/upload-url', declaration);
   assert.equal(replay.assetId, ticket.assetId);
   assert.equal(replay.path, ticket.path);
-  const stored = await fetch(ticket.uploadUrl, { method: 'PUT', body: bytes });
+  const stored = await fetch(ticket.uploadUrl, { method: 'PUT', headers: { 'content-type': mimeType }, body: bytes });
   assert.ok(stored.ok, 'Native signed upload failed');
   await stored.body?.cancel();
   return { ...ticket, bytes, checksum: hash(bytes) };
@@ -179,6 +179,47 @@ try {
   const reloaded = await request(alice.token, 'GET', `/chapters/${chapter.id}/document`);
   assert.equal(reloaded.document.version, 2);
   assert.deepEqual(reloaded.document.nodes, edit.nodes);
+
+  const actor = { 'x-bookworm-actor': alice.userId };
+  const memoryPath = `/books/${book.id}`;
+  const memory = await request(alice.token, 'GET', `${memoryPath}/memory`);
+  assert.equal(memory.canEdit, true);
+  assert.equal(memory.items.length, 0);
+  assert.ok(memory.imageAssets.some(asset => asset.id === receipt.assetIds[0]), 'Scanned import image missing from Book Bible choices');
+  const currentVersions = await request(alice.token, 'GET', `/chapters/${chapter.id}/versions`);
+  const currentVersion = currentVersions.versions.find(version => version.version_number === 2);
+  assert.ok(currentVersion);
+  const passage = edit.nodes.at(-1);
+  const source = { chapterId: chapter.id, documentVersionId: currentVersion.id, nodeId: passage.id, textHash: hash(passage.text) };
+  const intent = { requestId: randomUUID(), type: 'character', name: 'Captain Mira', description: 'An author-reviewed character.',
+    attributes: { role: 'Captain' }, imageAssetIds: [receipt.assetIds[0]], sourceRefs: [source] };
+  await request(alice.token, 'POST', `${memoryPath}/bible`, intent, 422);
+  await request(alice.token, 'POST', `${memoryPath}/bible`, intent, 409, { 'x-bookworm-actor': bob.userId });
+  const canon = await request(alice.token, 'POST', `${memoryPath}/bible`, intent, 201, actor);
+  assert.equal(canon.replayed, false);
+  assert.equal(canon.item.name, intent.name);
+  assert.deepEqual(canon.item.attributes_json.imageAssetIds, intent.imageAssetIds);
+  assert.deepEqual(canon.item.source_refs_json, [source]);
+  const repeatedCanon = await request(alice.token, 'POST', `${memoryPath}/bible`, intent, 200, actor);
+  assert.equal(repeatedCanon.replayed, true); assert.deepEqual(repeatedCanon.receipt, canon.receipt);
+  const recoveredCanon = await request(alice.token, 'GET', `${memoryPath}/bible/requests/${intent.requestId}`, undefined, 200, actor);
+  assert.deepEqual(recoveredCanon.receipt, canon.receipt);
+  await request(alice.token, 'POST', `${memoryPath}/bible`, { ...intent, name: 'Changed replay' }, 409, actor);
+  await request(bob.token, 'GET', `${memoryPath}/bible/requests/${intent.requestId}`, undefined, 404, { 'x-bookworm-actor': bob.userId });
+  const update = { ...intent, requestId: randomUUID(), description: 'A saved, revised character with a persistent image and citation.',
+    expectedUpdatedAt: canon.item.updated_at, expectedIncarnationId: canon.item.mutation_incarnation_id };
+  const changedCanon = await request(alice.token, 'PUT', `${memoryPath}/bible/${canon.item.id}`, update, 200, actor);
+  assert.equal(changedCanon.item.id, canon.item.id);
+  assert.equal(changedCanon.item.description, update.description);
+  await request(alice.token, 'PUT', `${memoryPath}/bible/${canon.item.id}`, { ...update, requestId: randomUUID() }, 409, actor);
+  const reloadedMemory = await request(alice.token, 'GET', `${memoryPath}/memory`);
+  assert.equal(reloadedMemory.items.length, 1);
+  assert.deepEqual(reloadedMemory.items[0], changedCanon.item);
+  assert.deepEqual(data(await bob.client.from('book_bible_items').select('id').eq('book_id', book.id), 'foreign canon read'), []);
+  const evidence = await request(alice.token, 'POST', `${memoryPath}/bible/evidence`, source);
+  assert.equal(evidence.text, passage.text); assert.equal(evidence.isCurrentVersion, true);
+  console.log('PASS native Book Bible character/image/citation persistence, durable replay/recovery, actor/tenant isolation and stale-edit refusal');
+
   assert.equal(data(await service.from('ai_jobs').select('id'), 'AI jobs').length, 0);
   assert.equal(data(await service.from('usage_events').select('id'), 'provider usage').length, 0);
   console.log('PASS native initial table creation, edit/reload, stale-write refusal and zero AI jobs/usage');
