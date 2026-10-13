@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiClientError, type DocumentVersionSummary } from "@bookworm/api-client";
 import type { Book, Chapter } from "@bookworm/types";
+import { bookNodesPlainText, bookNodesWordCount } from "@bookworm/book-model/plain-text";
 import type { BookNode } from "@bookworm/book-model";
 import { apiClient } from "./api";
 import BookTree from "./BookTree";
@@ -11,6 +12,7 @@ import RichBookEditor, { type EditorDocument, type EditorValidationError } from 
 import VersionTimeline from "./VersionTimeline";
 import AiAssistantPanel from "./AiAssistantPanel";
 import { storyBlueprintWriterBrief } from "../lib/story-blueprint-draft";
+import { chapterDraftBackup } from "../lib/chapter-draft";
 
 const EDIT_ROLES = new Set(["owner","admin","editor","writer","illustrator","designer"]);
 
@@ -217,20 +219,29 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
     finally { if (sequence === loadSequence.current) { restoring.current = false; setSaving(false); } }
   };
 
-  const downloadDraft = () => {
-    const blob = new Blob([editorValidation?.draftText ?? draft.map((n) => n.text ?? "").join("\n\n")], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob); const link = window.document.createElement("a"); link.href = url; link.download = "unsaved-manuscript.txt"; link.click(); URL.revokeObjectURL(url);
+  const downloadDraft = (format: "json" | "txt" = "json") => {
+    if (!document || loading) return;
+    const content = format === "txt" ? editorValidation?.draftText ?? bookNodesPlainText(draft)
+      : JSON.stringify(chapterDraftBackup({ bookId, chapterId: document.chapterId, baseVersion: document.version,
+        nodes: draft, capturedAt: new Date().toISOString(), validation: editorValidation }), null, 2);
+    const blob = new Blob([content], { type: format === "txt" ? "text/plain;charset=utf-8" : "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob); const link = window.document.createElement("a");
+    link.href = url; link.download = `bookworm-chapter-${document.chapterId}-draft.${format}`;
+    window.document.body.append(link); link.click(); link.remove();
+    // Let the browser consume the object URL before releasing it.
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const editable = EDIT_ROLES.has(role) && !pendingRestore;
   const editorSequence = loadSequence.current;
   const wordCount = editorValidation ? (editorValidation.draftText.match(/\S+/gu)?.length ?? 0)
-    : draft.reduce((count, node) => count + (node.text?.trim() ? node.text.trim().split(/\s+/u).length : 0), 0);
+    : bookNodesWordCount(draft);
   return <main className="mx-auto min-h-[calc(100dvh-84px)] max-w-[1680px] bg-black p-4 text-white sm:p-6">
     <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
       <div><Link href="/dashboard" className="text-xs text-white/50 hover:text-white">← Library</Link><h1 className="mt-2 text-2xl font-medium">{book?.title ?? "Manuscript"}</h1></div>
       <div className="flex flex-wrap items-center gap-3 text-sm"><Link href={`/books/${bookId}/plan`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Plan</Link><Link href={`/books/${bookId}/translate`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Translate</Link><Link href={`/books/${bookId}/publish`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Layout & publish</Link><span role="status" className="text-white/50">{editorValidation ? "Unsaved · correct numbering before saving" : saving ? "Saving…" : dirty ? "Unsaved changes" : document ? `Saved · v${document.version}` : ""}</span>
         {editable && document && <button type="button" onClick={() => void save()} disabled={!dirty || saving || conflict || loading || editorValidation !== null} className="rounded-full bg-white px-5 py-2 font-medium text-black disabled:opacity-40">Save chapter</button>}
-        {editorValidation && <button type="button" onClick={downloadDraft} className="rounded-full border border-white/20 px-4 py-2">Download draft text</button>}
+        {editorValidation && <button type="button" onClick={() => downloadDraft("txt")} className="min-h-11 rounded-full border border-white/20 px-4 py-2">Download draft text</button>}
+{document && !loading && <details className="relative basis-full lg:basis-auto"><summary className="inline-flex min-h-11 cursor-pointer rounded-full border border-white/20 px-4 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">Back up chapter draft</summary><div className="absolute left-0 z-30 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-2xl border border-white/15 bg-[#101010] p-4 shadow-xl lg:left-auto lg:right-0"><p className="text-xs leading-5 text-white/60">JSON preserves structure, formatting and artwork references. Image files are not embedded. Text export does not keep formatting. Neither action saves to the server.</p><button type="button" onClick={() => downloadDraft()} className="mt-3 block min-h-11 w-full rounded-xl border border-white/20 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download JSON backup</button><button type="button" onClick={() => downloadDraft("txt")} className="mt-2 block min-h-11 w-full rounded-xl border border-white/15 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download draft text</button></div></details>}
       </div>
     </div>
     {error && <div role="alert" className="mb-4 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}
@@ -238,8 +249,8 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
     </div>}
     {draftPlanMessage && <p role="status" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-3 text-sm leading-6 text-amber-100">{draftPlanMessage}</p>}
     {notice && <p role="status" className="mb-4 text-sm text-emerald-200">{notice}</p>}
-    {pendingRestore && !saving && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Restore outcome is not confirmed. Your current draft remains here; editing is paused until you recover the request or reload saved content.</p><div className="mt-3 flex flex-wrap gap-4"><button type="button" disabled={loading} className="underline" onClick={() => void restore(pendingRestore.versionId)}>Retry original restore</button><button type="button" className="underline" onClick={downloadDraft}>Download my draft</button><button type="button" disabled={loading} className="underline" onClick={() => { if (window.confirm("Reload saved content and replace this draft? Download it first if needed.")) void loadChapter(pendingRestore.chapterId); }}>Reload saved content</button></div></div>}
-    {conflict && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Another save changed this chapter. Your unsaved draft is still here. Download it before reloading if you need to merge changes.</p><button className="mr-4 mt-3 underline" onClick={downloadDraft}>Download my draft</button><button className="underline" onClick={() => { if (document && window.confirm("Reload saved content and replace this unsaved draft?")) void loadChapter(document.chapterId); }}>Reload saved version</button></div>}
+    {pendingRestore && !saving && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Restore outcome is not confirmed. Your current draft remains here; editing is paused until you recover the request or reload saved content.</p><div className="mt-3 flex flex-wrap gap-4"><button type="button" disabled={loading} className="underline" onClick={() => void restore(pendingRestore.versionId)}>Retry original restore</button><button type="button" className="underline" onClick={() => downloadDraft()}>Download my draft</button><button type="button" disabled={loading} className="underline" onClick={() => { if (window.confirm("Reload saved content and replace this draft? Download it first if needed.")) void loadChapter(pendingRestore.chapterId); }}>Reload saved content</button></div></div>}
+    {conflict && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Another save changed this chapter. Your unsaved draft is still here. Download the JSON backup before reloading if you need to merge changes. It preserves artwork references, not image files.</p><button className="mr-4 mt-3 underline" onClick={() => downloadDraft()}>Download my draft</button><button className="underline" onClick={() => { if (document && window.confirm("Reload saved content and replace this unsaved draft?")) void loadChapter(document.chapterId); }}>Reload saved version</button></div>}
     <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_260px]">
       <aside className="self-start rounded-2xl border border-white/10 p-2">
         <button type="button" className="flex min-h-11 w-full items-center justify-between px-3 text-sm text-white/75 lg:hidden" aria-expanded={structureOpen} aria-controls="chapter-structure" onClick={() => setStructureOpen((open) => !open)}><span>Chapters · {chapters.length}</span><span>{structureOpen ? "Hide" : "Show"}</span></button>

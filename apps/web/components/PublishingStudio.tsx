@@ -8,6 +8,7 @@ import { apiClient } from "./api";
 import ChapterAudioDownload from "./ChapterAudioDownload";
 import NarrationQuoteStudio from "./NarrationQuoteStudio";
 import SavedEpubReader from "./SavedEpubReader";
+import SavedPrintLibrary from "./SavedPrintLibrary";
 
 import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
 export { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
@@ -37,7 +38,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<"load" | "save" | "render" | "preflight" | "package" | "history" | "audiobook" | null>("load");
   const [channel, setChannel] = useState<Channel>("export");
-  const [rendered, setRendered] = useState<RenderedEditionResult | null>(null);
+  const [rendered, setRendered] = useState<(RenderedEditionResult & { expiresAt?: number }) | null>(null);
   const [readerRefreshKey, setReaderRefreshKey] = useState("");
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [publishingJobs, setPublishingJobs] = useState<PublishingPackageJob[]>([]);
@@ -46,6 +47,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const currentBook = useRef(bookId); currentBook.current = bookId;
   const currentEdition = useRef(activeId); currentEdition.current = activeId;
   const viewEpoch = useRef(0);
+  const adoptPrint = useCallback((result: RenderedEditionResult, expiresAt: number) => { setRendered({ ...result, expiresAt }); setPreflight(null); setNotice("Saved print proof opened. Run fresh preflight before creating a package."); }, []);
+  const invalidatePrint = useCallback((jobId: string) => { setRendered(current => current?.jobId === jobId ? null : current); setPreflight(null); }, []);
 
   const activeEdition = editions.find((edition) => edition.id === activeId) ?? null;
   const currentIdentity = book?.id === bookId;
@@ -341,7 +344,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           {rtlPrintUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL print PDF and fixed EPUB are not available with the current fonts.</p><p className="mt-1 text-amber-100/80">Use a reflowable EPUB for this edition, or run preflight to record the requirement while a shaping-capable font pipeline is added.</p></div>}
         </section>
 
-        {form.kind === "print" && <p className="text-sm leading-relaxed text-white/50">Bitstream Vera embeds body and heading fonts in the PDF, including bold and italic text. It supports a limited Latin character set. Preflight identifies unsupported characters before export. Inline code and page numbers still use standard PDF fonts.</p>}
+        {form.kind === "print" && <p className="text-sm leading-relaxed text-white/50">Bitstream Vera embeds body and heading fonts in the PDF, including bold and italic text. It supports a limited Latin character set. Preflight identifies unsupported characters before export. Inline code uses embedded DejaVu Sans Mono for DejaVu/Vera books and Courier for legacy fonts; page numbers use the selected embedded body font.</p>}
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="front-matter-settings">
           <h2 id="front-matter-settings" className="text-xl font-semibold">Title & copyright pages</h2>
@@ -418,7 +421,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             <button type="button" onClick={() => void render()} disabled={!editable || !activeId || dirty || Boolean(busy) || renderBlocked} aria-describedby={renderBlocked ? "rtl-render-guidance" : undefined} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "render" ? "Rendering…" : `Render ${form.kind === "ebook" ? "EPUB" : "PDF"}`}</button></div>
           {dirty && <p className="mt-3 text-xs text-amber-200">Save these settings before rendering or validating.</p>}
           {renderBlocked && <p id="rtl-render-guidance" className="mt-3 text-sm text-amber-100">Rendering is disabled until the RTL typography requirement above is resolved. Preflight is still available.</p>}
-          {rendered && <div className="mt-5 grid gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <img src={artifact.download.url} alt="Rendered book cover" className="mt-3 max-h-80 w-full rounded-lg object-contain" /> : artifact.asset.mime_type === "application/pdf" ? <iframe title="Rendered print edition preview" src={artifact.download.url} className="mt-3 h-96 w-full rounded-lg bg-white" /> : null}<a href={artifact.download.url} download className="mt-3 inline-block text-sm underline">Download private file</a></div>)}</div>}
+          {rendered && <div className="mt-5 grid gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <img src={artifact.download.url} alt="Rendered book cover" className="mt-3 max-h-80 w-full rounded-lg object-contain" /> : artifact.asset.mime_type === "application/pdf" ? <iframe title={artifact.role === "rendered_cover" ? "Rendered cover preview" : "Rendered print edition preview"} src={artifact.download.url} className="mt-3 h-96 w-full rounded-lg bg-white" /> : null}<a href={artifact.download.url} download onClick={event => { if (!currentIdentity || currentBook.current !== bookId || rendered.expiresAt !== undefined && Date.now() >= rendered.expiresAt) { event.preventDefault(); setRendered(null); setPreflight(null); setError("Private print links expired or this book changed. Open the saved print again to renew them."); } }} className="mt-3 inline-block text-sm underline">Download private file</a></div>)}</div>}
+          {form.kind === "print" && currentIdentity && book && activeId && <SavedPrintLibrary key={`${bookId}:${activeId}`} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} refreshKey={readerRefreshKey} dirty={dirty} disabled={dirty || Boolean(busy)} onSelect={adoptPrint} onInvalidate={invalidatePrint} />}
           <div className="mt-6 flex flex-wrap items-end gap-3 border-t border-white/10 pt-5"><label className="min-w-52 flex-1 text-sm text-white/65">Preflight target<select value={channel} onChange={(event) => { setChannel(event.target.value as Channel); setPreflight(null); }} className={fieldClass}><option value="export">Universal export</option><option value="kdp">Amazon KDP</option><option value="apple">Apple Books</option><option value="barnesnoble">Barnes & Noble Press</option><option value="lulu">Lulu</option><option value="googleplay">Google Play Books</option></select></label><button type="button" onClick={() => void validate()} disabled={!editable || !activeId || dirty || Boolean(busy) || !channelCompatible} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "preflight" ? "Checking…" : "Run preflight"}</button></div>
           {!channelCompatible && <p className="mt-3 text-sm text-amber-200">{channel === "lulu" ? "Lulu packages require a print PDF edition." : channel === "googleplay" ? "Google Play Books packages require an EPUB edition with an embedded front cover." : channel === "apple" ? "Apple Books packages require an EPUB edition." : "Choose an edition supported by this retailer."}</p>}
           {channel === "googleplay" && channelCompatible && <p className="mt-3 text-xs leading-5 text-white/45">Single-title Partner Center handoff only. Run EpubCheck and inspect Google’s processed preview, pricing, territories, and Review tab before publishing. This does not submit the book.</p>}

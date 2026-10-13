@@ -24,6 +24,7 @@ import { aiRoutes } from "./routes/ai.js";
 import { editionRoutes } from "./routes/editions.js";
 import { publishingRoutes } from "./routes/publishing.js";
 import { readerRoutes } from "./routes/reader.js";
+import { savedPrintRoutes } from "./routes/saved-print.js";
 import { accountRoutes } from "./routes/account.js";
 import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
 import { metadataQuoteRoutes } from "./routes/metadata-quotes.js";
@@ -83,6 +84,7 @@ export async function buildApp(
     editionRoutes(v1, { fetcher: opts.renderFetch });
     publishingRoutes(v1, { renderFetcher: opts.renderFetch, publishingFetcher: opts.publishingFetch });
     readerRoutes(v1, { fetcher: opts.renderFetch });
+    savedPrintRoutes(v1);
     folderRoutes(v1);
     collabRoutes(v1);
     teamRoutes(v1);

@@ -75,7 +75,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/referrals")) return { claimPendingReferral: async () => {} };
     if (name.endsWith("/AssetBrowser")) return { default: "AssetBrowser" };
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
-    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
+    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
     if (name.endsWith("/epub-reader")) return readerHelpers;
     if (name.endsWith("/approved-artwork")) return artwork;

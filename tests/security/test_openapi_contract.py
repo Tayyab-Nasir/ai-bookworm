@@ -48,6 +48,44 @@ def test_duplicate_contract_keys_are_not_silently_overwritten():
         load_contract("post:\n  responses: {200: first}\n  responses: {200: second}\n")
 
 
+def test_saved_print_history_and_renewal_contract_preserve_exact_private_read_only_sources():
+    document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
+    root = "/v1/editions/{editionId}/print-renders"
+    history = document["paths"][root]["get"]
+    renewal = document["paths"][root + "/{jobId}/download"]["get"]
+    assert set(document["paths"][root]) == {"get"}
+    assert set(document["paths"][root + "/{jobId}/download"]) == {"get"}
+    assert not history.get("requestBody") and not renewal.get("requestBody")
+    assert {p["name"] for p in renewal["parameters"] if p["in"] == "query"} == {"sha256", "fingerprint"}
+    assert all(p["required"] for p in renewal["parameters"])
+    for operation in (history, renewal):
+        assert operation["responses"]["200"]["headers"]["Cache-Control"]["schema"]["const"] == "private, no-store"
+        assert {"401", "403", "404", "422", "503"} <= operation["responses"].keys()
+    assert "409" in renewal["responses"]
+    validator = Draft202012Validator({**document, "$ref": "#/components/schemas/SavedPrintHistory"}, format_checker=FormatChecker())
+    identity = "b0000000-0000-4000-8000-000000000003"
+    render = {"jobId": identity, "createdAt": "2026-10-13T00:00:00.000Z", "fingerprint": "a" * 64,
+              "source": {"bookId": identity, "editionId": identity, "jobId": identity, "assetId": identity,
+                         "version": 1, "sha256": "b" * 64, "sizeBytes": 800}}
+    assert not list(validator.iter_errors({"renders": [render]}))
+    for patch in ({"download": {"url": "https://private.example"}}, {"storagePath": "private-path"},
+                  {"fingerprint": "bad"}, {"jobId": "invalid"}):
+        assert list(validator.iter_errors({"renders": [{**render, **patch}]}))
+    for patch in ({"version": 2}, {"sizeBytes": 157286401}, {"sha256": "bad"}, {"plainText": "private"}):
+        assert list(validator.iter_errors({"renders": [{**render, "source": {**render["source"], **patch}}]}))
+    assert list(validator.iter_errors({"renders": [render] * 26}))
+    download_validator = Draft202012Validator({**document, "$ref": "#/components/schemas/SavedPrintDownloadResult"}, format_checker=FormatChecker())
+    artifact = {"asset": {"id": identity, "workspace_id": identity, "type": "rendered_book", "name": "book.pdf",
+                           "storage_path": "workspaces/private/v1/book.pdf", "mime_type": "application/pdf", "size_bytes": 800,
+                           "checksum": "b" * 64, "status": "draft", "deleted_at": None},
+                "role": "rendered_print", "download": {"url": "https://private.example/saved", "expiresIn": 300}}
+    result = {"jobId": identity, "status": "succeeded", "artifacts": [artifact]}
+    assert not list(download_validator.iter_errors(result))
+    for patch in ({"status": "running"}, {"artifacts": []}, {"artifacts": [artifact] * 3}):
+        assert list(download_validator.iter_errors({**result, **patch}))
+    assert list(download_validator.iter_errors({**result, "artifacts": [{**artifact, "download": {**artifact["download"], "expiresIn": 3600}}]}))
+
+
 def test_openapi_structure_references_and_operation_identities():
     document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
     assert document["openapi"] == "3.1.0"

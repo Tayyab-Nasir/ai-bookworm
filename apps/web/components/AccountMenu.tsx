@@ -27,9 +27,9 @@ export function AccountMenu() {
       window.location.assign("/login");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Sign-out failed."); setBusy(false); }
   }
-  return <div className="relative flex items-center gap-2 text-xs">
+  return <div className="relative flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs">
     {admin && <Link href="/admin" className="rounded-full border border-white/15 px-3 py-2 text-white/75">Admin</Link>}
-    <Link href="/settings/data-rights" title={email ?? "Account settings"} className="hidden max-w-40 truncate text-[#aaa] hover:text-white lg:inline">{email ?? "Account"}</Link>
+    <Link href="/settings/data-rights" aria-label="Account settings and support" title={email ?? "Account settings"} className="inline-flex min-h-11 items-center rounded-full border border-white/15 px-3 py-2 text-[#aaa] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"><span className="lg:hidden">Account</span><span className="hidden max-w-40 truncate lg:inline">{email ?? "Account"}</span></Link>
     <button onClick={() => void logout()} disabled={busy} className="rounded-full border border-white/15 px-3 py-2 text-[#ddd] disabled:opacity-50">{busy ? "Signing out…" : "Sign out"}</button>
     {error && <p role="alert" className="absolute right-0 top-12 w-60 rounded-xl bg-red-950 p-3 text-red-100">{error}</p>}
   </div>;

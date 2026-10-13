@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
-import Link from "next/link";
 import { AuthorHeader, AuthorPage } from "../../components/AuthorShell";
 import type { Asset, Book, Folder, Workspace } from "@bookworm/types";
 import AssetBrowser from "../../components/AssetBrowser";
@@ -14,12 +13,56 @@ import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../.
 
 interface VersionRow {
   id: string;
+  asset_id?: string;
+  storage_path?: string;
   version_number: number;
   checksum: string;
+  mime_type?: string;
+  size_bytes?: number;
   scan_status: "pending" | "clean" | "infected" | "error" | "trusted_generated";
   detected_mime_type?: string | null;
   created_by: string;
   created_at: string;
+}
+
+const downloadMimeTypes = new Set([
+  "text/plain", "text/markdown", "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/epub+zip",
+  "image/png", "image/jpeg", "image/webp", "image/gif", "audio/mpeg", "application/zip",
+]);
+
+function verifiedDownloadVersion(asset: Asset, rows: VersionRow[]) {
+  const matching = rows.filter(row => row.asset_id === asset.id && row.storage_path === asset.storage_path && row.checksum === asset.checksum);
+  const version = matching.length === 1 ? matching[0] : null;
+  if (asset.deleted_at || !/^[a-f0-9]{64}$/i.test(asset.checksum) || !downloadMimeTypes.has(asset.mime_type)
+    || !Number.isSafeInteger(asset.size_bytes) || asset.size_bytes <= 0
+    || !asset.storage_path?.startsWith(`workspaces/${asset.workspace_id}/`) || asset.storage_path.split("/").some(part => !part || part === "." || part === "..")
+    || !version || !Number.isSafeInteger(version.version_number) || version.version_number <= 0
+    || version.mime_type !== asset.mime_type || version.size_bytes !== asset.size_bytes
+    || (asset.current_version_number != null && version.version_number !== asset.current_version_number)
+    || !["clean", "trusted_generated"].includes(version.scan_status)
+    || (version.scan_status === "clean" && version.detected_mime_type !== asset.mime_type)) {
+    throw new Error("The current file version could not be verified. Refresh the library before preparing a download.");
+  }
+  return version;
+}
+
+function verifiedDownloadLink(result: { url: string; expiresIn: number }, asset: Asset) {
+  if (typeof result?.url !== "string" || result.url.length > 8192 || result.url.trim() !== result.url || /[\r\n\t]/.test(result.url) || !Number.isSafeInteger(result.expiresIn) || result.expiresIn < 1 || result.expiresIn > 300) {
+    throw new Error("The private download link could not be confirmed. Try preparing it again.");
+  }
+  let url: URL;
+  try { url = new URL(result.url); }
+  catch { throw new Error("The private download link could not be confirmed. Try preparing it again."); }
+  if (url.protocol !== "https:" || url.username || url.password || url.hash
+    || decodeURIComponent(url.pathname) !== `/storage/v1/object/sign/book-assets/${asset.storage_path}`
+    || url.searchParams.getAll("token").length !== 1 || !url.searchParams.get("token")) {
+    throw new Error("The private download link does not match this file. Refresh the library and try again.");
+  }
+  // Supabase signed-object URLs support this query option without changing the token.
+  const filename = asset.name.replace(/[\u0000-\u001f\u007f/\\]/g, "_").slice(0, 240) || "asset";
+  url.searchParams.set("download", filename);
+  return { url: url.href, filename };
 }
 
 function AssetsPageInner() {
@@ -49,22 +92,32 @@ function AssetsPageInner() {
   const [finalizingImage, setFinalizingImage] = useState<string | null>(null);
   const [uploadStage, setUploadStage] = useState<"uploading" | "scanning" | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [download, setDownload] = useState<{ assetId: string; version: number; request: number; url: string; filename: string; expiresAt: number } | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeDialogRef = useRef<HTMLButtonElement>(null);
   const activeWorkspace = useRef("");
   const scopeVersion = useRef(0);
   const libraryRequest = useRef(0);
   const detailRequest = useRef(0);
+  const downloadRequest = useRef(0);
+  const activeAsset = useRef<string | null>(null);
+  const preparingDownload = useRef(false);
   const editReady = useRef(false);
   editReady.current = Boolean(canEdit);
 
   const resetWorkspaceScope = useCallback((id: string) => {
-    activeWorkspace.current = id; scopeVersion.current++; libraryRequest.current++; detailRequest.current++;
+    activeWorkspace.current = id; scopeVersion.current++; libraryRequest.current++; detailRequest.current++; downloadRequest.current++;
+    activeAsset.current = null; preparingDownload.current = false;
     editReady.current = false;
     setWorkspaceId(id); setLibraryWorkspaceId(""); setLibraryLoading(Boolean(id));
     setBooks([]); setFolders([]); setAssets([]); setOpen(null); setPreviewUrl(null); setVersions([]); setUsage([]);
     setAssetAccess(null); setAccessError(false); setImageJobs([]); setHistoryError(null); setHistoryLoading(false);
     setError(null); setUploadNotice(null); setUploadStage(null); setFinalizingImage(null);
+    setDetailLoading(false); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
   }, []);
 
   function changeWorkspace(id: string) {
@@ -77,6 +130,7 @@ function AssetsPageInner() {
   }
 
   const permissionScope = scopeVersion.current;
+  const renderedDetailRequest = detailRequest.current;
   function retryAssetAccess() {
     if (!workspaceId || activeWorkspace.current !== workspaceId || scopeVersion.current !== permissionScope) return;
     editReady.current = false;
@@ -85,8 +139,18 @@ function AssetsPageInner() {
   }
 
   function closeAsset() {
-    detailRequest.current++; setOpen(null); setPreviewUrl(null); setVersions([]); setUsage([]);
+    detailRequest.current++; downloadRequest.current++; activeAsset.current = null; preparingDownload.current = false;
+    setOpen(null); setPreviewUrl(null); setVersions([]); setUsage([]);
+    setDetailLoading(false); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
   }
+
+  useEffect(() => {
+    return () => {
+      activeWorkspace.current = ""; activeAsset.current = null; scopeVersion.current++;
+      libraryRequest.current++; detailRequest.current++; downloadRequest.current++;
+      editReady.current = false; preparingDownload.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -116,6 +180,9 @@ function AssetsPageInner() {
 
   useEffect(() => {
     let live = true;
+    // Selecting an already validated workspace updates its URL. Repeating the
+    // bootstrap reset for that same selection can fence its own in-flight reads.
+    if (requestedWorkspaceId && activeWorkspace.current === requestedWorkspaceId) return;
     resetWorkspaceScope("");
     void api.listWorkspaces().then(({ workspaces: available }) => {
       if (!live) return;
@@ -126,7 +193,7 @@ function AssetsPageInner() {
     }).catch((e: unknown) => {
       if (live) setError(e instanceof Error ? e.message : "Could not load workspaces");
     });
-    return () => { live = false; activeWorkspace.current = ""; scopeVersion.current++; libraryRequest.current++; detailRequest.current++; editReady.current = false; };
+    return () => { live = false; };
   }, [api, requestedWorkspaceId, resetWorkspaceScope]);
 
   const load = useCallback(async () => {
@@ -156,6 +223,12 @@ function AssetsPageInner() {
     void load();
     return () => { libraryRequest.current++; detailRequest.current++; };
   }, [load]);
+
+  useEffect(() => {
+    if (!download) return;
+    const timer = window.setTimeout(() => setDownload(current => current === download ? null : current), Math.max(0, download.expiresAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [download]);
 
   useEffect(() => {
     if (!open) return;
@@ -190,8 +263,10 @@ function AssetsPageInner() {
     if (!dataReady || activeWorkspace.current !== workspaceId || a.workspace_id !== workspaceId || !assets.some(asset => asset.id === a.id)) return;
     const version = scopeVersion.current; const request = ++detailRequest.current;
     const current = () => version === scopeVersion.current && request === detailRequest.current && activeWorkspace.current === workspaceId;
+    activeAsset.current = a.id; downloadRequest.current++; preparingDownload.current = false;
     setOpen(a);
     setPreviewUrl(null); setVersions([]); setUsage([]);
+    setDetailLoading(true); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
     try {
       const [v, u, preview] = await Promise.all([
         api.listAssetVersions(a.id),
@@ -203,9 +278,45 @@ function AssetsPageInner() {
       setUsage(u.links);
       setPreviewUrl(preview?.url ?? null);
     } catch (e) {
-      if (current()) setError(e instanceof Error ? e.message : "Could not open asset");
-    }
+      if (current()) setDetailError(e instanceof Error ? e.message : "Could not open asset");
+    } finally { if (current()) setDetailLoading(false); }
   };
+
+  async function prepareDownload(asset: Asset) {
+    if (!dataReady || scopeVersion.current !== permissionScope || detailRequest.current !== renderedDetailRequest
+      || activeWorkspace.current !== workspaceId || activeAsset.current !== asset.id || preparingDownload.current) return;
+    const version = scopeVersion.current; const request = ++downloadRequest.current;
+    const current = () => version === scopeVersion.current && request === downloadRequest.current && activeWorkspace.current === workspaceId && activeAsset.current === asset.id;
+    const startedAt = Date.now();
+    preparingDownload.current = true;
+    setDownloadBusy(true); setDownloadError(null); setDownload(null);
+    try {
+      const [library, history] = await Promise.all([api.listAssets(workspaceId), api.listAssetVersions(asset.id)]);
+      if (!current()) return;
+      if (library.assets.some(row => row.workspace_id !== workspaceId)) throw new Error("The file library does not match this workspace. Refresh before downloading.");
+      const saved = library.assets.find(row => row.id === asset.id);
+      if (!saved || saved.checksum !== asset.checksum || saved.storage_path !== asset.storage_path || saved.mime_type !== asset.mime_type || saved.size_bytes !== asset.size_bytes) {
+        throw new Error("This file changed since you opened it. Refresh the library and open its current version.");
+      }
+      const selected = verifiedDownloadVersion(saved, history.versions);
+      const result = await api.getAssetDownloadUrl(asset.id, selected.version_number);
+      if (!current()) return;
+      const link = verifiedDownloadLink(result, saved);
+      const expiresAt = startedAt + result.expiresIn * 1000;
+      if (expiresAt <= Date.now()) throw new Error("This download link expired before it was ready. Prepare a new link.");
+      setDownload({ assetId: asset.id, version: selected.version_number, request, ...link, expiresAt });
+    } catch (reason) {
+      if (current()) setDownloadError(reason instanceof Error ? reason.message : "The download could not be confirmed. Prepare a new link to retry.");
+    } finally { if (current()) { preparingDownload.current = false; setDownloadBusy(false); } }
+  }
+
+  function refreshLibrary() {
+    if (!workspaceId || libraryLoading || uploadStage || finalizingImage || activeWorkspace.current !== workspaceId || scopeVersion.current !== permissionScope) return;
+    closeAsset();
+    void load();
+    setHistoryRevision(value => value + 1);
+    retryAssetAccess();
+  }
 
   const upload = (folderId: string | null) => {
     if (!workspaceId || !editReady.current || activeWorkspace.current !== workspaceId || uploadStage) return;
@@ -258,7 +369,7 @@ function AssetsPageInner() {
   return (
     <AuthorPage>
       <AuthorHeader workspaceId={workspaceId || undefined} />
-      <div className="mx-auto max-w-7xl px-4 pb-16 pt-10 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl px-4 pb-16 pt-10 sm:px-6 lg:px-8 [&>div:last-child]:flex-col [&>div:last-child>aside]:w-full [&>div:last-child>aside]:border-r-0 [&>div:last-child>aside]:border-b [&>div:last-child>aside]:border-white/10 [&>div:last-child>aside]:pb-4 [&>div:last-child>aside]:pr-0 [&>div:last-child>section]:min-w-0 sm:[&>div:last-child]:flex-row sm:[&>div:last-child>aside]:w-64 sm:[&>div:last-child>aside]:border-b-0 sm:[&>div:last-child>aside]:border-r sm:[&>div:last-child>aside]:pb-0 sm:[&>div:last-child>aside]:pr-4">
         <div className="mb-8 flex flex-col items-start justify-between gap-5 border-b border-white/[0.09] pb-8 sm:flex-row sm:items-end">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Visual library</p>
@@ -276,9 +387,9 @@ function AssetsPageInner() {
             <button className="glass-solid metal-shine min-h-11 rounded-full px-5 text-sm font-semibold text-black disabled:cursor-not-allowed disabled:opacity-50" disabled={!workspaceId || !canEdit || Boolean(uploadStage)} onClick={() => upload(null)}>
               {uploadStage === "uploading" ? "Uploading..." : uploadStage === "scanning" ? "Checking file..." : "Upload asset"}
             </button>
-            <Link href={workspaceId ? `/assets?ws=${workspaceId}` : "/assets"} className="glass-ghost inline-flex min-h-11 items-center rounded-full px-5 text-sm font-medium">
-              Refresh
-            </Link>
+            <button type="button" disabled={!workspaceId || libraryLoading || Boolean(uploadStage) || Boolean(finalizingImage)} onClick={refreshLibrary} className="glass-ghost inline-flex min-h-11 items-center rounded-full px-5 text-sm font-medium disabled:opacity-40">
+              {libraryLoading ? "Refreshing library…" : "Refresh library"}
+            </button>
           </div>
         </div>
 
@@ -367,6 +478,9 @@ function AssetsPageInner() {
               </button>
             </div>
 
+            {detailLoading && <p role="status" className="mb-4 text-sm text-white/60">Loading file details…</p>}
+            {detailError && <div role="alert" className="mb-4 rounded-xl border border-red-300/20 bg-red-300/10 p-4 text-sm text-red-100"><p>{detailError}</p><button type="button" onClick={() => void openAsset(open)} className="mt-2 min-h-11 underline">Retry file details</button></div>}
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
               <div>
                 {previewUrl && open.mime_type.startsWith("image/") && (
@@ -404,6 +518,23 @@ function AssetsPageInner() {
                 </div>
               </div>
             </div>
+
+            <section aria-label="Original file download" className="mb-6 rounded-xl border border-white/10 p-4">
+              <h3 className="font-medium">Original file</h3>
+              <p className="mt-2 text-sm text-white/55">Prepare a private link to the verified current version, then download when you are ready.</p>
+              <button type="button" disabled={downloadBusy || !dataReady || open.checksum === "pending"} onClick={() => void prepareDownload(open)} className="mt-3 min-h-11 rounded-full border border-white/20 px-4 text-sm disabled:opacity-40">{downloadBusy ? "Preparing download…" : download ? "Prepare a new download link" : "Prepare download"}</button>
+              {open.checksum === "pending" && <p role="status" className="mt-2 text-sm text-amber-100">This upload is awaiting verification. A download is available after the file passes checks.</p>}
+              {downloadError && <p role="alert" className="mt-3 text-sm text-red-100">{downloadError}</p>}
+              {download && download.assetId === open.id && <div role="status" className="mt-3"><a href={download.url} download={download.filename} target="_blank" rel="noopener noreferrer" onClick={(event) => {
+                if (!dataReady || scopeVersion.current !== permissionScope || detailRequest.current !== renderedDetailRequest
+                  || downloadRequest.current !== download.request || activeWorkspace.current !== workspaceId || activeAsset.current !== open.id) {
+                  event.preventDefault(); return;
+                }
+                if (Date.now() >= download.expiresAt) {
+                  event.preventDefault(); setDownload(null); setDownloadError("This link is no longer current. Prepare a new download link.");
+                }
+              }} className="inline-flex min-h-11 items-center rounded-full bg-white px-4 text-sm font-medium text-black">Download original file · v{download.version}</a><p className="mt-2 text-xs text-white/50">This private link expires in a few minutes. Preparing it does not start a download.</p></div>}
+            </section>
 
             <div className="mb-6">
               <h3 className="text-lg font-semibold text-white mb-2">Used in</h3>

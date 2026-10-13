@@ -4,12 +4,13 @@ import { useEditor, useEditorState, EditorContent, Extension, Node, ReactNodeVie
 import StarterKit from "@tiptap/starter-kit";
 import { OrderedList } from "@tiptap/extension-list";
 import { useEffect, useRef, useState } from "react";
+import { bookNodesPlainText } from "@bookworm/book-model/plain-text";
 import type { Chapter as ModelChapter, BookNode } from "@bookworm/book-model";
 import { editorToNodes, nodesToEditor, LIST_NUMBER_TYPES, listNumberStyle, listNumberStyleFromType, listStart } from "./book-editor-model";
 import { ArtworkPicker, ManuscriptBlockView } from "./ManuscriptArtwork";
 
 export type EditorPermission = "editor" | "viewer";
-export interface EditorValidationError { message: string; draftText: string }
+export interface EditorValidationError { message: string; draftText: string; editorDocument?: unknown }
 export interface EditorDocument { chapterId: string; version: number; nodes: BookNode[] }
 export interface RichBookEditorProps {
   document: EditorDocument; permissions: EditorPermission;
@@ -87,8 +88,8 @@ export default function RichBookEditor({ document, permissions, workspaceId, onC
       } catch (reason) {
         if (!(reason instanceof RangeError)) throw reason;
         setNumberingError(reason.message);
-        validationRef.current?.({ message: reason.message, draftText: current.getText({ blockSeparator: "\n\n",
-          textSerializers: { preservedBlock: ({ node }) => typeof node.attrs.canonical?.text === "string" ? node.attrs.canonical.text : "" } }) });
+        validationRef.current?.({ message: reason.message, editorDocument: current.getJSON(), draftText: current.getText({ blockSeparator: "\n\n",
+          textSerializers: { preservedBlock: ({ node }) => node.attrs.canonical ? bookNodesPlainText([node.attrs.canonical as BookNode]) : "" } }) });
       }
     },
   });

@@ -624,3 +624,69 @@ for (const outcome of ["success", "failure"]) test(`late actual AI Apply ${outco
 });
 
 test.after(() => { console.log(JSON.stringify({ mountedNumberingArtifacts: artifacts })); });
+
+test("explicit local draft backup preserves rows-only tables, captions, styles and never saves", async () => {
+  const page = await fixture(375, true);
+  try {
+    await page.evaluate(() => {
+      window.nodes.push({ id: "rows-only", type: "table", rows: [["River", "Three bridges"], ["City", "Two towers"]] },
+        { id: "captioned-image", type: "image", assetId: "11111111-1111-4111-8111-111111111111", assetVersionNumber: 7,
+          caption: "A moonlit harbour", altText: "Private accessibility description" });
+      window.bookwormApi.getAssetDownloadUrl = async () => { throw new Error("Synthetic preview unavailable"); };
+      window.renderBookEditor({ initialChapterId: "second" });
+      window.localBackups = [];
+      URL.createObjectURL = blob => { window.localBackups.push(blob); return `blob:synthetic-backup-${window.localBackups.length}`; };
+      HTMLAnchorElement.prototype.click = function () { window.downloadName = this.download; };
+    });
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    await page.getByText("Back up chapter draft", { exact: true }).click();
+    for (const width of [375, 320, 640, 768, 1024, 1280]) {
+      await page.setViewportSize({ width, height: 980 });
+      const menu = await page.locator("details[open] > div").boundingBox();
+      assert(menu && menu.x >= 0 && menu.x + menu.width <= width, `Draft menu must remain visible at ${width}px; got ${JSON.stringify(menu)}`);
+      const button = await page.getByRole("button", { name: "Download JSON backup", exact: true }).boundingBox();
+      assert(button && button.height >= 44 && button.x >= 0 && button.x + button.width <= width);
+    }
+    await page.setViewportSize({ width: 375, height: 980 });
+    await page.getByRole("button", { name: "Download JSON backup", exact: true }).click();
+    const backup = await page.evaluate(async () => JSON.parse(await window.localBackups[0].text()));
+    assert.equal(backup.chapterId, "second");
+    assert.deepEqual(backup.nodes, await page.evaluate(() => window.nodes));
+    assert.equal(backup.nodes.find(node => node.id === "first").attributes.listStart, 7);
+    assert.match(backup.plainText, /River\tThree bridges\nCity\tTwo towers/);
+    assert.match(backup.plainText, /A moonlit harbour/);
+    assert.doesNotMatch(backup.plainText, /Private accessibility/);
+    await page.getByRole("button", { name: "Download draft text", exact: true }).click();
+    assert.equal(await page.evaluate(async () => window.localBackups[1].text()), backup.plainText);
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+    assert.equal(await page.evaluate(() => [...Object.values(localStorage), ...Object.values(sessionStorage)].some(value => value.includes("moonlit harbour"))), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: resolve(artifacts, "chapter-backup-mobile.png"), fullPage: true });
+  } finally { await page.close(); }
+});
+
+test("invalid live list numbering JSON backup keeps unsaved editor document, table and visible text", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.getByText("Imported first step", { exact: true }).click();
+    await page.getByRole("spinbutton", { name: "Start list at" }).fill("1000000");
+    await page.getByRole("alert").waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByText("Imported first step", { exact: true }).click();
+    await page.keyboard.press("End"); await page.keyboard.type(" latest invalid edit");
+    await page.evaluate(() => {
+      window.localBackups = [];
+      URL.createObjectURL = blob => { window.localBackups.push(blob); return "blob:synthetic-invalid-backup"; };
+      HTMLAnchorElement.prototype.click = function () {};
+    });
+    await page.getByText("Back up chapter draft", { exact: true }).click();
+    await page.getByRole("button", { name: "Download JSON backup", exact: true }).click();
+    const backup = await page.evaluate(async () => JSON.parse(await window.localBackups[0].text()));
+    assert.equal(backup.canonicalState, "last-valid-draft");
+    assert.match(JSON.stringify(backup.editorDocument), /latest invalid edit/);
+    assert.match(backup.plainText, /Research facts/);
+    assert.match(backup.plainText, /latest invalid edit/);
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+    assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
+  } finally { await page.close(); }
+});

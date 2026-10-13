@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BookModelSchema, BookNodeSchema, type BookModel, type BookNode } from "@bookworm/book-model";
+import { BookModelSchema, BookNodeSchema, bookNodesPlainText, bookNodesWordCount, type BookModel, type BookNode } from "@bookworm/book-model";
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "./supabase.js";
 import { requireWorkspaceEditor, requireWorkspaceMember } from "./authorize.js";
@@ -103,11 +103,11 @@ export async function checkAssetReferences(sb: SupabaseClient, nodes: BookNode[]
 
 export async function appendVersion(sb: SupabaseClient, chapterId: string, expectedVersion: number,
   nodes: BookNode[], operationId: string, summary: string) {
-  const plainText = nodes.map((node) => node.text ?? "").filter(Boolean).join("\n\n");
+  const plainText = bookNodesPlainText(nodes);
   const { data, error } = await sb.rpc("append_chapter_version", {
     p_chapter_id: chapterId, p_expected_version: expectedVersion,
     p_content_json: { schemaVersion: "1.0", nodes }, p_plain_text: plainText,
-    p_word_count: plainText.trim() ? plainText.trim().split(/\s+/u).length : 0,
+    p_word_count: bookNodesWordCount(nodes),
     p_change_summary: summary, p_operation_id: operationId,
   });
   if (error) rpcError(error);

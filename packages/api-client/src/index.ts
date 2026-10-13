@@ -618,6 +618,7 @@ export interface SavedEpubSource {
   bookId: string; editionId: string; jobId: string; assetId: string; version: 1; sha256: string; sizeBytes: number;
 }
 export interface SavedEpubRender { jobId: string; createdAt: string; source: SavedEpubSource }
+export interface SavedPrintRender { jobId: string; createdAt: string; source: SavedEpubSource; fingerprint: string }
 export interface EpubReaderResource {
   index: number; mimeType: "image/png" | "image/jpeg"; sha256: string; sizeBytes: number; width: number; height: number;
 }
@@ -1002,6 +1003,10 @@ export function createClient(opts: ClientOptions) {
       call<RenderedEditionResult>("POST", `/v1/editions/${editionId}/render`, body),
     listEditionRenders: (editionId: string) =>
       call<{ renders: SavedEpubRender[] }>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders`),
+    listPrintRenders: (editionId: string) =>
+      call<{ renders: SavedPrintRender[] }>("GET", `/v1/editions/${encodeURIComponent(editionId)}/print-renders`),
+    downloadPrintRender: (editionId: string, jobId: string, sha256: string, fingerprint: string) =>
+      call<RenderedEditionResult>("GET", `/v1/editions/${encodeURIComponent(editionId)}/print-renders/${encodeURIComponent(jobId)}/download?sha256=${encodeURIComponent(sha256)}&fingerprint=${encodeURIComponent(fingerprint)}`),
     readEpubSection: (editionId: string, jobId: string, spineIndex: number, sha256: string) =>
       call<EpubReaderResult>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders/${encodeURIComponent(jobId)}/reader?spine=${encodeURIComponent(spineIndex)}&sha256=${encodeURIComponent(sha256)}`),
     readEpubResource: (editionId: string, jobId: string, resourceIndex: number, sha256: string) =>

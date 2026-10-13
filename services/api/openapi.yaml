@@ -8,6 +8,52 @@ servers:
 tags:
   - name: v1
 paths:
+  /v1/editions/{editionId}/print-renders:
+    get:
+      operationId: listSavedPrintRenders
+      summary: List verified immutable print export identities
+      description: Active workspace members, including viewers, may read up to 25 verified saved print exports from the latest 50 successful render jobs. Checks exact primary and optional cover asset/version metadata and excludes retired, deleted or malformed proofs. History contains no signed links, storage paths or manuscript content, and performs no Storage byte reads, rendering, provider calls, purchases or writes. Current manuscript and edition edits do not invalidate historical proof downloads. All work shares a 30-second deadline.
+      parameters:
+        - { name: editionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Verified saved identities with a fingerprint binding edition, manuscript, artwork and all artifact descriptors
+          headers:
+            Cache-Control: { schema: { type: string, const: "private, no-store" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SavedPrintHistory" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/editions/{editionId}/print-renders/{jobId}/download:
+    get:
+      operationId: renewSavedPrintDownload
+      summary: Verify and renew private downloads for one exact saved print export
+      description: Requires active workspace membership and the primary SHA-256 and complete fingerprint returned by saved print history. Checks succeeded source identity, canonical v1 PDF/PNG paths, exact metadata and clean or trusted-generated versions; rereads and hashes every artifact within a 150 MiB interior, 25 MiB cover and 175 MiB combined limit before signing any five-minute link. Rechecks membership and source/version identity after reading bytes. A 30-second absolute deadline and shared byte-reader admission bound work. Performs no rerender, provider call, charge or mutation. Historical proofs remain downloadable after manuscript or edition edits; retailer packaging still independently requires current matching render and preflight fingerprints. Extra query fields are rejected.
+      parameters:
+        - { name: editionId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: sha256, in: query, required: true, schema: { type: string, pattern: '^[a-f0-9]{64}$' } }
+        - { name: fingerprint, in: query, required: true, schema: { type: string, pattern: '^[a-f0-9]{64}$' } }
+      responses:
+        "200":
+          description: Existing rendered edition result with verified private artifact links
+          headers:
+            Cache-Control: { schema: { type: string, const: "private, no-store" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SavedPrintDownloadResult" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/workspaces/{workspaceId}/narration-models:
     get:
       operationId: listNarrationQuoteModels
@@ -3255,6 +3301,72 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    SavedPrintSource:
+      type: object
+      additionalProperties: false
+      required: [bookId, editionId, jobId, assetId, version, sha256, sizeBytes]
+      properties:
+        bookId: { type: string, format: uuid }
+        editionId: { type: string, format: uuid }
+        jobId: { type: string, format: uuid }
+        assetId: { type: string, format: uuid }
+        version: { type: integer, const: 1 }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        sizeBytes: { type: integer, minimum: 1, maximum: 157286400 }
+    SavedPrintRender:
+      type: object
+      additionalProperties: false
+      required: [jobId, createdAt, source, fingerprint]
+      properties:
+        jobId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        source: { $ref: "#/components/schemas/SavedPrintSource" }
+        fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+    SavedPrintHistory:
+      type: object
+      additionalProperties: false
+      required: [renders]
+      properties:
+        renders: { type: array, maxItems: 25, items: { $ref: "#/components/schemas/SavedPrintRender" } }
+    SavedPrintDownloadResult:
+      type: object
+      additionalProperties: false
+      required: [jobId, status, artifacts]
+      properties:
+        jobId: { type: string, format: uuid }
+        status: { type: string, const: succeeded }
+        artifacts:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items:
+            type: object
+            additionalProperties: false
+            required: [asset, role, download]
+            properties:
+              role: { type: string, enum: [rendered_print, rendered_cover] }
+              asset:
+                type: object
+                description: Confirmed current Asset row for the immutable v1 descriptor; existing Asset fields are preserved.
+                required: [id, workspace_id, type, name, storage_path, mime_type, size_bytes, checksum, status, deleted_at]
+                properties:
+                  id: { type: string, format: uuid }
+                  workspace_id: { type: string, format: uuid }
+                  type: { type: string, enum: [rendered_book, rendered_cover] }
+                  name: { type: string }
+                  storage_path: { type: string }
+                  mime_type: { type: string, enum: [application/pdf, image/png] }
+                  size_bytes: { type: integer, minimum: 1, maximum: 157286400 }
+                  checksum: { type: string, pattern: '^[a-fA-F0-9]{64}$' }
+                  status: { type: string, enum: [draft, in_review, approved] }
+                  deleted_at: { type: "null" }
+              download:
+                type: object
+                additionalProperties: false
+                required: [url, expiresIn]
+                properties:
+                  url: { type: string, format: uri }
+                  expiresIn: { type: integer, const: 300 }
     NarrationModel:
       type: string
       enum: [gpt-realtime-2.1-mini, gpt-realtime-2.1]
