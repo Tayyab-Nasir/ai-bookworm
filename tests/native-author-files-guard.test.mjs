@@ -6,7 +6,31 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { loopbackRelay } from './e2e/native-author-files-relay.mjs';
-import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeProjectId, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+
+test('native child settings boot the real production API without operator credentials or network calls', () => {
+  const env = nativeAuthorEnvironment({ url: 'http://127.0.0.1:55321', anonKey: 'synthetic-anonymous',
+    serviceKey: 'synthetic-service', scannerUrl: 'http://127.0.0.1:55323',
+    documentUrl: 'http://127.0.0.1:55324', serviceToken: 'synthetic-private-service' },
+  { PATH: process.env.PATH ?? '', OPENAI_API_KEY: 'operator-key-must-not-leak', NODE_OPTIONS: '--import dotenv/config' });
+  assert.equal(env.NODE_ENV, 'production');
+  assert.equal(env.OPENAI_API_KEY, ''); assert.equal(env.STRIPE_SECRET_KEY, '');
+  assert.equal(env.NODE_OPTIONS, undefined);
+  const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    let calls = 0;
+    globalThis.fetch = async () => { calls++; throw new Error('Production boot must not contact a service'); };
+    const { buildApp } = await import('./services/api/src/app.ts');
+    const app = await buildApp();
+    try {
+      await app.ready();
+      assert.equal((await app.inject({ method: 'GET', url: '/health' })).statusCode, 200);
+      assert.equal(calls, 0);
+    }
+    finally { await app.close(); }
+  `], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 20_000 });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+});
 
 test('generated project identity fits the CLI without truncating cleanup labels', () => {
   const id = randomUUID(), project = nativeProjectId(id);

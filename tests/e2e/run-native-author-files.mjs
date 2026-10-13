@@ -6,7 +6,7 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { childEnvironment, localStatus, migrationFiles, nativeProjectId, ownedInternalAddress, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
+import { childEnvironment, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, ownedInternalAddress, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
 import { loopbackRelay } from './native-author-files-relay.mjs';
 
 requireNativeAuthorRunner();
@@ -149,13 +149,7 @@ out=BytesIO(); doc.save(out); print(base64.b64encode(out.getvalue()).decode())`]
     ['--import', 'tsx', 'tests/e2e/native-author-files.mjs'], {
       timeout: 240_000, progress: true,
       input: JSON.stringify({ ...status, scannerUrl, documentUrl, serviceToken, docx }),
-      childEnv: { ...env, NODE_ENV: 'production', LOG_LEVEL: 'fatal',
-        SUPABASE_URL: status.url, SUPABASE_ANON_KEY: status.anonKey, SUPABASE_SERVICE_ROLE_KEY: status.serviceKey,
-        REDIS_URL: 'redis://127.0.0.1:59998', QDRANT_URL: 'http://127.0.0.1:59999',
-        SCANNING_SERVICE_URL: scannerUrl, SCANNING_SERVICE_TOKEN: serviceToken,
-        DOCUMENT_SERVICE_URL: documentUrl, DOCUMENT_SERVICE_TOKEN: serviceToken,
-        OPENAI_API_KEY: '', STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '',
-      },
+      childEnv: nativeAuthorEnvironment({ ...status, scannerUrl, documentUrl, serviceToken }, env),
     });
   console.log(diagnostic(output));
   assert.equal((await migrationDigest()).digest, before.digest, 'Migration source changed during native acceptance');

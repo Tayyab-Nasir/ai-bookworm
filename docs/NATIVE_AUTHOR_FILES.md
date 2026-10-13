@@ -11,6 +11,10 @@ service images and runs `node tests/e2e/run-native-author-files.mjs`. Supabase C
 is fixed at 2.120.0; its setup action is pinned to the reviewed v3 commit. The
 runner refuses execution outside explicitly enabled GitHub-hosted Linux CI.
 Run the safe, Docker-free guard tests locally with `npm run test:native-author-guard`.
+The guard suite boots the actual production API with the same child-environment
+builder, synthetic local settings and outbound fetches forbidden. This catches
+environment-schema and route-registration failures before building containers;
+it does not replace native dependency or authenticated-journey acceptance.
 
 The runner copies only the ordered repository migrations into a new temporary,
 unlinked Supabase project. It never copies `.temp`, `.env`, customer data or
@@ -56,6 +60,13 @@ application's entitlement, quote or consent controls.
   containers, networks and local database volumes are removed in `finally`.
 
 ## Evidence boundary
+
+Run `38387928342` on `fa4ff82` started Supabase, ClamAV and the document parser,
+and completed owned cleanup. The author process then failed before requests
+because its `LOG_LEVEL=fatal` was outside the application's configuration enum.
+The shared child-environment builder now uses `error`; a real production-boot
+regression reproduced that failure before the correction, then passed. All ten
+guard/relay/boot checks pass locally. A fresh native journey is still required.
 
 Native run `38386967571` on `6dc20cd` successfully started Supabase with all
 109 migrations, resolving the earlier pgcrypto error. It then exposed two

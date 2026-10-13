@@ -51,6 +51,16 @@ export function childEnvironment(source = process.env) {
     'BOOKWORM_NATIVE_AUTHOR_TEST'].filter(key => source[key]).map(key => [key, source[key]]));
 }
 
+export function nativeAuthorEnvironment(setup, source = process.env) {
+  return { ...childEnvironment(source), NODE_ENV: 'production', LOG_LEVEL: 'error',
+    SUPABASE_URL: setup.url, SUPABASE_ANON_KEY: setup.anonKey, SUPABASE_SERVICE_ROLE_KEY: setup.serviceKey,
+    REDIS_URL: 'redis://127.0.0.1:59998', QDRANT_URL: 'http://127.0.0.1:59999',
+    SCANNING_SERVICE_URL: setup.scannerUrl, SCANNING_SERVICE_TOKEN: setup.serviceToken,
+    DOCUMENT_SERVICE_URL: setup.documentUrl, DOCUMENT_SERVICE_TOKEN: setup.serviceToken,
+    OPENAI_API_KEY: '', STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '',
+  };
+}
+
 export function localOrigin(raw) {
   const url = new URL(raw);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port
