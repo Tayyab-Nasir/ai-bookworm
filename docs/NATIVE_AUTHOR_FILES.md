@@ -41,8 +41,10 @@ Rendering uses the existing private image, including its pinned EPUBCheck
 runtime, with a separate owned loopback relay and explicit service token.
 No subscription or commercial plan is seeded: saved-book export uses the
 application's existing rendering entitlement. Initial authoring creates no
-usage; the export extension requires exactly two `rendering` meter records,
-one per saved edition, with no AI jobs or other usage even after replay.
+usage; the complete browser/API extension requires exactly four `rendering`
+meter records, one EPUB and PDF per author path, with no AI jobs or other usage
+even after reopening and replay. The accepted API-only export revision below
+required two; the new browser Publishing Studio extension is not yet accepted.
 
 ## Assertions
 
@@ -78,6 +80,21 @@ one per saved edition, with no AI jobs or other usage even after replay.
   containers, networks and local database volumes are removed in `finally`.
 
 ## Evidence boundary
+
+Native run `38402880532`, job `115314763759`, PASSED at
+`2026-10-13T13:14:51Z` on exact `69da7108b5b30c28fa31adeab2b7a089f3a05a8a`.
+The native author/browser journey and real EPUB/PDF API extension passed,
+including exact private bytes, actual saved text/images, preflight/replay,
+foreign-tenant refusal, immutable old proofs after edits, two rendering events,
+zero AI jobs, migration integrity and owned cleanup. Twelve runner guards and
+the production web build passed in CI; 53 reader regressions passed locally.
+This supersedes the unaccepted API export status below, not release acceptance.
+
+The follow-on browser Publishing Studio extension drives real edition
+save/reload, EPUB/PDF rendering, sandboxed saved text and illustrations, actual
+download events with checksum verification, saved-print reopening, preflight
+findings, manual-submission gating and 390px containment. These new UI assertions
+and their four-event ledger total remain unverified until exact-source native CI.
 
 Native production-browser run `38400066961`, job `115305096361`, PASSED at
 `2026-10-13T12:52:58Z` on exact `b24ca869b2d5b92fa3f0b250e4304a30b52c29bc`.

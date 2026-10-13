@@ -220,12 +220,12 @@ try {
   assert.equal(evidence.text, passage.text); assert.equal(evidence.isCurrentVersion, true);
   console.log('PASS native Book Bible character/image/citation persistence, durable replay/recovery, actor/tenant isolation and stale-edit refusal');
 
-  const { runNativeAuthorBrowser } = await import('./native-author-files-browser.mjs');
-  await runNativeAuthorBrowser({ setup, service, apiOrigin: address, origins, foreignBookId: book.id });
-
   assert.equal(data(await service.from('ai_jobs').select('id'), 'AI jobs').length, 0);
   assert.equal(data(await service.from('usage_events').select('id'), 'provider usage').length, 0);
   console.log('PASS native initial table creation, edit/reload, stale-write refusal and zero AI jobs/usage');
+
+  const { runNativeAuthorBrowser } = await import('./native-author-files-browser.mjs');
+  await runNativeAuthorBrowser({ setup, service, apiOrigin: address, origins, foreignBookId: book.id });
 
   const { runNativeAuthorRenders } = await import('./native-author-files-render.mjs');
   await runNativeAuthorRenders({ request, service, alice, bob, book, chapter: reloaded.document });

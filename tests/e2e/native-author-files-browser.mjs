@@ -197,6 +197,9 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await screenshot('memory-mobile');
     succeeded('publishing metadata persistence and desktop/mobile containment');
 
+    const { runNativePublishingBrowser } = await import('./native-author-files-publishing.mjs');
+    await runNativePublishingBrowser({ page, bookId, passage, screenshot, onStage: value => { stage = value; } });
+
     stage = 'logout and returning author in a fresh browser context';
     await page.goto(`${webOrigin}/dashboard`);
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();

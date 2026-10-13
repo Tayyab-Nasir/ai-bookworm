@@ -102,7 +102,7 @@ export async function runNativeAuthorRenders({ request, service, alice, bob, boo
   }
   const usage = await service.from('usage_events').select('meter,quantity');
   assert.equal(usage.error, null);
-  assert.equal(usage.data.length, 2);
+  assert.equal(usage.data.length, 4); // One EPUB and PDF each through the browser and API.
   assert.ok(usage.data.every(row => row.meter === 'rendering' && Number(row.quantity) === 1));
   const jobs = await service.from('ai_jobs').select('id');
   assert.equal(jobs.error, null); assert.deepEqual(jobs.data, []);
