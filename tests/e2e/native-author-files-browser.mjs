@@ -154,11 +154,11 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.getByRole('button', { name: 'Add memory entry', exact: true }).click();
     const form = page.locator('#bible-entry-details');
     await form.getByLabel('Name', { exact: true }).fill('Browser Captain Mira');
-    await form.getByLabel('Description', { exact: true }).fill('A browser-saved captain with an imported visual reference.');
+    await form.getByRole('textbox', { name: 'Description', exact: true }).fill('A browser-saved captain with an imported visual reference.');
     await expect(form.getByRole('checkbox')).toHaveCount(1);
     await form.getByRole('checkbox').check();
     await form.getByRole('button', { name: '+ Add chapter source', exact: true }).click();
-    await form.getByLabel('Source chapter', { exact: true }).selectOption(chapter.id);
+    await form.getByRole('combobox', { name: 'Source chapter', exact: true }).selectOption(chapter.id);
     const [canonResponse] = await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/bible') && r.request().method() === 'POST'),
       form.getByRole('button', { name: 'Save memory entry', exact: true }).click()]);
     assert.equal(canonResponse.status(), 201);
@@ -169,18 +169,19 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.getByRole('button', { name: /character Browser Captain Mira/ }).click();
     await expect(form.getByLabel('Name', { exact: true })).toHaveValue('Browser Captain Mira');
     await expect(form.getByRole('checkbox')).toBeChecked();
-    await expect(form.getByLabel('Source chapter', { exact: true })).toHaveValue(chapter.id);
+    await expect(form.getByRole('combobox', { name: 'Source chapter', exact: true })).toHaveValue(chapter.id);
     succeeded('Book Bible save/reload with scanned image and version-pinned chapter');
 
     stage = 'publishing metadata and responsive memory';
     const metadata = page.getByRole('region', { name: 'Publishing metadata', exact: true });
-    await metadata.getByLabel('Book description', { exact: true }).fill('An author-reviewed harbor adventure.');
-    await metadata.getByLabel('Keywords · one per line', { exact: true }).fill('harbor\nadventure');
+    await metadata.getByRole('textbox', { name: 'Book description', exact: true }).fill('An author-reviewed harbor adventure.');
+    await metadata.getByRole('textbox', { name: 'Keywords · one per line', exact: true }).fill('harbor\nadventure');
     const [savedMetadata] = await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/metadata') && r.request().method() === 'PUT'),
       metadata.getByRole('button', { name: 'Save metadata', exact: true }).click()]);
     assert.equal(savedMetadata.status(), 200);
     await page.reload();
-    await expect(metadata.getByLabel('Book description', { exact: true })).toHaveValue('An author-reviewed harbor adventure.');
+    await expect(metadata.getByRole('textbox', { name: 'Book description', exact: true })).toHaveValue('An author-reviewed harbor adventure.');
+    await expect(metadata.getByRole('textbox', { name: 'Keywords · one per line', exact: true })).toHaveValue('harbor\nadventure');
     await screenshot('memory-desktop');
     await page.setViewportSize({ width: 390, height: 844 });
     await screenshot('memory-mobile');

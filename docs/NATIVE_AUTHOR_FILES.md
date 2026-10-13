@@ -93,6 +93,19 @@ remain strict; production authentication behavior was not changed. Both failed
 native runs completed browser/web and service cleanup. The revised browser
 journey still needs terminal native acceptance.
 
+Run `38395191172` on `5bbc4aa` subsequently passed the production-browser
+signup/profile/private-cookie, workspace, real DOCX import and chapter
+save/reload assertions. It stopped before saving linked Book Bible memory;
+both cleanup levels passed. The retained screenshot shows its chapter select
+still unselected. An isolated Chrome reproduction found zero matches for the
+test's exact label lookup, but one exact accessible combobox match, which could
+select the chapter. Both selection and reload assertions now use that semantic
+role locator without changing the application or weakening saved-link checks.
+The same probe reproduced exact-label failure for a populated nested textarea;
+memory descriptions and metadata now use exact textbox roles. Metadata reload
+also checks the saved keyword lines, not only the book description.
+The remainder of this revised native browser journey is still unverified.
+
 Run `38387928342` on `fa4ff82` started Supabase, ClamAV and the document parser,
 and completed owned cleanup. The author process then failed before requests
 because its `LOG_LEVEL=fatal` was outside the application's configuration enum.
