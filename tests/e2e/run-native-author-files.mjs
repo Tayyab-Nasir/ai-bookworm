@@ -6,7 +6,7 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { childEnvironment, localOrigin, localStatus, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
+import { childEnvironment, localOrigin, localStatus, migrationFiles, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
 
 requireNativeAuthorRunner();
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -47,7 +47,7 @@ async function command(label, executable, args, { input, timeout = 120_000, chil
 }
 
 async function migrationDigest() {
-  const files = (await readdir(join(root, 'supabase/migrations'))).filter(name => /^\d{14}_[a-z0-9_]+\.sql$/.test(name)).sort();
+  const files = migrationFiles(await readdir(join(root, 'supabase/migrations')));
   assert.ok(files.length >= 108, 'Missing manuscript import migrations');
   const hash = createHash('sha256');
   for (const name of files) {

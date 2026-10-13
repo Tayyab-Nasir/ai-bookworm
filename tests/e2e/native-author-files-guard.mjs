@@ -1,4 +1,18 @@
 /** Guards shared by the disposable runner and its real HTTP journey. No app imports. */
+export function migrationFiles(names) {
+  const files = names.filter(name => name.endsWith('.sql')).sort();
+  const versions = new Set();
+  for (const name of files) {
+    const match = /^(\d+)_[a-z0-9_]+\.sql$/.exec(name);
+    if (!match || versions.has(match[1])) throw new Error('Invalid or duplicate repository migration version.');
+    versions.add(match[1]);
+  }
+  if (!files.includes('0001_extensions.sql') || !files.includes('20261013110000_canonical_import_reading_text.sql')) {
+    throw new Error('Missing original or canonical import migration.');
+  }
+  return files;
+}
+
 export function requireNativeAuthorRunner(env = process.env, platform = process.platform) {
   if (platform !== 'linux' || env.GITHUB_ACTIONS !== 'true'
     || env.RUNNER_ENVIRONMENT !== 'github-hosted' || env.BOOKWORM_NATIVE_AUTHOR_TEST !== '1') {

@@ -1,8 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { childEnvironment, localFetch, localOrigin, localStatus, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+
+test('native manifest preserves every original numbered and timestamped migration', () => {
+  const names = readdirSync(new URL('../supabase/migrations/', import.meta.url));
+  const files = migrationFiles(names);
+  assert.ok(files.length >= 108);
+  assert.equal(files.length, names.filter(name => name.endsWith('.sql')).length);
+  assert.equal(files[0], '0001_extensions.sql');
+  assert.ok(files.includes('0013_admin_ops.sql'));
+  assert.deepEqual(migrationFiles([...names].reverse()), files);
+  assert.throws(() => migrationFiles(names.filter(name => name !== '0001_extensions.sql')));
+  assert.throws(() => migrationFiles([...names, '0001_duplicate.sql']));
+  assert.throws(() => migrationFiles([...names, 'bad-name.sql']));
+});
 
 test('native author runner requires explicit disposable hosted Linux CI', () => {
   const env = { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', BOOKWORM_NATIVE_AUTHOR_TEST: '1' };

@@ -106,11 +106,19 @@ try {
   await request(bob.token, 'POST', `/assets/${text.assetId}/confirm`, { checksumSha256: text.checksum, sizeBytes: text.bytes.length }, 404);
   await confirm(alice, text, 422, '0'.repeat(64));
   await quarantined(alice, text);
+  // Reach a real owned service with no scanner route: a dependency error must
+  // persist quarantine, not convert an outage into a clean verdict.
+  try {
+    process.env.SCANNING_SERVICE_URL = setup.documentUrl;
+    await confirm(alice, text, 503);
+    await quarantined(alice, text);
+  } finally { process.env.SCANNING_SERVICE_URL = setup.scannerUrl; }
   assert.equal((await confirm(alice, text)).scanStatus, 'clean');
   await download(alice, text);
   await request(bob.token, 'GET', `/assets/${text.assetId}/download-url`, undefined, 404);
   assert.ok((await bob.client.storage.from('book-assets').download(text.path)).error, 'Foreign tenant read private bytes');
-  console.log('PASS native signed upload, quarantine, checksum failure/retry, real clean scan and byte-exact download');
+  assert.ok((await bob.client.storage.from('book-assets').createSignedUploadUrl(text.path)).error, 'Foreign tenant acquired upload authority');
+  console.log('PASS native signed upload, quarantine, checksum/scanner failure recovery, real clean scan and byte-exact download');
 
   // Exact harmless bytes in the test-only ClamAV signature database, not malware.
   const rejected = await upload(alice, 'harmless-rejection.txt', 'text/plain', Buffer.from('Bookworm harmless infected-verdict acceptance fixture.'));

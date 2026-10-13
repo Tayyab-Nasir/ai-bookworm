@@ -32,7 +32,8 @@ application's entitlement, quote or consent controls.
   verification, and workspace isolation through both API and PostgREST.
 - Book create/replay, mismatched replay refusal and foreign-book denial.
 - Real signed upload, quarantine visibility at both API and Storage, checksum
-  mismatch/retry, real malware scan, and byte-exact original download.
+  mismatch and scanner-unavailable recovery, real malware scan, byte-exact
+  original download, and refusal of foreign upload authority.
 - The test-only ClamAV database recognizes one exact harmless text fixture;
   the API must persist the infected verdict and keep its bytes quarantined.
 - A synthetic DOCX with a table and PNG follows upload, scan, durable job,
