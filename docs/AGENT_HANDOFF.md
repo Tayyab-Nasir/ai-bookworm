@@ -5,6 +5,11 @@
 This is the full AI-native publishing application, not only its landing page.
 Shared vault: `C:/Users/Asus/Memory-Ai`.
 
+- Current author/file/saved-print build and user's Stripe deferral:
+  `docs/AUTHOR_FILE_PROOF_CHECKPOINT.md` (2026-10-13).
+- Exact frozen-source acceptance and continuation:
+  `Codex Sessions/2026-10/2026-10-13-author-file-proof-checkpoint.md`.
+
 - Current workspace, publication proof desk and local gstack setup checkpoint:
   `docs/WORKSPACE_PUBLICATION_CHECKPOINT.md` (2026-10-10).
 - Exact frozen-candidate evidence, excluded drafts and continuation artifacts:
