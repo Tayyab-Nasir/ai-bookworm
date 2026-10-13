@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { BookModelSchema } from "@bookworm/book-model";
+import { BookModelSchema, bookNodesPlainText } from "@bookworm/book-model";
 import { AppError } from "../errors.js";
 import { loadBook, nodesSchema } from "./authoring.js";
 import type { SupabaseClient } from "./supabase.js";
@@ -60,7 +60,7 @@ export async function executeManuscriptImport(input: {
     const parsed = z.object({ bookModel: BookModelSchema, embeddedAssets: embeddedImagesSchema.default([]), report: z.object({ warnings: z.array(z.string()).default([]), confidence: z.string().optional() }).passthrough() }).safeParse(await readDocumentResponse(response));
     if (!parsed.success) throw new AppError(503, "Document parser returned an invalid document; no chapters were imported");
     const chapters = parsed.data.bookModel.chapters;
-    if (!chapters.some((c) => c.nodes.some((n) => n.text?.trim()))) throw new AppError(422, "No readable manuscript text found. Scanned PDFs need OCR before import.");
+    if (!chapters.some((c) => bookNodesPlainText(c.nodes).trim())) throw new AppError(422, "No readable manuscript text found. Scanned PDFs need OCR before import.");
     const warnings = [...parsed.data.report.warnings];
     if (parsed.data.embeddedAssets.length) {
       return importManuscriptImages({ service: service, scanner: scanner,
@@ -73,7 +73,10 @@ export async function executeManuscriptImport(input: {
     const normalized = chapters.map((chapter) => ({ title: chapter.title || "Untitled chapter", nodes: nodesSchema.parse(chapter.nodes.map((node) => {
       if (node.assetId) {
         warnings.push("An embedded illustration remains in the original source. Upload that illustration in Assets to attach it to the manuscript.");
-        return { id: node.id, type: "caption" as const, text: "[Embedded illustration — retained in original manuscript]", attributes: { sourceAssetId: asset.id, importedNodeType: node.type } };
+        const readingText = bookNodesPlainText([node]);
+        const marker = "[Embedded illustration — retained in original manuscript]";
+        return { id: node.id, type: "caption" as const, text: readingText ? `${readingText}\n\n${marker}` : marker,
+          attributes: { sourceAssetId: asset.id, importedNodeType: node.type } };
       }
       return node;
     })) }));

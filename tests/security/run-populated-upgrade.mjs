@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 107 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 108 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -16,7 +16,8 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
-const targetEnd = '20261013100000_manual_book_bible_recovery.sql';
+const targetEnd = '20261013110000_canonical_import_reading_text.sql';
+const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
 const guardedTranslation = '20260919120000_quoted_translation_queue.sql';
 const db = new PGlite({ extensions: { citext, pgcrypto } });
@@ -76,10 +77,38 @@ async function expectedGuard(migration, fixture, historical, kind) {
   console.log(`PASS expected ${kind} guarded failure with atomic rollback ${migration.name}`);
 }
 
+async function expectedReadingTextGuard(migration, fixture, historical, signature) {
+  step = `expected canonical reading-text definition guard: ${signature}`;
+  const signatures = ['public.create_book_chapters(uuid,jsonb,uuid)', 'public.complete_manuscript_import(uuid,uuid,uuid,text,jsonb,jsonb,jsonb)'];
+  const captureTargets = async () => (await db.query(`select oid::text,proacl,prosecdef,proconfig,proretset,prorettype::text,
+    pg_get_functiondef(oid) as definition from pg_proc where oid in ($1::regprocedure,$2::regprocedure) order by oid`, signatures)).rows;
+  await db.exec('begin;');
+  try {
+    const { rows: [{ definition }] } = await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature]);
+    const marker = "from jsonb_array_elements(v_item->'nodes') with ordinality;";
+    assert.equal(definition.split(marker).length, 2, 'Drift fixture changes exactly one current projection');
+    await db.exec(definition.replace(marker, "from jsonb_array_elements(v_item->'nodes') with ordinality /* synthetic projection drift */;"));
+    const before = await captureTargets();
+    const schemaAcl = (await db.query("select nspacl from pg_namespace where nspname='private'")).rows;
+    await db.exec('savepoint reading_text_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001'
+      && error.message.startsWith('Canonical import reading text target definition drift:')
+      && error.message.includes(signature.split('(')[0].split('.').at(-1)));
+    await db.exec('rollback to savepoint reading_text_guard;');
+    assert.deepEqual(await captureTargets(), before, 'Both function bodies and ACLs survive failed migration, including second-target failure');
+    assert.deepEqual((await db.query("select nspacl from pg_namespace where nspname='private'")).rows, schemaAcl, 'Schema ACL addition rolls back');
+    for (const helper of ['private.canonical_book_nodes_plain_text(jsonb)', 'private.canonical_book_plain_text_word_count(text)']) {
+      assert.equal((await db.query('select to_regprocedure($1) as helper', [helper])).rows[0].helper, null, 'Failed migration leaves no helper');
+    }
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS expected canonical reading-text drift and atomic rollback ${signature}`);
+}
+
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 107, 'This reviewed rehearsal pins the 45 -> 107 target; review before extending');
+  assert.equal(names.length, 108, 'This reviewed rehearsal pins the 45 -> 108 target; review before extending');
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912180000_translation_workflow.sql');
   assert.equal(names.at(-1), targetEnd);
@@ -88,7 +117,7 @@ try {
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
   }));
   const manifest = migrations.map(({ name, sha256 }) => `${name} ${sha256}`).join('\n');
-  console.log(`Ordered source manifest sha256=${createHash('sha256').update(manifest).digest('hex')} baseline=45 upgrade=62`);
+  console.log(`Ordered source manifest sha256=${createHash('sha256').update(manifest).digest('hex')} baseline=45 upgrade=63`);
   await db.exec(await readFile(join(root, 'tests/security/local-supabase-fixture.sql'), 'utf8'));
   for (const migration of migrations.slice(0, 45)) await migrate(migration, 'baseline');
   step = 'committed populated historical fixture';
@@ -101,7 +130,12 @@ try {
   for (const migration of migrations.slice(45)) {
     if (migration.name === guardedMetadata) await expectedGuard(migration, fixture, historical, 'duplicate metadata');
     if (migration.name === guardedTranslation) await expectedGuard(migration, fixture, historical, 'function drift');
-    if (migration.name === targetEnd) await expectedGuard(migration, fixture, historical, 'nonfinite canon revision');
+    if (migration.name === guardedBible) await expectedGuard(migration, fixture, historical, 'nonfinite canon revision');
+    if (migration.name === targetEnd) {
+      for (const signature of ['public.create_book_chapters(uuid,jsonb,uuid)', 'public.complete_manuscript_import(uuid,uuid,uuid,text,jsonb,jsonb,jsonb)']) {
+        await expectedReadingTextGuard(migration, fixture, historical, signature);
+      }
+    }
     await migrate(migration, 'upgrade');
     assert.deepEqual(await captureHistoricalState(db, fixture), historical, `Historical identities/content/versions/balances/ownership unchanged after ${migration.name}`);
   }
@@ -130,6 +164,24 @@ try {
   assert.equal((await db.query('select count(*)::int as n from bookworm_private.book_bible_mutation_receipts')).rows[0].n, 0, 'Rollback probes do not leave historical mutation claims');
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Durable upgrade probes preserve all historical fields and rolled-back canon');
   console.log('PASS historical canon incarnation backfill, distinct identity, explicit authenticated recovery writes and rollback without invented historical receipts');
+  step = 'new chapter reading text after populated upgrade';
+  for (const tenant of fixture.tenants) {
+    const nodes = [{ id: 'table-reading', type: 'table', rows: [['Alpha', 'Beta']] },
+      { id: 'empty-authoritative', type: 'table', text: '', rows: [['Hidden legacy grid']] },
+      { id: 'unicode-reading', type: 'paragraph', text: 'Gamma\u00a0delta' }];
+    await db.exec('begin; set local role authenticated;');
+    try {
+      await db.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({ sub: tenant.user, role: 'authenticated' })]);
+      const { rows: [chapter] } = await db.query('select current_document_version_id from public.create_book_chapters($1,$2::jsonb)',
+        [tenant.book, JSON.stringify([{ title: 'Reading text upgrade probe', nodes }])]);
+      const { rows: [version] } = await db.query('select content_json,plain_text,word_count from public.document_versions where id=$1', [chapter.current_document_version_id]);
+      assert.equal(version.plain_text, 'Alpha\tBeta\n\nGamma\u00a0delta');
+      assert.equal(version.word_count, 4);
+      assert.deepEqual(version.content_json.nodes, nodes, 'Reading projection does not rewrite canonical content');
+    } finally { await db.exec('rollback;'); }
+  }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'New reading projections leave historical versions and receipts untouched');
+  console.log('PASS populated upgrade reading projection: table cells, authoritative empty text, Unicode whitespace, unchanged canonical content and historical rollback');
   console.log('PASS preserved historical projections, tenant/role/quarantine isolation, tenant-scoped profiles/ledger, retired RPCs, service-only pinned RPCs, rich citations, legacy-unverified Stripe receipts and zero unentitled image capacity');
   step = 'existing synthetic paid quote lifecycle helpers on upgraded schema';
   await verifyPaidQuoteFixtures(async statement => {
@@ -141,7 +193,7 @@ try {
       : typeof value === 'boolean' ? value ? 't' : 'f' : String(value);
   });
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Reused paid lifecycle fixtures roll back without changing historical rows');
-  console.log('PASS populated upgrade: 45 historical migrations + committed rows + 62 upgrades + three guarded aborts + reused synthetic paid lifecycle helpers.');
+  console.log('PASS populated upgrade: 45 historical migrations + committed rows + 63 upgrades + five guarded aborts + reused synthetic paid lifecycle helpers.');
   console.log('NOT PROVEN: hosted history/drift, real backup/restore, native concurrency, GoTrue/PostgREST/Storage HTTP, provider receipts, worker drain or production rollout authority.');
 } catch (error) {
   // Never print SQL, function definitions, row contents or raw database error detail.

@@ -5,6 +5,11 @@
 This is the full AI-native publishing application, not only its landing page.
 Shared vault: `C:/Users/Asus/Memory-Ai`.
 
+- Current manual Book Bible save/recovery and edit-conflict checkpoint:
+  `docs/MANUAL_BOOK_BIBLE_CHECKPOINT.md` (2026-10-13).
+- Exact R2 acceptance, native CI and continuation:
+  `Codex Sessions/2026-10/2026-10-13-manual-book-bible-build.md`.
+
 - Current author/file/saved-print build and user's Stripe deferral:
   `docs/AUTHOR_FILE_PROOF_CHECKPOINT.md` (2026-10-13).
 - Exact frozen-source acceptance and continuation:

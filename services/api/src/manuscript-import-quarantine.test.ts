@@ -75,6 +75,7 @@ async function fixture(options: FixtureOptions = {}) {
   const scannedImages: Buffer[] = [];
   const imageObjects = new Map<string, Buffer>();
   const downloads: string[] = [];
+  const uploads: string[] = [];
   const role = options.role ?? "editor";
   const scanStatus = options.scanStatus ?? "clean";
   const checksum = options.checksum ?? SOURCE_CHECKSUM;
@@ -132,7 +133,7 @@ async function fixture(options: FixtureOptions = {}) {
     storage: {
       from: (_bucket: string) => ({
         download: async (path: string) => { downloads.push(path); return { data: new Blob([Uint8Array.from(imageObjects.get(path) ?? SOURCE_BYTES)]), error: null }; },
-        upload: async (path: string, bytes: Buffer) => { imageObjects.set(path, bytes); return { error: null }; },
+        upload: async (path: string, bytes: Buffer) => { uploads.push(path); imageObjects.set(path, bytes); return { error: null }; },
         remove: async (paths: string[]) => { paths.forEach((path) => imageObjects.delete(path)); return { error: null }; },
       }),
     },
@@ -168,6 +169,7 @@ async function fixture(options: FixtureOptions = {}) {
     rpcCalls,
     scannedImages,
     downloads,
+    uploads,
     close: async () => {
       globalThis.fetch = originalFetch;
       await app.close();
@@ -225,6 +227,47 @@ test("import preserves formatting and table cells across validation into the ato
     const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH, payload: { assetId: ASSET_ID } });
     assert.equal(response.statusCode, 200, response.body);
     assert.deepEqual(ctx.rpcCalls[0].args.p_chapters, [{ title: "Opening", nodes }]);
+  } finally { await ctx.close(); }
+});
+
+for (const [name, nodes] of [
+  ["rows-only table", [{ id: "grid", type: "table", rows: [["Name", "Role"], ["Elara", "Navigator"]] }]],
+  ["distinct image caption", [{ id: "picture", type: "image", text: "", caption: "A visible caption", altText: "Private accessibility words" }]],
+] as const) test(`canonical ${name} reading text reaches the import commit without a prose node`, async () => {
+  const ctx = await fixture({ parsedNodes: structuredClone(nodes) as unknown as Array<Record<string, unknown>> });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH, payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, 200, response.body); assert.equal(ctx.parserCalls.length, 1);
+    assert.equal(ctx.rpcCalls[0].name, "complete_manuscript_import"); assert.deepEqual(ctx.rpcCalls[0].args.p_chapters, [{ title: "Opening", nodes }]);
+  } finally { await ctx.close(); }
+});
+
+for (const nodes of [
+  [{ id: "grid", type: "table", text: "", rows: [["Stale retained grid"]] }],
+  [{ id: "picture", type: "image", text: "", altText: "Accessibility is not reading text" }],
+]) test("import does not treat suppressed table rows or accessibility-only images as reading text", async () => {
+  const ctx = await fixture({ parsedNodes: nodes });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH, payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, 422); assert.equal(ctx.parserCalls.length, 1); assert.equal(ctx.rpcCalls.length, 0);
+  } finally { await ctx.close(); }
+});
+
+for (const [name, fields, readingText] of [
+  ["caption-only", { caption: "The hidden garden" }, "The hidden garden"],
+  ["mirrored text and caption", { text: "The harbor at dawn", caption: "The harbor at dawn" }, "The harbor at dawn"],
+] as const) test(`unavailable parser illustration preserves ${name} once without fabricating image bytes`, async () => {
+  const node = { id: "unavailable-figure", type: "image", assetId: WORKSPACE_ID, altText: "Private accessibility wording", ...fields };
+  const ctx = await fixture({ parsedNodes: [node], embeddedAssets: [] });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH, payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, 200, response.body); assert.equal(ctx.parserCalls.length, 1);
+    assert.deepEqual(ctx.rpcCalls[0].args.p_chapters, [{ title: "Opening", nodes: [{ id: node.id, type: "caption",
+      text: `${readingText}\n\n[Embedded illustration — retained in original manuscript]`,
+      attributes: { sourceAssetId: ASSET_ID, importedNodeType: "image" } }] }]);
+    assert.deepEqual(ctx.rpcCalls[0].args.p_images, []); assert.deepEqual(ctx.uploads, []); assert.deepEqual(ctx.scannedImages, []);
+    assert.deepEqual(ctx.downloads, [STORAGE_PATH]); assert.equal(response.json().report.imageCount, 0); assert.deepEqual(response.json().assetIds, []);
+    assert.deepEqual(response.json().report.warnings, ["An embedded illustration remains in the original source. Upload that illustration in Assets to attach it to the manuscript."]);
   } finally { await ctx.close(); }
 });
 
