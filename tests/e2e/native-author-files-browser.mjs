@@ -71,11 +71,19 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
       page.getByRole('button', { name: 'Create account', exact: true }).click()]);
     stage = 'successful signup response';
     assert.equal(signup.status(), 200);
-    stage = 'public signup identity';
-    const user = (await signup.json()).user;
-    assert.ok(user?.id);
     stage = 'authenticated dashboard redirect';
     await page.waitForURL(`${webOrigin}/dashboard`);
+    // AuthCard performs a full navigation, invalidating the prior fetch body's
+    // Playwright handle. Verify the new document's actual session and identity.
+    stage = 'persisted public signup identity';
+    const session = await page.evaluate(async () => {
+      const response = await fetch('/api/auth/session');
+      return { status: response.status, body: await response.json() };
+    });
+    assert.equal(session.status, 200);
+    const user = session.body.user;
+    assert.ok(user?.id); assert.equal(user.email, email);
+    assert.deepEqual(Object.keys(user).sort(), ['displayName', 'email', 'id']);
     stage = 'signup profile persistence';
     const profile = await service.from('profiles').select('id').eq('id', user.id).single();
     assert.equal(profile.data?.id, user.id);
@@ -182,7 +190,7 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.goto(`${webOrigin}/dashboard`);
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
     await page.waitForURL(`${webOrigin}/login`);
-    assert.equal((await page.request.get(`${webOrigin}/api/auth/session`)).status(), 401);
+    assert.equal(await page.evaluate(async () => (await fetch('/api/auth/session')).status), 401);
     await page.context().close(); page = await context();
     await page.goto(`${webOrigin}/books/${bookId}/memory`);
     await page.getByLabel('Email', { exact: true }).fill(email);
@@ -190,7 +198,7 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.getByRole('button', { name: /sign in/i }).click();
     await page.waitForURL(`${webOrigin}/books/${bookId}/memory`);
     await expect(page.getByRole('button', { name: /character Browser Captain Mira/ })).toBeVisible();
-    assert.equal((await page.request.get(`${webOrigin}/api/backend/v1/books/${foreignBookId}`)).status(), 404);
+    assert.equal(await page.evaluate(async id => (await fetch(`/api/backend/v1/books/${id}`)).status, foreignBookId), 404);
     assert.deepEqual(errors, []);
     succeeded('logout, protected-route login, persistent memory and foreign-book refusal');
   } catch {

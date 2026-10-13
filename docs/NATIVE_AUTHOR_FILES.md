@@ -82,6 +82,17 @@ That extension has 11 passing local guard checks, including a reproduced
 then-fixed trailing-slash origin-collision case, but still requires an exact
 new-source production build and native browser run with screenshot review.
 
+The first browser runs on `14e1791` and diagnostic follow-up `99ede3a` passed
+production build and native API/service assertions, but failed when the test
+read the signup response body after AuthCard's full navigation. A local
+isolated Chrome reproduction confirms that old response handle is unavailable
+while the new page's authenticated session endpoint succeeds. Browser identity
+is now verified through that endpoint after navigation, including exact email,
+minimal public fields and durable profile. Cookie, tenant and logout assertions
+remain strict; production authentication behavior was not changed. Both failed
+native runs completed browser/web and service cleanup. The revised browser
+journey still needs terminal native acceptance.
+
 Run `38387928342` on `fa4ff82` started Supabase, ClamAV and the document parser,
 and completed owned cleanup. The author process then failed before requests
 because its `LOG_LEVEL=fatal` was outside the application's configuration enum.
