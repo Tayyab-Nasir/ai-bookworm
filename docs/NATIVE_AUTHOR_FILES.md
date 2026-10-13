@@ -1,7 +1,7 @@
 # Native author-file acceptance
 
 This test runs the actual Bookworm API and document worker against disposable
-Supabase Auth, PostgREST, Storage, ClamAV and document-parser containers. It does
+Supabase Auth, PostgREST, Storage, ClamAV, document-parser and rendering containers. It does
 not use the SQL-only suite's Auth/Storage stubs or injected API service fakes.
 
 ## Running and safety
@@ -25,7 +25,7 @@ Published ports must bind to loopback. Operator credentials, proxy/Docker
 overrides and dotenv hooks are not inherited by child processes.
 
 The processing network stays Docker-internal, with no published ports or
-external route. Two byte-transparent Node TCP relays bind only to host loopback
+external route. Three byte-transparent Node TCP relays bind only to host loopback
 and reach inspected, running containers on that exact network. They do not
 replace HTTP responses or service implementations. The project ID is a full
 random UUID under a short prefix, below the pinned CLI's 40-character cap;
@@ -36,6 +36,13 @@ never printed. The journey's fetch guard allows only the exact owned loopback
 origins, refuses redirects, and bounds requests. OpenAI and Stripe credentials
 are empty; no AI job or provider usage may be created. This does not bypass the
 application's entitlement, quote or consent controls.
+
+Rendering uses the existing private image, including its pinned EPUBCheck
+runtime, with a separate owned loopback relay and explicit service token.
+No subscription or commercial plan is seeded: saved-book export uses the
+application's existing rendering entitlement. Initial authoring creates no
+usage; the export extension requires exactly two `rendering` meter records,
+one per saved edition, with no AI jobs or other usage even after replay.
 
 ## Assertions
 
@@ -71,6 +78,25 @@ application's entitlement, quote or consent controls.
   containers, networks and local database volumes are removed in `finally`.
 
 ## Evidence boundary
+
+Native production-browser run `38400066961`, job `115305096361`, PASSED at
+`2026-10-13T12:52:58Z` on exact `b24ca869b2d5b92fa3f0b250e4304a30b52c29bc`.
+Alongside the native API/service assertions, its terminal logs verify signup,
+private cookies, workspace creation, real DOCX import, persistent chapter edits,
+Book Bible image/chapter links after reload, saved description/keywords, desktop
+and mobile containment, logout, fresh-context login and foreign-book refusal.
+Zero AI jobs/usage, migration-source integrity and both cleanup levels passed.
+This supersedes the failed-browser status below; it does not cover the new
+rendering extension or hosted Google OAuth/funded provider/release acceptance.
+
+The added native export extension is not yet accepted. It exercises actual
+EPUB/PDF generation, stored bytes/checksums, foreign-tenant refusal, durable
+render replay, real saved EPUB text/image reads, refreshed PDF downloads and
+export preflight replay. It edits the manuscript afterward: old proofs must
+remain readable byte-for-byte, while reuse of old render/preflight keys must
+return 409. Preflight findings are recorded, not treated as retailer approval;
+the deliberately small imported image is not print-quality acceptance. This
+does not yet prove the browser's Publishing Studio against native rendering.
 
 Native author run `38389676074`, job `115270072557`, passed at
 `2026-10-13T11:24:19Z` on exact source

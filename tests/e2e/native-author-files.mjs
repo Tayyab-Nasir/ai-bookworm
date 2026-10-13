@@ -11,7 +11,7 @@ for await (const chunk of process.stdin) {
   assert.ok(input.length < 2 * 1024 * 1024, 'Native fixture input exceeds its limit');
 }
 const setup = JSON.parse(input);
-const origins = new Set([setup.url, setup.scannerUrl, setup.documentUrl].map(localOrigin));
+const origins = new Set([setup.url, setup.scannerUrl, setup.documentUrl, setup.renderingUrl].map(localOrigin));
 assert.equal(setup.url, 'http://127.0.0.1:55321');
 assert.equal(process.env.SUPABASE_URL, setup.url);
 assert.ok(process.env.SUPABASE_ANON_KEY === setup.anonKey, 'Disposable anonymous key mismatch');
@@ -226,6 +226,9 @@ try {
   assert.equal(data(await service.from('ai_jobs').select('id'), 'AI jobs').length, 0);
   assert.equal(data(await service.from('usage_events').select('id'), 'provider usage').length, 0);
   console.log('PASS native initial table creation, edit/reload, stale-write refusal and zero AI jobs/usage');
+
+  const { runNativeAuthorRenders } = await import('./native-author-files-render.mjs');
+  await runNativeAuthorRenders({ request, service, alice, bob, book, chapter: reloaded.document });
 } finally {
   for (const client of clients) await client.auth.signOut().catch(() => {});
   await app.close();

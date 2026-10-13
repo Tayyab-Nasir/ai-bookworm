@@ -25,11 +25,13 @@ test('native web settings exclude service credentials and reject self-proxy or e
 test('native child settings boot the real production API without operator credentials or network calls', () => {
   const env = nativeAuthorEnvironment({ url: 'http://127.0.0.1:55321', anonKey: 'synthetic-anonymous',
     serviceKey: 'synthetic-service', scannerUrl: 'http://127.0.0.1:55323',
-    documentUrl: 'http://127.0.0.1:55324', serviceToken: 'synthetic-private-service' },
+    documentUrl: 'http://127.0.0.1:55324', renderingUrl: 'http://127.0.0.1:55325', serviceToken: 'synthetic-private-service' },
   { PATH: process.env.PATH ?? '', OPENAI_API_KEY: 'operator-key-must-not-leak', NODE_OPTIONS: '--import dotenv/config' });
   assert.equal(env.NODE_ENV, 'production');
   assert.equal(env.OPENAI_API_KEY, ''); assert.equal(env.STRIPE_SECRET_KEY, '');
   assert.equal(env.NODE_OPTIONS, undefined);
+  assert.equal(env.RENDERING_SERVICE_URL, 'http://127.0.0.1:55325');
+  assert.equal(env.RENDERING_SERVICE_TOKEN, 'synthetic-private-service');
   const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     let calls = 0;
@@ -44,6 +46,13 @@ test('native child settings boot the real production API without operator creden
     finally { await app.close(); }
   `], { cwd: fileURLToPath(new URL('../', import.meta.url)), env, encoding: 'utf8', timeout: 20_000 });
   assert.equal(result.status, 0, result.stderr || result.error?.message);
+});
+
+test('native renderer must be a distinct owned loopback service', () => {
+  const setup = { url: 'http://127.0.0.1:55321', scannerUrl: 'http://127.0.0.1:55323', documentUrl: 'http://127.0.0.1:55324' };
+  for (const renderingUrl of [undefined, 'https://renderer.example', 'http://127.0.0.1:55321/', setup.scannerUrl, setup.documentUrl]) {
+    assert.throws(() => nativeAuthorEnvironment({ ...setup, renderingUrl }, {}));
+  }
 });
 
 test('generated project identity fits the CLI without truncating cleanup labels', () => {

@@ -2,10 +2,10 @@ name: Native author files acceptance
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['package.json', 'package-lock.json', 'apps/web/**', 'services/api/**', 'packages/**', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
+    paths: ['package.json', 'package-lock.json', 'apps/web/**', 'services/api/**', 'packages/**', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'services/rendering/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
   push:
     branches: [main, master, 'codex/**']
-    paths: ['package.json', 'package-lock.json', 'apps/web/**', 'services/api/**', 'packages/**', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
+    paths: ['package.json', 'package-lock.json', 'apps/web/**', 'services/api/**', 'packages/**', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'services/rendering/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
 permissions:
   contents: read
 jobs:
@@ -31,12 +31,13 @@ jobs:
           NEXT_TELEMETRY_DISABLED: '1'
           BOOKWORM_DIST_DIR: .next-native-author
         run: node node_modules/next/dist/bin/next build apps/web
-      - name: Build existing private scanner and document runtimes
+      - name: Build existing private scanner, document and rendering runtimes
         run: |
           docker build -t bookworm-ci-scanner services/scanning
           docker build -t bookworm-ci-clamd ops/scanner-test
           docker build -f ops/processing.Dockerfile --target document -t bookworm-ci-document .
-      - name: Verify real Auth, PostgREST, Storage, scanner and import worker
+          docker build -f ops/processing.Dockerfile --target rendering -t bookworm-ci-rendering .
+      - name: Verify native authoring, imports, saved EPUB/PDF and private downloads
         env:
           BOOKWORM_NATIVE_AUTHOR_TEST: '1'
         run: node tests/e2e/run-native-author-files.mjs

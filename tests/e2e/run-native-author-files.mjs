@@ -125,11 +125,15 @@ try {
     '-e', `SCANNING_SERVICE_TOKEN=${serviceToken}`, '-e', 'CLAMD_HOST=clamd']);
   const document = await runContainer('bookworm-ci-document', ['--memory', '512m',
     '-e', `SERVICE_AUTH_TOKEN=${serviceToken}`]);
+  const rendering = await runContainer('bookworm-ci-rendering', ['--memory', '1g',
+    '-e', `SERVICE_AUTH_TOKEN=${serviceToken}`]);
   const scannerUrl = await containerOrigin(scanner, 8004);
   const documentUrl = await containerOrigin(document, 8000);
+  const renderingUrl = await containerOrigin(rendering, 8000);
   await waitReady(`${scannerUrl}/ready`, { authorization: `Bearer ${serviceToken}` });
   await waitReady(`${documentUrl}/health`);
-  console.log('PASS real ClamAV and document parser ready');
+  await waitReady(`${renderingUrl}/health`);
+  console.log('PASS real ClamAV, document parser and rendering service ready');
 
   // Generate synthetic DOCX bytes with the parser image's installed libraries.
   // No customer fixture, download, alternate scanner or parser stub is involved.
@@ -148,8 +152,8 @@ out=BytesIO(); doc.save(out); print(base64.b64encode(out.getvalue()).decode())`]
   const output = await command('native author HTTP journey', process.execPath,
     ['--import', 'tsx', 'tests/e2e/native-author-files.mjs'], {
       timeout: 600_000, progress: true,
-      input: JSON.stringify({ ...status, scannerUrl, documentUrl, serviceToken, docx }),
-      childEnv: nativeAuthorEnvironment({ ...status, scannerUrl, documentUrl, serviceToken }, env),
+      input: JSON.stringify({ ...status, scannerUrl, documentUrl, renderingUrl, serviceToken, docx }),
+      childEnv: nativeAuthorEnvironment({ ...status, scannerUrl, documentUrl, renderingUrl, serviceToken }, env),
     });
   console.log(diagnostic(output));
   assert.equal((await migrationDigest()).digest, before.digest, 'Migration source changed during native acceptance');
