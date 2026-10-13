@@ -69,14 +69,26 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.getByLabel('Password', { exact: true }).fill(password);
     const [signup] = await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname === '/api/auth/signup'),
       page.getByRole('button', { name: 'Create account', exact: true }).click()]);
+    stage = 'successful signup response';
     assert.equal(signup.status(), 200);
+    stage = 'public signup identity';
     const user = (await signup.json()).user;
     assert.ok(user?.id);
+    stage = 'authenticated dashboard redirect';
     await page.waitForURL(`${webOrigin}/dashboard`);
+    stage = 'signup profile persistence';
     const profile = await service.from('profiles').select('id').eq('id', user.id).single();
     assert.equal(profile.data?.id, user.id);
+    stage = 'session cookie persistence';
     const cookies = (await page.context().cookies()).filter(c => c.name.startsWith('sb-'));
-    assert.ok(cookies.length && cookies.every(c => c.httpOnly && c.secure && c.sameSite === 'Lax'));
+    assert.ok(cookies.length);
+    stage = 'session cookie HttpOnly policy';
+    assert.ok(cookies.every(c => c.httpOnly));
+    stage = 'session cookie Secure policy';
+    assert.ok(cookies.every(c => c.secure));
+    stage = 'session cookie SameSite policy';
+    assert.ok(cookies.every(c => c.sameSite === 'Lax'));
+    stage = 'session cookies inaccessible to page JavaScript';
     assert.ok(!(await page.evaluate(() => document.cookie)).includes('sb-'));
     succeeded('signup, durable profile and HttpOnly Secure cookies');
 

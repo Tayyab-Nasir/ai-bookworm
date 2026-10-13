@@ -27,7 +27,7 @@ function diagnostic(text) {
     .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[jwt]')
     .replace(/sb_(?:secret|publishable)_[A-Za-z0-9_-]+/g, '[key]')
     .replace(/(?:token|password|secret|key)\s*[:=]\s*\S+/gi, '[private setting]')
-    .split(/\r?\n/).filter(line => /error|failed|SQLSTATE|migration|PASS|AssertionError/i.test(line)).slice(-12).join('\n');
+    .split(/\r?\n/).filter(line => /error|failed|SQLSTATE|migration|PASS|AssertionError/i.test(line)).slice(-40).join('\n');
 }
 
 async function command(label, executable, args, { input, timeout = 120_000, childEnv = env, progress = false } = {}) {
