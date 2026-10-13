@@ -98,6 +98,16 @@ return 409. Preflight findings are recorded, not treated as retailer approval;
 the deliberately small imported image is not print-quality acceptance. This
 does not yet prove the browser's Publishing Studio against native rendering.
 
+Export run `38400938973`, job `115308087178`, failed at `2026-10-13T12:59:38Z`
+on `f3096e7` after the complete native author/browser flow passed. EPUB rendering,
+private-byte checksum/replay and saved history checks reached the reader; the
+test incorrectly expected manuscript text in spine section zero, which is the
+real table of contents. A local renderer/reader reproduction confirms this.
+The revised test resolves the imported chapter's unique title from the returned
+spine, keeps exact-source/text/image/tenant checks and uses that chapter again
+for old-proof verification. Both cleanup levels passed in the failed run;
+preflight, print and final export accounting are not yet accepted.
+
 Native author run `38389676074`, job `115270072557`, passed at
 `2026-10-13T11:24:19Z` on exact source
 `9245dfc6bdd860cf09aad90fd4f050d4d33cf19e`. Its terminal logs confirm the

@@ -6,6 +6,9 @@ import { requireNativeAuthorRunner } from './native-author-files-guard.mjs';
 export async function runNativeAuthorRenders({ request, service, alice, bob, book, chapter }) {
   requireNativeAuthorRunner();
   const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+  const chapters = await request(alice.token, 'GET', `/books/${book.id}/chapters`);
+  const imported = chapters.chapters.find(value => value.id === chapter.chapterId);
+  assert.ok(imported?.title, 'Imported chapter missing from the saved book');
   const proofs = [];
   for (const kind of ['ebook', 'print']) {
     const config = kind === 'ebook' ? { kind } : { kind, typography: { body_font: 'BookwormVera', heading_font: 'BookwormVera-Bold' } };
@@ -36,15 +39,26 @@ export async function runNativeAuthorRenders({ request, service, alice, bob, boo
     const proof = history.renders[0];
     assert.equal(proof.jobId, result.jobId); assert.equal(proof.source.sha256, hash(bytes));
     assert.equal(proof.source.sizeBytes, bytes.length);
-    const savedPath = kind === 'ebook'
+    let savedPath = kind === 'ebook'
       ? `${historyPath}/${proof.jobId}/reader?spine=0&sha256=${proof.source.sha256}`
       : `${historyPath}/${proof.jobId}/download?sha256=${proof.source.sha256}&fingerprint=${proof.fingerprint}`;
     await request(bob.token, 'GET', savedPath, undefined, 404);
     await request(alice.token, 'GET', savedPath.replace(proof.source.sha256, '0'.repeat(64)), undefined, 409);
-    const saved = await request(alice.token, 'GET', savedPath);
+    let saved = await request(alice.token, 'GET', savedPath);
     if (kind === 'ebook') {
       assert.deepEqual(saved.source, proof.source);
+      assert.match(saved.document.title, /— Contents$/);
+      // Navigation/front matter precede the manuscript in the real EPUB spine.
+      const sections = saved.spine.filter(value => value.title === imported.title);
+      assert.equal(sections.length, 1, 'Imported chapter missing or ambiguous in the saved EPUB');
+      assert.ok(sections[0].index > 0);
+      savedPath = savedPath.replace('spine=0&', `spine=${sections[0].index}&`);
+      await request(bob.token, 'GET', savedPath, undefined, 404);
+      saved = await request(alice.token, 'GET', savedPath);
+      assert.deepEqual(saved.source, proof.source);
+      assert.equal(saved.document.index, sections[0].index);
       assert.match(saved.document.html, /Captain/);
+      assert.match(saved.document.html, /Author reviewed and revised this manuscript\./);
       assert.ok(saved.document.resources.length > 0, 'Imported illustration absent from saved EPUB reader');
       const image = saved.document.resources[0];
       const resource = await request(alice.token, 'GET', `${historyPath}/${proof.jobId}/reader/resources/${image.index}?sha256=${proof.source.sha256}`);

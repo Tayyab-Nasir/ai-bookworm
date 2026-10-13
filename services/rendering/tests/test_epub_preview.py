@@ -111,6 +111,23 @@ def test_saved_reflowable_artifact_identity_content_cover_and_resources(reader, 
     assert reader.preview_epub(reflow) == response
 
 
+def test_default_epub_opens_contents_and_resolves_saved_chapter_from_spine(reader):
+    data = render_epub(BOOK, EbookEdition())[0]
+    contents = reader.preview_epub(data)
+    assert contents["document"]["index"] == 0
+    assert contents["document"]["title"] == BOOK["metadata"]["title"] + " — Contents"
+    for chapter in BOOK["chapters"]:
+        sections = [item for item in contents["spine"] if item["title"] == chapter["title"]]
+        assert len(sections) == 1
+        assert sections[0]["index"] > 0
+        saved = reader.preview_epub(data, sections[0]["index"])
+        assert saved["document"]["title"] == chapter["title"]
+        assert saved["sourceSha256"] == contents["sourceSha256"]
+        for node in chapter["nodes"]:
+            if node["type"] == "paragraph":
+                assert node["text"] in saved["document"]["html"]
+
+
 def test_real_fixed_pages_and_nav_per_item_reflow_override(reader, fixed):
     first = reader.preview_epub(fixed)
     assert first["layout"] == "pre-paginated"
