@@ -147,7 +147,7 @@ out=BytesIO(); doc.save(out); print(base64.b64encode(out.getvalue()).decode())`]
 
   const output = await command('native author HTTP journey', process.execPath,
     ['--import', 'tsx', 'tests/e2e/native-author-files.mjs'], {
-      timeout: 240_000, progress: true,
+      timeout: 600_000, progress: true,
       input: JSON.stringify({ ...status, scannerUrl, documentUrl, serviceToken, docx }),
       childEnv: nativeAuthorEnvironment({ ...status, scannerUrl, documentUrl, serviceToken }, env),
     });

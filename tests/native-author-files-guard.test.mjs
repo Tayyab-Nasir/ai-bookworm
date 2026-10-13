@@ -6,7 +6,21 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { loopbackRelay } from './e2e/native-author-files-relay.mjs';
-import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, nativeWebEnvironment, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+
+test('native web settings exclude service credentials and reject self-proxy or external origins', () => {
+  const setup = { url: 'http://127.0.0.1:55321', anonKey: 'synthetic-public', serviceKey: 'never-web' };
+  const env = nativeWebEnvironment(setup, 'http://127.0.0.1:55330', 'http://127.0.0.1:55331',
+    { PATH: 'native-path', SUPABASE_SERVICE_ROLE_KEY: 'operator-secret', OPENAI_API_KEY: 'operator-secret' });
+  assert.equal(env.NODE_ENV, 'production'); assert.equal(env.NEXT_TELEMETRY_DISABLED, '1');
+  assert.equal(env.SUPABASE_ANON_KEY, setup.anonKey);
+  assert.equal(env.SUPABASE_SERVICE_ROLE_KEY, undefined); assert.equal(env.OPENAI_API_KEY, undefined);
+  for (const origin of ['http://127.0.0.1:55330', setup.url, setup.url + '/', 'https://external.example', 'http://localhost:55331']) {
+    assert.throws(() => nativeWebEnvironment(setup, 'http://127.0.0.1:55330', origin));
+  }
+  assert.throws(() => nativeWebEnvironment(setup, setup.url, 'http://127.0.0.1:55331'));
+  assert.throws(() => nativeWebEnvironment(setup, setup.url + '/', 'http://127.0.0.1:55331'));
+});
 
 test('native child settings boot the real production API without operator credentials or network calls', () => {
   const env = nativeAuthorEnvironment({ url: 'http://127.0.0.1:55321', anonKey: 'synthetic-anonymous',

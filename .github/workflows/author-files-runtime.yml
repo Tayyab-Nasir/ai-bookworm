@@ -2,10 +2,10 @@ name: Native author files acceptance
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['package.json', 'package-lock.json', 'services/api/**', 'packages/**', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
+    paths: ['package.json', 'package-lock.json', 'apps/web/**', 'services/api/**', 'packages/**', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
   push:
     branches: [main, master, 'codex/**']
-    paths: ['package.json', 'package-lock.json', 'services/api/**', 'packages/**', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
+    paths: ['package.json', 'package-lock.json', 'apps/web/**', 'services/api/**', 'packages/**', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
 permissions:
   contents: read
 jobs:
@@ -23,6 +23,14 @@ jobs:
           version: 2.120.0
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: node --test tests/native-author-files-guard.test.mjs
+      - name: Install isolated browser runtime
+        run: node node_modules/playwright/cli.js install --with-deps chromium
+      - name: Build production author interface
+        env:
+          NODE_ENV: production
+          NEXT_TELEMETRY_DISABLED: '1'
+          BOOKWORM_DIST_DIR: .next-native-author
+        run: node node_modules/next/dist/bin/next build apps/web
       - name: Build existing private scanner and document runtimes
         run: |
           docker build -t bookworm-ci-scanner services/scanning
@@ -32,3 +40,12 @@ jobs:
         env:
           BOOKWORM_NATIVE_AUTHOR_TEST: '1'
         run: node tests/e2e/run-native-author-files.mjs
+      - name: Retain synthetic browser screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-author-browser-${{ github.sha }}
+          path: .git/bookworm-native-browser/*.png
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

@@ -56,17 +56,38 @@ application's entitlement, quote or consent controls.
 - Book Bible create/update/reload links a real scanned image and a pinned saved
   passage. Durable replay/recovery, changed-intent refusal, actor/tenant scope,
   stale edits and evidence retrieval use the actual API and database.
+- The production Next interface runs against those same real services in
+  Playwright: signup/profile/private cookies, workspace onboarding, DOCX
+  upload/import, chapter save/reload, linked Book Bible, publishing metadata,
+  mobile containment, logout and a fresh-context returning-author login.
+  It does not replace application responses with browser fixtures. The web
+  child receives only the disposable anonymous key, not service-role or paid
+  provider credentials. Canonical web, API and Supabase origins must differ.
+- Synthetic desktop/mobile screenshots are retained for seven days. Password
+  fields are masked; cookies, storage-state dumps and raw server logs are not
+  uploaded. The workflow also runs for web-only source changes. Browser and
+  web processes are closed before native-service cleanup.
 - Ordered migration source digests must be unchanged after the run; owned
   containers, networks and local database volumes are removed in `finally`.
 
 ## Evidence boundary
+
+Native author run `38389676074`, job `115270072557`, passed at
+`2026-10-13T11:24:19Z` on exact source
+`9245dfc6bdd860cf09aad90fd4f050d4d33cf19e`. Its terminal logs confirm the
+real API/Auth/Storage/scanner/import/Book Bible assertions above, zero AI
+jobs/usage, migration-source integrity and owned-resource cleanup. It does
+**not** cover the production-browser extension added after that commit.
+That extension has 11 passing local guard checks, including a reproduced
+then-fixed trailing-slash origin-collision case, but still requires an exact
+new-source production build and native browser run with screenshot review.
 
 Run `38387928342` on `fa4ff82` started Supabase, ClamAV and the document parser,
 and completed owned cleanup. The author process then failed before requests
 because its `LOG_LEVEL=fatal` was outside the application's configuration enum.
 The shared child-environment builder now uses `error`; a real production-boot
 regression reproduced that failure before the correction, then passed. All ten
-guard/relay/boot checks pass locally. A fresh native journey is still required.
+guard/relay/boot checks passed locally before the successful retry above.
 
 Native run `38386967571` on `6dc20cd` successfully started Supabase with all
 109 migrations, resolving the earlier pgcrypto error. It then exposed two
@@ -74,8 +95,8 @@ harness defects: internal-only Docker containers have no published host port,
 and the 48-character project ID was truncated by `start` but not the explicit
 `stop --project-id` filter. Owned-network removal correctly failed rather than
 claiming cleanup success. The relay and short-ID repairs above have local
-guard coverage; the complete author/Book Bible journey still needs terminal
-native acceptance. Separate native database run `38386967711` passed on that
+guard coverage; the later successful author run above supplies terminal
+native acceptance for that slice. Separate native database run `38386967711` passed on that
 same source SHA; SQL-only acceptance does not certify Auth/Storage HTTP.
 
 The pinned [CLI project-ID implementation](https://github.com/supabase/cli/blob/v2.120.0/apps/cli/src/command-internal/docker-ids.ts)

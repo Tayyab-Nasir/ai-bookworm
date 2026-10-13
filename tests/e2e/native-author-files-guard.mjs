@@ -61,6 +61,17 @@ export function nativeAuthorEnvironment(setup, source = process.env) {
   };
 }
 
+export function nativeWebEnvironment(setup, webOrigin, apiOrigin, source = process.env) {
+  const supabase = localOrigin(setup.url), web = localOrigin(webOrigin), api = localOrigin(apiOrigin);
+  if (supabase !== 'http://127.0.0.1:55321' || new Set([supabase, web, api]).size !== 3) {
+    throw new Error('Native browser requires distinct owned web, API and Supabase origins.');
+  }
+  return { ...childEnvironment(source), NODE_ENV: 'production', NEXT_TELEMETRY_DISABLED: '1',
+    BOOKWORM_DIST_DIR: '.next-native-author', APP_URL: web, API_URL: api,
+    SUPABASE_URL: supabase, SUPABASE_ANON_KEY: setup.anonKey,
+  };
+}
+
 export function localOrigin(raw) {
   const url = new URL(raw);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port
