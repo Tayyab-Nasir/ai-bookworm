@@ -106,6 +106,18 @@ memory descriptions and metadata now use exact textbox roles. Metadata reload
 also checks the saved keyword lines, not only the book description.
 The remainder of this revised native browser journey is still unverified.
 
+Run `38397789460` on `5c9dcec` passed the same earlier browser stages, then
+failed at linked Book Bible save/reload; both cleanup levels passed. Its
+retained screenshot now shows a confirmed saved entry and selected source
+chapter. The UI performs a post-write identity check before clearing its dirty
+state, so the test must await the actual save confirmation and cleared unsaved
+indicator before reloading, not only the HTTP response. The save button remains
+enabled after a confirmed save. The test also checks the returned entry type
+independently of its visual badge, uses the entry name for selection, waits for
+metadata save confirmation, and reports narrow stages with safe error categories.
+These synchronization/diagnostic changes still require a successful native run;
+the earlier failure does not by itself prove an application persistence defect.
+
 Run `38387928342` on `fa4ff82` started Supabase, ClamAV and the document parser,
 and completed owned cleanup. The author process then failed before requests
 because its `LOG_LEVEL=fatal` was outside the application's configuration enum.

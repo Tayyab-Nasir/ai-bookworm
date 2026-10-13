@@ -159,14 +159,23 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await form.getByRole('checkbox').check();
     await form.getByRole('button', { name: '+ Add chapter source', exact: true }).click();
     await form.getByRole('combobox', { name: 'Source chapter', exact: true }).selectOption(chapter.id);
+    stage = 'Book Bible create response';
     const [canonResponse] = await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/bible') && r.request().method() === 'POST'),
       form.getByRole('button', { name: 'Save memory entry', exact: true }).click()]);
     assert.equal(canonResponse.status(), 201);
     const canon = (await canonResponse.json()).item;
+    assert.equal(canon.type, 'character');
     assert.equal(canon.attributes_json.imageAssetIds.length, 1);
     assert.equal(canon.source_refs_json[0].chapterId, chapter.id);
+    stage = 'Book Bible confirmed save interface';
+    await expect(page.getByText('“Browser Captain Mira” saved to this book’s memory.', { exact: true })).toBeVisible();
+    await expect(form.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
+    await expect(form.getByRole('button', { name: 'Save memory entry', exact: true })).toBeEnabled();
+    stage = 'Book Bible reload after confirmed save';
     await page.reload();
-    await page.getByRole('button', { name: /character Browser Captain Mira/ }).click();
+    stage = 'saved Book Bible entry selection';
+    await page.getByRole('button', { name: /Browser Captain Mira/ }).click();
+    stage = 'saved Book Bible image and source values';
     await expect(form.getByLabel('Name', { exact: true })).toHaveValue('Browser Captain Mira');
     await expect(form.getByRole('checkbox')).toBeChecked();
     await expect(form.getByRole('combobox', { name: 'Source chapter', exact: true })).toHaveValue(chapter.id);
@@ -179,6 +188,7 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     const [savedMetadata] = await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/metadata') && r.request().method() === 'PUT'),
       metadata.getByRole('button', { name: 'Save metadata', exact: true }).click()]);
     assert.equal(savedMetadata.status(), 200);
+    await expect(page.getByText('Publishing metadata saved.', { exact: true })).toBeVisible();
     await page.reload();
     await expect(metadata.getByRole('textbox', { name: 'Book description', exact: true })).toHaveValue('An author-reviewed harbor adventure.');
     await expect(metadata.getByRole('textbox', { name: 'Keywords · one per line', exact: true })).toHaveValue('harbor\nadventure');
@@ -198,14 +208,15 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.getByLabel('Password', { exact: true }).fill(password);
     await page.getByRole('button', { name: /sign in/i }).click();
     await page.waitForURL(`${webOrigin}/books/${bookId}/memory`);
-    await expect(page.getByRole('button', { name: /character Browser Captain Mira/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Browser Captain Mira/ })).toBeVisible();
     assert.equal(await page.evaluate(async id => (await fetch(`/api/backend/v1/books/${id}`)).status, foreignBookId), 404);
     assert.deepEqual(errors, []);
     succeeded('logout, protected-route login, persistent memory and foreign-book refusal');
-  } catch {
+  } catch (error) {
     if (page && !page.isClosed()) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true,
       mask: [page.locator('input')] }).catch(() => {});
-    throw new Error(`Native browser assertion failed at ${stage}. Review the synthetic screenshot artifact.`);
+    const category = ['TimeoutError', 'AssertionError'].includes(error?.name) ? error.name : 'Error';
+    throw new Error(`Native browser assertion failed at ${stage} (${category}). Review the synthetic screenshot artifact.`);
   } finally {
     try { if (browser) await browser.close(); }
     finally {
