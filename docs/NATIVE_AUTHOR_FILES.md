@@ -81,6 +81,19 @@ required two; the new browser Publishing Studio extension is not yet accepted.
 
 ## Evidence boundary
 
+Native Publishing Studio run `38403692442`, job `115317598239`, failed at
+`2026-10-13T13:21:26Z` on exact `b425c3c8bae6284c5c45e43b3ce487072fa9b0ed`.
+Both EPUB and print browser save/reload, real renders, saved proofs, exact
+downloads, preflight and mobile checks passed, as did both cleanup levels.
+The run stopped at the combined logout/returning-author assertion; the retained
+screenshot shows the returned Book Bible, but does not identify the failing
+subcheck. No PDF download defect is demonstrated by this run. Final four-event
+accounting and the later API export checks were not reached. The test now
+separates logout, returning login, foreign-book refusal and the browser-error
+audit, retaining every assertion and emitting only secret-free error categories
+with the source-defined stage at which each occurred. The complete extension
+still requires a successful exact-source native run.
+
 Native run `38402880532`, job `115314763759`, PASSED at
 `2026-10-13T13:14:51Z` on exact `69da7108b5b30c28fa31adeab2b7a089f3a05a8a`.
 The native author/browser journey and real EPUB/PDF API extension passed,

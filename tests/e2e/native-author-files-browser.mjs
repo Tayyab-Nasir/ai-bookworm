@@ -11,6 +11,12 @@ import { nativeWebEnvironment, requireNativeAuthorRunner } from './native-author
 
 const expect = playwrightExpect.configure({ timeout: 30_000 });
 
+export function browserErrorSummary(error) {
+  if (/^ResizeObserver loop (?:limit exceeded|completed with undelivered notifications\.)$/.test(error?.message ?? '')) return 'ResizeObserver loop';
+  return ['Error', 'TypeError', 'ReferenceError', 'RangeError', 'SyntaxError', 'SecurityError', 'AbortError'].includes(error?.name)
+    ? error.name : 'Unknown browser error';
+}
+
 export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origins, foreignBookId }) {
   requireNativeAuthorRunner();
   const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -34,10 +40,10 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await value.route('**/*', route => {
       const target = new URL(route.request().url());
       if (!['http:', 'https:'].includes(target.protocol) || [webOrigin, setup.url].includes(target.origin)) return route.continue();
-      errors.push('Unowned browser destination'); return route.abort('blockedbyclient');
+      errors.push({ kind: 'Unowned browser destination', stage }); return route.abort('blockedbyclient');
     });
     const nextPage = await value.newPage(); nextPage.setDefaultTimeout(30_000);
-    nextPage.on('pageerror', () => errors.push('Unhandled browser error'));
+    nextPage.on('pageerror', error => errors.push({ kind: browserErrorSummary(error), stage }));
     nextPage.on('dialog', dialog => dialog.dismiss());
     return nextPage;
   }
@@ -200,11 +206,13 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     const { runNativePublishingBrowser } = await import('./native-author-files-publishing.mjs');
     await runNativePublishingBrowser({ page, bookId, passage, screenshot, onStage: value => { stage = value; } });
 
-    stage = 'logout and returning author in a fresh browser context';
+    stage = 'logout and private session removal';
     await page.goto(`${webOrigin}/dashboard`);
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
     await page.waitForURL(`${webOrigin}/login`);
     assert.equal(await page.evaluate(async () => (await fetch('/api/auth/session')).status), 401);
+    succeeded('logout removes the private session');
+    stage = 'returning author protected-route login in a fresh browser context';
     await page.context().close(); page = await context();
     await page.goto(`${webOrigin}/books/${bookId}/memory`);
     await page.getByLabel('Email', { exact: true }).fill(email);
@@ -212,13 +220,20 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.getByRole('button', { name: /sign in/i }).click();
     await page.waitForURL(`${webOrigin}/books/${bookId}/memory`);
     await expect(page.getByRole('button', { name: /Browser Captain Mira/ })).toBeVisible();
+    succeeded('returning author protected-route login and persistent memory');
+    stage = 'returning author foreign-book refusal';
     assert.equal(await page.evaluate(async id => (await fetch(`/api/backend/v1/books/${id}`)).status, foreignBookId), 404);
+    succeeded('returning author foreign-book refusal');
+    stage = 'browser errors and outbound destination audit';
     assert.deepEqual(errors, []);
     succeeded('logout, protected-route login, persistent memory and foreign-book refusal');
   } catch (error) {
     if (page && !page.isClosed()) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true,
       mask: [page.locator('input')] }).catch(() => {});
     const category = ['TimeoutError', 'AssertionError'].includes(error?.name) ? error.name : 'Error';
+    // Only fixed categories and source-defined stage labels: no raw messages,
+    // page contents, URLs, stack traces, cookies or credentials reach CI logs.
+    if (errors.length) console.error(`Native browser diagnostics: ${JSON.stringify({ total: errors.length, first: errors.slice(0, 10) })}`);
     throw new Error(`Native browser assertion failed at ${stage} (${category}). Review the synthetic screenshot artifact.`);
   } finally {
     try { if (browser) await browser.close(); }

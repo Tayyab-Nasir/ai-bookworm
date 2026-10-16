@@ -6,7 +6,18 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { loopbackRelay } from './e2e/native-author-files-relay.mjs';
+import { browserErrorSummary } from './e2e/native-author-files-browser.mjs';
 import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, nativeWebEnvironment, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+
+test('native browser diagnostics keep error categories without secrets or page content', () => {
+  for (const message of ['ResizeObserver loop limit exceeded', 'ResizeObserver loop completed with undelivered notifications.']) {
+    assert.equal(browserErrorSummary(new Error(message)), 'ResizeObserver loop');
+  }
+  assert.equal(browserErrorSummary(new TypeError('https://private.example/?token=never-log')), 'TypeError');
+  assert.equal(browserErrorSummary(new Error('private manuscript text')), 'Error');
+  assert.equal(browserErrorSummary({ name: 'private-token', message: 'ResizeObserver loop private-secret' }), 'Unknown browser error');
+  assert.equal(browserErrorSummary(null), 'Unknown browser error');
+});
 
 test('native web settings exclude service credentials and reject self-proxy or external origins', () => {
   const setup = { url: 'http://127.0.0.1:55321', anonKey: 'synthetic-public', serviceKey: 'never-web' };
