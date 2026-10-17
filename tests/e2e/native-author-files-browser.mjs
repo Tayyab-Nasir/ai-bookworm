@@ -17,6 +17,15 @@ export function browserErrorSummary(error) {
     ? error.name : 'Unknown browser error';
 }
 
+export function blockNativeServiceWorkers() {
+  // Playwright's serviceWorkers:'block' init script reads this getter outside
+  // a try/catch. Opaque sandboxed reader frames already deny it themselves.
+  let worker;
+  try { worker = navigator.serviceWorker; }
+  catch (error) { if (error?.name === 'SecurityError') return; throw error; }
+  if (worker) worker.register = async () => { throw new Error('Native browser test blocks service-worker registration.'); };
+}
+
 export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origins, foreignBookId }) {
   requireNativeAuthorRunner();
   const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -36,7 +45,8 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
   const errors = [];
   origins.add(webOrigin);
   async function context() {
-    const value = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
+    const value = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await value.addInitScript(blockNativeServiceWorkers);
     await value.route('**/*', route => {
       const target = new URL(route.request().url());
       if (!['http:', 'https:'].includes(target.protocol) || [webOrigin, setup.url].includes(target.origin)) return route.continue();
@@ -233,7 +243,7 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     const category = ['TimeoutError', 'AssertionError'].includes(error?.name) ? error.name : 'Error';
     // Only fixed categories and source-defined stage labels: no raw messages,
     // page contents, URLs, stack traces, cookies or credentials reach CI logs.
-    if (errors.length) console.error(`Native browser diagnostics: ${JSON.stringify({ total: errors.length, first: errors.slice(0, 10) })}`);
+    if (errors.length) console.error(`Native browser error diagnostics: ${JSON.stringify({ total: errors.length, first: errors.slice(0, 10) })}`);
     throw new Error(`Native browser assertion failed at ${stage} (${category}). Review the synthetic screenshot artifact.`);
   } finally {
     try { if (browser) await browser.close(); }

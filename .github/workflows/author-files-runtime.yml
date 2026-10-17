@@ -25,6 +25,8 @@ jobs:
       - run: node --test tests/native-author-files-guard.test.mjs
       - name: Install isolated browser runtime
         run: node node_modules/playwright/cli.js install --with-deps chromium
+      - name: Verify inert reader and browser-worker isolation
+        run: node tests/e2e/native-author-files-browser-guard.mjs
       - name: Build production author interface
         env:
           NODE_ENV: production

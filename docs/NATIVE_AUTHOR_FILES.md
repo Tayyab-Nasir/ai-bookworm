@@ -81,6 +81,24 @@ required two; the new browser Publishing Studio extension is not yet accepted.
 
 ## Evidence boundary
 
+Diagnostic run `38983316406`, job `117248948482`, failed at
+`2026-10-16T23:52:24Z` on exact `413afcfe3e0bfeca1c0ef4a8a172004d65693469`.
+Publishing proof/download stages, logout, returning login, saved memory and
+foreign-book refusal passed. The error audit recorded four `SecurityError`
+events during the EPUB stage. A minimal local Chromium 153 reproduction
+isolates Playwright's `serviceWorkers: 'block'` init script: it reads the
+`navigator.serviceWorker` getter in an opaque sandboxed frame, where that
+getter correctly throws. The same frame without that injected script is clean.
+
+The runner now installs an equivalent registration blocker that respects the
+sandbox's own denial without suppressing unrelated errors. The saved-reader
+sandbox/CSP, exact source checks, outbound allowlist and strict error audit
+remain unchanged. A real-browser guard before the container build verifies
+opaque-origin isolation, denied registration, zero worker requests and zero
+page errors. Its companion unit regression also checks unexpected failures
+are not swallowed. This correction still requires exact-source native journey
+acceptance; the final four-render ledger check was not reached on `413afcf`.
+
 Native Publishing Studio run `38403692442`, job `115317598239`, failed at
 `2026-10-13T13:21:26Z` on exact `b425c3c8bae6284c5c45e43b3ce487072fa9b0ed`.
 Both EPUB and print browser save/reload, real renders, saved proofs, exact

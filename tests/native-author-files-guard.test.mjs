@@ -5,9 +5,22 @@ import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { runInNewContext } from 'node:vm';
 import { loopbackRelay } from './e2e/native-author-files-relay.mjs';
-import { browserErrorSummary } from './e2e/native-author-files-browser.mjs';
+import { blockNativeServiceWorkers, browserErrorSummary } from './e2e/native-author-files-browser.mjs';
 import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, nativeWebEnvironment, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+
+test('native service-worker blocker preserves sandbox denial without injecting page errors', async () => {
+  const install = navigator => runInNewContext(`(${blockNativeServiceWorkers.toString()})()`, { navigator });
+  let calls = 0;
+  const worker = { register: async () => { calls++; } };
+  install({ serviceWorker: worker });
+  await assert.rejects(worker.register('/must-not-load.js'), /Native browser test blocks service-worker registration/);
+  assert.equal(calls, 0);
+  assert.doesNotThrow(() => install({}));
+  assert.doesNotThrow(() => install({ get serviceWorker() { throw new DOMException('Sandboxed origin', 'SecurityError'); } }));
+  assert.throws(() => install({ get serviceWorker() { throw new Error('Unexpected getter failure'); } }), /Unexpected getter failure/);
+});
 
 test('native browser diagnostics keep error categories without secrets or page content', () => {
   for (const message of ['ResizeObserver loop limit exceeded', 'ResizeObserver loop completed with undelivered notifications.']) {
