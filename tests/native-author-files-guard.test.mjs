@@ -7,9 +7,17 @@ import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { loopbackRelay } from './e2e/native-author-files-relay.mjs';
-import { blockNativeServiceWorkers, browserErrorSummary } from './e2e/native-author-files-browser.mjs';
+import { blockNativeServiceWorkers, browserErrorSummary, nativeBrowserJson } from './e2e/native-author-files-browser.mjs';
 import { inspectNativePackage } from './e2e/native-author-files-packages.mjs';
 import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, nativeWebEnvironment, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+
+test('native browser response-body reads preserve results and fail within a bounded deadline', async () => {
+  assert.deepEqual(await nativeBrowserJson({ json: async () => ({ status: 'succeeded' }) }), { status: 'succeeded' });
+  const failure = new Error('synthetic parse failure');
+  await assert.rejects(nativeBrowserJson({ json: async () => { throw failure; } }), error => error === failure);
+  await assert.rejects(nativeBrowserJson({ json: () => new Promise(() => {}) }, 10),
+    error => error.name === 'TimeoutError' && error.message === 'Native browser response body deadline exceeded.');
+});
 
 test('native ZIP inspection reads exact member checksums and rejects invalid archives', () => {
   const fixture = spawnSync(process.execPath, ['scripts/run-python.mjs', '-I', '-c', `

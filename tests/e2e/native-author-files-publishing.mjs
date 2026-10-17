@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect as playwrightExpect } from '@playwright/test';
 import { localFetch, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
+import { nativeBrowserJson } from './native-author-files-browser.mjs';
 
 const expect = playwrightExpect.configure({ timeout: 30_000 });
 
@@ -173,7 +174,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         page.getByRole('button', { name: edition.kind === 'ebook' ? 'Render EPUB' : 'Render PDF', exact: true }).click(),
       ]);
       assert.equal(rendered.status(), 201);
-      const render = await rendered.json();
+      const render = await nativeBrowserJson(rendered);
       assert.equal(render.status, 'succeeded');
       await expect(page.getByText('Private render completed.', { exact: true })).toBeVisible();
       for (const channel of edition.channels) {
@@ -184,7 +185,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
           page.getByRole('button', { name: 'Run preflight', exact: true }).click(),
         ]);
         assert.equal(validated.status(), 201);
-        const preflight = await validated.json();
+        const preflight = await nativeBrowserJson(validated);
         assert.equal(preflight.errors, 0); assert.equal(preflight.requestedChannel, channel);
         const loseReply = packages.length === 6;
         if (loseReply) await page.evaluate(() => {
@@ -204,8 +205,9 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
           page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publishing/jobs') && response.request().method() === 'POST', { timeout: 90_000 }),
           history.getByRole('button', { name: 'Create retailer package', exact: true }).click(),
         ]);
+        onStage(`retailer browser ${channel} ${edition.kind} package response body`);
         assert.equal(created.status(), 201);
-        const job = await created.json();
+        const job = await nativeBrowserJson(created);
         assert.equal(job.status, 'succeeded'); assert.equal(job.submissionMode, 'manual');
         assert.equal(job.sourceRenderJobId, render.jobId); assert.equal(job.sourcePreflightJobId, preflight.jobId);
         if (loseReply) {
@@ -214,16 +216,21 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
           const pending = await page.evaluate(() => Object.entries(sessionStorage).filter(([key]) => key.startsWith('bookworm:package:')).map(([, value]) => JSON.parse(value)));
           assert.equal(pending.length, 1); assert.equal(pending[0].request.idempotencyKey, job.requestId);
           assert.deepEqual(Object.keys(pending[0]).sort(), ['request', 'schema', 'userId']);
-          await page.reload(); await select(edition);
+          onStage('retailer browser lost reply reload');
+          await page.reload();
+          onStage('retailer browser lost reply saved edition selection');
+          await select(edition);
+          onStage('retailer browser original request status lookup');
           const [recovered] = await Promise.all([
             page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/publishing/requests/${job.requestId}`) && response.request().method() === 'GET'),
             page.getByRole('button', { name: 'Recover saved export', exact: true }).click(),
           ]);
-          assert.equal(recovered.status(), 200); assert.equal((await recovered.json()).job.id, job.id);
+          assert.equal(recovered.status(), 200); assert.equal((await nativeBrowserJson(recovered)).job.id, job.id);
           await expect(page.getByText(/Saved export confirmed/)).toBeVisible();
           assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith('bookworm:package:'))), false);
           console.log('PASS native browser lost accepted export reply recovered after reload with one original package request');
         } else await expect(page.getByText(`${channel} package is ready for manual submission.`, { exact: true })).toBeVisible();
+        onStage(`retailer browser ${channel} ${edition.kind} exact private ZIP download`);
         const row = history.getByRole('listitem').first();
         await expect(row.getByText('ready', { exact: true })).toBeVisible();
         const bytes = await download(page, row.getByRole('link', { name: 'Download private ZIP', exact: true }), job.package.asset.checksum);

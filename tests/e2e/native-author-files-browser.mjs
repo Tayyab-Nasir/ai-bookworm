@@ -11,6 +11,15 @@ import { nativeWebEnvironment, requireNativeAuthorRunner } from './native-author
 
 const expect = playwrightExpect.configure({ timeout: 30_000 });
 
+export async function nativeBrowserJson(response, timeout = 30_000) {
+  let timer;
+  try {
+    return await Promise.race([response.json(), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error('Native browser response body deadline exceeded.'), { name: 'TimeoutError' })), timeout);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 export function browserErrorSummary(error) {
   if (/^ResizeObserver loop (?:limit exceeded|completed with undelivered notifications\.)$/.test(error?.message ?? '')) return 'ResizeObserver loop';
   return ['Error', 'TypeError', 'ReferenceError', 'RangeError', 'SyntaxError', 'SecurityError', 'AbortError'].includes(error?.name)
@@ -245,7 +254,9 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.getByRole('button', { name: /sign in/i }).click();
     await page.waitForURL(`${webOrigin}/dashboard`);
     const { runNativeRetailerBrowser } = await import('./native-author-files-publishing.mjs');
-    await runNativeRetailerBrowser({ page, retailer, service, screenshot, onStage: value => { stage = value; } });
+    await runNativeRetailerBrowser({ page, retailer, service, screenshot, onStage: value => {
+      stage = value; console.log(`STAGE native browser ${stage}`);
+    } });
     stage = 'retailer owner logout';
     await page.goto(`${webOrigin}/dashboard`);
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
@@ -255,7 +266,8 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     assert.deepEqual(errors, []);
     succeeded('logout, protected-route login, persistent memory and foreign-book refusal');
   } catch (error) {
-    if (page && !page.isClosed()) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true,
+    console.error(`Native browser assertion failed at ${stage}.`);
+    if (page && !page.isClosed()) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true, timeout: 5000,
       mask: [page.locator('input')] }).catch(() => {});
     const category = ['TimeoutError', 'AssertionError'].includes(error?.name) ? error.name : 'Error';
     // Only fixed categories and source-defined stage labels: no raw messages,
