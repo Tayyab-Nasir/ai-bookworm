@@ -214,7 +214,7 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     succeeded('publishing metadata persistence and desktop/mobile containment');
 
     const { runNativePublishingBrowser } = await import('./native-author-files-publishing.mjs');
-    await runNativePublishingBrowser({ page, bookId, passage, screenshot, onStage: value => { stage = value; } });
+    await runNativePublishingBrowser({ page, bookId, passage, screenshot, origins, onStage: value => { stage = value; } });
 
     stage = 'logout and private session removal';
     await page.goto(`${webOrigin}/dashboard`);

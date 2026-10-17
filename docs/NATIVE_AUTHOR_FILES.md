@@ -43,8 +43,8 @@ No subscription or commercial plan is seeded: saved-book export uses the
 application's existing rendering entitlement. Initial authoring creates no
 usage; the complete browser/API extension requires exactly four `rendering`
 meter records, one EPUB and PDF per author path, with no AI jobs or other usage
-even after reopening and replay. The accepted API-only export revision below
-required two; the new browser Publishing Studio extension is not yet accepted.
+even after reopening and replay. The earlier API-only export revision below
+required two; the complete browser extension passed on `e426b1b` as recorded below.
 
 ## Assertions
 
@@ -81,6 +81,37 @@ required two; the new browser Publishing Studio extension is not yet accepted.
 
 ## Evidence boundary
 
+Native run `38985140682`, job `117254741704`, PASSED at
+`2026-10-17T00:15:30Z` on exact `e426b1b0f887021762f2d63b1ca4b627978bb5d2`.
+Terminal logs verify the production author/browser and actual API export flows,
+EPUB/PDF proofs and downloads, logout/returning login, saved Book Bible, tenant
+refusal, immutable old proofs, all four rendering events, zero AI jobs/other
+usage, migration integrity and both owned cleanup levels. The production web
+build, 14 runner guards and inert-reader browser guard also passed. This
+supersedes the historical pending/failure observations below, not whole-product,
+hosted Google OAuth, funded provider, print-quality or retailer acceptance.
+
+A separate normal-Chrome check exposed a real download issue that the native
+headless shell masked: an inline cross-origin PDF ignores the HTML `download`
+attribute and can replace the app. Publishing Studio now adds Storage's
+attachment query option only to explicit file and audio-segment download links;
+inline PDF/image/audio preview URLs and their signed token/source are unchanged.
+The formatter uses the file library's existing filename-sanitization pattern.
+It is not an authorization, source-validation or expiry bypass.
+
+The mounted regression uses real React/CSS, synthetic API data and an owned
+local HTTP server with separate app/file origins. Full Chrome checks fresh and
+saved PDF/PNG downloads, its native PDF viewer, audio-segment download bytes,
+filenames, unchanged app location, no unintended generation, stale responses,
+revocation, expiry and mobile containment. Its audio bytes test transport only,
+not speech quality. The workflow runs the suite with full Chromium (not the
+headless shell), and the native Storage path additionally requires an actual
+`Content-Disposition: attachment` response and exact saved bytes. These new
+attachment assertions require successful native CI on their own source revision;
+the earlier `e426b1b` acceptance does not prove them.
+
+### Historical diagnostic sequence
+
 Diagnostic run `38983316406`, job `117248948482`, failed at
 `2026-10-16T23:52:24Z` on exact `413afcfe3e0bfeca1c0ef4a8a172004d65693469`.
 Publishing proof/download stages, logout, returning login, saved memory and
@@ -96,8 +127,8 @@ sandbox/CSP, exact source checks, outbound allowlist and strict error audit
 remain unchanged. A real-browser guard before the container build verifies
 opaque-origin isolation, denied registration, zero worker requests and zero
 page errors. Its companion unit regression also checks unexpected failures
-are not swallowed. This correction still requires exact-source native journey
-acceptance; the final four-render ledger check was not reached on `413afcf`.
+are not swallowed. Exact-source acceptance is recorded for `e426b1b` above;
+the final four-render ledger check was not reached on `413afcf`.
 
 Native Publishing Studio run `38403692442`, job `115317598239`, failed at
 `2026-10-13T13:21:26Z` on exact `b425c3c8bae6284c5c45e43b3ce487072fa9b0ed`.

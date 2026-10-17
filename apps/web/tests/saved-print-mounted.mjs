@@ -3,6 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -26,6 +27,7 @@ const pdfXref = Buffer.byteLength(pdfSource);
 pdfSource += `xref\n0 ${pdfOffsets.length}\n0000000000 65535 f \n${pdfOffsets.slice(1).map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${pdfOffsets.length} /Root 1 0 R >>\nstartxref\n${pdfXref}\n%%EOF\n`;
 const pdfBytes = Buffer.from(pdfSource);
 const pngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==", "base64");
+const audioBytes = Buffer.from("ID3synthetic-private-segment"); // Transport fixture only, not a narration-quality test.
 const primaryDigest = createHash("sha256").update(pdfBytes).digest("hex");
 const coverDigest = createHash("sha256").update(pngBytes).digest("hex");
 const bundles = await Promise.all([false, true].map(parent => build({ stdin: { contents: parent
@@ -61,17 +63,44 @@ const stylePath = resolve("apps/web/styles/globals.css");
 const styles = await postcss([tailwind({ base: resolve("apps/web"), optimize: false })]).process(await readFile(stylePath, "utf8"), { from: stylePath });
 const browser = await chromium.launch({ headless: true, channel: process.env.BROWSER_TEST_CHANNEL || "msedge" });
 const artifacts = await mkdtemp(resolve(tmpdir(), "bookworm-saved-print-mounted-"));
-test.after(() => browser.close());
+const storage = createServer((request, response) => {
+  const url = new URL(request.url, "http://127.0.0.1");
+  if (url.pathname === "/api/auth/session") {
+    response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    response.end(JSON.stringify({ user: { id: ids.asset } })); return;
+  }
+  if (url.pathname === "/bookworm-saved-print-fixture") {
+    response.writeHead(200, { "content-type": "text/html", "content-security-policy":
+      `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src ${storageOrigin} data:; frame-src ${storageOrigin}; media-src ${storageOrigin}; connect-src 'self'; font-src 'self' data:` });
+    response.end('<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><div id="root"></div></body></html>'); return;
+  }
+  if (!url.pathname.startsWith("/storage/v1/object/sign/book-assets/workspaces/") || url.searchParams.get("token") !== "synthetic") {
+    response.writeHead(404); response.end(); return;
+  }
+  const filename = url.searchParams.get("download");
+  const bytes = url.pathname.endsWith(".mp3") ? audioBytes : url.pathname.endsWith(".png") ? pngBytes : pdfBytes;
+  response.writeHead(200, {
+    "content-type": url.pathname.endsWith(".mp3") ? "audio/mpeg" : url.pathname.endsWith(".png") ? "image/png" : "application/pdf",
+    "content-length": bytes.length, "cache-control": "no-store",
+    // Real HTTP lets full Chrome load its PDF viewer. Only Download gets attachment disposition.
+    "content-disposition": filename ? `attachment; filename*=UTF-8''${encodeURIComponent(filename)}` : "inline",
+  });
+  response.end(bytes);
+});
+test.after(async () => {
+  try { await browser.close(); }
+  finally { storage.closeAllConnections(); await new Promise(resolve => storage.close(resolve)); }
+});
+await new Promise((resolve, reject) => { storage.once("error", reject); storage.listen(0, "127.0.0.1", resolve); });
+const storageOrigin = `http://127.0.0.1:${storage.address().port}`;
 
-async function fixture({ parent = false, width = 1280, disabled = false } = {}) {
+async function fixture({ parent = false, width = 1280, disabled = false, audio = false } = {}) {
   const page = await browser.newPage({ viewport: { width, height: 980 } }); page.setDefaultTimeout(6000);
   const errors = []; page.on("pageerror", error => errors.push(error.message));
-  await page.route("**/*", route => route.fulfill(route.request().url().startsWith("https://storage.example.test/")
-    ? route.request().url().includes("/cover.png") ? { contentType: "image/png", body: pngBytes } : { contentType: "application/pdf", body: pdfBytes }
-    : { contentType: "text/html", body: '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><div id="root"></div></body></html>' }));
-  await page.goto("http://127.0.0.1/bookworm-saved-print-fixture");
+  // Different hosts enforce cross-origin download behavior without intercepting Chrome's PDF viewer.
+  await page.goto(`http://localhost:${storage.address().port}/bookworm-saved-print-fixture`);
   await page.addStyleTag({ content: styles.css + "body { background: #050505; color: white; } output { display: block; margin-top: 16px; }" });
-  await page.evaluate(({ ids, disabled, primaryDigest, primarySize, coverDigest, coverSize }) => {
+  await page.evaluate(({ ids, disabled, primaryDigest, primarySize, coverDigest, coverSize, audio, storageOrigin }) => {
     window.ids = ids; window.requests = []; window.selected = []; window.invalidated = []; window.historyWaiters = []; window.downloadWaiters = [];
     window.initialProps = { bookId: ids.book, workspaceId: ids.workspace, editionId: ids.edition, disabled };
     const proof = (editionId, jobId, assetId, letter) => ({ jobId, createdAt: "2026-10-13T12:00:00.000Z", fingerprint: letter.repeat(64),
@@ -81,18 +110,23 @@ async function fixture({ parent = false, width = 1280, disabled = false } = {}) 
       { asset: { id: entry.source.assetId, workspace_id: ids.workspace, type: "rendered_book", name: "Saved interior.pdf",
           storage_path: `workspaces/${ids.workspace}/assets/${entry.source.assetId}/v1/book.pdf`, mime_type: "application/pdf", size_bytes: primarySize,
           checksum: primaryDigest, deleted_at: null, status: "draft" }, role: "rendered_print",
-        download: { url: `https://storage.example.test/storage/v1/object/sign/book-assets/workspaces/${ids.workspace}/assets/${entry.source.assetId}/v1/book.pdf?token=synthetic`, expiresIn: 300 } },
+        download: { url: `${storageOrigin}/storage/v1/object/sign/book-assets/workspaces/${ids.workspace}/assets/${entry.source.assetId}/v1/book.pdf?token=synthetic`, expiresIn: 300 } },
       { asset: { id: ids.cover, workspace_id: ids.workspace, type: "rendered_cover", name: "Saved cover.png",
           storage_path: `workspaces/${ids.workspace}/assets/${ids.cover}/v1/cover.png`, mime_type: "image/png", size_bytes: coverSize,
           checksum: coverDigest, deleted_at: null, status: "draft" }, role: "rendered_cover",
-        download: { url: `https://storage.example.test/storage/v1/object/sign/book-assets/workspaces/${ids.workspace}/assets/${ids.cover}/v1/cover.png?token=synthetic`, expiresIn: 300 } },
+        download: { url: `${storageOrigin}/storage/v1/object/sign/book-assets/workspaces/${ids.workspace}/assets/${ids.cover}/v1/cover.png?token=synthetic`, expiresIn: 300 } },
     ] });
     window.results = Object.fromEntries(window.proofs.map(entry => [entry.jobId, result(entry)]));
-    const editions = [ids.edition, ids.otherEdition].map(id => ({ id, book_id: ids.book, type: "print", language: "en", status: "draft",
-      updated_at: "2026-10-13T00:00:00.000Z", edition_metadata_json: { kind: "print", cover: { asset_id: null } } }));
+    const editions = [ids.edition, ids.otherEdition].map(id => ({ id, book_id: ids.book, type: audio ? "audiobook" : "print", language: "en", status: "draft",
+      updated_at: "2026-10-13T00:00:00.000Z", edition_metadata_json: { kind: audio ? "audiobook" : "print", cover: { asset_id: null } } }));
     window.bookwormApi = {
       getBook: async bookId => ({ book: { id: bookId, workspace_id: ids.workspace, title: "Saved author manuscript", language: "en" }, role: "owner" }),
       listEditions: async () => ({ editions }), listPublishingJobs: async () => ({ jobs: [] }), listAssets: async () => ({ assets: [] }), listChapters: async () => ({ chapters: [] }),
+      listNarrationModels: async () => ({ models: [] }), listAudiobookGooglePlayExports: async () => ({ jobs: [] }),
+      listAudiobookProjects: async () => ({ projects: [{ id: ids.job, chapterId: ids.asset, status: "running", segmentCount: 1,
+        billingMode: "quoted", creditUnits: 1, voice: "marin", segments: [{ index: 0, status: "succeeded", download: {
+          url: `${storageOrigin}/storage/v1/object/sign/book-assets/workspaces/${ids.workspace}/assets/${ids.asset}/v1/part.mp3?token=synthetic`, expiresIn: 300,
+        } }] }] }),
       listPrintRenders: async editionId => {
         window.requests.push({ method: "GET", action: "history", editionId });
         const response = { renders: structuredClone(window.proofs.filter(proof => proof.source.editionId === editionId)) };
@@ -113,14 +147,72 @@ async function fixture({ parent = false, width = 1280, disabled = false } = {}) 
       renderEdition: async () => { window.requests.push({ method: "POST", action: "render" }); throw new Error("Unexpected rendering request"); },
       createPublishingJob: async () => { window.requests.push({ method: "POST", action: "package" }); throw new Error("Unexpected package request"); },
     };
-  }, { ids, disabled, primaryDigest, primarySize: pdfBytes.length, coverDigest, coverSize: pngBytes.length });
+  }, { ids, disabled, primaryDigest, primarySize: pdfBytes.length, coverDigest, coverSize: pngBytes.length, audio, storageOrigin });
   for (const file of bundles[parent ? 1 : 0].outputFiles.filter(file => file.path.endsWith(".css"))) await page.addStyleTag({ content: file.text });
   await page.addScriptTag({ content: bundles[parent ? 1 : 0].outputFiles.find(file => file.path.endsWith(".js")).text });
   await page.evaluate(({ parent, book }) => parent ? window.showStudio(book) : window.mountLibrary(), { parent, book: ids.book });
-  await page.getByRole("heading", { name: "Saved print proofs" }).waitFor();
+  await page.getByRole("heading", { name: audio ? "Saved audio & delivery" : "Saved print proofs", exact: true }).waitFor();
   return { page, errors };
 }
 async function open(page) { await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled(); await page.getByRole("button", { name: "Open saved print", exact: true }).click(); await page.getByRole("button", { name: "Renew private links", exact: true }).waitFor(); }
+
+test("actual Studio downloads a private audio segment without replacing its player or leaving the app", async () => {
+  const { page, errors } = await fixture({ parent: true, audio: true });
+  try {
+    const appUrl = page.url(), player = page.locator("audio"), link = page.getByRole("link", { name: "Download private MP3", exact: true });
+    await expect(link).toBeVisible();
+    const previewUrl = await player.getAttribute("src"), filename = `narration-${ids.job}-part-1.mp3`;
+    assert.equal(new URL(previewUrl).searchParams.has("download"), false);
+    assert.equal(new URL(await link.getAttribute("href")).searchParams.get("download"), filename);
+    const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
+    assert.equal(download.suggestedFilename(), filename); assert.equal(await download.failure(), null);
+    assert.deepEqual(await readFile(await download.path()), audioBytes);
+    assert.equal(page.url(), appUrl); await expect(player).toHaveAttribute("src", previewUrl);
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(request => request.method !== "GET")), []);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const source of ["saved", "new"]) test(`actual Studio downloads ${source} cross-origin PDF and cover without leaving inline previews`, async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    const appUrl = page.url();
+    let downloads = 0; page.on("download", () => { downloads++; });
+    if (source === "saved") await open(page);
+    else {
+      await page.evaluate(() => { window.bookwormApi.renderEdition = async () => {
+        window.requests.push({ method: "POST", action: "render" }); return structuredClone(window.results[window.ids.job]);
+      }; });
+      await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    }
+    const links = page.getByRole("link", { name: "Download private file", exact: true });
+    await expect(links).toHaveCount(2);
+    const preview = page.getByTitle("Rendered print edition preview", { exact: true });
+    const previewUrl = await preview.getAttribute("src");
+    assert.equal(new URL(previewUrl).searchParams.has("download"), false);
+    assert.equal(new URL(await page.getByAltText("Rendered book cover", { exact: true }).getAttribute("src")).searchParams.has("download"), false);
+    // Full Chrome has a PDF viewer; the headless shell downloads even inline PDFs and masks this bug.
+    const viewerFrame = () => page.frames().find(frame => frame.url().startsWith("chrome-extension://") && new URL(frame.url()).pathname === "/index.html");
+    await expect.poll(() => Boolean(viewerFrame())).toBe(true);
+    await expect(viewerFrame().locator("pdf-viewer")).toBeVisible();
+    await expect(viewerFrame().getByRole("button", { name: "Print", exact: true })).toBeEnabled();
+    await expect.poll(() => viewerFrame().locator("pdf-viewer").evaluate(viewer => viewer.loadState_)).toBe("success");
+    await preview.screenshot({ path: resolve(artifacts, `${source}-print-inline-preview.png`) });
+    assert.equal(downloads, 0, "Opening previews must not download files");
+    for (const [index, filename, digest] of [[0, "Saved interior.pdf", primaryDigest], [1, "Saved cover.png", coverDigest]]) {
+      const link = links.nth(index), href = new URL(await link.getAttribute("href"));
+      assert.equal(href.searchParams.get("download"), filename);
+      assert.equal(href.searchParams.get("token"), "synthetic");
+      const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
+      assert.equal(await download.failure(), null); assert.equal(download.suggestedFilename(), filename);
+      assert.equal(createHash("sha256").update(await readFile(await download.path())).digest("hex"), digest);
+      assert.equal(page.url(), appUrl); await expect(preview).toHaveAttribute("src", previewUrl);
+    }
+    assert.equal(downloads, 2);
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(request => request.method === "POST").map(request => request.action)), source === "new" ? ["render"] : []);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 test("initial parent loading waits, then reads history without posting or rendering", async () => {
   const { page, errors } = await fixture({ disabled: true });

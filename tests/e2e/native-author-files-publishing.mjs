@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect as playwrightExpect } from '@playwright/test';
-import { requireNativeAuthorRunner } from './native-author-files-guard.mjs';
+import { localFetch, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
 
 const expect = playwrightExpect.configure({ timeout: 30_000 });
 
-export async function runNativePublishingBrowser({ page, bookId, passage, screenshot, onStage }) {
+export async function runNativePublishingBrowser({ page, bookId, passage, screenshot, origins, onStage }) {
   requireNativeAuthorRunner();
   const origin = new URL(page.url()).origin;
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -90,7 +90,21 @@ export async function runNativePublishingBrowser({ page, bookId, passage, screen
       await page.getByRole('button', { name: /^print /i }).click();
       await page.getByRole('button', { name: 'Open saved print', exact: true }).click();
       await expect(page.getByText('Saved print proof opened. Run fresh preflight before creating a package.', { exact: true })).toBeVisible();
-      await download(page.getByRole('link', { name: 'Download private file', exact: true }), artifact.asset.checksum);
+      const link = page.getByRole('link', { name: 'Download private file', exact: true });
+      const attachmentUrl = new URL(await link.getAttribute('href'));
+      const previewUrl = new URL(await page.getByTitle('Rendered print edition preview', { exact: true }).getAttribute('src'));
+      assert.equal(previewUrl.searchParams.has('download'), false);
+      assert.equal(attachmentUrl.searchParams.get('download'), artifact.asset.name);
+      const original = new URL(attachmentUrl); original.searchParams.delete('download');
+      assert.equal(original.href, previewUrl.href);
+      // The headless shell downloads inline PDFs too; require Storage's real attachment header.
+      const attachment = await localFetch(origins)(attachmentUrl.href);
+      assert.equal(attachment.status, 200);
+      assert.match(attachment.headers.get('content-disposition') ?? '', /^attachment(?:;|$)/i);
+      assert.equal(createHash('sha256').update(Buffer.from(await attachment.arrayBuffer())).digest('hex'), artifact.asset.checksum);
+      const location = page.url();
+      await download(link, artifact.asset.checksum);
+      assert.equal(page.url(), location);
       await expect(page.getByRole('button', { name: 'Renew private links', exact: true })).toBeEnabled();
       await screenshot('publishing-print-desktop');
       await page.setViewportSize({ width: 390, height: 844 });
