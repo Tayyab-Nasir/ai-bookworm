@@ -42,7 +42,7 @@ async function command(label, executable, args, { input, timeout = 120_000, chil
   try {
     await new Promise((resolve, reject) => {
       child.once('error', reject);
-      child.once('close', code => code === 0 ? resolve() : reject(new Error(`${label} failed (${code}).\n${diagnostic(stderr + '\n' + stdout)}`)));
+      child.once('close', code => code === 0 ? resolve() : reject(new Error(`${label} failed (${code}).\n${diagnostic(stderr)}\n${diagnostic(stdout)}`)));
     });
   } finally { clearTimeout(timer); if (ticker) clearInterval(ticker); }
   return stdout.trim();

@@ -8,6 +8,22 @@ import { nativeBrowserJson } from './native-author-files-browser.mjs';
 
 const expect = playwrightExpect.configure({ timeout: 30_000 });
 
+/** Inject a client-only loss after the real server response has fully arrived. */
+export function discardNextPackageReply() {
+  const original = window.fetch;
+  window.fetch = async (...args) => {
+    const result = await original(...args);
+    if (String(args[0]).endsWith('/publishing/jobs') && args[1]?.method === 'POST' && result.ok) {
+      window.fetch = original;
+      // Drain the real body before dropping it. Leaving an unread streaming
+      // response can keep Playwright's response.json() pending on native CI.
+      await result.arrayBuffer();
+      throw new TypeError('Connection lost after saved export');
+    }
+    return result;
+  };
+}
+
 async function download(page, link, checksum) {
   const transferred = page.waitForEvent('download');
   await link.click();
@@ -188,19 +204,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         const preflight = await nativeBrowserJson(validated);
         assert.equal(preflight.errors, 0); assert.equal(preflight.requestedChannel, channel);
         const loseReply = packages.length === 6;
-        if (loseReply) await page.evaluate(() => {
-          const original = window.fetch;
-          window.fetch = async (...args) => {
-            const result = await original(...args);
-            if (String(args[0]).endsWith('/publishing/jobs') && args[1]?.method === 'POST' && result.ok) {
-              window.fetch = original;
-              // The real server has answered. Simulate loss only on the client;
-              // no response body, account, package or usage record is fabricated.
-              throw new TypeError('Connection lost after saved export');
-            }
-            return result;
-          };
-        });
+        if (loseReply) await page.evaluate(discardNextPackageReply);
         const [created] = await Promise.all([
           page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publishing/jobs') && response.request().method() === 'POST', { timeout: 90_000 }),
           history.getByRole('button', { name: 'Create retailer package', exact: true }).click(),
