@@ -1,7 +1,7 @@
 # Native author-file acceptance
 
 This test runs the actual Bookworm API and document worker against disposable
-Supabase Auth, PostgREST, Storage, ClamAV, document-parser and rendering containers. It does
+Supabase Auth, PostgREST, Storage, ClamAV, document-parser, rendering and publishing containers. It does
 not use the SQL-only suite's Auth/Storage stubs or injected API service fakes.
 
 ## Running and safety
@@ -25,7 +25,7 @@ Published ports must bind to loopback. Operator credentials, proxy/Docker
 overrides and dotenv hooks are not inherited by child processes.
 
 The processing network stays Docker-internal, with no published ports or
-external route. Three byte-transparent Node TCP relays bind only to host loopback
+external route. Four byte-transparent Node TCP relays bind only to host loopback
 and reach inspected, running containers on that exact network. They do not
 replace HTTP responses or service implementations. The project ID is a full
 random UUID under a short prefix, below the pinned CLI's 40-character cap;
@@ -39,12 +39,16 @@ application's entitlement, quote or consent controls.
 
 Rendering uses the existing private image, including its pinned EPUBCheck
 runtime, with a separate owned loopback relay and explicit service token.
-No subscription or commercial plan is seeded: saved-book export uses the
-application's existing rendering entitlement. Initial authoring creates no
-usage; the complete browser/API extension requires exactly four `rendering`
-meter records, one EPUB and PDF per author path, with no AI jobs or other usage
-even after reopening and replay. The earlier API-only export revision below
-required two; the complete browser extension passed on `e426b1b` as recorded below.
+The initial author/browser proofs use the existing rendering entitlement and
+require exactly four rendering events. The retailer extension first asserts
+default-deny packaging, then inserts one unpublished synthetic plan and one
+subscription in the disposable database only. It grants retailer export channels,
+not AI credits, and contains no provider customer/subscription IDs. It imports no
+commercial seed and makes no checkout/payment call. Four additional renders and
+seven retailer packages must result in exactly eight `rendering` and seven
+`publishing` events in total, including replay and history recovery. AI jobs and
+the credit ledger must remain empty. These test fixtures do not authorize or
+enable a commercial plan in any hosted environment; Stripe remains deferred.
 
 ## Assertions
 
@@ -78,8 +82,32 @@ required two; the complete browser extension passed on `e426b1b` as recorded bel
   web processes are closed before native-service cleanup.
 - Ordered migration source digests must be unchanged after the run; owned
   containers, networks and local database volumes are removed in `finally`.
+- A separate real TXT import saves 32 chapters, listing metadata and a scanned
+  1800x2700 cover. Actual cover composition includes an offline-generated QR
+  code. Four saved editions produce EPUB/front-cover and PDF/full-wrap bytes;
+  B&N uses a custom printer template instead of KDP's paper profile, and Lulu
+  uses its separate all-edge bleed setting.
+  Seven native package paths cover KDP/Apple/B&N/Google EPUB and KDP/B&N/Lulu PDF.
+  Each requires zero-error channel preflight; Google also requires actual
+  EPUBCheck. Python's standard ZIP reader verifies every exact artifact/cover,
+  metadata, preflight report, README and manifest checksum without extracting files.
+- Native package replay/history must retain job and asset identity, reject
+  cross-request key reuse, and deny foreign API, Storage and signed-link access.
+  A later metadata edit must reject old source proofs while every previous ZIP
+  remains byte-identical and readable. Service capabilities and README retain
+  the manual-submission boundary; no retailer is contacted.
 
 ## Evidence boundary
+
+Private download acceptance run `38986781107`, job `117259989715`, PASSED at
+`2026-10-17T00:36:27Z` on exact `3274e35ffabef1a6fc7f1c1b696c520d67eab840`.
+Terminal metadata/logs verified the production build, 14 runner guards,
+16 full-Chromium mounted checks, opaque-reader isolation and the complete native
+author/browser/API EPUB/PDF flow. Actual Storage attachment headers, exact bytes,
+tenant checks, immutable proofs, four render events, zero AI usage, migration
+integrity and both cleanup levels passed. This supersedes the attachment-pending
+status in the historical sequence below. It does not cover the new seven-package
+extension: that extension requires successful native CI on its own source SHA.
 
 Native run `38985140682`, job `117254741704`, PASSED at
 `2026-10-17T00:15:30Z` on exact `e426b1b0f887021762f2d63b1ca4b627978bb5d2`.

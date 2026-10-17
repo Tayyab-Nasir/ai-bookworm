@@ -11,7 +11,7 @@ for await (const chunk of process.stdin) {
   assert.ok(input.length < 2 * 1024 * 1024, 'Native fixture input exceeds its limit');
 }
 const setup = JSON.parse(input);
-const origins = new Set([setup.url, setup.scannerUrl, setup.documentUrl, setup.renderingUrl].map(localOrigin));
+const origins = new Set([setup.url, setup.scannerUrl, setup.documentUrl, setup.renderingUrl, setup.publishingUrl].map(localOrigin));
 assert.equal(setup.url, 'http://127.0.0.1:55321');
 assert.equal(process.env.SUPABASE_URL, setup.url);
 assert.ok(process.env.SUPABASE_ANON_KEY === setup.anonKey, 'Disposable anonymous key mismatch');
@@ -55,9 +55,9 @@ async function author(label) {
   assert.ok(workspace.id && workspace.organization_id);
   return { client, token, workspace, userId: identity.user.id };
 }
-async function upload(author, name, mimeType, bytes) {
+async function upload(author, name, mimeType, bytes, type = 'manuscript') {
   const declaration = { workspaceId: author.workspace.id, requestId: randomUUID(), filename: name,
-    mimeType, sizeBytes: bytes.length, type: 'manuscript' };
+    mimeType, sizeBytes: bytes.length, type };
   const ticket = await request(author.token, 'POST', '/assets/upload-url', declaration);
   const replay = await request(author.token, 'POST', '/assets/upload-url', declaration);
   assert.equal(replay.assetId, ticket.assetId);
@@ -229,6 +229,9 @@ try {
 
   const { runNativeAuthorRenders } = await import('./native-author-files-render.mjs');
   await runNativeAuthorRenders({ request, service, alice, bob, book, chapter: reloaded.document });
+  const { runNativeRetailerPackages } = await import('./native-author-files-packages.mjs');
+  await runNativeRetailerPackages({ request, service, alice, bob, upload, confirm, runOneDocumentJob,
+    artwork: Buffer.from(setup.packageArtwork, 'base64') });
 } finally {
   for (const client of clients) await client.auth.signOut().catch(() => {});
   await app.close();

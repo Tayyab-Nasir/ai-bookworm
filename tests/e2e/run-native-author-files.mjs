@@ -1,4 +1,4 @@
-/** Owns only disposable CI resources. Never links, pushes, seeds plans or reads .env. */
+/** Owns only disposable CI resources. Never links, pushes, imports commercial seeds or reads .env. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -127,13 +127,17 @@ try {
     '-e', `SERVICE_AUTH_TOKEN=${serviceToken}`]);
   const rendering = await runContainer('bookworm-ci-rendering', ['--memory', '1g',
     '-e', `SERVICE_AUTH_TOKEN=${serviceToken}`]);
+  const publishing = await runContainer('bookworm-ci-publishing', ['--memory', '1g',
+    '-e', `SERVICE_AUTH_TOKEN=${serviceToken}`]);
   const scannerUrl = await containerOrigin(scanner, 8004);
   const documentUrl = await containerOrigin(document, 8000);
   const renderingUrl = await containerOrigin(rendering, 8000);
+  const publishingUrl = await containerOrigin(publishing, 8000);
   await waitReady(`${scannerUrl}/ready`, { authorization: `Bearer ${serviceToken}` });
   await waitReady(`${documentUrl}/health`);
   await waitReady(`${renderingUrl}/health`);
-  console.log('PASS real ClamAV, document parser and rendering service ready');
+  await waitReady(`${publishingUrl}/health`);
+  console.log('PASS real ClamAV, document parser, rendering and publishing services ready');
 
   // Generate synthetic DOCX bytes with the parser image's installed libraries.
   // No customer fixture, download, alternate scanner or parser stub is involved.
@@ -148,12 +152,17 @@ for row,values in zip(table.rows,[['Captain','Mira'],['Harbor','Dawn']]):
  for cell,value in zip(row.cells,values): cell.text=value
 doc.add_picture(image)
 out=BytesIO(); doc.save(out); print(base64.b64encode(out.getvalue()).decode())`]);
+  const packageArtwork = await command('create synthetic retailer cover artwork', 'docker', ['exec', '-i', document, 'python', '-c',
+    `from io import BytesIO
+import base64
+from PIL import Image
+out=BytesIO(); Image.new('RGB',(1800,2700),'#204050').save(out,format='PNG'); print(base64.b64encode(out.getvalue()).decode())`]);
 
   const output = await command('native author HTTP journey', process.execPath,
     ['--import', 'tsx', 'tests/e2e/native-author-files.mjs'], {
       timeout: 600_000, progress: true,
-      input: JSON.stringify({ ...status, scannerUrl, documentUrl, renderingUrl, serviceToken, docx }),
-      childEnv: nativeAuthorEnvironment({ ...status, scannerUrl, documentUrl, renderingUrl, serviceToken }, env),
+      input: JSON.stringify({ ...status, scannerUrl, documentUrl, renderingUrl, publishingUrl, serviceToken, docx, packageArtwork }),
+      childEnv: nativeAuthorEnvironment({ ...status, scannerUrl, documentUrl, renderingUrl, publishingUrl, serviceToken }, env),
     });
   console.log(diagnostic(output));
   assert.equal((await migrationDigest()).digest, before.digest, 'Migration source changed during native acceptance');

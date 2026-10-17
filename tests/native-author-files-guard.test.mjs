@@ -4,11 +4,31 @@ import { spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { loopbackRelay } from './e2e/native-author-files-relay.mjs';
 import { blockNativeServiceWorkers, browserErrorSummary } from './e2e/native-author-files-browser.mjs';
+import { inspectNativePackage } from './e2e/native-author-files-packages.mjs';
 import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, nativeWebEnvironment, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+
+test('native ZIP inspection reads exact member checksums and rejects invalid archives', () => {
+  const fixture = spawnSync(process.execPath, ['scripts/run-python.mjs', '-I', '-c', `
+import io, sys, zipfile
+out = io.BytesIO()
+with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:
+ for name, value in {'book.epub': b'synthetic bytes', 'README.txt': b'manual submission',
+                     'metadata.json': b'{}', 'preflight.json': b'{}', 'manifest.json': b'{}'}.items():
+  archive.writestr(name, value)
+sys.stdout.buffer.write(out.getvalue())
+`], { cwd: fileURLToPath(new URL('../', import.meta.url)), timeout: 30_000 });
+  assert.equal(fixture.status, 0);
+  const inspected = inspectNativePackage(fixture.stdout);
+  assert.equal(inspected.files['book.epub'].size, Buffer.byteLength('synthetic bytes'));
+  assert.equal(inspected.files['book.epub'].sha256, createHash('sha256').update('synthetic bytes').digest('hex'));
+  assert.equal(inspected.readme, 'manual submission');
+  assert.deepEqual(inspected.metadata, {});
+  assert.throws(() => inspectNativePackage(Buffer.from('not a ZIP')), /could not be inspected/);
+});
 
 test('native service-worker blocker preserves sandbox denial without injecting page errors', async () => {
   const install = navigator => runInNewContext(`(${blockNativeServiceWorkers.toString()})()`, { navigator });
@@ -49,13 +69,16 @@ test('native web settings exclude service credentials and reject self-proxy or e
 test('native child settings boot the real production API without operator credentials or network calls', () => {
   const env = nativeAuthorEnvironment({ url: 'http://127.0.0.1:55321', anonKey: 'synthetic-anonymous',
     serviceKey: 'synthetic-service', scannerUrl: 'http://127.0.0.1:55323',
-    documentUrl: 'http://127.0.0.1:55324', renderingUrl: 'http://127.0.0.1:55325', serviceToken: 'synthetic-private-service' },
+    documentUrl: 'http://127.0.0.1:55324', renderingUrl: 'http://127.0.0.1:55325',
+    publishingUrl: 'http://127.0.0.1:55326', serviceToken: 'synthetic-private-service' },
   { PATH: process.env.PATH ?? '', OPENAI_API_KEY: 'operator-key-must-not-leak', NODE_OPTIONS: '--import dotenv/config' });
   assert.equal(env.NODE_ENV, 'production');
   assert.equal(env.OPENAI_API_KEY, ''); assert.equal(env.STRIPE_SECRET_KEY, '');
   assert.equal(env.NODE_OPTIONS, undefined);
   assert.equal(env.RENDERING_SERVICE_URL, 'http://127.0.0.1:55325');
   assert.equal(env.RENDERING_SERVICE_TOKEN, 'synthetic-private-service');
+  assert.equal(env.PUBLISHING_SERVICE_URL, 'http://127.0.0.1:55326');
+  assert.equal(env.PUBLISHING_SERVICE_TOKEN, 'synthetic-private-service');
   const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     let calls = 0;
@@ -73,9 +96,17 @@ test('native child settings boot the real production API without operator creden
 });
 
 test('native renderer must be a distinct owned loopback service', () => {
-  const setup = { url: 'http://127.0.0.1:55321', scannerUrl: 'http://127.0.0.1:55323', documentUrl: 'http://127.0.0.1:55324' };
+  const setup = { url: 'http://127.0.0.1:55321', scannerUrl: 'http://127.0.0.1:55323', documentUrl: 'http://127.0.0.1:55324', publishingUrl: 'http://127.0.0.1:55326' };
   for (const renderingUrl of [undefined, 'https://renderer.example', 'http://127.0.0.1:55321/', setup.scannerUrl, setup.documentUrl]) {
     assert.throws(() => nativeAuthorEnvironment({ ...setup, renderingUrl }, {}));
+  }
+});
+
+test('native publisher must be a distinct owned loopback service', () => {
+  const setup = { url: 'http://127.0.0.1:55321', scannerUrl: 'http://127.0.0.1:55323',
+    documentUrl: 'http://127.0.0.1:55324', renderingUrl: 'http://127.0.0.1:55325' };
+  for (const publishingUrl of [undefined, 'https://publisher.example', ...Object.values(setup)]) {
+    assert.throws(() => nativeAuthorEnvironment({ ...setup, publishingUrl }, {}));
   }
 });
 

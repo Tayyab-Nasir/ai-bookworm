@@ -56,12 +56,17 @@ export function nativeAuthorEnvironment(setup, source = process.env) {
   if ([setup.url, setup.scannerUrl, setup.documentUrl].map(localOrigin).includes(renderingUrl)) {
     throw new Error('Native rendering requires its own owned loopback service.');
   }
+  const publishingUrl = localOrigin(setup.publishingUrl);
+  if ([setup.url, setup.scannerUrl, setup.documentUrl, renderingUrl].map(localOrigin).includes(publishingUrl)) {
+    throw new Error('Native publishing requires its own owned loopback service.');
+  }
   return { ...childEnvironment(source), NODE_ENV: 'production', LOG_LEVEL: 'error',
     SUPABASE_URL: setup.url, SUPABASE_ANON_KEY: setup.anonKey, SUPABASE_SERVICE_ROLE_KEY: setup.serviceKey,
     REDIS_URL: 'redis://127.0.0.1:59998', QDRANT_URL: 'http://127.0.0.1:59999',
     SCANNING_SERVICE_URL: setup.scannerUrl, SCANNING_SERVICE_TOKEN: setup.serviceToken,
     DOCUMENT_SERVICE_URL: setup.documentUrl, DOCUMENT_SERVICE_TOKEN: setup.serviceToken,
     RENDERING_SERVICE_URL: renderingUrl, RENDERING_SERVICE_TOKEN: setup.serviceToken,
+    PUBLISHING_SERVICE_URL: publishingUrl, PUBLISHING_SERVICE_TOKEN: setup.serviceToken,
     OPENAI_API_KEY: '', STRIPE_SECRET_KEY: '', STRIPE_WEBHOOK_SECRET: '',
   };
 }
