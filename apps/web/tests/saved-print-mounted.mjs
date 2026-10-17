@@ -424,7 +424,7 @@ test("opening and renewing an exact previous print keeps transient parent busy s
     const request = await page.evaluate(() => window.requests.find(request => request.action === "download"));
     assert.equal(request.sha256, primaryDigest); assert.equal(request.fingerprint, "b".repeat(64));
     await page.evaluate(() => window.setProofProps({ disabled: true }));
-    assert.equal(await page.getByRole("button", { name: "Renew private links", exact: true }).isDisabled(), true);
+    await expect(page.getByRole("button", { name: "Renew private links", exact: true })).toBeDisabled();
     assert.equal(await page.getByRole("link", { name: "Download exact saved interior" }).count(), 1);
     await page.evaluate(() => window.setProofProps({ disabled: false }));
     await page.getByRole("button", { name: "Renew private links", exact: true }).click();
