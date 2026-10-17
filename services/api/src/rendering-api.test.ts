@@ -17,6 +17,9 @@ interface Store {
   tables: Record<string, Row[]>;
   objects: Map<string, Buffer>;
   downloads?: string[];
+  signedPaths?: string[];
+  queryErrors?: Record<string, { code: string }>;
+  signError?: boolean;
   rpcError?: { code: string; message?: string; details?: string };
 }
 
@@ -38,7 +41,11 @@ function fakeSupabase(store: Store) {
           ? { data: new Blob([new Uint8Array(bytes)]), error: null }
           : { data: null, error: { message: "missing" } };
       },
-      createSignedUrl: async (path: string, seconds: number) => ({ data: { signedUrl: `signed:${seconds}:${path}` }, error: null }),
+      createSignedUrl: async (path: string, seconds: number) => {
+        store.signedPaths?.push(path);
+        if (store.signError) return { data: null, error: { message: "private signing diagnostic" } };
+        return { data: { signedUrl: `signed:${seconds}:${path}` }, error: null };
+      },
       remove: async (paths: string[]) => { paths.forEach((path) => store.objects.delete(path)); return { data: paths, error: null }; },
     }) },
     from: (table: string) => {
@@ -71,7 +78,7 @@ function fakeSupabase(store: Store) {
         }
         return selected();
       };
-      const result = () => { const data = mutate(); return { data, error: insertError }; };
+      const result = () => { const data = mutate(); return { data, error: store.queryErrors?.[table] ?? insertError }; };
       const builder: Record<string, unknown> = {};
       builder.select = () => builder;
       builder.eq = (key: string, value: unknown) => { filters.push([key, value]); return builder; };
@@ -98,7 +105,8 @@ function fakeSupabase(store: Store) {
           storage_path: artifact.storagePath, mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes,
           checksum: artifact.checksum, status: "draft", deleted_at: null, created_by: USER,
         });
-        store.tables.asset_versions.push({ asset_id: artifact.assetId, version_number: 1, storage_path: artifact.storagePath, checksum: artifact.checksum });
+        store.tables.asset_versions.push({ asset_id: artifact.assetId, version_number: 1, storage_path: artifact.storagePath,
+          checksum: artifact.checksum, mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes, scan_status: "trusted_generated" });
         store.tables.asset_links.push({ asset_id: artifact.assetId, entity_type: "edition", entity_id: EDITION, usage_role: artifact.role });
         store.tables.usage_events.push({ publishing_job_id: job.id, organization_id: ORG, workspace_id: WORKSPACE, user_id: USER, meter: "publishing", quantity: 1 });
         Object.assign(job, {
@@ -553,6 +561,97 @@ test("editor creates a durable private retailer package and can list, read, and 
   assert.equal(packageRequests.length, 1);
   assert.equal(store.tables.usage_events.filter((row) => row.meter === "publishing").length, 1);
   await app.close();
+});
+
+test("package history and replay never renew deleted, foreign, changed or quarantined ZIPs", async () => {
+  const cases: [string, (asset: Row, version: Row, descriptor: Row) => void][] = [
+    ["deleted", asset => { asset.deleted_at = "2026-10-17T00:00:00Z"; }],
+    ["archived", asset => { asset.status = "archived"; }],
+    ["foreign workspace", asset => { asset.workspace_id = crypto.randomUUID(); }],
+    ["changed path", asset => { asset.storage_path = "another/private/file.zip"; }],
+    ["changed checksum", asset => { asset.checksum = "0".repeat(64); }],
+    ["changed size", asset => { asset.size_bytes = Number(asset.size_bytes) + 1; }],
+    ["wrong type", asset => { asset.type = "manuscript"; }],
+    ["wrong MIME", asset => { asset.mime_type = "text/html"; }],
+    ["quarantined version", (_asset, version) => { version.scan_status = "infected"; }],
+    ["changed version checksum", (_asset, version) => { version.checksum = "0".repeat(64); }],
+    ["changed version path", (_asset, version) => { version.storage_path = "another/private/file.zip"; }],
+    ["unscanned version", (_asset, version) => { version.scan_status = "pending"; }],
+    ["changed version MIME", (_asset, version) => { version.mime_type = "text/html"; }],
+    ["changed version size", (_asset, version) => { version.size_bytes = Number(version.size_bytes) + 1; }],
+    ["missing asset", asset => { asset.id = crypto.randomUUID(); }],
+    ["missing original version", (_asset, version) => { version.version_number = 2; }],
+    ["invalid descriptor ID", (_asset, _version, descriptor) => { descriptor.assetId = "invalid"; }],
+    ["invalid descriptor hash", (_asset, _version, descriptor) => { descriptor.checksum = "invalid"; }],
+    ["wrong descriptor channel", (_asset, _version, descriptor) => { descriptor.filename = "apple-export.zip"; }],
+    ["wrong descriptor path", (_asset, _version, descriptor) => { descriptor.storagePath = "another/private/file.zip"; }],
+  ];
+  for (const [label, mutate] of cases) {
+    const store = baseStore(); enableRetailerPackages(store);
+    const requests: unknown[] = [];
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(requests) });
+    try {
+      const sources = await createReadySources(app);
+      const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+      const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+      assert.equal(created.statusCode, 201, created.body);
+      const job = created.json();
+      const asset = store.tables.assets.find(value => value.id === job.package.asset.id)!;
+      const version = store.tables.asset_versions.find(value => value.asset_id === asset.id)!;
+      const descriptor = (store.tables.publishing_jobs.find(value => value.id === job.id)!.response_json as { artifact: Row }).artifact;
+      const originalAsset = { ...asset }, originalVersion = { ...version }, originalDescriptor = { ...descriptor };
+      mutate(asset, version, descriptor); store.signedPaths = [];
+      const history = structuredClone(store.tables.publishing_jobs);
+      const usage = structuredClone(store.tables.usage_events);
+      for (const request of [
+        { method: "GET" as const, url: `/v1/publishing/jobs?bookId=${BOOK}` },
+        { method: "GET" as const, url: `/v1/publishing/jobs/${job.id}` },
+        { method: "POST" as const, url: "/v1/publishing/jobs", payload },
+      ]) {
+        const response = await app.inject({ ...request, headers: auth });
+        assert.equal(response.statusCode, 200, `${label}: ${response.body}`);
+        const result = response.json().jobs?.[0] ?? response.json();
+        assert.equal(result.id, job.id); assert.equal(result.status, "succeeded");
+        assert.equal(result.package, null, `${label}: unavailable snapshot must have no download link`);
+        assert.equal(response.headers["cache-control"], "private, no-store");
+      }
+      assert.deepEqual(store.signedPaths, [], `${label}: private signing must not run`);
+      assert.deepEqual(store.tables.publishing_jobs, history); assert.deepEqual(store.tables.usage_events, usage);
+      assert.equal(requests.length, 1, "recovery must not rebuild or charge for the package");
+      Object.assign(asset, originalAsset); Object.assign(version, originalVersion); Object.assign(descriptor, originalDescriptor);
+      const restored = await app.inject({ method: "GET", url: `/v1/publishing/jobs/${job.id}`, headers: auth });
+      assert.equal(restored.statusCode, 200, restored.body);
+      assert.equal(restored.json().package.asset.id, asset.id);
+    } finally { await app.close(); }
+  }
+});
+
+test("package history fails closed on availability or signing outages without changing the saved job", async () => {
+  for (const unavailable of ["assets", "asset_versions", "signing"]) {
+    const store = baseStore(); enableRetailerPackages(store);
+    const requests: unknown[] = [];
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(requests) });
+    try {
+      const sources = await createReadySources(app);
+      const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth,
+        payload: { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() } });
+      assert.equal(created.statusCode, 201, created.body);
+      const job = created.json(), history = structuredClone(store.tables.publishing_jobs), usage = structuredClone(store.tables.usage_events);
+      store.signedPaths = [];
+      if (unavailable === "signing") store.signError = true;
+      else store.queryErrors = { [unavailable]: { code: "08006" } };
+      for (const url of [`/v1/publishing/jobs?bookId=${BOOK}`, `/v1/publishing/jobs/${job.id}`]) {
+        const response = await app.inject({ method: "GET", url, headers: auth });
+        assert.equal(response.statusCode, 503, response.body);
+        assert.equal(response.headers["cache-control"], "private, no-store");
+        assert.equal(response.body.includes("signed:300:"), false);
+        assert.equal(response.body.includes("private signing diagnostic"), false);
+      }
+      if (unavailable !== "signing") assert.deepEqual(store.signedPaths, []);
+      assert.deepEqual(store.tables.publishing_jobs, history); assert.deepEqual(store.tables.usage_events, usage);
+      assert.equal(requests.length, 1);
+    } finally { await app.close(); }
+  }
 });
 
 test("Google Play ebook preflight and private package remain manual and plan-gated", async () => {

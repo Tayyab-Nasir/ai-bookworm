@@ -27,7 +27,7 @@ with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as archive:
   return JSON.parse(result.stdout.toString('utf8'));
 }
 
-export async function runNativeRetailerPackages({ request, service, alice, bob, upload, confirm, runOneDocumentJob, artwork }) {
+export async function runNativeRetailerPackages({ request, service, alice, bob, author, upload, confirm, runOneDocumentJob, artwork }) {
   requireNativeAuthorRunner();
   assert.equal(new URL(service.supabaseUrl).origin, 'http://127.0.0.1:55321');
   const data = (result, label) => {
@@ -64,6 +64,25 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
   const coverConfig = { asset_id: cover.assetId, qr_code: {
     enabled: true, url: 'https://example.com/harbor', label: 'Author website',
   } };
+  await request(alice.token, 'POST', `/books/${book.id}/editions`, { config: { kind: 'ebook', cover: coverConfig } }, 422);
+  const reviewer = await author('Native cover reviewer');
+  const invitation = await request(alice.token, 'POST', `/workspaces/${alice.workspace.id}/invitations`,
+    { email: reviewer.email, role: 'reviewer' }, 201);
+  const invitationToken = new URLSearchParams(new URL(invitation.acceptanceUrl).hash.slice(1)).get('token');
+  assert.ok(invitationToken, 'Native invitation must return a one-time acceptance fragment');
+  await request(bob.token, 'POST', '/workspaces/invitations/accept', { token: invitationToken }, 403);
+  await request(reviewer.token, 'POST', '/workspaces/invitations/accept', { token: invitationToken });
+  const approvalIntent = { workspaceId: alice.workspace.id, entityType: 'asset', entityId: cover.assetId,
+    entityVersionNumber: 1, reviewerId: reviewer.userId, idempotencyKey: randomUUID() };
+  await request(alice.token, 'POST', '/approvals', { ...approvalIntent, reviewerId: alice.userId }, 422);
+  const approval = await request(alice.token, 'POST', '/approvals', approvalIntent, 201);
+  assert.equal(approval.status, 'pending'); assert.equal(approval.entity_version_number, 1);
+  assert.equal((await request(alice.token, 'POST', '/approvals', approvalIntent, 201)).id, approval.id);
+  await request(alice.token, 'POST', `/approvals/${approval.id}/approve`, {}, 403);
+  await request(bob.token, 'POST', `/approvals/${approval.id}/approve`, {}, 404);
+  const approved = await request(reviewer.token, 'POST', `/approvals/${approval.id}/approve`, {});
+  assert.equal(approved.status, 'approved'); assert.equal(approved.entity_version_number, 1);
+  console.log('PASS native invited reviewer approves exact cover version; unapproved edition, self-review and foreign review refused');
   const front = { copyright_notice: 'Synthetic acceptance fixture. Not for retail sale.', publisher: 'Fixture Press' };
   const printConfig = { kind: 'print', trim_size: '6x9', bleed_in: 0.125, bleed_edges: 'outer',
     include_table_of_contents: true, cover: coverConfig, front_matter: front,
@@ -153,10 +172,32 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
       if (packages.length) await request(alice.token, 'POST', '/publishing/jobs', {
         ...intent, idempotencyKey: packages[0].intent.idempotencyKey,
       }, 409);
-      packages.push({ id: packaged.id, checksum: hash(bytes), intent });
+      packages.push({ id: packaged.id, assetId: artifact.asset.id, path: artifact.asset.storage_path, checksum: hash(bytes), intent });
       console.log(`PASS native ${channel} ${config.kind} private ZIP, exact artifact/cover/manifest/listing, replay, history and tenant refusal`);
     }
   }
+  const savedPackage = packages[0];
+  await request(alice.token, 'DELETE', `/assets/${savedPackage.assetId}`);
+  await request(alice.token, 'GET', `/assets/${savedPackage.assetId}/download-url`, undefined, 404);
+  assert.ok((await alice.client.storage.from('book-assets').download(savedPackage.path)).error);
+  assert.ok((await alice.client.storage.from('book-assets').createSignedUrl(savedPackage.path, 60)).error);
+  for (const result of [
+    await request(alice.token, 'GET', `/publishing/jobs/${savedPackage.id}`),
+    (await request(alice.token, 'GET', `/publishing/jobs?bookId=${book.id}`)).jobs.find(job => job.id === savedPackage.id),
+    await request(alice.token, 'POST', '/publishing/jobs', savedPackage.intent),
+  ]) {
+    assert.equal(result.id, savedPackage.id); assert.equal(result.status, 'succeeded');
+    assert.equal(result.package, null, 'Deleted ZIP history must not renew a private link');
+  }
+  await request(bob.token, 'POST', `/assets/${savedPackage.assetId}/restore`, {}, 404);
+  await request(alice.token, 'POST', `/assets/${savedPackage.assetId}/restore`, {});
+  const restoredPackage = await request(alice.token, 'GET', `/publishing/jobs/${savedPackage.id}`);
+  assert.equal(restoredPackage.package.asset.id, savedPackage.assetId);
+  const restoredBytes = await fetch(restoredPackage.package.download.url);
+  assert.equal(restoredBytes.status, 200);
+  assert.equal(hash(Buffer.from(await restoredBytes.arrayBuffer())), savedPackage.checksum);
+  console.log('PASS native deleted package denies new links and direct Storage access; exact saved ZIP restored without regeneration');
+
   await request(alice.token, 'PUT', `/books/${book.id}/metadata`, {
     ...listing, expectedUpdatedAt: metadata.metadata.updated_at, description: 'A later listing edit must not rewrite the saved packages.',
   });

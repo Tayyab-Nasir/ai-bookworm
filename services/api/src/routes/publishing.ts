@@ -74,6 +74,12 @@ const renderJobResponseSchema = z.object({
   usage: z.record(z.unknown()),
 }).strict();
 
+const packageArtifactSchema = renderArtifactSchema.extend({
+  type: z.literal("publishing_package"), role: z.literal("publishing_package"),
+  mimeType: z.literal("application/zip"), sizeBytes: z.number().int().min(1).max(200 * 1024 * 1024),
+  filename: z.string().regex(/^[a-z]+-export\.zip$/u).max(128),
+}).strict();
+
 export const packageServiceResponseSchema = z.object({
   channel: retailerChannelSchema,
   ruleVersion: z.string().min(1).max(200),
@@ -215,20 +221,36 @@ export function decodePackage(encoded: string, checksum: string) {
   return bytes;
 }
 
-async function hydratePackageJob(sb: SupabaseClient, job: Record<string, unknown>) {
+async function hydratePackageJob(sb: SupabaseClient, workspaceId: string, job: Record<string, unknown>) {
   const response = job.response_json && typeof job.response_json === "object" && !Array.isArray(job.response_json)
     ? job.response_json as Record<string, unknown>
     : {};
   let packageArtifact = null;
-  const descriptor = response.artifact && typeof response.artifact === "object" && !Array.isArray(response.artifact)
-    ? response.artifact as Record<string, unknown>
-    : null;
-  if (job.status === "succeeded" && typeof descriptor?.assetId === "string") {
-    const { data: asset, error } = await sb.from("assets").select("*").eq("id", descriptor.assetId).maybeSingle();
-    if (error || !asset) throw new AppError(500, "The publishing package record is incomplete.");
-    const { data: signed, error: signError } = await sb.storage.from(BUCKET).createSignedUrl(asset.storage_path, 300);
-    if (signError || !signed?.signedUrl) throw new AppError(503, "A private package download link could not be created.");
-    packageArtifact = { asset, download: { url: signed.signedUrl, expiresIn: 300 } };
+  const parsed = packageArtifactSchema.safeParse(response.artifact);
+  if (job.status === "succeeded" && parsed.success) {
+    const descriptor = parsed.data;
+    const canonicalPath = `workspaces/${workspaceId}/assets/${descriptor.assetId}/v1/${job.channel}-export.zip`;
+    if (descriptor.filename === `${job.channel}-export.zip` && descriptor.storagePath === canonicalPath) {
+      const [{ data: asset, error: assetError }, { data: version, error: versionError }] = await Promise.all([
+        sb.from("assets").select("*").eq("id", descriptor.assetId).eq("workspace_id", workspaceId).is("deleted_at", null).maybeSingle(),
+        sb.from("asset_versions").select("asset_id,version_number,storage_path,checksum,mime_type,size_bytes,scan_status")
+          .eq("asset_id", descriptor.assetId).eq("version_number", 1).maybeSingle(),
+      ]);
+      if (assetError || versionError) throw new AppError(503, "The private package availability could not be verified.");
+      const matches = (row: Record<string, unknown> | null) => row && row.storage_path === canonicalPath
+        && row.mime_type === descriptor.mimeType && Number(row.size_bytes) === descriptor.sizeBytes
+        && String(row.checksum).toLowerCase() === descriptor.checksum.toLowerCase();
+      // Keep the immutable job in history, but never renew access to unavailable
+      // or replaced bytes. Restoring the exact confirmed asset can restore its link.
+      if (matches(asset) && asset?.workspace_id === workspaceId && asset.deleted_at === null
+        && asset.type === descriptor.type && ["draft", "in_review", "approved"].includes(String(asset.status))
+        && matches(version) && version?.asset_id === descriptor.assetId && version.version_number === 1
+        && ["clean", "trusted_generated"].includes(String(version.scan_status))) {
+        const { data: signed, error: signError } = await sb.storage.from(BUCKET).createSignedUrl(canonicalPath, 300);
+        if (signError || !signed?.signedUrl) throw new AppError(503, "A private package download link could not be created.");
+        packageArtifact = { asset, download: { url: signed.signedUrl, expiresIn: 300 } };
+      }
+    }
   }
   const request = requestJson(job);
   return {
@@ -459,7 +481,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       }
       if (existing.status !== "succeeded") throw new AppError(409, `That publishing request is already ${existing.status}.`);
       reply.header("cache-control", "private, no-store");
-      return reply.status(200).send(await hydratePackageJob(service, existing));
+      return reply.status(200).send(await hydratePackageJob(service, book.workspace_id, existing));
     }
     if (insertError || !inserted) throw new AppError(500, "Could not create the publishing package job.");
 
@@ -536,7 +558,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       }
       completionPersisted = true;
       reply.header("cache-control", "private, no-store");
-      return reply.status(201).send(await hydratePackageJob(service, completedJob));
+      return reply.status(201).send(await hydratePackageJob(service, book.workspace_id, completedJob));
     } catch (error) {
       if (!completionPersisted) {
         if (uploadedPaths.length) await service.storage.from(BUCKET).remove(uploadedPaths);
@@ -547,12 +569,12 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     }
   });
 
-  app.get("/publishing/jobs", async (req) => {
+  app.get("/publishing/jobs", async (req, reply) => {
     const parsed = listPackageJobsSchema.safeParse(req.query);
     if (!parsed.success) throw new AppError(422, "Check the publishing history filters.", { issues: parsed.error.issues });
     const query = parsed.data;
     const user = app.supabaseFactory(req.userToken);
-    await loadBook(user, query.bookId, req.userId);
+    const { book } = await loadBook(user, query.bookId, req.userId);
     const { data, error } = await user.from("publishing_jobs").select("*")
       .eq("book_id", query.bookId).in("channel", retailerChannelSchema.options)
       .order("created_at", { ascending: false }).limit(100);
@@ -561,17 +583,19 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       && (!query.editionId || job.edition_id === query.editionId)
       && (!query.channel || job.channel === query.channel)).slice(0, query.limit);
     const service = app.supabaseFactory();
-    return { jobs: await Promise.all(jobs.map((job) => hydratePackageJob(service, job))) };
+    reply.header("cache-control", "private, no-store");
+    return { jobs: await Promise.all(jobs.map((job) => hydratePackageJob(service, book.workspace_id, job))) };
   });
 
-  app.get("/publishing/jobs/:jobId", async (req) => {
+  app.get("/publishing/jobs/:jobId", async (req, reply) => {
     const parsed = z.object({ jobId: z.string().uuid() }).safeParse(req.params);
     if (!parsed.success) throw new AppError(422, "Invalid publishing job id.");
     const user = app.supabaseFactory(req.userToken);
     const { data: job, error } = await user.from("publishing_jobs").select("*").eq("id", parsed.data.jobId).maybeSingle();
     if (error) throw new AppError(500, "Could not load the publishing job.");
     if (!job || requestJson(job).action !== "export_package") throw new AppError(404, "Publishing package job not found.");
-    await loadBook(user, job.book_id, req.userId);
-    return hydratePackageJob(app.supabaseFactory(), job);
+    const { book } = await loadBook(user, job.book_id, req.userId);
+    reply.header("cache-control", "private, no-store");
+    return hydratePackageJob(app.supabaseFactory(), book.workspace_id, job);
   });
 }

@@ -26,6 +26,9 @@ const service = createClient(setup.url, setup.serviceKey, options);
 const app = await buildApp();
 const address = await app.listen({ host: '127.0.0.1', port: 0 });
 origins.add(localOrigin(address));
+// Invitation links stay on this owned origin; the fixture uses only their
+// one-time fragment through the real acceptance API, never an email sender.
+process.env.APP_URL = address;
 const clients = [];
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function data(result, label) {
@@ -53,7 +56,7 @@ async function author(label) {
   const token = identity.session.access_token;
   const workspace = await request(token, 'POST', '/workspaces', { name: label, slug: `native-${randomUUID()}` }, 201);
   assert.ok(workspace.id && workspace.organization_id);
-  return { client, token, workspace, userId: identity.user.id };
+  return { client, token, workspace, userId: identity.user.id, email: identity.user.email };
 }
 async function upload(author, name, mimeType, bytes, type = 'manuscript') {
   const declaration = { workspaceId: author.workspace.id, requestId: randomUUID(), filename: name,
@@ -230,7 +233,7 @@ try {
   const { runNativeAuthorRenders } = await import('./native-author-files-render.mjs');
   await runNativeAuthorRenders({ request, service, alice, bob, book, chapter: reloaded.document });
   const { runNativeRetailerPackages } = await import('./native-author-files-packages.mjs');
-  await runNativeRetailerPackages({ request, service, alice, bob, upload, confirm, runOneDocumentJob,
+  await runNativeRetailerPackages({ request, service, alice, bob, author, upload, confirm, runOneDocumentJob,
     artwork: Buffer.from(setup.packageArtwork, 'base64') });
 } finally {
   for (const client of clients) await client.auth.signOut().catch(() => {});

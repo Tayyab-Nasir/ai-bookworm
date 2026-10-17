@@ -84,7 +84,11 @@ enable a commercial plan in any hosted environment; Stripe remains deferred.
   containers, networks and local database volumes are removed in `finally`.
 - A separate real TXT import saves 32 chapters, listing metadata and a scanned
   1800x2700 cover. Actual cover composition includes an offline-generated QR
-  code. Four saved editions produce EPUB/front-cover and PDF/full-wrap bytes;
+  code. An unapproved cover must fail edition creation. A separate real Auth
+  reviewer joins through the one-time, email-bound invitation API and approves
+  the exact scanned version through the review API; self/foreign decisions are
+  refused. No invitation email is sent or membership/approval row bypassed.
+  Four saved editions produce EPUB/front-cover and PDF/full-wrap bytes;
   B&N uses a custom printer template instead of KDP's paper profile, and Lulu
   uses its separate all-edge bleed setting.
   Seven native package paths cover KDP/Apple/B&N/Google EPUB and KDP/B&N/Lulu PDF.
@@ -96,8 +100,26 @@ enable a commercial plan in any hosted environment; Stripe remains deferred.
   A later metadata edit must reject old source proofs while every previous ZIP
   remains byte-identical and readable. Service capabilities and README retain
   the manual-submission boundary; no retailer is contacted.
+- Soft-deleting a package preserves its historical job but removes its new
+  history/detail/replay download links, generic download access and direct
+  authenticated Storage access. Restoring it returns the identical saved ZIP
+  without another package or usage event. Already-issued signed links may live
+  until expiry; this is not instant signed-token revocation. History validates
+  the immutable descriptor against current asset/version/scan records, rather
+  than re-downloading and hashing Storage bytes on every read.
 
 ## Evidence boundary
+
+The first seven-package native run `38987964004`, job `117263732431`, FAILED
+on exact `8dbefd60faeb04b1353a0df19c083b95cce21fa2`: its new cover fixture had
+been scanned but not approved, so the real edition API correctly refused it.
+Guards, full-Chromium attachment checks, production build, private service builds
+and the earlier author/browser/API proof journeys passed; both owned cleanup
+levels completed. No retailer package or final extended usage/migration check
+was reached. The fixture now uses real invitation and version-pinned approval
+APIs without weakening the approval gate. The package-history access correction
+and native delete/restore assertions are new, and require successful native CI
+on their own exact source SHA; the prior passing run below does not cover them.
 
 Private download acceptance run `38986781107`, job `117259989715`, PASSED at
 `2026-10-17T00:36:27Z` on exact `3274e35ffabef1a6fc7f1c1b696c520d67eab840`.
