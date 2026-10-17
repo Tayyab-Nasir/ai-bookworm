@@ -26,7 +26,7 @@ export function blockNativeServiceWorkers() {
   if (worker) worker.register = async () => { throw new Error('Native browser test blocks service-worker registration.'); };
 }
 
-export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origins, foreignBookId }) {
+export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origins, foreignBookId, prepareRetailer }) {
   requireNativeAuthorRunner();
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const reservation = createServer();
@@ -234,6 +234,23 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     stage = 'returning author foreign-book refusal';
     assert.equal(await page.evaluate(async id => (await fetch(`/api/backend/v1/books/${id}`)).status, foreignBookId), 404);
     succeeded('returning author foreign-book refusal');
+    stage = 'native retailer fixture and private service acceptance';
+    const retailer = await prepareRetailer();
+    stage = 'retailer owner login through actual Auth';
+    await page.goto(`${webOrigin}/dashboard`);
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+    await page.waitForURL(`${webOrigin}/login`);
+    await page.getByLabel('Email', { exact: true }).fill(retailer.email);
+    await page.getByLabel('Password', { exact: true }).fill(retailer.password);
+    await page.getByRole('button', { name: /sign in/i }).click();
+    await page.waitForURL(`${webOrigin}/dashboard`);
+    const { runNativeRetailerBrowser } = await import('./native-author-files-publishing.mjs');
+    await runNativeRetailerBrowser({ page, retailer, service, screenshot, onStage: value => { stage = value; } });
+    stage = 'retailer owner logout';
+    await page.goto(`${webOrigin}/dashboard`);
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+    await page.waitForURL(`${webOrigin}/login`);
+    assert.equal(await page.evaluate(async () => (await fetch('/api/auth/session')).status), 401);
     stage = 'browser errors and outbound destination audit';
     assert.deepEqual(errors, []);
     succeeded('logout, protected-route login, persistent memory and foreign-book refusal');

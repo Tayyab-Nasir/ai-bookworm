@@ -7,6 +7,16 @@ import { localFetch, requireNativeAuthorRunner } from './native-author-files-gua
 
 const expect = playwrightExpect.configure({ timeout: 30_000 });
 
+async function download(page, link, checksum) {
+  const transferred = page.waitForEvent('download');
+  await link.click();
+  const file = await transferred;
+  assert.equal(await file.failure(), null);
+  const bytes = await readFile(await file.path());
+  assert.equal(createHash('sha256').update(bytes).digest('hex'), checksum);
+  return bytes;
+}
+
 export async function runNativePublishingBrowser({ page, bookId, passage, screenshot, origins, onStage }) {
   requireNativeAuthorRunner();
   const origin = new URL(page.url()).origin;
@@ -20,14 +30,6 @@ export async function runNativePublishingBrowser({ page, bookId, passage, screen
   assert.equal(chapters.status, 200);
   const imported = chapters.body.chapters.filter(chapter => chapter.title !== 'Browser review');
   assert.equal(imported.length, 1);
-  const download = async (link, checksum) => {
-    const transferred = page.waitForEvent('download');
-    await link.click();
-    const file = await transferred;
-    assert.equal(await file.failure(), null);
-    assert.equal(createHash('sha256').update(await readFile(await file.path())).digest('hex'), checksum);
-  };
-
   for (const kind of ['ebook', 'print']) {
     onStage(`native ${kind} edition save and reload`);
     await page.getByRole('button', { name: kind === 'ebook' ? 'New EPUB' : 'New print', exact: true }).click();
@@ -79,7 +81,7 @@ export async function runNativePublishingBrowser({ page, bookId, passage, screen
       await expect.poll(() => desk.frameLocator('iframe').locator('img').evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
       await expect(desk.locator('iframe')).toHaveAttribute('sandbox', '');
       await desk.getByRole('button', { name: 'Renew exact EPUB download', exact: true }).click();
-      await download(desk.getByRole('link', { name: 'Download saved EPUB v1', exact: true }), artifact.asset.checksum);
+      await download(page, desk.getByRole('link', { name: 'Download saved EPUB v1', exact: true }), artifact.asset.checksum);
       await screenshot('publishing-epub-desktop');
       await page.setViewportSize({ width: 390, height: 844 });
       await screenshot('publishing-epub-mobile');
@@ -103,7 +105,7 @@ export async function runNativePublishingBrowser({ page, bookId, passage, screen
       assert.match(attachment.headers.get('content-disposition') ?? '', /^attachment(?:;|$)/i);
       assert.equal(createHash('sha256').update(Buffer.from(await attachment.arrayBuffer())).digest('hex'), artifact.asset.checksum);
       const location = page.url();
-      await download(link, artifact.asset.checksum);
+      await download(page, link, artifact.asset.checksum);
       assert.equal(page.url(), location);
       await expect(page.getByRole('button', { name: 'Renew private links', exact: true })).toBeEnabled();
       await screenshot('publishing-print-desktop');
@@ -124,4 +126,130 @@ export async function runNativePublishingBrowser({ page, bookId, passage, screen
     await expect(page.getByRole('main').getByRole('alert')).toHaveCount(0);
     console.log(`PASS native browser ${kind} save/reload, private render, saved proof, exact download, preflight and mobile containment`);
   }
+}
+
+/** The accepted native fixture supplies artwork, approval and a non-AI export
+ * entitlement. Every new render, preflight and ZIP below is created by the UI. */
+export async function runNativeRetailerBrowser({ page, retailer, service, screenshot, onStage }) {
+  requireNativeAuthorRunner();
+  const origin = new URL(page.url()).origin;
+  const publishUrl = `${origin}/books/${retailer.bookId}/publish`;
+  const { inspectNativePackage } = await import('./native-author-files-packages.mjs');
+  const requests = [];
+  const observe = request => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'POST' && (/\/publishing\/(jobs|validate)$/.test(path) || /\/editions\/[^/]+\/render$/.test(path))) requests.push(path);
+  };
+  page.on('request', observe);
+  const api = async (method, path) => {
+    const result = await page.evaluate(async ({ method, path }) => {
+      const response = await fetch(`/api/backend/v1${path}`, { method,
+        ...(method === 'POST' ? { headers: { 'content-type': 'application/json' }, body: '{}' } : {}) });
+      return { status: response.status, body: await response.json() };
+    }, { method, path });
+    assert.equal(result.status, 200, `Native browser ${method} returned an unexpected status`);
+    return result.body;
+  };
+  const select = async edition => {
+    const { editions } = await api('GET', `/books/${retailer.bookId}/editions`);
+    const index = editions.findIndex(value => value.id === edition.id);
+    assert.ok(index >= 0);
+    await page.locator('aside').getByRole('button').nth(index).click();
+    await expect(page.getByRole('combobox', { name: 'Format', exact: true })).toHaveValue(edition.kind);
+  };
+  const history = page.getByRole('region', { name: 'Retailer export packages', exact: true });
+  const packages = [];
+  try {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(publishUrl);
+    await expect(page.getByRole('heading', { name: 'Layout & publishing', exact: true })).toBeVisible();
+    for (const edition of retailer.editions) {
+      onStage(`retailer browser ${edition.kind} saved edition selection and rendering`);
+      await select(edition);
+      await expect(page.getByRole('checkbox', { name: 'Add QR code', exact: true })).toBeChecked();
+      await expect(page.getByLabel('HTTPS destination', { exact: true })).toHaveValue('https://example.com/harbor');
+      const [rendered] = await Promise.all([
+        page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/editions/${edition.id}/render`) && response.request().method() === 'POST', { timeout: 90_000 }),
+        page.getByRole('button', { name: edition.kind === 'ebook' ? 'Render EPUB' : 'Render PDF', exact: true }).click(),
+      ]);
+      assert.equal(rendered.status(), 201);
+      const render = await rendered.json();
+      assert.equal(render.status, 'succeeded');
+      await expect(page.getByText('Private render completed.', { exact: true })).toBeVisible();
+      for (const channel of edition.channels) {
+        onStage(`retailer browser ${channel} ${edition.kind} preflight and package creation`);
+        await page.getByRole('combobox', { name: 'Preflight target', exact: true }).selectOption(channel);
+        const [validated] = await Promise.all([
+          page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publishing/validate') && response.request().method() === 'POST', { timeout: 90_000 }),
+          page.getByRole('button', { name: 'Run preflight', exact: true }).click(),
+        ]);
+        assert.equal(validated.status(), 201);
+        const preflight = await validated.json();
+        assert.equal(preflight.errors, 0); assert.equal(preflight.requestedChannel, channel);
+        const [created] = await Promise.all([
+          page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publishing/jobs') && response.request().method() === 'POST', { timeout: 90_000 }),
+          history.getByRole('button', { name: 'Create retailer package', exact: true }).click(),
+        ]);
+        assert.equal(created.status(), 201);
+        const job = await created.json();
+        assert.equal(job.status, 'succeeded'); assert.equal(job.submissionMode, 'manual');
+        assert.equal(job.sourceRenderJobId, render.jobId); assert.equal(job.sourcePreflightJobId, preflight.jobId);
+        await expect(page.getByText(`${channel} package is ready for manual submission.`, { exact: true })).toBeVisible();
+        const row = history.getByRole('listitem').first();
+        await expect(row.getByText('ready', { exact: true })).toBeVisible();
+        const bytes = await download(page, row.getByRole('link', { name: 'Download private ZIP', exact: true }), job.package.asset.checksum);
+        assert.equal(page.url(), publishUrl, 'ZIP download replaced the author interface');
+        const archive = inspectNativePackage(bytes);
+        assert.equal(archive.manifest.channel, channel); assert.equal(archive.preflight.errors, 0);
+        for (const { role, asset } of render.artifacts) {
+          const name = role === 'rendered_cover' ? (edition.kind === 'ebook' ? 'cover.png' : 'cover.pdf')
+            : edition.kind === 'ebook' ? 'book.epub' : 'book.pdf';
+          assert.equal(archive.files[name].sha256, asset.checksum);
+        }
+        assert.match(archive.readme, /NOT been submitted, published or approved/);
+        packages.push({ job, edition });
+        console.log(`PASS native browser ${channel} ${edition.kind} package creation and exact private ZIP download`);
+      }
+    }
+    assert.equal(requests.filter(path => path.endsWith('/publishing/jobs')).length, 7);
+    assert.equal(requests.filter(path => path.endsWith('/publishing/validate')).length, 7);
+    assert.equal(requests.filter(path => path.endsWith('/render')).length, 4);
+    const mutations = requests.length;
+    const saved = packages[0];
+    onStage('retailer browser reload and saved package history');
+    await page.reload();
+    await select(saved.edition);
+    const { jobs } = await api('GET', `/publishing/jobs?bookId=${retailer.bookId}`);
+    const index = jobs.filter(job => job.editionId === saved.edition.id).findIndex(job => job.id === saved.job.id);
+    assert.ok(index >= 0);
+    const row = history.getByRole('listitem').nth(index);
+    await download(page, row.getByRole('link', { name: 'Download private ZIP', exact: true }), saved.job.package.asset.checksum);
+    onStage('retailer browser deleted package history');
+    await api('DELETE', `/assets/${saved.job.package.asset.id}`);
+    await history.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(row.getByText('unavailable', { exact: true })).toBeVisible();
+    await expect(row.getByRole('link', { name: 'Download private ZIP', exact: true })).toHaveCount(0);
+    await expect(row.getByText(/This job is saved in history, but its file is currently unavailable/)).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await screenshot('retailer-unavailable-mobile');
+    onStage('retailer browser restored exact package download');
+    await api('POST', `/assets/${saved.job.package.asset.id}/restore`);
+    await history.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(row.getByText('ready', { exact: true })).toBeVisible();
+    await download(page, row.getByRole('link', { name: 'Download private ZIP', exact: true }), saved.job.package.asset.checksum);
+    await screenshot('retailer-restored-mobile');
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await screenshot('retailer-history-desktop');
+    assert.equal(requests.length, mutations, 'History recovery must not render, validate or package again');
+    await expect(page.getByRole('main').getByRole('alert')).toHaveCount(0);
+    const usage = await service.from('usage_events').select('meter,quantity');
+    assert.equal(usage.error, null); assert.equal(usage.data.length, 26);
+    for (const [meter, count] of [['rendering', 12], ['publishing', 14]]) assert.equal(usage.data.filter(row => row.meter === meter).length, count);
+    assert.ok(usage.data.every(row => Number(row.quantity) === 1));
+    for (const table of ['ai_jobs', 'credit_ledger']) {
+      const result = await service.from(table).select('id');
+      assert.equal(result.error, null); assert.deepEqual(result.data, []);
+    }
+    console.log('PASS native browser seven packages, read-only history recovery, unavailable/restored ZIP, exact usage and zero AI or credit charges');
+  } finally { page.off('request', observe); }
 }

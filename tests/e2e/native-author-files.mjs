@@ -48,15 +48,16 @@ async function request(token, method, path, body, expected = 200, headers = {}) 
 async function author(label) {
   const client = createClient(setup.url, setup.anonKey, options);
   clients.push(client);
+  const password = `Bwk-${randomUUID()}!`;
   const identity = data(await client.auth.signUp({ email: `${randomUUID()}@bookworm.local.test`,
-    password: `Bwk-${randomUUID()}!`, options: { data: { full_name: label, role: 'admin' } } }), 'native signup');
+    password, options: { data: { full_name: label, role: 'admin' } } }), 'native signup');
   assert.ok(identity.session?.access_token, 'Local email signup did not return a session');
   const profile = data(await client.from('profiles').select('id').eq('id', identity.user.id).single(), 'Auth profile trigger');
   assert.equal(profile.id, identity.user.id);
   const token = identity.session.access_token;
   const workspace = await request(token, 'POST', '/workspaces', { name: label, slug: `native-${randomUUID()}` }, 201);
   assert.ok(workspace.id && workspace.organization_id);
-  return { client, token, workspace, userId: identity.user.id, email: identity.user.email };
+  return { client, token, workspace, userId: identity.user.id, email: identity.user.email, password };
 }
 async function upload(author, name, mimeType, bytes, type = 'manuscript') {
   const declaration = { workspaceId: author.workspace.id, requestId: randomUUID(), filename: name,
@@ -228,13 +229,17 @@ try {
   console.log('PASS native initial table creation, edit/reload, stale-write refusal and zero AI jobs/usage');
 
   const { runNativeAuthorBrowser } = await import('./native-author-files-browser.mjs');
-  await runNativeAuthorBrowser({ setup, service, apiOrigin: address, origins, foreignBookId: book.id });
-
-  const { runNativeAuthorRenders } = await import('./native-author-files-render.mjs');
-  await runNativeAuthorRenders({ request, service, alice, bob, book, chapter: reloaded.document });
-  const { runNativeRetailerPackages } = await import('./native-author-files-packages.mjs');
-  await runNativeRetailerPackages({ request, service, alice, bob, author, upload, confirm, runOneDocumentJob,
-    artwork: Buffer.from(setup.packageArtwork, 'base64') });
+  await runNativeAuthorBrowser({ setup, service, apiOrigin: address, origins, foreignBookId: book.id,
+    prepareRetailer: async () => {
+      const { runNativeAuthorRenders } = await import('./native-author-files-render.mjs');
+      await runNativeAuthorRenders({ request, service, alice, bob, book, chapter: reloaded.document });
+      const { runNativeRetailerPackages } = await import('./native-author-files-packages.mjs');
+      const retailer = await runNativeRetailerPackages({ request, service, alice, bob, author, upload, confirm, runOneDocumentJob,
+        artwork: Buffer.from(setup.packageArtwork, 'base64') });
+      // Synthetic credentials stay in this process and the actual login form.
+      // Never persist them in screenshots, artifacts, notes or logs.
+      return { ...retailer, email: alice.email, password: alice.password };
+    } });
 } finally {
   for (const client of clients) await client.auth.signOut().catch(() => {});
   await app.close();

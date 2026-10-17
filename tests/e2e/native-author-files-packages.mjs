@@ -98,9 +98,11 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
       wrap_cover: { enabled: true, profile: 'custom', expected_page_count: 36, spine_width_in: 0.1 } }, channels: ['lulu'] },
   ];
   const packages = [];
+  const browserEditions = [];
   let granted = false;
   for (const { config, channels } of editions) {
     const edition = await request(alice.token, 'POST', `/books/${book.id}/editions`, { config }, 201);
+    browserEditions.push({ id: edition.id, kind: config.kind, channels });
     const render = await request(alice.token, 'POST', `/editions/${edition.id}/render`, { idempotencyKey: randomUUID() }, 201);
     assert.equal(render.status, 'succeeded'); assert.equal(render.artifacts.length, 2);
     const sourceFiles = Object.fromEntries(render.artifacts.map(({ role, asset }) => [
@@ -217,4 +219,5 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
   assert.deepEqual(data(await service.from('ai_jobs').select('id'), 'AI jobs'), []);
   assert.deepEqual(data(await service.from('credit_ledger').select('id'), 'credit ledger'), []);
   console.log('PASS native seven immutable retailer packages, stale-source refusal, exact render/package usage and zero AI jobs or credit charges');
+  return { bookId: book.id, editions: browserEditions };
 }

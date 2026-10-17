@@ -789,6 +789,34 @@ test("Assets permission retained retry cannot cross an A-to-B-to-A scope replace
   assert.deepEqual(reads, [A, A]);
 });
 
+test("Publishing history marks unavailable completed packages honestly and recovers restored files without regeneration", async () => {
+  const saved = { asset: { id: B, size_bytes: 1024, checksum: "a".repeat(64) }, download: { url: "https://storage.example/saved.zip" } };
+  let artifact: typeof saved | null = null;
+  let generated = 0;
+  const api = {
+    getBook: async () => ({ book: { id: B, workspace_id: A, language: "en", title: "Fixture book" }, role: "owner" }),
+    listEditions: async () => ({ editions: [{ id: A, book_id: B, type: "ebook", language: "en", edition_metadata_json: { kind: "ebook" } }] }),
+    listPublishingJobs: async () => ({ jobs: [{ id: "saved-package", editionId: A, channel: "kdp", status: "succeeded", createdAt: "2026-10-17T00:00:00Z", package: artifact }] }),
+    listChapters: async () => ({ chapters: [] }), listAssets: async () => ({ assets: [] }),
+    createPublishingJob: async () => { generated++; }, renderEdition: async () => { generated++; },
+  };
+  const h = harness("apps/web/components/PublishingStudio.tsx", api, { props: { bookId: B } });
+  h.render(); await h.callbacks.find(fn => fn.toString().includes("api.getBook"))!();
+  const assertAvailability = (available: boolean) => {
+    const tree = h.render(); const row = nodes(tree).find(node => node.type === "li" && node.key === "saved-package"); assert(row);
+    const badge = nodes(row).find(node => node.type === "span" && node.props.children === (available ? "ready" : "unavailable")); assert(badge);
+    assert.equal(badge.props.className.includes("emerald"), available);
+    assert.equal(nodes(row).some(node => node.type === "a" && node.props.children === "Download private ZIP"), available);
+    assert.equal(generated, 0);
+  };
+  assertAvailability(false);
+  for (const value of [saved, null, saved]) {
+    artifact = value;
+    nodes(h.render()).find(node => node.type === "button" && node.props.children === "Refresh").props.onClick();
+    await settle(); assertAvailability(value !== null);
+  }
+});
+
 test("Publishing render refreshes the real saved reader once; unsaved edits preserve its selected older snapshot", async () => {
   const latest = { bookId: B, editionId: A, jobId: "33333333-3333-4333-8333-333333333333", assetId: "55555555-5555-4555-8555-555555555555", version: 1 as const, sha256: "c".repeat(64), sizeBytes: 2000 };
   const older = { ...latest, jobId: "44444444-4444-4444-8444-444444444444", assetId: "66666666-6666-4666-8666-666666666666", sha256: "d".repeat(64) };

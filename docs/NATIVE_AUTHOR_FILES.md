@@ -107,8 +107,36 @@ enable a commercial plan in any hosted environment; Stripe remains deferred.
   until expiry; this is not instant signed-token revocation. History validates
   the immutable descriptor against current asset/version/scan records, rather
   than re-downloading and hashing Storage bytes on every read.
+- The browser then signs in as the synthetic retailer-book owner through the
+  actual login form. Publishing Studio selects all four saved editions, retains
+  approved artwork/QR settings, renders new proofs and creates the same seven
+  channel/format packages through real preflight and packaging controls. Browser
+  downloads must preserve the exact ZIP and source EPUB/PDF/cover hashes.
+  Reload/history remains read-only. A real authenticated BFF deletion/restore
+  simulates an asset change elsewhere: history must show `unavailable` without
+  a link, then recover the exact original ZIP without rendering or packaging
+  again. Mobile and desktop screenshots check containment. This does not test
+  the Assets deletion buttons themselves or a lost package-creation response.
+  Final combined accounting requires 12 rendering and 14 publishing events,
+  each quantity one, with zero AI jobs and an empty credit ledger.
 
 ## Evidence boundary
+
+Native run `38988819612`, job `117266372247`, PASSED at
+`2026-10-17T01:04:06Z` on exact `81b71311dd53806c5b5acc4932f3e7fc70c82a0d`.
+Terminal metadata and logs confirm real invited cover approval, seven API-driven
+retailer packages, private deletion/restore and original ZIP bytes, final eight
+rendering/seven publishing events, zero AI/credit charges, migration integrity
+and both cleanup levels. Production build, 16 full-Chromium mounted checks and
+16 runner guards also passed. This is disposable native acceptance, not hosted
+deployment, retailer approval or product completion.
+
+The subsequent availability-label UI and seven-package browser extension require
+their own exact-source native run. Local web tests (381), installed-Chrome mounted
+checks (17), web types and runner guards (16) pass, but those fixture checks alone
+do not prove the added native browser journey. The local mounted suite defaults
+to installed Chrome; CI explicitly selects full Chromium. Edge PDF-viewer
+compatibility is not claimed.
 
 The first seven-package native run `38987964004`, job `117263732431`, FAILED
 on exact `8dbefd60faeb04b1353a0df19c083b95cce21fa2`: its new cover fixture had

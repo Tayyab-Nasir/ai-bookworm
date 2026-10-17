@@ -1,5 +1,6 @@
 // Real React components and compiled project CSS; all API/PDF responses are in-memory fixtures.
-// Run from repository root: node --test apps/web/tests/saved-print-mounted.mjs
+// Run with installed Chrome: node --test apps/web/tests/saved-print-mounted.mjs
+// CI sets BROWSER_TEST_CHANNEL=chromium for its downloaded full browser.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -61,7 +62,7 @@ const bundles = await Promise.all([false, true].map(parent => build({ stdin: { c
 })));
 const stylePath = resolve("apps/web/styles/globals.css");
 const styles = await postcss([tailwind({ base: resolve("apps/web"), optimize: false })]).process(await readFile(stylePath, "utf8"), { from: stylePath });
-const browser = await chromium.launch({ headless: true, channel: process.env.BROWSER_TEST_CHANNEL || "msedge" });
+const browser = await chromium.launch({ headless: true, channel: process.env.BROWSER_TEST_CHANNEL || "chrome" });
 const artifacts = await mkdtemp(resolve(tmpdir(), "bookworm-saved-print-mounted-"));
 const storage = createServer((request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
@@ -155,6 +156,44 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
   return { page, errors };
 }
 async function open(page) { await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled(); await page.getByRole("button", { name: "Open saved print", exact: true }).click(); await page.getByRole("button", { name: "Renew private links", exact: true }).waitFor(); }
+
+test("actual Studio distinguishes unavailable package history and restores its link without another export", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.savedPackage = { id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
+        createdAt: "2026-10-17T00:00:00Z", ruleVersion: "fixture-rules", package: {
+          asset: { id: window.ids.asset, size_bytes: 1024, checksum: "a".repeat(64) },
+          download: { url: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 300 },
+        } };
+      window.packageJobs = [structuredClone(window.savedPackage)];
+      window.bookwormApi.listPublishingJobs = async () => {
+        window.requests.push({ method: "GET", action: "packages" });
+        return { jobs: structuredClone(window.packageJobs) };
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText("ready", { exact: true })).toBeVisible();
+    await expect(history.getByRole("link", { name: "Download private ZIP" })).toBeVisible();
+    await page.evaluate(() => { window.packageJobs[0].package = null; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText("unavailable", { exact: true })).toBeVisible();
+    await expect(history.getByText("ready", { exact: true })).toHaveCount(0);
+    await expect(history.getByRole("link", { name: "Download private ZIP" })).toHaveCount(0);
+    await expect(history.getByText(/This job is saved in history, but its file is currently unavailable/)).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await history.scrollIntoViewIfNeeded();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+    await history.screenshot({ path: resolve(artifacts, "unavailable-retailer-package-mobile.png") });
+    await page.evaluate(() => { window.packageJobs = [structuredClone(window.savedPackage)]; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText("ready", { exact: true })).toBeVisible();
+    await expect(history.getByRole("link", { name: "Download private ZIP" })).toHaveAttribute("href", /\/kdp-export\.zip\?/);
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method === "POST")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 test("actual Studio downloads a private audio segment without replacing its player or leaving the app", async () => {
   const { page, errors } = await fixture({ parent: true, audio: true });
