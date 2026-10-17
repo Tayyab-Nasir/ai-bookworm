@@ -92,6 +92,7 @@ async function fixture({ publishing = false } = {}) {
         getBook: async bookId => window.bookOverride ? window.bookOverride(bookId) : ({ book: { id: bookId, workspace_id: WORKSPACE, title: "Rain City", language: "en" }, role: "writer" }),
         listEditions: async () => ({ editions: window.editions }),
         listPublishingJobs: async () => ({ jobs: [] }),
+        listEditionRenders: async () => ({ renders: [] }),
         listChapters: async () => ({ chapters: window.chapters }),
         listAssets: async () => ({ assets: [] }),
         listAudiobookProjects: async editionId => {
@@ -130,6 +131,7 @@ async function publishingAction(operation) {
     window.preflightResult = { jobId, ruleVersion: "synthetic", channel: "kdp", requestedChannel: "kdp", errors: 0, warnings: 0,
       findings: [{ code: "synthetic", message: "Old private preflight finding", location: "", severity: "info", category: "metadata", rule_id: "synthetic", rule_version: "synthetic" }] };
     window.packageJob = { id: jobId, bookId: BOOK, editionId: EDITION, channel: "kdp", status: "succeeded", createdAt: "2026-10-05T00:00:00Z",
+      sourceRenderJobId: jobId, sourcePreflightJobId: jobId,
       ruleVersion: "synthetic", failureCode: null, submissionMode: "manual", package: { asset, download } };
     window.exportJob = { id: jobId, editionId: EDITION, status: "queued", progressChapters: 0, progressTotal: 2, errorCode: null,
       createdAt: "2026-10-05T00:00:00Z", completedAt: null, downloadUrl: null, synthesizedVoiceDisclosureRequired: true };
@@ -173,6 +175,7 @@ async function publishingAction(operation) {
     window.api[method] = async (...args) => {
       if (operation === "package history" && args[0] !== oldBook) return { jobs: [] };
       if (operation === "export history" && args[0] !== oldEdition) return { jobs: [] };
+      if (operation === "package") window.actionResult.requestId = args[0].idempotencyKey;
       window.actionCalls.push({ method, args }); return window.defer("parentAction");
     };
   }, { operation, oldBook: BOOK, oldEdition: EDITION });
@@ -182,6 +185,9 @@ async function publishingAction(operation) {
 }
 
 async function clickPublishingAction(page, operation) {
+  if (operation === "package" && await page.getByRole("button", { name: "Retry original export", exact: true }).count()) {
+    await page.getByRole("button", { name: "Retry original export", exact: true }).click(); return;
+  }
   const button = { save: "Save edition", render: "Render EPUB", preflight: "Run preflight", package: "Create retailer package",
     "audio export": "Queue Google Play archive", "cancel export": "Cancel export" }[operation];
   if (button) await page.getByRole("button", { name: button, exact: true }).click();
@@ -253,9 +259,10 @@ test("current publishing failures stay visible, release only their own lock and 
       await resolvePublishingAction(page); await settle(page);
       await expect(page.getByRole("alert")).toHaveCount(0);
       assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
-      if (operation === "audio export") {
+      if (operation === "audio export" || operation === "package") {
         const calls = await page.evaluate(() => window.actionCalls);
-        assert.equal(calls[0].args[1].idempotencyKey, calls[1].args[1].idempotencyKey, "Export retry replaced its original key");
+        const bodyIndex = operation === "package" ? 0 : 1;
+        assert.equal(calls[0].args[bodyIndex].idempotencyKey, calls[1].args[bodyIndex].idempotencyKey, "Export retry replaced its original key");
       }
     } finally { await page.close(); }
   }

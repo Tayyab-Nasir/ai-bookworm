@@ -48,6 +48,34 @@ def test_duplicate_contract_keys_are_not_silently_overwritten():
         load_contract("post:\n  responses: {200: first}\n  responses: {200: second}\n")
 
 
+def test_retailer_request_recovery_is_read_only_and_closure_uses_original_identity():
+    document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
+    lookup = document["paths"]["/v1/publishing/requests/{requestId}"]["get"]
+    close = document["paths"]["/v1/publishing/requests/close"]["post"]
+    assert "requestBody" not in lookup
+    assert {"requestId", "bookId"} <= {p.get("name") for p in lookup["parameters"]}
+    for operation in (lookup, close):
+        assert operation["responses"]["200"] == {"$ref": "#/components/responses/PublishingRequestResult"}
+        assert {"401", "403", "409", "422", "503"} <= operation["responses"].keys()
+    assert close["requestBody"]["content"]["application/json"]["schema"]["$ref"].endswith("/post/requestBody/content/application~1json/schema")
+    assert "requestId" in document["components"]["schemas"]["PublishingPackageJob"]["required"]
+    assert document["components"]["responses"]["PublishingRequestResult"]["headers"]["Cache-Control"]["schema"]["const"] == "private, no-store"
+    validator = Draft202012Validator({**document, "$ref": "#/components/responses/PublishingRequestResult/content/application~1json/schema"}, format_checker=FormatChecker())
+    identity = "d1000000-0000-4000-8000-000000000001"
+    assert not list(validator.iter_errors({"requestId": identity, "job": None}))
+    job = {"id": identity, "requestId": identity, "bookId": identity, "editionId": identity, "channel": "kdp",
+           "status": "cancelled", "createdAt": "2026-10-17T01:00:00Z", "sourceRenderJobId": identity,
+           "sourcePreflightJobId": identity, "failureCode": None, "submissionMode": "manual", "package": None,
+           "startedAt": None, "completedAt": "2026-10-17T01:00:00Z", "ruleVersion": None}
+    assert not list(validator.iter_errors({"requestId": identity, "job": job}))
+    available = {**job, "status": "succeeded", "package": {"asset": {"id": identity}, "download": {"url": "https://storage.example/file", "expiresIn": 300}}}
+    assert not list(validator.iter_errors({"requestId": identity, "job": available}))
+    for invalid in ({}, {"requestId": identity}, {"requestId": identity, "job": {}},
+                    {"requestId": identity, "job": {**job, "status": "unknown"}},
+                    {"requestId": identity, "job": {key: value for key, value in job.items() if key != "requestId"}}):
+        assert list(validator.iter_errors(invalid)), invalid
+
+
 def test_manual_book_bible_contract_binds_actor_request_and_exact_current_disposition():
     document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
     root = "/v1/books/{bookId}/bible"

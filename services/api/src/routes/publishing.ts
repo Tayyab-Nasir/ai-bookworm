@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { renderImagesFingerprint, assertRenderImagesCurrent } from "../lib/render-images.js";
 import { AppError } from "../errors.js";
@@ -195,6 +195,29 @@ export async function loadRenderedPackageInputs(
   return encoded;
 }
 
+async function findPackageRequest(sb: SupabaseClient, userId: string, bookId: string, key: string) {
+  const { data, error } = await sb.from("publishing_jobs").select("*")
+    .eq("book_id", bookId).eq("created_by", userId).eq("idempotency_key", key).maybeSingle();
+  if (error) throw new AppError(503, "The original package request could not be checked. Keep its request ID.");
+  return data as Record<string, unknown> | null;
+}
+
+function assertPackageActor(req: FastifyRequest) {
+  const actor = req.headers["x-bookworm-actor"];
+  if (actor !== undefined && (!z.string().uuid().safeParse(actor).success || actor !== req.userId)) {
+    throw new AppError(409, "Your account changed. Use the original account to recover this export request.");
+  }
+}
+
+function assertPackageRequest(job: Record<string, unknown>, body: z.infer<typeof packageRequestSchema>) {
+  const original = requestJson(job);
+  if (job.book_id !== body.bookId || job.edition_id !== body.editionId || job.channel !== body.channel
+    || original.action !== "export_package" || original.sourceRenderJobId !== body.renderJobId
+    || original.sourcePreflightJobId !== body.preflightJobId) {
+    throw new AppError(409, "That publishing request key belongs to a different package request.");
+  }
+}
+
 export function assertSavedRenderedCoverPolicy(config: z.infer<typeof editionConfigSchema>, renderJob: Record<string, unknown> | null) {
   if (!requiresEffectiveEbookCoverPolicy(config)) return;
   const response = renderJobResponseSchema.safeParse(renderJob?.response_json);
@@ -254,7 +277,7 @@ async function hydratePackageJob(sb: SupabaseClient, workspaceId: string, job: R
   }
   const request = requestJson(job);
   return {
-    id: job.id, bookId: job.book_id, editionId: job.edition_id, channel: job.channel, status: job.status,
+    id: job.id, requestId: job.idempotency_key, bookId: job.book_id, editionId: job.edition_id, channel: job.channel, status: job.status,
     createdAt: job.created_at, startedAt: job.started_at, completedAt: job.completed_at,
     sourceRenderJobId: request.sourceRenderJobId ?? response.sourceRenderJobId ?? null,
     sourcePreflightJobId: request.sourcePreflightJobId ?? response.sourcePreflightJobId ?? null,
@@ -402,12 +425,24 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     }
   });
 
-  app.post("/publishing/jobs", async (req, reply) => {
+  app.post("/publishing/jobs", { config: { durableIdempotency: true } }, async (req, reply) => {
+    assertPackageActor(req);
     const parsed = packageRequestSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "Check the publishing package request.", { issues: parsed.error.issues });
     const body = parsed.data;
     const user = app.supabaseFactory(req.userToken);
     const { book } = await loadBook(user, body.bookId, req.userId, true);
+    const service = app.supabaseFactory();
+    const replay = async (existing: Record<string, unknown>) => {
+      assertPackageRequest(existing, body);
+      if (existing.status !== "succeeded") throw new AppError(409, `That publishing request is already ${existing.status}. Recover its saved status before starting another export.`);
+      reply.header("cache-control", "private, no-store");
+      return reply.status(200).send(await hydratePackageJob(service, book.workspace_id, existing));
+    };
+    // Recovery reads the accepted immutable result. New work alone must pass
+    // current source/plan gates; an edited manuscript must not erase its receipt.
+    const existing = await findPackageRequest(user, req.userId, body.bookId, body.idempotencyKey);
+    if (existing) return replay(existing);
     const { data: edition, error: editionError } = await user.from("editions").select("*")
       .eq("id", body.editionId).eq("book_id", body.bookId).maybeSingle();
     if (editionError) throw new AppError(500, "Could not load the edition for publishing.");
@@ -420,7 +455,6 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     if (config.kind === "audiobook") {
       throw new AppError(422, "Audiobook retailer packaging is not available in this release.");
     }
-    const service = app.supabaseFactory();
     const { data: workspace, error: workspaceError } = await service.from("workspaces")
       .select("organization_id").eq("id", book.workspace_id).maybeSingle();
     if (workspaceError || !workspace) throw new AppError(404, "workspace not found");
@@ -467,21 +501,9 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       created_by: req.userId, started_at: new Date().toISOString(),
     }).select("*").single();
     if (insertError?.code === "23505") {
-      const { data: existing } = await service.from("publishing_jobs").select("*")
-        .eq("idempotency_key", body.idempotencyKey).eq("book_id", body.bookId).eq("created_by", req.userId).maybeSingle();
+      const existing = await findPackageRequest(user, req.userId, body.bookId, body.idempotencyKey);
       if (!existing) throw new AppError(409, "That publishing request key is already in use.");
-      const existingRequest = existing.request_json && typeof existing.request_json === "object" && !Array.isArray(existing.request_json)
-        ? existing.request_json as Record<string, unknown> : {};
-      if (existing.channel !== body.channel || existing.edition_id !== body.editionId
-        || existingRequest.action !== "export_package" || existingRequest.editionUpdatedAt !== edition.updated_at
-        || existingRequest.bookModelSha256 !== modelSha256 || existingRequest.imageSha256 !== imageSha256
-        || existingRequest.sourceRenderJobId !== body.renderJobId
-        || existingRequest.sourcePreflightJobId !== body.preflightJobId) {
-        throw new AppError(409, "That publishing request key belongs to a different package request.");
-      }
-      if (existing.status !== "succeeded") throw new AppError(409, `That publishing request is already ${existing.status}.`);
-      reply.header("cache-control", "private, no-store");
-      return reply.status(200).send(await hydratePackageJob(service, book.workspace_id, existing));
+      return replay(existing);
     }
     if (insertError || !inserted) throw new AppError(500, "Could not create the publishing package job.");
 
@@ -567,6 +589,50 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       if (error instanceof AppError) throw error;
       throw new AppError(503, "The publishing package could not be created.");
     }
+  });
+
+  app.get("/publishing/requests/:requestId", async (req, reply) => {
+    assertPackageActor(req);
+    const params = z.object({ requestId: z.string().uuid() }).safeParse(req.params);
+    const query = z.object({ bookId: z.string().uuid() }).strict().safeParse(req.query);
+    if (!params.success || !query.success) throw new AppError(422, "Invalid saved package request.");
+    const user = app.supabaseFactory(req.userToken);
+    const { book } = await loadBook(user, query.data.bookId, req.userId);
+    const job = await findPackageRequest(user, req.userId, book.id, params.data.requestId);
+    if (job && requestJson(job).action !== "export_package") throw new AppError(409, "This request ID is not a retailer package request.");
+    reply.header("cache-control", "private, no-store");
+    return { requestId: params.data.requestId, job: job ? await hydratePackageJob(app.supabaseFactory(), book.workspace_id, job) : null };
+  });
+
+  app.post("/publishing/requests/close", { config: { durableIdempotency: true } }, async (req, reply) => {
+    assertPackageActor(req);
+    const parsed = packageRequestSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "Invalid package request to close.");
+    const body = parsed.data;
+    const user = app.supabaseFactory(req.userToken);
+    const { book } = await loadBook(user, body.bookId, req.userId, true);
+    const service = app.supabaseFactory();
+    let job = await findPackageRequest(user, req.userId, body.bookId, body.idempotencyKey);
+    if (!job) {
+      const { data: edition, error: editionError } = await user.from("editions").select("id")
+        .eq("id", body.editionId).eq("book_id", body.bookId).maybeSingle();
+      if (editionError) throw new AppError(503, "The saved edition could not be checked.");
+      if (!edition) throw new AppError(404, "Edition not found for this book.");
+      // The existing unique request key arbitrates closure against a delayed
+      // create. Never update a queued/running/accepted job or delete its files.
+      const { data, error } = await service.from("publishing_jobs").insert({
+        id: randomUUID(), book_id: body.bookId, edition_id: body.editionId, channel: body.channel,
+        status: "cancelled", idempotency_key: body.idempotencyKey, created_by: req.userId,
+        request_json: { action: "export_package", sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId },
+        response_json: { error: "request_closed_before_acceptance" }, completed_at: new Date().toISOString(),
+      }).select("*").single();
+      if (error && error.code !== "23505") throw new AppError(503, "Closure was not confirmed. Recover the original package request.");
+      job = error ? await findPackageRequest(user, req.userId, body.bookId, body.idempotencyKey) : data;
+    }
+    if (!job) throw new AppError(409, "That publishing request key is already in use.");
+    assertPackageRequest(job, body);
+    reply.header("cache-control", "private, no-store");
+    return { requestId: body.idempotencyKey, job: await hydratePackageJob(service, book.workspace_id, job) };
   });
 
   app.get("/publishing/jobs", async (req, reply) => {

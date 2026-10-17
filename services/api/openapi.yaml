@@ -2007,6 +2007,9 @@ paths:
       tags: [v1]
       operationId: createPublishingJob
       summary: Create a private retailer export package for manual submission
+      description: Persist and reuse the original request key after an uncertain reply. Same-key recovery returns the immutable saved result even if source content or plan access later changes; new requests still require current proofs and entitlement. The browser proxy requires X-Bookworm-Actor to match its verified session.
+      parameters:
+        - { $ref: "#/components/parameters/PublishingRequestActor" }
       requestBody:
         required: true
         content:
@@ -2035,6 +2038,45 @@ paths:
               schema: { $ref: "#/components/schemas/PublishingPackageJob" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/publishing/requests/{requestId}:
+    get:
+      tags: [v1]
+      operationId: getPublishingRequest
+      summary: Recover the current author's original export request without generating another package
+      description: Requires current book membership. Actor-scoped lookup works after source edits or plan changes. A null job is not proof that a delayed create cannot arrive; retain the key and explicitly retry or close it.
+      parameters:
+        - { $ref: "#/components/parameters/PublishingRequestActor" }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: bookId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/PublishingRequestResult" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/publishing/requests/close:
+    post:
+      tags: [v1]
+      operationId: closePublishingRequest
+      summary: Close an unaccepted request while preserving any export already accepted
+      description: Requires current editing access and the original body. The unique durable request key arbitrates closure against delayed creation. Only an absent request gets a cancelled tombstone; existing work is returned unchanged. No package is generated, no files removed, and no usage charged.
+      parameters:
+        - { $ref: "#/components/parameters/PublishingRequestActor" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/paths/~1v1~1publishing~1jobs/post/requestBody/content/application~1json/schema" }
+      responses:
+        "200": { $ref: "#/components/responses/PublishingRequestResult" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
@@ -3391,6 +3433,12 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
+    PublishingRequestActor:
+      name: X-Bookworm-Actor
+      in: header
+      required: false
+      description: Expected original author. Required by the browser proxy and checked against both verified identity and session. Direct bearer-token API callers are scoped by their authenticated actor.
+      schema: { type: string, format: uuid }
     BookBibleActor:
       name: X-Bookworm-Actor
       in: header
@@ -4014,24 +4062,24 @@ components:
         findings: { type: array, items: { type: object } }
     PublishingPackageJob:
       type: object
-      required: [id, bookId, editionId, channel, status, createdAt, sourceRenderJobId, sourcePreflightJobId, failureCode, submissionMode, package]
+      required: [id, requestId, bookId, editionId, channel, status, createdAt, sourceRenderJobId, sourcePreflightJobId, failureCode, submissionMode, package]
       properties:
         id: { type: string, format: uuid }
+        requestId: { type: string, minLength: 8, maxLength: 200 }
         bookId: { type: string, format: uuid }
         editionId: { type: string, format: uuid }
         channel: { $ref: "#/components/schemas/RetailerChannel" }
         status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
         createdAt: { type: string, format: date-time }
-        startedAt: { type: string, format: date-time, nullable: true }
-        completedAt: { type: string, format: date-time, nullable: true }
-        sourceRenderJobId: { type: string, format: uuid, nullable: true }
-        sourcePreflightJobId: { type: string, format: uuid, nullable: true }
-        ruleVersion: { type: string, nullable: true }
-        failureCode: { type: string, nullable: true }
+        startedAt: { type: [string, "null"], format: date-time }
+        completedAt: { type: [string, "null"], format: date-time }
+        sourceRenderJobId: { type: [string, "null"], format: uuid }
+        sourcePreflightJobId: { type: [string, "null"], format: uuid }
+        ruleVersion: { type: [string, "null"] }
+        failureCode: { type: [string, "null"] }
         submissionMode: { type: string, enum: [manual] }
         package:
-          nullable: true
-          type: object
+          type: [object, "null"]
           required: [asset, download]
           properties:
             asset: { type: object }
@@ -4532,6 +4580,21 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
   responses:
+    PublishingRequestResult:
+      description: Original actor's saved request and current private-file availability; null means not yet found, not closed
+      headers:
+        Cache-Control: { schema: { type: string, const: "private, no-store" } }
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [requestId, job]
+            properties:
+              requestId: { type: string, minLength: 8, maxLength: 200 }
+              job:
+                oneOf:
+                  - { type: "null" }
+                  - { $ref: "#/components/schemas/PublishingPackageJob" }
     NarrationChapterAccepted:
       description: Authoritatively confirmed original funded chapter project, not provider completion or measured billing
       headers:

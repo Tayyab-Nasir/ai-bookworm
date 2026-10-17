@@ -35,7 +35,7 @@ const bundles = await Promise.all([false, true].map(parent => build({ stdin: { c
   ? `import React from "react"; import { createRoot } from "react-dom/client";
      import Studio from "./apps/web/components/PublishingStudio"; import { ApiClientError } from "@bookworm/api-client";
      window.ApiClientError = ApiClientError; const root = createRoot(document.getElementById("root"));
-     window.showStudio = bookId => root.render(React.createElement(Studio, {bookId}));`
+     window.showStudio = bookId => root.render(bookId ? React.createElement(Studio, {bookId}) : null);`
   : `import React, { useCallback, useState } from "react"; import { createRoot } from "react-dom/client";
      import Library from "./apps/web/components/SavedPrintLibrary"; import { ApiClientError } from "@bookworm/api-client";
      window.ApiClientError = ApiClientError;
@@ -156,6 +156,161 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
   return { page, errors };
 }
 async function open(page) { await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled(); await page.getByRole("button", { name: "Open saved print", exact: true }).click(); await page.getByRole("button", { name: "Renew private links", exact: true }).waitFor(); }
+
+test("actual Studio recovers a lost export reply after remount without submitting another package", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.createPublishingJob = async body => {
+        window.requests.push({ method: "POST", action: "package", body });
+        window.acceptedPackage = { id: window.ids.otherAsset, requestId: body.idempotencyKey, bookId: body.bookId,
+          editionId: body.editionId, channel: body.channel, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+          status: "succeeded", submissionMode: "manual", package: null, createdAt: new Date().toISOString() };
+        throw new Error("The reply was lost");
+      };
+      window.bookwormApi.getPublishingRequest = async (bookId, requestId) => {
+        window.requests.push({ method: "GET", action: "recover-package", bookId, requestId });
+        return { requestId, job: structuredClone(window.acceptedPackage) };
+      };
+    });
+    await open(page);
+    await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+    await expect(page.getByText(/The reply was lost/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Recover saved export", exact: true })).toBeEnabled();
+    const saved = await page.evaluate(() => Object.entries(sessionStorage).filter(([key]) => key.startsWith("bookworm:package:")));
+    assert.equal(saved.length, 1); assert.equal(saved[0][1].includes("Saved author manuscript"), false);
+    // Unmount/remount the real component; sessionStorage survives exactly as on reload.
+    await page.evaluate(() => window.showStudio(null));
+    await page.getByRole("heading", { name: "Saved print proofs", exact: true }).waitFor({ state: "hidden" });
+    await page.evaluate(() => {
+      const original = window.bookwormApi.getBook;
+      window.bookwormApi.getBook = async bookId => ({ ...await original(bookId), role: "viewer" });
+    });
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(page.getByRole("button", { name: "Retry original export", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "Recover saved export", exact: true }).click();
+    await expect(page.getByText(/Saved export confirmed/)).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 1);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:package:"))), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio retries the exact original export even after another edition is selected", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.createPublishingJob = async body => {
+        window.requests.push({ method: "POST", action: "package", body });
+        if (window.requests.filter(row => row.action === "package").length === 1) throw new Error("Unknown export outcome");
+        return { id: window.ids.otherAsset, requestId: body.idempotencyKey, bookId: body.bookId, editionId: body.editionId,
+          channel: body.channel, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+          status: "succeeded", submissionMode: "manual", package: null, createdAt: new Date().toISOString() };
+      };
+    });
+    await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+    await expect(page.getByText(/Unknown export outcome/)).toBeVisible();
+    await page.locator("aside").getByRole("button", { name: "print en · draft" }).nth(1).click();
+    await page.getByRole("button", { name: "Retry original export", exact: true }).click();
+    await expect(page.getByText(/Saved export confirmed/)).toBeVisible();
+    const bodies = await page.evaluate(() => window.requests.filter(row => row.action === "package").map(row => row.body));
+    assert.equal(bodies.length, 2); assert.deepEqual(bodies[0], bodies[1]);
+    assert.equal(bodies[1].editionId, ids.edition); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio retains a lost closure across remount and cannot retry the original export", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.createPublishingJob = async body => { window.requests.push({ method: "POST", action: "package", body }); throw new Error("No accepted reply"); };
+      window.bookwormApi.closePublishingRequest = async body => {
+        window.requests.push({ method: "POST", action: "close", body });
+        window.closedPackage = { id: window.ids.otherAsset, requestId: body.idempotencyKey, bookId: body.bookId, editionId: body.editionId,
+          channel: body.channel, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+          status: "cancelled", submissionMode: "manual", package: null, createdAt: new Date().toISOString() };
+        throw new Error("Closure reply lost");
+      };
+      window.bookwormApi.getPublishingRequest = async (_book, requestId) => ({ requestId, job: window.closedPackage ?? null });
+    });
+    await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+    await page.getByRole("button", { name: "Recover saved export", exact: true }).click();
+    await expect(page.getByText(/No saved export was found/)).toBeVisible();
+    await page.getByRole("checkbox", { name: /Close this request only/ }).check();
+    await page.getByRole("button", { name: "Close unaccepted export request", exact: true }).click();
+    await expect(page.getByText(/Closure reply lost/)).toBeVisible();
+    await page.evaluate(() => window.showStudio(null)); await page.getByRole("heading", { name: "Saved print proofs", exact: true }).waitFor({ state: "hidden" });
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(page.getByRole("button", { name: "Recover saved export", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Retry original export", exact: true })).toBeDisabled();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    await page.getByLabel("Retailer request recovery").screenshot({ path: resolve(artifacts, "saved-export-recovery-mobile.png") });
+    await page.getByRole("button", { name: "Recover saved export", exact: true }).click();
+    await expect(page.getByText(/Saved request closed/)).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 1);
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "close").length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio sends no export when storage cannot persist or the signed-in account changes", async () => {
+  for (const failure of ["storage", "account"]) {
+    const { page, errors } = await fixture({ parent: true });
+    try {
+      await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+      await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+      if (failure === "storage") await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("blocked"); }; });
+      else await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: ids.otherAsset } } }));
+      await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+      await expect(page.getByRole("alert")).toContainText(failure === "storage" ? "session recovery is unavailable" : "account changed");
+      assert.equal(await page.evaluate(() => window.requests.some(row => row.action === "package")), false);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
+
+test("actual Studio retains the original request after a mismatched receipt or a late account change", async () => {
+  for (const failure of ["source", "account"]) {
+    const { page, errors } = await fixture({ parent: true });
+    try {
+      await page.evaluate(() => {
+        window.bookwormApi.createPublishingJob = async body => {
+          window.requests.push({ method: "POST", action: "package", body });
+          window.acceptedPackage = { id: window.ids.otherAsset, requestId: body.idempotencyKey, bookId: body.bookId,
+            editionId: body.editionId, channel: body.channel, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+            status: "succeeded", submissionMode: "manual", package: null, createdAt: new Date().toISOString() };
+          return new Promise(resolve => { window.releasePackage = resolve; });
+        };
+        window.bookwormApi.getPublishingRequest = async (_book, requestId) => ({ requestId, job: window.acceptedPackage });
+      });
+      await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+      await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+      await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+      await expect.poll(() => page.evaluate(() => Boolean(window.releasePackage))).toBe(true);
+      if (failure === "account") await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: ids.otherAsset } } }));
+      await page.evaluate(failure => window.releasePackage({ ...window.acceptedPackage,
+        ...(failure === "source" ? { sourceRenderJobId: window.ids.otherJob } : {}) }), failure);
+      await expect(page.getByRole("alert")).toContainText(failure === "source" ? "does not match" : "account changed");
+      await expect(page.getByText("unavailable", { exact: true })).toHaveCount(0);
+      const pending = await page.evaluate(() => Object.values(sessionStorage).map(value => JSON.parse(value)));
+      assert.equal(pending.length, 1); assert.equal(pending[0].userId, ids.asset);
+      if (failure === "account") await page.unroute("**/api/auth/session");
+      await page.evaluate(() => window.showStudio(null)); await page.getByRole("heading", { name: "Saved print proofs", exact: true }).waitFor({ state: "hidden" });
+      await page.evaluate(() => window.showStudio(window.ids.book));
+      await page.getByRole("button", { name: "Recover saved export", exact: true }).click();
+      await expect(page.getByText(/Saved export confirmed/)).toBeVisible();
+      assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 1);
+      assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:package:"))), false);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
 
 test("actual Studio distinguishes unavailable package history and restores its link without another export", async () => {
   const { page, errors } = await fixture({ parent: true });

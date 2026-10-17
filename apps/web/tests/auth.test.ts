@@ -83,6 +83,25 @@ test("redirects stay inside author routes and same-origin is required", () => {
   assert.equal(sameOrigin(request("login", {}, undefined, "http://evil.test"), "http://localhost:3000"), false);
 });
 
+test("retailer create, recovery and closure bind the original account before forwarding", async () => {
+  const signedIn = await login(); const authProvider = provider;
+  const upstream = "http://api.example.test/v1/publishing/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ job: null }) : authProvider(url, init);
+  for (const [suffix, method, handler] of [["jobs", "POST", backendPost], ["requests/22222222-2222-4222-8222-222222222222", "GET", backendGet], ["requests/close", "POST", backendPost]] as const) {
+    const path = ["v1", "publishing", ...suffix.split("/")];
+    for (const [actor, status] of [[undefined, 422], ["bad", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) },
+      }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, status);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + (status === 200 ? 1 : 0));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+    }
+  }
+});
+
 test("local auth keeps the active development origin instead of a stale APP_URL port", () => {
   for (const host of ["localhost:3001", "127.0.0.1:3001", "[::1]:3001"]) {
     assert.equal(appOrigin(new NextRequest(`http://${host}/books/new`, { headers: { host } })), `http://${host}`);

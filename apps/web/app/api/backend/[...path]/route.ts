@@ -22,14 +22,19 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       || (path.length === 6 && path[4] === "requests" && request.method === "GET")
       || (path.length === 7 && path[4] === "requests" && path[6] === "close" && request.method === "POST")
     );
-    const actor = manualBible ? request.headers.get("x-bookworm-actor") : null;
-    if (manualBible && (!actor || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor))) {
-      return auth.finish(authError(422, "An original Book Bible account identity is required."));
+    const packageRequest = path[1] === "publishing" && (
+      (path.length === 3 && path[2] === "jobs" && request.method === "POST")
+      || (path.length === 4 && path[2] === "requests" && (request.method === "GET" || (path[3] === "close" && request.method === "POST")))
+    );
+    const boundRequest = manualBible || packageRequest;
+    const actor = boundRequest ? request.headers.get("x-bookworm-actor") : null;
+    if (boundRequest && (!actor || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor))) {
+      return auth.finish(authError(422, "The original account identity is required for this saved request."));
     }
     // Never replace the expected actor with the new signed-in account. That
     // would turn an old user's recovery pointer into a different user's write.
-    if (manualBible && (actor !== identity.user.id || actor !== data.session.user.id)) {
-      return auth.finish(authError(409, "Your account changed. Reload saved data before recovering this Book Bible request."));
+    if (boundRequest && (actor !== identity.user.id || actor !== data.session.user.id)) {
+      return auth.finish(authError(409, "Your account changed. Reload saved data before recovering this request."));
     }
     if (process.env.NODE_ENV === "production" && !process.env.API_URL) {
       throw new AuthConfigurationError("The workspace service is not configured. Set API_URL to the separate Bookworm API server.");

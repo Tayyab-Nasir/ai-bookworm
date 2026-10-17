@@ -573,8 +573,14 @@ export interface PreflightResult {
 
 export type RetailerChannel = "kdp" | "apple" | "barnesnoble" | "lulu" | "googleplay";
 
+export interface PublishingPackageRequest {
+  bookId: string; editionId: string; channel: RetailerChannel;
+  renderJobId: string; preflightJobId: string; idempotencyKey: string;
+}
+
 export interface PublishingPackageJob {
   id: string;
+  requestId: string;
   bookId: string;
   editionId: string;
   channel: RetailerChannel;
@@ -1099,8 +1105,12 @@ export function createClient(opts: ClientOptions) {
       call<{ catalogVersion: string; models: TranslationModelChoice[] }>("GET", "/v1/translations/models"),
     runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
       call<PreflightResult>("POST", "/v1/publishing/validate", body),
-    createPublishingJob: (body: { bookId: string; editionId: string; channel: RetailerChannel; renderJobId: string; preflightJobId: string; idempotencyKey: string }) =>
-      call<PublishingPackageJob>("POST", "/v1/publishing/jobs", body),
+    createPublishingJob: (body: PublishingPackageRequest, expectedActorId?: string) =>
+      call<PublishingPackageJob>("POST", "/v1/publishing/jobs", body, false, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
+    getPublishingRequest: (bookId: string, requestId: string, expectedActorId: string) =>
+      call<{ requestId: string; job: PublishingPackageJob | null }>("GET", `/v1/publishing/requests/${encodeURIComponent(requestId)}?${new URLSearchParams({ bookId })}`, undefined, false, { "x-bookworm-actor": expectedActorId }),
+    closePublishingRequest: (body: PublishingPackageRequest, expectedActorId: string) =>
+      call<{ requestId: string; job: PublishingPackageJob | null }>("POST", "/v1/publishing/requests/close", body, false, { "x-bookworm-actor": expectedActorId }),
     listPublishingJobs: (bookId: string, filter?: { editionId?: string; channel?: RetailerChannel; limit?: number }) => {
       const qs = new URLSearchParams({ bookId });
       if (filter?.editionId) qs.set("editionId", filter.editionId);

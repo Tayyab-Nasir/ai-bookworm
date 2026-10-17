@@ -186,6 +186,20 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         assert.equal(validated.status(), 201);
         const preflight = await validated.json();
         assert.equal(preflight.errors, 0); assert.equal(preflight.requestedChannel, channel);
+        const loseReply = packages.length === 6;
+        if (loseReply) await page.evaluate(() => {
+          const original = window.fetch;
+          window.fetch = async (...args) => {
+            const result = await original(...args);
+            if (String(args[0]).endsWith('/publishing/jobs') && args[1]?.method === 'POST' && result.ok) {
+              window.fetch = original;
+              // The real server has answered. Simulate loss only on the client;
+              // no response body, account, package or usage record is fabricated.
+              throw new TypeError('Connection lost after saved export');
+            }
+            return result;
+          };
+        });
         const [created] = await Promise.all([
           page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publishing/jobs') && response.request().method() === 'POST', { timeout: 90_000 }),
           history.getByRole('button', { name: 'Create retailer package', exact: true }).click(),
@@ -194,7 +208,22 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         const job = await created.json();
         assert.equal(job.status, 'succeeded'); assert.equal(job.submissionMode, 'manual');
         assert.equal(job.sourceRenderJobId, render.jobId); assert.equal(job.sourcePreflightJobId, preflight.jobId);
-        await expect(page.getByText(`${channel} package is ready for manual submission.`, { exact: true })).toBeVisible();
+        if (loseReply) {
+          onStage('retailer browser lost reply, reload and read-only original request recovery');
+          await expect(page.getByText(/Connection lost after saved export/)).toBeVisible();
+          const pending = await page.evaluate(() => Object.entries(sessionStorage).filter(([key]) => key.startsWith('bookworm:package:')).map(([, value]) => JSON.parse(value)));
+          assert.equal(pending.length, 1); assert.equal(pending[0].request.idempotencyKey, job.requestId);
+          assert.deepEqual(Object.keys(pending[0]).sort(), ['request', 'schema', 'userId']);
+          await page.reload(); await select(edition);
+          const [recovered] = await Promise.all([
+            page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/publishing/requests/${job.requestId}`) && response.request().method() === 'GET'),
+            page.getByRole('button', { name: 'Recover saved export', exact: true }).click(),
+          ]);
+          assert.equal(recovered.status(), 200); assert.equal((await recovered.json()).job.id, job.id);
+          await expect(page.getByText(/Saved export confirmed/)).toBeVisible();
+          assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith('bookworm:package:'))), false);
+          console.log('PASS native browser lost accepted export reply recovered after reload with one original package request');
+        } else await expect(page.getByText(`${channel} package is ready for manual submission.`, { exact: true })).toBeVisible();
         const row = history.getByRole('listitem').first();
         await expect(row.getByText('ready', { exact: true })).toBeVisible();
         const bytes = await download(page, row.getByRole('link', { name: 'Download private ZIP', exact: true }), job.package.asset.checksum);

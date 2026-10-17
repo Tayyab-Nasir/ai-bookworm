@@ -20,6 +20,7 @@ interface Store {
   signedPaths?: string[];
   queryErrors?: Record<string, { code: string }>;
   signError?: boolean;
+  downloadBarrier?: () => Promise<void>;
   rpcError?: { code: string; message?: string; details?: string };
 }
 
@@ -35,6 +36,7 @@ function fakeSupabase(store: Store) {
         return { data: { path }, error: null };
       },
       download: async (path: string) => {
+        const barrier = store.downloadBarrier; store.downloadBarrier = undefined; await barrier?.();
         store.downloads?.push(path);
         const bytes = store.objects.get(path);
         return bytes
@@ -561,6 +563,93 @@ test("editor creates a durable private retailer package and can list, read, and 
   assert.equal(packageRequests.length, 1);
   assert.equal(store.tables.usage_events.filter((row) => row.meter === "publishing").length, 1);
   await app.close();
+});
+
+test("package request recovery survives changed sources and plan loss without a second export", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const sent: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(sent) });
+  try {
+    const sources = await createReadySources(app);
+    const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+    const headers = { ...auth, "idempotency-key": payload.idempotencyKey };
+    const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers, payload });
+    assert.equal(created.statusCode, 201, created.body);
+    const original = created.json();
+    store.tables.books[0].title = "Changed after accepted export";
+    store.tables.subscriptions.length = 0;
+    const recovered = await app.inject({ method: "GET", url: `/v1/publishing/requests/${payload.idempotencyKey}?bookId=${BOOK}`, headers: auth });
+    assert.equal(recovered.statusCode, 200, recovered.body);
+    assert.equal(recovered.json().job.id, original.id);
+    assert.equal(recovered.headers["cache-control"], "private, no-store");
+    const replay = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers, payload });
+    assert.equal(replay.statusCode, 200, replay.body);
+    assert.equal(replay.json().id, original.id);
+    const mismatch = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers,
+      payload: { ...payload, renderJobId: crypto.randomUUID() } });
+    assert.equal(mismatch.statusCode, 409, mismatch.body);
+    const closed = await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers, payload });
+    assert.equal(closed.statusCode, 200, closed.body);
+    assert.equal(closed.json().job.id, original.id);
+    assert.equal(closed.json().job.status, "succeeded");
+    assert.equal(sent.length, 1);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 1);
+    store.tables.publishing_jobs.find(row => row.id === original.id)!.created_by = crypto.randomUUID();
+    const foreign = await app.inject({ method: "GET", url: `/v1/publishing/requests/${payload.idempotencyKey}?bookId=${BOOK}`, headers: auth });
+    assert.equal(foreign.statusCode, 200); assert.equal(foreign.json().job, null);
+  } finally { await app.close(); }
+});
+
+test("closing an unaccepted package request blocks delayed dispatch and never changes accepted work", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const sent: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(sent) });
+  try {
+    const sources = await createReadySources(app);
+    const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+    const url = `/v1/publishing/requests/${payload.idempotencyKey}?bookId=${BOOK}`;
+    for (const route of [{ method: "GET" as const, url }, { method: "POST" as const, url: "/v1/publishing/jobs", payload }, { method: "POST" as const, url: "/v1/publishing/requests/close", payload }]) {
+      const changedActor = await app.inject({ ...route, headers: { ...auth, "x-bookworm-actor": crypto.randomUUID() } });
+      assert.equal(changedActor.statusCode, 409);
+    }
+    const missing = await app.inject({ method: "GET", url, headers: auth });
+    assert.equal(missing.statusCode, 200); assert.equal(missing.json().job, null);
+    const count = store.tables.publishing_jobs.length;
+    const closed = await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers: auth, payload });
+    assert.equal(closed.statusCode, 200, closed.body); assert.equal(closed.json().job.status, "cancelled");
+    const late = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+    assert.equal(late.statusCode, 409, late.body);
+    const again = await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers: auth, payload });
+    assert.equal(again.json().job.id, closed.json().job.id);
+    assert.equal(store.tables.publishing_jobs.length, count + 1);
+    assert.equal((await app.inject({ method: "GET", url, headers: auth })).json().job.status, "cancelled");
+    assert.equal(sent.length, 0);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+    store.tables.workspace_members[0].role = "viewer";
+    assert.equal((await app.inject({ method: "GET", url, headers: auth })).statusCode, 200);
+    assert.equal((await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers: auth, payload })).statusCode, 403);
+  } finally { await app.close(); }
+});
+
+test("package closure wins a create already validating sources without dispatch or usage", async () => {
+  const store = baseStore(); enableRetailerPackages(store); const sent: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(sent) });
+  let release!: () => void, entered!: () => void;
+  const arrived = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const sources = await createReadySources(app);
+    const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+    store.downloadBarrier = async () => { entered(); await gate; };
+    const creating = app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload }).then(result => result);
+    await arrived;
+    const closed = await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers: auth, payload });
+    assert.equal(closed.statusCode, 200, closed.body); assert.equal(closed.json().job.status, "cancelled");
+    release();
+    const late = await creating; assert.equal(late.statusCode, 409, late.body);
+    assert.equal(sent.length, 0); assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+    assert.equal(store.tables.publishing_jobs.filter(row => row.idempotency_key === payload.idempotencyKey).length, 1);
+  } finally { release?.(); await app.close(); }
 });
 
 test("package history and replay never renew deleted, foreign, changed or quarantined ZIPs", async () => {

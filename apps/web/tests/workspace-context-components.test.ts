@@ -76,7 +76,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/referrals")) return { claimPendingReferral: async () => {} };
     if (name.endsWith("/AssetBrowser")) return { default: "AssetBrowser" };
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
-    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
+    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "RetailerPackageRequest"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
     if (name.endsWith("/epub-reader")) return readerHelpers;
     if (name.endsWith("/private-download")) return { privateDownloadUrl };
@@ -860,5 +860,5 @@ test("Publishing render refreshes the real saved reader once; unsaved edits pres
   assert.equal(edited.refreshKey, completed.refreshKey); assert.equal(edited.dirty, true);
   assert.equal(nodes(childTree).find(node => node.props?.["aria-label"] === "Saved EPUB export").props.value, older.jobId);
   assert.match(nodes(childTree).find(node => node.type === "iframe").props.srcDoc, /Older saved snapshot/);
-  assert.equal(nodes(parent.render()).find(node => node.type === "button" && node.props.children === "Create retailer package").props.disabled, true, "proof/package invalidation remains in force");
+  assert.equal(props(parent.render(), "RetailerPackageRequest").request, null, "dirty settings must not offer a new package request to the child");
 });

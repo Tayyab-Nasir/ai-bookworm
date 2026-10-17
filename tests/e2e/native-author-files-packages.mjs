@@ -200,11 +200,26 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
   assert.equal(hash(Buffer.from(await restoredBytes.arrayBuffer())), savedPackage.checksum);
   console.log('PASS native deleted package denies new links and direct Storage access; exact saved ZIP restored without regeneration');
 
+  const closureIntent = { ...savedPackage.intent, idempotencyKey: randomUUID() };
+  const missing = await request(alice.token, 'GET', `/publishing/requests/${closureIntent.idempotencyKey}?bookId=${book.id}`);
+  assert.equal(missing.job, null);
+  const closed = await request(alice.token, 'POST', '/publishing/requests/close', closureIntent);
+  assert.equal(closed.requestId, closureIntent.idempotencyKey); assert.equal(closed.job.status, 'cancelled');
+  await request(alice.token, 'POST', '/publishing/jobs', closureIntent, 409);
+  const closedAgain = await request(alice.token, 'POST', '/publishing/requests/close', closureIntent);
+  assert.equal(closedAgain.job.id, closed.job.id);
+  await request(bob.token, 'GET', `/publishing/requests/${closureIntent.idempotencyKey}?bookId=${book.id}`, undefined, 404);
+  console.log('PASS native unaccepted export closure blocks delayed creation, preserves history and adds no usage');
+
   await request(alice.token, 'PUT', `/books/${book.id}/metadata`, {
     ...listing, expectedUpdatedAt: metadata.metadata.updated_at, description: 'A later listing edit must not rewrite the saved packages.',
   });
   for (const saved of packages) {
-    await request(alice.token, 'POST', '/publishing/jobs', saved.intent, 422);
+    const replay = await request(alice.token, 'POST', '/publishing/jobs', saved.intent);
+    assert.equal(replay.id, saved.id);
+    await request(alice.token, 'POST', '/publishing/jobs', { ...saved.intent, idempotencyKey: randomUUID() }, 422);
+    const receipt = await request(alice.token, 'GET', `/publishing/requests/${saved.intent.idempotencyKey}?bookId=${book.id}`);
+    assert.equal(receipt.job.id, saved.id);
     const recovered = await request(alice.token, 'GET', `/publishing/jobs/${saved.id}`);
     const response = await fetch(recovered.package.download.url);
     assert.equal(response.status, 200);

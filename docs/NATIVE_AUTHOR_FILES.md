@@ -97,8 +97,11 @@ enable a commercial plan in any hosted environment; Stripe remains deferred.
   metadata, preflight report, README and manifest checksum without extracting files.
 - Native package replay/history must retain job and asset identity, reject
   cross-request key reuse, and deny foreign API, Storage and signed-link access.
-  A later metadata edit must reject old source proofs while every previous ZIP
-  remains byte-identical and readable. Service capabilities and README retain
+  After a later metadata edit, a new request must reject old source proofs while
+  same-key recovery returns the original accepted job and byte-identical ZIP.
+  Closing a never-accepted request must block its delayed creation without
+  dispatch or usage; repeating closure must preserve the same cancelled record.
+  Service capabilities and README retain
   the manual-submission boundary; no retailer is contacted.
 - Soft-deleting a package preserves its historical job but removes its new
   history/detail/replay download links, generic download access and direct
@@ -115,12 +118,30 @@ enable a commercial plan in any hosted environment; Stripe remains deferred.
   Reload/history remains read-only. A real authenticated BFF deletion/restore
   simulates an asset change elsewhere: history must show `unavailable` without
   a link, then recover the exact original ZIP without rendering or packaging
-  again. Mobile and desktop screenshots check containment. This does not test
-  the Assets deletion buttons themselves or a lost package-creation response.
+  again. On the seventh export, a one-time browser fetch wrapper throws only
+  after the real server response arrives. Reload and read-only request recovery
+  must return that exact job with only one original creation request. No server
+  response or database record is fabricated. Mobile and desktop screenshots
+  check containment. This does not test the Assets deletion buttons themselves.
   Final combined accounting requires 12 rendering and 14 publishing events,
   each quantity one, with zero AI jobs and an empty credit ledger.
 
 ## Evidence boundary
+
+Native run `38989888020`, job `117269699047`, PASSED at
+`2026-10-17T01:18:40Z` on exact `4e4830e2e58cf98d4d6a88f19a22545f7bfd6d9b`.
+Terminal metadata/logs confirm seven API and seven real browser retailer
+packages, byte-exact private downloads, unavailable/restored history, the final
+26 usage events with zero AI/credits, migration integrity and both cleanup
+levels. Production/private-service builds, 16 guards and 17 full-Chromium
+mounted checks passed. This accepts the original browser-package journey.
+
+The request-recovery/closure extension described above is newer than that SHA.
+It requires its own exact-source native run; prior success must not be reused.
+Its local recovery tests cover reload, exact original retry after edition
+selection, read-only membership, lost closure, blocked storage, changed actor
+and malformed receipt retention. The API uses its existing durable unique
+request key; no new database migration or provider call is required.
 
 Native run `38988819612`, job `117266372247`, PASSED at
 `2026-10-17T01:04:06Z` on exact `81b71311dd53806c5b5acc4932f3e7fc70c82a0d`.
@@ -131,10 +152,8 @@ and both cleanup levels. Production build, 16 full-Chromium mounted checks and
 16 runner guards also passed. This is disposable native acceptance, not hosted
 deployment, retailer approval or product completion.
 
-The subsequent availability-label UI and seven-package browser extension require
-their own exact-source native run. Local web tests (381), installed-Chrome mounted
-checks (17), web types and runner guards (16) pass, but those fixture checks alone
-do not prove the added native browser journey. The local mounted suite defaults
+The availability-label UI and seven-package browser extension are accepted by
+`4e4830e` above, superseding their earlier pending status. The local mounted suite defaults
 to installed Chrome; CI explicitly selects full Chromium. Edge PDF-viewer
 compatibility is not claimed.
 
