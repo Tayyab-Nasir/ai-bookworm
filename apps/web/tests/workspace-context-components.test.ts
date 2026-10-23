@@ -8,6 +8,7 @@ import ts from "typescript";
 import * as readerHelpers from "../lib/epub-reader";
 import { privateDownloadUrl } from "../lib/private-download";
 import { renderLinksDeadline } from "../lib/pdf-proof";
+import { jobLink } from "../lib/job-link";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -68,6 +69,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name === "next/link") return { default: "Link" };
     if (name === "next/navigation") return { useSearchParams: () => new URLSearchParams(window.location.search), useRouter: () => ({ push() {} }), usePathname: () => new URL(window.location.href).pathname };
     if (name.endsWith("/workspace-selection")) return helperExports;
+    if (name.endsWith("/job-link")) return { jobLink };
     if (name.endsWith("/api")) return { apiClient: () => api };
     if (name.endsWith("/AuthorShell")) return { AuthorHeader: "Header", AuthorPage: "Page" };
     for (const component of ["AuthorDashboard", "BillingCenter", "CollaborationCenter", "BookSetupClient", "BookEditorClient", "BookMemoryClient", "StoryBlueprintClient", "PublishingStudio", "TranslationStudio"]) {

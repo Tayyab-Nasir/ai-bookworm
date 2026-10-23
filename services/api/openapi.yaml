@@ -3006,7 +3006,7 @@ paths:
       tags: [v1]
       operationId: getDashboardOverview
       summary: Tenant-scoped author operations dashboard
-      description: Returns books, aggregate assets/jobs/packages, paid usage, safe recent job labels, recent activity, and explicit retailer-sales provenance. Private job inputs and fabricated sales are never returned.
+      description: Returns the complete visible library, exact asset and execution-queue totals, publishing-package history, paid usage, safe recent jobs, activity, and explicit retailer-sales provenance. The four execution queues are manuscript imports, AI jobs (including narration and translation), publishing jobs, and Google Play audiobook exports. Quote preparation remains in individual studios. Recent jobs are the newest twelve, not a complete active-job inventory. A missing count or incomplete book scope fails unavailable instead of reporting zero. Job navigation never executes or retries work. Historical outputs are not current-file checks, retailer acceptance, or sales. No private job inputs, storage paths, or raw errors are returned.
       parameters:
         - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -3018,13 +3018,40 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [workspace, books, summary, usage, recentJobs, activity, sales]
+                required: [workspace, books, summary, usage, pipeline, recentJobs, activity, sales]
                 properties:
                   workspace: { type: object }
                   books: { type: array, items: { $ref: "#/components/schemas/Book" } }
                   summary: { type: object }
                   usage: { type: object }
-                  recentJobs: { type: array, items: { type: object } }
+                  pipeline:
+                    type: array
+                    minItems: 4
+                    maxItems: 4
+                    items:
+                      type: object
+                      required: [kind, label, pending, failed]
+                      properties:
+                        kind: { type: string, enum: [import, ai, publishing, audiobook_export] }
+                        label: { type: string }
+                        pending: { type: integer, minimum: 0, description: Exact queued plus running count over saved history }
+                        failed: { type: integer, minimum: 0, description: Exact failed count over saved history }
+                  recentJobs:
+                    type: array
+                    maxItems: 12
+                    items:
+                      type: object
+                      required: [id, kind, destination, label, status, bookId, bookTitle, createdAt, completedAt]
+                      properties:
+                        id: { type: string, format: uuid }
+                        kind: { type: string, enum: [import, ai, publishing, audiobook_export] }
+                        destination: { type: string, enum: [editor, memory, publish, translate, plan, assets, overview] }
+                        label: { type: string }
+                        status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+                        bookId: { type: [string, "null"], format: uuid }
+                        bookTitle: { type: [string, "null"] }
+                        createdAt: { type: string, format: date-time }
+                        completedAt: { type: [string, "null"], format: date-time }
                   activity: { type: array, items: { type: object } }
                   sales: { $ref: "#/components/schemas/RetailerSalesSummary" }
         "401": { $ref: "#/components/responses/Error" }

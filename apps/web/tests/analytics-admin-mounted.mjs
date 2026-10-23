@@ -433,6 +433,58 @@ test("community moderation reviews comment context, paginates, and recovers a lo
   } finally { await page.close(); }
 });
 
+test("workspace execution ledger shows all queues and safe exact workflow links at desktop and 320px", async () => {
+  const page = await fixture({ styled: true });
+  try {
+    const scope = await page.evaluate(() => {
+      const id = n => `${String(n).padStart(8,"0")}-1111-4111-8111-111111111111`;
+      const workspace = id(1), book = id(2), jobs = [
+        [3,"import","Manuscript import","failed","editor"], [4,"ai","AI writing","failed","editor"],
+        [5,"ai","Story Blueprint proposal","queued","plan"], [6,"ai","Book Bible extraction","running","memory"],
+        [7,"ai","Translation","queued","translate"], [8,"ai","Book cover","running","assets"],
+        [9,"publishing","Channel preflight","succeeded","publish"], [10,"audiobook_export","Google Play audiobook package","failed","publish"],
+      ].map(([n,kind,label,status,destination]) => ({id:id(n),kind,label,status,destination,bookId:book,bookTitle:"Harbor Notebook",createdAt:"2026-10-24T00:00:00Z",completedAt:null}));
+      window.api.listWorkspaces = async () => ({workspaces:[{id:workspace,name:"Harbor Studio"}]});
+      window.api.getDashboardOverview = async () => ({...window.overview(workspace),books:[{...window.overview(workspace).books[0],id:book,title:"Harbor Notebook"}],
+        recentJobs:jobs, pipeline:[{kind:"import",label:"Manuscript imports",pending:1,failed:1},{kind:"ai",label:"AI generation",pending:3,failed:1},
+          {kind:"publishing",label:"Publishing",pending:0,failed:0},{kind:"audiobook_export",label:"Audiobook exports",pending:0,failed:1}],
+        summary:{...window.overview(workspace).summary,pendingJobs:4,failedJobs:3}});
+      window.renderDashboard();return {workspace,book,writer:id(4)};
+    });
+    await expect(page.getByRole("heading",{name:"Harbor Notebook",exact:true})).toBeVisible();
+    const queues=page.getByRole("definition");assert.equal(await queues.count(),4);
+    for(const name of ["Manuscript imports","AI generation","Publishing","Audiobook exports"]) await expect(page.getByRole("term").filter({hasText:name})).toBeVisible();
+    const writer=page.getByRole("link",{name:"Open AI writing workflow for Harbor Notebook",exact:true});
+    await expect(writer).toHaveAttribute("href",`/books/${scope.book}?aiJob=${scope.writer}`);
+    for(const [label,path] of [["Manuscript import",`/books/${scope.book}`],["Story Blueprint proposal",`/books/${scope.book}/plan`],
+      ["Book Bible extraction",`/books/${scope.book}/memory`],["Translation",`/books/${scope.book}/translate`],
+      ["Book cover",`/assets?ws=${scope.workspace}`],["Channel preflight",`/books/${scope.book}/publish`],["Google Play audiobook package",`/books/${scope.book}/publish`]]) {
+      await expect(page.getByRole("link",{name:`Open ${label} workflow for Harbor Notebook`,exact:true})).toHaveAttribute("href",path);
+    }
+    await expect(page.getByText(/Historical package jobs are not current-file checks, retailer approval, or sales/)).toBeVisible();
+    await expect(page.getByText(/Totals include older queued, running, and failed jobs/)).toBeVisible();
+    await page.screenshot({path:resolve(artifacts,"pipeline-desktop.png"),fullPage:true});
+    await page.setViewportSize({width:320,height:844});
+    assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+    await writer.focus();await expect(writer).toBeFocused();assert((await writer.boundingBox()).height>=44);
+    assert(await writer.evaluate(element=>getComputedStyle(element).boxShadow!=="none"));
+    await page.screenshot({path:resolve(artifacts,"pipeline-mobile-320.png"),fullPage:true});
+    assert.deepEqual(await page.evaluate(()=>window.calls),[]);
+  } finally { await page.close(); }
+});
+
+test("foreign or malformed job pointers never become dashboard navigation", async () => {
+  const page=await fixture();
+  try {
+    await page.evaluate(()=>{window.api.getDashboardOverview=async id=>({...window.overview(id),recentJobs:[{...window.overview(id).recentJobs[0],
+      id:"11111111-1111-4111-8111-111111111111",bookId:"22222222-2222-4222-8222-222222222222",destination:"editor"}]});window.renderDashboard();});
+    await expect(page.getByRole("heading",{name:"A book",exact:true})).toBeVisible();
+    await expect(page.getByText("a private job",{exact:true})).toBeVisible();
+    await expect(page.getByRole("link",{name:/Open a private job workflow/})).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(()=>window.calls),[]);
+  } finally {await page.close();}
+});
+
 test("a late moderation queue cannot repopulate a different community page", async () => {
   const page = await fixture();
   try {

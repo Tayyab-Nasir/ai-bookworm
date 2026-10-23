@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 import { loadBook } from "../lib/authoring.js";
+import { jobSummary } from "../lib/job-summary.js";
 
 const unavailable = () => new AppError(503, "The saved book overview is temporarily unavailable. No book changes were made.");
 const number = z.number().int().nonnegative().safe();
@@ -14,12 +15,6 @@ const editionSchema = z.object({ id: z.string().uuid(), book_id: z.string().uuid
 const jobSchema = z.object({ id: z.string().uuid(), book_id: z.string().uuid(), status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]),
   created_at: z.string().datetime({ offset: true }), completed_at: z.string().datetime({ offset: true }).nullable(),
   agent_type: z.string().optional(), channel: z.string().optional(), action: z.string().nullable().optional() });
-const aiLabels: Record<string, [string, "editor" | "memory" | "publish" | "translate"]> = {
-  writer: ["AI writing", "editor"], proofreader: ["Proofreading", "editor"], copyeditor: ["Copy editing", "editor"],
-  consistency: ["Consistency review", "editor"], book_bible: ["Book Bible extraction", "memory"],
-  metadata: ["Listing proposal", "memory"], illustrator: ["Illustration", "publish"], cover_designer: ["Book cover", "publish"],
-  translator: ["Translation", "translate"], narrator: ["Audiobook narration", "publish"],
-};
 function checked<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) throw unavailable();
@@ -42,7 +37,7 @@ export function bookOverviewRoutes(app: FastifyInstance) {
     const bookFields = checked(z.object({ id: z.literal(bookId), workspace_id: z.string().uuid(), title: z.string().min(1).max(500),
       subtitle: z.string().max(500).nullable(), author_name: z.string().min(1).max(300), language: z.string().min(1).max(40),
       genre: z.string().max(200).nullable(), status: z.string().min(1).max(40), updated_at: z.string().datetime({ offset: true }) }), book);
-    const [space, chapters, bible, metadata, editions, imports, ai, publishing, renders, packages] = await Promise.all([
+    const [space, chapters, bible, metadata, editions, imports, ai, publishing, audiobookExports, renders, packages] = await Promise.all([
       sb.from("workspaces").select("id,name").eq("id", bookFields.workspace_id).maybeSingle(),
       sb.from("chapters").select("id,book_id,title,order_index,current_document_version_id").eq("book_id", bookId).order("order_index").limit(501),
       sb.from("book_bible_items").select("id", { count: "exact", head: true }).eq("book_id", bookId),
@@ -51,10 +46,11 @@ export function bookOverviewRoutes(app: FastifyInstance) {
       sb.from("manuscript_import_jobs").select("id,book_id,status,created_at,completed_at").eq("book_id", bookId).order("created_at", { ascending: false }).limit(4),
       sb.from("ai_jobs").select("id,book_id,agent_type,status,created_at,completed_at").eq("book_id", bookId).eq("workspace_id", bookFields.workspace_id).order("created_at", { ascending: false }).limit(4),
       sb.from("publishing_jobs").select("id,book_id,channel,status,created_at,completed_at,action:request_json->>action").eq("book_id", bookId).order("created_at", { ascending: false }).limit(4),
+      sb.from("audiobook_google_play_export_jobs").select("id,book_id,status,created_at,completed_at").eq("book_id", bookId).eq("workspace_id", bookFields.workspace_id).order("created_at", { ascending: false }).limit(4),
       sb.from("publishing_jobs").select("id", { count: "exact", head: true }).eq("book_id", bookId).eq("status", "succeeded").contains("request_json", { action: "render" }),
       sb.from("publishing_jobs").select("id", { count: "exact", head: true }).eq("book_id", bookId).eq("status", "succeeded").contains("request_json", { action: "export_package" }),
     ]);
-    if ([space, chapters, metadata, editions, imports, ai, publishing].some(r => r.error)) throw unavailable();
+    if ([space, chapters, metadata, editions, imports, ai, publishing, audiobookExports].some(r => r.error)) throw unavailable();
     const workspace = checked(z.object({ id: z.literal(bookFields.workspace_id), name: z.string().min(1).max(200) }), space.data);
     const chapterRows = checked(z.array(chapterSchema).max(500), chapters.data);
     if (chapterRows.some(c => c.book_id !== bookId) || new Set(chapterRows.map(c => c.id)).size !== chapterRows.length) throw unavailable();
@@ -76,14 +72,11 @@ export function bookOverviewRoutes(app: FastifyInstance) {
       keywords: z.array(z.string()), categories: z.array(z.string()), isbn13: z.string().nullable() }), metadata.data);
     const editionRows = checked(z.array(editionSchema).max(12), editions.data);
     if (editionRows.some(e => e.book_id !== bookId)) throw unavailable();
-    const jobs = ([ ["import", imports], ["ai", ai], ["publishing", publishing] ] as const).flatMap(([kind, result]) => {
+    const jobs = ([ ["import", imports], ["ai", ai], ["publishing", publishing], ["audiobook_export", audiobookExports] ] as const).flatMap(([kind, result]) => {
       const rows = checked(z.array(jobSchema).max(4), result.data);
       if (rows.some(j => j.book_id !== bookId)) throw unavailable();
       return rows.map(j => {
-        const [label, destination] = kind === "import" ? ["Manuscript import", "editor"] as const
-          : kind === "ai" ? aiLabels[j.agent_type ?? ""] ?? ["AI task", "editor"] as const
-          : [({ render: "Edition render", validate: "Channel preflight", preflight: "Channel preflight", export_package: "Retailer package" } as Record<string, string>)[j.action ?? ""] ?? "Publishing task", "publish"] as const;
-        return { id: j.id, kind, label, status: j.status, createdAt: j.created_at, completedAt: j.completed_at, destination };
+        return { id: j.id, kind, ...jobSummary(kind, j), status: j.status, createdAt: j.created_at, completedAt: j.completed_at };
       });
     }).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).slice(0, 12);
     const wordCount = savedChapters.reduce((n, c) => n + c.wordCount, 0);

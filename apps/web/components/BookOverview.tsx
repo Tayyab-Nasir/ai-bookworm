@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { parseBookOverview, type BookOverview as Overview } from "@bookworm/api-client";
 import { apiClient } from "./api";
 import styles from "./BookOverview.module.css";
+import { jobLink } from "../lib/job-link";
 
 async function viewer() {
   const response = await fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
@@ -57,7 +58,6 @@ export default function BookOverview({ bookId }: { bookId: string }) {
         : overview.editionsTotal === 0
           ? { title: "Shape the reading experience.", copy: "Choose an ebook or print edition. Set typography, spacing, artwork, cover, and an optional QR destination, then save a proof.", label: "Create an edition", href: `${root}/publish` }
           : { title: "Review the next proof.", copy: "Open your saved editions, check the current manuscript and cover, and run preflight for your chosen channel. A saved package is not a published book.", label: "Open publishing studio", href: `${root}/publish` };
-  const destination = (target: Overview["jobs"][number]["destination"]) => target === "editor" ? root : `${root}/${target}`;
 
   return <main className={styles.desk} aria-busy={loading}>
     <div className={styles.toolbar}>
@@ -125,8 +125,8 @@ export default function BookOverview({ bookId }: { bookId: string }) {
         </div>
       </div>
 
-      <section className={styles.activity} aria-labelledby="book-jobs-title"><div className={styles.sectionHeading}><p className={styles.eyebrow}>Recent pipeline activity</p><h2 id="book-jobs-title">What’s moving.</h2><p>Latest four jobs per pipeline. Opening this desk starts no job or paid generation.</p></div>
-        {overview.jobs.length === 0 ? <p className={styles.note}>No import, AI, or publishing jobs recorded for this book yet.</p> : <ul className={styles.jobs}>{overview.jobs.map(job => <li key={`${job.kind}:${job.id}`}><Link href={destination(job.destination)}><span>{job.label}<small>{job.kind === "import" ? "Import pipeline" : job.kind === "ai" ? "AI pipeline" : "Publishing pipeline"}</small></span><span className={styles.jobStatus} data-status={job.status}>{job.status}</span><span aria-hidden="true">↗</span></Link></li>)}</ul>}
+      <section className={styles.activity} aria-labelledby="book-jobs-title"><div className={styles.sectionHeading}><p className={styles.eyebrow}>Recent pipeline activity</p><h2 id="book-jobs-title">What’s moving.</h2><p>Newest 12 jobs, sampled from the latest four per pipeline. Opening a workflow starts no job or paid generation.</p></div>
+        {overview.jobs.length === 0 ? <p className={styles.note}>No import, AI, publishing, or audiobook export jobs recorded for this book yet.</p> : <ul className={styles.jobs}>{overview.jobs.map(job => <li key={`${job.kind}:${job.id}`}><Link href={jobLink({ ...job, bookId }, overview.workspace.id) ?? `${root}/overview`}><span>{job.label}<small>{job.kind === "import" ? "Import pipeline" : job.kind === "ai" ? "AI pipeline" : job.kind === "audiobook_export" ? "Audiobook export pipeline" : "Publishing pipeline"}</small></span><span className={styles.jobStatus} data-status={job.status}>{job.status}</span><span aria-hidden="true">↗</span></Link></li>)}</ul>}
       </section>
       <footer className={styles.footer}><span>Saved-state snapshot · <time dateTime={overview.observedAt}>{new Date(overview.observedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}</time></span><span>Refresh after changes in another tab.</span></footer>
     </>}

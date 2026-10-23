@@ -11,7 +11,7 @@ export interface BookOverview {
   editionsTotal: number;
   editions: { id: string; kind: "ebook" | "print" | "audiobook"; status: string; updatedAt: string; coverArtworkChosen: boolean }[];
   history: { renders: number; packages: number };
-  jobs: { id: string; kind: "import" | "ai" | "publishing"; label: string; status: string; createdAt: string; completedAt: string | null; destination: "editor" | "memory" | "publish" | "translate" }[];
+  jobs: { id: string; kind: "import" | "ai" | "publishing" | "audiobook_export"; label: string; status: string; createdAt: string; completedAt: string | null; destination: "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview" }[];
 }
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
@@ -55,10 +55,10 @@ export function parseBookOverview(value: unknown, bookId: string): BookOverview 
       || !date(e.updatedAt) || typeof e.coverArtworkChosen !== "boolean") || !unique(value.editions as BookOverview["editions"])) return fail();
   if (!Array.isArray(value.jobs) || value.jobs.length > 12 || value.jobs.some(j => !object(j)
     || !keys(j, ["id", "kind", "label", "status", "createdAt", "completedAt", "destination"]) || !id(j.id)
-    || !["import", "ai", "publishing"].includes(String(j.kind)) || !text(j.label, 80)
+    || !["import", "ai", "publishing", "audiobook_export"].includes(String(j.kind)) || !text(j.label, 80)
     || !["queued", "running", "succeeded", "failed", "cancelled"].includes(String(j.status))
     || !date(j.createdAt) || j.completedAt !== null && !date(j.completedAt)
-    || !["editor", "memory", "publish", "translate"].includes(String(j.destination)))) return fail();
+    || !["editor", "memory", "publish", "translate", "plan", "assets", "overview"].includes(String(j.destination)))) return fail();
   const jobs = value.jobs as BookOverview["jobs"];
   if (new Set(jobs.map(j => `${j.kind}:${j.id}`)).size !== jobs.length || jobs.some((j, i) => i > 0 && Date.parse(jobs[i - 1].createdAt) < Date.parse(j.createdAt))) return fail();
   return value as unknown as BookOverview;

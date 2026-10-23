@@ -271,6 +271,44 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await expect(page.getByText(/Stored job history does not verify current files/)).toBeVisible();
     succeeded('book desk refreshes saved editions/renders without inventing retailer packages');
 
+    stage = 'workspace pipeline exact native queue counts and real validate labels';
+    await page.goto(`${webOrigin}/dashboard`);
+    await expect(page.getByRole('heading', { name: 'Native browser manuscript', exact: true })).toBeVisible();
+    const dashboardResponse = await page.evaluate(async workspaceId => {
+      const response = await fetch(`/api/backend/v1/dashboard?workspaceId=${workspaceId}`);
+      return { status: response.status, cache: response.headers.get('cache-control'), body: await response.json() };
+    }, workspace.id);
+    assert.equal(dashboardResponse.status, 200);
+    assert.equal(dashboardResponse.cache, 'private, no-store, max-age=0');
+    const dashboard = dashboardResponse.body, scopedBooks = dashboard.books.map(book => book.id);
+    assert.equal(dashboard.workspace.id, workspace.id); assert.equal(dashboard.pipeline.length, 4);
+    for (const [kind, table] of [['import', 'manuscript_import_jobs'], ['ai', 'ai_jobs'], ['publishing', 'publishing_jobs'], ['audiobook_export', 'audiobook_google_play_export_jobs']]) {
+      const scoped = () => ['ai', 'audiobook_export'].includes(kind)
+        ? service.from(table).select('id', { head: true, count: 'exact' }).eq('workspace_id', workspace.id)
+        : service.from(table).select('id', { head: true, count: 'exact' }).in('book_id', scopedBooks);
+      const pending = await scoped().in('status', ['queued', 'running']), failed = await scoped().eq('status', 'failed');
+      assert.equal(pending.error, null); assert.equal(failed.error, null);
+      const queue = dashboard.pipeline.find(queue => queue.kind === kind);
+      assert.equal(queue.pending, pending.count); assert.equal(queue.failed, failed.count);
+    }
+    assert.equal(dashboard.summary.pendingJobs, dashboard.pipeline.reduce((sum, queue) => sum + queue.pending, 0));
+    assert.equal(dashboard.summary.failedJobs, dashboard.pipeline.reduce((sum, queue) => sum + queue.failed, 0));
+    const actualPublishing = await service.from('publishing_jobs').select('id,action:request_json->>action').eq('book_id', bookId);
+    assert.equal(actualPublishing.error, null);
+    for (const job of dashboard.recentJobs.filter(job => job.kind === 'publishing')) {
+      const action = actualPublishing.data.find(row => row.id === job.id)?.action;
+      assert.equal(job.label, action === 'render' ? 'Edition render' : ['validate', 'preflight'].includes(action) ? 'Channel preflight' : action === 'export_package' ? 'Retailer package' : 'Publishing task');
+    }
+    assert(dashboard.recentJobs.some(job => job.kind === 'import' && job.id === queuedJob.id));
+    const imports = page.getByRole('link', { name: 'Open Manuscript import workflow for Native browser manuscript', exact: true });
+    await expect(imports).toHaveAttribute('href', `/books/${bookId}`);
+    await expect(page.getByRole('definition')).toHaveCount(4);
+    await screenshot('workspace-pipeline-mobile');
+    await page.setViewportSize({ width: 1280, height: 900 }); await screenshot('workspace-pipeline-desktop');
+    await imports.click(); await page.waitForURL(`${webOrigin}/books/${bookId}`);
+    await expect(page.locator('.tiptap')).toContainText('Captain');
+    succeeded('workspace pipeline matches all four native queues and opens saved import without retrying it');
+
     stage = 'logout and private session removal';
     await page.goto(`${webOrigin}/dashboard`);
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();

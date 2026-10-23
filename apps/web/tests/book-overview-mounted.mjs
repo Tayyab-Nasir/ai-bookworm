@@ -50,6 +50,7 @@ test('book desk shows saved facts and exact scoped links without commercial comp
     const tools=page.getByRole('navigation',{name:'Book tools'});await expect(tools.getByRole('link',{name:'Workspace artwork'})).toHaveAttribute('href',`/assets?ws=${SPACE}`);
     await expect(page.getByRole('region',{name:'Chapter ledger'}).getByRole('link',{name:/^01 The harbor at dawn v2/})).toHaveAttribute('href',`/books/${A}?chapter=${id(5)}`);
     await expect(page.getByText('1 package in saved history',{exact:true})).toBeVisible();
+    await expect(page.getByRole('link',{name:/^Proofreading AI pipeline failed/})).toHaveAttribute('href',`/books/${A}?aiJob=${id(9)}`);
     await expect(page.getByText(/Stored job history does not verify current files/)).toBeVisible();
     assert((await page.evaluate(()=>window.reads)).every(r=>r.method==='GET'));
     assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
@@ -88,7 +89,7 @@ test('returning after an account switch clears the former account snapshot',asyn
 });
 test('read-only and empty states offer honest next actions without pretending saved progress',async()=>{
   const page=await fixture();try{await ready(page);await page.evaluate(A=>{const d=window.fixtureData[A];d.workspace.role='viewer';d.chapters=[];d.manuscript={chapterCount:0,wordCount:0,chaptersWithoutSavedVersion:0};d.jobs=[];d.bibleItems=0;d.editions=[];d.editionsTotal=0;d.history={renders:0,packages:0};},A);
-    await page.getByRole('button',{name:'Refresh book desk'}).click();await expect(page.getByRole('link',{name:'Read manuscript',exact:true})).toBeVisible();await expect(page.getByText('No chapters yet. Start in the editor or create a Story Blueprint.')).toBeVisible();await expect(page.getByText(/No import, AI, or publishing jobs/)).toBeVisible();
+    await page.getByRole('button',{name:'Refresh book desk'}).click();await expect(page.getByRole('link',{name:'Read manuscript',exact:true})).toBeVisible();await expect(page.getByText('No chapters yet. Start in the editor or create a Story Blueprint.')).toBeVisible();await expect(page.getByText(/No import, AI, publishing, or audiobook export jobs/)).toBeVisible();
     await expect(page.getByText('Book status: draft · Read-only access',{exact:true})).toBeVisible();
   }finally{await page.close();}
 });

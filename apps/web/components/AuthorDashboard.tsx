@@ -7,6 +7,7 @@ import type { Book, Workspace } from "@bookworm/types";
 import { apiClient } from "./api";
 import { AuthorHeader } from "./AuthorShell";
 import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../lib/workspace-selection";
+import { jobLink } from "../lib/job-link";
 
 function statusLabel(status: Book["status"]) {
   return status.replace("_", " ");
@@ -184,7 +185,7 @@ export default function AuthorDashboard() {
         {[
           ["Active books", String(overview.summary.activeBooks), `${overview.summary.publishedBooks} published`],
           ["In production", String(overview.summary.inProductionBooks), "Drafts and review-ready books"],
-          ["Open jobs", String(overview.summary.pendingJobs), overview.summary.failedJobs ? `${overview.summary.failedJobs} need attention` : "Generation and publishing pipeline"],
+          ["Open jobs", String(overview.summary.pendingJobs), overview.summary.failedJobs ? `${overview.summary.failedJobs} failed in saved history` : "Imports, AI, publishing & audiobook exports"],
           ["Library assets", String(overview.summary.assets), `${overview.summary.visualAssets} cover and illustration assets`],
         ].map(([label, value, detail]) => (
           <div key={label} className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5">
@@ -213,16 +214,24 @@ export default function AuthorDashboard() {
 
         <div className="rounded-2xl border border-white/[0.09] bg-[linear-gradient(145deg,rgba(255,255,255,.055),rgba(255,255,255,.018))] p-5 sm:p-6">
           <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Distribution</p><div className="mt-2 flex items-end justify-between gap-4"><h2 className="text-2xl font-medium tracking-[-0.04em]">Retail desk</h2><span className="text-3xl font-medium tracking-[-0.05em]">{overview.summary.readyPackages}</span></div>
-          <p className="mt-2 text-sm text-white/45">Retailer-ready packages created</p>
+          <p className="mt-2 text-sm text-white/45">Packages in publishing history</p>
+          <p className="mt-2 text-xs leading-5 text-white/45">Historical package jobs are not current-file checks, retailer approval, or sales. Audiobook exports appear in the pipeline below.</p>
           <div className={`mt-6 rounded-xl border p-4 ${overview.sales.status === "imported" ? "border-emerald-200/15 bg-emerald-100/[0.04]" : "border-amber-200/15 bg-amber-100/[0.04]"}`}><p className={`text-sm font-medium ${overview.sales.status === "imported" ? "text-emerald-50" : "text-amber-50"}`}>{overview.sales.available === false ? "Sales reporting is unavailable" : overview.sales.status === "imported" ? `${overview.sales.imports} retailer report${overview.sales.imports === 1 ? "" : "s"} imported` : "Sales data is not connected"}</p><p className={`mt-2 text-xs leading-5 ${overview.sales.status === "imported" ? "text-emerald-100/60" : "text-amber-100/60"}`}>{overview.sales.message}</p></div>
           <div className="mt-5 flex flex-wrap gap-3"><Link href={books[0] ? `/books/${books[0].id}/publish` : createHref} className="rounded-full bg-white px-4 py-2 text-xs font-semibold text-black">Open publishing</Link><Link href={workspace ? `/analytics?ws=${encodeURIComponent(workspace.id)}` : "/analytics"} className="self-center text-xs text-white/55 underline underline-offset-4 hover:text-white">{overview.sales.available === false ? "View sales setup" : overview.sales.status === "imported" ? "View sales ledger" : "Import retailer report"}</Link></div>
         </div>
       </section>}
 
-      {overview && <section className="mt-4 grid gap-4 lg:grid-cols-2" aria-label="Recent workspace state">
+      {overview && <section className="mt-4 grid items-start gap-4 lg:grid-cols-2" aria-label="Recent workspace state">
         <div className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5 sm:p-6">
           <div className="flex items-center justify-between gap-4"><div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#777]">Pipeline</p><h2 className="mt-2 text-xl font-medium">Recent jobs</h2></div><Link href={workspace ? `/tasks?ws=${encodeURIComponent(workspace.id)}` : "/tasks"} className="text-xs text-white/50 underline underline-offset-4 hover:text-white">Open workflow</Link></div>
-          {overview.recentJobs.length ? <ul className="mt-5 divide-y divide-white/[0.08]">{overview.recentJobs.slice(0, 6).map((job) => <li key={`${job.kind}:${job.id}`} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"><div className="min-w-0"><p className="truncate text-sm font-medium">{job.label}</p><p className="mt-1 truncate text-xs text-white/40">{job.bookTitle ?? "Workspace task"} · {new Date(job.createdAt).toLocaleDateString()}</p></div><span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider ${jobStatusClass(job.status)}`}>{job.status}</span></li>)}</ul> : <p className="mt-5 text-sm text-white/40">No generation or publishing jobs yet.</p>}
+          {overview.pipeline && <dl aria-label="Execution queue totals" className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 border-b border-white/[0.08] pb-5">
+            {overview.pipeline.map(queue => <div key={queue.kind} className="min-w-0"><dt className="text-xs text-white/60">{queue.label}</dt><dd className="mt-1 text-sm tabular-nums">{queue.pending.toLocaleString()} open <span className="text-white/50">· {queue.failed.toLocaleString()} failed</span></dd></div>)}
+          </dl>}
+          <p className="mt-4 text-xs leading-5 text-white/50">Latest 12 execution jobs. Totals include older queued, running, and failed jobs. Quote preparation stays in each book’s studio.</p>
+          {overview.recentJobs.length ? <ul className="mt-3 divide-y divide-white/[0.08]">{overview.recentJobs.map(job => {
+            const href = (!job.bookId || books.some(book => book.id === job.bookId)) ? jobLink(job, overview.workspace.id) : null;
+            return <li key={`${job.kind}:${job.id}`} className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"><div className="min-w-0 flex-1">{href ? <Link href={href} aria-label={`Open ${job.label} workflow${job.bookTitle ? ` for ${job.bookTitle}` : ""}`} className="inline-flex min-h-11 max-w-full items-center rounded-md text-sm font-medium text-white underline decoration-white/25 underline-offset-4 hover:decoration-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"><span className="min-w-0 break-words">{job.label}</span></Link> : <p className="text-sm font-medium">{job.label}</p>}<p className="mt-1 text-xs leading-5 text-white/50"><bdi>{job.bookTitle ?? "Workspace task"}</bdi> · {new Date(job.createdAt).toLocaleDateString()}</p></div><span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider ${jobStatusClass(job.status)}`}>{job.status}</span></li>;
+          })}</ul> : <p className="mt-5 text-sm text-white/50">No import, AI, publishing, or audiobook export jobs yet.</p>}
         </div>
 
         <div className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5 sm:p-6">

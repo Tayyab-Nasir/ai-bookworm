@@ -86,6 +86,22 @@ test("book overview returns current saved pointers, scoped history and safe read
   assert(tokens.length > 0 && tokens.every(t => t === "good"), "Only caller-scoped clients may be created");
   assert(reads.filter(r => r.table === "document_versions").every(r => r.columns === "id,chapter_id,version_number,word_count,created_at"));
 });
+test("book desk includes only this book's audiobook exports and routes actual Bible and planning agents correctly", async () => {
+  const rows = tables();
+  rows.audiobook_google_play_export_jobs = [
+    { id: id(90), workspace_id: WORKSPACE, book_id: BOOK, status: "queued", created_at: now, completed_at: null, snapshot_json: "private-payload" },
+    { id: id(91), workspace_id: OTHER, book_id: OTHER, status: "running", created_at: now, completed_at: null },
+  ];
+  rows.ai_jobs = ["bookbible", "story_blueprint", "illustrator"].map((agent_type, i) => ({ id: id(92 + i), workspace_id: WORKSPACE, book_id: BOOK, agent_type, status: "queued", created_at: now, completed_at: null }));
+  const { response } = await request(rows); assert.equal(response.statusCode, 200);
+  const jobs = response.json().jobs;
+  assert.equal(jobs.find((job: Row) => job.id === id(90)).kind, "audiobook_export");
+  assert.equal(jobs.find((job: Row) => job.id === id(92)).destination, "memory");
+  assert.equal(jobs.find((job: Row) => job.id === id(93)).destination, "plan");
+  assert.equal(jobs.find((job: Row) => job.id === id(94)).destination, "assets");
+  assert(!jobs.some((job: Row) => job.id === id(91))); assert.doesNotMatch(response.body, /private-payload|snapshot_json/);
+});
+
 test("empty books show actual zeroes without pretending an unsaved chapter is a version", async () => {
   const rows = tables(); rows.chapters = []; rows.document_versions = []; rows.book_metadata = []; rows.editions = [];
   const { response, reads } = await request(rows);
@@ -120,7 +136,7 @@ test("invalid identity or book ID cannot start book aggregation", async () => {
   const absent = await request(tables(), {}, "good", OTHER); assert.equal(absent.response.statusCode, 404);
 });
 test("database and exact-count failures are unavailable, never misleading zeroes", async () => {
-  for (const table of ["workspaces", "chapters", "book_metadata", "book_bible_items", "editions", "manuscript_import_jobs", "ai_jobs", "publishing_jobs", "document_versions"]) {
+  for (const table of ["workspaces", "chapters", "book_metadata", "book_bible_items", "editions", "manuscript_import_jobs", "ai_jobs", "publishing_jobs", "audiobook_google_play_export_jobs", "document_versions"]) {
     const { response } = await request(tables(), { error: table }); assert.equal(response.statusCode, 503, table);
     assert.doesNotMatch(response.body, /private-payload/);
   }

@@ -53,6 +53,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/book-overview-mounted.mjs
+      - name: Verify execution queues and workspace recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/analytics-admin-mounted.mjs
       - name: Build production author interface
         env:
           NODE_ENV: production

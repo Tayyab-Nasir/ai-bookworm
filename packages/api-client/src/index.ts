@@ -686,7 +686,8 @@ export interface EpubResourceResult { source: SavedEpubSource; resource: EpubRea
 
 export interface DashboardRecentJob {
   id: string;
-  kind: "ai" | "publishing";
+  kind: "import" | "ai" | "publishing" | "audiobook_export";
+  destination: "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview";
   label: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   bookId: string | null;
@@ -738,6 +739,7 @@ export interface DashboardOverview {
     failedJobs: number; readyPackages: number;
   };
   usage: BillingUsageSummary;
+  pipeline: { kind: DashboardRecentJob["kind"]; label: string; pending: number; failed: number }[];
   recentJobs: DashboardRecentJob[];
   activity: ActivityEvent[];
   sales: RetailerSalesSummary;
