@@ -19,7 +19,8 @@ export function chapterRoutes(app: FastifyInstance) {
     return { chapter, role, document: { chapterId, version: current?.version_number ?? 0, nodes: parseNodes(current?.content_json) } };
   });
 
-  app.get("/chapters/:chapterId/versions", async (req) => {
+  app.get("/chapters/:chapterId/versions", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
     const { chapterId } = req.params as { chapterId: string };
     const sb = app.supabaseFactory(req.userToken);
     await loadChapter(sb, chapterId, req.userId);
@@ -28,6 +29,23 @@ export function chapterRoutes(app: FastifyInstance) {
       .eq("chapter_id", chapterId).order("version_number", { ascending: false }).limit(100);
     if (error) throw new AppError(500, "Could not load version history");
     return { versions: data ?? [] };
+  });
+
+  // A historical manuscript is private, immutable data, not an asset download.
+  app.get("/chapters/:chapterId/versions/:versionId", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    const parsed = z.object({ chapterId: z.string().uuid(), versionId: z.string().uuid() }).safeParse(req.params);
+    if (!parsed.success) throw new AppError(422, "invalid chapter or version ID");
+    const { chapterId, versionId } = parsed.data;
+    const sb = app.supabaseFactory(req.userToken);
+    await loadChapter(sb, chapterId, req.userId);
+    const { data, error } = await sb.from("document_versions")
+      .select("id,chapter_id,version_number,plain_text,word_count,created_by,created_at,change_summary,content_json")
+      .eq("chapter_id", chapterId).eq("id", versionId).maybeSingle();
+    if (error) throw new AppError(503, "Could not read the saved revision. Try again without restoring it.");
+    if (!data) throw new AppError(404, "version not found in this chapter");
+    const { content_json, ...version } = data;
+    return { version, document: { chapterId, version: data.version_number, nodes: parseNodes(content_json) } };
   });
 
   // Read-only recovery of this author's exact save, even after later edits.

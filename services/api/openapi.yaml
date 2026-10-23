@@ -8,6 +8,47 @@ servers:
 tags:
   - name: v1
 paths:
+  /v1/chapters/{chapterId}/versions/{versionId}:
+    get:
+      operationId: getDocumentVersion
+      summary: Read an exact saved canonical chapter revision
+      description: Requires current workspace membership, including viewers. Both chapter and version UUIDs are validated; the revision is selected by both identities after authorization. Returns private, no-store metadata and validated canonical blocks. Never restores, writes, signs image URLs or calls a provider. Unsupported legacy content is preserved and rejected rather than silently converted.
+      parameters:
+        - { name: chapterId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: versionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Exact immutable saved revision, with Cache-Control private, no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [version, document]
+                properties:
+                  version:
+                    type: object
+                    required: [id, chapter_id, version_number, plain_text, word_count, created_by, created_at]
+                    properties:
+                      id: { type: string, format: uuid }
+                      chapter_id: { type: string, format: uuid }
+                      version_number: { type: integer, minimum: 1 }
+                      plain_text: { type: string }
+                      word_count: { type: integer, minimum: 0 }
+                      created_by: { type: string, format: uuid }
+                      created_at: { type: string, format: date-time }
+                      change_summary: { type: [string, 'null'] }
+                  document:
+                    type: object
+                    required: [chapterId, version, nodes]
+                    properties:
+                      chapterId: { type: string, format: uuid }
+                      version: { type: integer, minimum: 1 }
+                      nodes: { type: array, maxItems: 20000, items: { type: object } }
+        '401': { description: Authentication required }
+        '403': { description: Current workspace membership required }
+        '404': { description: Chapter or saved version unavailable in this scope }
+        '422': { description: Invalid UUID or unsupported stored canonical format }
+        '503': { description: Historical revision read unavailable; no mutation attempted }
   /v1/chapters/{chapterId}/saves:
     get:
       operationId: recoverChapterDocumentSave

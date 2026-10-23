@@ -193,6 +193,20 @@ try {
   const currentVersions = await request(alice.token, 'GET', `/chapters/${chapter.id}/versions`);
   const currentVersion = currentVersions.versions.find(version => version.version_number === 2);
   assert.ok(currentVersion);
+  const historyPath = `/chapters/${chapter.id}/versions/${versions.versions[0].id}`;
+  const historical = await request(alice.token, 'GET', historyPath);
+  assert.deepEqual(historical.document, saved.document, 'Historical blocks must stay immutable after later edits');
+  assert.equal(historical.version.id, versions.versions[0].id);
+  const exactCurrent = await request(alice.token, 'GET', `/chapters/${chapter.id}/versions/${currentVersion.id}`);
+  assert.deepEqual(exactCurrent.document, reloaded.document);
+  await request(null, 'GET', historyPath, undefined, 401);
+  await request(bob.token, 'GET', historyPath, undefined, 404);
+  await request(alice.token, 'GET', `/chapters/${created.chapter.id}/versions/${currentVersion.id}`, undefined, 404);
+  await request(alice.token, 'GET', `/chapters/${chapter.id}/versions/${randomUUID()}`, undefined, 404);
+  await request(alice.token, 'GET', `/chapters/${chapter.id}/versions/not-a-uuid`, undefined, 422);
+  assert.deepEqual((await request(alice.token, 'GET', `/chapters/${chapter.id}/versions`)).versions, currentVersions.versions,
+    'Historical comparisons do not append or modify any revision');
+  console.log('PASS native immutable canonical revision reads, exact identity, authentication, cross-chapter/tenant isolation and no extra versions');
   const passage = edit.nodes.at(-1);
   const source = { chapterId: chapter.id, documentVersionId: currentVersion.id, nodeId: passage.id, textHash: hash(passage.text) };
   const intent = { requestId: randomUUID(), type: 'character', name: 'Captain Mira', description: 'An author-reviewed character.',

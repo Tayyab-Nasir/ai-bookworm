@@ -23,3 +23,20 @@
 .text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow-y: auto; }
 .text del { color: var(--removed); text-decoration: line-through; }
 .text ins { color: var(--added); text-decoration: underline; text-underline-offset: 3px; }
+.blocks { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; min-width: 0; }
+.blocks h5 { font-size: 13px; margin: 0; }
+.failure { color: var(--removed); overflow-wrap: anywhere; }
+.stats { font-variant-numeric: tabular-nums; font-size: 11px; line-height: 1.8; }
+.blockList { list-style: none; padding: 0; margin: 10px 0; }
+.blockList > li { border-top: 1px solid var(--line); padding: 10px 0; }
+.blockList summary { cursor: pointer; overflow-wrap: anywhere; }
+.blockList summary span { display: block; color: var(--muted); font-size: 11px; }
+.blockList summary:focus-visible { outline: 2px solid var(--added); outline-offset: 3px; }
+.field { margin-top: 14px; }
+.field h6 { margin: 0 0 8px; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+.valuePair { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.valuePair > div { background: var(--paper); border-left: 2px solid var(--line); min-width: 0; padding: 8px; }
+.valuePair > div > span { color: var(--muted); font-size: 10px; }
+.valuePair pre { font: inherit; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; }
+.valuePair small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.ledger code { overflow-wrap: anywhere; }

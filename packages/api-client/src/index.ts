@@ -19,6 +19,7 @@ export interface ManuscriptImportJob {
   status: "queued" | "running" | "succeeded" | "failed"; attempts: number;
   error_code: string | null; created_at: string; available_at: string; completed_at: string | null;
 }
+export interface DocumentVersionSnapshot { version: DocumentVersionSummary; document: ChapterDocument }
 
 export type BookBibleItemType = "character" | "location" | "place" | "organization" | "fact" | "object" | "event" | "term" | "timeline" | "style";
 export interface BookBibleSourceRef {
@@ -918,6 +919,8 @@ export function createClient(opts: ClientOptions) {
       call<{ status: "not_found"; operationId: string } | { status: "saved"; operationId: string; versionId: string; document: ChapterDocument }>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/saves?${new URLSearchParams({ operationId })}`),
     listDocumentVersions: (chapterId: string) =>
       call<{ versions: DocumentVersionSummary[] }>("GET", `/v1/chapters/${chapterId}/versions`),
+    getDocumentVersion: (chapterId: string, versionId: string) =>
+      call<DocumentVersionSnapshot>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/versions/${encodeURIComponent(versionId)}`),
     saveChapterDocument: (chapterId: string, body: { nodes: BookNode[]; expectedVersion: number; operationId: string; changeSummary?: string }) =>
       call<{ version: number; versionId: string; document: ChapterDocument }>("PUT", `/v1/chapters/${chapterId}/document`, body),
     restoreDocumentVersion: (chapterId: string, versionId: string, body: { expectedVersion: number; operationId: string }) =>

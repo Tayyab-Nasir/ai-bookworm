@@ -76,6 +76,7 @@ const manuscript = { chapterId: memoryChapters[0].id, version: 1, nodes: [
   { id: 'second', type: 'paragraph', text: 'Across the water, the city was beginning to wake. She opened the letter one last time.' },
 ] };
 const manuscriptHistory = [{ id: randomUUID(), chapter_id: manuscript.chapterId, version_number: 1, plain_text: manuscript.nodes.map((n) => n.text).join('\n\n'), word_count: 50, created_at: new Date().toISOString(), change_summary: 'Initial manuscript' }];
+const manuscriptSnapshots = new Map([[manuscriptHistory[0].id, { version: structuredClone(manuscriptHistory[0]), document: structuredClone(manuscript) }]]);
 const savedOperations = new Map();
 const previewTokens = new Set();
 function session() {
@@ -565,6 +566,10 @@ const server = createServer(async (req, res) => {
   if (url.pathname === `${memoryBase}/chapters` && req.method === 'GET') return json(200, { chapters: memoryChapters.map((ch, order_index) => ({ ...ch, book_id: memoryBookId, order_index })) });
   if (url.pathname === `/v1/chapters/${manuscript.chapterId}/document` && req.method === 'GET') return json(200, { chapter: memoryChapters[0], role: 'owner', document: manuscript });
   if (url.pathname === `/v1/chapters/${manuscript.chapterId}/versions`) return json(200, { versions: manuscriptHistory });
+  if (req.method === 'GET' && url.pathname.startsWith(`/v1/chapters/${manuscript.chapterId}/versions/`)) {
+    const snapshot = manuscriptSnapshots.get(url.pathname.slice(url.pathname.lastIndexOf('/') + 1));
+    return snapshot ? json(200, snapshot) : json(404, { error: { message: 'Saved revision is not in this chapter' } });
+  }
   if (url.pathname === `/v1/chapters/${manuscript.chapterId}/document` && req.method === 'PUT') {
     if (savedOperations.has(body.operationId)) return json(200, savedOperations.get(body.operationId));
     if (body.expectedVersion !== manuscript.version) return json(409, { error: { message: 'Document changed. Reload before saving.' } });
@@ -572,6 +577,7 @@ const server = createServer(async (req, res) => {
     const plain_text = body.nodes.map((n) => n.text ?? '').join('\n\n');
     const version = { id: randomUUID(), chapter_id: manuscript.chapterId, version_number: manuscript.version, plain_text, word_count: plain_text.split(/\s+/).length, created_at: new Date().toISOString(), change_summary: 'Browser acceptance save' };
     manuscriptHistory.unshift(version);
+    manuscriptSnapshots.set(version.id, { version: structuredClone(version), document: structuredClone(manuscript) });
     const result = { version: manuscript.version, versionId: version.id, document: structuredClone(manuscript) };
     savedOperations.set(body.operationId, result);
     return json(200, result);
