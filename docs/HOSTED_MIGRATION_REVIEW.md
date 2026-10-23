@@ -3,6 +3,55 @@
 Recorded on 2026-10-23 for Supabase **AI-BookWorm** (`cyhqtwndadlyzpeatxws`).
 This is a read-only inventory, not an applied upgrade or release approval.
 
+## Operator approval and fresh preflight — 2026-10-23
+
+The user explicitly approved proceeding with the Supabase migrations. That
+approval covers the reviewed 64-file upgrade below; it does not need to be
+requested again. **No live migration has run yet.**
+
+Fresh checks still identify the intended healthy project with 45 applied and
+109 local migrations. The 109 source files match commit
+`3019489301d1d76e5e1b4308e5ae3aa54d13228b`. The populated 45-to-109 rehearsal
+passed again, including five guarded failures with atomic rollback; ordered
+source manifest SHA-256:
+`e9f7c1fc6b2ff81c100bb674b6e773db64a840dd57b3b9b5b332872b7d37b54c`.
+
+A catalog comparison against a reconstructed 45-migration baseline verified
+75 application function bodies and effective role grants, 55 table definitions,
+102 policies, 117 indexes, 33 triggers, six enums and the private storage bucket.
+The comparison accounts for PostgreSQL's differing NOT NULL catalog
+representation and the observed hosted default function grants. The unrelated
+empty `public."AI-BookWorm"` table and its index are preserved. This comparison
+does not claim that all managed Supabase schemas have been audited.
+
+Exact aggregate reads found one profile and no workspaces, books, assets,
+AI/publishing/import jobs, audiobook projects, Book Bible items or stored
+objects. No active application jobs, other active client transactions, idle
+transactions, duplicate active metadata requests or nonfinite canon revisions
+were observed. Repeat activity checks immediately before applying the upgrade.
+
+The signed-in dashboard confirms that the Free plan has **no project backups**.
+The connected migration tools work, but the CLI has no management login and
+the local environment has no direct database connection for an export. The
+user is saving `BOOKWORM_BACKUP_DATABASE_URL` in the ignored root `.env.local`.
+Never put that value in chat, Git, logs or the shared vault.
+
+Portable PostgreSQL 17.11 tools from PostgreSQL's official EDB download and a
+checksum-verified Mozilla CA bundle are prepared locally. The operator helper
+`.git/bookworm-tracking/backup-hosted-project-20261023.mjs` requires the exact
+project host/user, verifies TLS, uses read-only transactions, excludes credentials
+from process arguments/logs, and stores archives outside the repository/vault
+with restricted Windows permissions. It will export database and password-free
+role definitions, read every archive entry, and write a metadata-only receipt.
+**An export and a restore drill have not yet occurred.**
+
+Next: after the connection is configured, complete the backup and restore
+readiness check, refresh hosted history/activity, apply the 64 pinned files in
+order through the migration tool, then compare the hosted target catalog and
+run permission/feature checks. Do not replay the first 45 migrations or bypass
+a failed migration guard. Current preflight receipts and source/target catalogs
+are local under `.git/bookworm-tracking/hosted-*-20261023.*`.
+
 ## Verified metadata
 
 The hosted project was `ACTIVE_HEALTHY`. Its migration history contained **45**
