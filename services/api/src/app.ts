@@ -35,6 +35,7 @@ import { audiobookRoutes } from "./routes/audiobooks.js";
 import { narrationQuoteRoutes } from "./routes/narration-quotes.js";
 import { translationRoutes } from "./routes/translations.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { bookOverviewRoutes } from "./routes/book-overview.js";
 import { salesRoutes } from "./routes/sales.js";
 import { adminPlugin } from "./plugins/admin.js";
 import { redactObject } from "./lib/redact.js";
@@ -64,6 +65,7 @@ export async function buildApp(
     await v1.register(adminPlugin);
     workspaceRoutes(v1);
     dashboardRoutes(v1);
+    bookOverviewRoutes(v1);
     salesRoutes(v1);
     bookRoutes(v1, { assetScanner: opts.assetScanner });
     chapterRoutes(v1);

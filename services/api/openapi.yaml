@@ -935,6 +935,36 @@ paths:
               schema: { $ref: "#/components/schemas/Workspace" }
         "401": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/overview:
+    get:
+      operationId: getBookOverview
+      summary: Read the current book desk without starting or modifying work
+      description: >-
+        Requires active workspace membership and uses only the caller's RLS client.
+        Current document-version pointers supply saved word counts; no manuscript
+        text, Bible descriptions, prompts, signed URLs, provider access or credits
+        are returned or used. At most 500 chapters, 12 latest editions and four
+        jobs per pipeline. Exact edition and historical output counts are separate
+        from these bounded samples. Historical successes do not certify current
+        files, channel compliance, retailer submission, or sales. An unavailable
+        count or current version fails rather than becoming zero. No-store.
+      parameters:
+        - name: bookId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Safe saved operational facts, not a completion certificate
+          headers: { Cache-Control: { schema: { type: string, const: 'private, no-store' } } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BookOverview' }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+        "404": { $ref: '#/components/responses/Error' }
+        "422": { $ref: '#/components/responses/Error' }
+        "503": { $ref: '#/components/responses/Error' }
   /v1/books:
     get:
       tags: [v1]
@@ -5000,6 +5030,103 @@ components:
         price_cents: { type: integer }
         currency: { type: string }
         entitlements_json: { type: object }
+    BookOverview:
+      type: object
+      additionalProperties: false
+      required: [viewerId, observedAt, book, workspace, manuscript, chapters, bibleItems, listing, editionsTotal, editions, history, jobs]
+      properties:
+        viewerId: { type: string, format: uuid }
+        observedAt: { type: string, format: date-time }
+        book:
+          type: object
+          additionalProperties: false
+          required: [id, workspaceId, title, subtitle, authorName, language, genre, status, updatedAt]
+          properties:
+            id: { type: string, format: uuid }
+            workspaceId: { type: string, format: uuid }
+            title: { type: string, maxLength: 500 }
+            subtitle: { type: [string, 'null'], maxLength: 500 }
+            authorName: { type: string, maxLength: 300 }
+            language: { type: string, maxLength: 40 }
+            genre: { type: [string, 'null'], maxLength: 200 }
+            status: { type: string, maxLength: 40 }
+            updatedAt: { type: string, format: date-time }
+        workspace:
+          type: object
+          additionalProperties: false
+          required: [id, name, role]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string, maxLength: 200 }
+            role: { type: string, enum: [owner, admin, editor, writer, illustrator, designer, reviewer, viewer] }
+        manuscript:
+          type: object
+          additionalProperties: false
+          required: [chapterCount, wordCount, chaptersWithoutSavedVersion]
+          properties:
+            chapterCount: { type: integer, minimum: 0, maximum: 500 }
+            wordCount: { type: integer, minimum: 0 }
+            chaptersWithoutSavedVersion: { type: integer, minimum: 0, maximum: 500 }
+        chapters:
+          type: array
+          maxItems: 500
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, title, orderIndex, versionNumber, wordCount, updatedAt]
+            properties:
+              id: { type: string, format: uuid }
+              title: { type: string, maxLength: 500 }
+              orderIndex: { type: integer, minimum: 0 }
+              versionNumber: { type: [integer, 'null'], minimum: 1 }
+              wordCount: { type: integer, minimum: 0 }
+              updatedAt: { type: [string, 'null'], format: date-time }
+        bibleItems: { type: integer, minimum: 0 }
+        listing:
+          type: object
+          additionalProperties: false
+          required: [description, keywords, categories, isbn]
+          properties:
+            description: { type: boolean }
+            keywords: { type: integer, minimum: 0 }
+            categories: { type: integer, minimum: 0 }
+            isbn: { type: boolean }
+        editionsTotal: { type: integer, minimum: 0 }
+        editions:
+          type: array
+          maxItems: 12
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, kind, status, updatedAt, coverArtworkChosen]
+            properties:
+              id: { type: string, format: uuid }
+              kind: { type: string, enum: [ebook, print, audiobook] }
+              status: { type: string, maxLength: 40 }
+              updatedAt: { type: string, format: date-time }
+              coverArtworkChosen: { type: boolean }
+        history:
+          type: object
+          additionalProperties: false
+          required: [renders, packages]
+          properties:
+            renders: { type: integer, minimum: 0 }
+            packages: { type: integer, minimum: 0 }
+        jobs:
+          type: array
+          maxItems: 12
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, kind, label, status, createdAt, completedAt, destination]
+            properties:
+              id: { type: string, format: uuid }
+              kind: { type: string, enum: [import, ai, publishing] }
+              label: { type: string, maxLength: 80 }
+              status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+              createdAt: { type: string, format: date-time }
+              completedAt: { type: [string, 'null'], format: date-time }
+              destination: { type: string, enum: [editor, memory, publish, translate] }
     Book:
       type: object
       required: [id, workspace_id, title, author_name, language, status, created_by, created_at, updated_at]

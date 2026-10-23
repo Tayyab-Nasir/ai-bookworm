@@ -3,6 +3,8 @@
 // client from services/api/openapi.yaml (e.g. openapi-typescript) later.
 import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task, Approval, WorkspaceMember, Edition, BookBibleItem as CanonicalBookBibleItem } from "@bookworm/types";
 import type { BookNode } from "@bookworm/book-model";
+import { parseBookOverview } from "@bookworm/api-client/book-overview";
+export { parseBookOverview, type BookOverview } from "@bookworm/api-client/book-overview";
 
 export interface ChapterDocument { chapterId: string; version: number; nodes: BookNode[] }
 export interface ChapterTitleState { title: string; revision: number; updatedAt: string }
@@ -895,6 +897,8 @@ export function createClient(opts: ClientOptions) {
       call<{ books: Book[] }>("GET", `/v1/books?workspaceId=${encodeURIComponent(workspaceId)}`),
     createBook: (body: CreateBookRequest) => call<Book>("POST", "/v1/books", body),
     getBook: (bookId: string) => call<{ book: Book; role: string }>("GET", `/v1/books/${bookId}`),
+    getBookOverview: (bookId: string) => call<unknown>("GET", `/v1/books/${encodeURIComponent(bookId)}/overview`)
+      .then(value => parseBookOverview(value, bookId)),
     updateBook: (bookId: string, body: Partial<Omit<CreateBookRequest, "workspaceId" | "requestId" | "subtitle" | "genre">> & { subtitle?: string | null; genre?: string | null; expectedUpdatedAt: string }) =>
       call<{ book: Book }>("PATCH", `/v1/books/${bookId}`, body),
     createBookBibleItem: (bookId: string, body: BookBibleMutationBody, expectedActorId: string) =>

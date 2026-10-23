@@ -49,6 +49,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/book-workspace-navigation-mounted.mjs
+      - name: Verify saved book desk and identity recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/book-overview-mounted.mjs
       - name: Build production author interface
         env:
           NODE_ENV: production

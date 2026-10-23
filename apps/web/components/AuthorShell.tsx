@@ -112,6 +112,7 @@ export function AuthorHeader({ workspaceId, bookId }: { workspaceId?: string | n
           </nav>}
         </div>
 
+        {bookId && <Link href={`/books/${encodeURIComponent(bookId)}/overview`} aria-current={pathname === `/books/${bookId}/overview` ? "page" : undefined} className="inline-flex min-h-11 items-center rounded-full border border-white/15 px-3 text-xs text-white/80 focus-visible:ring-2 focus-visible:ring-white">Book desk</Link>}
         <Link
           {...linkProps("/books/new")}
           className="glass-solid metal-shine hidden min-h-10 items-center rounded-full px-4 text-[13px] font-semibold text-black outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black sm:inline-flex"

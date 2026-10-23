@@ -222,8 +222,46 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await screenshot('memory-mobile');
     succeeded('publishing metadata persistence and desktop/mobile containment');
 
+    stage = 'book desk current saved state and scoped navigation';
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto(`${webOrigin}/books/${bookId}/overview`);
+    await expect(page.getByRole('heading', { name: 'Native browser manuscript', exact: true })).toBeVisible();
+    const readDesk = () => page.evaluate(async path => {
+      const response = await fetch(path, { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15_000) });
+      return { status: response.status, cacheControl: response.headers.get('cache-control'), body: await response.json() };
+    }, `/api/backend/v1/books/${bookId}/overview`);
+    const deskResponse = await readDesk();
+    assert.equal(deskResponse.status, 200);
+    assert.equal(deskResponse.cacheControl, 'private, no-store');
+    const desk = deskResponse.body;
+    assert.equal(desk.viewerId, user.id); assert.equal(desk.book.id, bookId);
+    assert.equal(desk.workspace.id, workspace.id); assert.equal(desk.workspace.role, 'owner');
+    assert.ok(desk.manuscript.wordCount >= 12); assert.ok(desk.manuscript.chapterCount >= 2);
+    assert.equal(desk.manuscript.wordCount, desk.chapters.reduce((n, c) => n + c.wordCount, 0));
+    const savedChapter = desk.chapters.find(c => c.id === chapter.id);
+    assert.equal(savedChapter.versionNumber, 2); assert.equal(desk.bibleItems, 1);
+    assert.equal(desk.listing.description, true); assert.equal(desk.listing.keywords, 2);
+    assert.ok(!JSON.stringify(desk).includes('An author-reviewed harbor adventure.'));
+    await expect(page.getByRole('navigation', { name: 'Book tools' }).getByRole('link', { name: 'Workspace artwork', exact: true }))
+      .toHaveAttribute('href', `/assets?ws=${workspace.id}`);
+    await screenshot('book-desk-desktop');
+    await page.setViewportSize({ width: 320, height: 844 });
+    await screenshot('book-desk-mobile');
+    succeeded('book desk uses real RLS/current versions without manuscript or private prompt payloads');
+
     const { runNativePublishingBrowser } = await import('./native-author-files-publishing.mjs');
     await runNativePublishingBrowser({ page, bookId, passage, screenshot, origins, onStage: value => { stage = value; } });
+
+    stage = 'book desk reload after saved publishing outputs';
+    await page.goto(`${webOrigin}/books/${bookId}/overview`);
+    await expect(page.getByRole('heading', { name: 'Native browser manuscript', exact: true })).toBeVisible();
+    const afterResponse = await readDesk();
+    assert.equal(afterResponse.status, 200);
+    const afterPublishing = afterResponse.body;
+    assert.ok(afterPublishing.editionsTotal > 0); assert.ok(afterPublishing.history.renders > 0);
+    assert.ok(afterPublishing.history.packages > 0);
+    await expect(page.getByText(/Stored job history does not verify current files/)).toBeVisible();
+    succeeded('book desk refreshes real saved edition/render/package history without publication claims');
 
     stage = 'logout and private session removal';
     await page.goto(`${webOrigin}/dashboard`);

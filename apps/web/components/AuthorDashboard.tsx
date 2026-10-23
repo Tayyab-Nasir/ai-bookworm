@@ -263,6 +263,7 @@ export default function AuthorDashboard() {
                 <h3 className="mt-7 text-2xl font-medium leading-tight tracking-[-0.045em] text-white">{book.title}</h3>
                 <p className="mt-2 text-sm text-[#919191]">{book.author_name}{book.genre ? ` · ${book.genre}` : ""}</p>
                 <div className="mt-auto flex flex-wrap items-center gap-3 pt-8">
+                  <Link href={`/books/${book.id}/overview`} className="text-sm font-medium text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">Book desk</Link>
                   <Link href={`/books/${book.id}?title=${encodeURIComponent(book.title)}`} className="text-sm font-medium text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">
                     Open editor
                   </Link>
