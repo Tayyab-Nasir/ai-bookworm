@@ -64,8 +64,20 @@ No approved model/rate catalog is implied by a fixture model name.
 - Failure-first tests reproduced seven missing dimension/write-confirmation
   checks before the fixes. Malformed/foreign/stale evidence and raw upstream
   errors are rejected without exposing manuscript text or credentials.
-- Broader service/security and exact-source CI evidence are recorded below
-  once complete. The dedicated workflow runs no paid-provider tests.
+- Exact-source GitHub workflow
+  [39986187160](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/39986187160)
+  passed all 136 focused cases on commit
+  `1490402d96d03a7288c08d7b6558ac5acfd7fd31`. It installed OpenAI SDK 3.37.0;
+  local checks also passed with 3.6.0. Qdrant client was 1.19.0 in both.
+- Full `npm run verify` passed at **16:27:28 UTC** on a clean exported copy of
+  that Git source: 931 API, 412 web, 840 service, 18 E2E, 50 security cases plus
+  two subtests; 111 migrations/74 SQL assertion files; populated 45-to-111
+  upgrade/crypto, synthetic handler load and deterministic evaluation gates.
+  Source hashes remained unchanged. Live provider evaluation was skipped
+  without a key; unrelated shared uncommitted billing tests were excluded.
+- Read-only hosted recheck still reports 111 migrations. The previous private
+  application-backup manifest is unchanged and its through-111 restore receipt
+  remains valid; full Supabase/Auth/Storage/settings recovery is still unproven.
 
 Hash-vector fixtures demonstrate structural correctness only. They are not
 evidence of language understanding, multilingual recall, factual accuracy,

@@ -4,10 +4,13 @@ This audits the original full-product goal, not merely the latest editor feature
 Sources: `PRD-SOW.txt` sections 2, 5 and 16; `PLAN.md`; current source and the
 native/local evidence linked below. User overrides: mobile parked, Stripe deferred.
 Implemented source is not synonymous with a live, commercially accepted service.
-Current verified source: `a22a4aa` (full local suite and native database CI).
-Application-identical `5c32630` passed the production web build and native
-author/files CI. Hosted schema is at 111 migrations; application-only recovery
-through 111 is verified. See `CHAPTER_TITLE_CHECKPOINT.md` for evidence boundaries.
+Current full-suite source: `1490402`, including the dormant retrieval adapter
+repair; see `SEMANTIC_RETRIEVAL_CHECKPOINT.md` for the exact tests and gates.
+Web/API source is unchanged from `a22a4aa` (native database CI), whose
+application-identical `5c32630` passed the production web build and native
+author/files CI. Hosted schema remains at 111 migrations; application-only
+recovery through 111 is verified. See `CHAPTER_TITLE_CHECKPOINT.md` for those
+earlier hosted/native evidence boundaries.
 
 | Workflow | Current implementation/evidence | Remaining acceptance |
 | --- | --- | --- |
