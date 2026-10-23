@@ -76,6 +76,7 @@ export default function ChapterTitleEditor(props: Props) {
     if (mode === "retry" && retainedTitle.current === null) return;
     const sequence = epoch.current;
     flight.current = true; setBusy(true); setError(null); setNotice(null);
+    callbacks.current.onState({ dirty, busy: true, pending: pending !== null });
     try {
       await editorAccount(userId);
       if (sequence !== epoch.current) return;
@@ -108,7 +109,12 @@ export default function ChapterTitleEditor(props: Props) {
     {editing && !pending && <form className="mt-3" onSubmit={event => { event.preventDefault(); void run("save"); }}>
       <fieldset disabled={disabled || busy || !canEdit} className="min-w-0 space-y-3 disabled:opacity-50">
         <label className="block text-xs text-white/60" htmlFor={`chapter-title-${chapterId}`}>New chapter title</label>
-        <input id={`chapter-title-${chapterId}`} autoFocus value={draft} onChange={event => setDraft(event.target.value)} maxLength={500} required aria-describedby={`title-help-${chapterId}`} className="w-full min-w-0 rounded-lg border border-white/20 bg-black px-3 py-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-white" />
+        <input id={`chapter-title-${chapterId}`} autoFocus value={draft} onChange={event => {
+          const value = event.target.value;
+          setDraft(value);
+          // Lock sibling manuscript actions in this event's render, not a later effect.
+          callbacks.current.onState({ dirty: value !== current?.title, busy, pending: pending !== null });
+        }} maxLength={500} required aria-describedby={`title-help-${chapterId}`} className="w-full min-w-0 rounded-lg border border-white/20 bg-black px-3 py-2 text-sm text-white focus-visible:ring-2 focus-visible:ring-white" />
         <p id={`title-help-${chapterId}`} className="text-xs leading-5 text-white/45">Updates the chapter list and future contents pages. It does not rewrite a heading inside your manuscript or change an older export.</p>
         <div className="flex flex-wrap gap-2"><button type="submit" disabled={!validChapterTitle(draft.trim()) || draft.trim() === current?.title} className="min-h-11 rounded-lg bg-white px-4 text-xs font-medium text-black disabled:opacity-40">Save title</button><button type="button" onClick={() => { setDraft(current!.title); setEditing(false); }} className="min-h-11 rounded-lg border border-white/15 px-4 text-xs">Cancel title edit</button></div>
       </fieldset>

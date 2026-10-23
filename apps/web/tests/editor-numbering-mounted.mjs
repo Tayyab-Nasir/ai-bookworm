@@ -871,6 +871,7 @@ test("renaming a chapter preserves its unsaved manuscript and updates the chapte
     const before = await manuscript.innerText();
     await page.getByRole("button", { name: "Edit chapter title", exact: true }).click();
     await page.getByLabel("New chapter title", { exact: true }).fill("A revised opening");
+    await page.waitForFunction(() => Array.from(document.querySelectorAll("button")).find(button => button.textContent === "Save chapter")?.disabled === true);
     assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
     await page.getByRole("button", { name: "Save title", exact: true }).click();
     await page.getByRole("status").filter({ hasText: "Chapter title saved" }).waitFor();
@@ -878,6 +879,7 @@ test("renaming a chapter preserves its unsaved manuscript and updates the chapte
     assert.equal(await page.getByRole("navigation", { name: "Chapters" }).getByText("A revised opening", { exact: true }).count(), 1);
     assert.equal(await page.evaluate(() => window.requests.length), 0);
     assert.equal(await page.evaluate(() => window.titleRequests.length), 1);
+    await page.waitForFunction(() => Array.from(document.querySelectorAll("button")).find(button => button.textContent === "Save chapter")?.disabled === false);
     assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isEnabled(), true);
     await page.getByRole("button", { name: "Save chapter", exact: true }).click();
     await page.waitForFunction(() => window.requests.length === 1);
