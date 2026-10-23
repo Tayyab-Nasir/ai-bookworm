@@ -820,6 +820,12 @@ export interface CreditLedgerEntry {
   created_at: string;
 }
 
+export type ManualChapterSaveResult = {
+  status: "saved" | "closed" | "superseded" | "not_found";
+  operationId: string; bookId: string; chapterId: string; expectedVersion: number; currentVersion: number;
+  receipt: { versionId: string; document: ChapterDocument } | null;
+};
+
 export function createClient(opts: ClientOptions) {
   async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown, useIdempotencyKey = true): Promise<T> {
     if (body !== undefined) {
@@ -921,8 +927,12 @@ export function createClient(opts: ClientOptions) {
       call<{ versions: DocumentVersionSummary[] }>("GET", `/v1/chapters/${chapterId}/versions`),
     getDocumentVersion: (chapterId: string, versionId: string) =>
       call<DocumentVersionSnapshot>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/versions/${encodeURIComponent(versionId)}`),
-    saveChapterDocument: (chapterId: string, body: { nodes: BookNode[]; expectedVersion: number; operationId: string; changeSummary?: string }) =>
-      call<{ version: number; versionId: string; document: ChapterDocument }>("PUT", `/v1/chapters/${chapterId}/document`, body),
+    saveChapterDocument: (chapterId: string, body: { nodes: BookNode[]; expectedVersion: number; operationId: string; changeSummary?: string }, expectedActorId?: string) =>
+      call<{ version: number; versionId: string; document: ChapterDocument }>("PUT", `/v1/chapters/${chapterId}/document`, body, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
+    getManualChapterSaveStatus: (chapterId: string, operationId: string, expectedVersion: number, expectedActorId: string) =>
+      call<ManualChapterSaveResult>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/manual-saves/${encodeURIComponent(operationId)}?${new URLSearchParams({ expectedVersion: String(expectedVersion) })}`, undefined, false, { "x-bookworm-actor": expectedActorId }),
+    closeManualChapterSave: (chapterId: string, operationId: string, expectedVersion: number, expectedActorId: string) =>
+      call<ManualChapterSaveResult>("POST", `/v1/chapters/${encodeURIComponent(chapterId)}/manual-saves/${encodeURIComponent(operationId)}/close`, { expectedVersion }, false, { "x-bookworm-actor": expectedActorId }),
     restoreDocumentVersion: (chapterId: string, versionId: string, body: { expectedVersion: number; operationId: string }) =>
       call<{ version: number; versionId: string; document: ChapterDocument }>("POST", `/v1/chapters/${chapterId}/versions/${versionId}/restore`, body),
     applyOperation: (chapterId: string, op: DocumentOperation) =>

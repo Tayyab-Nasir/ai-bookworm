@@ -48,6 +48,33 @@ def test_duplicate_contract_keys_are_not_silently_overwritten():
         load_contract("post:\n  responses: {200: first}\n  responses: {200: second}\n")
 
 
+def test_manual_chapter_save_contract_binds_actor_and_separates_read_from_explicit_closure():
+    document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
+    root = "/v1/chapters/{chapterId}/manual-saves/{operationId}"
+    read = document["paths"][root]["get"]
+    close = document["paths"][root + "/close"]["post"]
+    assert "requestBody" not in read
+    assert document["components"]["parameters"]["ManualChapterActor"]["required"] is True
+    for operation in (read, close):
+        assert {"$ref": "#/components/parameters/ManualChapterActor"} in operation["parameters"]
+        assert operation["responses"]["200"] == {"$ref": "#/components/responses/ManualChapterSaveResult"}
+        assert {"401", "403", "404", "409", "422", "503"} <= operation["responses"].keys()
+    request = Draft202012Validator(close["requestBody"]["content"]["application/json"]["schema"])
+    assert not list(request.iter_errors({"expectedVersion": 1}))
+    for invalid in ({}, {"expectedVersion": "1"}, {"expectedVersion": None}, {"expectedVersion": -1}, {"expectedVersion": 1, "nodes": []}):
+        assert list(request.iter_errors(invalid))
+    assert document["components"]["responses"]["ManualChapterSaveResult"]["headers"]["Cache-Control"]["schema"]["const"] == "private, no-store"
+    validator = Draft202012Validator({**document, "$ref": "#/components/schemas/ManualChapterSaveResult"}, format_checker=FormatChecker())
+    identity = "d1000000-0000-4000-8000-000000000001"
+    result = {"status": "not_found", "operationId": identity, "bookId": identity, "chapterId": identity,
+              "expectedVersion": 1, "currentVersion": 1, "receipt": None}
+    receipt = {"versionId": identity, "document": {"chapterId": identity, "version": 2, "nodes": []}}
+    for status in ("saved", "closed", "not_found", "superseded"):
+        assert not list(validator.iter_errors({**result, "status": status, "receipt": receipt if status in ("saved", "closed") else None}))
+    for patch in ({"status": "unknown"}, {"status": "saved"}, {"receipt": receipt}, {"currentVersion": "1"}, {"operationId": "bad"}, {"actorId": identity}):
+        assert list(validator.iter_errors({**result, **patch})), patch
+
+
 def test_retailer_request_recovery_is_read_only_and_closure_uses_original_identity():
     document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
     lookup = document["paths"]["/v1/publishing/requests/{requestId}"]["get"]

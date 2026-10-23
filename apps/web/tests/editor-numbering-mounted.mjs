@@ -703,3 +703,174 @@ test("invalid live list numbering JSON backup keeps unsaved editor document, tab
     assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
   } finally { await page.close(); }
 });
+
+async function manualSaveFixture({ stored = true, width = 1280 } = {}) {
+  const page = await fixture(width, true);
+  await page.evaluate(stored => {
+    window.manualReads = 0; window.manualClosures = 0; window.originalSave = null;
+    window.apiDocument = { chapterId: "chapter", version: 1, nodes: structuredClone(window.nodes) };
+    window.bookwormApi.getChapterDocument = async () => ({ role: "owner", document: structuredClone(window.apiDocument) });
+    window.bookwormApi.saveChapterDocument = async (chapterId, body, actor) => {
+      if (actor !== "fixture-author") throw Error("Missing original actor");
+      window.requests.push(structuredClone(body));
+      if (stored || window.retryConfirmed) {
+        window.originalSave = { chapterId, version: body.expectedVersion + 1, nodes: structuredClone(body.nodes) };
+        window.apiDocument = structuredClone(window.originalSave);
+      }
+      if (window.retryConfirmed) return { version: window.originalSave.version, versionId: "saved-version", document: structuredClone(window.originalSave) };
+      throw Error("Save reply lost in fixture");
+    };
+    window.manualStatus = (chapterId, operationId, expectedVersion) => ({
+      chapterId, bookId: "book", operationId, expectedVersion, currentVersion: window.apiDocument.version,
+      status: window.originalSave ? "saved" : window.closedSave ? "closed" : "not_found",
+      receipt: window.originalSave || window.closedSave ? { versionId: "receipt-version", document: structuredClone(window.originalSave ?? window.closedSave) } : null,
+    });
+    window.bookwormApi.getManualChapterSaveStatus = async (chapterId, operationId, expectedVersion, actor) => {
+      if (actor !== "fixture-author") throw Error("Wrong recovery actor"); window.manualReads++;
+      return window.manualStatus(chapterId, operationId, expectedVersion);
+    };
+    window.bookwormApi.closeManualChapterSave = async (chapterId, operationId, expectedVersion, actor) => {
+      if (actor !== "fixture-author") throw Error("Wrong closure actor"); window.manualClosures++;
+      if (!window.originalSave && !window.closedSave) {
+        window.closedSave = { ...structuredClone(window.apiDocument), version: expectedVersion + 1 };
+        window.apiDocument = structuredClone(window.closedSave);
+      }
+      if (window.closeReplyLost) throw Error("Closure reply lost in fixture");
+      return window.manualStatus(chapterId, operationId, expectedVersion);
+    };
+  }, stored);
+  await page.getByText("Imported first step", { exact: true }).click();
+  await page.keyboard.press("End"); await page.keyboard.insertText(" PRIVATE LOST SAVE");
+  await page.getByRole("button", { name: "Save chapter", exact: true }).click();
+  await page.getByText("Save reply lost in fixture", { exact: true }).waitFor();
+  return page;
+}
+
+test("manual saved outcome survives remount without manuscript storage or another write", async () => {
+  const page = await manualSaveFixture({ width: 320 });
+  try {
+    assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "false");
+    const raw = await page.evaluate(() => Object.entries(sessionStorage).find(([key]) => key.startsWith("bookworm:manual-save:"))?.[1]);
+    assert.ok(raw); assert.equal(raw.includes("PRIVATE"), false); assert.equal(raw.includes("Imported"), false);
+    assert.deepEqual(Object.keys(JSON.parse(raw)).sort(), ["schema", "userId", "bookId", "chapterId", "operationId", "expectedVersion", "digest"].sort());
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: resolve(artifacts, "manual-save-recovery-mobile.png"), fullPage: true });
+    await page.evaluate(() => window.renderBookEditor({ key: "reload-manual" }));
+    await page.getByRole("region", { name: "Manual save recovery" }).waitFor();
+    assert.equal(await page.evaluate(() => window.requests.length), 1);
+    await page.getByRole("button", { name: "Check saved status", exact: true }).click();
+    await page.getByText("Original save confirmed. Loaded saved version 2.", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.requests.length), 1);
+    assert.equal(await page.evaluate(() => window.manualReads), 1);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:manual-save:"))), false);
+    assert.match(await page.locator(".ProseMirror").innerText(), /PRIVATE LOST SAVE/);
+  } finally { await page.close(); }
+});
+
+test("missing manual save can only retry the identical retained body and operation", async () => {
+  const page = await manualSaveFixture({ stored: false });
+  try {
+    assert.equal(await page.getByRole("button", { name: "Retry original save" }).count(), 0);
+    await page.getByRole("button", { name: "Check saved status", exact: true }).click();
+    await page.getByRole("button", { name: "Retry original save" }).waitFor();
+    await page.evaluate(() => { window.retryConfirmed = true; });
+    await page.getByRole("button", { name: "Retry original save" }).click();
+    await page.getByText("Saved version 2.", { exact: true }).waitFor();
+    const requests = await page.evaluate(() => window.requests);
+    assert.equal(requests.length, 2); assert.deepEqual(requests[1], requests[0]);
+    assert.equal(await page.evaluate(() => window.manualClosures), 0);
+  } finally { await page.close(); }
+});
+
+test("missing manual save after remount needs explicit closure and recovers a lost closure reply", async () => {
+  const page = await manualSaveFixture({ stored: false });
+  try {
+    await page.evaluate(() => { window.closeReplyLost = true; window.renderBookEditor({ key: "reload-missing" }); });
+    await page.getByRole("button", { name: "Check saved status", exact: true }).click();
+    await page.getByRole("button", { name: "Close unconfirmed save" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Retry original save" }).count(), 0);
+    assert.equal(await page.evaluate(() => window.manualClosures), 0);
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Close unconfirmed save" }).click();
+    await page.getByText("Closure reply lost in fixture", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Check saved status", exact: true }).click();
+    await page.getByText("Original request closed or superseded. Loaded saved version 2.", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.manualClosures), 1);
+    assert.equal(await page.evaluate(() => window.requests.length), 1);
+    assert.doesNotMatch(await page.locator(".ProseMirror").innerText(), /PRIVATE LOST SAVE/);
+  } finally { await page.close(); }
+});
+
+test("recovered original never replaces a local draft with later collaborator text", async () => {
+  const page = await manualSaveFixture();
+  try {
+    await page.evaluate(() => { window.apiDocument = { chapterId: "chapter", version: 3, nodes: [{ id: "n", type: "paragraph", text: "Collaborator revision" }] }; });
+    await page.getByRole("button", { name: "Check saved status", exact: true }).click();
+    await page.getByText(/Your original save is confirmed at version 2/).waitFor();
+    assert.match(await page.locator(".ProseMirror").innerText(), /PRIVATE LOST SAVE/);
+    assert.doesNotMatch(await page.locator(".ProseMirror").innerText(), /Collaborator revision/);
+    assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
+    assert.equal(await page.evaluate(() => window.requests.length), 1);
+  } finally { await page.close(); }
+});
+
+test("inconsistent current content cannot clear a confirmed original save pointer", async () => {
+  const page = await manualSaveFixture();
+  try {
+    await page.evaluate(() => { window.apiDocument.nodes = [{ id: "wrong", type: "paragraph", text: "Wrong content at the same immutable version" }]; });
+    await page.getByRole("button", { name: "Check saved status", exact: true }).click();
+    await page.getByText(/current chapter could not be verified/i).waitFor();
+    assert.equal(await page.getByRole("region", { name: "Manual save recovery" }).count(), 1);
+    assert.match(await page.locator(".ProseMirror").innerText(), /PRIVATE LOST SAVE/);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:manual-save:"))), true);
+    assert.equal(await page.evaluate(() => window.requests.length), 1);
+  } finally { await page.close(); }
+});
+
+test("account switch blocks manual recovery before any API call and keeps the original pointer", async () => {
+  const page = await manualSaveFixture();
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ user: { id: "another-author" } }) }));
+    await page.getByRole("button", { name: "Check saved status", exact: true }).click();
+    await page.getByText(/Your account changed/).waitFor();
+    assert.equal(await page.evaluate(() => window.manualReads), 0);
+    assert.equal(await page.evaluate(() => window.requests.length), 1);
+    assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "false");
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:manual-save:"))), true);
+  } finally { await page.close(); }
+});
+
+test("corrupt recovery metadata never unlocks a new save after remount", async () => {
+  const page = await manualSaveFixture();
+  try {
+    await page.evaluate(() => {
+      const key = Object.keys(sessionStorage).find(key => key.startsWith("bookworm:manual-save:"));
+      sessionStorage.setItem(key, "invalid metadata"); window.renderBookEditor({ key: "reload-corrupt" });
+    });
+    await page.getByText(/manual save recovery record is invalid/).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
+    assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "false");
+    assert.equal(await page.evaluate(() => window.requests.length), 1);
+  } finally { await page.close(); }
+});
+
+test("late save recovery cannot adopt an old chapter or remove its recovery pointer", async () => {
+  const page = await manualSaveFixture();
+  try {
+    await page.evaluate(() => {
+      const original = window.bookwormApi.getManualChapterSaveStatus;
+      window.bookwormApi.getManualChapterSaveStatus = (...args) => new Promise(resolve => { window.finishRecovery = async () => resolve(await original(...args)); });
+      window.bookwormApi.getChapterDocument = async chapterId => ({ role: "owner", document: chapterId === "chapter" ? window.apiDocument
+        : { chapterId, version: 1, nodes: [{ id: "second", type: "paragraph", text: "Second chapter manuscript" }] } });
+    });
+    await page.getByRole("button", { name: "Check saved status", exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishRecovery === "function");
+    await page.evaluate(() => window.renderBookEditor({ initialChapterId: "second" }));
+    await page.getByText("Second chapter manuscript", { exact: true }).waitFor();
+    await page.evaluate(async () => { await window.finishRecovery(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    assert.equal(await page.getByText("Second chapter manuscript", { exact: true }).count(), 1);
+    assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "true");
+    assert.equal(await page.getByRole("region", { name: "Manual save recovery" }).count(), 0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:manual-save:"))), true);
+  } finally { await page.close(); }
+});

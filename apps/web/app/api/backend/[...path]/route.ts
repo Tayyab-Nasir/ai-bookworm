@@ -26,7 +26,11 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       (path.length === 3 && path[2] === "jobs" && request.method === "POST")
       || (path.length === 4 && path[2] === "requests" && (request.method === "GET" || (path[3] === "close" && request.method === "POST")))
     );
-    const boundRequest = manualBible || packageRequest;
+    const manualSave = path[1] === "chapters" && (
+      (path[3] === "manual-saves" && ((path.length === 5 && request.method === "GET") || (path.length === 6 && path[5] === "close" && request.method === "POST")))
+      || (path.length === 4 && path[3] === "document" && request.method === "PUT" && request.headers.has("x-bookworm-actor"))
+    );
+    const boundRequest = manualBible || packageRequest || manualSave;
     const actor = boundRequest ? request.headers.get("x-bookworm-actor") : null;
     if (boundRequest && (!actor || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor))) {
       return auth.finish(authError(422, "The original account identity is required for this saved request."));

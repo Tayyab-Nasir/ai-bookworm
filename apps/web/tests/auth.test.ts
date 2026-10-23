@@ -75,6 +75,30 @@ test("manual Book Bible requests preserve their expected actor and reject accoun
   }
 });
 
+test("manual manuscript recovery and actor-bound saves refuse account crossover", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const upstream = "http://api.example.test/v1/chapters/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  const root = ["v1", "chapters", "88888888-8888-4888-8888-888888888888"];
+  const operation = "22222222-2222-4222-8222-222222222222";
+  for (const [suffix, method, handler, missingStatus] of [
+    [["manual-saves", operation], "GET", backendGet, 422],
+    [["manual-saves", operation, "close"], "POST", backendPost, 422],
+    [["document"], "PUT", backendPut, 200],
+  ] as const) {
+    const path = [...root, ...suffix];
+    for (const [actor, expected] of [[undefined, missingStatus], ["bad", 422], [operation, 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, { method,
+        headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) } }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, expected);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + Number(expected === 200));
+      if (expected === 200 && actor) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), actor);
+    }
+  }
+});
+
 test("redirects stay inside author routes and same-origin is required", () => {
   for (const path of ["https://evil.test", "//evil.test", "/\\evil.test", "/%5cevil.test", "/%0aevil", "/auth/callback", "/api/backend/v1/books"]) assert.equal(safeNext(path), "/dashboard");
   assert.equal(safeNext("/books/123?tab=writing"), "/books/123?tab=writing");

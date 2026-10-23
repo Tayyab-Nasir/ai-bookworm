@@ -8,6 +8,51 @@ servers:
 tags:
   - name: v1
 paths:
+  /v1/chapters/{chapterId}/manual-saves/{operationId}:
+    get:
+      operationId: getManualChapterSaveStatus
+      summary: Verify the original manual save without retrying it
+      description: Requires current workspace membership and the original signed-in actor. Reads latest version before immutable author-scoped receipts. saved confirms the original version, closed confirms an unchanged closure revision, superseded means a newer revision fences the absent original, and not_found remains unresolved. This read never appends a revision, calls a provider or charges credits. The original PUT document request optionally accepts the same actor header and rejects mismatched accounts when supplied.
+      parameters:
+        - { name: chapterId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: operationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: expectedVersion, in: query, required: true, schema: { type: integer, minimum: 0, maximum: 2147483645 } }
+        - { $ref: "#/components/parameters/ManualChapterActor" }
+      responses:
+        '200': { $ref: "#/components/responses/ManualChapterSaveResult" }
+        '401': { description: Authentication required }
+        '403': { description: Current workspace membership required }
+        '404': { description: Chapter unavailable in this scope }
+        '409': { description: Account changed or inconsistent revision identity; retain original request }
+        '422': { description: Invalid actor, UUID or expected revision }
+        '503': { description: Receipt unavailable; no new save attempted }
+  /v1/chapters/{chapterId}/manual-saves/{operationId}/close:
+    post:
+      operationId: closeManualChapterSave
+      summary: Explicitly close an unresolved manual save without resending draft text
+      description: Requires current editing membership and the original actor. An already committed original or closure returns its receipt without another write. Otherwise append_chapter_version locks the chapter and uses the expected revision to append server-loaded unchanged content under a stable closure key. That revision fences a delayed original write. A racing original may win with a 409 response; check the same status afterward. Never deletes history or undoes an original save. No manuscript body, provider, credits or new transport idempotency key is accepted.
+      parameters:
+        - { name: chapterId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: operationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/ManualChapterActor" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedVersion]
+              properties:
+                expectedVersion: { type: integer, minimum: 0, maximum: 2147483645 }
+      responses:
+        '200': { $ref: "#/components/responses/ManualChapterSaveResult" }
+        '401': { description: Authentication required }
+        '403': { description: Current editing membership required }
+        '404': { description: Chapter unavailable in this scope }
+        '409': { description: Account changed or concurrent write won; read original status }
+        '422': { description: Invalid actor, UUID, expected revision or unsupported saved content }
+        '503': { description: Database workflow unavailable; preserve original request }
   /v1/chapters/{chapterId}/versions/{versionId}:
     get:
       operationId: getDocumentVersion
@@ -3527,6 +3572,12 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
+    ManualChapterActor:
+      name: X-Bookworm-Actor
+      in: header
+      required: true
+      description: Original signed-in author UUID. Required by API and browser proxy for manual save recovery and closure; never supplies authorization. Missing/invalid is 422 and account mismatch is 409.
+      schema: { type: string, format: uuid }
     PublishingRequestActor:
       name: X-Bookworm-Actor
       in: header
@@ -3553,6 +3604,39 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    ManualChapterSaveResult:
+      type: object
+      additionalProperties: false
+      required: [status, operationId, bookId, chapterId, expectedVersion, currentVersion, receipt]
+      properties:
+        status: { enum: [saved, closed, superseded, not_found] }
+        operationId: { type: string, format: uuid }
+        bookId: { type: string, format: uuid }
+        chapterId: { type: string, format: uuid }
+        expectedVersion: { type: integer, minimum: 0, maximum: 2147483645 }
+        currentVersion: { type: integer, minimum: 0, maximum: 2147483647 }
+        receipt:
+          oneOf:
+            - type: 'null'
+            - type: object
+              additionalProperties: false
+              required: [versionId, document]
+              properties:
+                versionId: { type: string, format: uuid }
+                document:
+                  type: object
+                  required: [chapterId, version, nodes]
+                  properties:
+                    chapterId: { type: string, format: uuid }
+                    version: { type: integer, minimum: 1, maximum: 2147483647 }
+                    nodes: { type: array, maxItems: 20000, items: { type: object } }
+      oneOf:
+        - properties:
+            status: { enum: [saved, closed] }
+            receipt: { type: object }
+        - properties:
+            status: { enum: [superseded, not_found] }
+            receipt: { type: 'null' }
     BookBibleSourceRef:
       type: object
       additionalProperties: false
@@ -4674,6 +4758,13 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
   responses:
+    ManualChapterSaveResult:
+      description: Original author's immutable manual save or closure receipt and latest observed revision; not_found remains unresolved
+      headers:
+        Cache-Control: { schema: { type: string, const: "private, no-store" } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ManualChapterSaveResult" }
     PublishingRequestResult:
       description: Original actor's saved request and current private-file availability; null means not yet found, not closed
       headers:

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { applyOperation, DocumentOperationSchema, type BookModel } from "@bookworm/book-model";
 import { AppError } from "../errors.js";
 import { appendVersion, checkAssetReferences, latestVersion, loadChapter, nodesSchema, parseNodes } from "../lib/authoring.js";
+import { checkChapterActor, manualChapterSaveRoutes } from "../lib/manual-chapter-save.js";
 
 const saveSchema = z.object({
   expectedVersion: z.number().int().nonnegative(), nodes: nodesSchema,
@@ -10,6 +11,7 @@ const saveSchema = z.object({
 });
 
 export function chapterRoutes(app: FastifyInstance) {
+  manualChapterSaveRoutes(app);
   app.get("/chapters/:chapterId/document", async (req, reply) => {
     reply.header("Cache-Control", "private, no-store");
     const { chapterId } = req.params as { chapterId: string };
@@ -67,6 +69,7 @@ export function chapterRoutes(app: FastifyInstance) {
   });
 
   app.put("/chapters/:chapterId/document", { bodyLimit: 5 * 1024 * 1024 }, async (req) => {
+    checkChapterActor(req);
     const { chapterId } = req.params as { chapterId: string };
     const parsed = saveSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid document", { issues: parsed.error.issues });

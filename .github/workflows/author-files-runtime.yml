@@ -31,6 +31,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/saved-print-mounted.mjs
+      - name: Verify manuscript recovery and imported structure in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --import tsx --test apps/web/tests/editor-numbering-mounted.mjs
       - name: Build production author interface
         env:
           NODE_ENV: production
