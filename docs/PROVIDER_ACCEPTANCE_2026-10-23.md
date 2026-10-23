@@ -13,24 +13,40 @@ The non-billable model inventory authenticated successfully and listed
 `gpt-realtime-2.1-mini` and `gpt-realtime-2.1`.
 
 One bounded attempt per modality was made through the existing provider
-adapters. SDK retries were disabled. No customer manuscript was sent.
+adapters. The operator then explicitly supplied a replacement credential and
+asked for another test; only one additional bounded text probe was attempted.
+The non-billable inventory also authenticated with that replacement credential.
+SDK retries were disabled. No customer manuscript was sent.
 
 | Probe | Time UTC | Result |
 | --- | --- | --- |
 | Astra text, maximum 768 output tokens | 16:55:01–16:55:08 | No verified completion; original diagnostic was not retained by the probe harness. Outcome remains unconfirmed. |
 | Sunburst, one low-quality 1024-square illustration, no references | 16:55:44–16:55:46 | SDK RateLimitError, HTTP 429; no verified image or usage receipt. |
 | Realtime 2.1, one short synthetic sentence, maximum 512 output tokens | 16:56:27–16:56:29 | Provider error classified as quota/billing before a session-created event; no verified audio or usage receipt. |
+| Replacement-key Astra text, maximum 768 output tokens | 17:09:15–17:09:21 | ProviderOutcomeUnknown with underlying HTTP 429 classified as quota/billing. No verified completion or usage receipt. Replacement-key image and speech were not attempted. |
 
 No further paid requests are permitted automatically. The operator needs to
 resolve billing/quota and rotate the exposed credential. Local conservative
-holds remain **USD2.25** (text .25, image 1, speech 1). This is not a measured
+holds remain **USD2.50** (original text .25, image 1, speech 1, replacement text .25). This is not a measured
 charge or refund. Actual spend is unknown and requires provider reconciliation;
-at most USD2.75 of the original ceiling remains until then. Redacted receipts
-are local-only in `.git/bookworm-tracking/provider-acceptance-20261023/`.
+at most USD2.50 of the original ceiling remains until then. Changing credentials
+does not reset the ceiling. Redacted receipts are local-only in
+`.git/bookworm-tracking/provider-acceptance-20261023/` and its `replacement-key/`
+subdirectory. The root `.env` holds the latest credential, remains Git-ignored
+and untracked, and was not copied into the running app, clean build or tests.
+The app's separate `.env.local` has a blank OpenAI assignment; saving the root
+file alone does not enable generation or change paid-AI gates.
 
 No runtime purchase flags, customer prices, funded balances, live data,
 deployment or retailer publication were changed. A working API key does not
 prove generation, durable jobs, quote settlement or paid workflow acceptance.
+
+[OpenAI error guidance](https://developers.openai.com/api/docs/guides/error-codes)
+distinguishes exhausted prepaid balance, project/organization spend limits and
+organization usage limits. Retrying does not resolve those conditions. The
+retained probe classification does not identify which of those specific limits
+applies here; the operator must check the account, not generate another key and
+assume the budget has changed.
 
 ## Current official guidance checked
 

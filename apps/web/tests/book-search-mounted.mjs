@@ -104,8 +104,14 @@ test("historical source stays historical with safe Unicode pagination and no mob
     await p.evaluate(() => { window.historical = true; }); await search(p);
     await p.getByRole("button", { name: "Read cited source", exact: true }).click();
     await p.getByRole("status").filter({ hasText: "earlier version; the chapter has changed" }).waitFor();
-    await p.getByLabel("Cited source text", { exact: true }).focus(); await p.keyboard.press("PageDown");
-    assert(await p.getByLabel("Cited source text", { exact: true }).evaluate(node=>node.scrollTop)>0);
+    const sourceText = p.getByLabel("Cited source text", { exact: true });
+    await sourceText.focus();
+    assert(await sourceText.evaluate(node => document.activeElement === node));
+    assert(await sourceText.evaluate(node => node.scrollHeight > node.clientHeight));
+    await p.keyboard.press("PageDown");
+    // Native keyboard scrolling is asynchronous in full Chromium. Observe the
+    // resulting scroll, not the first frame immediately after key delivery.
+    await p.waitForFunction(() => document.querySelector('[aria-label="Cited source text"]')?.scrollTop > 0);
     assert.equal(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await p.getByRole("button", { name: "Hide cited source" }).scrollIntoViewIfNeeded();
     await p.screenshot({ path: resolve(artifacts, "search-source-mobile.png"), fullPage: true });
