@@ -7,6 +7,7 @@ import { parseNodes } from "../lib/authoring.js";
 import { requireWorkspaceEditor, requireWorkspaceMember } from "../lib/authorize.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { searchBookContext, searchSchema } from "../lib/retrieval.js";
+import { readSearchEvidence, searchEvidenceSchema } from "../lib/search-evidence.js";
 
 const id = z.string().uuid();
 const timestamp = z.string().datetime({ offset: true });
@@ -178,7 +179,12 @@ export function bookMemoryRoutes(app: FastifyInstance) {
       startOffset, endOffset, totalLength: node.text.length,
       nextOffset: endOffset < node.text.length ? endOffset : null };
   });
-  app.post("/books/:bookId/search", async (req) => {
+  app.post("/books/:bookId/search/evidence", { onSend: privateMutationResponse }, async (req) => {
+    const body = parse(searchEvidenceSchema, req.body);
+    const { sb, bookId } = await scopedBook(app, req);
+    return readSearchEvidence(sb, bookId, body);
+  });
+  app.post("/books/:bookId/search", { onSend: privateMutationResponse }, async (req) => {
     const body = parse(searchSchema, req.body);
     const { sb, bookId } = await scopedBook(app, req);
     return { results: await searchBookContext(sb, bookId, body), strategy: "postgres_full_text", query: body.query };

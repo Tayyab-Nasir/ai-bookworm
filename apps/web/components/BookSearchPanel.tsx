@@ -1,17 +1,23 @@
 "use client";
 
 import Link from "next/link";
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { BookSearchResult } from "@bookworm/api-client";
 import { apiClient } from "./api";
+import { parseSearchResults, searchCitation } from "../lib/book-search";
+import SearchSourcePassage from "./SearchSourcePassage";
 
-export default function BookSearchPanel({ bookId, onOpenBibleEntry }: { bookId: string; onOpenBibleEntry?: (id: string) => void }) {
+export default function BookSearchPanel(props: { bookId: string; onOpenBibleEntry?: (id: string) => void }) {
+  return <SearchPanel key={props.bookId} {...props} />;
+}
+function SearchPanel({ bookId, onOpenBibleEntry }: { bookId: string; onOpenBibleEntry?: (id: string) => void }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<BookSearchResult[]>([]);
   const [searched, setSearched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
+  useEffect(() => () => { ++generation.current; }, []);
   function changeQuery(value: string) {
     // A response for the old phrase must never appear below the new phrase.
     ++generation.current;
@@ -24,7 +30,7 @@ export default function BookSearchPanel({ bookId, onOpenBibleEntry }: { bookId: 
     setBusy(true); setError(null); setResults([]); setSearched(false);
     try {
       const response = await apiClient().searchBook(bookId, { query: query.trim(), limit: 8 });
-      if (current === generation.current) { setResults(response.results); setSearched(true); }
+      if (current === generation.current) { setResults(parseSearchResults(response, query.trim())); setSearched(true); }
     } catch (reason) {
       if (current === generation.current) setError(reason instanceof Error ? reason.message : "Search failed.");
     } finally { if (current === generation.current) setBusy(false); }
@@ -40,11 +46,12 @@ export default function BookSearchPanel({ bookId, onOpenBibleEntry }: { bookId: 
     </form>
     {error && <p role="alert" className="mt-4 text-sm text-red-200">{error}</p>}
     {searched && <p role="status" className="mt-4 text-xs text-[#999]">{results.length ? `${results.length} matching passages. Showing the highest-ranked results.` : "No matching passage. Try fewer words, another spelling, or OR between alternatives."}</p>}
-    <div className="mt-4 grid gap-3 lg:grid-cols-2">{results.map((result) => <article key={result.id} className="min-w-0 rounded-xl border border-white/10 p-4">
+    <div className="mt-4 grid items-start gap-3 lg:grid-cols-2">{results.map((result) => <article key={result.id} className="min-w-0 rounded-xl border border-white/10 p-4">
       <p className="text-[10px] uppercase tracking-widest text-[#999]">{result.source_type === "bible" ? "Book Bible" : "Saved manuscript"}</p>
       <h3 className="mt-2 break-words font-medium">{result.title}</h3>
-      <blockquote className="mt-3 whitespace-pre-wrap break-words border-l border-white/20 pl-3 text-sm leading-6 text-[#ccc]">{result.excerpt}</blockquote>
-      {result.source_type === "manuscript" && result.chapter_id && <Link href={`/books/${encodeURIComponent(bookId)}?chapter=${encodeURIComponent(result.chapter_id)}`} className="mt-3 inline-flex min-h-10 items-center text-sm font-medium text-white underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-white">Open saved chapter →</Link>}
+      <blockquote tabIndex={0} aria-label="Search excerpt" className="mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words border-l border-white/20 pl-3 text-sm leading-6 text-[#ccc] outline-none focus-visible:ring-2 focus-visible:ring-white/50">{result.excerpt}</blockquote>
+      {searchCitation(result) && <SearchSourcePassage bookId={bookId} citation={searchCitation(result)!} />}
+      {result.source_type === "manuscript" && result.chapter_id && <Link href={`/books/${encodeURIComponent(bookId)}?chapter=${encodeURIComponent(result.chapter_id)}`} className="mt-3 inline-flex min-h-10 items-center text-sm font-medium text-white underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-white">Open current chapter →</Link>}
       {result.source_type === "bible" && result.bible_item_id && onOpenBibleEntry && <button type="button" onClick={() => onOpenBibleEntry(result.bible_item_id!)} className="mt-3 block min-h-10 text-sm font-medium text-white underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-white">Open Book Bible entry →</button>}
       <details className="mt-3 text-xs text-[#999]"><summary className="cursor-pointer rounded outline-none focus-visible:ring-2 focus-visible:ring-white">Source citation</summary><dl className="mt-2 space-y-1 break-all">
         <dt>Source ID</dt><dd>{result.bible_item_id ?? result.chapter_id}</dd>

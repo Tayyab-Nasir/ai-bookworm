@@ -47,6 +47,30 @@ const invoke = (action: string, body: unknown, cookie?: string) => POST(request(
 const cookies = (response: NextResponse) => response.cookies.getAll().map(({ name, value }) => `${name}=${value}`).join("; ");
 const login = () => invoke("login", { email: user.email, password: "fixture-password" });
 
+test("source passage proxy requires a current session and same-origin request and keeps text private", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const path = ["v1", "books", "88888888-8888-4888-8888-888888888888", "search", "evidence"];
+  const upstream = `http://api.example.test/${path.join("/")}`;
+  const citation = { chapterId: user.id, documentVersionId: user.id, nodeId: "p1", chunkIndex: 0, textHash: "a".repeat(32) };
+  let forwarded = 0;
+  provider = (url, init) => {
+    if (url.href !== upstream) return authProvider(url, init);
+    forwarded++; assert.equal(init?.method, "POST");
+    const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : String(init?.body);
+    assert.deepEqual(JSON.parse(body), citation);
+    assert.match(new Headers(init?.headers).get("authorization")!, /^Bearer /);
+    return Response.json({ text: "Saved source" });
+  };
+  for (const [cookie, origin, status] of [[undefined, "http://localhost:3000", 401],
+    [cookies(signedIn), "https://foreign.example", 403], [cookies(signedIn), "http://localhost:3000", 200]] as const) {
+    const response = await backendPost(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+      method: "POST", headers: { origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(citation),
+    }), { params: Promise.resolve({ path }) });
+    assert.equal(response.status, status); assert.match(response.headers.get("cache-control")!, /no-store/);
+  }
+  assert.equal(forwarded, 1);
+});
+
 test("manual Book Bible requests preserve their expected actor and reject account crossover before forwarding", async () => {
   const signedIn = await login();
   const authProvider = provider;

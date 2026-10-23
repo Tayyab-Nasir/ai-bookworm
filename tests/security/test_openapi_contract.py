@@ -281,6 +281,7 @@ def test_openapi_structure_references_and_operation_identities():
         assert document["components"]["schemas"][schema]["type"] == "object", schema
     for path, method in [
         ("/v1/books/{bookId}/bible/evidence", "post"),
+        ("/v1/books/{bookId}/search/evidence", "post"),
         ("/v1/books/{bookId}/story-blueprint", "put"),
         ("/v1/admin/moderation/reports/{id}/resolve", "post"),
     ]:
@@ -290,6 +291,29 @@ def test_openapi_structure_references_and_operation_identities():
         actual = {p["name"] for p in parameters if p.get("in") == "path" and p.get("required") is True}
         assert expected == actual, (path, "path parameters")
         assert operation["requestBody"]["content"], (path, "request body")
+
+
+def test_search_reader_contract_pins_version_chunk_and_codepoint_page():
+    document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
+    operation = document["paths"]["/v1/books/{bookId}/search/evidence"]["post"]
+    assert {"401", "403", "404", "409", "422", "503"} <= operation["responses"].keys()
+    assert operation["responses"]["200"]["headers"]["Cache-Control"]["schema"]["const"] == "private, no-store"
+    identity = "e1000000-0000-4000-8000-000000000001"
+    citation = {"chapterId": identity, "documentVersionId": identity, "nodeId": "p1", "chunkIndex": 1600, "textHash": "a" * 32}
+    request = Draft202012Validator(operation["requestBody"]["content"]["application/json"]["schema"], format_checker=FormatChecker())
+    assert not list(request.iter_errors(citation))
+    assert not list(request.iter_errors({**citation, "offset": 1300}))
+    for patch in ({"chapterId": "bad"}, {"documentVersionId": None}, {"chunkIndex": 1}, {"chunkIndex": -1600},
+                  {"textHash": "a" * 64}, {"offset": -1}, {"offset": "0"}, {"nodes": []}):
+        assert list(request.iter_errors({**citation, **patch})), patch
+    validator = Draft202012Validator({**document, "$ref": "#/components/schemas/SearchSourcePassage"}, format_checker=FormatChecker())
+    result = {"bookId": identity, "citation": citation, "chapterTitle": "Saved", "versionNumber": 2,
+              "isCurrentVersion": False, "text": "🌙" * 6000, "startOffset": 1300, "endOffset": 7300,
+              "totalLength": 8000, "previousOffset": 0, "nextOffset": 7300, "matchedStart": 1600, "matchedEnd": 3400}
+    assert not list(validator.iter_errors(result))
+    for patch in ({"versionNumber": 0}, {"isCurrentVersion": "true"}, {"text": "x" * 6001},
+                  {"citation": {**citation, "textHash": "bad"}}, {"previousOffset": "0"}, {"extra": True}):
+        assert list(validator.iter_errors({**result, **patch})), patch
 
 
 def test_sales_contract_preserves_nullable_unknowns_and_negative_corrections():

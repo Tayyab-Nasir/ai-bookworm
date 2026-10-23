@@ -17,6 +17,14 @@ export interface BookSearchResult {
   bible_item_id: string | null; document_version_id: string | null; node_id: string | null;
   chunk_index: number; title: string; excerpt: string; text_hash: string; score: number;
 }
+export interface SearchPassageCitation {
+  chapterId: string; documentVersionId: string; nodeId: string; chunkIndex: number; textHash: string;
+}
+export interface SearchSourcePassage {
+  bookId: string; citation: SearchPassageCitation; chapterTitle: string; versionNumber: number; isCurrentVersion: boolean;
+  text: string; startOffset: number; endOffset: number; totalLength: number;
+  previousOffset: number | null; nextOffset: number | null; matchedStart: number; matchedEnd: number;
+}
 export interface DocumentVersionSummary {
   id: string; chapter_id: string; version_number: number; plain_text: string; word_count: number;
   created_by: string; created_at: string; change_summary: string | null;
@@ -1202,6 +1210,8 @@ export function createClient(opts: ClientOptions) {
       ),
     searchBook: (bookId: string, body: { query: string; limit?: number; chapterIds?: string[]; includeBible?: boolean }) =>
       call<{ results: BookSearchResult[]; strategy: "postgres_full_text"; query: string }>("POST", `/v1/books/${encodeURIComponent(bookId)}/search`, body),
+    readSearchPassage: (bookId: string, body: SearchPassageCitation & { offset?: number }) =>
+      call<SearchSourcePassage>("POST", `/v1/books/${encodeURIComponent(bookId)}/search/evidence`, body),
     qualifyReferral: (referredUserId: string, serviceToken: string) =>
       callService<{ qualified: boolean; held?: boolean; rewarded?: boolean }>("/v1/referrals/qualify", { referredUserId }, serviceToken),
     // Step 14: admin console (403 for non-admins)
