@@ -67,8 +67,30 @@ These serial SQL cases are not a new multi-connection race claim.
   rename/replay, stale conflicts, delayed-write closure, unchanged chapter
   identity/order/document pointer and both immutable versions. Rollback restores
   every historical projection. The extended rehearsal passes locally.
-- Full clean-source verification after that test-only extension and local runtime
-  refresh remain separate acceptance steps; use the final continuation receipt.
+- Full `npm run verify` passed at 15:33:09 UTC on clean Git source
+  `a22a4aae85c712b565a8b1e81a3fc44e4eadec9e`: 931 committed API tests, 412 web,
+  737 service, 18 E2E, 50 security plus two subtests, 111 migrations/74 SQL files,
+  populated-upgrade/crypto, synthetic handler-load and deterministic eval gates.
+  Live provider eval was skipped without a key. Source integrity was verified.
+  This excludes the 15 pre-existing shared, uncommitted billing tests.
+- Native database CI `39978430063` passed on `a22a4aa`. Its application code is
+  identical to the production-build/native-author source at `5c32630`; only the
+  populated-upgrade runner and this checkpoint changed. Native author/files CI
+  `39976538049` remains the relevant passing application acceptance.
+- The loopback web/API now run the frozen `a22a4aa` snapshot: login and API health
+  return 200. Supabase readiness passed; Redis remains unavailable, so aggregate
+  readiness correctly returns 503. No private workers or provider keys started.
+- At 15:36:19 UTC the actual private application-data snapshot also passed an
+  offline archived-source restore from migration 45 through all 66 updates to
+  111. All original application row counts and the typed profile are preserved.
+  The two additional migration sources and a verified manifest/receipt were
+  appended in a private `schema-through-111` supplement. Original backup artifacts
+  are byte-identical; this still does not restore Auth credentials or project settings.
+
+Exact private artifact paths, runtime process identities and remaining operator
+inputs are recorded in the shared Obsidian continuation note
+`Codex Sessions/2026-10/2026-10-23-chapter-title-editing.md`. Do not commit private
+backup contents or treat local/native fixture evidence as hosted user acceptance.
 
 ## Migration boundary
 

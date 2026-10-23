@@ -4,6 +4,10 @@ This audits the original full-product goal, not merely the latest editor feature
 Sources: `PRD-SOW.txt` sections 2, 5 and 16; `PLAN.md`; current source and the
 native/local evidence linked below. User overrides: mobile parked, Stripe deferred.
 Implemented source is not synonymous with a live, commercially accepted service.
+Current verified source: `a22a4aa` (full local suite and native database CI).
+Application-identical `5c32630` passed the production web build and native
+author/files CI. Hosted schema is at 111 migrations; application-only recovery
+through 111 is verified. See `CHAPTER_TITLE_CHECKPOINT.md` for evidence boundaries.
 
 | Workflow | Current implementation/evidence | Remaining acceptance |
 | --- | --- | --- |
@@ -18,7 +22,7 @@ Implemented source is not synonymous with a live, commercially accepted service.
 | Translation and audiobooks | Separate funded quoted jobs; reviewed translation and narrated audio/QC/export workflows | Approved OpenAI text/speech catalogs, funded narration/translation and hosted worker acceptance |
 | Teams and operations | Invitations, roles, tasks, approvals, activity, moderation, support/data-rights intake | Operational ownership, retention/fulfilment processes, alerting and delivery acceptance |
 | Credits and payments | Immutable ledger, quote holds, metered settlement and entitlement gates | Stripe intentionally deferred; no unpriced/free generation is enabled as a substitute |
-| Deployment and recovery | Vercel web boundary documented; separate API/private processors/workers; application snapshot restore-tested | Private runtime hosting choice, supervision, full Supabase/Auth/Storage/settings recovery, operator-approved deployment |
+| Deployment and recovery | Vercel web boundary documented; separate API/private processors/workers; application snapshot restore-tested through migration 111 | Private runtime hosting choice, supervision, full Supabase/Auth/Storage/settings recovery, operator-approved deployment |
 
 ## Integration decisions carried forward
 
