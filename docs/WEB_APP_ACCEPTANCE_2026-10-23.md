@@ -4,19 +4,22 @@ This audits the original full-product goal, not merely the latest editor feature
 Sources: `PRD-SOW.txt` sections 2, 5 and 16; `PLAN.md`; current source and the
 native/local evidence linked below. User overrides: mobile parked, Stripe deferred.
 Implemented source is not synonymous with a live, commercially accepted service.
-Current prior full-suite source: `1490402`, including the dormant retrieval adapter
-repair; see `SEMANTIC_RETRIEVAL_CHECKPOINT.md` for the exact tests and gates.
-Web/API source is unchanged from `a22a4aa` (native database CI), whose
-application-identical `5c32630` passed the production web build and native
-author/files CI. Hosted schema remains at 111 migrations; application-only
-recovery through 111 is verified. See `CHAPTER_TITLE_CHECKPOINT.md` for those
-earlier hosted/native evidence boundaries.
+Current full-suite application source: `f8e59fe`, including the dormant retrieval
+adapter repair and canonical source reader. Full clean-source verify and isolated
+production web build pass; see `SEARCH_SOURCE_READER_CHECKPOINT.md` for exact
+counts and native CI status. The `eca8d2a` follow-up changes only browser-test
+timing and provider-test documentation, not application code. The existing
+loopback web/API still run older `a22a4aa`; the new source was not deployed or
+served there. Hosted schema remains at 111 migrations; application-only recovery
+through 111 is verified. See `CHAPTER_TITLE_CHECKPOINT.md` for earlier
+hosted/native evidence boundaries.
 
-The canonical search reader is now implemented and locally tested; see
-`SEARCH_SOURCE_READER_CHECKPOINT.md` for its exact acceptance boundary.
-The operator supplied a key and approved USD5 total synthetic provider tests.
-The key authenticates, but the probes did not verify generation: image returned
-429 and speech reported quota/billing. Further paid calls are stopped; see
+The operator supplied an initial and replacement key and approved USD5 total
+synthetic provider tests. Both authenticate, but probes did not verify
+generation: original image returned 429, original speech reported quota/billing,
+and the replacement-key text probe returned an underlying 429 with quota/billing
+classification. The budget does not reset with replacement credentials.
+Further paid calls are stopped; see
 `PROVIDER_ACCEPTANCE_2026-10-23.md`. Do not repeat a request for the same budget.
 
 | Workflow | Current implementation/evidence | Remaining acceptance |
