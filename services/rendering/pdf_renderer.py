@@ -34,7 +34,7 @@ from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
 from print_layout import NUMBER_SIZE_PT, NUMBER_TRIM_INSET_IN, number_metrics, print_layout_issues
 
-RENDERER_VERSION = "pdf-1.17.0"
+RENDERER_VERSION = "pdf-1.18.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -266,7 +266,9 @@ def render_pdf(book: dict, edition: PrintEdition,
         toc.dotsMinLevel = -1 if numbering.style == "none" else 0
         story.extend([PageBreak(), Paragraph("Contents", heading), toc])
     for index, ch in enumerate(sorted(book["chapters"], key=lambda c: c["order"])):
-        story.append(PageBreak())
+        # A preceding authored break already starts the next chapter's page.
+        if not isinstance(story[-1], PageBreak):
+            story.append(PageBreak())
         chapter_style = heading
         if edition.include_table_of_contents or chapter_bookmarks:
             chapter_style = ParagraphStyle(f"ChapterHeading{index}", parent=heading)
@@ -295,8 +297,9 @@ def render_pdf(book: dict, edition: PrintEdition,
             elif t == "caption":
                 story.append(Paragraph(text, caption))
             elif t == "pageBreak":
-                if not isinstance(story[-1], PageBreak):
-                    story.append(PageBreak())
+                # Each explicit manuscript break is intentional; consecutive
+                # breaks preserve an author's blank page, unlike auto layout.
+                story.append(PageBreak())
             elif t == "separator":
                 story.append(Spacer(1, typo.leading))
             elif t == "table":

@@ -13,8 +13,7 @@ from . import (ParseError, check_size, make_book, make_report, new_chapter,
 from .embedded_images import EmbeddedImages
 from .table_grid import span_attributes
 from .docx_numbering import WordNumbering
-
-_HEADING_LEVELS = {f"Heading {i}": i for i in range(1, 7)}
+from .docx_flow import heading_level, page_break_before, run_content
 
 
 def _is_marked_header(row) -> bool:
@@ -24,7 +23,7 @@ def _is_marked_header(row) -> bool:
     return flag is not None and flag.get(qn("w:val"), "1").lower() not in {"0", "false", "off"}
 
 
-def _paragraph_runs(para) -> list[dict]:
+def _paragraph_runs(para, warnings) -> list[dict]:
     """Keep text and supported marks, including hyperlink labels but never URLs."""
     result = []
     for content in para.iter_inner_content():
@@ -41,15 +40,15 @@ def _paragraph_runs(para) -> list[dict]:
                         style = style.base_style
                 if value:
                     marks.append({"type": mark})
-            for content_item in run.iter_inner_content():
+            for content_item in run_content(run, warnings):
                 if isinstance(content_item, str):
                     for i, text in enumerate(content_item.split("\n")):
                         if i:
                             result.append({"type": "hardBreak"})
                         if text:
                             result.append({"type": "text", "text": text, **({"marks": marks} if marks else {})})
-                elif hasattr(content_item, "_drawing"):
-                    result.append({"type": "drawing", "element": content_item._drawing})
+                else:
+                    result.append(content_item)
     return result
 
 
@@ -132,10 +131,10 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
             warnings.append("DOCX table text, row order, any explicitly marked header rows and rectangular merged cells were preserved; complex merged-cell layout, cell formatting and nested tables require review against the original.")
             continue
         style = para.style.name if para.style else ""
-        level = _HEADING_LEVELS.get(style)
+        level = heading_level(para, warnings)
         list_attributes = numbering.attributes(para)
-        rich_text = _paragraph_runs(para)
-        text = "".join("\n" if r["type"] == "hardBreak" else r.get("text", "") for r in rich_text)
+        rich_text = _paragraph_runs(para, warnings)
+        text = "".join("\n" if r["type"] in {"hardBreak", "pageBreak"} else r.get("text", "") for r in rich_text)
         if level == 1:
             current = new_chapter(text.strip() or f"Chapter {len(chapters) + 1}", len(chapters))
             chapters.append(current)
@@ -143,6 +142,11 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
             # content before the first Heading 1
             current = new_chapter(title, 0)
             chapters.append(current)
+
+        # Chapters already start on a fresh page. Formatting is an 'at least'
+        # boundary; unlike authored consecutive breaks it must not add a blank.
+        if page_break_before(para) and current["nodes"] and current["nodes"][-1]["type"] != "pageBreak":
+            current["nodes"].append(node("pageBreak"))
 
         pending = []
         text_blocks = 0
@@ -171,6 +175,10 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
             pending.clear()
 
         for part in rich_text:
+            if part["type"] == "pageBreak":
+                flush_text()
+                current["nodes"].append(node("pageBreak"))
+                continue
             if part["type"] != "drawing":
                 pending.append(part)
                 continue
