@@ -10,7 +10,8 @@ const saveSchema = z.object({
 });
 
 export function chapterRoutes(app: FastifyInstance) {
-  app.get("/chapters/:chapterId/document", async (req) => {
+  app.get("/chapters/:chapterId/document", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
     const { chapterId } = req.params as { chapterId: string };
     const sb = app.supabaseFactory(req.userToken);
     const { chapter, role } = await loadChapter(sb, chapterId, req.userId);
@@ -27,6 +28,24 @@ export function chapterRoutes(app: FastifyInstance) {
       .eq("chapter_id", chapterId).order("version_number", { ascending: false }).limit(100);
     if (error) throw new AppError(500, "Could not load version history");
     return { versions: data ?? [] };
+  });
+
+  // Read-only recovery of this author's exact save, even after later edits.
+  app.get("/chapters/:chapterId/saves", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    const { chapterId } = req.params as { chapterId: string };
+    const parsed = z.object({ operationId: z.string().min(1).max(200) }).safeParse(req.query);
+    if (!parsed.success) throw new AppError(422, "invalid operation ID");
+    const { operationId } = parsed.data;
+    const sb = app.supabaseFactory(req.userToken);
+    await loadChapter(sb, chapterId, req.userId);
+    const { data: saved, error } = await sb.from("document_versions")
+      .select("id,version_number,content_json").eq("chapter_id", chapterId)
+      .eq("operation_id", operationId).eq("created_by", req.userId).maybeSingle();
+    if (error) throw new AppError(503, "Saved manuscript status could not be verified. Keep the original save request.");
+    if (!saved) return { status: "not_found", operationId };
+    return { status: "saved", operationId, versionId: saved.id,
+      document: { chapterId, version: saved.version_number, nodes: parseNodes(saved.content_json) } };
   });
 
   app.put("/chapters/:chapterId/document", { bodyLimit: 5 * 1024 * 1024 }, async (req) => {

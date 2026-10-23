@@ -1,37 +1,85 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 
+import '../api.dart';
 import '../auth.dart';
+import '../manuscript_draft.dart';
 import '../models.dart';
+import 'manuscript_editor.dart';
 
-/// Reader + lightweight editor. Reads the chapter's current document version
-/// through the Supabase client (RLS gates access; the /v1 API only exposes
-/// operations). Edits go through POST /v1/chapters/:id/operations with
-/// expectedVersion — a 409 means someone else saved first, so we reload.
 class ReaderScreen extends StatefulWidget {
-  const ReaderScreen({
-    super.key,
-    required this.auth,
-    required this.chapter,
-    required this.workspaceId,
-  });
-
+  const ReaderScreen(
+      {super.key,
+      required this.auth,
+      required this.chapter,
+      required this.workspaceId});
   final AuthState auth;
   final Chapter chapter;
   final String workspaceId;
-
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
 
 class _ReaderScreenState extends State<ReaderScreen> {
-  final _text = TextEditingController();
-  List<Map<String, dynamic>> _comments = const [];
-  int _version = 0;
-  bool _editing = false;
-  bool _loading = true;
-  String? _error;
+  ManuscriptDraft? _editor;
+  @override
+  void initState() {
+    super.initState();
+    final api = widget.auth.api, user = widget.auth.user;
+    if (api != null &&
+        user != null &&
+        widget.auth.workspace?.id == widget.workspaceId) {
+      _editor = ManuscriptDraft(
+          api: api,
+          userId: user.id,
+          workspaceId: widget.workspaceId,
+          bookId: widget.chapter.bookId,
+          chapterId: widget.chapter.id);
+    }
+  }
 
+  @override
+  void dispose() {
+    _editor?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final editor = _editor;
+    if (editor == null)
+      return Scaffold(
+          appBar: AppBar(title: Text(widget.chapter.title)),
+          body: const Center(
+              child: Text(
+                  'Select the correct workspace before opening this chapter.')));
+    return ManuscriptEditor(
+        editor: editor,
+        title: widget.chapter.title,
+        onComments: () => showModalBottomSheet<void>(
+            context: context,
+            isScrollControlled: true,
+            useSafeArea: true,
+            builder: (_) => _ChapterComments(
+                api: editor.api,
+                workspaceId: widget.workspaceId,
+                chapterId: widget.chapter.id)));
+  }
+}
+
+class _ChapterComments extends StatefulWidget {
+  const _ChapterComments(
+      {required this.api, required this.workspaceId, required this.chapterId});
+  final ApiClient api;
+  final String workspaceId, chapterId;
+  @override
+  State<_ChapterComments> createState() => _ChapterCommentsState();
+}
+
+class _ChapterCommentsState extends State<_ChapterComments> {
+  final _text = TextEditingController();
+  List<Map<String, dynamic>> _comments = [];
+  bool _busy = false;
+  String? _error;
   @override
   void initState() {
     super.initState();
@@ -45,156 +93,74 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _load() async {
-    setState(() => _loading = true);
+    setState(() => _busy = true);
     try {
-      final sb = Supabase.instance.client;
-      final rows = await sb
-          .from('document_versions')
-          .select('version_number, plain_text')
-          .eq('chapter_id', widget.chapter.id)
-          .order('version_number', ascending: false)
-          .limit(1);
-      final row = rows.isEmpty ? null : rows.first;
-      final comments = await widget.auth.api?.listComments(
-              widget.workspaceId, 'chapter', widget.chapter.id) ??
-          const <Map<String, dynamic>>[];
-      if (!mounted) return;
-      setState(() {
-        _version = (row?['version_number'] as num?)?.toInt() ?? 0;
-        if (!_editing) _text.text = row?['plain_text'] as String? ?? '';
-        _comments = comments;
-        _loading = false;
-        _error = null;
-      });
-    } on Exception catch (e) {
-      if (mounted) {
+      final rows = await widget.api
+          .listComments(widget.workspaceId, 'chapter', widget.chapterId);
+      if (mounted)
         setState(() {
-          _error = e.toString();
-          _loading = false;
+          _comments = rows;
+          _error = null;
         });
-      }
+    } on Exception {
+      if (mounted)
+        setState(() => _error =
+            'Comments could not be loaded. Your manuscript was not changed.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
-  Future<void> _save() async {
-    final api = widget.auth.api;
-    if (api == null) return;
+  Future<void> _post() async {
+    final text = _text.text.trim();
+    if (text.isEmpty || _busy) return;
+    setState(() => _busy = true);
     try {
-      final newVersion = await api.applyChapterOperation(
-        widget.chapter.id,
-        operationId: 'mobile-${DateTime.now().microsecondsSinceEpoch}',
-        type: 'replace_text',
-        target: {'chapterId': widget.chapter.id},
-        payload: {'text': _text.text},
-        expectedVersion: _version,
-      );
-      if (mounted) {
-        setState(() {
-          _version = newVersion;
-          _editing = false;
-        });
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Saved v$newVersion')));
-      }
-    } on ApiError catch (e) {
+      await widget.api
+          .createComment(widget.workspaceId, 'chapter', widget.chapterId, text);
       if (!mounted) return;
-      if (e.status == 409) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text('Chapter changed elsewhere — reloading latest')));
-        await _load();
-      } else {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(e.message)));
-      }
+      _text.clear();
+      await _load();
+    } on Exception {
+      if (mounted)
+        setState(() => _error =
+            'The comment could not be confirmed. Refresh comments before posting again.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
-  }
-
-  Future<void> _addComment() async {
-    final controller = TextEditingController();
-    final body = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Comment'),
-        content: TextField(
-            controller: controller,
-            autofocus: true,
-            maxLines: 3,
-            decoration: const InputDecoration(hintText: 'Write a comment…')),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-              child: const Text('Post')),
-        ],
-      ),
-    );
-    if (body == null || body.isEmpty) return;
-    await widget.auth.api
-        ?.createComment(widget.workspaceId, 'chapter', widget.chapter.id, body);
-    await _load();
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.chapter.title),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.comment_outlined),
-            onPressed: _addComment,
-          ),
-          IconButton(
-            icon: Icon(_editing ? Icons.close : Icons.edit),
-            onPressed: () => setState(() => _editing = !_editing),
-          ),
-          if (_editing)
-            IconButton(icon: const Icon(Icons.save), onPressed: _save),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Column(
-              children: [
-                if (_error != null) Text(_error!),
-                Expanded(
-                  child: _editing
-                      ? Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: TextField(
-                            controller: _text,
-                            maxLines: null,
-                            expands: true,
-                            keyboardType: TextInputType.multiline,
-                            decoration: const InputDecoration.collapsed(
-                                hintText: 'Write…'),
-                          ),
-                        )
-                      : SingleChildScrollView(
-                          padding: const EdgeInsets.all(16),
-                          child: Text(_text.text.isEmpty
-                              ? '(empty chapter)'
-                              : _text.text),
-                        ),
-                ),
-                if (_comments.isNotEmpty)
-                  SizedBox(
-                    height: 160,
-                    child: ListView(
-                      children: [
-                        for (final c in _comments)
-                          ListTile(
-                            dense: true,
-                            leading: const Icon(Icons.chat_bubble_outline,
-                                size: 18),
-                            title: Text(c['body'] as String? ?? ''),
-                          ),
-                      ],
-                    ),
-                  ),
-              ],
-            ),
-    );
-  }
+  Widget build(BuildContext context) => Padding(
+      padding: EdgeInsets.fromLTRB(
+          16, 16, 16, MediaQuery.viewInsetsOf(context).bottom + 16),
+      child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * .65,
+          child: Column(children: [
+            Text('Chapter comments',
+                style: Theme.of(context).textTheme.titleLarge),
+            if (_busy) const LinearProgressIndicator(),
+            if (_error != null) Text(_error!),
+            Expanded(
+                child: ListView.builder(
+                    itemCount: _comments.length,
+                    itemBuilder: (_, index) => ListTile(
+                        leading: const Icon(Icons.chat_bubble_outline),
+                        title: Text(_comments[index]['body'] as String)))),
+            TextField(
+                controller: _text,
+                enabled: !_busy,
+                maxLines: 3,
+                maxLength: 10000,
+                decoration:
+                    const InputDecoration(labelText: 'Write a comment')),
+            Wrap(spacing: 12, children: [
+              TextButton(
+                  onPressed: _busy ? null : _load,
+                  child: const Text('Refresh comments')),
+              FilledButton(
+                  onPressed: _busy ? null : _post,
+                  child: const Text('Post comment')),
+            ]),
+          ])));
 }

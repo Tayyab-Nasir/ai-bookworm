@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'models.dart';
+import 'chapter_document.dart';
 
 /// Thin client over the /v1 endpoints the screens use. All business rules stay
 /// server-side; this only serializes requests and decodes the envelopes.
@@ -96,7 +97,9 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> _req(String method, String path,
-      {Map<String, dynamic>? body, Map<String, String?>? query}) async {
+      {Map<String, dynamic>? body,
+      Map<String, String?>? query,
+      int responseLimit = 2 * 1024 * 1024}) async {
     _checkSession();
     final client = _clientFactory();
     try {
@@ -118,11 +121,11 @@ class ApiClient {
                     .trim()
                     .toLowerCase() !=
                 'application/json' ||
-            (response.contentLength ?? 0) > 2 * 1024 * 1024) throw _invalid();
+            (response.contentLength ?? 0) > responseLimit) throw _invalid();
         final bytes = BytesBuilder(copy: false);
         await for (final chunk in response.stream) {
           _checkSession();
-          if (bytes.length + chunk.length > 2 * 1024 * 1024) throw _invalid();
+          if (bytes.length + chunk.length > responseLimit) throw _invalid();
           bytes.add(chunk);
         }
         _checkSession();
@@ -184,6 +187,54 @@ class ApiClient {
             in (await _get('/v1/books/$bookId/chapters'))['chapters'] as List)
           Chapter.fromJson((c as Map).cast<String, dynamic>()),
       ];
+
+  Future<({ChapterDocument document, String role})> getChapterDocument(
+      String chapterId, String bookId) async {
+    final body = await _req(
+        'GET', '/v1/chapters/${Uri.encodeComponent(chapterId)}/document',
+        responseLimit: 5 * 1024 * 1024);
+    final chapter = body['chapter'];
+    if (chapter is! Map ||
+        chapter['id'] != chapterId ||
+        chapter['book_id'] != bookId ||
+        body['role'] is! String) throw _invalid();
+    return (
+      document: ChapterDocument.parse(body['document'], chapterId),
+      role: body['role'] as String
+    );
+  }
+
+  Future<ChapterDocument> saveChapterDocument(
+      ChapterDocument document, String operationId) async {
+    final body = await _req('PUT',
+        '/v1/chapters/${Uri.encodeComponent(document.chapterId)}/document',
+        responseLimit: 5 * 1024 * 1024,
+        body: {
+          'expectedVersion': document.version,
+          'nodes': document.nodes,
+          'operationId': operationId,
+          'changeSummary': 'Manuscript edited on mobile'
+        });
+    final saved = ChapterDocument.parse(body['document'], document.chapterId);
+    if (body['version'] != saved.version ||
+        body['versionId'] is! String ||
+        (body['versionId'] as String).isEmpty) throw _invalid();
+    return saved;
+  }
+
+  Future<ChapterDocument?> getChapterSave(
+      String chapterId, String operationId) async {
+    final body = await _req(
+        'GET', '/v1/chapters/${Uri.encodeComponent(chapterId)}/saves',
+        query: {'operationId': operationId}, responseLimit: 5 * 1024 * 1024);
+    if (body['operationId'] != operationId) throw _invalid();
+    if (body['status'] == 'not_found' && !body.containsKey('document'))
+      return null;
+    if (body['status'] != 'saved' ||
+        body['versionId'] is! String ||
+        (body['versionId'] as String).isEmpty) throw _invalid();
+    return ChapterDocument.parse(body['document'], chapterId);
+  }
 
   /// Apply a typed document operation. Returns the new version number.
   /// Throws ApiError(409) on stale expectedVersion — caller must reload.
@@ -310,24 +361,43 @@ class ApiClient {
       _patch('/v1/tasks/$taskId', {if (status != null) 'status': status});
 
   Future<List<Map<String, dynamic>>> listComments(
-          String workspaceId, String entityType, String entityId) async =>
-      [
-        for (final c in (await _get('/v1/comments', {
+      String workspaceId, String entityType, String entityId) async {
+    final rows = (await _get('/v1/comments', {
+      'workspaceId': workspaceId,
+      'entityType': entityType,
+      'entityId': entityId,
+    }))['comments'];
+    if (rows is! List) throw _invalid();
+    return List.unmodifiable(
+        rows.map((row) => _comment(row, workspaceId, entityType, entityId)));
+  }
+
+  Map<String, dynamic> _comment(
+      Object? row, String workspaceId, String entityType, String entityId) {
+    if (row is! Map<String, dynamic> ||
+        row['id'] is! String ||
+        row['workspace_id'] != workspaceId ||
+        row['entity_type'] != entityType ||
+        row['entity_id'] != entityId ||
+        row['author_id'] is! String ||
+        row['body'] is! String) throw _invalid();
+    return Map.unmodifiable(row);
+  }
+
+  Future<void> createComment(String workspaceId, String entityType,
+      String entityId, String body) async {
+    final saved = _comment(
+        await _post('/v1/comments', {
           'workspaceId': workspaceId,
           'entityType': entityType,
           'entityId': entityId,
-        }))['comments'] as List)
-          (c as Map).cast<String, dynamic>(),
-      ];
-
-  Future<void> createComment(String workspaceId, String entityType,
-          String entityId, String body) =>
-      _post('/v1/comments', {
-        'workspaceId': workspaceId,
-        'entityType': entityType,
-        'entityId': entityId,
-        'body': body,
-      });
+          'body': body,
+        }),
+        workspaceId,
+        entityType,
+        entityId);
+    if (saved['body'] != body) throw _invalid();
+  }
 
   Future<List<Community>> listCommunities() async => [
         for (final c in (await _get('/v1/communities'))['communities'] as List)

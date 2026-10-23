@@ -63,6 +63,55 @@ void main() {
             isA<ApiError>().having((error) => error.code, 'code', 'timeout')));
   });
 
+  test(
+      'chapter comments reject malformed and foreign replies without leaking them',
+      () async {
+    final valid = {
+      'id': 'comment',
+      'workspace_id': 'workspace',
+      'entity_type': 'chapter',
+      'entity_id': 'chapter',
+      'author_id': 'author',
+      'body': 'A note'
+    };
+    for (final rows in [
+      null,
+      {},
+      ['private'],
+      [
+        {...valid, 'body': 3}
+      ],
+      [
+        {...valid, 'workspace_id': 'foreign'}
+      ],
+      [
+        {...valid, 'entity_id': 'foreign'}
+      ]
+    ]) {
+      final api = client(MockClient((_) async => http.Response(
+          jsonEncode({'comments': rows}), 200,
+          headers: {'content-type': 'application/json'})));
+      await expectLater(api.listComments('workspace', 'chapter', 'chapter'),
+          throwsA(isA<ApiError>()));
+    }
+    final api = client(MockClient((request) async => http.Response(
+        jsonEncode(request.method == 'GET'
+            ? {
+                'comments': [valid]
+              }
+            : valid),
+        200,
+        headers: {'content-type': 'application/json'})));
+    expect((await api.listComments('workspace', 'chapter', 'chapter')).single,
+        valid);
+    await api.createComment('workspace', 'chapter', 'chapter', 'A note');
+    final wrong = client(MockClient((_) async => http.Response('{}', 201,
+        headers: {'content-type': 'application/json'})));
+    await expectLater(
+        wrong.createComment('workspace', 'chapter', 'chapter', 'A note'),
+        throwsA(isA<ApiError>()));
+  });
+
   test('a changed account blocks dispatch and discards an old reply', () async {
     var current = false;
     var calls = 0;

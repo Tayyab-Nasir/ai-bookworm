@@ -8,6 +8,43 @@ servers:
 tags:
   - name: v1
 paths:
+  /v1/chapters/{chapterId}/saves:
+    get:
+      operationId: recoverChapterDocumentSave
+      summary: Read the authenticated author's original immutable manuscript save
+      description: Requires current workspace membership. Filters receipts by chapter, operation ID and authenticated creator. Returns the original version even after later edits, with no replay, new version or provider work. A not_found result is not cancellation and does not prove an in-flight save cannot still complete. Retry only the original unchanged operation when needed.
+      parameters:
+        - { name: chapterId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: operationId, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 200 } }
+      responses:
+        '200':
+          description: Original save receipt, or no visible receipt yet
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [status, operationId]
+                    properties:
+                      status: { const: not_found }
+                      operationId: { type: string }
+                  - type: object
+                    required: [status, operationId, versionId, document]
+                    properties:
+                      status: { const: saved }
+                      operationId: { type: string }
+                      versionId: { type: string, format: uuid }
+                      document:
+                        type: object
+                        required: [chapterId, version, nodes]
+                        properties:
+                          chapterId: { type: string, format: uuid }
+                          version: { type: integer, minimum: 1 }
+                          nodes: { type: array, maxItems: 20000, items: { type: object } }
+        '403': { description: Current workspace membership is required }
+        '404': { description: Chapter unavailable }
+        '422': { description: Invalid operation identifier }
+        '503': { description: Status could not be verified; preserve the original intent }
   /v1/books/{bookId}/bible:
     post:
       operationId: createManualBookBibleItem

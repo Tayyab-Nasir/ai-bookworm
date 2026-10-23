@@ -59,10 +59,26 @@ machine because the Android SDK is absent.
 
 ## Remaining work — do not bypass these gates
 
-1. Complete book creation/import and the mobile editor using current document
-   endpoints, preserved rich nodes, expected versions and save recovery. The
-   legacy reader's whole-chapter `replace_text` request is incompatible with
-   the node-based operation contract.
+The manuscript editor now uses versioned document GET/PUT endpoints, preserves
+canonical nodes and imported attributes, supports text formatting and block
+ordering, and keeps encrypted actor/workspace/book/chapter-scoped local drafts.
+Typing checkpoints locally after a short idle interval; Save is a separate
+online action. A durable operation identity is stored before each online save.
+Lost replies are checked through the read-only `/v1/chapters/:id/saves` receipt
+endpoint, which requires the matching authenticated author. Restart and retry
+reuse the original unchanged request; a pending request locks further edits.
+Conflicts retain both versions. Non-overlapping blocks can merge; overlapping
+blocks/order require explicit choices pinned to the reviewed saved version.
+Merging updates the local draft only and still requires Save.
+
+Artwork pins, captions, tables and opaque blocks survive text edits unchanged.
+Native artwork preview/insertion and dedicated table editing are not finished;
+the screen labels those limits rather than flattening their saved data. Current
+checks use synthetic transports, not live device storage or hosted acceptance.
+
+1. Complete native book creation/import, artwork preview/insertion and table
+   editing. Verify editor/receipt recovery against an isolated native service
+   stack and actual device secure storage before calling mobile release-ready.
 2. Replace legacy AI calls with the existing paid quote, consent, acceptance,
    original-job recovery and review/apply contracts. Never enable free generation
    or forward an app token to a private AI service.
@@ -78,4 +94,4 @@ machine because the Android SDK is absent.
 
 Cross-agent continuation: repository `docs/AGENT_HANDOFF.md`, the main Codex
 handoff in `C:/Users/Asus/Memory-Ai`, and
-`Codex Sessions/2026-10/2026-10-23-mobile-files-continuation.md`.
+`Codex Sessions/2026-10/2026-10-23-mobile-manuscript-continuation.md`.
