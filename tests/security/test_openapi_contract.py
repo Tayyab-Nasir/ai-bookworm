@@ -75,6 +75,31 @@ def test_manual_chapter_save_contract_binds_actor_and_separates_read_from_explic
         assert list(validator.iter_errors({**result, **patch})), patch
 
 
+def test_chapter_title_contract_separates_text_change_read_and_explicit_closure():
+    document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
+    path = document["paths"]["/v1/chapters/{chapterId}/title-changes/{operationId}"]
+    close = document["paths"]["/v1/chapters/{chapterId}/title-changes/{operationId}/close"]["post"]
+    assert {"$ref": "#/components/parameters/ManualChapterActor"} in path["parameters"]
+    assert "requestBody" not in path["get"]
+    for operation in (path["get"], path["put"], close):
+        assert operation["responses"]["200"] == {"$ref": "#/components/responses/ChapterTitleChange"}
+        assert {"401", "403", "404", "409", "422", "503"} <= operation["responses"].keys()
+    write = Draft202012Validator(path["put"]["requestBody"]["content"]["application/json"]["schema"])
+    assert not list(write.iter_errors({"expectedRevision": 0, "title": "New title"}))
+    for value in ({"expectedRevision": "0", "title": "Title"}, {"expectedRevision": 0, "title": ""}, {"expectedRevision": 0, "title": "x" * 501}, {"expectedRevision": 0, "title": "Title", "nodes": []}):
+        assert list(write.iter_errors(value))
+    closing = Draft202012Validator(close["requestBody"]["content"]["application/json"]["schema"])
+    assert not list(closing.iter_errors({"expectedRevision": 0, "titleDigest": "a" * 64}))
+    assert list(closing.iter_errors({"expectedRevision": 0, "titleDigest": "a" * 64, "title": "Must not be sent"}))
+    identity = "d1000000-0000-4000-8000-000000000001"
+    payload = {"chapterId": identity, "bookId": identity, "operationId": identity, "expectedRevision": 0, "titleDigest": "a" * 64,
+               "status": "not_found", "receipt": None, "current": {"title": "Saved", "revision": 0, "updatedAt": "2026-10-23T15:00:00Z"}}
+    validator = Draft202012Validator({**document, "$ref": "#/components/schemas/ChapterTitleChange"}, format_checker=FormatChecker())
+    assert not list(validator.iter_errors(payload))
+    assert list(validator.iter_errors({**payload, "status": "saved"}))
+    assert not list(validator.iter_errors({**payload, "status": "saved", "receipt": {"title": "Saved", "revision": 1}}))
+
+
 def test_retailer_request_recovery_is_read_only_and_closure_uses_original_identity():
     document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
     lookup = document["paths"]["/v1/publishing/requests/{requestId}"]["get"]

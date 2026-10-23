@@ -8,6 +8,107 @@ servers:
 tags:
   - name: v1
 paths:
+  /v1/chapters/{chapterId}/title:
+    get:
+      operationId: getChapterTitle
+      summary: Read current chapter title and its independent revision
+      parameters:
+        - { name: chapterId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/ManualChapterActor" }
+      responses:
+        '200':
+          description: Private title metadata; no manuscript body or mutation
+          headers: { Cache-Control: { schema: { type: string, const: 'private, no-store' } } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bookId, chapterId, title, revision, updatedAt, role]
+                properties:
+                  bookId: { type: string, format: uuid }
+                  chapterId: { type: string, format: uuid }
+                  title: { type: string, maxLength: 500 }
+                  revision: { type: integer, minimum: 0, maximum: 2147483646 }
+                  updatedAt: { type: string, format: date-time }
+                  role: { type: string }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /v1/chapters/{chapterId}/title-changes/{operationId}:
+    parameters:
+      - { name: chapterId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: operationId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { $ref: "#/components/parameters/ManualChapterActor" }
+    get:
+      operationId: getChapterTitleChange
+      summary: Read this author's exact rename receipt without replaying it
+      description: not_found is not cancellation. A saved receipt is immutable; current title can reflect a newer collaborator edit.
+      parameters:
+        - { name: expectedRevision, in: query, required: true, schema: { type: integer, minimum: 0, maximum: 2147483646 } }
+        - { name: titleDigest, in: query, required: true, schema: { type: string, pattern: '^[a-f0-9]{64}$' } }
+      responses:
+        '200': { $ref: '#/components/responses/ChapterTitleChange' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+    put:
+      operationId: changeChapterTitle
+      summary: Rename one chapter without replacing manuscript content
+      description: Actor-scoped UUID and independent title revision provide replay safety and compare-and-swap. Empty, untrimmed, control-bearing or over-500-character titles are refused. A stale edit produces a durable conflict result. Renames update future book-model fingerprints; existing immutable exports and consented paid-job snapshots are not rewritten.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedRevision, title]
+              properties:
+                expectedRevision: { type: integer, minimum: 0, maximum: 2147483646 }
+                title: { type: string, minLength: 1, maxLength: 500, pattern: '^[^\x00-\x1F\x7F-\x9F]+$' }
+      responses:
+        '200': { $ref: '#/components/responses/ChapterTitleChange' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+  /v1/chapters/{chapterId}/title-changes/{operationId}/close:
+    post:
+      operationId: closeChapterTitleChange
+      summary: Explicitly close an unconfirmed rename without changing the current title
+      description: Stores an actor-scoped tombstone under the same chapter lock as rename. A late original returns closed. A committed rename returns its original receipt and is never undone. No title text, manuscript nodes, credits or provider calls.
+      parameters:
+        - { name: chapterId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: operationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/ManualChapterActor" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expectedRevision, titleDigest]
+              properties:
+                expectedRevision: { type: integer, minimum: 0, maximum: 2147483646 }
+                titleDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+      responses:
+        '200': { $ref: '#/components/responses/ChapterTitleChange' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
   /v1/chapters/{chapterId}/manual-saves/{operationId}:
     get:
       operationId: getManualChapterSaveStatus
@@ -3604,6 +3705,41 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    ChapterTitleChange:
+      type: object
+      additionalProperties: false
+      required: [chapterId, bookId, operationId, expectedRevision, titleDigest, status, receipt, current]
+      properties:
+        chapterId: { type: string, format: uuid }
+        bookId: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        expectedRevision: { type: integer, minimum: 0, maximum: 2147483646 }
+        titleDigest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        status: { enum: [saved, closed, conflict, not_found] }
+        receipt:
+          oneOf:
+            - { type: 'null' }
+            - type: object
+              additionalProperties: false
+              required: [title, revision]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 500 }
+                revision: { type: integer, minimum: 0, maximum: 2147483646 }
+        current:
+          type: object
+          additionalProperties: false
+          required: [title, revision, updatedAt]
+          properties:
+            title: { type: string, maxLength: 500 }
+            revision: { type: integer, minimum: 0, maximum: 2147483646 }
+            updatedAt: { type: string, format: date-time }
+      oneOf:
+        - properties:
+            status: { const: saved }
+            receipt: { type: object }
+        - properties:
+            status: { enum: [closed, conflict, not_found] }
+            receipt: { type: 'null' }
     ManualChapterSaveResult:
       type: object
       additionalProperties: false
@@ -4758,6 +4894,12 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
   responses:
+    ChapterTitleChange:
+      description: Exact private rename result; a missing result must be recovered or explicitly closed
+      headers: { Cache-Control: { schema: { type: string, const: 'private, no-store' } } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ChapterTitleChange' }
     ManualChapterSaveResult:
       description: Original author's immutable manual save or closure receipt and latest observed revision; not_found remains unresolved
       headers:

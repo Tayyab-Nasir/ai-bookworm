@@ -79,6 +79,7 @@ async function fixture(width = 1280, parent = false, realReview = false) {
     window.bookwormApi = {
       getBook: async () => ({ book: { id: "book", workspace_id: "workspace", title: "Author manuscript" }, role: "owner" }),
       listChapters: async () => ({ chapters }),
+      getChapterTitle: async chapterId => ({ bookId: "book", chapterId, title: chapters.find(c => c.id === chapterId).title, revision: 0, updatedAt: "2026-10-23T15:00:00Z", role: "owner" }),
       getChapterDocument: async chapterId => { window.documentReads.push(chapterId); return { role: "owner", document: { chapterId, version: 1, nodes: structuredClone(window.nodes) } }; },
       listDocumentVersions: async () => ({ versions: [{ id: "version", version_number: 1, created_at: "2026-10-05T12:00:00Z", plain_text: "Saved source" }] }),
       saveChapterDocument: async (chapterId, body) => { window.requests.push(body); return { version: 2, document: { chapterId, version: 2, nodes: body.nodes } }; },
@@ -851,6 +852,37 @@ test("corrupt recovery metadata never unlocks a new save after remount", async (
     assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
     assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "false");
     assert.equal(await page.evaluate(() => window.requests.length), 1);
+  } finally { await page.close(); }
+});
+
+test("renaming a chapter preserves its unsaved manuscript and updates the chapter tree", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.titleRequests = [];
+      window.bookwormApi.changeChapterTitle = async (chapterId, operationId, body) => {
+        window.titleRequests.push(body);
+        const titleDigest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body.title))), b => b.toString(16).padStart(2, "0")).join("");
+        return { chapterId, bookId: "book", operationId, expectedRevision: body.expectedRevision, titleDigest, status: "saved", receipt: { title: body.title, revision: 1 }, current: { title: body.title, revision: 1, updatedAt: "2026-10-23T15:01:00Z" } };
+      };
+    });
+    const manuscript = page.getByRole("textbox", { name: "Manuscript editor" });
+    await manuscript.click(); await page.keyboard.press("Control+End"); await page.keyboard.insertText(" Local unsaved ending.");
+    const before = await manuscript.innerText();
+    await page.getByRole("button", { name: "Edit chapter title", exact: true }).click();
+    await page.getByLabel("New chapter title", { exact: true }).fill("A revised opening");
+    assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
+    await page.getByRole("button", { name: "Save title", exact: true }).click();
+    await page.getByRole("status").filter({ hasText: "Chapter title saved" }).waitFor();
+    assert.equal(await manuscript.innerText(), before);
+    assert.equal(await page.getByRole("navigation", { name: "Chapters" }).getByText("A revised opening", { exact: true }).count(), 1);
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+    assert.equal(await page.evaluate(() => window.titleRequests.length), 1);
+    assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isEnabled(), true);
+    await page.getByRole("button", { name: "Save chapter", exact: true }).click();
+    await page.waitForFunction(() => window.requests.length === 1);
+    assert.match(JSON.stringify(await page.evaluate(() => window.requests[0].nodes)), /Local unsaved ending/);
+    await page.screenshot({ path: resolve(artifacts, "chapter-title-keeps-manuscript.png"), fullPage: true });
   } finally { await page.close(); }
 });
 

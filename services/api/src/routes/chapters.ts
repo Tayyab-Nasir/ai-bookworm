@@ -4,6 +4,7 @@ import { applyOperation, DocumentOperationSchema, type BookModel } from "@bookwo
 import { AppError } from "../errors.js";
 import { appendVersion, checkAssetReferences, latestVersion, loadChapter, nodesSchema, parseNodes } from "../lib/authoring.js";
 import { checkChapterActor, manualChapterSaveRoutes } from "../lib/manual-chapter-save.js";
+import { chapterTitleRoutes } from "../lib/chapter-title.js";
 
 const saveSchema = z.object({
   expectedVersion: z.number().int().nonnegative(), nodes: nodesSchema,
@@ -12,6 +13,7 @@ const saveSchema = z.object({
 
 export function chapterRoutes(app: FastifyInstance) {
   manualChapterSaveRoutes(app);
+  chapterTitleRoutes(app);
   app.get("/chapters/:chapterId/document", async (req, reply) => {
     reply.header("Cache-Control", "private, no-store");
     const { chapterId } = req.params as { chapterId: string };

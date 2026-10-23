@@ -8,6 +8,7 @@ import { bookNodesPlainText, bookNodesWordCount } from "@bookworm/book-model/pla
 import type { BookNode } from "@bookworm/book-model";
 import { apiClient } from "./api";
 import BookTree from "./BookTree";
+import ChapterTitleEditor, { type ChapterTitleEditorState } from "./ChapterTitleEditor";
 import RichBookEditor, { type EditorDocument, type EditorValidationError } from "./RichBookEditor";
 import VersionTimeline from "./VersionTimeline";
 import AiAssistantPanel from "./AiAssistantPanel";
@@ -28,7 +29,9 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   const [role, setRole] = useState("viewer");
   const [dirty, setDirty] = useState(false);
   const [editorValidation, setEditorValidation] = useState<EditorValidationError | null>(null);
-  const hasUnsavedChanges = dirty || editorValidation !== null;
+  const [titleState, setTitleState] = useState<ChapterTitleEditorState>({ dirty: false, busy: false, pending: false });
+  const titleBlocked = titleState.dirty || titleState.busy || titleState.pending;
+  const hasUnsavedChanges = dirty || editorValidation !== null || titleState.dirty;
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [aiDecisionBusy, setAiDecisionBusy] = useState(false);
@@ -122,9 +125,9 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   }, [api, bookId, initialChapterId, initialAiJobId, initialDraftPlanItemId, bookLoadAttempt, loadChapter]);
 
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (hasUnsavedChanges || manualSave || pendingRestore || pendingCreation.current) { event.preventDefault(); event.returnValue = ""; } };
+    const warn = (event: BeforeUnloadEvent) => { if (hasUnsavedChanges || titleBlocked || manualSave || pendingRestore || pendingCreation.current) { event.preventDefault(); event.returnValue = ""; } };
     const guardNavigation = (event: globalThis.MouseEvent) => {
-      if ((!hasUnsavedChanges && !manualSave && !pendingRestore && !pendingCreation.current) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      if ((!hasUnsavedChanges && !titleBlocked && !manualSave && !pendingRestore && !pendingCreation.current) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
       if (!(anchor instanceof HTMLAnchorElement) || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
       const destination = new URL(anchor.href, window.location.href);
@@ -134,10 +137,10 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
     window.addEventListener("beforeunload", warn);
     window.document.addEventListener("click", guardNavigation, true);
     return () => { window.removeEventListener("beforeunload", warn); window.document.removeEventListener("click", guardNavigation, true); };
-  }, [hasUnsavedChanges, manualSave, pendingRestore]);
+  }, [hasUnsavedChanges, titleBlocked, manualSave, pendingRestore]);
 
   const save = useCallback(async (retry = false) => {
-    if (!document || saveFlight.current !== null || saving || loading || aiDecisionBusy || conflict || !dirty || pendingRestore || editorValidation || !EDIT_ROLES.has(role)
+    if (!document || titleBlocked || saveFlight.current !== null || saving || loading || aiDecisionBusy || conflict || !dirty || pendingRestore || editorValidation || !EDIT_ROLES.has(role)
       || !saveAccount || !saveRecoveryReady || (manualSave && (!retry || !saveMissing || !pendingSave.current))) return;
     const sequence = loadSequence.current;
     saveFlight.current = sequence;
@@ -167,7 +170,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       if (sequence !== loadSequence.current) return;
       setError(reason instanceof Error ? reason.message : "Save outcome is unconfirmed. Your draft remains in this editor; check the original save status.");
     } finally { if (saveFlight.current === sequence) saveFlight.current = null; if (sequence === loadSequence.current) setSaving(false); }
-  }, [api, bookId, document, draft, saving, loading, aiDecisionBusy, role, conflict, dirty, pendingRestore, editorValidation, manualSave, saveAccount, saveRecoveryReady, saveMissing]);
+  }, [api, bookId, document, draft, saving, loading, aiDecisionBusy, role, conflict, dirty, pendingRestore, editorValidation, manualSave, saveAccount, saveRecoveryReady, saveMissing, titleBlocked]);
 
   const recoverSave = async (close = false) => {
     const pointer = manualSave;
@@ -215,14 +218,14 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   }, [save]);
 
   const selectChapter = (id: string) => {
-    if (saving || loading || aiDecisionBusy || manualSave || id === document?.chapterId) return;
+    if (saving || loading || aiDecisionBusy || manualSave || titleState.pending || titleState.busy || id === document?.chapterId) return;
     if ((hasUnsavedChanges || pendingRestore) && !window.confirm("This chapter has unsaved changes or an unresolved restore. Leave it and open another chapter?")) return;
     setActiveAiJobId(undefined);
     void loadChapter(id);
   };
 
   const createChapter = async () => {
-    if (!newTitle.trim() || saving || loading || aiDecisionBusy || manualSave || (document && !saveRecoveryReady) || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role) || (hasUnsavedChanges && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
+    if (!newTitle.trim() || titleBlocked || saving || loading || aiDecisionBusy || manualSave || (document && !saveRecoveryReady) || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role) || (hasUnsavedChanges && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
     creatingChapter.current = true;
     let sequence = loadSequence.current;
     setSaving(true); setError(null);
@@ -256,7 +259,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   };
 
   const reorder = async (orderedIds: string[]) => {
-    if (saving || loading || aiDecisionBusy || manualSave || (document && !saveRecoveryReady) || pendingRestore || !EDIT_ROLES.has(role)) return;
+    if (titleBlocked || saving || loading || aiDecisionBusy || manualSave || (document && !saveRecoveryReady) || pendingRestore || !EDIT_ROLES.has(role)) return;
     const sequence = loadSequence.current;
     setSaving(true); setError(null);
     try { const result = await api.reorderChapters(bookId, { orderedIds, expectedIds: chapters.map((c) => c.id) }); if (sequence === loadSequence.current) setChapters(result.chapters); }
@@ -265,7 +268,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   };
 
   const restore = async (versionId: string) => {
-    if (!document || saving || loading || aiDecisionBusy || manualSave || !saveRecoveryReady || restoring.current || !EDIT_ROLES.has(role)) return;
+    if (!document || titleBlocked || saving || loading || aiDecisionBusy || manualSave || !saveRecoveryReady || restoring.current || !EDIT_ROLES.has(role)) return;
     if (pendingRestore && (pendingRestore.versionId !== versionId || pendingRestore.chapterId !== document.chapterId)) return;
     if (!pendingRestore && !window.confirm("Restore this version as a new saved version? Current saved history will remain available.")) return;
     if (!pendingRestore && hasUnsavedChanges && !window.confirm("Your unsaved draft will be replaced. Continue?")) return;
@@ -303,7 +306,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
     // Let the browser consume the object URL before releasing it.
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  const editable = EDIT_ROLES.has(role) && !pendingRestore && !manualSave && (!document || saveRecoveryReady);
+  const editable = EDIT_ROLES.has(role) && !titleBlocked && !pendingRestore && !manualSave && (!document || saveRecoveryReady);
   const editorSequence = loadSequence.current;
   const wordCount = editorValidation ? (editorValidation.draftText.match(/\S+/gu)?.length ?? 0)
     : bookNodesWordCount(draft);
@@ -338,9 +341,9 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       <aside className="self-start rounded-2xl border border-white/10 p-2">
         <button type="button" className="flex min-h-11 w-full items-center justify-between px-3 text-sm text-white/75 lg:hidden" aria-expanded={structureOpen} aria-controls="chapter-structure" onClick={() => setStructureOpen((open) => !open)}><span>Chapters · {chapters.length}</span><span>{structureOpen ? "Hide" : "Show"}</span></button>
         <div id="chapter-structure" className={structureOpen ? "block" : "hidden lg:block"}>
-        <BookTree chapters={chapters} activeId={document?.chapterId ?? null} onSelect={selectChapter} onReorder={(ids) => void reorder(ids)} disabled={saving || loading || aiDecisionBusy || !!manualSave} readOnly={!editable} />
+        <BookTree chapters={chapters} activeId={document?.chapterId ?? null} onSelect={selectChapter} onReorder={(ids) => void reorder(ids)} disabled={saving || loading || aiDecisionBusy || !!manualSave || titleState.pending || titleState.busy} readOnly={!editable} />
         {EDIT_ROLES.has(role) && !pendingRestore && <form className="mt-5 space-y-2 border-t border-white/10 p-2 pt-4" onSubmit={(event) => { event.preventDefault(); void createChapter(); }}>
-          <fieldset disabled={saving || loading || aiDecisionBusy || !!manualSave || (!!document && !saveRecoveryReady)} className="min-w-0 space-y-2 disabled:opacity-50">
+          <fieldset disabled={titleBlocked || saving || loading || aiDecisionBusy || !!manualSave || (!!document && !saveRecoveryReady)} className="min-w-0 space-y-2 disabled:opacity-50">
           <label className="block text-xs text-white/50" htmlFor="new-chapter-title">New chapter</label><input id="new-chapter-title" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} disabled={!!pendingCreation.current} aria-describedby={pendingCreation.current ? "chapter-creation-recovery" : undefined} maxLength={500} required placeholder="Chapter title" className="w-full rounded-lg border border-white/15 bg-black p-2 text-sm" />
           <label className="block text-xs text-white/50" htmlFor="new-chapter-brief">Optional AI drafting brief</label><textarea id="new-chapter-brief" value={newChapterBrief} onChange={(e) => setNewChapterBrief(e.target.value)} disabled={!!pendingCreation.current} aria-describedby={pendingCreation.current ? "chapter-creation-recovery" : undefined} maxLength={4000} rows={3} placeholder="What happens in this chapter?" className="w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm" />
           <p className="text-[11px] leading-4 text-white/40">A brief creates an empty chapter and opens separate AI price review. Nothing is generated or charged until you accept a quote.</p>
@@ -351,7 +354,11 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
         </div>
       </aside>
       <section className="min-w-0">
-        {document && <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1"><h2 className="text-sm text-white/75">{chapters.find((chapter) => chapter.id === document.chapterId)?.title ?? "Chapter"}</h2><span className="text-xs tabular-nums text-white/45">{wordCount.toLocaleString()} words</span></div>}
+        {document && saveAccount && <ChapterTitleEditor key={`${bookId}:${document.chapterId}:${saveAccount}`} bookId={bookId} chapterId={document.chapterId} userId={saveAccount}
+          initialTitle={chapters.find(chapter => chapter.id === document.chapterId)?.title ?? "Chapter"} canEdit={EDIT_ROLES.has(role)}
+          disabled={saving || loading || aiDecisionBusy || !!manualSave || !!pendingRestore || !saveRecoveryReady || conflict}
+          onState={setTitleState} onTitle={title => setChapters(items => items.map(chapter => chapter.id === document.chapterId ? { ...chapter, title } : chapter))} />}
+        {document && <p className="mb-3 px-1 text-right text-xs tabular-nums text-white/45">{wordCount.toLocaleString()} words</p>}
         {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={document} workspaceId={book.workspace_id} permissions={editable && !saving && !aiDecisionBusy ? "editor" : "viewer"} onValidationChange={setEditorValidation} onChange={(nodes) => { if (aiDecisionBusy || manualSave || saveFlight.current !== null) return; setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border-dashed border border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
       </section>
       <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">

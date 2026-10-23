@@ -84,6 +84,10 @@ test("manual manuscript recovery and actor-bound saves refuse account crossover"
   for (const [suffix, method, handler, missingStatus] of [
     [["manual-saves", operation], "GET", backendGet, 422],
     [["manual-saves", operation, "close"], "POST", backendPost, 422],
+    [["title"], "GET", backendGet, 422],
+    [["title-changes", operation], "GET", backendGet, 422],
+    [["title-changes", operation], "PUT", backendPut, 422],
+    [["title-changes", operation, "close"], "POST", backendPost, 422],
     [["document"], "PUT", backendPut, 200],
   ] as const) {
     const path = [...root, ...suffix];

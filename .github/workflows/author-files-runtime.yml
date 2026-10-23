@@ -35,6 +35,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --import tsx --test apps/web/tests/editor-numbering-mounted.mjs
+      - name: Verify chapter title editing and recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/chapter-title-mounted.mjs
       - name: Build production author interface
         env:
           NODE_ENV: production

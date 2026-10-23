@@ -5,6 +5,13 @@ import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task
 import type { BookNode } from "@bookworm/book-model";
 
 export interface ChapterDocument { chapterId: string; version: number; nodes: BookNode[] }
+export interface ChapterTitleState { title: string; revision: number; updatedAt: string }
+export interface ChapterTitleChangeResult {
+  chapterId: string; bookId: string; operationId: string; expectedRevision: number; titleDigest: string;
+  status: "saved" | "closed" | "conflict" | "not_found";
+  receipt: { title: string; revision: number } | null;
+  current: ChapterTitleState;
+}
 export interface BookSearchResult {
   id: string; source_type: "manuscript" | "bible"; chapter_id: string | null;
   bible_item_id: string | null; document_version_id: string | null; node_id: string | null;
@@ -919,6 +926,14 @@ export function createClient(opts: ClientOptions) {
       call<{ jobs: ManuscriptImportJob[] }>("GET", `/v1/books/${bookId}/import-jobs`),
     retryManuscriptImport: (bookId: string, jobId: string) =>
       call<{ job: ManuscriptImportJob }>("POST", `/v1/books/${bookId}/import-jobs/${jobId}/retry`, {}),
+    getChapterTitle: (chapterId: string, expectedActorId: string) =>
+      call<ChapterTitleState & { bookId: string; chapterId: string; role: string }>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/title`, undefined, false, { "x-bookworm-actor": expectedActorId }),
+    changeChapterTitle: (chapterId: string, operationId: string, body: { title: string; expectedRevision: number }, expectedActorId: string) =>
+      call<ChapterTitleChangeResult>("PUT", `/v1/chapters/${encodeURIComponent(chapterId)}/title-changes/${encodeURIComponent(operationId)}`, body, false, { "x-bookworm-actor": expectedActorId }),
+    getChapterTitleChange: (chapterId: string, operationId: string, expectedRevision: number, titleDigest: string, expectedActorId: string) =>
+      call<ChapterTitleChangeResult>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/title-changes/${encodeURIComponent(operationId)}?${new URLSearchParams({ expectedRevision: String(expectedRevision), titleDigest })}`, undefined, false, { "x-bookworm-actor": expectedActorId }),
+    closeChapterTitleChange: (chapterId: string, operationId: string, expectedRevision: number, titleDigest: string, expectedActorId: string) =>
+      call<ChapterTitleChangeResult>("POST", `/v1/chapters/${encodeURIComponent(chapterId)}/title-changes/${encodeURIComponent(operationId)}/close`, { expectedRevision, titleDigest }, false, { "x-bookworm-actor": expectedActorId }),
     getChapterDocument: (chapterId: string) =>
       call<{ chapter: Chapter; role: string; document: ChapterDocument }>("GET", `/v1/chapters/${chapterId}/document`),
     getChapterSaveStatus: (chapterId: string, operationId: string) =>
