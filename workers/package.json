@@ -1,0 +1,5 @@
+{
+  "name": "@bookworm/workers-runtime",
+  "private": true,
+  "type": "module"
+}

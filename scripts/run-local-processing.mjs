@@ -70,7 +70,7 @@ async function portAvailable(port) {
   });
 }
 
-async function healthy(service) {
+export async function healthy(service) {
   try {
     const response = await fetch(service.url + service.healthPath, { redirect: 'error', signal: AbortSignal.timeout(1500) });
     if (response.status !== 200 || !response.headers.get('content-type')?.startsWith('application/json')) {

@@ -134,13 +134,14 @@ try {
 
   const docx = await upload(alice, 'table-and-image.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', Buffer.from(setup.docx, 'base64'));
   await confirm(alice, docx);
-  const queued = await request(alice.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 202);
-  const replay = await request(alice.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 202);
-  assert.equal(replay.job.id, queued.job.id);
-  await request(bob.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 404);
-  const outcome = await runOneDocumentJob(service);
-  assert.equal(outcome.status, 'succeeded', `Real document worker returned ${outcome.status}`);
-  assert.equal(outcome.jobId, queued.job.id);
+  const { withAutomaticNativeImport } = await import('./native-author-files-import-worker.mjs');
+  const queued = await withAutomaticNativeImport(async waitFor => {
+    const created = await request(alice.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 202);
+    const replay = await request(alice.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 202);
+    assert.equal(replay.job.id, created.job.id);
+    await request(bob.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 404);
+    await waitFor(created.job.id); return created;
+  });
   assert.equal((await runOneDocumentJob(service)).status, 'idle');
   const recovered = await request(alice.token, 'GET', `/books/${book.id}/imports/${docx.assetId}`);
   const receipt = recovered.import;

@@ -23,6 +23,13 @@ queue consumers. `--check` checks entrypoint presence, not service health.
 The test suite also imports every worker under a secret-free production
 environment and verifies configuration refusal before any network work.
 
+For the local web app's non-provider manuscript pipeline, use the dedicated
+`npm run imports:local -- --config .env.local` supervisor after private services
+are ready. It filters credentials, bounds restarts and supports owned graceful
+shutdown on Windows and Linux. See `LOCAL_IMPORT_WORKER.md` before activation;
+the command starts real imports for the entire configured Supabase project.
+It does not activate any paid role or replace the production systemd units below.
+
 ## Worker roles
 
 | Role | Work processed |
