@@ -56,6 +56,12 @@ and bounded prompt assembly remain mandatory regardless of backend.
 Qdrant configuration already present in the repository is likewise optional and
 does not represent the active author-facing search path.
 
+The 2026-10-23 private-adapter checkpoint repairs Qdrant client compatibility,
+version/tenant point identity, embedding response validation and index-only
+recovery. See `SEMANTIC_RETRIEVAL_CHECKPOINT.md` for tests and remaining gates.
+It adds no author endpoint, funded embedding jobs or semantic-quality claim;
+PostgreSQL FTS remains the production implementation of this decision.
+
 As of the September 2026 upstream review, LightRAG recommends its REST server
 for integrations and PostgreSQL for production storage; its default local-file
 stores are not production storage. These are deployment characteristics, not

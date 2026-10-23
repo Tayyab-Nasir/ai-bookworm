@@ -30,6 +30,11 @@ through 111 is verified. See `CHAPTER_TITLE_CHECKPOINT.md` for evidence boundari
   source search is PostgreSQL FTS with tenant/source-version checks. The existing
   `BOOK_RETRIEVAL_DECISION.md` requires a measured private evaluation before a
   second retrieval store is adopted. Do not label current search semantic RAG.
+  The dormant Qdrant/OpenAI embedding adapter has since been repaired and
+  structurally tested with the actual local client and intercepted SDK requests.
+  `SEMANTIC_RETRIEVAL_CHECKPOINT.md` lists the still-required funded durable
+  worker, canonical rehydration, rich-source coverage and semantic evaluation.
+  This is not an enabled author feature or proof of semantic recall.
 - SnapOtter has not been copied or installed. `SNAPOTTER_EVALUATION.md` records
   the prior licensing, privacy and isolated-processor gates. This audit does not
   refresh upstream terms or claim those gates have been cleared.

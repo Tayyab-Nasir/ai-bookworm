@@ -32,20 +32,30 @@ class FakeQdrantClient:
     def create_collection(self, name, vectors_config):
         self.collections[name] = {"config": vectors_config, "points": {}}
 
-    def upsert(self, collection_name, points):
-        self.collections[collection_name]["points"].update({p.id: p for p in points})
+    def get_collection(self, name):
+        return SimpleNamespace(config=SimpleNamespace(params=SimpleNamespace(vectors=self.collections[name]["config"])))
 
-    def delete(self, collection_name, points_selector):
+    def upsert(self, collection_name, points, wait):
+        assert wait is True
+        self.collections[collection_name]["points"].update({p.id: p for p in points})
+        return SimpleNamespace(status="completed")
+
+    def delete(self, collection_name, points_selector, wait):
+        assert wait is True
         conds = {c.key: c.match.value for c in points_selector.filter.must}
         pts = self.collections[collection_name]["points"]
         for pid in [pid for pid, p in pts.items() if all(p.payload.get(k) == v for k, v in conds.items())]:
             del pts[pid]
+        return SimpleNamespace(status="completed")
 
-    def search(self, collection_name, query_vector, query_filter, limit, with_payload):
-        conds = {c.key: c.match.value for c in query_filter.must}
+    def query_points(self, collection_name, query, query_filter, limit, with_payload, with_vectors):
+        assert with_payload is True and with_vectors is False
+        conds = {c.key: c.match.value for c in query_filter.must if hasattr(c.match, "value")}
+        choices = {c.key: c.match.any for c in query_filter.must if hasattr(c.match, "any")}
         pts = self.collections[collection_name]["points"].values()
-        hits = [p for p in pts if all(p.payload.get(k) == v for k, v in conds.items())]
-        return [SimpleNamespace(id=p.id, score=1.0, payload=p.payload) for p in hits[:limit]]
+        hits = [p for p in pts if all(p.payload.get(k) == v for k, v in conds.items())
+                and all(p.payload.get(k) in values for k, values in choices.items())]
+        return SimpleNamespace(points=[SimpleNamespace(id=p.id, score=1.0, payload=p.payload) for p in hits[:limit]])
 
 
 @pytest.fixture
@@ -83,7 +93,7 @@ def test_search_returns_only_matching_tenant(rag, embedder):
     chapters = [{"id": "c1", "nodes": [{"id": "n1", "text": "alpha text"}]}]
     index_book_version(rag, embedder, "w1", "b1", "v1", chapters)
     index_book_version(rag, embedder, "w1", "b2", "v1", chapters)
-    hits = rag.search(embedder.embed(["alpha"])[0], "w1", "b1")
+    hits = rag.search(embedder.embed(["alpha"]).vectors[0], "w1", "b1", document_version_ids=["v1"], embedding_model=embedder.model)
     assert len(hits) == 1 and hits[0]["book_id"] == "b1"
 
 
@@ -106,7 +116,7 @@ CHAPTERS = [
 
 def test_index_upserts_full_payload(rag, embedder):
     n = index_book_version(rag, embedder, "w1", "b1", "v1", CHAPTERS)
-    assert n == 2  # n1's short paragraphs pack into 1 chunk + 1 node in c2
+    assert n.points_upserted == 2  # n1's short paragraphs pack into 1 chunk + 1 node in c2
     pt = next(iter(rag._client.collections["book_chunks"]["points"].values()))
     for key in ("workspace_id", "book_id", "chapter_id", "node_id", "document_version_id", "text_hash", "language", "text"):
         assert key in pt.payload
@@ -119,7 +129,7 @@ def test_point_ids_stable_across_reruns(rag, embedder):
     ids_first = set(rag._client.collections["book_chunks"]["points"])
     index_book_version(rag, embedder, "w1", "b1", "v1", CHAPTERS)  # rerun, no delete
     assert ids_first == set(rag._client.collections["book_chunks"]["points"])
-    assert point_id("b1", "n1", text_hash("First para.")) == point_id("b1", "n1", text_hash("First para."))
+    assert point_id("w1", "b1", "v1", "c1", "n1", 0, text_hash("First para."), embedder.model) == point_id("w1", "b1", "v1", "c1", "n1", 0, text_hash("First para."), embedder.model)
 
 
 def test_reindex_removes_old_version_points(rag, embedder):
@@ -137,7 +147,7 @@ def test_chunk_text_keeps_paragraphs_and_splits_long(embedder):
 
 
 def test_embedder_deterministic_unit_vectors(embedder):
-    v1, v2 = embedder.embed(["hello"])[0], DeterministicMockEmbedder(dim=DIM).embed(["hello"])[0]
+    v1, v2 = embedder.embed(["hello"]).vectors[0], DeterministicMockEmbedder(dim=DIM).embed(["hello"]).vectors[0]
     assert v1 == v2
     assert abs(sum(x * x for x in v1) ** 0.5 - 1.0) < 1e-9
     assert len(v1) == DIM
