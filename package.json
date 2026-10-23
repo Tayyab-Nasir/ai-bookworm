@@ -9,6 +9,8 @@
     "packages/*"
   ],
   "scripts": {
+    "services:local": "node scripts/run-local-processing.mjs",
+    "test:local-processing-launcher": "node --test tests/local-processing-launcher.test.mjs",
     "worker": "node --import tsx workers/run.mjs",
     "test:worker-launcher": "node --test tests/worker-launcher.test.mjs",
     "test:native-author-guard": "node --test tests/native-author-files-guard.test.mjs",
@@ -40,7 +42,7 @@
     "worker:image-quotes": "npm run worker:image-quotes -w @bookworm/api --",
     "worker:narration-quotes": "npm run worker:narration-quotes -w @bookworm/api --",
     "storage:orphan-report": "npm run storage:orphan-report -w @bookworm/api --",
-    "verify": "npm run typecheck && npm run test:worker-launcher && npm run test:native-author-guard && npm run test:migrations:inventory && npm run test:unit && npm run test:web && npm run test:db && npm run test:db:crypto && npm run test:db:upgrade && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
+    "verify": "npm run typecheck && npm run test:local-processing-launcher && npm run test:worker-launcher && npm run test:native-author-guard && npm run test:migrations:inventory && npm run test:unit && npm run test:web && npm run test:db && npm run test:db:crypto && npm run test:db:upgrade && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
   },
   "engines": {
     "node": ">=22"

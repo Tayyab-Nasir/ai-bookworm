@@ -74,6 +74,9 @@ the private scanner and healthy malware engine. Import, rendering, publishing
 packages and generation require their authenticated services and separately
 supervised workers. Next.js alone is not the full stack. See [operations](operations.md).
 
+For the loopback-only HTTP service launcher, per-role token isolation and actual
+local upload/export evidence, see [private local processing](LOCAL_PROCESSING_RUNTIME.md).
+
 ## Verification
 
 ```powershell
