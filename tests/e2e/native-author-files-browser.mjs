@@ -226,10 +226,10 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`${webOrigin}/books/${bookId}/overview`);
     await expect(page.getByRole('heading', { name: 'Native browser manuscript', exact: true })).toBeVisible();
-    const readDesk = () => page.evaluate(async path => {
+    const readDesk = (targetBookId = bookId) => page.evaluate(async path => {
       const response = await fetch(path, { cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(15_000) });
       return { status: response.status, cacheControl: response.headers.get('cache-control'), body: await response.json() };
-    }, `/api/backend/v1/books/${bookId}/overview`);
+    }, `/api/backend/v1/books/${targetBookId}/overview`);
     const deskResponse = await readDesk();
     stage = 'book desk authenticated BFF status and private no-cache policy';
     assert.equal(deskResponse.status, 200);
@@ -260,16 +260,16 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     const { runNativePublishingBrowser } = await import('./native-author-files-publishing.mjs');
     await runNativePublishingBrowser({ page, bookId, passage, screenshot, origins, onStage: value => { stage = value; } });
 
-    stage = 'book desk reload after saved publishing outputs';
+    stage = 'book desk reload after universal proofs, before any retailer package';
     await page.goto(`${webOrigin}/books/${bookId}/overview`);
     await expect(page.getByRole('heading', { name: 'Native browser manuscript', exact: true })).toBeVisible();
     const afterResponse = await readDesk();
     assert.equal(afterResponse.status, 200);
     const afterPublishing = afterResponse.body;
     assert.ok(afterPublishing.editionsTotal > 0); assert.ok(afterPublishing.history.renders > 0);
-    assert.ok(afterPublishing.history.packages > 0);
+    assert.equal(afterPublishing.history.packages, 0, 'Universal proofs are not retailer packages');
     await expect(page.getByText(/Stored job history does not verify current files/)).toBeVisible();
-    succeeded('book desk refreshes real saved edition/render/package history without publication claims');
+    succeeded('book desk refreshes saved editions/renders without inventing retailer packages');
 
     stage = 'logout and private session removal';
     await page.goto(`${webOrigin}/dashboard`);
@@ -288,6 +288,7 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     succeeded('returning author protected-route login and persistent memory');
     stage = 'returning author foreign-book refusal';
     assert.equal(await page.evaluate(async id => (await fetch(`/api/backend/v1/books/${id}`)).status, foreignBookId), 404);
+    assert.equal(await page.evaluate(async id => (await fetch(`/api/backend/v1/books/${id}/overview`)).status, foreignBookId), 404);
     succeeded('returning author foreign-book refusal');
     stage = 'native retailer fixture and private service acceptance';
     const retailer = await prepareRetailer();
@@ -303,6 +304,19 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await runNativeRetailerBrowser({ page, retailer, service, screenshot, onStage: value => {
       stage = value; console.log(`STAGE native browser ${stage}`);
     } });
+    stage = 'retailer book desk exact saved package count';
+    await page.goto(`${webOrigin}/books/${retailer.bookId}/overview`);
+    await expect(page.getByRole('region', { name: 'Book overview', exact: true })).toBeVisible();
+    const retailerDesk = await readDesk(retailer.bookId);
+    assert.equal(retailerDesk.status, 200); assert.equal(retailerDesk.body.book.id, retailer.bookId);
+    const exactPackages = await service.from('publishing_jobs').select('id', { head: true, count: 'exact' })
+      .eq('book_id', retailer.bookId).eq('status', 'succeeded').contains('request_json', { action: 'export_package' });
+    assert.equal(exactPackages.error, null); assert.ok(exactPackages.count >= 7);
+    assert.equal(retailerDesk.body.history.packages, exactPackages.count);
+    assert.ok(retailerDesk.body.history.renders > 0);
+    await expect(page.getByText(/Stored job history does not verify current files/)).toBeVisible();
+    await screenshot('retailer-book-desk-history');
+    succeeded('retailer book desk matches real package history without cross-book or publication claims');
     stage = 'retailer owner logout';
     await page.goto(`${webOrigin}/dashboard`);
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
