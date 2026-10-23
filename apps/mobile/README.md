@@ -87,12 +87,26 @@ blocks/order require explicit choices pinned to the reviewed saved version.
 Merging updates the local draft only and still requires Save.
 
 Artwork pins, captions, tables and opaque blocks survive text edits unchanged.
-Native artwork preview/insertion and dedicated table editing are not finished;
-the screen labels those limits rather than flattening their saved data. Current
-checks use synthetic transports, not live device storage or hosted acceptance.
+Native authors can insert cleared workspace artwork after a checksum-verified
+private preview, edit alt text/captions/decorative status, and set inline width
+or full-bleed print placement/crop focus. Approval and current-version state are
+rechecked before insertion; chapter saves still enforce server-side permissions
+and approvals. Preview requests never forward session credentials to Storage.
+They require the configured origin, exact immutable path, matching media/size/
+SHA-256 and a decodable image. Previews support files up to 20 MiB and 40 million
+pixels (16,384 pixels per axis); originals are never replaced or downsampled.
 
-1. Complete native artwork preview/insertion and table editing. Verify the new
-   create/import flow and editor/receipt recovery against an isolated native service
+The native table editor supports cell text, header rows, merge/split, add/remove
+rows and columns, bounded in-screen undo and navigation across every row. It
+retains canonical grid hashes and unrelated imported attributes. Stale merge
+maps require an explicit review before removal; inconsistent table text/grid
+remains preserved instead of being overwritten. Table edits enter the existing
+secure manuscript draft; online Save remains a separate action. Artwork form
+changes enter the draft only on explicit Insert/Use; leaving a changed form
+requires confirmation. Page breaks can also be added without changing prose.
+Current checks use synthetic transports, not real device or hosted acceptance.
+
+1. Verify create/import, artwork/table editing and editor/receipt recovery against an isolated native service
    stack and actual device secure storage before calling mobile release-ready.
 2. Replace legacy AI calls with the existing paid quote, consent, acceptance,
    original-job recovery and review/apply contracts. Never enable free generation
@@ -109,4 +123,4 @@ checks use synthetic transports, not live device storage or hosted acceptance.
 
 Cross-agent continuation: repository `docs/AGENT_HANDOFF.md`, the main Codex
 handoff in `C:/Users/Asus/Memory-Ai`, and
-`Codex Sessions/2026-10/2026-10-23-mobile-create-import-continuation.md`.
+`Codex Sessions/2026-10/2026-10-23-mobile-artwork-table-continuation.md`.

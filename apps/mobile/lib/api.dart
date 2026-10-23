@@ -463,12 +463,38 @@ class ApiClient {
           row['created_by'] is! String ||
           row['checksum'] is! String ||
           row['storage_path'] is! String ||
+          (row['requires_approval'] != null &&
+              row['requires_approval'] is! bool) ||
+          (row['deleted_at'] != null && row['deleted_at'] is! String) ||
           (row['current_version_number'] != null &&
               row['current_version_number'] is! int) ||
           (row['current_scan_status'] != null &&
               row['current_scan_status'] is! String)) throw _invalid();
       return AssetItem.fromJson(row);
     }));
+  }
+
+  Future<List<Map<String, dynamic>>> listAssetVersions(String assetId) async {
+    if (!_isUuid(assetId)) throw _invalid();
+    final rows = (await _get(
+        '/v1/assets/${Uri.encodeComponent(assetId)}/versions'))['versions'];
+    if (rows is! List ||
+        rows.any((row) =>
+            row is! Map<String, dynamic> || row['asset_id'] != assetId))
+      throw _invalid();
+    return rows.cast<Map<String, dynamic>>();
+  }
+
+  Future<String> assetDownloadUrl(String assetId, int version) async {
+    if (!_isUuid(assetId) || version < 1) throw _invalid();
+    final value = await _get(
+        '/v1/assets/${Uri.encodeComponent(assetId)}/download-url',
+        {'versionNumber': '$version'});
+    if (value['url'] is! String ||
+        value['expiresIn'] is! int ||
+        value['expiresIn'] < 1 ||
+        value['expiresIn'] > 300) throw _invalid();
+    return value['url'];
   }
 
   Future<Map<String, String>> createAssetUploadUrl(String workspaceId,

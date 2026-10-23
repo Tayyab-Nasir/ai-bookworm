@@ -269,6 +269,8 @@ class AssetItem {
     this.storagePath = '',
     this.scanStatus,
     this.version,
+    this.requiresApproval,
+    this.deletedAt,
   });
 
   factory AssetItem.fromJson(Map<String, dynamic> j) => AssetItem(
@@ -284,6 +286,8 @@ class AssetItem {
         storagePath: j['storage_path'] as String? ?? '',
         scanStatus: j['current_scan_status'] as String?,
         version: j['current_version_number'] as int?,
+        requiresApproval: j['requires_approval'] as bool?,
+        deletedAt: j['deleted_at'] as String?,
       );
 
   final String id;
@@ -295,6 +299,8 @@ class AssetItem {
   final String workspaceId, createdBy, checksum, storagePath;
   final String? scanStatus;
   final int? version;
+  final bool? requiresApproval;
+  final String? deletedAt;
 }
 
 class PublishingJob {

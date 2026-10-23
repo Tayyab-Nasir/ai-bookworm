@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api.dart';
 import '../auth.dart';
 import '../manuscript_draft.dart';
+import '../manuscript_artwork.dart';
 import '../models.dart';
 import 'manuscript_editor.dart';
 
@@ -21,6 +22,7 @@ class ReaderScreen extends StatefulWidget {
 
 class _ReaderScreenState extends State<ReaderScreen> {
   ManuscriptDraft? _editor;
+  NativeArtwork? _artwork;
   @override
   void initState() {
     super.initState();
@@ -34,6 +36,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
           workspaceId: widget.workspaceId,
           bookId: widget.chapter.bookId,
           chapterId: widget.chapter.id);
+      _artwork = NativeArtwork(
+          api: api,
+          workspaceId: widget.workspaceId,
+          storageBaseUrl: widget.auth.storageBaseUrl);
     }
   }
 
@@ -54,6 +60,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   'Select the correct workspace before opening this chapter.')));
     return ManuscriptEditor(
         editor: editor,
+        artwork: _artwork,
         title: widget.chapter.title,
         onComments: () => showModalBottomSheet<void>(
             context: context,

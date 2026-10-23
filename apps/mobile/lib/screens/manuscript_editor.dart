@@ -6,13 +6,21 @@ import 'package:flutter/services.dart';
 import '../chapter_document.dart';
 import '../manuscript_draft.dart';
 import '../models.dart';
+import '../manuscript_artwork.dart';
+import 'manuscript_artwork_editor.dart';
+import 'manuscript_table_editor.dart';
 
 class ManuscriptEditor extends StatefulWidget {
   const ManuscriptEditor(
-      {super.key, required this.editor, required this.title, this.onComments});
+      {super.key,
+      required this.editor,
+      required this.title,
+      this.onComments,
+      this.artwork});
   final ManuscriptDraft editor;
   final String title;
   final VoidCallback? onComments;
+  final NativeArtwork? artwork;
   @override
   State<ManuscriptEditor> createState() => _ManuscriptEditorState();
 }
@@ -118,6 +126,58 @@ class _ManuscriptEditorState extends State<ManuscriptEditor> {
           reviewedVersion: remote.version);
   }
 
+  void _replaceBlock(String id, Map<String, dynamic> value) {
+    final nodes = [...editor.draft!.nodes],
+        index = editor.draft!.nodes.indexWhere((node) => node['id'] == id);
+    if (index < 0)
+      throw manuscriptError(
+          'This block is no longer in the draft. Reopen the manuscript.');
+    nodes[index] = value;
+    editor.updateNodes(nodes);
+  }
+
+  Future<void> _editTable(Map<String, dynamic> node) async {
+    if (editor.draft == null) return;
+    await Navigator.push<void>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => ManuscriptTableEditor(
+                node: node,
+                readOnly: !editor.canEdit,
+                validateNode: (value) {
+                  final nodes = [...editor.draft!.nodes];
+                  final index = nodes.indexWhere((n) => n['id'] == node['id']);
+                  if (index < 0)
+                    throw manuscriptError(
+                        'This table is no longer in the draft.');
+                  nodes[index] = value;
+                  editor.base!.withNodes(nodes);
+                },
+                onChanged: (value) =>
+                    _replaceBlock(node['id'] as String, value))));
+  }
+
+  Future<void> _editArtwork([Map<String, dynamic>? node]) async {
+    if (!editor.canEdit || widget.artwork == null) return;
+    final value = await Navigator.push<Map<String, dynamic>>(
+        context,
+        MaterialPageRoute(
+            builder: (_) =>
+                ManuscriptArtworkEditor(artwork: widget.artwork!, node: node)));
+    if (value == null || !mounted || !editor.canEdit) return;
+    try {
+      if (node == null) {
+        editor.updateNodes([...editor.draft!.nodes, value]);
+      } else {
+        _replaceBlock(node['id'] as String, value);
+      }
+    } on ApiError catch (error) {
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.message)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final document = editor.draft;
@@ -213,24 +273,83 @@ class _ManuscriptEditorState extends State<ManuscriptEditor> {
                             return Padding(
                                 padding:
                                     const EdgeInsets.symmetric(vertical: 16),
-                                child: OutlinedButton.icon(
-                                    onPressed: editor.canEdit
-                                        ? () => _changeNodes([
-                                              ...document.nodes,
-                                              {
+                                child:
+                                    Wrap(spacing: 8, runSpacing: 8, children: [
+                                  OutlinedButton.icon(
+                                      onPressed: editor.canEdit
+                                          ? () => _changeNodes([
+                                                ...document.nodes,
+                                                {
+                                                  'id': newManuscriptId(),
+                                                  'type': 'paragraph',
+                                                  'text': ''
+                                                }
+                                              ])
+                                          : null,
+                                      icon: const Icon(Icons.add),
+                                      label: const Text('Add paragraph')),
+                                  OutlinedButton.icon(
+                                      onPressed: editor.canEdit
+                                          ? () {
+                                              final node = <String, dynamic>{
                                                 'id': newManuscriptId(),
-                                                'type': 'paragraph',
-                                                'text': ''
+                                                'type': 'table',
+                                                'rows': [
+                                                  ['', ''],
+                                                  ['', '']
+                                                ],
+                                                'text': '\t\n\t',
+                                                'attributes': {
+                                                  'tableHeaderRows': 1
+                                                }
+                                              };
+                                              try {
+                                                editor.updateNodes([
+                                                  ...editor.draft!.nodes,
+                                                  node
+                                                ]);
+                                                _editTable(node);
+                                              } on ApiError catch (error) {
+                                                ScaffoldMessenger.of(context)
+                                                    .showSnackBar(SnackBar(
+                                                        content: Text(
+                                                            error.message)));
                                               }
-                                            ])
-                                        : null,
-                                    icon: const Icon(Icons.add),
-                                    label: const Text('Add paragraph')));
+                                            }
+                                          : null,
+                                      icon: const Icon(
+                                          Icons.table_chart_outlined),
+                                      label: const Text('Add table')),
+                                  OutlinedButton.icon(
+                                      onPressed: editor.canEdit &&
+                                              widget.artwork != null
+                                          ? () => _editArtwork()
+                                          : null,
+                                      icon: const Icon(
+                                          Icons.add_photo_alternate_outlined),
+                                      label: const Text('Add illustration')),
+                                  OutlinedButton.icon(
+                                      onPressed: editor.canEdit
+                                          ? () => _changeNodes([
+                                                ...editor.draft!.nodes,
+                                                {
+                                                  'id': newManuscriptId(),
+                                                  'type': 'pageBreak'
+                                                }
+                                              ])
+                                          : null,
+                                      icon: const Icon(
+                                          Icons.insert_page_break_outlined),
+                                      label: const Text('Add page break')),
+                                ]));
                           final node = document.nodes[index];
                           return _ManuscriptBlock(
                               key: ValueKey(node['id']),
                               node: node,
                               editable: editor.canEdit,
+                              artwork: widget.artwork,
+                              onEditTable: () => _editTable(node),
+                              onEditArtwork: () => _editArtwork(node),
                               onChanged: (value) => _changeNodes(
                                   [...editor.draft!.nodes]..[index] = value),
                               validateNode: (value) => editor.base!.withNodes(
@@ -365,12 +484,17 @@ class _ManuscriptBlock extends StatefulWidget {
       required this.editable,
       required this.onChanged,
       required this.validateNode,
+      this.artwork,
+      this.onEditTable,
+      this.onEditArtwork,
       required this.onDelete,
       required this.onMove});
   final Map<String, dynamic> node;
   final bool editable;
   final ValueChanged<Map<String, dynamic>> onChanged;
   final ValueChanged<Map<String, dynamic>> validateNode;
+  final NativeArtwork? artwork;
+  final VoidCallback? onEditTable, onEditArtwork;
   final VoidCallback onDelete;
   final ValueChanged<int> onMove;
   @override
@@ -558,13 +682,20 @@ class _ManuscriptBlockState extends State<_ManuscriptBlock> {
                               '${mark[0].toUpperCase()}${mark.substring(1)}')),
                   ]),
               ] else if (type == 'image') ...[
-                const Icon(Icons.image_outlined,
-                    semanticLabel: 'Preserved manuscript artwork'),
+                if (widget.artwork != null)
+                  PrivateArtworkPreview(artwork: widget.artwork!, node: node)
+                else
+                  const Icon(Icons.image_outlined,
+                      semanticLabel: 'Preserved manuscript artwork'),
                 Text(node['altText'] as String? ??
                     'Artwork retained in this chapter'),
                 if (node['caption'] is String) Text(node['caption'] as String),
-                const Text(
-                    'Artwork and its exact version are preserved. Image preview is available in the web editor.'),
+                Text(
+                    'Pinned artwork version ${node['assetVersionNumber'] ?? 'not recorded'} · original file retained'),
+                if (widget.editable && widget.artwork != null)
+                  TextButton(
+                      onPressed: widget.onEditArtwork,
+                      child: const Text('Artwork settings')),
               ] else if (type == 'table') ...[
                 SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
@@ -576,8 +707,14 @@ class _ManuscriptBlockState extends State<_ManuscriptBlock> {
                                 : cell)
                             .join(' | '))
                         .join('\n'))),
-                const Text(
-                    'Table preview: up to 20 rows. All cells and formatting are preserved; edit tables in the web editor.'),
+                Text(
+                    'Preview: first 20 rows of ${(node['rows'] as List? ?? []).length}. All cells and formatting are retained.'),
+                if (widget.onEditTable != null)
+                  TextButton(
+                      onPressed: widget.onEditTable,
+                      child: Text(widget.editable
+                          ? 'Edit table'
+                          : 'View all table rows')),
               ] else if (type == 'pageBreak' || type == 'separator')
                 const Divider()
               else
