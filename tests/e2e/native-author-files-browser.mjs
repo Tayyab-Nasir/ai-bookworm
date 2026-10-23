@@ -231,21 +231,29 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
       return { status: response.status, cacheControl: response.headers.get('cache-control'), body: await response.json() };
     }, `/api/backend/v1/books/${bookId}/overview`);
     const deskResponse = await readDesk();
+    stage = 'book desk authenticated BFF status and private no-cache policy';
     assert.equal(deskResponse.status, 200);
-    assert.equal(deskResponse.cacheControl, 'private, no-store');
+    assert.equal(deskResponse.cacheControl, 'private, no-store, max-age=0');
     const desk = deskResponse.body;
+    stage = 'book desk account and workspace identity';
     assert.equal(desk.viewerId, user.id); assert.equal(desk.book.id, bookId);
     assert.equal(desk.workspace.id, workspace.id); assert.equal(desk.workspace.role, 'owner');
+    stage = 'book desk current saved word counts and chapter version';
     assert.ok(desk.manuscript.wordCount >= 12); assert.ok(desk.manuscript.chapterCount >= 2);
     assert.equal(desk.manuscript.wordCount, desk.chapters.reduce((n, c) => n + c.wordCount, 0));
     const savedChapter = desk.chapters.find(c => c.id === chapter.id);
-    assert.equal(savedChapter.versionNumber, 2); assert.equal(desk.bibleItems, 1);
+    assert.equal(savedChapter.versionNumber, 2);
+    stage = 'book desk canon and saved listing facts';
+    assert.equal(desk.bibleItems, 1);
     assert.equal(desk.listing.description, true); assert.equal(desk.listing.keywords, 2);
     assert.ok(!JSON.stringify(desk).includes('An author-reviewed harbor adventure.'));
+    stage = 'book desk canonical workspace artwork link';
     await expect(page.getByRole('navigation', { name: 'Book tools' }).getByRole('link', { name: 'Workspace artwork', exact: true }))
       .toHaveAttribute('href', `/assets?ws=${workspace.id}`);
+    stage = 'book desk desktop visual containment';
     await screenshot('book-desk-desktop');
     await page.setViewportSize({ width: 320, height: 844 });
+    stage = 'book desk full-header mobile visual containment';
     await screenshot('book-desk-mobile');
     succeeded('book desk uses real RLS/current versions without manuscript or private prompt payloads');
 
