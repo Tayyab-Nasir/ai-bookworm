@@ -43,6 +43,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/book-search-mounted.mjs
+      - name: Verify book workspace navigation in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/book-workspace-navigation-mounted.mjs
       - name: Build production author interface
         env:
           NODE_ENV: production

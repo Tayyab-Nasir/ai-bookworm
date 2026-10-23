@@ -3,5 +3,5 @@ import StoryBlueprintClient from "../../../../components/StoryBlueprintClient";
 
 export default async function StoryBlueprintPage({ params }: { params: Promise<{ bookId: string }> }) {
   const { bookId } = await params;
-  return <AuthorPage><AuthorHeader /><StoryBlueprintClient key={bookId} bookId={bookId} /></AuthorPage>;
+  return <AuthorPage><AuthorHeader bookId={bookId} /><StoryBlueprintClient key={bookId} bookId={bookId} /></AuthorPage>;
 }

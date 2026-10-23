@@ -49,8 +49,10 @@ An isolated frozen source directory avoids touching those files.
 
 ## Hosted migrations
 
-As verified on 2026-10-23, **110 source migrations are applied** to AI-BookWorm.
+As verified on 2026-10-23, **111 source migrations are applied** to AI-BookWorm.
 See [the hosted review](HOSTED_MIGRATION_REVIEW.md) and its evidence receipt.
+The later title-revision migration and application restore through 111 are
+recorded in [the chapter-title checkpoint](CHAPTER_TITLE_CHECKPOINT.md).
 Do not paste the old combined SQL into the dashboard, replay migrations, or
 repair timestamps to match source filenames. Hosted versions are application
 timestamps. Refresh history, map names, review drift/recovery, then apply only

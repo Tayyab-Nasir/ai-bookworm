@@ -63,8 +63,11 @@ Further paid calls are stopped; see
 2. Local web/API liveness works, but Redis is unavailable and private processors
    and worker supervision are not running. The one-second hosted Supabase probe
    has intermittently failed after idle; its cause remains unconfirmed.
-3. The pending fresh Google-login answer and private service-hosting choice must
-   be collected. Do not infer successful user acceptance from a passing build.
+3. Google login and real dashboard/workspace/manual-save behavior now pass in
+   the operator's Chrome session against the local production app and hosted
+   Supabase. The private service-hosting choice remains open. See
+   `BOOK_WORKSPACE_NAVIGATION_CHECKPOINT.md` for this evidence and the pending
+   updated-source checks; this does not prove a deployed customer session.
 4. Full project disaster recovery, hosted operational acceptance and retailer
    acceptance remain distinct from the tested application-only recovery and
    native disposable fixture checks.

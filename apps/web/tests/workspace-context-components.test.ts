@@ -69,7 +69,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/workspace-selection")) return helperExports;
     if (name.endsWith("/api")) return { apiClient: () => api };
     if (name.endsWith("/AuthorShell")) return { AuthorHeader: "Header", AuthorPage: "Page" };
-    for (const component of ["AuthorDashboard", "BillingCenter", "CollaborationCenter", "BookSetupClient"]) {
+    for (const component of ["AuthorDashboard", "BillingCenter", "CollaborationCenter", "BookSetupClient", "BookEditorClient", "BookMemoryClient", "StoryBlueprintClient", "PublishingStudio", "TranslationStudio"]) {
       if (name.endsWith(`/${component}`)) return { default: component };
     }
     if (name.endsWith("/AccountMenu")) return { AccountMenu: "AccountMenu" };
@@ -637,6 +637,61 @@ test("validated header links retain B without storage; unscoped community remain
   }
   assert(hrefs.includes("/community")); assert(!hrefs.includes(`/community?ws=${B}`));
 });
+
+test("book header resolves canonical workspace instead of caller or saved preferences", async () => {
+  const bookId = "33333333-3333-4333-8333-333333333333";
+  const waiting = deferred<any>();
+  const h = harness("apps/web/components/AuthorShell.tsx", { getBook: () => waiting.promise },
+    { inner: "AuthorHeader", props: { bookId, workspaceId: A }, query: `?ws=${A}`, remembered: A, trackDependencies: true });
+  let tree = h.render();
+  const pending = nodes(tree).filter(node => node.type === "Link" && node.props["aria-disabled"]);
+  assert.equal(pending.length, 7); assert(pending.every(node => node.props.href === "#"));
+  let prevented = false; pending[0].props.onClick({ preventDefault() { prevented = true; } }); assert(prevented);
+  h.effects.forEach(effect => effect());
+  waiting.resolve({ book: { id: bookId, workspace_id: B } }); await settle();
+  tree = h.render();
+  const hrefs = nodes(tree).filter(node => node.type === "Link").map(node => node.props.href);
+  for (const path of ["/dashboard", "/assets", "/tasks", "/billing", "/analytics", "/books/new"]) {
+    assert(hrefs.includes(`${path}?ws=${B}`)); assert(!hrefs.includes(`${path}?ws=${A}`)); assert(!hrefs.includes(path));
+  }
+});
+
+test("book header discards a late previous-book workspace and blocks old links during loading", async () => {
+  const one = deferred<any>(), two = deferred<any>();
+  const h = harness("apps/web/components/AuthorShell.tsx", { getBook: id => id === A ? one.promise : two.promise },
+    { inner: "AuthorHeader", props: { bookId: A }, trackDependencies: true });
+  h.render(); h.effects.forEach(effect => effect());
+  h.setProps({ bookId: B }); let tree = h.render();
+  assert.equal(props(tree, "Link").href, "#");
+  h.effects.forEach(effect => effect());
+  two.resolve({ book: { id: B, workspace_id: B } }); await settle();
+  assert.equal(props(h.render(), "Link").href, `/dashboard?ws=${B}`);
+  one.resolve({ book: { id: A, workspace_id: A } }); await settle();
+  assert.equal(props(h.render(), "Link").href, `/dashboard?ws=${B}`);
+  h.setProps({ bookId: A }); tree = h.render(); assert.equal(props(tree, "Link").href, "#");
+});
+
+for (const response of [{ book: { id: B, workspace_id: B } }, { book: { id: A, workspace_id: "invalid" } }, null]) {
+  test(`book header refuses unverified identity ${JSON.stringify(response)}`, async () => {
+    let reads = 0;
+    const h = harness("apps/web/components/AuthorShell.tsx", { getBook: async () => { ++reads; return response; } },
+      { inner: "AuthorHeader", props: { bookId: A }, trackDependencies: true });
+    h.render(); h.effects.forEach(effect => effect()); await settle();
+    const tree = h.render(); assert.equal(props(tree, "Link").href, "#");
+    assert(nodes(tree).some(node => node.type === "Link" && node.props.children === "Choose workspace" && node.props.href === "/dashboard"), "a failed book lookup must still allow explicit workspace selection");
+    const retry = nodes(tree).find(node => node.type === "button" && node.props.children === "Reload navigation");
+    assert(retry); assert.equal(reads, 1); retry.props.onClick(); h.render();
+    h.effects.forEach(effect => effect()); await settle();
+    assert.equal(reads, 2, "explicit retry must revalidate the book");
+  });
+}
+
+for (const path of ["page.tsx", "memory/page.tsx", "plan/page.tsx", "publish/page.tsx", "translate/page.tsx"]) {
+  test(`${path} passes its book identity to shared workspace navigation`, async () => {
+    const h = harness(`apps/web/app/books/[bookId]/${path}`, {}, { props: { params: Promise.resolve({ bookId: A }), searchParams: Promise.resolve({}) } });
+    const tree = await h.render(); assert.equal(props(tree, "Header").bookId, A);
+  });
+}
 
 for (const component of ["AuthorDashboard", "BillingCenter", "CollaborationCenter", "BookSetupClient"]) {
   test(`${component} renders a sibling header with only a validated workspace`, async () => {

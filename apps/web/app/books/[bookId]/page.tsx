@@ -16,7 +16,7 @@ export default async function BookEditorPage({
   const draftPlan = typeof query.draftPlan === "string" && uuid.test(query.draftPlan) ? query.draftPlan : undefined;
   return (
     <AuthorPage>
-      <AuthorHeader />
+      <AuthorHeader bookId={bookId} />
       <BookEditorClient key={bookId} bookId={bookId} initialChapterId={chapter} initialAiJobId={aiJob} initialDraftPlanItemId={draftPlan} />
     </AuthorPage>
   );
