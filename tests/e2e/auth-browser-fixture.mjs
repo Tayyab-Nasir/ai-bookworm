@@ -41,6 +41,7 @@ let lostUploadAllocationReply = false;
 let lostUploadPutReply = false;
 let lostAiReply = false;
 let lostReviewReply = false;
+let lostReviewQuoteReply = false;
 const memoryBookId = '88888888-8888-4888-8888-888888888888';
 const memoryBook = { id: memoryBookId, workspace_id: '33333333-3333-4333-8333-333333333333', title: 'The Long Way Home', subtitle: null, author_name: 'Fixture author', language: 'en', genre: 'Fantasy', status: 'draft', updated_at: '2026-08-31T08:00:00.000Z' };
 const memoryItems = [];
@@ -226,7 +227,8 @@ const server = createServer(async (req, res) => {
       if (req.method === 'GET') return json(200, { jobs: publishingPackages.map((job) => ({ ...job, package: { ...job.package, download: fixtureDownload('package') } })) });
       const render = publishingRenders.get(body.renderJobId); const check = publishingChecks.get(body.preflightJobId);
       if (!render || render.editionId !== body.editionId || !check || check.editionId !== body.editionId || check.channel !== body.channel) return json(422, { error: { message: 'Mismatched render/preflight sources' } });
-      const job = { id: randomUUID(), bookId: body.bookId, editionId: body.editionId, channel: body.channel, status: 'succeeded', submissionMode: 'manual', createdAt: new Date().toISOString(), ruleVersion: 'fixture-1',
+      const job = { id: randomUUID(), requestId: body.idempotencyKey, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+        bookId: body.bookId, editionId: body.editionId, channel: body.channel, status: 'succeeded', submissionMode: 'manual', createdAt: new Date().toISOString(), ruleVersion: 'fixture-1',
         package: { asset: { id: randomUUID(), size_bytes: 1600, checksum: 'f'.repeat(64) }, download: fixtureDownload('package') } };
       publishingPackages.push(job); return json(201, job);
     }
@@ -460,7 +462,18 @@ const server = createServer(async (req, res) => {
       if (quote.bookId !== aiReviewQuoteMatch[1] || quote.agentType !== body.agentType || quote.chapterIds.join(',') !== body.chapterIds.join(',')) {
         return json(409, { error: { message: 'Quote key is bound to different inputs' } });
       }
+      if (quote.agentType !== 'writer' && process.env.FIXTURE_LOST_REVIEW_QUOTE_REPLY === 'true' && !lostReviewQuoteReply) {
+        lostReviewQuoteReply = true;
+        return json(503, { error: { message: 'Fixture lost quote creation reply' } });
+      }
       return json(201, { quote: { ...quote, bookId: undefined, chapterIds: undefined, idempotencyKey: undefined } });
+    }
+    const aiReviewKeyMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/quote-requests\/([^/]+)$/u);
+    if (aiReviewKeyMatch && req.method === 'GET') {
+      const quote = aiReviewQuoteKeys.get(decodeURIComponent(aiReviewKeyMatch[2]));
+      if (!quote || quote.bookId !== aiReviewKeyMatch[1]) return json(404, { error: { message: 'Quote not found' } });
+      return json(200, { quote: { ...quote, bookId: undefined, chapterIds: undefined, idempotencyKey: undefined },
+        ...(quote.acceptedJobId ? { job: { id: quote.acceptedJobId, status: aiReviews.get(quote.acceptedJobId)?.status ?? 'queued' } } : {}) });
     }
     const aiReviewQuoteStatusMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/quotes\/([^/]+)$/u);
     if (aiReviewQuoteStatusMatch && req.method === 'GET') {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pendingReviewBody, readPendingReview, reviewBriefHash, reviewRecoveryKey, type PendingReview } from "../lib/ai-review-recovery";
+import { canReplaceReviewQuote, pendingReviewBody, readPendingReview, recoverReviewRequest, reviewBriefHash, reviewRecoveryKey, verifiedReviewQuoteStatus, type PendingReview } from "../lib/ai-review-recovery";
+import type { AiJobWithSuggestions } from "@bookworm/api-client";
 
 const id = (last: number) => `00000000-0000-4000-8000-${String(last).padStart(12, "0")}`;
 const pending = async (): Promise<PendingReview> => ({
@@ -63,4 +64,60 @@ test("non-writer retry never carries an old writer instruction", async () => {
   const value = { ...await pending(), mode: "proofreader" as const };
   assert.equal((await reviewBriefHash("proofreader", "old writer text")), (await reviewBriefHash("proofreader", "")));
   assert.equal("userInstruction" in pendingReviewBody(value, "old writer text"), false);
+});
+
+const readyQuote = () => ({ requestId: id(9), status: "ready" as const, agentType: "writer" as const, model: "approved-model",
+  countedInputTokens: 420, maxOutputTokens: 1200, reservedCredits: 7, expiresAt: "2030-01-01T00:00:00Z" });
+
+test("recovered quote validation binds original identity, task, model and positive exact prices", async () => {
+  const request = { ...await pending(), modelId: "approved", model: "approved-model", quoteRequestId: id(9) };
+  assert.deepEqual(verifiedReviewQuoteStatus({ quote: readyQuote() }, request), { quote: readyQuote() });
+  for (const change of [{ requestId: id(8) }, { agentType: "copyeditor" }, { model: "unexpected-model" },
+    { reservedCredits: 0 }, { reservedCredits: 1.2 }, { countedInputTokens: -1 }, { maxOutputTokens: null }, { expiresAt: "invalid" }, { status: "accepted" }]) {
+    assert.throws(() => verifiedReviewQuoteStatus({ quote: { ...readyQuote(), ...change } }, request), /could not be verified/);
+  }
+  for (const value of [null, {}, { quote: null }, { quote: readyQuote(), job: {} }, { quote: readyQuote(), job: { id: id(10), status: "missing" } },
+    { quote: { requestId: id(9), status: "counting" }, job: { id: id(10), status: "running" } }])
+    assert.throws(() => verifiedReviewQuoteStatus(value, request), /could not be verified/);
+});
+
+test("only expired, failed or definitely refused unaccepted quotes allow a fresh request", async () => {
+  const request = await pending(), status = { quote: readyQuote() }, now = Date.parse("2031-01-01T00:00:00Z");
+  assert.equal(canReplaceReviewQuote(status, request, now), true);
+  assert.equal(canReplaceReviewQuote(status, request, Date.parse("2029-01-01T00:00:00Z")), false);
+  assert.equal(canReplaceReviewQuote(status, { ...request, acceptAttempted: true }, now), false);
+  assert.equal(canReplaceReviewQuote({ ...status, job: { id: id(10), status: "queued" } }, request, now), false);
+  assert.equal(canReplaceReviewQuote({ quote: { requestId: id(9), status: "failed" } }, request, now), true);
+  assert.equal(canReplaceReviewQuote({ quote: { requestId: id(9), status: "counting" } }, request, now), false);
+  assert.equal(canReplaceReviewQuote(status, { ...request, acceptanceRefused: true }, Date.parse("2029-01-01T00:00:00Z")), true);
+  assert.equal(canReplaceReviewQuote(null, request, now), false);
+});
+
+test("acceptance attempt survives reload and malformed attempt markers fail closed", async () => {
+  const request = { ...await pending(), modelId: "approved", model: "approved-model", acceptAttempted: true as const };
+  assert.equal(readPendingReview(JSON.stringify(request), id(1), id(2), id(3), 2000)?.acceptAttempted, true);
+  for (const change of [{ acceptAttempted: "true" }, { acceptAttempted: false }, { acceptanceRefused: true }, { model: 10 }, { modelId: 10 }])
+    assert.equal(readPendingReview(JSON.stringify({ ...request, ...change }), id(1), id(2), id(3), 2000), null);
+});
+
+test("lost quote recovery reads the exact key and accepted job, never a create/count method", async () => {
+  const request = { ...await pending(), modelId: "approved" }, calls: string[] = [];
+  const job: AiJobWithSuggestions = { id: id(10), book_id: id(2), agent_type: "writer", status: "succeeded", model: "approved-model",
+    chapter_ids: [id(3)], context_source_count: 1, usage_json: {}, error_code: null, error_message: null,
+    created_at: "2026-10-23T00:00:00Z", started_at: null, completed_at: null, suggestions: [] };
+  const status = { quote: readyQuote(), job: { id: job.id, status: job.status } };
+  const api = {
+    getAiReviewQuote: async (book: string, quote: string) => { calls.push(`id:${book}:${quote}`); return status; },
+    recoverAiReviewQuote: async (book: string, key: string) => { calls.push(`key:${book}:${key}`); return status; },
+    getAiJob: async (id: string) => { calls.push(`job:${id}`); return job; },
+    getAiJobByRequest: async () => { throw new Error("legacy fallback must not run for a paid quote"); },
+  };
+  assert.equal((await recoverReviewRequest(api, request)).job?.id, id(10));
+  assert.deepEqual(calls, [`key:${id(2)}:${id(4)}`, `job:${id(10)}`]);
+  calls.length = 0;
+  await recoverReviewRequest(api, { ...request, quoteRequestId: id(9) });
+  assert.deepEqual(calls, [`id:${id(2)}:${id(9)}`, `job:${id(10)}`]);
+  await assert.rejects(recoverReviewRequest({ ...api, getAiJob: async () => ({ ...job, book_id: id(7) }) }, request), /does not match/);
+  await assert.rejects(recoverReviewRequest({ ...api, getAiJob: async () => ({ ...job, chapter_ids: [id(3), id(8)] }) }, request), /does not match/);
+  await assert.rejects(recoverReviewRequest({ ...api, getAiJob: async () => ({ ...job, id: id(8) }) }, request), /identity does not match/);
 });

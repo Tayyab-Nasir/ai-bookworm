@@ -532,7 +532,7 @@ for (const refreshFails of [false, true]) test(`actual chapter creation opens pr
       api.createAiReviewQuote = async (bookId, body) => { flow.quotes.push({ bookId, ...structuredClone(body) }); return { quote }; };
       api.acceptAiReviewQuote = async (bookId, requestId, expectedCredits) => {
         flow.acceptances.push({ bookId, requestId, expectedCredits });
-        flow.review = { id: "paid-job", book_id: bookId, chapter_ids: [document.chapterId], agent_type: "writer", status: "succeeded",
+        flow.review = { id: crypto.randomUUID(), book_id: bookId, chapter_ids: [document.chapterId], agent_type: "writer", status: "succeeded",
           context_source_count: 0, usage_json: {}, created_at: new Date().toISOString(), suggestions: [{
             id: "paid-suggestion", entity_type: "chapter", entity_id: document.chapterId, status: "pending", rationale: "Opening scene for author review",
             operation_json: { operationId: crypto.randomUUID(), type: "replace_text", expectedVersion: 1,

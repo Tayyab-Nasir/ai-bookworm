@@ -101,6 +101,25 @@ function acceptanceRpcError(error: { code?: string }): never {
   throw new AppError(503, "AI review quote acceptance could not be confirmed. Recover this same quote before retrying.");
 }
 
+async function readQuoteStatus(app: FastifyInstance, req: FastifyRequest, bookId: string, lookup: { id: string } | { key: string }) {
+  const { book } = await scopedBook(app, req, bookId);
+  const service = app.supabaseFactory();
+  const query = service.from("ai_review_token_quote_requests").select("*")
+    .eq("user_id", req.userId).eq("book_id", bookId);
+  const { data, error } = await ("id" in lookup ? query.eq("id", lookup.id) : query.eq("idempotency_key", lookup.key)).maybeSingle();
+  if (error) throw new AppError(503, "Could not load AI review quote status.");
+  if (!data) throw new AppError(404, "AI review quote not found.");
+  const saved = parse(requestRow, data, "AI review quote is unavailable.");
+  let job: { id: string; status: string } | null = null;
+  if (saved.accepted_job_id) {
+    const found = await service.from("ai_jobs").select("id,status")
+      .eq("id", saved.accepted_job_id).eq("book_id", bookId).eq("created_by", req.userId).eq("billing_mode", "quoted").maybeSingle();
+    if (found.error || !found.data) throw new AppError(503, "Could not recover accepted AI review status.");
+    job = { id: found.data.id, status: found.data.status };
+  }
+  return { quote: toQuote(saved, { id: "id" in lookup ? lookup.id : saved.id, userId: req.userId, bookId, workspaceId: book.workspace_id }), ...(job ? { job } : {}) };
+}
+
 export function aiReviewQuoteRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
   app.get("/books/:bookId/ai-review/models", async (req, reply) => {
     const bookId = parse(id, (req.params as { bookId: string }).bookId, "Valid book ID required.");
@@ -227,21 +246,18 @@ export function aiReviewQuoteRoutes(app: FastifyInstance, options: { fetcher?: t
   app.get("/books/:bookId/ai-review/quotes/:requestId", async (req, reply) => {
     const bookId = parse(id, (req.params as { bookId: string }).bookId, "Valid book ID required.");
     const requestId = parse(id, (req.params as { requestId: string }).requestId, "Valid quote request ID required.");
-    const { book } = await scopedBook(app, req, bookId);
-    const { data, error } = await app.supabaseFactory().from("ai_review_token_quote_requests").select("*")
-      .eq("id", requestId).eq("user_id", req.userId).eq("book_id", bookId).maybeSingle();
-    if (error) throw new AppError(503, "Could not load AI review quote status.");
-    if (!data) throw new AppError(404, "AI review quote not found.");
-    const saved = parse(requestRow, data, "AI review quote is unavailable.");
-    let job: { id: string; status: string } | null = null;
-    if (saved.accepted_job_id) {
-      const found = await app.supabaseFactory().from("ai_jobs").select("id,status")
-        .eq("id", saved.accepted_job_id).eq("book_id", bookId).eq("created_by", req.userId).eq("billing_mode", "quoted").maybeSingle();
-      if (found.error || !found.data) throw new AppError(503, "Could not recover accepted AI review status.");
-      job = { id: found.data.id, status: found.data.status };
-    }
+    const status = await readQuoteStatus(app, req, bookId, { id: requestId });
     reply.header("cache-control", "private, no-store");
-    return { quote: toQuote(saved, { id: requestId, userId: req.userId, bookId, workspaceId: book.workspace_id }), ...(job ? { job } : {}) };
+    return status;
+  });
+
+  // Recover a lost quote reply without replaying a provider token-count request.
+  app.get("/books/:bookId/ai-review/quote-requests/:requestKey", async (req, reply) => {
+    const bookId = parse(id, (req.params as { bookId: string }).bookId, "Valid book ID required.");
+    const key = parse(z.string().min(8).max(200), (req.params as { requestKey: string }).requestKey, "Valid quote request key required.");
+    const status = await readQuoteStatus(app, req, bookId, { key });
+    reply.header("cache-control", "private, no-store");
+    return status;
   });
 
   app.post("/books/:bookId/ai-review/quotes/:requestId/accept", async (req, reply) => {

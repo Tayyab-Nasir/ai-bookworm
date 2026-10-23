@@ -1015,6 +1015,8 @@ export function createClient(opts: ClientOptions) {
       call<{ jobId: string; status: "queued" | "running" | "succeeded" | "failed" }>("POST", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes/${encodeURIComponent(requestId)}/accept`, { expectedCredits }),
     getAiReviewQuote: (bookId: string, requestId: string) =>
       call<{ quote: AiReviewUsageQuote | { requestId: string; status: "counting" | "failed"; errorCode?: string }; job?: { id: string; status: string } }>("GET", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes/${encodeURIComponent(requestId)}`),
+    recoverAiReviewQuote: (bookId: string, requestKey: string) =>
+      call<{ quote: AiReviewUsageQuote | { requestId: string; status: "counting" | "failed"; errorCode?: string }; job?: { id: string; status: string } }>("GET", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quote-requests/${encodeURIComponent(requestKey)}`),
     listMetadataModels: (bookId: string) => call<{ catalogVersion: string; models: AiReviewModelChoice[] }>("GET", `/v1/books/${encodeURIComponent(bookId)}/metadata/models`),
     createMetadataQuote: (bookId: string, body: CreateMetadataQuoteRequest) =>
       call<MetadataQuoteStatus>("POST", `/v1/books/${encodeURIComponent(bookId)}/metadata/quotes`, body),

@@ -35,12 +35,14 @@ test("AI review client keeps counting, exact quote acceptance and recovery on th
     });
     await api.getAiReviewQuote(bookId, requestId);
     await api.acceptAiReviewQuote(bookId, requestId, 24);
+    await api.recoverAiReviewQuote(bookId, "original/key with spaces");
 
     assert.deepEqual(calls.map((call) => call.url), [
       "/api/backend/v1/books/book-1/ai-review/models",
       "/api/backend/v1/books/book-1/ai-review/quotes",
       "/api/backend/v1/books/book-1/ai-review/quotes/quote-1",
       "/api/backend/v1/books/book-1/ai-review/quotes/quote-1/accept",
+      "/api/backend/v1/books/book-1/ai-review/quote-requests/original%2Fkey%20with%20spaces",
     ]);
     assert.deepEqual(JSON.parse(String(calls[1].init?.body)), {
       chapterIds: ["chapter-1"], agentType: "proofreader", idempotencyKey: "review-key-0001",
@@ -49,6 +51,8 @@ test("AI review client keeps counting, exact quote acceptance and recovery on th
     });
     assert.deepEqual(JSON.parse(String(calls[3].init?.body)), { expectedCredits: 24 });
     assert.equal(calls[2].init?.method, "GET");
+    assert.equal(calls[4].init?.method, "GET");
+    assert.equal(calls[4].init?.body, undefined);
     assert.ok(calls.every((call) => call.init?.credentials === "same-origin"));
   } finally { globalThis.fetch = original; }
 });

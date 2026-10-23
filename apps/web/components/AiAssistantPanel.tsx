@@ -5,7 +5,7 @@ import { ApiClientError, type AiJobReview, type AiJobWithSuggestions, type AiRev
 import type { AiSuggestion } from "@bookworm/types";
 import { apiClient } from "./api";
 import AiProofSheet from "./AiProofSheet";
-import { canAcceptReviewQuote, readPendingReview, reviewBriefHash, reviewRecoveryKey, reviewTargetsChapter, type PendingReview, type ReviewMode } from "../lib/ai-review-recovery";
+import { canAcceptReviewQuote, canReplaceReviewQuote, readPendingReview, recoverReviewRequest, reviewBriefHash, reviewRecoveryKey, reviewTargetsChapter, verifiedReviewQuoteStatus, type PendingReview, type ReviewMode, type ReviewQuoteStatus } from "../lib/ai-review-recovery";
 import { previewAiSuggestion, type SavedChapterPreview } from "../lib/ai-suggestion-preview";
 
 type Mode = ReviewMode;
@@ -40,14 +40,18 @@ export default function AiAssistantPanel({
   const [recent, setRecent] = useState<AiJobReview[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
   const [recoveryReady, setRecoveryReady] = useState(false);
+  const [restoreInitialReview, setRestoreInitialReview] = useState(false);
   const [pendingRequest, setPendingRequest] = useState<PendingReview | null>(null);
   const [models, setModels] = useState<AiReviewModelChoice[]>([]);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [countingConsent, setCountingConsent] = useState(false);
   const [quote, setQuote] = useState<AiReviewUsageQuote | null>(null);
   const [quoteRequestId, setQuoteRequestId] = useState<string | null>(null);
+  const [verifiedStatus, setVerifiedStatus] = useState<ReviewQuoteStatus | null>(null);
+  const [quoteClock, setQuoteClock] = useState(Date.now);
   const [acceptanceUncertain, setAcceptanceUncertain] = useState(false);
   const [pricingError, setPricingError] = useState<string | null>(null);
+  const [modelRefresh, setModelRefresh] = useState(0);
   const [lastAppliedVersion, setLastAppliedVersion] = useState<number | null>(null);
   const requestInFlight = useRef(false);
   const suggestions = useMemo(() => job?.suggestions ?? [], [job]);
@@ -64,8 +68,43 @@ export default function AiAssistantPanel({
     setRecent((current) => [next, ...current.filter((item) => item.id !== next.id)].slice(0, 8));
   }, []);
 
+  const keepPending = useCallback((request: PendingReview) => {
+    window.sessionStorage.setItem(reviewRecoveryKey(request.userId, request.bookId, request.chapterId), JSON.stringify(request));
+    setPendingRequest(request);
+  }, []);
+
+  const adoptRecovery = useCallback((result: Awaited<ReturnType<typeof recoverReviewRequest>>, request: PendingReview) => {
+    const storageKey = reviewRecoveryKey(request.userId, request.bookId, request.chapterId);
+    if (result.job) {
+      const next = result.job;
+      if (["queued", "running"].includes(next.status) || next.error_code === "ai_provider_outcome_unconfirmed") {
+        keepPending({ ...request, ...(result.status ? { quoteRequestId: result.status.quote.requestId } : {}), acceptAttempted: true, acceptanceRefused: undefined });
+      } else {
+        // Failure to clear only causes another safe server read on the next visit.
+        try { window.sessionStorage.removeItem(storageKey); } catch { /* Server job remains authoritative. */ }
+        setPendingRequest(null);
+      }
+      setJob(next); setLastAppliedVersion(null); remember(next);
+      setQuote(null); setQuoteRequestId(null); setVerifiedStatus(null); setCountingConsent(false);
+      setAcceptanceUncertain(next.error_code === "ai_provider_outcome_unconfirmed");
+      setNotice("Recovered the saved AI review without starting another request.");
+    } else if (result.status) {
+      const status = result.status;
+      // The server identity must be durable before its offer can be accepted.
+      keepPending({ ...request, quoteRequestId: status.quote.requestId });
+      setVerifiedStatus(status); setQuoteClock(Date.now());
+      setQuote(status.quote.status === "ready" ? status.quote : null);
+      setQuoteRequestId(status.quote.status === "counting" ? status.quote.requestId : null);
+      setAcceptanceUncertain(false);
+      setNotice(status.quote.status === "ready" ? "Recovered the exact saved quote. Accept only if you still want to start generation."
+        : status.quote.status === "counting" ? "The saved quote is still being counted. This status check did not start another count or generation."
+          : "The saved quote count failed. No generation was accepted; you may explicitly start a new quote.");
+    }
+  }, [keepPending, remember]);
+
   useEffect(() => { void loadRecent(); }, [loadRecent]);
-  useEffect(() => { requestInFlight.current = false; setBusy(false); setReviewing(null); setRecent([]); setJob(null); setLastAppliedVersion(null); setError(null); setNotice(null); setQuote(null); setQuoteRequestId(null); setCountingConsent(false); setAcceptanceUncertain(false); setInstruction(""); }, [bookId, chapterId]);
+  useEffect(() => () => { reviewScope.current = { ...reviewScope.current }; }, []);
+  useEffect(() => { requestInFlight.current = false; setBusy(false); setReviewing(null); setRecent([]); setJob(null); setLastAppliedVersion(null); setError(null); setNotice(null); setQuote(null); setQuoteRequestId(null); setVerifiedStatus(null); setCountingConsent(false); setAcceptanceUncertain(false); setInstruction(""); }, [bookId, chapterId]);
   useEffect(() => {
     let cancelled = false;
     setModels([]); setSelectedModelId(""); setPricingError(null);
@@ -75,11 +114,11 @@ export default function AiAssistantPanel({
       setSelectedModelId((current) => current && result.models.some((item) => item.id === current) ? current : result.models[0]?.id ?? "");
     }).catch((reason) => { if (!cancelled) setPricingError(reason instanceof Error ? reason.message : "Usage-based AI pricing is unavailable."); });
     return () => { cancelled = true; };
-  }, [api, bookId]);
+  }, [api, bookId, modelRefresh]);
   useEffect(() => {
     if (!chapterId) return;
     let cancelled = false;
-    setRecoveryReady(false); setPendingRequest(null);
+    setRecoveryReady(false); setRestoreInitialReview(false); setPendingRequest(null);
     void (async () => {
       const session = await fetch("/api/auth/session", { cache: "no-store" });
       if (!session.ok) throw new Error("Sign in again before requesting AI review.");
@@ -99,44 +138,21 @@ export default function AiAssistantPanel({
         setCountingConsent(saved.allowProviderTokenCounting === true);
         if (saved.modelId) setSelectedModelId(saved.modelId);
         try {
-          const recovered = await api.getAiJobByRequest(bookId, saved.key);
+          const recovered = await recoverReviewRequest(api, saved);
           if (cancelled) return;
-          if (!reviewTargetsChapter(recovered, chapterId)) throw new Error("The saved AI request targets another chapter. No new request was sent.");
-          setJob(recovered); setLastAppliedVersion(null); remember(recovered); setPendingRequest(null);
-          try { window.sessionStorage.removeItem(storageKey); } catch { /* A later reload can read the same server job. */ }
-          setNotice("Recovered the saved AI review without starting another request.");
+          adoptRecovery(recovered, saved);
         } catch (reason) {
           if (cancelled) return;
-          if (reason instanceof ApiClientError && reason.status === 404) {
-            if (saved.quoteRequestId) {
-              try {
-                const status = await api.getAiReviewQuote(bookId, saved.quoteRequestId);
-                if (cancelled) return;
-                if (status.job) {
-                  const recovered = await api.getAiJob(status.job.id);
-                  if (cancelled) return;
-                  if (!reviewTargetsChapter(recovered, chapterId)) throw new Error("The recovered paid review targets a different chapter.");
-                  setJob(recovered); setLastAppliedVersion(null); remember(recovered); setPendingRequest(null);
-                  try { window.sessionStorage.removeItem(storageKey); } catch { /* Durable server state remains authoritative. */ }
-                  setNotice("Recovered the accepted AI review from its saved quote without another charge.");
-                } else if (status.quote.status === "ready") {
-                  setQuote(status.quote); setQuoteRequestId(null);
-                  setNotice("Recovered the exact saved quote. Accept only if you still want to start generation.");
-                } else if (status.quote.status === "counting") {
-                  setQuoteRequestId(saved.quoteRequestId);
-                  setNotice("The saved quote is still being counted. This status check did not start another count or generation.");
-                } else setError("The saved quote count failed. No generation job or credit hold was created; start a fresh quote when ready.");
-              } catch (statusError) {
-                if (!cancelled) setError(statusError instanceof Error ? statusError.message : "Could not recover the saved quote. No new generation was started.");
-              }
-            } else setNotice("The previous request is not queued. Retry its original brief and settings with the same request key; no new key will be used.");
-          } else setError(reason instanceof Error ? reason.message : "Could not verify the saved AI request. No new request was sent.");
+          setAcceptanceUncertain(saved.acceptAttempted === true);
+          if (reason instanceof ApiClientError && reason.status === 404 && !saved.quoteRequestId && !saved.acceptAttempted)
+            setNotice("No original quote is visible yet. Retry its original brief and settings with the same request key; no new key will be used.");
+          else setError(reason instanceof Error ? reason.message : "Could not verify the saved AI request. No new request was sent.");
         }
       }
-      if (!cancelled) setRecoveryReady(true);
+      if (!cancelled) { setRestoreInitialReview(!saved); setRecoveryReady(true); }
     })().catch((reason) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "AI request recovery is unavailable."); setRecoveryReady(false); } });
     return () => { cancelled = true; };
-  }, [api, bookId, chapterId, remember]);
+  }, [api, bookId, chapterId, adoptRecovery]);
   useEffect(() => {
     if (!initialDraftInstruction || !recoveryReady || job) return;
     if (pendingRequest && (pendingRequest.bookId !== bookId || pendingRequest.chapterId !== chapterId)) return;
@@ -160,29 +176,34 @@ export default function AiAssistantPanel({
     return () => { cancelled = true; };
   }, [bookId, chapterId, initialDraftInstruction, job, pendingRequest, recoveryReady]);
   useEffect(() => {
-    if (!quoteRequestId) return;
+    if (!quoteRequestId || !pendingRequest) return;
     let cancelled = false;
     const refresh = async () => {
       try {
-        const result = await api.getAiReviewQuote(bookId, quoteRequestId);
+        const result = await recoverReviewRequest(api, pendingRequest);
         if (cancelled) return;
-        if (result.quote.status === "ready") { setQuote(result.quote); setQuoteRequestId(null); setNotice("Exact usage quote is ready. Review the credit total before accepting."); }
-        else if (result.quote.status === "failed") { setQuoteRequestId(null); setError("Usage counting failed. No generation job or credit hold was created."); }
+        if (result.job || result.status?.quote.status !== "counting") adoptRecovery(result, pendingRequest);
       } catch { /* A transient status failure must not start another provider count. */ }
     };
     const timer = window.setInterval(() => { void refresh(); }, 2_000);
     void refresh();
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [api, bookId, quoteRequestId]);
+  }, [api, pendingRequest, quoteRequestId, adoptRecovery]);
+  useEffect(() => {
+    if (!quote || Date.parse(quote.expiresAt) <= quoteClock) return;
+    const timer = window.setTimeout(() => setQuoteClock(Date.now()), Math.max(0, Math.min(2_147_483_647, Date.parse(quote.expiresAt) - Date.now() + 1)));
+    return () => window.clearTimeout(timer);
+  }, [quote, quoteClock]);
   useEffect(() => {
     // Each effect setup owns its fetch. Strict Mode may cancel and replay the
     // setup; a persistent "already opened" latch would discard both responses.
-    if (!initialJobId || !chapterId) return;
+    // A URL-linked historical review must never replace a recovered paid request.
+    if (!initialJobId || !chapterId || !recoveryReady || !restoreInitialReview) return;
     let cancelled = false;
     setBusy(true); setError(null); setNotice(null);
     void api.getAiJob(initialJobId).then((result) => {
       if (cancelled) return;
-      if (!reviewTargetsChapter(result, chapterId)) { setError("This saved review belongs to a different chapter. Select that chapter before opening it."); return; }
+      if (result.id !== initialJobId || result.book_id !== bookId || !reviewTargetsChapter(result, chapterId)) { setError("This saved review belongs to a different chapter. Select that chapter before opening it."); return; }
       setJob(result); setLastAppliedVersion(null); remember(result);
       if (modes.some((item) => item.value === result.agent_type)) setMode(result.agent_type as Mode);
       if (result.status === "failed") { setError(result.error_message ?? "This AI review did not finish. Start a fresh review."); return; }
@@ -193,7 +214,7 @@ export default function AiAssistantPanel({
     }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not open the saved AI review."); })
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
-  }, [api, bookId, chapterId, initialJobId, remember]);
+  }, [api, bookId, chapterId, initialJobId, remember, recoveryReady, restoreInitialReview]);
   useEffect(() => {
     if (!job || !["queued", "running"].includes(job.status) || unconfirmed) return;
     let cancelled = false;
@@ -201,6 +222,10 @@ export default function AiAssistantPanel({
       try {
         const next = await api.getAiJob(job.id);
         if (cancelled) return;
+        if (next.id !== job.id || next.book_id !== bookId || !reviewTargetsChapter(next, chapterId)) throw new Error("Saved review scope changed.");
+        if (pendingRequest && (!["queued", "running"].includes(next.status) || next.error_code === "ai_provider_outcome_unconfirmed")) {
+          adoptRecovery({ status: verifiedStatus, job: next }, pendingRequest);
+        }
         setJob(next); remember(next);
         if (next.error_code === "ai_provider_outcome_unconfirmed") setNotice(null);
         if (next.status === "succeeded") setNotice(next.suggestions.length ? "Review complete. Inspect each suggestion before applying it." : "Review completed with no suggestions.");
@@ -210,21 +235,20 @@ export default function AiAssistantPanel({
     const timer = window.setInterval(() => { void refresh(); }, 1_500);
     void refresh();
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [api, job?.id, job?.status, unconfirmed, remember]);
+  }, [api, bookId, chapterId, job?.id, job?.status, unconfirmed, remember, pendingRequest, verifiedStatus, adoptRecovery]);
 
   const run = async () => {
-    if (!chapterId || !userId || !recoveryReady || !selectedModelId || !models.length || acceptanceUncertain || quote || quoteRequestId || (!countingConsent && pendingRequest?.allowProviderTokenCounting !== true) || requestInFlight.current || processing || dirty || !editable || (mode === "writer" && !instruction.trim())) return;
+    if (!chapterId || !userId || !recoveryReady || !selectedModelId || !models.length || unconfirmed || acceptanceUncertain || quote || quoteRequestId || verifiedStatus || (!countingConsent && pendingRequest?.allowProviderTokenCounting !== true) || requestInFlight.current || processing || dirty || !editable || (mode === "writer" && !instruction.trim())) return;
     const scope = reviewScope.current;
     requestInFlight.current = true;
     setBusy(true); setError(null); setNotice(null);
     let request = pendingRequest;
-    let dispatched = false;
     try {
       const digest = await reviewBriefHash(mode, instruction);
       if (reviewScope.current !== scope) return;
       if (request && request.briefHash !== digest) throw new Error("Re-enter the original drafting instruction exactly before retrying this request. No new request was sent.");
       if (!request) {
-        request = { schema: 1, userId, bookId, chapterId, key: crypto.randomUUID(), modelId: selectedModelId,
+        request = { schema: 1, userId, bookId, chapterId, key: crypto.randomUUID(), modelId: selectedModelId, model: models.find(item => item.id === selectedModelId)?.model,
           allowProviderTokenCounting: true, mode, includeRelated,
           includeBookBible, includeStyleGuide,
           contextBudget: contextBudget as PendingReview["contextBudget"], briefHash: digest, savedAt: Date.now() };
@@ -239,17 +263,14 @@ export default function AiAssistantPanel({
           setPendingRequest(request);
         }
         try {
-          const existing = await api.getAiJobByRequest(bookId, request.key);
+          const existing = await recoverReviewRequest(api, request);
           if (reviewScope.current !== scope) return;
-          if (!reviewTargetsChapter(existing, chapterId)) throw new Error("The saved request targets another chapter. No new request was sent.");
-          setJob(existing); setLastAppliedVersion(null); remember(existing); setPendingRequest(null);
-          try { window.sessionStorage.removeItem(reviewRecoveryKey(userId, bookId, chapterId)); } catch { /* Server job is durable. */ }
-          setNotice("Recovered the saved AI review without starting another request.");
+          adoptRecovery(existing, request);
           return;
-        } catch (reason) { if (!(reason instanceof ApiClientError && reason.status === 404)) throw reason; }
+        } catch (reason) { if (!(reason instanceof ApiClientError && reason.status === 404) || request.quoteRequestId || request.acceptAttempted) throw reason; }
       }
       if (reviewScope.current !== scope) return;
-      dispatched = true;
+      setJob(null); setVerifiedStatus(null);
       const result = await api.createAiReviewQuote(bookId, {
         modelId: request.modelId ?? selectedModelId, agentType: request.mode, chapterIds: [request.chapterId],
         ...(request.mode === "writer" ? { userInstruction: instruction.trim() } : {}), idempotencyKey: request.key,
@@ -259,27 +280,13 @@ export default function AiAssistantPanel({
         allowProviderTokenCounting: true,
       });
       if (reviewScope.current !== scope) return;
-      if (result.quote) {
-        request = { ...request, quoteRequestId: result.quote.requestId };
-        setPendingRequest(request);
-        try { window.sessionStorage.setItem(reviewRecoveryKey(request.userId, bookId, chapterId), JSON.stringify(request)); }
-        catch { throw new Error("The exact quote is ready, but its recovery pointer could not be saved. Do not accept it yet; retry this same quote key."); }
-        setQuote(result.quote); setQuoteRequestId(null);
-        setNotice("Exact usage quote is ready. Review the credit total, then accept to start generation.");
-      } else if (result.request) {
-        request = { ...request, quoteRequestId: result.request.id };
-        setPendingRequest(request);
-        try { window.sessionStorage.setItem(reviewRecoveryKey(request.userId, bookId, chapterId), JSON.stringify(request)); } catch { throw new Error("The quote request is counting, but its recovery pointer could not be saved. Do not create a new request key."); }
-        setQuote(null); setQuoteRequestId(result.request.id);
-        setNotice("Counting the selected saved text for an exact quote. No generation job or credit hold has started.");
-      } else throw new Error("The quote request returned no recoverable status.");
+      if (result.quote && result.request || !result.quote && result.request?.status !== "counting") throw new Error("The quote request returned no verifiable status.");
+      const status = verifiedReviewQuoteStatus({ quote: result.quote ?? { requestId: result.request!.id, status: "counting" } }, request);
+      adoptRecovery({ status, job: null }, request);
+      setNotice(status.quote.status === "ready" ? "Exact usage quote is ready. Review the credit total, then accept to start generation."
+        : "Counting the selected saved text for an exact quote. No generation job or credit hold has started.");
     } catch (reason) {
       if (reviewScope.current !== scope) return;
-      if (dispatched && reason instanceof ApiClientError && [400, 401, 403, 422].includes(reason.status)) {
-        setPendingRequest(null);
-        setQuote(null); setQuoteRequestId(null);
-        try { window.sessionStorage.removeItem(reviewRecoveryKey(userId, bookId, chapterId)); } catch { /* The server still rejected this request. */ }
-      }
       setError(reason instanceof Error ? reason.message : "AI review outcome is unknown. Recover the original request before trying again.");
     }
     finally { if (reviewScope.current === scope) { requestInFlight.current = false; setBusy(false); } }
@@ -288,38 +295,41 @@ export default function AiAssistantPanel({
   const acceptQuote = async () => {
     if (!quote || !pendingRequest || requestInFlight.current || !canAcceptReviewQuote(quote, { pending: pendingRequest, bookId, chapterId, editable, dirty, recoveryReady, busy: processing, acceptanceUncertain })) return;
     const scope = reviewScope.current;
+    let request = pendingRequest;
+    let dispatched = false, acceptedReply = false;
     setAcceptanceUncertain(true);
+    setVerifiedStatus(null);
     requestInFlight.current = true; setBusy(true); setError(null); setNotice(null);
     try {
-      try { window.sessionStorage.setItem(reviewRecoveryKey(pendingRequest.userId, bookId, pendingRequest.chapterId), JSON.stringify(pendingRequest)); }
+      const attempted = { ...pendingRequest, acceptAttempted: true as const };
+      try { keepPending(attempted); request = attempted; }
       catch { throw new Error("Browser recovery storage is unavailable. No paid generation was requested."); }
+      dispatched = true;
       const accepted = await api.acceptAiReviewQuote(bookId, quote.requestId, quote.reservedCredits);
-      const result = await api.getAiJob(accepted.jobId);
+      acceptedReply = true;
       if (reviewScope.current !== scope) return;
-      if (!reviewTargetsChapter(result, chapterId)) throw new Error("Accepted review targets another chapter. Recover it from Recent saved reviews before continuing.");
-      setJob(result); setLastAppliedVersion(null); remember(result);
-      setPendingRequest(null); setQuote(null); setQuoteRequestId(null); setCountingConsent(false); setAcceptanceUncertain(false);
-      try { window.sessionStorage.removeItem(reviewRecoveryKey(pendingRequest.userId, bookId, pendingRequest.chapterId)); } catch { /* The server job is durable and idempotently recoverable. */ }
+      const result = await recoverReviewRequest(api, request);
+      if (reviewScope.current !== scope) return;
+      if (!result.job || result.job.id !== accepted.jobId) throw new Error("The accepted review could not be confirmed. Recover this same request.");
+      adoptRecovery(result, request); setCountingConsent(false);
       setNotice("Review accepted and queued. It will continue if you leave this page.");
     } catch (reason) {
       if (reviewScope.current !== scope) return;
       try {
-        const status = await api.getAiReviewQuote(bookId, quote.requestId);
+        const result = await recoverReviewRequest(api, request);
         if (reviewScope.current !== scope) return;
-        if (status.job) {
-          const recovered = await api.getAiJob(status.job.id);
-          if (reviewScope.current !== scope) return;
-          if (!reviewTargetsChapter(recovered, chapterId)) throw new Error("Accepted review targets another chapter.");
-          setJob(recovered); setLastAppliedVersion(null); remember(recovered);
-          setPendingRequest(null); setQuote(null); setQuoteRequestId(null); setCountingConsent(false); setAcceptanceUncertain(false);
-          try { window.sessionStorage.removeItem(reviewRecoveryKey(pendingRequest.userId, bookId, pendingRequest.chapterId)); } catch { /* Durable job already recovered. */ }
+        if (!result.job && dispatched && !acceptedReply && !pendingRequest.acceptAttempted
+            && reason instanceof ApiClientError && [400, 401, 402, 403, 409, 422].includes(reason.status)) {
+          // Only a definite first refusal may release this local attempt marker.
+          request = { ...request, acceptAttempted: undefined, acceptanceRefused: true };
+        }
+        adoptRecovery(result, request);
+        if (result.job) {
+          setCountingConsent(false);
           setNotice("Recovered the accepted review after an uncertain reply. No second charge was made.");
         } else {
-          // A verified read permits another explicit decision on the same offer.
-          setQuote(status.quote.status === "ready" ? status.quote : null);
-          if (status.quote.status === "counting") setQuoteRequestId(status.quote.requestId);
-          setAcceptanceUncertain(false);
-          setError(reason instanceof Error ? `${reason.message} Status confirmed no accepted job. Review the same quote before deciding again.` : "No accepted job was found. Review the same quote before deciding again.");
+          setError(request.acceptanceRefused ? "Acceptance was refused and no job is currently recorded. Resolve credits, permissions or changed source, then start a new quote."
+            : "No accepted job is currently recorded. Keep this original request; only an explicit retry of this same quote is allowed.");
         }
       } catch (recoveryError) {
         if (reviewScope.current === scope) setError(recoveryError instanceof Error ? `${recoveryError.message} Acceptance remains locked; recover saved status before any retry.` : "Acceptance and recovery are unconfirmed. Keep this quote and contact support; do not create another request.");
@@ -332,34 +342,41 @@ export default function AiAssistantPanel({
     requestInFlight.current = true;
     setBusy(true); setError(null); setNotice(null);
     const scope = reviewScope.current;
+    setVerifiedStatus(null);
     try {
-      let recovered: AiJobWithSuggestions;
-      if (pendingRequest.quoteRequestId) {
-        const status = await api.getAiReviewQuote(bookId, pendingRequest.quoteRequestId);
-        if (reviewScope.current !== scope) return;
-        if (!status.job) {
-          if (status.quote.status === "ready") { setQuote(status.quote); setQuoteRequestId(null); }
-          else if (status.quote.status === "counting") setQuoteRequestId(pendingRequest.quoteRequestId);
-          else setError("The saved quote count failed. No generation was accepted.");
-          setAcceptanceUncertain(false); setNotice("Saved quote status recovered without counting or generating again. Review it before deciding.");
-          return;
-        }
-        recovered = await api.getAiJob(status.job.id);
-      } else recovered = await api.getAiJobByRequest(bookId, pendingRequest.key);
+      const recovered = await recoverReviewRequest(api, pendingRequest);
       if (reviewScope.current !== scope) return;
-      if (!reviewTargetsChapter(recovered, chapterId)) throw new Error("The saved request targets another chapter. No new request was sent.");
-      setJob(recovered); setLastAppliedVersion(null); remember(recovered); setPendingRequest(null); setQuote(null); setAcceptanceUncertain(false);
-      try { window.sessionStorage.removeItem(reviewRecoveryKey(pendingRequest.userId, bookId, pendingRequest.chapterId)); } catch { /* Server job is durable. */ }
-      setNotice("Recovered the saved AI review without starting another request.");
+      adoptRecovery(recovered, pendingRequest);
     } catch (reason) {
       if (reviewScope.current !== scope) return;
-      if (reason instanceof ApiClientError && reason.status === 404) setNotice("No saved job is visible yet. Retry the original request with the same settings and brief; do not start a new one.");
+      setQuote(null); setQuoteRequestId(null); setAcceptanceUncertain(pendingRequest.acceptAttempted === true);
+      if (reason instanceof ApiClientError && reason.status === 404 && !pendingRequest.quoteRequestId && !pendingRequest.acceptAttempted)
+        setNotice("No original quote is visible yet. Retry the original request with the same settings and brief; do not start a new one.");
       else setError(reason instanceof Error ? reason.message : "Could not check the saved request. No new request was sent.");
     } finally { if (reviewScope.current === scope) { requestInFlight.current = false; setBusy(false); } }
   };
 
+  const startNewQuote = async () => {
+    if (!pendingRequest || processing || requestInFlight.current || !canReplaceReviewQuote(verifiedStatus, pendingRequest)
+        || !window.confirm("Start a new quote? The old server request is retained. A new quote needs separate counting consent and price acceptance.")) return;
+    const scope = reviewScope.current;
+    requestInFlight.current = true; setBusy(true); setError(null);
+    try {
+      const recovered = await recoverReviewRequest(api, pendingRequest);
+      if (reviewScope.current !== scope) return;
+      adoptRecovery(recovered, pendingRequest);
+      if (!canReplaceReviewQuote(recovered.status, pendingRequest)) return;
+      window.sessionStorage.removeItem(reviewRecoveryKey(pendingRequest.userId, bookId, pendingRequest.chapterId));
+      setPendingRequest(null); setVerifiedStatus(null); setQuote(null); setQuoteRequestId(null);
+      setAcceptanceUncertain(false); setCountingConsent(false);
+      setNotice("Ready for a new quote. No token count, credit hold or generation has started.");
+    } catch (reason) {
+      if (reviewScope.current === scope) setError(reason instanceof Error ? reason.message : "The original quote could not be resolved. Its recovery record was kept.");
+    } finally { if (reviewScope.current === scope) { requestInFlight.current = false; setBusy(false); } }
+  };
+
   const restore = async (review: AiJobReview) => {
-    if (processing || reviewing || dirty || !reviewTargetsChapter(review, chapterId)) return;
+    if (processing || reviewing || dirty || pendingRequest || !reviewTargetsChapter(review, chapterId)) return;
     const scope = reviewScope.current;
     setBusy(true); setError(null); setNotice(null);
     try {
@@ -423,6 +440,7 @@ export default function AiAssistantPanel({
       {models.length ? models.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.model}</option>) : <option value="">No approved model available</option>}
     </select>
     {pricingError && <p role="status" className="mt-2 text-xs leading-5 text-amber-200">Paid AI review is unavailable: {pricingError} No free generation fallback is offered.</p>}
+    {!pendingRequest && (pricingError || !models.length) && <button type="button" disabled={processing} onClick={() => setModelRefresh(value => value + 1)} className="mt-2 text-xs underline underline-offset-4">Reload approved models</button>}
     <label className="mt-3 block text-xs text-white/55" htmlFor="ai-context-budget">Source context budget</label>
     <select id="ai-context-budget" value={contextBudget} onChange={(event) => setContextBudget(Number(event.target.value))} disabled={processing || !!pendingRequest} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
       <option value={4096}>Compact · about 4K tokens</option><option value={8192}>Balanced · about 8K tokens</option><option value={16000}>Extended · about 16K tokens</option>
@@ -436,10 +454,13 @@ export default function AiAssistantPanel({
     {["writer", "consistency"].includes(mode) && <label className="mt-3 flex items-start gap-2 text-xs text-white/60"><input type="checkbox" checked={includeRelated} onChange={(event) => setIncludeRelated(event.target.checked)} disabled={processing || !!pendingRequest} /> Include related saved passages</label>}
     <label className="mt-3 flex items-start gap-2 text-xs leading-5 text-white/60"><input type="checkbox" checked={countingConsent || pendingRequest?.allowProviderTokenCounting === true} onChange={(event) => setCountingConsent(event.target.checked)} disabled={processing || pendingRequest?.allowProviderTokenCounting === true} /><span>I agree to send {consentSources} to OpenAI for token counting so Bookworm can calculate the exact quote. This does not generate content or reserve credits.</span></label>
     {mode === "writer" && <><label className="mt-3 block text-xs text-white/55" htmlFor="ai-instruction">Drafting instruction</label><textarea id="ai-instruction" value={instruction} onChange={(event) => setInstruction(event.target.value)} disabled={processing || !!quote || !!quoteRequestId || acceptanceUncertain} maxLength={4000} rows={4} placeholder="Continue this scene with…" className="mt-1 w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm disabled:opacity-60" /></>}
-    <button type="button" onClick={() => void run()} disabled={!chapterId || !recoveryReady || !models.length || !selectedModelId || acceptanceUncertain || (!countingConsent && pendingRequest?.allowProviderTokenCounting !== true) || processing || dirty || !editable || !!quoteRequestId || !!quote || (mode === "writer" && !instruction.trim())} className="mt-3 w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-black disabled:opacity-40">{busy ? "Preparing quote…" : quoteRequestId ? "Counting saved text…" : pendingRequest ? "Recover original quote" : "Prepare usage quote"}</button>
+    <button type="button" onClick={() => void run()} disabled={!chapterId || !recoveryReady || !models.length || !selectedModelId || unconfirmed || acceptanceUncertain || (!countingConsent && pendingRequest?.allowProviderTokenCounting !== true) || processing || dirty || !editable || !!verifiedStatus || !!quoteRequestId || !!quote || (mode === "writer" && !instruction.trim())} className="mt-3 w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-black disabled:opacity-40">{busy ? "Preparing quote…" : quoteRequestId ? "Counting saved text…" : pendingRequest ? "Recover original quote" : "Prepare usage quote"}</button>
     {quote && pendingRequest && <div className="mt-3 rounded-xl border border-emerald-300/25 bg-emerald-300/[0.06] p-3 text-xs leading-5 text-emerald-50"><p className="font-medium">Exact usage quote · {quote.model}</p><p className="mt-1 text-white/65">{quote.countedInputTokens.toLocaleString()} input tokens counted · up to {quote.maxOutputTokens.toLocaleString()} output tokens</p><p className="mt-2 text-lg font-semibold">{quote.reservedCredits.toLocaleString()} credits on acceptance</p><p className="text-[11px] text-white/45">Expires {new Date(quote.expiresAt).toLocaleString()}. Acceptance starts generation and reserves this exact maximum; results still require your review.</p><button type="button" disabled={!canAcceptReviewQuote(quote, { pending: pendingRequest, bookId, chapterId, editable, dirty, recoveryReady, busy: processing, acceptanceUncertain })} onClick={() => void acceptQuote()} className="mt-3 w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-black disabled:opacity-40">{busy ? "Accepting…" : `Accept · ${quote.reservedCredits.toLocaleString()} credits`}</button></div>}
     {acceptanceUncertain && <div className="mt-3 text-xs leading-5 text-amber-100"><p role="status">Acceptance is unconfirmed. Read saved status before another decision.</p><button type="button" disabled={busy} onClick={() => void checkPending()} className="mt-2 rounded-md border border-white/15 px-3 py-2">Recover acceptance status</button></div>}
-    {pendingRequest && !quote && !quoteRequestId && <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100"><p>A previous request is saved for recovery. Only its ID, settings and instruction digest are stored in this tab; manuscript text is not. Retry the exact settings to recover the same quote or accepted job. No new request key will be created.</p><button type="button" disabled={busy} onClick={() => void checkPending()} className="mt-2 underline underline-offset-4 disabled:opacity-40">Check accepted job · read only</button></div>}
+    {pendingRequest && !acceptanceUncertain && <button type="button" disabled={busy} onClick={() => void checkPending()} className="mt-3 text-xs underline underline-offset-4 disabled:opacity-40">Check saved request · read only</button>}
+    {pendingRequest && !quote && !quoteRequestId && <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100"><p>A previous request is saved for recovery. Only its ID, settings and instruction digest are stored in this tab; manuscript text is not. Check saved status without re-entering the brief or sending it to OpenAI. No new request key will be created.</p></div>}
+    {quote && Date.parse(quote.expiresAt) <= quoteClock && <p role="status" className="mt-3 text-xs leading-5 text-amber-100">{pendingRequest?.acceptAttempted ? "This quote expired after an acceptance attempt. Keep its recovery record and check saved status; do not start a duplicate request." : "This quote has expired. Check its saved status before requesting a fresh price."}</p>}
+    {canReplaceReviewQuote(verifiedStatus, pendingRequest, quoteClock) && <button type="button" disabled={processing} onClick={() => void startNewQuote()} className="mt-3 w-full rounded-lg border border-white/20 px-3 py-2 text-sm disabled:opacity-40">Start a new quote</button>}
     {dirty && <p className="mt-2 text-xs text-amber-200">Save the chapter before running or applying AI suggestions.</p>}
     {error && <p role="alert" className="mt-3 text-xs leading-5 text-red-200">{error}</p>}
     {unconfirmed && <p role="alert" className="mt-3 rounded-lg border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">The paid provider response for request {job?.id} is unconfirmed. No second generation will start automatically. Your credit remains reserved while support checks the provider result; do not start a new review for this book yet.</p>}
@@ -453,7 +474,7 @@ export default function AiAssistantPanel({
           const targetsCurrent = reviewTargetsChapter(review, chapterId);
           return <div key={review.id} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 px-3 py-2">
             <div className="min-w-0"><p className="truncate text-xs text-white/75">{modeLabel(review.agent_type)} · {review.status}</p><p className="mt-0.5 text-[10px] text-white/35">{review.context_source_count} related saved source{review.context_source_count === 1 ? "" : "s"}</p></div>
-            {targetsCurrent ? <button type="button" disabled={processing || !!reviewing || dirty} onClick={() => void restore(review)} className="shrink-0 rounded-md border border-white/15 px-2 py-1 text-[11px] disabled:opacity-40">Open</button> : <span className="shrink-0 text-[10px] text-white/30">Other chapter</span>}
+            {targetsCurrent ? <button type="button" disabled={processing || !!reviewing || dirty || !!pendingRequest} onClick={() => void restore(review)} className="shrink-0 rounded-md border border-white/15 px-2 py-1 text-[11px] disabled:opacity-40">Open</button> : <span className="shrink-0 text-[10px] text-white/30">Other chapter</span>}
           </div>;
         })}
       </div>

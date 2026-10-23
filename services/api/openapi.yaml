@@ -1882,6 +1882,22 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { description: Counting/storage unavailable; no generation is started }
+  /v1/books/{bookId}/ai-review/quote-requests/{requestKey}:
+    get:
+      tags: [v1]
+      operationId: recoverAiReviewTokenQuote
+      summary: Recover the original private quote by its saved request key
+      description: Read-only caller/book-scoped lookup after reply loss. Never counts tokens, dispatches generation or reserves credits; works without an active pricing catalog.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestKey, in: path, required: true, schema: { type: string, minLength: 8, maxLength: 200 } }
+      responses:
+        "200": { description: Safe original quote status and optional accepted job status }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/ai-review/quotes/{requestId}:
     get:
       tags: [v1]

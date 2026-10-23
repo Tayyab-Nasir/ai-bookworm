@@ -1,5 +1,6 @@
 // Requires isolated Next on 4398 and synthetic Auth/API on 4399 with
-// FIXTURE_AI_DRAFT=true and FIXTURE_LOST_REVIEW_REPLY=true.
+// FIXTURE_AI_DRAFT=true, FIXTURE_LOST_REVIEW_REPLY=true,
+// and FIXTURE_LOST_REVIEW_QUOTE_REPLY=true.
 import assert from 'node:assert/strict';
 import { chromium, expect } from '@playwright/test';
 
@@ -10,9 +11,11 @@ try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   page.setDefaultTimeout(30000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  let reviewAccepts = 0;
+  let reviewAccepts = 0, reviewCreates = 0, keyReads = 0;
   page.on('request', request => {
     if (request.url().includes('/ai-review/quotes/') && request.url().endsWith('/accept') && request.method() === 'POST') reviewAccepts++;
+    if (request.url().endsWith('/ai-review/quotes') && request.method() === 'POST') reviewCreates++;
+    if (request.url().includes('/ai-review/quote-requests/') && request.method() === 'GET') keyReads++;
   });
   await page.goto(`${origin}/dashboard`);
   await page.getByLabel('Email').fill('author@example.test');
@@ -42,12 +45,22 @@ try {
   await expect(page.getByLabel(/I agree to send the selected saved chapter/)).toBeChecked();
   await expect(page.getByRole('button', { name: 'Prepare usage quote' })).toBeEnabled();
   await page.getByRole('button', { name: 'Prepare usage quote' }).click();
+  await page.getByText('Fixture lost quote creation reply', { exact: true }).waitFor();
+  assert.equal(reviewCreates, 2, 'one onboarding quote and one proofread quote expected');
+  await page.reload();
   await expect(page.getByText('24 credits on acceptance')).toBeVisible();
+  assert.equal(reviewCreates, 2, 'reload recovers a lost quote without another token count');
+  assert.ok(keyReads > 0, 'lost reply must recover through read-only key lookup');
   await page.getByRole('button', { name: 'Accept · 24 credits' }).click();
   await expect(page.getByText('Recovered the accepted review after an uncertain reply. No second charge was made.')).toBeVisible();
   assert.equal(reviewAccepts, 2, 'one onboarding acceptance and one proofread acceptance expected; the latter loses its reply');
   await page.reload();
-  await page.getByText('Recent saved reviews').click();
+  // The initial empty editor can mount a temporary AI panel. Wait for the saved
+  // chapter before opening history so its subsequent keyed mount cannot close it.
+  await page.locator('.tiptap').waitFor();
+  const history = page.locator('section[aria-labelledby="ai-assistant-title"] details').filter({ has: page.locator('summary', { hasText: 'Recent saved reviews' }) });
+  await history.locator('summary').click();
+  await expect(history).toHaveJSProperty('open', true);
   await page.getByText('Proofread · succeeded').waitFor();
   assert.equal(reviewAccepts, 2, 'reload must not accept or queue another paid review');
   const jobs = await page.evaluate(async id => {
@@ -58,5 +71,5 @@ try {
   assert.equal(await page.evaluate(() => Object.values(sessionStorage).some(value => value.includes('Private setup brief'))), false);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
-  console.log('PASS AI review browser: explicit usage consent and quote, accepted-but-lost response recovered read-only after reload with one funded review, no private brief storage, mobile containment. Auth/API are fixtures.');
+  console.log('PASS web AI review: lost quote creation recovered by GET after reload without recounting; explicit priced acceptance, lost acceptance recovered with one funded review; no private brief storage; narrow-screen containment. Auth/API are fixtures.');
 } finally { await browser.close(); }

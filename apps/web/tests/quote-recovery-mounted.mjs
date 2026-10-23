@@ -686,6 +686,215 @@ test("AI review uncertain acceptance keeps the original quote locked until read-
   } finally { await page.close(); }
 });
 
+test("lost writer quote recovers read-only after remount without its private brief or current pricing catalog", async () => {
+  const page = await fixture({ width: 390, styled: true });
+  try {
+    await page.evaluate(() => {
+      window.reviewQuote = { requestId: "11111111-1111-4111-8111-111111111111", status: "ready", agentType: "writer", model: "approved",
+        countedInputTokens: 3100, maxOutputTokens: 6000, reservedCredits: 24, expiresAt: "2030-01-01T00:00:00.000Z" };
+      window.api.createAiReviewQuote = async (_book, body) => { window.calls.push({ operation: "review-create", body }); throw new Error("Quote reply lost"); };
+      window.api.getAiJobByRequest = async () => { throw window.apiError(404, "No legacy job"); };
+      window.api.recoverAiReviewQuote = async (book, key) => { window.calls.push({ operation: "quote-key-read", book, key }); return { quote: window.reviewQuote }; };
+    });
+    await page.evaluate(input => window.renderPanel({ ...input, initialDraftInstruction: "Private writer brief to recover." }), props());
+    await expect(page.getByRole("textbox", { name: "Drafting instruction", exact: true })).toHaveValue("Private writer brief to recover.");
+    await page.getByRole("checkbox", { name: /I agree to send the selected saved chapter/ }).check();
+    await page.getByRole("button", { name: "Prepare usage quote" }).click();
+    await page.getByText("Quote reply lost", { exact: true }).waitFor();
+    await page.evaluate(() => window.clearComponent());
+    await expect(page.getByRole("heading", { name: "AI assistant" })).toHaveCount(0);
+    await page.evaluate(input => { window.api.listAiReviewModels = async () => ({ models: [] }); window.renderPanel(input); }, props());
+    await expect(page.getByRole("button", { name: "Accept · 24 credits" })).toBeEnabled();
+    await expect(page.getByRole("textbox", { name: "Drafting instruction", exact: true })).toHaveValue("");
+    const calls = await page.evaluate(() => window.calls.filter(call => call.operation));
+    assert.deepEqual(calls.map(call => call.operation), ["review-create", "quote-key-read"]);
+    assert.equal(calls[1].key, calls[0].body.idempotencyKey);
+    assert.equal(await page.evaluate(() => Object.values(sessionStorage).some(value => value.includes("Private writer brief"))), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: resolve(artifacts, "writer-quote-read-only-recovery-phone.png"), fullPage: true });
+  } finally { await page.close(); }
+});
+
+test("expired unaccepted AI quote can be replaced only after explicit confirmation and a fresh read", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.reviewQuote = { requestId: "11111111-1111-4111-8111-111111111111", status: "ready", agentType: "proofreader", model: "approved",
+        countedInputTokens: 3100, maxOutputTokens: 6000, reservedCredits: 24, expiresAt: "2020-01-01T00:00:00.000Z" };
+      window.api.createAiReviewQuote = async (_book, body) => { window.calls.push({ operation: "review-create", body }); return { quote: window.reviewQuote }; };
+      window.api.getAiReviewQuote = async () => { window.calls.push({ operation: "review-status" }); return { quote: window.reviewQuote }; };
+    });
+    await page.evaluate(input => window.renderPanel(input), props());
+    await page.getByRole("checkbox", { name: /I agree to send the selected saved chapter/ }).check();
+    await page.getByRole("button", { name: "Prepare usage quote" }).click();
+    await expect(page.getByRole("button", { name: "Accept · 24 credits" })).toBeDisabled();
+    page.once("dialog", dialog => dialog.dismiss());
+    await page.getByRole("button", { name: "Start a new quote", exact: true }).click();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "review-status").length), 0);
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Start a new quote", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Prepare usage quote" })).toBeDisabled();
+    await expect(page.getByRole("checkbox", { name: /I agree to send the selected saved chapter/ })).not.toBeChecked();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "review-create").length), 1);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "review-status").length), 1);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:ai-review:")).length), 0);
+  } finally { await page.close(); }
+});
+
+async function paidReviewFixture(page) {
+  await page.evaluate(() => {
+    window.reviewQuote = { requestId: "11111111-1111-4111-8111-111111111111", status: "ready", agentType: "proofreader", model: "approved",
+      countedInputTokens: 3100, maxOutputTokens: 6000, reservedCredits: 24, expiresAt: "2030-01-01T00:00:00.000Z" };
+    window.reviewKey = "bookworm:ai-review:00000000-0000-4000-8000-000000000001:a-book:a-chapter";
+    window.api.createAiReviewQuote = async (_book, body) => { window.calls.push({ operation: "review-create", body }); return { quote: window.reviewQuote }; };
+    window.api.getAiReviewQuote = async () => { window.calls.push({ operation: "review-status" }); return { quote: window.reviewQuote }; };
+  });
+  await page.evaluate(input => window.renderPanel(input), props());
+  await page.getByRole("checkbox", { name: /I agree to send the selected saved chapter/ }).check();
+  await page.getByRole("button", { name: "Prepare usage quote" }).click();
+  await page.getByRole("button", { name: "Accept · 24 credits" }).waitFor();
+}
+
+test("uncertain acceptance survives remount and expiry without abandoning the paid request", async () => {
+  const page = await fixture();
+  try {
+    await paidReviewFixture(page);
+    await page.evaluate(() => {
+      window.api.acceptAiReviewQuote = async () => {
+        if (JSON.parse(sessionStorage.getItem(window.reviewKey)).acceptAttempted !== true) throw new Error("Attempt not saved before dispatch");
+        window.calls.push({ operation: "review-accept" }); throw new Error("Paid reply lost");
+      };
+      window.api.getAiReviewQuote = async () => { throw new Error("Recovery offline"); };
+    });
+    await page.getByRole("button", { name: "Accept · 24 credits" }).click();
+    await page.getByRole("button", { name: "Recover acceptance status" }).waitFor();
+    const original = await page.evaluate(() => sessionStorage.getItem(window.reviewKey));
+    assert.equal(JSON.parse(original).acceptAttempted, true);
+    await page.evaluate(() => window.clearComponent());
+    await expect(page.getByRole("heading", { name: "AI assistant" })).toHaveCount(0);
+    await page.evaluate(input => {
+      window.reviewQuote.expiresAt = "2020-01-01T00:00:00Z";
+      window.api.getAiReviewQuote = async () => { window.calls.push({ operation: "review-status" }); return { quote: window.reviewQuote }; };
+      window.renderPanel(input);
+    }, props());
+    await page.getByText(/expired after an acceptance attempt/).waitFor();
+    await expect(page.getByRole("button", { name: "Start a new quote", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Accept · 24 credits" })).toBeDisabled();
+    assert.equal(await page.evaluate(() => sessionStorage.getItem(window.reviewKey)), original);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "review-accept").length), 1);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "review-create").length), 1);
+  } finally { await page.close(); }
+});
+
+for (const earlierUncertainAttempt of [false, true]) test(`a definite acceptance refusal ${earlierUncertainAttempt ? "cannot erase earlier uncertainty" : "offers an explicit fresh quote"}`, async () => {
+  const page = await fixture();
+  try {
+    await paidReviewFixture(page);
+    await page.evaluate(uncertain => {
+      window.api.acceptAiReviewQuote = async () => {
+        window.calls.push({ operation: "review-accept" });
+        if (uncertain && window.calls.filter(call => call.operation === "review-accept").length === 1) throw new Error("Unknown transport result");
+        throw window.apiError(402, "Insufficient funded credits");
+      };
+    }, earlierUncertainAttempt);
+    const accept = page.getByRole("button", { name: "Accept · 24 credits" });
+    await accept.click();
+    if (earlierUncertainAttempt) {
+      await expect(accept).toBeEnabled();
+      await accept.click();
+      await expect(accept).toBeEnabled();
+      await expect(page.getByRole("button", { name: "Start a new quote", exact: true })).toHaveCount(0);
+      assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem(window.reviewKey)).acceptAttempted), true);
+    } else {
+      await expect(accept).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Start a new quote", exact: true })).toBeEnabled();
+      assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem(window.reviewKey)).acceptanceRefused), true);
+    }
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "review-create").length), 1);
+  } finally { await page.close(); }
+});
+
+test("fresh-quote confirmation recovers a newly visible accepted job rather than discarding its identity", async () => {
+  const page = await fixture();
+  try {
+    await paidReviewFixture(page);
+    await page.evaluate(() => {
+      window.reviewQuote.expiresAt = "2020-01-01T00:00:00Z";
+    });
+    await page.getByRole("button", { name: "Check saved request · read only" }).click();
+    await expect(page.getByRole("button", { name: "Start a new quote", exact: true })).toBeEnabled();
+    await page.evaluate(() => {
+      const id = "22222222-2222-4222-8222-222222222222";
+      window.api.getAiReviewQuote = async () => ({ quote: window.reviewQuote, job: { id, status: "running" } });
+      window.api.getAiJob = async () => ({ ...window.job(id, "a-chapter"), status: "running", suggestions: [] });
+    });
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Start a new quote", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Start a new quote", exact: true })).toHaveCount(0);
+    assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem(window.reviewKey)).acceptAttempted), true);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "review-create").length), 1);
+  } finally { await page.close(); }
+});
+
+test("completed quote recovery permits a later review only after fresh counting consent", async () => {
+  const page = await fixture();
+  try {
+    await paidReviewFixture(page);
+    await page.evaluate(() => {
+      const id = "22222222-2222-4222-8222-222222222222";
+      window.api.getAiReviewQuote = async () => ({ quote: window.reviewQuote, job: { id, status: "succeeded" } });
+      window.api.getAiJob = async () => window.job(id, "a-chapter");
+    });
+    await page.getByRole("button", { name: "Check saved request · read only" }).click();
+    await page.getByText("22222222-2222-4222-8222-222222222222 proposal", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => sessionStorage.getItem(window.reviewKey)), null);
+    const consent = page.getByRole("checkbox", { name: /I agree to send the selected saved chapter/ });
+    await expect(consent).not.toBeChecked();
+    await expect(page.getByRole("button", { name: "Prepare usage quote" })).toBeDisabled();
+    await consent.check();
+    await expect(page.getByRole("button", { name: "Prepare usage quote" })).toBeEnabled();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "review-create").length), 1);
+  } finally { await page.close(); }
+});
+
+test("an old URL-linked review cannot replace the pending request recovered on remount", async () => {
+  const page = await fixture();
+  try {
+    await paidReviewFixture(page);
+    await page.evaluate(() => {
+      window.clearComponent();
+      const saved = JSON.parse(sessionStorage.getItem(window.reviewKey));
+      sessionStorage.setItem(window.reviewKey, JSON.stringify({ ...saved, acceptanceRefused: true }));
+      const id = "22222222-2222-4222-8222-222222222222";
+      window.api.getAiReviewQuote = async () => ({ quote: window.reviewQuote, job: { id, status: "running" } });
+      window.api.getAiJob = async requested => {
+        window.calls.push({ operation: "job-read", id: requested });
+        return { ...window.job(requested, "a-chapter"), status: requested === id ? "running" : "succeeded", suggestions: [] };
+      };
+    });
+    await expect(page.getByRole("heading", { name: "AI assistant" })).toHaveCount(0);
+    await page.evaluate(input => window.renderPanel(input), props("a-book", "a-chapter", "a-older-review"));
+    await page.getByText("Recovered the saved AI review without starting another request.", { exact: true }).waitFor();
+    const saved = await page.evaluate(() => JSON.parse(sessionStorage.getItem(window.reviewKey)));
+    assert.equal(saved.acceptAttempted, true);
+    assert.equal(saved.acceptanceRefused, undefined);
+    assert.equal(await page.evaluate(() => window.calls.some(call => call.operation === "job-read" && call.id === "a-older-review")), false);
+    await expect(page.getByRole("combobox", { name: "Task", exact: true })).toBeDisabled();
+  } finally { await page.close(); }
+});
+
+test("a quote expiring on screen disables paid acceptance and offers explicit renewal", async () => {
+  const page = await fixture();
+  try {
+    await paidReviewFixture(page);
+    await page.evaluate(() => { window.reviewQuote.expiresAt = new Date(Date.now() + 350).toISOString(); });
+    await page.getByRole("button", { name: "Check saved request · read only" }).click();
+    await page.getByText("This quote has expired. Check its saved status before requesting a fresh price.", { exact: true }).waitFor();
+    await expect(page.getByRole("button", { name: "Accept · 24 credits" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Start a new quote", exact: true })).toBeEnabled();
+  } finally { await page.close(); }
+});
+
 test("Book Bible uncertain acceptance reads the existing quote before another explicit approval", async () => {
   const page = await fixture();
   try {
@@ -773,7 +982,7 @@ test("generic AI quote 409 preserves the original key and retries only its origi
         return { quote: { requestId: "11111111-1111-4111-8111-111111111111", status: "ready", agentType: "writer", model: "approved",
           countedInputTokens: 3100, maxOutputTokens: 6000, reservedCredits: 24, expiresAt: "2030-01-01T00:00:00.000Z" } };
       };
-      window.api.getAiJobByRequest = async (_book, key) => {
+      window.api.recoverAiReviewQuote = async (_book, key) => {
         window.calls.push({ operation: "review-key-read", key }); throw window.apiError(404, "No accepted job");
       };
     });

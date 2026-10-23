@@ -161,6 +161,17 @@ test("AI review quote binds consented source request, counts once, and replays w
   assert.equal(rpcCalls[1]?.name, "complete_ai_review_token_quote_count");
   const quote = first.json().quote;
   assert.equal(quote.status, "ready"); assert.equal(quote.countedInputTokens, 420); assert.ok(quote.reservedCredits > 0);
+  const writesBeforeRecovery = rpcCalls.length;
+  delete process.env.AI_REVIEW_PRICING_CATALOG_JSON;
+  const recovered = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/ai-review/quote-requests/${request.idempotencyKey}`, headers: auth });
+  assert.equal(recovered.statusCode, 200, recovered.body);
+  assert.deepEqual(recovered.json().quote, quote);
+  assert.equal(recovered.headers['cache-control'], 'private, no-store');
+  assert.equal(rpcCalls.length, writesBeforeRecovery, 'read-only quote recovery wrote an RPC');
+  assert.equal(countCalls, 1, 'recovery counted with the provider');
+  assert.ok(!recovered.body.includes(SOURCE));
+  assert.ok(!recovered.body.includes(TOKEN));
+  process.env.AI_REVIEW_PRICING_CATALOG_JSON = catalog();
   const replay = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/ai-review/quotes`, headers: auth, payload: request });
   assert.equal(replay.statusCode, 200, replay.body); assert.equal(countCalls, 1, "ready quote replay called provider counter again");
   assert.equal(replay.json().quote.reservedCredits, quote.reservedCredits);
@@ -178,8 +189,42 @@ test("AI review quote binds consented source request, counts once, and replays w
   assert.equal(status.statusCode, 200, status.body); assert.equal(status.headers["cache-control"], "private, no-store");
   assert.equal(status.json().quote.reservedCredits, quote.reservedCredits);
   assert.equal(status.json().job.status, "queued");
+  const recoveredJob = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/ai-review/quote-requests/${request.idempotencyKey}`, headers: auth });
+  assert.equal(recoveredJob.statusCode, 200, recoveredJob.body);
+  assert.deepEqual(recoveredJob.json().job, status.json().job);
+  assert.equal(countCalls, 1);
   assert.equal((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/ai-review/models`, headers: auth })).statusCode, 200);
   assert.equal((await app.inject({ method: "GET", url: `/v1/books/${BOOK}/ai-review/models` })).statusCode, 401);
+});
+
+test('quote key recovery is read-only and caller/book/workspace scoped, including counting and failure', async (t) => {
+  const { factory, state, rpcCalls } = setup();
+  let providerCalls = 0;
+  const app = await makeApp(factory, async () => { providerCalls++; throw new Error('unexpected provider call'); });
+  t.after(() => app.close());
+  const key = 'original/key with spaces';
+  const request: Row = { id: randomUUID(), user_id: USER, workspace_id: WORKSPACE, book_id: BOOK,
+    generation_job_id: randomUUID(), generation_request_json: {}, catalog_json: {}, source_versions_json: [],
+    status: 'counting', lease_token: null, lease_expires_at: null, request_sha256: null,
+    counted_input_tokens: null, usage_quote_json: null, error_code: null, created_at: new Date().toISOString(),
+    accepted_job_id: null, idempotency_key: key };
+  state.ai_review_token_quote_requests.push(request);
+  const url = `/v1/books/${BOOK}/ai-review/quote-requests/${encodeURIComponent(key)}`;
+  const get = () => app.inject({ method: 'GET', url, headers: auth });
+  assert.equal((await get()).json().quote.status, 'counting');
+  request.status = 'failed';
+  assert.equal((await get()).json().quote.status, 'failed');
+  assert.equal((await app.inject({ method: 'GET', url })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'GET', url: `/v1/books/${BOOK}/ai-review/quote-requests/short`, headers: auth })).statusCode, 422);
+  request.user_id = randomUUID(); assert.equal((await get()).statusCode, 404); request.user_id = USER;
+  request.book_id = randomUUID(); assert.equal((await get()).statusCode, 404); request.book_id = BOOK;
+  request.workspace_id = randomUUID(); assert.equal((await get()).statusCode, 503); request.workspace_id = WORKSPACE;
+  request.accepted_job_id = randomUUID();
+  assert.equal((await get()).statusCode, 503, 'missing accepted job must not look unaccepted');
+  request.accepted_job_id = null;
+  state.workspace_members.length = 0;
+  assert.ok([403, 404].includes((await get()).statusCode));
+  assert.equal(rpcCalls.length, 0); assert.equal(providerCalls, 0);
 });
 
 test("AI review counter failures fail the quote request without creating a generation job", async (t) => {
