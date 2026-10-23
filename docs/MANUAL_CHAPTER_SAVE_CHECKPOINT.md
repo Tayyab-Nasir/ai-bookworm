@@ -36,7 +36,9 @@ the API. Malformed metadata or unavailable storage fails closed.
 
 ## Verification
 
-- Workspace typechecks and unit suites passed; API suite: **937 tests**.
+- Workspace typechecks and unit suites passed. Shared checkout API: **937 tests**;
+  the clean committed snapshot has **922 tests**, excluding 15 preserved,
+  uncommitted billing tests from another agent.
 - Web suite: **406 tests**; security/contract suite: **49 tests + 2 subtests**.
 - Actual mounted editor/compiled CSS in headless Edge: **38 tests**, including
   cold recovery, identical retry, lost closure reply, late response/account
@@ -51,6 +53,15 @@ the API. Malformed metadata or unavailable storage fails closed.
 - The existing native author/files CI workflow now includes the full mounted
   editor regression suite before its production web build. Exact commit/run
   outcomes are recorded separately in the shared Obsidian handoff.
+
+Final acceptance of application commit `8861da07425efb097bc6d0a09ef60c1366623564`:
+the complete clean-snapshot `npm run verify` passed at 14:12:44 UTC, including
+737 service, 18 E2E, database-upgrade/crypto, load and deterministic evaluation
+cases. Installed Python and hash-verified EPUBCheck were explicitly configured;
+live-provider evaluation was skipped without a key. Production Next build passed.
+[Native database CI](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/39963455427)
+and [native author/files CI](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/39963455341)
+both passed on that exact application commit. These are not hosted/funded proofs.
 
 ## Files and continuation
 
