@@ -19,6 +19,8 @@ const aiReviews = new Map();
 const aiKeys = new Map();
 const aiReviewQuotes = new Map();
 const aiReviewQuoteKeys = new Map();
+const aiDecisionReceipts = new Map();
+let lostSuggestionReply = false;
 const populatedDashboardReads = new Map();
 const publishingEditions = new Map();
 const publishingPackages = [];
@@ -443,6 +445,10 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/v1/usage') return json(200, { entitlements: {}, usage: {}, creditBalance: 120 });
   if (process.env.FIXTURE_AI_DRAFT === 'true') {
     const draft = draftChapters.get(url.pathname.split('/')[3]);
+    if (draft && url.pathname.endsWith('/saves') && req.method === 'GET') {
+      const operationId = url.searchParams.get('operationId');
+      return json(200, aiDecisionReceipts.get(`${draft.chapter.id}:${operationId}`) ?? { status: 'not_found', operationId });
+    }
     if (draft && url.pathname.endsWith('/document')) return json(200, { ...draft, role: 'owner' });
     if (draft && url.pathname.endsWith('/versions')) return json(200, { versions: [] });
     const aiReviewModelMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/models$/u);
@@ -497,6 +503,7 @@ const server = createServer(async (req, res) => {
             operation_json: { operationId: randomUUID(), type: 'replace_text', target: { chapterId: source.chapter.id, nodeId: source.document.nodes[0].id },
               payload: { nodeId: source.document.nodes[0].id, from: 0, to: 0, text: 'Mara reached the harbor before dawn.' }, expectedVersion: source.document.version },
           }] };
+        for (const suggestion of review.suggestions) suggestion.ai_job_id = review.id;
         quote.acceptedJobId = review.id; aiReviews.set(review.id, review); aiKeys.set(quote.idempotencyKey, review);
       }
       if (quote.agentType !== 'writer' && process.env.FIXTURE_LOST_REVIEW_REPLY === 'true' && !lostReviewReply) {
@@ -539,7 +546,14 @@ const server = createServer(async (req, res) => {
       const source = draftChapters.get(owner.chapter_ids[0]);
       if (url.pathname.endsWith('/apply')) {
         source.document.nodes[0].text = suggestion.operation_json.payload.text; source.document.version++;
-        suggestion.status = 'accepted'; return json(200, { suggestionId, status: 'accepted', version: source.document.version });
+        const operationId = `ai-suggestion:${suggestionId}`;
+        const versionId = randomUUID();
+        aiDecisionReceipts.set(`${source.chapter.id}:${operationId}`, { status: 'saved', operationId, versionId, document: structuredClone(source.document) });
+        suggestion.status = 'accepted'; suggestion.reviewed_by = user.id;
+        if (process.env.FIXTURE_LOST_SUGGESTION_REPLY === 'true' && owner.agent_type === 'proofreader' && !lostSuggestionReply) {
+          lostSuggestionReply = true; return json(503, { error: { message: 'Fixture lost committed Apply reply' } });
+        }
+        return json(200, { suggestionId, status: 'accepted', version: source.document.version, versionId });
       }
       suggestion.status = 'rejected'; return json(200, { suggestion });
     }

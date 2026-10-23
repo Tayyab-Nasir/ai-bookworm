@@ -7,6 +7,7 @@ import { apiClient } from "./api";
 import AiProofSheet from "./AiProofSheet";
 import { canAcceptReviewQuote, canReplaceReviewQuote, readPendingReview, recoverReviewRequest, reviewBriefHash, reviewRecoveryKey, reviewTargetsChapter, verifiedReviewQuoteStatus, type PendingReview, type ReviewMode, type ReviewQuoteStatus } from "../lib/ai-review-recovery";
 import { previewAiSuggestion, type SavedChapterPreview } from "../lib/ai-suggestion-preview";
+import { readSuggestionDecision, recoverSuggestionDecision, suggestionDecisionKey, type SuggestionDecision, type RecoveredDecision } from "../lib/ai-suggestion-recovery";
 
 type Mode = ReviewMode;
 const modes: { value: Mode; label: string }[] = [
@@ -21,9 +22,10 @@ function modeLabel(agentType: string) {
 }
 
 export default function AiAssistantPanel({
-  bookId, chapterId, savedChapter, initialJobId, initialDraftInstruction, dirty, editable, onApplied,
-}: { bookId: string; chapterId: string | null; savedChapter: SavedChapterPreview | null; initialJobId?: string; initialDraftInstruction?: string; dirty: boolean; editable: boolean; onApplied: () => Promise<void> }) {
+  bookId, chapterId, savedChapter, initialJobId, initialDraftInstruction, dirty, editable, onApplied, onDecisionBusy,
+}: { bookId: string; chapterId: string | null; savedChapter: SavedChapterPreview | null; initialJobId?: string; initialDraftInstruction?: string; dirty: boolean; editable: boolean; onApplied: () => Promise<void>; onDecisionBusy?: (busy: boolean) => void }) {
   const api = apiClient();
+  const latest = useRef({ dirty, editable, onApplied, onDecisionBusy }); latest.current = { dirty, editable, onApplied, onDecisionBusy };
   const reviewScope = useRef({ bookId, chapterId });
   if (reviewScope.current.bookId !== bookId || reviewScope.current.chapterId !== chapterId) reviewScope.current = { bookId, chapterId };
   const [mode, setMode] = useState<Mode>("proofreader");
@@ -35,6 +37,9 @@ export default function AiAssistantPanel({
   const [job, setJob] = useState<AiJobWithSuggestions | null>(null);
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState<string | null>(null);
+  const [pendingDecision, setPendingDecision] = useState<SuggestionDecision | null>(null);
+  const [decisionCanRetry, setDecisionCanRetry] = useState(false);
+  const decisionInFlight = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [recent, setRecent] = useState<AiJobReview[]>([]);
@@ -56,7 +61,7 @@ export default function AiAssistantPanel({
   const requestInFlight = useRef(false);
   const suggestions = useMemo(() => job?.suggestions ?? [], [job]);
   const unconfirmed = job?.error_code === "ai_provider_outcome_unconfirmed";
-  const processing = busy || job?.status === "queued" || job?.status === "running";
+  const processing = busy || !!reviewing || !!pendingDecision || job?.status === "queued" || job?.status === "running";
 
   const loadRecent = useCallback(async () => {
     const scope = reviewScope.current;
@@ -67,6 +72,49 @@ export default function AiAssistantPanel({
   const remember = useCallback((next: AiJobReview) => {
     setRecent((current) => [next, ...current.filter((item) => item.id !== next.id)].slice(0, 8));
   }, []);
+
+  const clearDecision = useCallback((decision: SuggestionDecision) => {
+    try { window.sessionStorage.removeItem(suggestionDecisionKey(decision.userId, decision.bookId, decision.chapterId)); }
+    catch { /* A retained checkpoint causes only another read on the next visit. */ }
+    setPendingDecision(null); setDecisionCanRetry(false);
+  }, []);
+
+  const verifyDecisionAccount = useCallback(async (decision: SuggestionDecision) => {
+    const response = await fetch("/api/auth/session", { cache: "no-store" });
+    const session = await response.json();
+    if (!response.ok || session?.user?.id !== decision.userId) throw new Error("Your account changed. Reload before recovering this decision.");
+  }, []);
+
+  const adoptDecision = useCallback(async (result: RecoveredDecision, decision: SuggestionDecision, scope: object) => {
+    if (reviewScope.current !== scope) return;
+    setJob(result.job); remember(result.job);
+    if (result.status === "pending") {
+      setDecisionCanRetry(true);
+      setNotice("The saved suggestion is still pending. Retry only the original decision, or check its status again.");
+      return;
+    }
+    if (result.status === "accepted" || result.status === "stale") {
+      setLastAppliedVersion(result.version ?? decision.expectedVersion + 1);
+      if (latest.current.dirty) {
+        clearDecision(decision);
+        setError(`${result.status === "stale" ? "The saved chapter changed." : "The suggestion is saved."} Your unsaved draft is still here. Back it up before reloading the saved chapter.`);
+        return;
+      }
+      setNotice(result.status === "stale" ? "The saved chapter advanced. Refreshing it before another decision…" : result.version ? `Recovered manuscript version ${result.version}. Refreshing the saved chapter…` : "This suggestion was accepted by another author. Refreshing the saved chapter…");
+      await latest.current.onApplied();
+      if (reviewScope.current !== scope) return;
+      setNotice(result.status === "stale" ? "The newer saved chapter has been refreshed. This original suggestion cannot apply to the newer version; review the current text before requesting another proposal." : result.version ? `Applied as manuscript version ${result.version}. Other suggestions from this review may now be stale.` : "The accepted suggestion and saved chapter have been refreshed.");
+    } else setNotice("Recovered the saved rejection. The manuscript was not changed by Reject.");
+    clearDecision(decision);
+  }, [clearDecision, remember]);
+
+  const readDecision = useCallback(async (decision: SuggestionDecision, scope: object) => {
+    await verifyDecisionAccount(decision);
+    const result = await recoverSuggestionDecision(api, decision);
+    await verifyDecisionAccount(decision);
+    if (reviewScope.current === scope) await adoptDecision(result, decision, scope);
+    return result;
+  }, [api, adoptDecision, verifyDecisionAccount]);
 
   const keepPending = useCallback((request: PendingReview) => {
     window.sessionStorage.setItem(reviewRecoveryKey(request.userId, request.bookId, request.chapterId), JSON.stringify(request));
@@ -103,8 +151,12 @@ export default function AiAssistantPanel({
   }, [keepPending, remember]);
 
   useEffect(() => { void loadRecent(); }, [loadRecent]);
+  useEffect(() => {
+    onDecisionBusy?.(!!reviewing || !!pendingDecision);
+    return () => onDecisionBusy?.(false);
+  }, [onDecisionBusy, reviewing, pendingDecision]);
   useEffect(() => () => { reviewScope.current = { ...reviewScope.current }; }, []);
-  useEffect(() => { requestInFlight.current = false; setBusy(false); setReviewing(null); setRecent([]); setJob(null); setLastAppliedVersion(null); setError(null); setNotice(null); setQuote(null); setQuoteRequestId(null); setVerifiedStatus(null); setCountingConsent(false); setAcceptanceUncertain(false); setInstruction(""); }, [bookId, chapterId]);
+  useEffect(() => { requestInFlight.current = false; decisionInFlight.current = false; setBusy(false); setReviewing(null); setPendingDecision(null); setDecisionCanRetry(false); setRecent([]); setJob(null); setLastAppliedVersion(null); setError(null); setNotice(null); setQuote(null); setQuoteRequestId(null); setVerifiedStatus(null); setCountingConsent(false); setAcceptanceUncertain(false); setInstruction(""); }, [bookId, chapterId]);
   useEffect(() => {
     let cancelled = false;
     setModels([]); setSelectedModelId(""); setPricingError(null);
@@ -125,14 +177,24 @@ export default function AiAssistantPanel({
       const { user } = await session.json();
       if (typeof user?.id !== "string") throw new Error("Your session could not be verified.");
       const storageKey = reviewRecoveryKey(user.id, bookId, chapterId);
-      let raw: string | null;
-      try { raw = window.sessionStorage.getItem(storageKey); }
+      let raw: string | null, decisionRaw: string | null;
+      try { raw = window.sessionStorage.getItem(storageKey); decisionRaw = window.sessionStorage.getItem(suggestionDecisionKey(user.id, bookId, chapterId)); }
       catch { throw new Error("Browser recovery storage is unavailable. AI review is paused to avoid duplicate charges."); }
       const saved = readPendingReview(raw, user.id, bookId, chapterId);
+      const decision = readSuggestionDecision(decisionRaw, user.id, bookId, chapterId);
+      if (decisionRaw && !decision) throw new Error("The saved suggestion decision could not be verified. Recover it before another manuscript decision.");
       if (raw && !saved) throw new Error("The saved AI recovery checkpoint is invalid or expired. No new request will be sent; contact support with this book and chapter.");
       if (cancelled) return;
       setUserId(user.id);
-      if (saved) {
+      if (decision) {
+        setPendingDecision(decision);
+        if (saved) setPendingRequest(saved);
+        const scope = reviewScope.current;
+        decisionInFlight.current = true; setReviewing(decision.suggestionId);
+        try { await readDecision(decision, scope); }
+        catch (reason) { if (!cancelled) setError(reason instanceof Error ? reason.message : "The original decision is unconfirmed. Check saved review before retrying."); }
+        finally { if (!cancelled) { decisionInFlight.current = false; setReviewing(null); } }
+      } else if (saved) {
         setPendingRequest(saved); setMode(saved.mode); setIncludeRelated(saved.includeRelated); setContextBudget(saved.contextBudget);
         setIncludeBookBible(saved.includeBookBible ?? true); setIncludeStyleGuide(saved.includeStyleGuide ?? true);
         setCountingConsent(saved.allowProviderTokenCounting === true);
@@ -149,12 +211,12 @@ export default function AiAssistantPanel({
           else setError(reason instanceof Error ? reason.message : "Could not verify the saved AI request. No new request was sent.");
         }
       }
-      if (!cancelled) { setRestoreInitialReview(!saved); setRecoveryReady(true); }
+      if (!cancelled) { setRestoreInitialReview(!saved && !decision); setRecoveryReady(true); }
     })().catch((reason) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "AI request recovery is unavailable."); setRecoveryReady(false); } });
     return () => { cancelled = true; };
-  }, [api, bookId, chapterId, adoptRecovery]);
+  }, [api, bookId, chapterId, adoptRecovery, readDecision]);
   useEffect(() => {
-    if (!initialDraftInstruction || !recoveryReady || job) return;
+    if (!initialDraftInstruction || !recoveryReady || job || pendingDecision) return;
     if (pendingRequest && (pendingRequest.bookId !== bookId || pendingRequest.chapterId !== chapterId)) return;
     let cancelled = false;
     void reviewBriefHash("writer", initialDraftInstruction).then((digest) => {
@@ -174,7 +236,7 @@ export default function AiAssistantPanel({
       if (!cancelled) setError("Could not verify the saved plan brief. No AI request was sent.");
     });
     return () => { cancelled = true; };
-  }, [bookId, chapterId, initialDraftInstruction, job, pendingRequest, recoveryReady]);
+  }, [bookId, chapterId, initialDraftInstruction, job, pendingRequest, pendingDecision, recoveryReady]);
   useEffect(() => {
     if (!quoteRequestId || !pendingRequest) return;
     let cancelled = false;
@@ -395,33 +457,77 @@ export default function AiAssistantPanel({
     finally { if (reviewScope.current === scope) setBusy(false); }
   };
 
-  const apply = async (suggestion: AiSuggestion) => {
-    if (dirty || reviewing || !editable || previewAiSuggestion(suggestion, savedChapter).state !== "ready"
-        || (lastAppliedVersion !== null && (savedChapter?.version ?? 0) < lastAppliedVersion)) return;
-    const scope = reviewScope.current;
-    setReviewing(suggestion.id); setError(null); setNotice(null);
+  const decide = async (action: SuggestionDecision["action"], suggestion: AiSuggestion, retry = false) => {
+    if (!job || !chapterId || !userId || !recoveryReady || decisionInFlight.current || reviewing || busy || !editable
+      || (pendingDecision && (!retry || pendingDecision.action !== action || pendingDecision.suggestionId !== suggestion.id))
+      || (action === "apply" && (dirty || !retry && previewAiSuggestion(suggestion, savedChapter).state !== "ready"
+        || lastAppliedVersion !== null && (savedChapter?.version ?? 0) < lastAppliedVersion))) return;
+    const operation = suggestion.operation_json;
+    const version = operation && typeof operation === "object" && !Array.isArray(operation) ? operation.expectedVersion : null;
+    if (!Number.isSafeInteger(version) || Number(version) < 0) { setError("The original suggestion version could not be verified."); return; }
+    const decision: SuggestionDecision = pendingDecision ?? { schema: 1, userId, bookId, chapterId, jobId: job.id,
+      suggestionId: suggestion.id, action, expectedVersion: Number(version) };
+    const scope = reviewScope.current, earlierAttempt = !!pendingDecision;
+    let dispatched = false;
+    decisionInFlight.current = true; setReviewing(suggestion.id); latest.current.onDecisionBusy?.(true);
+    setDecisionCanRetry(false); setError(null); setNotice(null);
     try {
-      const result = await api.applySuggestion(suggestion.id);
+      await verifyDecisionAccount(decision);
+      if (reviewScope.current !== scope || !latest.current.editable || action === "apply" && latest.current.dirty) return;
+      if (retry) {
+        const current = await readDecision(decision, scope);
+        if (reviewScope.current !== scope || current.status !== "pending") return;
+      }
+      if (!latest.current.editable || action === "apply" && latest.current.dirty) return;
+      window.sessionStorage.setItem(suggestionDecisionKey(userId, bookId, chapterId), JSON.stringify(decision));
+      setPendingDecision(decision);
+      dispatched = true;
+      let reviewed: AiSuggestion;
+      let appliedVersion: number | null = null;
+      if (action === "apply") {
+        const result = await api.applySuggestion(suggestion.id);
+        if (result.version !== decision.expectedVersion + 1 || result.suggestionId !== undefined && result.suggestionId !== suggestion.id)
+          throw new Error("The Apply reply could not be verified. Checking the saved decision.");
+        appliedVersion = result.version; reviewed = { ...suggestion, status: "accepted" };
+      } else {
+        const result = await api.rejectSuggestion(suggestion.id);
+        if (result.suggestion?.id !== suggestion.id || result.suggestion.status !== "rejected") throw new Error("The Reject reply could not be verified. Checking the saved decision.");
+        reviewed = { ...suggestion, ...result.suggestion };
+      }
       if (reviewScope.current !== scope) return;
-      setJob((current) => current ? { ...current, suggestions: current.suggestions.map((item) => item.id === suggestion.id ? { ...item, status: "accepted" } : item) } : current);
-      setLastAppliedVersion(result.version);
-      setNotice(`Applied as manuscript version ${result.version}. Refreshing the saved chapter…`);
-      try { await onApplied(); if (reviewScope.current === scope) setNotice(`Applied as manuscript version ${result.version}. Other suggestions from this review may now be stale.`); }
-      catch { if (reviewScope.current === scope) setError(`Applied as manuscript version ${result.version}, but the editor could not refresh. Reload the chapter before another edit.`); }
-    } catch (reason) { if (reviewScope.current === scope) setError(reason instanceof Error ? reason.message : "Could not apply suggestion"); }
-    finally { if (reviewScope.current === scope) setReviewing(null); }
+      await verifyDecisionAccount(decision);
+      await adoptDecision({ job: { ...job, suggestions: job.suggestions.map(item => item.id === suggestion.id ? reviewed : item) },
+        status: reviewed.status as "accepted" | "rejected", version: appliedVersion }, decision, scope);
+    } catch (reason) {
+      if (reviewScope.current !== scope) return;
+      setError(reason instanceof Error ? reason.message : "The review decision could not be confirmed.");
+      if (dispatched) {
+        try {
+          const recovered = await readDecision(decision, scope);
+          if (reviewScope.current !== scope) return;
+          if (recovered.status !== "pending") setError(null);
+          else if (!earlierAttempt && reason instanceof ApiClientError && [400, 401, 403, 404, 409, 422].includes(reason.status)) {
+            clearDecision(decision);
+            setNotice("The action was refused. The saved suggestion is still pending.");
+            if (action === "apply" && !latest.current.dirty) {
+              try { await latest.current.onApplied(); }
+              catch { if (reviewScope.current === scope) setError("The action was refused, but the saved chapter could not refresh. Reload it before another decision."); }
+            }
+          }
+        } catch (recoveryError) {
+          if (reviewScope.current === scope) setError(`${recoveryError instanceof Error ? recoveryError.message : "Recovery is unavailable."} The original decision is retained. Check saved review before another decision.`);
+        }
+      }
+    } finally { if (reviewScope.current === scope) { decisionInFlight.current = false; setReviewing(null); } }
   };
 
-  const reject = async (suggestion: AiSuggestion) => {
-    if (reviewing || !editable) return;
+  const checkDecision = async () => {
+    if (!pendingDecision || decisionInFlight.current) return;
     const scope = reviewScope.current;
-    setReviewing(suggestion.id); setError(null); setNotice(null);
-    try {
-      const result = await api.rejectSuggestion(suggestion.id);
-      if (reviewScope.current !== scope) return;
-      setJob((current) => current ? { ...current, suggestions: current.suggestions.map((item) => item.id === suggestion.id ? result.suggestion : item) } : current);
-    } catch (reason) { if (reviewScope.current === scope) setError(reason instanceof Error ? reason.message : "Could not reject suggestion"); }
-    finally { if (reviewScope.current === scope) setReviewing(null); }
+    decisionInFlight.current = true; setReviewing(pendingDecision.suggestionId); setDecisionCanRetry(false); setError(null);
+    try { await readDecision(pendingDecision, scope); }
+    catch (reason) { if (reviewScope.current === scope) setError(reason instanceof Error ? reason.message : "Could not check the saved review."); }
+    finally { if (reviewScope.current === scope) { decisionInFlight.current = false; setReviewing(null); } }
   };
 
   const consentSources = ["the selected saved chapter", ...(mode === "writer" ? ["your drafting instruction"] : []),
@@ -462,6 +568,14 @@ export default function AiAssistantPanel({
     {quote && Date.parse(quote.expiresAt) <= quoteClock && <p role="status" className="mt-3 text-xs leading-5 text-amber-100">{pendingRequest?.acceptAttempted ? "This quote expired after an acceptance attempt. Keep its recovery record and check saved status; do not start a duplicate request." : "This quote has expired. Check its saved status before requesting a fresh price."}</p>}
     {canReplaceReviewQuote(verifiedStatus, pendingRequest, quoteClock) && <button type="button" disabled={processing} onClick={() => void startNewQuote()} className="mt-3 w-full rounded-lg border border-white/20 px-3 py-2 text-sm disabled:opacity-40">Start a new quote</button>}
     {dirty && <p className="mt-2 text-xs text-amber-200">Save the chapter before running or applying AI suggestions.</p>}
+    {pendingDecision && <div role="status" className="mt-3 rounded-xl border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">
+      <p>The original {pendingDecision.action === "apply" ? "Apply" : "Reject"} decision is saved for recovery. Editing is paused while its outcome is checked.</p>
+      <button type="button" disabled={!!reviewing} onClick={() => void checkDecision()} className="mt-3 min-h-11 rounded-lg border border-white/20 px-3 py-2 disabled:opacity-40">Check saved review</button>
+      {decisionCanRetry && <button type="button" disabled={!!reviewing || !editable || pendingDecision.action === "apply" && (dirty || suggestions.find(item => item.id === pendingDecision.suggestionId) == null)} onClick={() => {
+        const suggestion = suggestions.find(item => item.id === pendingDecision.suggestionId);
+        if (suggestion) void decide(pendingDecision.action, suggestion, true);
+      }} className="mt-2 min-h-11 rounded-lg border border-white/20 px-3 py-2 disabled:opacity-40">Retry original {pendingDecision.action === "apply" ? "Apply" : "Reject"}</button>}
+    </div>}
     {error && <p role="alert" className="mt-3 text-xs leading-5 text-red-200">{error}</p>}
     {unconfirmed && <p role="alert" className="mt-3 rounded-lg border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">The paid provider response for request {job?.id} is unconfirmed. No second generation will start automatically. Your credit remains reserved while support checks the provider result; do not start a new review for this book yet.</p>}
     {notice && <p role="status" className="mt-3 text-xs leading-5 text-emerald-200">{notice}</p>}
@@ -488,7 +602,7 @@ export default function AiAssistantPanel({
           <p className="text-xs leading-5 text-white/70">{suggestion.rationale ?? "Suggested manuscript edit"}</p>
           {awaitingRefresh ? <p className="mt-3 text-xs leading-5 text-amber-200">The previous edit is saved, but this chapter has not refreshed. Reload it before reviewing another proposal.</p> : <AiProofSheet preview={preview} />}
           <p className="mt-2 text-[10px] text-white/40">{suggestion.confidence == null ? "Confidence not supplied" : `${Math.round(Number(suggestion.confidence) * 100)}% model confidence`} · Always review the wording yourself.</p>
-          {suggestion.status === "pending" ? <div className="mt-3 flex gap-2"><button type="button" disabled={!!reviewing || dirty || !editable || preview.state !== "ready" || awaitingRefresh} onClick={() => void apply(suggestion)} className="rounded-md bg-white px-3 py-1.5 text-xs text-black disabled:opacity-40">Apply</button><button type="button" disabled={!!reviewing || !editable} onClick={() => void reject(suggestion)} className="rounded-md border border-white/15 px-3 py-1.5 text-xs disabled:opacity-40">Reject</button></div> : <p className="mt-3 text-xs capitalize text-white/45">{suggestion.status}</p>}
+          {suggestion.status === "pending" ? <div className="mt-3 flex gap-2"><button type="button" disabled={!recoveryReady || !!reviewing || !!pendingDecision || dirty || !editable || preview.state !== "ready" || awaitingRefresh} onClick={() => void decide("apply", suggestion)} className="rounded-md bg-white px-3 py-1.5 text-xs text-black disabled:opacity-40">Apply</button><button type="button" disabled={!recoveryReady || !!reviewing || !!pendingDecision || !editable} onClick={() => void decide("reject", suggestion)} className="rounded-md border border-white/15 px-3 py-1.5 text-xs disabled:opacity-40">Reject</button></div> : <p className="mt-3 text-xs capitalize text-white/45">{suggestion.status}</p>}
         </article>;
       })}
     </div>

@@ -914,6 +914,8 @@ export function createClient(opts: ClientOptions) {
       call<{ job: ManuscriptImportJob }>("POST", `/v1/books/${bookId}/import-jobs/${jobId}/retry`, {}),
     getChapterDocument: (chapterId: string) =>
       call<{ chapter: Chapter; role: string; document: ChapterDocument }>("GET", `/v1/chapters/${chapterId}/document`),
+    getChapterSaveStatus: (chapterId: string, operationId: string) =>
+      call<{ status: "not_found"; operationId: string } | { status: "saved"; operationId: string; versionId: string; document: ChapterDocument }>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/saves?${new URLSearchParams({ operationId })}`),
     listDocumentVersions: (chapterId: string) =>
       call<{ versions: DocumentVersionSummary[] }>("GET", `/v1/chapters/${chapterId}/versions`),
     saveChapterDocument: (chapterId: string, body: { nodes: BookNode[]; expectedVersion: number; operationId: string; changeSummary?: string }) =>

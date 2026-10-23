@@ -65,7 +65,8 @@ async function fixture({ width = 1280, styled = false } = {}) {
         operation_json: { type: "replace_text", target: { chapterId: chapter, nodeId: "n1" }, payload: { nodeId: "n1", from: 4, to: 7, text: "silver" }, expectedVersion: 1 } }] });
     window.api = { listAiJobs: async () => ({ jobs: [] }), listAiReviewModels: async () => ({ models: [{ id: "approved", label: "Approved", model: "approved" }] }),
       getAiJob: async id => window.job(id, id.startsWith("a") ? "a-chapter" : "b-chapter"),
-      applySuggestion: async () => ({ version: 2 }), rejectSuggestion: async () => ({ suggestion: { status: "rejected" } }) };
+      getChapterDocument: async chapterId => ({ document: { chapterId, version: 1, nodes: [] } }),
+      applySuggestion: async () => ({ version: 2 }), rejectSuggestion: async id => ({ suggestion: { id, status: "rejected" } }) };
     window.fetch = async (path, init) => {
       window.calls.push({ path: String(path), method: init?.method || "GET", body: init?.body });
       if (path === "/api/auth/session") return Response.json({ user: { id: "00000000-0000-4000-8000-000000000001" } });
@@ -513,6 +514,189 @@ test("late Reject failure cannot clear a current chapter's in-flight review", as
     await expect(page.getByText("Old chapter rejection failed", { exact: true })).toHaveCount(0);
     await page.evaluate(() => window.gates["reject-b"].resolve({ suggestion: { id: "b-job-suggestion", status: "rejected" } }));
     await expect(page.getByText("rejected", { exact: true })).toHaveCount(1);
+  } finally { await page.close(); }
+});
+
+async function decisionFixture(page) {
+  await page.evaluate(() => {
+    window.savedReview = window.job("a-job", "a-chapter");
+    window.decisionKey = "bookworm:ai-decision:00000000-0000-4000-8000-000000000001:a-book:a-chapter";
+    window.api.getAiJob = async id => {
+      window.calls.push({ operation: "decision-read", id });
+      if (window.decisionReadOffline) throw new Error("Saved review temporarily unavailable");
+      return structuredClone(window.savedReview);
+    };
+    window.api.getChapterSaveStatus = async (chapterId, operationId) => {
+      window.calls.push({ operation: "decision-receipt", chapterId, operationId });
+      return { status: "saved", operationId, versionId: "saved-version-2", document: { chapterId, version: 2, nodes: [] } };
+    };
+    window.api.applySuggestion = async id => {
+      window.calls.push({ operation: "decision-apply", id, pointer: JSON.parse(sessionStorage.getItem(window.decisionKey)) });
+      window.savedReview.suggestions[0].status = "accepted";
+      throw new Error("Apply reply lost");
+    };
+    window.api.rejectSuggestion = async id => {
+      window.calls.push({ operation: "decision-reject", id }); window.savedReview.suggestions[0].status = "rejected";
+      throw new Error("Reject reply lost");
+    };
+  });
+  await page.evaluate(input => window.renderPanel(input), props("a-book", "a-chapter", "a-job"));
+  await page.getByRole("button", { name: "Apply", exact: true }).waitFor();
+}
+
+test("lost Apply reply recovers its saved manuscript receipt without repeating the edit", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.getByText("accepted", { exact: true }).waitFor();
+    const calls = await page.evaluate(() => window.calls.filter(call => call.operation));
+    assert.equal(calls.filter(call => call.operation === "decision-apply").length, 1);
+    assert.equal(calls.at(-1).operationId, "ai-suggestion:a-job-suggestion");
+    assert.deepEqual(Object.keys(calls.find(call => call.operation === "decision-apply").pointer).sort(), ["schema", "userId", "bookId", "chapterId", "jobId", "suggestionId", "action", "expectedVersion"].sort());
+    assert.equal(await page.evaluate(() => sessionStorage.getItem(window.decisionKey)), null);
+    assert.deepEqual(await page.evaluate(() => window.appliedCallbacks), ["a-chapter"]);
+  } finally { await page.close(); }
+});
+
+test("lost Reject reply reads saved status without refreshing or changing manuscript text", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.getByRole("button", { name: "Reject", exact: true }).click();
+    await page.getByText("rejected", { exact: true }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.appliedCallbacks), []);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "decision-receipt").length), 0);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "decision-reject").length), 1);
+  } finally { await page.close(); }
+});
+
+test("unconfirmed decision survives remount and recovers read-only before a historical URL", async () => {
+  const page = await fixture({ width: 390, styled: true });
+  try {
+    await decisionFixture(page);
+    await page.evaluate(() => { window.decisionReadOffline = true; });
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.getByRole("button", { name: "Check saved review", exact: true }).waitFor();
+    await expect(page.getByRole("button", { name: "Reject", exact: true })).toBeDisabled();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: resolve(artifacts, "suggestion-uncertain-phone.png"), fullPage: true });
+    await page.evaluate(() => window.clearComponent());
+    await expect(page.getByRole("heading", { name: "AI assistant" })).toHaveCount(0);
+    await page.evaluate(() => { window.decisionReadOffline = false; });
+    await page.evaluate(input => window.renderPanel(input), props("a-book", "a-chapter", "a-historical-job"));
+    await page.getByText("accepted", { exact: true }).waitFor();
+    await expect(page.getByRole("button", { name: "Check saved review", exact: true })).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.calls.some(call => call.operation === "decision-read" && call.id === "a-historical-job")), false);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "decision-apply").length), 1);
+    assert.equal(await page.evaluate(() => sessionStorage.getItem(window.decisionKey)), null);
+  } finally { await page.close(); }
+});
+
+test("saved pending decision permits only an explicit same-action retry after another read", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.evaluate(() => { window.api.applySuggestion = async id => { window.calls.push({ operation: "decision-apply", id }); throw new Error("Dispatch unconfirmed"); }; });
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.getByRole("button", { name: "Retry original Apply", exact: true }).waitFor();
+    await expect(page.getByRole("button", { name: "Reject", exact: true })).toBeDisabled();
+    await page.evaluate(() => { window.api.applySuggestion = async id => {
+      window.calls.push({ operation: "decision-apply", id }); window.savedReview.suggestions[0].status = "accepted"; return { version: 2 };
+    }; });
+    await page.getByRole("button", { name: "Retry original Apply", exact: true }).click();
+    await page.getByText("accepted", { exact: true }).waitFor();
+    const calls = await page.evaluate(() => window.calls.filter(call => call.operation));
+    const posts = calls.filter(call => call.operation === "decision-apply");
+    assert.equal(posts.length, 2); assert.equal(posts[0].id, posts[1].id);
+    assert.equal(calls[calls.lastIndexOf(posts[1]) - 1].operation, "decision-read");
+  } finally { await page.close(); }
+});
+
+test("a malformed accepted receipt keeps decision recovery locked without refreshing", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.evaluate(() => { window.api.getChapterSaveStatus = async () => ({ status: "saved", operationId: "another-operation", versionId: "other", document: { chapterId: "a-chapter", version: 2, nodes: [] } }); });
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.getByText(/manuscript receipt does not match/).waitFor();
+    await expect(page.getByRole("button", { name: "Apply", exact: true })).toBeDisabled();
+    assert.deepEqual(await page.evaluate(() => window.appliedCallbacks), []);
+    assert.notEqual(await page.evaluate(() => sessionStorage.getItem(window.decisionKey)), null);
+  } finally { await page.close(); }
+});
+
+test("a draft becoming dirty during Apply is retained without an automatic chapter refresh", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.evaluate(() => { window.api.applySuggestion = () => window.defer("dirty-apply"); });
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.waitForFunction(() => !!window.gates["dirty-apply"]);
+    await page.evaluate(input => window.renderPanel({ ...input, dirty: true }), props("a-book", "a-chapter", "a-job"));
+    await page.evaluate(() => window.gates["dirty-apply"].resolve({ version: 2 }));
+    await page.getByText(/Your unsaved draft is still here/).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.appliedCallbacks), []);
+  } finally { await page.close(); }
+});
+
+test("decision storage failure prevents a manuscript mutation", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.evaluate(() => {
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) { if (key.includes("ai-decision")) throw new Error("Decision storage blocked"); return original.call(this, key, value); };
+    });
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.getByText("Decision storage blocked", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "decision-apply").length), 0);
+    assert.deepEqual(await page.evaluate(() => window.appliedCallbacks), []);
+  } finally { await page.close(); }
+});
+
+test("account change after dispatch preserves the original decision without refreshing another account", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.evaluate(() => { window.api.applySuggestion = () => window.defer("account-apply"); });
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.waitForFunction(() => !!window.gates["account-apply"]);
+    await page.evaluate(() => {
+      window.fetch = async () => Response.json({ user: { id: "another-account" } });
+      window.gates["account-apply"].resolve({ version: 2 });
+    });
+    await page.getByText(/Your account changed/).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.appliedCallbacks), []);
+    assert.notEqual(await page.evaluate(() => sessionStorage.getItem(window.decisionKey)), null);
+  } finally { await page.close(); }
+});
+
+test("a definite first refusal resolves the local decision only after pending status is verified", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.evaluate(() => { window.api.applySuggestion = async () => { throw window.apiError(409, "Source changed before Apply"); }; });
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.getByText("The action was refused. The saved suggestion is still pending.", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => sessionStorage.getItem(window.decisionKey)), null);
+    await expect(page.getByRole("button", { name: "Reject", exact: true })).toBeEnabled();
+  } finally { await page.close(); }
+});
+
+test("a newer committed chapter resolves a pending old Apply through reads without retrying it", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.evaluate(() => { window.api.applySuggestion = async id => { window.calls.push({ operation: "decision-apply", id }); throw new Error("Original Apply unconfirmed"); }; });
+    await page.getByRole("button", { name: "Apply", exact: true }).click();
+    await page.getByRole("button", { name: "Retry original Apply", exact: true }).waitFor();
+    await page.evaluate(() => { window.api.getChapterDocument = async chapterId => ({ document: { chapterId, version: 3, nodes: [] } }); });
+    await page.getByRole("button", { name: "Check saved review", exact: true }).click();
+    await page.getByText(/The newer saved chapter has been refreshed/).waitFor();
+    assert.equal(await page.evaluate(() => sessionStorage.getItem(window.decisionKey)), null);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "decision-apply").length), 1);
+    assert.deepEqual(await page.evaluate(() => window.appliedCallbacks), ["a-chapter"]);
   } finally { await page.close(); }
 });
 

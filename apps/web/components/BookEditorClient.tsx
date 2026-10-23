@@ -29,6 +29,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   const hasUnsavedChanges = dirty || editorValidation !== null;
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [aiDecisionBusy, setAiDecisionBusy] = useState(false);
   const [bookLoadAttempt, setBookLoadAttempt] = useState(0);
   const [requestedChapterId, setRequestedChapterId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +49,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   const pendingSave = useRef<{ operationId: string; nodes: BookNode[]; expectedVersion: number } | null>(null);
   const [pendingRestore, setPendingRestore] = useState<{ chapterId: string; versionId: string; body: { operationId: string; expectedVersion: number } } | null>(null);
   const restoring = useRef(false);
+  const liveDraft = useRef(hasUnsavedChanges); liveDraft.current = hasUnsavedChanges;
 
   const loadChapter = useCallback(async (chapterId: string, reportFailure = false, preserveCurrentReview = false) => {
     const sequence = ++loadSequence.current;
@@ -118,7 +120,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   }, [hasUnsavedChanges, pendingRestore]);
 
   const save = useCallback(async () => {
-    if (!document || saving || loading || conflict || !dirty || pendingRestore || editorValidation || !EDIT_ROLES.has(role)) return;
+    if (!document || saving || loading || aiDecisionBusy || conflict || !dirty || pendingRestore || editorValidation || !EDIT_ROLES.has(role)) return;
     const sequence = loadSequence.current;
     setSaving(true); setError(null); setNotice(null);
     const request = pendingSave.current ?? { operationId: crypto.randomUUID(), nodes: draft, expectedVersion: document.version };
@@ -135,7 +137,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       if (reason instanceof ApiClientError && reason.status === 409) setConflict(true);
       setError(reason instanceof Error ? reason.message : "Save failed. Your draft remains in this editor.");
     } finally { if (sequence === loadSequence.current) setSaving(false); }
-  }, [api, document, draft, saving, loading, role, conflict, dirty, pendingRestore, editorValidation]);
+  }, [api, document, draft, saving, loading, aiDecisionBusy, role, conflict, dirty, pendingRestore, editorValidation]);
 
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } };
@@ -143,14 +145,14 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   }, [save]);
 
   const selectChapter = (id: string) => {
-    if (saving || loading || id === document?.chapterId) return;
+    if (saving || loading || aiDecisionBusy || id === document?.chapterId) return;
     if ((hasUnsavedChanges || pendingRestore) && !window.confirm("This chapter has unsaved changes or an unresolved restore. Leave it and open another chapter?")) return;
     setActiveAiJobId(undefined);
     void loadChapter(id);
   };
 
   const createChapter = async () => {
-    if (!newTitle.trim() || saving || loading || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role) || (hasUnsavedChanges && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
+    if (!newTitle.trim() || saving || loading || aiDecisionBusy || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role) || (hasUnsavedChanges && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
     creatingChapter.current = true;
     let sequence = loadSequence.current;
     setSaving(true); setError(null);
@@ -184,7 +186,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   };
 
   const reorder = async (orderedIds: string[]) => {
-    if (saving || loading || pendingRestore || !EDIT_ROLES.has(role)) return;
+    if (saving || loading || aiDecisionBusy || pendingRestore || !EDIT_ROLES.has(role)) return;
     const sequence = loadSequence.current;
     setSaving(true); setError(null);
     try { const result = await api.reorderChapters(bookId, { orderedIds, expectedIds: chapters.map((c) => c.id) }); if (sequence === loadSequence.current) setChapters(result.chapters); }
@@ -193,7 +195,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
   };
 
   const restore = async (versionId: string) => {
-    if (!document || saving || loading || restoring.current || !EDIT_ROLES.has(role)) return;
+    if (!document || saving || loading || aiDecisionBusy || restoring.current || !EDIT_ROLES.has(role)) return;
     if (pendingRestore && (pendingRestore.versionId !== versionId || pendingRestore.chapterId !== document.chapterId)) return;
     if (!pendingRestore && !window.confirm("Restore this version as a new saved version? Current saved history will remain available.")) return;
     if (!pendingRestore && hasUnsavedChanges && !window.confirm("Your unsaved draft will be replaced. Continue?")) return;
@@ -239,7 +241,7 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
     <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
       <div><Link href="/dashboard" className="text-xs text-white/50 hover:text-white">← Library</Link><h1 className="mt-2 text-2xl font-medium">{book?.title ?? "Manuscript"}</h1></div>
       <div className="flex flex-wrap items-center gap-3 text-sm"><Link href={`/books/${bookId}/plan`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Plan</Link><Link href={`/books/${bookId}/translate`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Translate</Link><Link href={`/books/${bookId}/publish`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Layout & publish</Link><span role="status" className="text-white/50">{editorValidation ? "Unsaved · correct numbering before saving" : saving ? "Saving…" : dirty ? "Unsaved changes" : document ? `Saved · v${document.version}` : ""}</span>
-        {editable && document && <button type="button" onClick={() => void save()} disabled={!dirty || saving || conflict || loading || editorValidation !== null} className="rounded-full bg-white px-5 py-2 font-medium text-black disabled:opacity-40">Save chapter</button>}
+        {editable && document && <button type="button" onClick={() => void save()} disabled={!dirty || saving || aiDecisionBusy || conflict || loading || editorValidation !== null} className="rounded-full bg-white px-5 py-2 font-medium text-black disabled:opacity-40">Save chapter</button>}
         {editorValidation && <button type="button" onClick={() => downloadDraft("txt")} className="min-h-11 rounded-full border border-white/20 px-4 py-2">Download draft text</button>}
 {document && !loading && <details className="relative basis-full lg:basis-auto"><summary className="inline-flex min-h-11 cursor-pointer rounded-full border border-white/20 px-4 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">Back up chapter draft</summary><div className="absolute left-0 z-30 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-2xl border border-white/15 bg-[#101010] p-4 shadow-xl lg:left-auto lg:right-0"><p className="text-xs leading-5 text-white/60">JSON preserves structure, formatting and artwork references. Image files are not embedded. Text export does not keep formatting. Neither action saves to the server.</p><button type="button" onClick={() => downloadDraft()} className="mt-3 block min-h-11 w-full rounded-xl border border-white/20 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download JSON backup</button><button type="button" onClick={() => downloadDraft("txt")} className="mt-2 block min-h-11 w-full rounded-xl border border-white/15 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download draft text</button></div></details>}
       </div>
@@ -255,9 +257,9 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       <aside className="self-start rounded-2xl border border-white/10 p-2">
         <button type="button" className="flex min-h-11 w-full items-center justify-between px-3 text-sm text-white/75 lg:hidden" aria-expanded={structureOpen} aria-controls="chapter-structure" onClick={() => setStructureOpen((open) => !open)}><span>Chapters · {chapters.length}</span><span>{structureOpen ? "Hide" : "Show"}</span></button>
         <div id="chapter-structure" className={structureOpen ? "block" : "hidden lg:block"}>
-        <BookTree chapters={chapters} activeId={document?.chapterId ?? null} onSelect={selectChapter} onReorder={(ids) => void reorder(ids)} disabled={saving || loading} readOnly={!editable} />
+        <BookTree chapters={chapters} activeId={document?.chapterId ?? null} onSelect={selectChapter} onReorder={(ids) => void reorder(ids)} disabled={saving || loading || aiDecisionBusy} readOnly={!editable} />
         {editable && <form className="mt-5 space-y-2 border-t border-white/10 p-2 pt-4" onSubmit={(event) => { event.preventDefault(); void createChapter(); }}>
-          <fieldset disabled={saving || loading} className="min-w-0 space-y-2 disabled:opacity-50">
+          <fieldset disabled={saving || loading || aiDecisionBusy} className="min-w-0 space-y-2 disabled:opacity-50">
           <label className="block text-xs text-white/50" htmlFor="new-chapter-title">New chapter</label><input id="new-chapter-title" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} disabled={!!pendingCreation.current} aria-describedby={pendingCreation.current ? "chapter-creation-recovery" : undefined} maxLength={500} required placeholder="Chapter title" className="w-full rounded-lg border border-white/15 bg-black p-2 text-sm" />
           <label className="block text-xs text-white/50" htmlFor="new-chapter-brief">Optional AI drafting brief</label><textarea id="new-chapter-brief" value={newChapterBrief} onChange={(e) => setNewChapterBrief(e.target.value)} disabled={!!pendingCreation.current} aria-describedby={pendingCreation.current ? "chapter-creation-recovery" : undefined} maxLength={4000} rows={3} placeholder="What happens in this chapter?" className="w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm" />
           <p className="text-[11px] leading-4 text-white/40">A brief creates an empty chapter and opens separate AI price review. Nothing is generated or charged until you accept a quote.</p>
@@ -269,11 +271,11 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       </aside>
       <section className="min-w-0">
         {document && <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1"><h2 className="text-sm text-white/75">{chapters.find((chapter) => chapter.id === document.chapterId)?.title ?? "Chapter"}</h2><span className="text-xs tabular-nums text-white/45">{wordCount.toLocaleString()} words</span></div>}
-        {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={document} workspaceId={book.workspace_id} permissions={editable && !saving ? "editor" : "viewer"} onValidationChange={setEditorValidation} onChange={(nodes) => { setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border border-dashed border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
+        {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={document} workspaceId={book.workspace_id} permissions={editable && !saving && !aiDecisionBusy ? "editor" : "viewer"} onValidationChange={setEditorValidation} onChange={(nodes) => { if (aiDecisionBusy) return; setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border border-dashed border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
       </section>
       <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">
-        <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} initialDraftInstruction={document?.chapterId === draftPlanTargetChapterId ? initialDraftInstruction : undefined} dirty={hasUnsavedChanges} editable={editable && !saving && !loading} onApplied={async () => { if (document && editorSequence === loadSequence.current) await loadChapter(document.chapterId, true, true); }} />
-        <div className="rounded-2xl border border-white/10 p-2"><VersionTimeline key={document?.chapterId ?? "empty"} versions={versions} onRestore={(id) => void restore(id)} readOnly={!editable || saving || loading} /></div>
+        <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} initialDraftInstruction={document?.chapterId === draftPlanTargetChapterId ? initialDraftInstruction : undefined} dirty={hasUnsavedChanges} editable={editable && !saving && !loading} onDecisionBusy={setAiDecisionBusy} onApplied={async () => { if (liveDraft.current) throw new Error("Back up the unsaved draft before refreshing the saved chapter."); if (document && editorSequence === loadSequence.current) await loadChapter(document.chapterId, true, true); }} />
+        <div className="rounded-2xl border border-white/10 p-2"><VersionTimeline key={document?.chapterId ?? "empty"} versions={versions} onRestore={(id) => void restore(id)} readOnly={!editable || saving || loading || aiDecisionBusy} /></div>
       </div>
     </div>
   </main>;

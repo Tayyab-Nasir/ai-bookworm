@@ -532,9 +532,10 @@ for (const refreshFails of [false, true]) test(`actual chapter creation opens pr
       api.createAiReviewQuote = async (bookId, body) => { flow.quotes.push({ bookId, ...structuredClone(body) }); return { quote }; };
       api.acceptAiReviewQuote = async (bookId, requestId, expectedCredits) => {
         flow.acceptances.push({ bookId, requestId, expectedCredits });
-        flow.review = { id: crypto.randomUUID(), book_id: bookId, chapter_ids: [document.chapterId], agent_type: "writer", status: "succeeded",
+        const jobId = crypto.randomUUID();
+        flow.review = { id: jobId, book_id: bookId, chapter_ids: [document.chapterId], agent_type: "writer", status: "succeeded",
           context_source_count: 0, usage_json: {}, created_at: new Date().toISOString(), suggestions: [{
-            id: "paid-suggestion", entity_type: "chapter", entity_id: document.chapterId, status: "pending", rationale: "Opening scene for author review",
+            id: "paid-suggestion", ai_job_id: jobId, entity_type: "chapter", entity_id: document.chapterId, status: "pending", rationale: "Opening scene for author review",
             operation_json: { operationId: crypto.randomUUID(), type: "replace_text", expectedVersion: 1,
               target: { chapterId: document.chapterId, nodeId: "paid-node" }, payload: { nodeId: "paid-node", from: 0, to: 0, text: "Mara reached the harbor before dawn." } },
           }] };
@@ -542,6 +543,7 @@ for (const refreshFails of [false, true]) test(`actual chapter creation opens pr
       };
       api.getAiReviewQuote = async () => { flow.statusReads++; return { quote, ...(flow.review ? { job: { id: flow.review.id, status: flow.review.status } } : {}) }; };
       api.getAiJob = async () => structuredClone(flow.review);
+      api.getChapterSaveStatus = async (chapterId, operationId) => ({ status: "saved", operationId, versionId: "paid-version-2", document: structuredClone(document) });
       api.applySuggestion = async () => { flow.applies++; document.version = 2; document.nodes[0].text = "Mara reached the harbor before dawn."; flow.review.suggestions[0].status = "accepted"; return { version: 2 }; };
     }, refreshFails);
     await page.getByLabel("New chapter", { exact: true }).fill("Paid author chapter");
@@ -568,14 +570,25 @@ for (const refreshFails of [false, true]) test(`actual chapter creation opens pr
     await page.getByRole("region", { name: "Proposed manuscript text change" }).getByText("Mara reached the harbor before dawn.", { exact: true }).waitFor();
     assert.deepEqual(await page.evaluate(() => [window.paidFlow.acceptances.length, window.paidFlow.statusReads, window.paidFlow.applies]), [1, 1, 0]);
     assert.equal((await page.getByRole("textbox", { name: "Manuscript editor" }).innerText()).trim(), "");
+    if (!refreshFails) await page.evaluate(() => {
+      const original = window.bookwormApi.applySuggestion;
+      window.bookwormApi.applySuggestion = () => new Promise(resolve => { window.finishApply = () => resolve(original()); });
+    });
     await page.getByRole("button", { name: "Apply", exact: true }).click();
+    if (!refreshFails) {
+      await page.waitForFunction(() => !!window.finishApply);
+      await page.waitForFunction(() => document.querySelector('[role="textbox"][aria-label="Manuscript editor"]')?.getAttribute("contenteditable") === "false");
+      assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
+      assert.equal(await page.getByLabel("New chapter", { exact: true }).isDisabled(), true);
+      await page.getByRole("textbox", { name: "Manuscript editor" }).press("x");
+      assert.equal((await page.getByRole("textbox", { name: "Manuscript editor" }).innerText()).trim(), "");
+      await page.evaluate(() => window.finishApply());
+    }
     if (refreshFails) {
       await page.getByRole("alert").filter({ hasText: "chapter refresh unavailable" }).waitFor();
       assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
       assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).count(), 0);
       await page.getByRole("button", { name: "Retry loading chapter", exact: true }).click();
-      await page.getByText("Recent saved reviews", { exact: true }).click();
-      await page.getByRole("button", { name: "Open", exact: true }).click();
       await page.getByText("accepted", { exact: true }).waitFor();
     }
     await page.getByRole("textbox", { name: "Manuscript editor" }).getByText("Mara reached the harbor before dawn.", { exact: true }).waitFor();

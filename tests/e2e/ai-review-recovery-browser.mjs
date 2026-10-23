@@ -1,6 +1,6 @@
 // Requires isolated Next on 4398 and synthetic Auth/API on 4399 with
 // FIXTURE_AI_DRAFT=true, FIXTURE_LOST_REVIEW_REPLY=true,
-// and FIXTURE_LOST_REVIEW_QUOTE_REPLY=true.
+// FIXTURE_LOST_REVIEW_QUOTE_REPLY=true, and FIXTURE_LOST_SUGGESTION_REPLY=true.
 import assert from 'node:assert/strict';
 import { chromium, expect } from '@playwright/test';
 
@@ -11,11 +11,13 @@ try {
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
   page.setDefaultTimeout(30000);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  let reviewAccepts = 0, reviewCreates = 0, keyReads = 0;
+  let reviewAccepts = 0, reviewCreates = 0, keyReads = 0, applies = 0, saveReads = 0;
   page.on('request', request => {
     if (request.url().includes('/ai-review/quotes/') && request.url().endsWith('/accept') && request.method() === 'POST') reviewAccepts++;
     if (request.url().endsWith('/ai-review/quotes') && request.method() === 'POST') reviewCreates++;
     if (request.url().includes('/ai-review/quote-requests/') && request.method() === 'GET') keyReads++;
+    if (request.url().includes('/ai/suggestions/') && request.url().endsWith('/apply') && request.method() === 'POST') applies++;
+    if (request.url().includes('/saves?operationId=') && request.method() === 'GET') saveReads++;
   });
   await page.goto(`${origin}/dashboard`);
   await page.getByLabel('Email').fill('author@example.test');
@@ -62,6 +64,15 @@ try {
   await history.locator('summary').click();
   await expect(history).toHaveJSProperty('open', true);
   await page.getByText('Proofread · succeeded').waitFor();
+  await page.getByText('Proofread · succeeded').locator('..').locator('..').getByRole('button', { name: 'Open', exact: true }).click();
+  await page.getByRole('button', { name: 'Apply', exact: true }).click();
+  await page.getByText('Applied as manuscript version 2. Other suggestions from this review may now be stale.', { exact: true }).waitFor();
+  await expect(page.locator('.tiptap')).toHaveText('Mara reached the harbor before dawn.');
+  assert.equal(applies, 1, 'committed-but-lost Apply must not post again');
+  assert.ok(saveReads > 0, 'Apply must recover its immutable saved manuscript receipt');
+  await page.reload();
+  await expect(page.locator('.tiptap')).toHaveText('Mara reached the harbor before dawn.');
+  assert.equal(applies, 1, 'reload must not repeat Apply');
   assert.equal(reviewAccepts, 2, 'reload must not accept or queue another paid review');
   const jobs = await page.evaluate(async id => {
     const response = await fetch(`/api/backend/v1/ai/jobs?bookId=${id}`);
@@ -71,5 +82,5 @@ try {
   assert.equal(await page.evaluate(() => Object.values(sessionStorage).some(value => value.includes('Private setup brief'))), false);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
-  console.log('PASS web AI review: lost quote creation recovered by GET after reload without recounting; explicit priced acceptance, lost acceptance recovered with one funded review; no private brief storage; narrow-screen containment. Auth/API are fixtures.');
+  console.log('PASS web AI review: lost quote creation and acceptance recover read-only; committed-but-lost Apply reads its saved version and refreshes the manuscript with one mutation across reloads; no private brief storage; narrow-screen containment. Auth/API are fixtures.');
 } finally { await browser.close(); }
