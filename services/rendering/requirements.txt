@@ -5,5 +5,7 @@ reportlab>=4.2,<5
 Pillow>=11,<13
 qrcode[pil]>=8,<9
 pypdf>=5,<7
+# PDFium default wheel has no V8/XFA; licenses ship with its binary distribution.
+pypdfium2==5.14.0
 # BSD wrapper; bundled FFmpeg remains a separately licensed executable (see -L).
 imageio-ffmpeg==0.6.0

@@ -13,7 +13,8 @@ from threading import BoundedSemaphore
 from typing import Literal
 import warnings
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+import anyio
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
@@ -35,6 +36,7 @@ from preflight import Finding  # noqa: E402
 from audio_assembly import assemble_audio_with_quality, encode_narration_pcm  # noqa: E402
 from publication_metadata import effective_publication_metadata  # noqa: E402
 from epub_preview_transport import preview_epub_request  # noqa: E402
+from pdf_preview import preview_pdf_page, MAX_PDF_BYTES  # noqa: E402
 
 app = FastAPI(title="bookworm-rendering")
 
@@ -85,6 +87,7 @@ class ImageInspectionRequest(BaseModel):
 
 
 _image_inspection_slot = BoundedSemaphore(1)
+_pdf_request_slot = BoundedSemaphore(1)
 
 
 def require_service_token(x_service_token: str | None = Header(default=None)) -> None:
@@ -93,6 +96,49 @@ def require_service_token(x_service_token: str | None = Header(default=None)) ->
         raise HTTPException(503, "Rendering service authentication is not configured.")
     if not x_service_token or not hmac.compare_digest(x_service_token.encode("utf-8"), configured.encode("utf-8")):
         raise HTTPException(401, "invalid service token")
+
+
+@app.post("/pdf/preview", dependencies=[Depends(require_service_token)])
+async def pdf_preview(request: Request, page: int = Query(ge=1, le=20_000),
+                      width: int = Query(default=1080, ge=720, le=1440)):
+    """Private API supplies only an authorized, checksum-pinned saved PDF."""
+    if not _pdf_request_slot.acquire(blocking=False):
+        raise HTTPException(503, "saved PDF preview is busy")
+    try:
+        return await _pdf_preview_request(request, page, width)
+    finally:
+        _pdf_request_slot.release()
+
+
+async def _pdf_preview_request(request: Request, page: int, width: int):
+    if width not in (720, 1080, 1440):
+        raise HTTPException(422, "unsupported PDF proof width")
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/pdf":
+        raise HTTPException(415, "saved PDF bytes are required")
+    if request.headers.get("content-encoding") not in (None, "identity"):
+        raise HTTPException(415, "encoded PDF requests are not supported")
+    expected = request.headers.get("x-content-sha256", "")
+    if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
+        raise HTTPException(422, "a valid saved PDF checksum is required")
+    declared = request.headers.get("content-length")
+    if declared is not None and (len(declared) > 10 or not declared.isascii() or not declared.isdecimal()):
+        raise HTTPException(422, "invalid PDF content length")
+    if declared is not None and int(declared) > MAX_PDF_BYTES:
+        raise HTTPException(413, "saved PDF exceeds the preview byte limit")
+    content = bytearray()
+    async for chunk in request.stream():
+        content.extend(chunk)
+        if len(content) > MAX_PDF_BYTES:
+            raise HTTPException(413, "saved PDF exceeds the preview byte limit")
+    if (declared is not None and int(declared) != len(content)) or hashlib.sha256(content).hexdigest() != expected:
+        raise HTTPException(422, "saved PDF integrity check failed")
+    try:
+        result = await anyio.to_thread.run_sync(lambda: preview_pdf_page(bytes(content), page, width))
+    except ValueError as error:
+        raise HTTPException(422, "the requested saved PDF page cannot be previewed") from error
+    except (RuntimeError, MemoryError) as error:
+        raise HTTPException(503, "saved PDF preview is unavailable or busy") from error
+    return Response(json.dumps(result), media_type="application/json", headers={"cache-control": "no-store"})
 
 
 def _cover_bytes(value: str | None) -> bytes | None:

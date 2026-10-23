@@ -111,11 +111,22 @@ export async function runNativePublishingBrowser({ page, bookId, passage, screen
       await expect(page.getByText('Saved print proof opened. Run fresh preflight before creating a package.', { exact: true })).toBeVisible();
       const link = page.getByRole('link', { name: 'Download private file', exact: true });
       const attachmentUrl = new URL(await link.getAttribute('href'));
-      const previewUrl = new URL(await page.getByTitle('Rendered print edition preview', { exact: true }).getAttribute('src'));
-      assert.equal(previewUrl.searchParams.has('download'), false);
+      const desk = page.getByRole('region', { name: 'Saved PDF page proof', exact: true });
+      const image = desk.getByRole('img');
+      await expect(image).toBeVisible();
+      await expect.poll(() => image.evaluate(node => node.complete && node.naturalWidth >= 720)).toBe(true);
+      assert.match(await image.getAttribute('src'), /^data:image\/png;base64,/);
+      assert.equal(await page.getByTitle('Rendered print edition preview', { exact: true }).count(), 0);
       assert.equal(attachmentUrl.searchParams.get('download'), artifact.asset.name);
       const original = new URL(attachmentUrl); original.searchParams.delete('download');
-      assert.equal(original.href, previewUrl.href);
+      const originalResponse = await localFetch(origins)(original.href);
+      assert.equal(originalResponse.status, 200);
+      assert.equal(createHash('sha256').update(Buffer.from(await originalResponse.arrayBuffer())).digest('hex'), artifact.asset.checksum);
+      await desk.getByRole('button', { name: 'Next page', exact: true }).click();
+      await expect(desk.getByRole('img')).toHaveAttribute('alt', /^Saved interior, page 2 of /);
+      await expect.poll(() => desk.getByRole('img').evaluate(node => node.complete && node.naturalWidth >= 720)).toBe(true);
+      await desk.getByRole('button', { name: 'Previous page', exact: true }).click();
+      await expect(desk.getByRole('img')).toHaveAttribute('alt', /^Saved interior, page 1 of /);
       // The headless shell downloads inline PDFs too; require Storage's real attachment header.
       const attachment = await localFetch(origins)(attachmentUrl.href);
       assert.equal(attachment.status, 200);

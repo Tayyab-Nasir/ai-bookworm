@@ -663,6 +663,13 @@ export interface SavedEpubSource {
 }
 export interface SavedEpubRender { jobId: string; createdAt: string; source: SavedEpubSource }
 export interface SavedPrintRender { jobId: string; createdAt: string; source: SavedEpubSource; fingerprint: string }
+export interface PdfProofPage {
+  formatVersion: "pdf-proof-1.0.0"; sourceSha256: string; sourceSizeBytes: number;
+  source: SavedEpubSource & { role: "rendered_print" | "rendered_cover" }; fingerprint: string;
+  pageNumber: number; pageCount: number; requestedWidth: 720 | 1080 | 1440;
+  pageWidthPoints: number; pageHeightPoints: number; text: string; textTruncated: boolean;
+  image: { mimeType: "image/png"; width: number; height: number; sizeBytes: number; sha256: string; base64: string };
+}
 export interface EpubReaderResource {
   index: number; mimeType: "image/png" | "image/jpeg"; sha256: string; sizeBytes: number; width: number; height: number;
 }
@@ -842,7 +849,7 @@ export type ManualChapterSaveResult = {
 };
 
 export function createClient(opts: ClientOptions) {
-  async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown, useIdempotencyKey = true): Promise<T> {
+  async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown, useIdempotencyKey = true, signal?: AbortSignal): Promise<T> {
     if (body !== undefined) {
       headers["content-type"] = "application/json";
     }
@@ -852,6 +859,7 @@ export function createClient(opts: ClientOptions) {
       headers,
       credentials: "same-origin",
       body: body === undefined ? undefined : JSON.stringify(body),
+      ...(signal ? { signal } : {}),
     });
     let parsed: unknown;
     try {
@@ -868,8 +876,8 @@ export function createClient(opts: ClientOptions) {
     return json;
   }
 
-  const call = <T>(method: string, path: string, body?: unknown, useIdempotencyKey = true, extraHeaders: Record<string, string> = {}) =>
-    request<T>(method, path, { ...extraHeaders, ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}) }, body, useIdempotencyKey);
+  const call = <T>(method: string, path: string, body?: unknown, useIdempotencyKey = true, extraHeaders: Record<string, string> = {}, signal?: AbortSignal) =>
+    request<T>(method, path, { ...extraHeaders, ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}) }, body, useIdempotencyKey, signal);
   const callService = <T>(path: string, body: unknown, serviceToken: string) =>
     request<T>("POST", path, { "x-service-token": serviceToken }, body);
 
@@ -1081,8 +1089,10 @@ export function createClient(opts: ClientOptions) {
       call<RenderedEditionResult>("POST", `/v1/editions/${editionId}/render`, body),
     listEditionRenders: (editionId: string) =>
       call<{ renders: SavedEpubRender[] }>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders`),
-    listPrintRenders: (editionId: string) =>
-      call<{ renders: SavedPrintRender[] }>("GET", `/v1/editions/${encodeURIComponent(editionId)}/print-renders`),
+    listPrintRenders: (editionId: string, signal?: AbortSignal) =>
+      call<{ renders: SavedPrintRender[] }>("GET", `/v1/editions/${encodeURIComponent(editionId)}/print-renders`, undefined, true, {}, signal),
+    readPrintPage: (editionId: string, jobId: string, pageNumber: number, source: { sha256: string; fingerprint: string; assetId: string; width: 720 | 1080 | 1440 }, signal?: AbortSignal) =>
+      call<PdfProofPage>("GET", `/v1/editions/${encodeURIComponent(editionId)}/print-renders/${encodeURIComponent(jobId)}/pages/${encodeURIComponent(pageNumber)}?${new URLSearchParams({ sha256: source.sha256, fingerprint: source.fingerprint, assetId: source.assetId, width: String(source.width) })}`, undefined, true, {}, signal),
     downloadPrintRender: (editionId: string, jobId: string, sha256: string, fingerprint: string) =>
       call<RenderedEditionResult>("GET", `/v1/editions/${encodeURIComponent(editionId)}/print-renders/${encodeURIComponent(jobId)}/download?sha256=${encodeURIComponent(sha256)}&fingerprint=${encodeURIComponent(fingerprint)}`),
     readEpubSection: (editionId: string, jobId: string, spineIndex: number, sha256: string) =>

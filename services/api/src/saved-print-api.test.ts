@@ -11,6 +11,7 @@ process.env.QDRANT_URL = "http://localhost:6333";
 process.env.LOG_LEVEL = "error";
 const { buildApp } = await import("./app.js");
 const { savedPrintRender, verifySavedPrintBytes } = await import("./lib/rendered-print.js");
+const { requestSavedPdfPage } = await import("./lib/pdf-proof.js");
 type Row = Record<string, unknown>;
 const USER = "b0000000-0000-4000-8000-000000000001";
 const WORKSPACE = "b0000000-0000-4000-8000-000000000002";
@@ -206,4 +207,129 @@ test("print bytes obey an absolute deadline even when storage ignores cancellati
   const saved = store(false); const confirmed = await savedPrintRender(factory(saved)("member"), WORKSPACE, BOOK, EDITION, saved.tables.publishing_jobs[0]);
   const sb = { storage: { from: () => ({ download: () => new Promise(() => {}) }) } } as never;
   await assert.rejects(verifySavedPrintBytes(sb, confirmed, AbortSignal.timeout(15), new Set()), /temporarily unavailable/u);
+});
+
+const proofPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==", "base64");
+const pageReply = (content = primaryBytes, page = 1, width = 1080) => ({
+  formatVersion: "pdf-proof-1.0.0", sourceSha256: hash(content), sourceSizeBytes: content.length,
+  pageNumber: page, pageCount: 2, requestedWidth: width, pageWidthPoints: 432, pageHeightPoints: 648,
+  text: "Saved interior <script>literal text only</script>", textTruncated: false,
+  image: { mimeType: "image/png", width: 1, height: 1, sizeBytes: proofPng.length, sha256: hash(proofPng), base64: proofPng.toString("base64") },
+});
+const pagePath = (render: { source: { sha256: string }; fingerprint: string }, assetId = ASSET, page = "1", width = "1080") =>
+  `${rootPath}/${JOB}/pages/${page}?sha256=${render.source.sha256}&fingerprint=${render.fingerprint}&assetId=${assetId}&width=${width}`;
+
+async function pageApp(saved: Store, renderFetch: typeof fetch) {
+  const previous = process.env.RENDERING_SERVICE_TOKEN;
+  process.env.RENDERING_SERVICE_TOKEN = "synthetic-private-rendering-token-only";
+  const app = await buildApp(factory(saved), { renderFetch });
+  return { app, close: async () => { await app.close(); if (previous === undefined) delete process.env.RENDERING_SERVICE_TOKEN; else process.env.RENDERING_SERVICE_TOKEN = previous; } };
+}
+
+test("viewer reads the exact saved PDF page through private binary transport, never signs, renders or writes", async () => {
+  const saved = store(); let calls = 0;
+  const { app, close } = await pageApp(saved, async (input, init) => {
+    calls++; const url = new URL(String(input)); assert.equal(url.pathname, "/pdf/preview");
+    assert.equal(url.search, "?page=2&width=720"); assert.equal(init?.method, "POST"); assert.equal(init?.redirect, "error");
+    assert(init?.signal instanceof AbortSignal); assert.deepEqual(init?.body, primaryBytes);
+    const headers = new Headers(init?.headers); assert.equal(headers.get("x-content-sha256"), hash(primaryBytes));
+    assert.equal(headers.get("content-type"), "application/pdf"); assert.equal(headers.get("authorization"), null);
+    return Response.json(pageReply(primaryBytes, 2, 720));
+  });
+  try {
+    const render = await listed(app); saved.tables.editions[0].updated_at = "2026-10-24T00:00:00Z";
+    const reply = await app.inject({ method: "GET", url: pagePath(render, ASSET, "2", "720"), headers: auth });
+    assert.equal(reply.statusCode, 200); assert.equal(reply.headers["cache-control"], "private, no-store");
+    assert.equal(reply.json().source.role, "rendered_print"); assert.equal(reply.json().source.sha256, hash(primaryBytes));
+    assert.equal(reply.json().image.sha256, hash(proofPng)); assert.equal(reply.json().fingerprint, render.fingerprint);
+    assert.equal(calls, 1); assert.equal(saved.downloads.length, 1); assert.deepEqual(saved.signed, []); assert.deepEqual(saved.mutations, []);
+    assert(saved.tokens.every(token => token === "member")); assert(!reply.body.includes("storagePath") && !reply.body.includes("private-rendering-token"));
+  } finally { await close(); }
+});
+
+test("the exact saved full-cover PDF is independently verified and selected", async () => {
+  const saved = store(); const { app, close } = await pageApp(saved, async (_input, init) => {
+    assert.deepEqual(init?.body, coverBytes); return Response.json(pageReply(coverBytes));
+  });
+  try { const reply = await app.inject({ method: "GET", url: pagePath(await listed(app), COVER), headers: auth });
+    assert.equal(reply.statusCode, 200); assert.equal(reply.json().source.role, "rendered_cover"); assert.equal(reply.json().source.sha256, hash(coverBytes)); }
+  finally { await close(); }
+});
+
+for (const [name, mutate, status] of [
+  ["revoked member", (saved: Store) => { saved.tables.workspace_members[0].status = "revoked"; }, 403],
+  ["foreign workspace", (saved: Store) => { saved.tables.books[0].workspace_id = OTHER; }, 403],
+  ["foreign job", (saved: Store) => { saved.tables.publishing_jobs[0].edition_id = OTHER; }, 404],
+  ["deleted artifact", (saved: Store) => { saved.tables.assets[0].deleted_at = "2026-10-24"; }, 422],
+  ["quarantine", (saved: Store) => { saved.tables.asset_versions[0].scan_status = "infected"; }, 422],
+  ["changed fingerprint", (saved: Store) => { (saved.tables.publishing_jobs[0].request_json as Row).imageSha256 = "d".repeat(64); }, 409],
+  ["corrupt bytes", (saved: Store) => { const content = Buffer.from(primaryBytes); content[50] ^= 1; saved.objects.set(String(saved.tables.assets[0].storage_path), content); }, 503],
+] as const) test(`PDF pages reject ${name} before decoder dispatch`, async () => {
+  const saved = store(); let calls = 0; const { app, close } = await pageApp(saved, async () => { calls++; return Response.json(pageReply()); });
+  try { const render = await listed(app); mutate(saved); const reply = await app.inject({ method: "GET", url: pagePath(render), headers: auth });
+    assert.equal(reply.statusCode, status); assert.equal(calls, 0); assert.deepEqual(saved.signed, []); assert.deepEqual(saved.mutations, []); }
+  finally { await close(); }
+});
+
+for (const during of ["storage", "decoder"]) test(`membership revoked during ${during} cannot receive page pixels or text`, async () => {
+  const saved = store(); let calls = 0; const revoke = () => { saved.tables.workspace_members[0].status = "revoked"; };
+  const { app, close } = await pageApp(saved, async () => { calls++; if (during === "decoder") revoke(); return Response.json(pageReply()); });
+  try { const render = await listed(app); if (during === "storage") saved.onDownload = revoke;
+    const reply = await app.inject({ method: "GET", url: pagePath(render), headers: auth }); assert.equal(reply.statusCode, 403);
+    assert.equal(calls, during === "decoder" ? 1 : 0); assert(!reply.body.includes(proofPng.toString("base64"))); }
+  finally { await close(); }
+});
+
+for (const [name, mutate] of [
+  ["wrong original hash", (r: ReturnType<typeof pageReply>) => { r.sourceSha256 = "d".repeat(64); }],
+  ["wrong original size", (r: ReturnType<typeof pageReply>) => { r.sourceSizeBytes++; }],
+  ["wrong page", (r: ReturnType<typeof pageReply>) => { r.pageNumber = 2; }],
+  ["impossible page count", (r: ReturnType<typeof pageReply>) => { r.pageCount = 0; }],
+  ["wrong resolution", (r: ReturnType<typeof pageReply>) => { r.requestedWidth = 720; }],
+  ["wrong PNG hash", (r: ReturnType<typeof pageReply>) => { r.image.sha256 = "d".repeat(64); }],
+  ["wrong PNG geometry", (r: ReturnType<typeof pageReply>) => { r.image.width = 2; }],
+  ["oversized image", (r: ReturnType<typeof pageReply>) => { r.image.sizeBytes = 7 * 1024 * 1024; }],
+  ["noncanonical base64", (r: ReturnType<typeof pageReply>) => { r.image.base64 += "\n"; }],
+  ["text controls", (r: ReturnType<typeof pageReply>) => { r.text = "private\u0000text"; }],
+] as const) test(`PDF page response rejects ${name} without leaking pixels`, async () => {
+  const saved = store(); const { app, close } = await pageApp(saved, async () => { const reply = pageReply(); mutate(reply); return Response.json(reply); });
+  try { const reply = await app.inject({ method: "GET", url: pagePath(await listed(app)), headers: auth });
+    assert.equal(reply.statusCode, 503); assert(!reply.body.includes(proofPng.toString("base64"))); }
+  finally { await close(); }
+});
+
+for (const [name, response, status] of [
+  ["decoder page rejection", () => Response.json({ detail: "internal native diagnostic" }, { status: 422 }), 422],
+  ["decoder outage", () => new Response("private diagnostic", { status: 500 }), 503],
+  ["HTML reply", () => new Response("<html>private</html>"), 503],
+  ["oversized reply header", () => new Response("{}", { headers: { "content-type": "application/json", "content-length": String(11 * 1024 * 1024) } }), 503],
+] as const) test(`PDF proof handles ${name} opaquely`, async () => {
+  const saved = store(); const { app, close } = await pageApp(saved, async () => response());
+  try { const reply = await app.inject({ method: "GET", url: pagePath(await listed(app)), headers: auth });
+    assert.equal(reply.statusCode, status); assert(!reply.body.includes("diagnostic")); }
+  finally { await close(); }
+});
+
+test("PDF page route accepts no caller-controlled URLs, paths, invalid pages or foreign assets", async () => {
+  const saved = store(); let calls = 0; const { app, close } = await pageApp(saved, async () => { calls++; return Response.json(pageReply()); });
+  try { const render = await listed(app);
+    for (const url of [pagePath(render) + "&url=https://other.example", pagePath(render, OTHER), pagePath(render, ASSET, "0"),
+      pagePath(render, ASSET, "01"), pagePath(render, ASSET, "20001"), pagePath(render, ASSET, "1", "9999")]) {
+      assert.equal((await app.inject({ method: "GET", url, headers: auth })).statusCode, 422);
+    }
+    assert.equal((await app.inject({ method: "GET", url: pagePath(render) })).statusCode, 401); assert.equal(calls, 0);
+  } finally { await close(); }
+});
+
+test("PDF decoder streaming has an absolute deadline and cancels unread private replies", async () => {
+  const previous = process.env.RENDERING_SERVICE_TOKEN; process.env.RENDERING_SERVICE_TOKEN = "synthetic-renderer-only";
+  let cancelled = false; const tasks = new Set<Promise<unknown>>(); const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25);
+  try {
+    await assert.rejects(requestSavedPdfPage(primaryBytes, { checksum: hash(primaryBytes), sizeBytes: primaryBytes.length }, 1, 1080,
+      controller.signal, tasks, async () => new Response(new ReadableStream({
+        start(stream) { stream.enqueue(new TextEncoder().encode("{")); }, cancel() { cancelled = true; },
+      }), { headers: { "content-type": "application/json" } })), /temporarily unavailable/);
+    await Promise.allSettled([...tasks]); assert(cancelled); assert.equal(tasks.size, 0);
+  } finally { clearTimeout(timer); if (previous === undefined) delete process.env.RENDERING_SERVICE_TOKEN; else process.env.RENDERING_SERVICE_TOKEN = previous; }
 });

@@ -102,7 +102,7 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
   await page.goto(`http://localhost:${storage.address().port}/bookworm-saved-print-fixture`);
   await page.addStyleTag({ content: styles.css + "body { background: #050505; color: white; } output { display: block; margin-top: 16px; }" });
   await page.evaluate(({ ids, disabled, primaryDigest, primarySize, coverDigest, coverSize, audio, storageOrigin }) => {
-    window.ids = ids; window.requests = []; window.selected = []; window.invalidated = []; window.historyWaiters = []; window.downloadWaiters = [];
+    window.ids = ids; window.requests = []; window.selected = []; window.invalidated = []; window.historyWaiters = []; window.downloadWaiters = []; window.pageWaiters = [];
     window.initialProps = { bookId: ids.book, workspaceId: ids.workspace, editionId: ids.edition, disabled };
     const proof = (editionId, jobId, assetId, letter) => ({ jobId, createdAt: "2026-10-13T12:00:00.000Z", fingerprint: letter.repeat(64),
       source: { bookId: ids.book, editionId, jobId, assetId, version: 1, sha256: primaryDigest, sizeBytes: primarySize } });
@@ -141,6 +141,18 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
         if (window.holdDownload) await new Promise(resolve => window.downloadWaiters.push(resolve));
         if (window.downloadError) throw new window.ApiClientError(window.downloadError, "access_denied", "Print proof access revoked", "fixture");
         return response;
+      },
+      readPrintPage: async (editionId, jobId, pageNumber, source, signal) => {
+        window.requests.push({ method: "GET", action: "page", editionId, jobId, pageNumber, source });
+        const proof = structuredClone(window.proofs.find(item => item.jobId === jobId));
+        const image = { mimeType: "image/png", width: 1, height: 1, sizeBytes: coverSize, sha256: coverDigest,
+          base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==" };
+        if (window.holdPage) await new Promise(resolve => window.pageWaiters.push(resolve));
+        if (window.pageError) throw new window.ApiClientError(window.pageError, "access_denied", "Saved PDF page access revoked", "fixture");
+        if (window.corruptPage) image.sha256 = "d".repeat(64);
+        return { formatVersion: "pdf-proof-1.0.0", source: { ...proof.source, role: "rendered_print" }, fingerprint: proof.fingerprint,
+          sourceSha256: primaryDigest, sourceSizeBytes: primarySize, pageNumber, pageCount: 4, requestedWidth: source.width,
+          pageWidthPoints: 432, pageHeightPoints: 648, text: `Saved page ${pageNumber} <script>literal, never executed</script>`, textTruncated: false, image };
       },
       runPreflight: async body => { window.requests.push({ method: "POST", action: "preflight", body });
         if (window.holdPreflight) await new Promise(resolve => { window.releasePreflight = resolve; });
@@ -367,7 +379,7 @@ test("actual Studio downloads a private audio segment without replacing its play
   } finally { await page.close(); }
 });
 
-for (const source of ["saved", "new"]) test(`actual Studio downloads ${source} cross-origin PDF and cover without leaving inline previews`, async () => {
+for (const source of ["saved", "new"]) test(`actual Studio downloads ${source} cross-origin PDF and cover without leaving inert page previews`, async () => {
   const { page, errors } = await fixture({ parent: true });
   try {
     const appUrl = page.url();
@@ -381,16 +393,13 @@ for (const source of ["saved", "new"]) test(`actual Studio downloads ${source} c
     }
     const links = page.getByRole("link", { name: "Download private file", exact: true });
     await expect(links).toHaveCount(2);
-    const preview = page.getByTitle("Rendered print edition preview", { exact: true });
+    const preview = page.getByAltText("Saved interior, page 1 of 4", { exact: true });
+    await expect(preview).toBeVisible();
     const previewUrl = await preview.getAttribute("src");
-    assert.equal(new URL(previewUrl).searchParams.has("download"), false);
+    assert(previewUrl.startsWith("data:image/png;base64,"));
     assert.equal(new URL(await page.getByAltText("Rendered book cover", { exact: true }).getAttribute("src")).searchParams.has("download"), false);
-    // Full Chrome has a PDF viewer; the headless shell downloads even inline PDFs and masks this bug.
-    const viewerFrame = () => page.frames().find(frame => frame.url().startsWith("chrome-extension://") && new URL(frame.url()).pathname === "/index.html");
-    await expect.poll(() => Boolean(viewerFrame())).toBe(true);
-    await expect(viewerFrame().locator("pdf-viewer")).toBeVisible();
-    await expect(viewerFrame().getByRole("button", { name: "Print", exact: true })).toBeEnabled();
-    await expect.poll(() => viewerFrame().locator("pdf-viewer").evaluate(viewer => viewer.loadState_)).toBe("success");
+    await expect.poll(() => preview.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
+    assert.equal(await page.locator('iframe[title="Rendered print edition preview"]').count(), 0);
     await preview.screenshot({ path: resolve(artifacts, `${source}-print-inline-preview.png`) });
     assert.equal(downloads, 0, "Opening previews must not download files");
     for (const [index, filename, digest] of [[0, "Saved interior.pdf", primaryDigest], [1, "Saved cover.png", coverDigest]]) {
@@ -405,6 +414,65 @@ for (const source of ["saved", "new"]) test(`actual Studio downloads ${source} c
     assert.equal(downloads, 2);
     assert.deepEqual(await page.evaluate(() => window.requests.filter(request => request.method === "POST").map(request => request.action)), source === "new" ? ["render"] : []);
     assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("PDF proof page, jump, detail, zoom and escaped text work at mobile width without new renders", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await open(page); const reader = page.getByRole("region", { name: "Saved PDF page proof", exact: true });
+    await expect(reader.getByAltText("Saved interior, page 1 of 4")).toBeVisible();
+    await reader.getByRole("button", { name: "Next page", exact: true }).click();
+    await expect(reader.getByAltText("Saved interior, page 2 of 4")).toBeVisible();
+    await reader.getByLabel("Go to PDF page", { exact: true }).fill("4"); await reader.getByRole("button", { name: "Go", exact: true }).click();
+    await expect(reader.getByAltText("Saved interior, page 4 of 4")).toBeVisible();
+    await expect(reader.getByRole("button", { name: "Next page", exact: true })).toBeDisabled();
+    await reader.getByLabel("PDF detail", { exact: true }).selectOption("720");
+    await expect.poll(() => page.evaluate(() => window.requests.filter(r => r.action === "page").at(-1)?.source.width)).toBe(720);
+    await expect(reader.getByAltText("Saved interior, page 4 of 4")).toBeVisible();
+    await reader.getByLabel("PDF zoom", { exact: true }).selectOption("200");
+    await expect(reader.getByAltText("Saved interior, page 4 of 4")).toHaveAttribute("style", /width: 200%/);
+    await reader.getByText("Page text (reading order may differ)", { exact: true }).click();
+    await expect(reader.getByText("Saved page 4 <script>literal, never executed</script>", { exact: true })).toBeVisible();
+    const region = reader.getByRole("region", { name: "PDF page 4 image", exact: true }); await region.focus();
+    await page.keyboard.press("ArrowRight"); await expect.poll(() => region.evaluate(node => node.scrollLeft)).toBeGreaterThan(0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    await reader.screenshot({ path: resolve(artifacts, "saved-pdf-page-proof-mobile.png") });
+    assert.equal(await page.evaluate(() => window.requests.some(r => r.method !== "GET")), false); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("late PDF pages from a previous edition are ignored and membership failures withdraw pixels", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => { window.holdPage = true; }); await open(page);
+    await page.waitForFunction(() => window.pageWaiters.length === 1);
+    await page.getByRole("button", { name: "print en · draft", exact: true }).nth(1).click();
+    await page.evaluate(() => { window.holdPage = false; window.pageWaiters[0](); });
+    await expect(page.getByAltText("Saved interior, page 1 of 4")).toHaveCount(0);
+    await open(page); await expect(page.getByAltText("Saved interior, page 1 of 4")).toBeVisible();
+    await page.evaluate(() => { window.pageError = 403; }); await page.getByRole("button", { name: "Next page", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Saved PDF page access revoked");
+    await expect(page.getByAltText(/Saved interior, page/)).toHaveCount(0);
+    await page.evaluate(() => { window.pageError = null; }); await page.getByRole("button", { name: "Retry saved page", exact: true }).click();
+    await expect(page.getByAltText("Saved interior, page 2 of 4")).toBeVisible(); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("freshly rendered links and PDF pages are withdrawn at their conservative expiry", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    await page.clock.install({ time: new Date("2026-10-24T00:00:00Z") });
+    await page.evaluate(() => { window.bookwormApi.renderEdition = async () => {
+      window.requests.push({ method: "POST", action: "render" }); const result = structuredClone(window.results[window.ids.job]);
+      result.artifacts.forEach(item => { item.download.expiresIn = 2; }); return result;
+    }; });
+    await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    await expect(page.getByAltText("Saved interior, page 1 of 4")).toBeVisible();
+    await page.clock.fastForward(3000); await expect(page.getByRole("link", { name: "Download private file", exact: true })).toHaveCount(0);
+    await expect(page.getByAltText(/Saved interior, page/)).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.requests.filter(r => r.action === "render").length), 1);
+    await expect(page.getByText(/Private proof links expired/)).toBeVisible();
   } finally { await page.close(); }
 });
 

@@ -9,6 +9,8 @@ import ChapterAudioDownload from "./ChapterAudioDownload";
 import NarrationQuoteStudio from "./NarrationQuoteStudio";
 import SavedEpubReader from "./SavedEpubReader";
 import SavedPrintLibrary from "./SavedPrintLibrary";
+import SavedPdfProof from "./SavedPdfProof";
+import { renderLinksDeadline } from "../lib/pdf-proof";
 import RetailerPackageRequest from "./RetailerPackageRequest";
 import { privateDownloadUrl } from "../lib/private-download";
 
@@ -100,6 +102,12 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
   useEffect(() => { void load(); return () => { ++viewEpoch.current; }; }, [load]);
   useEffect(() => {
+    if (!rendered?.expiresAt) return;
+    const jobId = rendered.jobId;
+    const timer = window.setTimeout(() => { invalidatePrint(jobId); setNotice("Private proof links expired. Open the saved proof again to renew them; no new render is needed."); }, Math.max(0, rendered.expiresAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [rendered, invalidatePrint]);
+  useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
@@ -177,7 +185,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     if (!editable || !activeId || dirty || busy || renderBlocked) return;
     const valid = captureView(); if (!valid()) return;
     setBusy("render"); setError(null); setNotice(null); setRendered(null);
-    try { const result = await api.renderEdition(activeId, { idempotencyKey: crypto.randomUUID() }); if (valid()) { setRendered(result); setReaderRefreshKey(result.jobId); setNotice("Private render completed."); } }
+    const startedAt = Date.now();
+    try { const result = await api.renderEdition(activeId, { idempotencyKey: crypto.randomUUID() }); if (valid()) { setRendered({ ...result, expiresAt: renderLinksDeadline(result, startedAt) }); setReaderRefreshKey(result.jobId); setNotice("Private render completed."); } }
     catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Rendering failed."); }
     finally { if (valid()) setBusy(null); }
   };
@@ -406,7 +415,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             <button type="button" onClick={() => void render()} disabled={!editable || !activeId || dirty || Boolean(busy) || renderBlocked} aria-describedby={renderBlocked ? "rtl-render-guidance" : undefined} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "render" ? "Rendering…" : `Render ${form.kind === "ebook" ? "EPUB" : "PDF"}`}</button></div>
           {dirty && <p className="mt-3 text-xs text-amber-200">Save these settings before rendering or validating.</p>}
           {renderBlocked && <p id="rtl-render-guidance" className="mt-3 text-sm text-amber-100">Rendering is disabled until the RTL typography requirement above is resolved. Preflight is still available.</p>}
-          {rendered && <div className="mt-5 grid gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <img src={artifact.download.url} alt="Rendered book cover" className="mt-3 max-h-80 w-full rounded-lg object-contain" /> : artifact.asset.mime_type === "application/pdf" ? <iframe title={artifact.role === "rendered_cover" ? "Rendered cover preview" : "Rendered print edition preview"} src={artifact.download.url} className="mt-3 h-96 w-full rounded-lg bg-white" /> : null}<a href={privateDownloadUrl(artifact.download.url, artifact.asset.name)} download onClick={event => { if (!currentIdentity || currentBook.current !== bookId || rendered.expiresAt !== undefined && Date.now() >= rendered.expiresAt) { event.preventDefault(); setRendered(null); setPreflight(null); setError("Private print links expired or this book changed. Open the saved print again to renew them."); } }} className="mt-3 inline-block text-sm underline">Download private file</a></div>)}</div>}
+          {rendered && <div className="mt-5 grid gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <img src={artifact.download.url} alt="Rendered book cover" className="mt-3 max-h-80 w-full rounded-lg object-contain" /> : null}<a href={privateDownloadUrl(artifact.download.url, artifact.asset.name)} download onClick={event => { if (!currentIdentity || currentBook.current !== bookId || rendered.expiresAt !== undefined && Date.now() >= rendered.expiresAt) { event.preventDefault(); setRendered(null); setPreflight(null); setError("Private print links expired or this book changed. Open the saved print again to renew them."); } }} className="mt-3 inline-block text-sm underline">Download private file</a></div>)}</div>}
+          {form.kind === "print" && rendered && currentIdentity && book && activeId && <SavedPdfProof key={`${bookId}:${activeId}:${rendered.jobId}`} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} rendered={rendered} disabled={dirty || Boolean(busy)} />}
           {form.kind === "print" && currentIdentity && book && activeId && <SavedPrintLibrary key={`${bookId}:${activeId}`} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} refreshKey={readerRefreshKey} dirty={dirty} disabled={dirty || Boolean(busy)} onSelect={adoptPrint} onInvalidate={invalidatePrint} />}
           <div className="mt-6 flex flex-wrap items-end gap-3 border-t border-white/10 pt-5"><label className="min-w-52 flex-1 text-sm text-white/65">Preflight target<select value={channel} onChange={(event) => { setChannel(event.target.value as Channel); setPreflight(null); }} className={fieldClass}><option value="export">Universal export</option><option value="kdp">Amazon KDP</option><option value="apple">Apple Books</option><option value="barnesnoble">Barnes & Noble Press</option><option value="lulu">Lulu</option><option value="googleplay">Google Play Books</option></select></label><button type="button" onClick={() => void validate()} disabled={!editable || !activeId || dirty || Boolean(busy) || !channelCompatible} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "preflight" ? "Checking…" : "Run preflight"}</button></div>
           {!channelCompatible && <p className="mt-3 text-sm text-amber-200">{channel === "lulu" ? "Lulu packages require a print PDF edition." : channel === "googleplay" ? "Google Play Books packages require an EPUB edition with an embedded front cover." : channel === "apple" ? "Apple Books packages require an EPUB edition." : "Choose an edition supported by this retailer."}</p>}

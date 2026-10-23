@@ -48,6 +48,22 @@ def test_duplicate_contract_keys_are_not_silently_overwritten():
         load_contract("post:\n  responses: {200: first}\n  responses: {200: second}\n")
 
 
+def test_saved_pdf_pages_are_exact_bounded_private_reads_not_render_or_purchase_requests():
+    document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
+    operation = document["paths"]["/v1/editions/{editionId}/print-renders/{jobId}/pages/{pageNumber}"]["get"]
+    assert "requestBody" not in operation
+    assert {p["name"] for p in operation["parameters"] if p["in"] == "query"} == {"sha256", "fingerprint", "assetId", "width"}
+    assert operation["responses"]["200"]["headers"]["Cache-Control"]["schema"]["const"] == "private, no-store"
+    assert {"401", "403", "404", "409", "422", "503"} <= operation["responses"].keys()
+    schema = document["components"]["schemas"]["PdfProofPage"]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["image"]["properties"]["mimeType"]["const"] == "image/png"
+    assert schema["properties"]["image"]["properties"]["sizeBytes"]["maximum"] == 6 * 1024 * 1024
+    assert schema["properties"]["image"]["properties"]["height"]["maximum"] == 4096
+    assert schema["properties"]["text"]["maxLength"] == 6000
+    assert schema["properties"]["sourceSizeBytes"]["maximum"] == 150 * 1024 * 1024
+
+
 def test_manual_chapter_save_contract_binds_actor_and_separates_read_from_explicit_closure():
     document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
     root = "/v1/chapters/{chapterId}/manual-saves/{operationId}"

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import ts from "typescript";
 import * as readerHelpers from "../lib/epub-reader";
 import { privateDownloadUrl } from "../lib/private-download";
+import { renderLinksDeadline } from "../lib/pdf-proof";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -41,7 +42,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     getItem(key: string) { if (options.blockedStorage) throw new Error("Storage blocked"); return values.get(key) ?? null; },
     setItem(key: string, value: string) { if (options.blockedStorage) throw new Error("Storage blocked"); values.set(key, value); },
     removeItem(key: string) { if (options.blockedStorage) throw new Error("Storage blocked"); values.delete(key); },
-  }, sessionStorage: { getItem: () => null } };
+  }, sessionStorage: { getItem: () => null }, setTimeout: (callback: () => void, milliseconds: number) => { const timer = setTimeout(callback, milliseconds); timer.unref(); return timer; }, clearTimeout };
   const jsx = (type: unknown, props: any, key?: string | number) => ({ type, props, key: key === undefined ? null : String(key) });
   const react = {
     useState(initial: any) { const index = stateCursor++; if (!(index in states)) states[index] = initial; return [states[index], (value: any) => { states[index] = typeof value === "function" ? value(states[index]) : value; }]; },
@@ -76,7 +77,8 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/referrals")) return { claimPendingReferral: async () => {} };
     if (name.endsWith("/AssetBrowser")) return { default: "AssetBrowser" };
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
-    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "RetailerPackageRequest"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
+    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "SavedPdfProof", "RetailerPackageRequest"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
+    if (name.endsWith("/pdf-proof")) return { renderLinksDeadline };
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
     if (name.endsWith("/epub-reader")) return readerHelpers;
     if (name.endsWith("/private-download")) return { privateDownloadUrl };
@@ -895,7 +897,7 @@ test("Publishing render refreshes the real saved reader once; unsaved edits pres
   await syncReader(); assert.equal(historyReads, 1);
   const renderButton = nodes(parentTree).find(node => node.type === "button" && node.props.children === "Render EPUB"); assert(renderButton); renderButton.props.onClick();
   await syncReader(); assert.equal(historyReads, 1, "starting a render is not a completed saved export");
-  pendingRender.resolve({ jobId: latest.jobId, status: "succeeded", artifacts: [] }); await settle();
+  pendingRender.resolve({ jobId: latest.jobId, status: "succeeded", artifacts: [{ asset: { ...asset(latest.assetId, B), name: "Saved.epub", mime_type: "application/epub+zip" }, role: "rendered_ebook", download: { url: `https://storage.example.test/storage/v1/object/sign/book-assets/workspaces/${B}/assets/${latest.assetId}/v1/book.epub?token=synthetic`, expiresIn: 300 } }] }); await settle();
   await syncReader(); parentTree = parent.render(); const completed = props(parentTree, "SavedEpubReader");
   assert.notEqual(completed.refreshKey, initial.refreshKey); assert.equal(historyReads, 2);
   let childTree = await syncReader(); assert.equal(historyReads, 2, "ordinary rerenders must not repeat history GETs");

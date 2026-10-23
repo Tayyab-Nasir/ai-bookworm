@@ -382,6 +382,33 @@ paths:
         "422": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/editions/{editionId}/print-renders/{jobId}/pages/{pageNumber}:
+    get:
+      operationId: readSavedPdfPage
+      summary: Inspect a verified saved print PDF without a browser PDF plugin
+      description: Active members including viewers may inspect exact saved interior or full-cover PDF bytes. Requires the listed primary SHA-256, whole-proof fingerprint and the selected artifact ID. Rejects caller URLs and paths. A single 30-second deadline and shared byte-reader admission cover user-scoped source checks, bounded Storage reads, hashing and private PDF decoding. Rechecks membership and immutable provenance before dispatch and before returning. The non-V8/non-XFA PDFium service emits only a bounded PNG and escaped plain reading text, never PDF scripts, annotations or form actions. No signed link, manuscript rerender, provider call, charge or mutation is performed. Historical source edits do not change the saved proof.
+      parameters:
+        - { name: editionId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: pageNumber, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 20000 } }
+        - { name: sha256, in: query, required: true, schema: { type: string, pattern: '^[a-f0-9]{64}$' } }
+        - { name: fingerprint, in: query, required: true, schema: { type: string, pattern: '^[a-f0-9]{64}$' } }
+        - { name: assetId, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: width, in: query, schema: { type: integer, enum: [720, 1080, 1440], default: 1080 } }
+      responses:
+        "200":
+          description: Exact source identity, verified inert PNG and bounded plain page text
+          headers:
+            Cache-Control: { schema: { type: string, const: "private, no-store" } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PdfProofPage" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/workspaces/{workspaceId}/narration-models:
     get:
       operationId: listNarrationQuoteModels
@@ -3954,6 +3981,46 @@ components:
         createdAt: { type: string, format: date-time }
         source: { $ref: "#/components/schemas/SavedPrintSource" }
         fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+    PdfProofPage:
+      type: object
+      additionalProperties: false
+      required: [formatVersion, source, fingerprint, sourceSha256, sourceSizeBytes, pageNumber, pageCount, requestedWidth, pageWidthPoints, pageHeightPoints, text, textTruncated, image]
+      properties:
+        formatVersion: { type: string, const: pdf-proof-1.0.0 }
+        source:
+          type: object
+          additionalProperties: false
+          required: [bookId, editionId, jobId, assetId, version, sha256, sizeBytes, role]
+          properties:
+            bookId: { type: string, format: uuid }
+            editionId: { type: string, format: uuid }
+            jobId: { type: string, format: uuid }
+            assetId: { type: string, format: uuid }
+            version: { type: integer, const: 1 }
+            sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+            sizeBytes: { type: integer, minimum: 9, maximum: 157286400 }
+            role: { type: string, enum: [rendered_print, rendered_cover] }
+        fingerprint: { type: string, pattern: '^[a-f0-9]{64}$' }
+        sourceSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        sourceSizeBytes: { type: integer, minimum: 9, maximum: 157286400 }
+        pageNumber: { type: integer, minimum: 1, maximum: 20000 }
+        pageCount: { type: integer, minimum: 1, maximum: 20000 }
+        requestedWidth: { type: integer, enum: [720, 1080, 1440] }
+        pageWidthPoints: { type: number, minimum: 1, maximum: 14400 }
+        pageHeightPoints: { type: number, minimum: 1, maximum: 14400 }
+        text: { type: string, maxLength: 6000 }
+        textTruncated: { type: boolean }
+        image:
+          type: object
+          additionalProperties: false
+          required: [mimeType, width, height, sizeBytes, sha256, base64]
+          properties:
+            mimeType: { type: string, const: image/png }
+            width: { type: integer, minimum: 1, maximum: 1440 }
+            height: { type: integer, minimum: 1, maximum: 4096 }
+            sizeBytes: { type: integer, minimum: 45, maximum: 6291456 }
+            sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+            base64: { type: string, minLength: 4, maxLength: 8388608, pattern: '^[A-Za-z0-9+/]*={0,2}$' }
     SavedPrintHistory:
       type: object
       additionalProperties: false

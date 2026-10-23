@@ -84,7 +84,7 @@ export async function buildApp(
     editionRoutes(v1, { fetcher: opts.renderFetch });
     publishingRoutes(v1, { renderFetcher: opts.renderFetch, publishingFetcher: opts.publishingFetch });
     readerRoutes(v1, { fetcher: opts.renderFetch });
-    savedPrintRoutes(v1);
+    savedPrintRoutes(v1, { fetcher: opts.renderFetch });
     folderRoutes(v1);
     collabRoutes(v1);
     teamRoutes(v1);

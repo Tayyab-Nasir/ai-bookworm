@@ -68,6 +68,17 @@ export async function runNativeAuthorRenders({ request, service, alice, bob, boo
       const reread = await fetch(saved.artifacts[0].download.url);
       assert.equal(reread.status, 200);
       assert.deepEqual(Buffer.from(await reread.arrayBuffer()), bytes);
+      const pagePath = `${historyPath}/${proof.jobId}/pages/1?sha256=${proof.source.sha256}&fingerprint=${proof.fingerprint}&assetId=${proof.source.assetId}&width=720`;
+      await request(bob.token, 'GET', pagePath, undefined, 404);
+      await request(alice.token, 'GET', pagePath.replace(proof.source.sha256, '0'.repeat(64)), undefined, 409);
+      const page = await request(alice.token, 'GET', pagePath);
+      assert.equal(page.formatVersion, 'pdf-proof-1.0.0'); assert.equal(page.sourceSha256, hash(bytes));
+      assert.deepEqual(page.source, { ...proof.source, role: 'rendered_print' });
+      assert.equal(page.fingerprint, proof.fingerprint); assert.equal(page.pageNumber, 1); assert(page.pageCount >= 2);
+      const png = Buffer.from(page.image.base64, 'base64'); assert.equal(hash(png), page.image.sha256);
+      assert.equal(png.length, page.image.sizeBytes); assert.equal(page.image.mimeType, 'image/png');
+      assert.equal(png.readUInt32BE(16), page.image.width); assert.equal(png.readUInt32BE(20), page.image.height);
+      assert.equal(page.image.width, 720); assert(page.image.height > 0 && page.image.height <= 4096);
     }
 
     const intent = { bookId: book.id, editionId: edition.id, channel: 'export', idempotencyKey: randomUUID() };
