@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../auth.dart';
 import '../models.dart';
 import 'book_overview_screen.dart';
+import 'assets_screen.dart';
 
 /// Home: recent books + open tasks for the selected workspace.
 class HomeScreen extends StatefulWidget {
@@ -60,7 +61,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _error = null;
       });
     } on Exception catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted)
+        setState(() {
+          _error = e.toString();
+          _loading = false;
+        });
     }
   }
 
@@ -68,7 +73,17 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final ws = widget.auth.workspace;
     return Scaffold(
-      appBar: AppBar(title: Text(ws == null ? 'Home' : 'Home — ${ws.name}')),
+      appBar: AppBar(
+          title: Text(ws == null ? 'Home' : 'Home — ${ws.name}'),
+          actions: [
+            IconButton(
+                tooltip: 'Files & artwork',
+                icon: const Icon(Icons.folder_outlined),
+                onPressed: ws == null
+                    ? null
+                    : () => Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => AssetsScreen(auth: widget.auth)))),
+          ]),
       body: RefreshIndicator(
         onRefresh: _load,
         child: ListView(
@@ -77,14 +92,16 @@ class _HomeScreenState extends State<HomeScreen> {
             if (_error != null) Text(_error!),
             if (ws == null && !_loading)
               const Text('No workspace yet. Create one on the web app first.'),
-            Text('Recent books', style: Theme.of(context).textTheme.titleMedium),
+            Text('Recent books',
+                style: Theme.of(context).textTheme.titleMedium),
             for (final b in _books.take(5))
               ListTile(
                 title: Text(b.title),
                 subtitle: Text('${b.authorName} • ${b.status}'),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => BookOverviewScreen(auth: widget.auth, book: b),
+                  builder: (_) =>
+                      BookOverviewScreen(auth: widget.auth, book: b),
                 )),
               ),
             if (_books.isEmpty && !_loading)

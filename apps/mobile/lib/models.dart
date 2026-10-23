@@ -218,7 +218,13 @@ class TaskItem {
             : DateTime.tryParse(j['due_at'] as String),
       );
 
-  static const statuses = ['todo', 'in_progress', 'blocked', 'done', 'cancelled'];
+  static const statuses = [
+    'todo',
+    'in_progress',
+    'blocked',
+    'done',
+    'cancelled'
+  ];
 
   final String id;
   final String title;
@@ -236,6 +242,12 @@ class AssetItem {
     required this.mimeType,
     required this.sizeBytes,
     required this.status,
+    this.workspaceId = '',
+    this.createdBy = '',
+    this.checksum = '',
+    this.storagePath = '',
+    this.scanStatus,
+    this.version,
   });
 
   factory AssetItem.fromJson(Map<String, dynamic> j) => AssetItem(
@@ -245,6 +257,12 @@ class AssetItem {
         mimeType: j['mime_type'] as String? ?? '',
         sizeBytes: (j['size_bytes'] as num?)?.toInt() ?? 0,
         status: j['status'] as String? ?? 'draft',
+        workspaceId: j['workspace_id'] as String? ?? '',
+        createdBy: j['created_by'] as String? ?? '',
+        checksum: j['checksum'] as String? ?? '',
+        storagePath: j['storage_path'] as String? ?? '',
+        scanStatus: j['current_scan_status'] as String?,
+        version: j['current_version_number'] as int?,
       );
 
   final String id;
@@ -253,6 +271,9 @@ class AssetItem {
   final String mimeType;
   final int sizeBytes;
   final String status;
+  final String workspaceId, createdBy, checksum, storagePath;
+  final String? scanStatus;
+  final int? version;
 }
 
 class PublishingJob {

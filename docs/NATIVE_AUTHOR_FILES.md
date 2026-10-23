@@ -1,5 +1,25 @@
 # Native author-file acceptance
 
+## Latest verified recovery checkpoint
+
+On 2026-10-23, terminal GitHub metadata and logs were rechecked for
+[run 38995492623](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/38995492623),
+job `117287015726`, exact source
+`ac439acfec8dcf5b7c998a4b3ebeda080fb0cd7a`. It **passed** on
+2026-10-17 at 02:40:47 UTC. This supersedes the earlier seventh-package timeout
+and saved-print fixture failure; no duplicate run was dispatched.
+
+The production build, 22 mounted Chromium checks and native author-file journey
+passed, including seven API-created and seven browser-created private retailer
+packages. The seventh browser package was created once, its real reply was
+consumed then deliberately dropped, and reload recovered that original request
+through read-only status. Exact ZIP contents, closure rejection, unavailable/
+restored original bytes, 26 combined render/package usage events, zero AI jobs/
+credit charges, migration integrity and owned cleanup remained enforced.
+
+These are disposable native-service/browser results, not hosted production,
+real retailer submission, paid OpenAI generation, or Flutter device acceptance.
+
 This test runs the actual Bookworm API and document worker against disposable
 Supabase Auth, PostgREST, Storage, ClamAV, document-parser, rendering and publishing containers. It does
 not use the SQL-only suite's Auth/Storage stubs or injected API service fakes.

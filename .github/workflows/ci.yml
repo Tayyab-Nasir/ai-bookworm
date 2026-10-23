@@ -61,3 +61,6 @@ jobs:
         working-directory: apps/mobile
       - run: flutter analyze
         working-directory: apps/mobile
+      - name: Verify mobile transport, secure sessions and upload recovery
+        run: flutter test --no-pub --coverage --timeout 25s
+        working-directory: apps/mobile

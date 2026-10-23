@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 
 import '../auth.dart';
-import '../api.dart';
 import '../models.dart';
 
 /// Reader + lightweight editor. Reads the chapter's current document version

@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <application
         android:name="${applicationName}"
+        android:allowBackup="false"
         android:label="AI Bookworm"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -21,6 +22,12 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="com.bookworm.ai" android:host="login-callback"/>
             </intent-filter>
         </activity>
         <meta-data

@@ -43,7 +43,7 @@ android {
 
     defaultConfig {
         applicationId "com.bookworm.ai"
-        minSdkVersion flutter.minSdkVersion
+        minSdkVersion Math.max(flutter.minSdkVersion, 23)
         targetSdkVersion flutter.targetSdkVersion
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
