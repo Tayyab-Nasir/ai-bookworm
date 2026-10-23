@@ -1,9 +1,48 @@
 # Hosted database upgrade review
 
 Recorded on 2026-10-23 for Supabase **AI-BookWorm** (`cyhqtwndadlyzpeatxws`).
-This is a read-only inventory, not an applied upgrade or release approval.
+The upgrade is applied and verified. Earlier preflight notes below are historical.
 
-## Operator approval and fresh preflight — 2026-10-23
+## Applied and verified — 2026-10-23
+
+All 64 reviewed pending migrations succeeded, preserving the original 45 hosted
+history entries. A post-upgrade advisor identified default client EXECUTE grants
+on a recreated internal metadata trigger helper. A regression test reproduced
+the issue; the additional `metadata_trigger_execution_hardening` migration
+revoked anonymous/authenticated access while retaining service access. The
+project now has **110 of 110 source migrations**, with no pending files.
+
+The hosted schema matches the reconstructed target: 91 application tables plus
+the unchanged unrelated `AI-BookWorm` table, 247 functions, 112 policies,
+230 indexes including the unrelated table's index, 84 triggers and six enums.
+All application tables have RLS enabled. Final catalog comparison confirms
+the follow-up changed only the intended permissions. The profile's hosted
+fingerprint is unchanged; one Auth user and zero Storage objects remain.
+
+A live transaction verified anonymous onboarding rejection, authenticated
+workspace/book creation, owner memberships and cross-tenant read denial.
+It was rolled back; no test workspace or book remains. Local checks passed:
+110 migrations, 72 SQL assertion files, the populated 45-to-110 upgrade with
+five guarded aborts, crypto namespace checks and three inventory tests.
+
+Recovery used the verified **application-only** snapshot and archived SQL after
+the user delegated finding a workable recovery method. A private local restore
+rehearsal preserved the typed profile and matched the schema. This is not a
+full Supabase/Auth/Storage/project-settings backup. No credentials or customer
+rows are in Git or Obsidian. Full disaster recovery remains a release gate.
+
+Metadata-only evidence, source hashes, hosted versions and advisor follow-ups:
+[`evidence/supabase-upgrade-applied-2026-10-23.json`](evidence/supabase-upgrade-applied-2026-10-23.json).
+Do not replay the old 45 or the completed 64-file plan; refresh hosted history.
+
+The anonymous privileged-function advisory is resolved. Remaining advisors
+cover existing public `citext`, authenticated privileged application RPCs,
+disabled leaked-password protection, server-only tables without client policies,
+and performance index suggestions. No blanket grants or index deletion.
+This is not full web/worker/provider acceptance. Mobile remains parked,
+Stripe deferred, and no deployment, paid generation or retailer submission occurred.
+
+## Historical operator approval and preflight — 2026-10-23
 
 The user explicitly approved proceeding with the Supabase migrations. That
 approval covers the reviewed 64-file upgrade below; it does not need to be

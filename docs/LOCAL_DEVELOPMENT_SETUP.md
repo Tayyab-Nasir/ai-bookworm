@@ -1,78 +1,87 @@
-# AI Bookworm - Local Development Setup
+# AI Bookworm — local web development
 
-## Quick Start
+The intended local origins are **web `http://localhost:3001`** and
+**API `http://127.0.0.1:3002`**. Do not point the web proxy back at itself.
+Service availability is a live observation, not a saved "running" badge.
 
-**Access the Running Instance:** http://localhost:3000
+## Environment
 
-## Services Status
+Store private settings in the ignored root `.env.local`, never Git or Obsidian.
+Use the variable names in `.env.example`. For this project:
 
-| Service | Port | Status | Endpoint |
-|---------|------|--------|----------|
-| Web App | 3000 | ✅ Running | http://localhost:3000 |
-| API | 3001 | ✅ Running | http://localhost:3001 |
-| AI Gateway | 8000 | ⏸️ Not started | N/A |
+- `APP_URL=http://localhost:3001`
+- `API_URL=http://127.0.0.1:3002`
+- `API_PORT=3002`, `WEB_PORT=3001`
+- Supabase public/server keys must refer to `cyhqtwndadlyzpeatxws`.
+- Keep service-role keys, OpenAI keys and service tokens server-only.
 
-## How to Start Services
+Google sign-in uses the operator-owned Supabase Google provider. Customers do
+not need OAuth credentials. The local redirect is exactly
+`http://localhost:3001/auth/callback`; use the canonical localhost origin.
 
-```bash
-cd C:/Users/Asus/ai-bookworm
+## Start the web and API
 
-# Terminal 1: API Service
-npx tsx services/api/src/index.ts
-# Health: http://localhost:3001/health
+From `C:/Users/Asus/ai-bookworm`, use two PowerShell terminals:
 
-# Terminal 2: Web App
-npm run dev -w apps/web
-# Access: http://localhost:3000
+```powershell
+$env:API_PORT = '3002'
+npm run dev -w @bookworm/api
 ```
 
-## Environment Setup
+```powershell
+npm run dev -w @bookworm/web -- --hostname 127.0.0.1 --port 3001
+```
 
-The `.env.local` file is pre-configured with Supabase keys for project `cyhqtwndadlyzpeatxws`.
+Development processes load the repository-local environment. Production needs
+an explicit environment/secret store. Stop your own processes with Ctrl+C;
+do not terminate another agent's server. Next development may update generated
+TypeScript includes; preserve shared `next-env.d.ts`/`tsconfig.json` drafts.
+An isolated frozen source directory avoids touching those files.
 
-### Missing keys and local test behavior
+## What health checks prove
 
-| Key | Purpose | Mock Fallback |
-|-----|---------|---------------|
-| OPENAI_API_KEY | Server-side text, image, and speech generation | Deterministic mocks only in explicit tests/evals; production requests fail closed |
-| STRIPE_SECRET_KEY | Billing | In-memory credits |
-| STRIPE_WEBHOOK_SECRET | Billing webhooks | Disabled |
-| REDIS_URL | Queue/cache | Not required |
-| QDRANT_URL | Vector search | Not required |
+- API `/health`: process liveness only.
+- API `/ready`: Supabase read and a real authenticated Redis PING. Missing or
+  unreachable configured Redis produces 503. Do not substitute a mock or
+  describe liveness as full readiness.
+- Neither proves scanner, document/rendering services, workers, OpenAI,
+  Storage transfer or retailer export acceptance.
 
-## Deterministic test capabilities
+## Hosted migrations
 
-- ✅ User signup/signin flow
-- ✅ Workspace/book management
-- ✅ Document upload (DOCX/EPUB/TXT/PDF)
-- ✅ Editor interface
-- ✅ AI proofreading (mock responses)
-- ✅ Credit ledger (simulated)
+As verified on 2026-10-23, **110 source migrations are applied** to AI-BookWorm.
+See [the hosted review](HOSTED_MIGRATION_REVIEW.md) and its evidence receipt.
+Do not paste the old combined SQL into the dashboard, replay migrations, or
+repair timestamps to match source filenames. Hosted versions are application
+timestamps. Refresh history, map names, review drift/recovery, then apply only
+newly approved pending migrations.
 
-## Database Migration Required
+The private application-only snapshot used for this upgrade is not a full
+project backup. Auth/Storage/configuration disaster recovery remains a release
+requirement. Never commit the snapshot's customer rows.
 
-Before full production testing, apply migrations:
+## Generation, credits and services
 
-1. Open: https://supabase.com/dashboard/project/cyhqtwndadlyzpeatxws/editor
-2. Paste contents of `docs/apply-migrations.sql`
-3. Run the SQL
+There is **no free production AI fallback**. Missing OpenAI keys or approved
+pricing catalogs disable paid generation. Deterministic providers and simulated
+credits are confined to explicit tests. Stripe is deferred at the owner's
+request; missing Stripe configuration never bypasses credit enforcement.
 
-## Testing the Flow
+Manual workspace/book creation and editing do not need OpenAI. Uploads require
+the private scanner and healthy malware engine. Import, rendering, publishing
+packages and generation require their authenticated services and separately
+supervised workers. Next.js alone is not the full stack. See [operations](operations.md).
 
-1. **Access**: Browse to http://localhost:3000
-2. **Signup**: Create a new account
-3. **Workspace**: Create/join a workspace
-4. **Book**: Create a new book
-5. **Editor**: Open the book editor
-6. **AI Tools**: Use the AI panel (works in mock mode)
+## Verification
 
-## Stopping Services
+```powershell
+npm run test:migrations:inventory
+npm run test:db
+npm run test:db:upgrade
+npm run test:db:crypto
+```
 
-- API: `Ctrl+C` in terminal running `tsx src/index.ts`
-- Web: `Ctrl+C` in terminal running `npm run dev`
-
-## Production Readiness
-
-Production note: repository migrations are installed in the authorized AI-BookWorm Supabase project. Provider and billing keys, Google OAuth, Redis/Qdrant, worker deployment, and release acceptance still require operator configuration.
-
-See `docs/release-checklist.md` for full production checklists.
+These suites use disposable local fixtures, not the hosted project. They do not
+prove Google login, native Storage HTTP or funded OpenAI behavior. Use the
+[release checklist](release-checklist.md) for remaining acceptance gates.
+Mobile work remains parked while the web app is finalized.

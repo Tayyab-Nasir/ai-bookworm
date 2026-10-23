@@ -1,0 +1,1180 @@
+{
+  "projectRef": "cyhqtwndadlyzpeatxws",
+  "capturedAt": "2026-10-23T12:05:23.308Z",
+  "sourceBaseline": "cb36da4a283eb8a543d17351abb346ac3d7e4263",
+  "baselineCount": 45,
+  "appliedThisRun": 65,
+  "targetCount": 110,
+  "history": [
+    {
+      "version": "20260912035021",
+      "name": "0001_extensions"
+    },
+    {
+      "version": "20260912035026",
+      "name": "0002_core"
+    },
+    {
+      "version": "20260912035030",
+      "name": "0003_assets_collaboration"
+    },
+    {
+      "version": "20260912035033",
+      "name": "0004_ai"
+    },
+    {
+      "version": "20260912035036",
+      "name": "0005_community"
+    },
+    {
+      "version": "20260912035039",
+      "name": "0006_billing_publishing"
+    },
+    {
+      "version": "20260912035042",
+      "name": "0007_indexes"
+    },
+    {
+      "version": "20260912035047",
+      "name": "0008_rls"
+    },
+    {
+      "version": "20260912035051",
+      "name": "0009_storage"
+    },
+    {
+      "version": "20260912035054",
+      "name": "0010_step9_collab"
+    },
+    {
+      "version": "20260912035057",
+      "name": "0011_stripe_events"
+    },
+    {
+      "version": "20260912035101",
+      "name": "0012_community_extras"
+    },
+    {
+      "version": "20260912035104",
+      "name": "0013_admin_ops"
+    },
+    {
+      "version": "20260912035108",
+      "name": "20260831022214_rls_tenant_hardening"
+    },
+    {
+      "version": "20260912035111",
+      "name": "20260831023000_workspace_onboarding"
+    },
+    {
+      "version": "20260912035114",
+      "name": "20260831040000_authoring_transactions"
+    },
+    {
+      "version": "20260912035117",
+      "name": "20260901090000_ai_workflow_transactions"
+    },
+    {
+      "version": "20260912035121",
+      "name": "20260903100000_image_asset_workflow"
+    },
+    {
+      "version": "20260912035124",
+      "name": "20260903120000_render_workflow"
+    },
+    {
+      "version": "20260912035128",
+      "name": "20260903130000_preflight_workflow"
+    },
+    {
+      "version": "20260912035131",
+      "name": "20260904100000_publishing_package_workflow"
+    },
+    {
+      "version": "20260912035134",
+      "name": "20260904120000_collaboration_invitations"
+    },
+    {
+      "version": "20260912035138",
+      "name": "20260904130000_collaboration_approval_hardening"
+    },
+    {
+      "version": "20260912035141",
+      "name": "20260905050000_admin_flag_transactions"
+    },
+    {
+      "version": "20260912035144",
+      "name": "20260905060000_book_retrieval"
+    },
+    {
+      "version": "20260912035149",
+      "name": "20260905070000_referral_transactions"
+    },
+    {
+      "version": "20260912035152",
+      "name": "20260905120000_publishing_worker_leases"
+    },
+    {
+      "version": "20260912035155",
+      "name": "20260906100000_account_support_data_rights"
+    },
+    {
+      "version": "20260912035158",
+      "name": "20260907100000_metadata_ai_workflow"
+    },
+    {
+      "version": "20260912035202",
+      "name": "20260907110000_asset_quarantine"
+    },
+    {
+      "version": "20260912035205",
+      "name": "20260909090000_manuscript_image_import"
+    },
+    {
+      "version": "20260912035208",
+      "name": "20260909150000_manuscript_import_receipts"
+    },
+    {
+      "version": "20260912035212",
+      "name": "20260910100000_manuscript_import_jobs"
+    },
+    {
+      "version": "20260912035215",
+      "name": "20260911100000_manuscript_import_health"
+    },
+    {
+      "version": "20260912035218",
+      "name": "20260911110000_ai_review_jobs"
+    },
+    {
+      "version": "20260912035221",
+      "name": "20260911120000_chapter_creation_requests"
+    },
+    {
+      "version": "20260912035224",
+      "name": "20260912090000_image_completion_receipts"
+    },
+    {
+      "version": "20260912035227",
+      "name": "20260912100000_image_completion_credit_guard"
+    },
+    {
+      "version": "20260912035230",
+      "name": "20260912110000_image_credit_reservations"
+    },
+    {
+      "version": "20260912035234",
+      "name": "20260912120000_community_creation"
+    },
+    {
+      "version": "20260912035419",
+      "name": "20260912130000_auth_profile_and_advisor_fixes"
+    },
+    {
+      "version": "20260912035715",
+      "name": "paid_generation_defaults"
+    },
+    {
+      "version": "20260912041804",
+      "name": "plan_publication_controls"
+    },
+    {
+      "version": "20260912043928",
+      "name": "audiobook_workflow"
+    },
+    {
+      "version": "20260912044427",
+      "name": "audiobook_idempotency_hardening"
+    },
+    {
+      "version": "20261023114924",
+      "name": "pgcrypto_digest_compatibility"
+    },
+    {
+      "version": "20261023114959",
+      "name": "translation_workflow"
+    },
+    {
+      "version": "20261023115003",
+      "name": "retailer_sales_imports"
+    },
+    {
+      "version": "20261023115006",
+      "name": "metadata_single_active_request"
+    },
+    {
+      "version": "20261023115011",
+      "name": "metadata_service_receipts"
+    },
+    {
+      "version": "20261023115014",
+      "name": "metadata_credit_reservations"
+    },
+    {
+      "version": "20261023115018",
+      "name": "shared_text_credit_reservations"
+    },
+    {
+      "version": "20261023115037",
+      "name": "media_credit_accounting_lock"
+    },
+    {
+      "version": "20261023115041",
+      "name": "media_request_immutability"
+    },
+    {
+      "version": "20261023115044",
+      "name": "atomic_credit_deduction"
+    },
+    {
+      "version": "20261023115055",
+      "name": "funded_usage_quotes"
+    },
+    {
+      "version": "20261023115058",
+      "name": "funded_dispatch_claim"
+    },
+    {
+      "version": "20261023115101",
+      "name": "quoted_translation_queue"
+    },
+    {
+      "version": "20261023115106",
+      "name": "quoted_translation_completion"
+    },
+    {
+      "version": "20261023115109",
+      "name": "cancel_undispatched_translation"
+    },
+    {
+      "version": "20261023115112",
+      "name": "translation_quote_proposals"
+    },
+    {
+      "version": "20261023115116",
+      "name": "translation_quote_requests"
+    },
+    {
+      "version": "20261023115119",
+      "name": "translation_quote_worker"
+    },
+    {
+      "version": "20261023115122",
+      "name": "retire_legacy_translation_queue"
+    },
+    {
+      "version": "20261023115125",
+      "name": "story_blueprints"
+    },
+    {
+      "version": "20261023115140",
+      "name": "story_blueprint_quote_proposals"
+    },
+    {
+      "version": "20261023115143",
+      "name": "audiobook_qc_review_signoffs"
+    },
+    {
+      "version": "20261023115147",
+      "name": "audiobook_google_play_export_jobs"
+    },
+    {
+      "version": "20261023115150",
+      "name": "book_retrieval_rich_nodes"
+    },
+    {
+      "version": "20261023115154",
+      "name": "image_manual_hold_release"
+    },
+    {
+      "version": "20261023115157",
+      "name": "image_single_flight_reservation"
+    },
+    {
+      "version": "20261023115201",
+      "name": "google_play_ebook_export"
+    },
+    {
+      "version": "20261023115204",
+      "name": "book_bible_evidence"
+    },
+    {
+      "version": "20261023115207",
+      "name": "ai_review_uncertain_hold"
+    },
+    {
+      "version": "20261023115210",
+      "name": "ai_review_service_receipts"
+    },
+    {
+      "version": "20261023115219",
+      "name": "ai_review_manual_hold_release"
+    },
+    {
+      "version": "20261023115222",
+      "name": "ai_review_receipt_recovery"
+    },
+    {
+      "version": "20261023115226",
+      "name": "book_bible_service_receipts"
+    },
+    {
+      "version": "20261023115229",
+      "name": "book_bible_ai_workflow"
+    },
+    {
+      "version": "20261023115233",
+      "name": "book_bible_manual_hold_release"
+    },
+    {
+      "version": "20261023115237",
+      "name": "book_bible_reading_batches"
+    },
+    {
+      "version": "20261023115240",
+      "name": "metadata_token_quote_acceptance"
+    },
+    {
+      "version": "20261023115243",
+      "name": "quoted_metadata_worker"
+    },
+    {
+      "version": "20261023115246",
+      "name": "ai_review_token_quotes"
+    },
+    {
+      "version": "20261023115252",
+      "name": "ai_review_token_quote_acceptance"
+    },
+    {
+      "version": "20261023115301",
+      "name": "quoted_ai_review_worker"
+    },
+    {
+      "version": "20261023115305",
+      "name": "book_bible_token_quotes"
+    },
+    {
+      "version": "20261023115308",
+      "name": "image_quote_snapshots"
+    },
+    {
+      "version": "20261023115312",
+      "name": "image_quote_price_validation"
+    },
+    {
+      "version": "20261023115316",
+      "name": "image_quote_acceptance"
+    },
+    {
+      "version": "20261023115321",
+      "name": "quoted_image_leases"
+    },
+    {
+      "version": "20261023115324",
+      "name": "quoted_image_receipts"
+    },
+    {
+      "version": "20261023115328",
+      "name": "quoted_image_completion"
+    },
+    {
+      "version": "20261023115331",
+      "name": "retailer_sales_analytics"
+    },
+    {
+      "version": "20261023115337",
+      "name": "platform_admin_report_moderation"
+    },
+    {
+      "version": "20261023115345",
+      "name": "illustration_review_workflow"
+    },
+    {
+      "version": "20261023115349",
+      "name": "atomic_artwork_completion"
+    },
+    {
+      "version": "20261023115352",
+      "name": "text_quote_recovery_completion"
+    },
+    {
+      "version": "20261023115357",
+      "name": "image_bible_quote_permissions"
+    },
+    {
+      "version": "20261023115400",
+      "name": "book_bible_quote_receipt_binding"
+    },
+    {
+      "version": "20261023115404",
+      "name": "narration_quote_snapshots"
+    },
+    {
+      "version": "20261023115407",
+      "name": "narration_chapter_quote_snapshots"
+    },
+    {
+      "version": "20261023115411",
+      "name": "funded_narration_chapter_acceptance"
+    },
+    {
+      "version": "20261023115414",
+      "name": "quoted_narration_leases"
+    },
+    {
+      "version": "20261023115417",
+      "name": "quoted_narration_receipts"
+    },
+    {
+      "version": "20261023115431",
+      "name": "quoted_narration_completion"
+    },
+    {
+      "version": "20261023115434",
+      "name": "stripe_webhook_transactions"
+    },
+    {
+      "version": "20261023115438",
+      "name": "manual_book_bible_recovery"
+    },
+    {
+      "version": "20261023115442",
+      "name": "canonical_import_reading_text"
+    },
+    {
+      "version": "20261023120243",
+      "name": "metadata_trigger_execution_hardening"
+    }
+  ],
+  "sourceMigrations": [
+    {
+      "index": 1,
+      "file": "0001_extensions.sql",
+      "sha256": "230221bc9837bfae44dd785288d781ece048db27523c79ebafbd6bc61e339280",
+      "bytes": 692
+    },
+    {
+      "index": 2,
+      "file": "0002_core.sql",
+      "sha256": "121e954f3c67a410b672bbe90f03dc6be180d0115657f996df025f2c83676a6e",
+      "bytes": 5251
+    },
+    {
+      "index": 3,
+      "file": "0003_assets_collaboration.sql",
+      "sha256": "d45a3ff1911c24fb886c013703e0d14f03e56da7b11c6d99384208df44c34cc1",
+      "bytes": 3729
+    },
+    {
+      "index": 4,
+      "file": "0004_ai.sql",
+      "sha256": "4c21e0b26cdb08d81b6f21f7b8eeafc673876c8ae5375872a5d5eda0c893261a",
+      "bytes": 1639
+    },
+    {
+      "index": 5,
+      "file": "0005_community.sql",
+      "sha256": "a2941755d6b5d09a49711520d43c66e4c771bf3edf416c7625aabc476ddc2fae",
+      "bytes": 2569
+    },
+    {
+      "index": 6,
+      "file": "0006_billing_publishing.sql",
+      "sha256": "eedecbece5e13fe504dce24ba8f0523ece3a7803fa3e435fc522be8e8d7bd948",
+      "bytes": 3359
+    },
+    {
+      "index": 7,
+      "file": "0007_indexes.sql",
+      "sha256": "9468968f445c77802a3ab211551cbef77319672504a883ac0655989f08b9b3b9",
+      "bytes": 1771
+    },
+    {
+      "index": 8,
+      "file": "0008_rls.sql",
+      "sha256": "fdf159a4580342a85117307a4859d10058ecd3f4944133c0da42374eab205216",
+      "bytes": 5965
+    },
+    {
+      "index": 9,
+      "file": "0009_storage.sql",
+      "sha256": "55a94c7d56ff5450c386ccdb6a025dd8d112d62fe19bc8d64aa9417f2d324f8f",
+      "bytes": 585
+    },
+    {
+      "index": 10,
+      "file": "0010_step9_collab.sql",
+      "sha256": "d9e80bee01b224fdda299f7dc35a8427bdba5349665520e4506ad8b38681b7eb",
+      "bytes": 1869
+    },
+    {
+      "index": 11,
+      "file": "0011_stripe_events.sql",
+      "sha256": "314bee87ac8b9cae42fbe27a3ea5f1324b7732879c88c24d95f0a130398d60f4",
+      "bytes": 902
+    },
+    {
+      "index": 12,
+      "file": "0012_community_extras.sql",
+      "sha256": "6b0373c68d453771e148401632f4fc9aceabc417de79f9cd9ea9d73f1103d8d3",
+      "bytes": 5814
+    },
+    {
+      "index": 13,
+      "file": "0013_admin_ops.sql",
+      "sha256": "9eeaac9da58ee2e253ef6046d349b714c8d5bc8773dd4bf5a1917975c7636bc1",
+      "bytes": 2756
+    },
+    {
+      "index": 14,
+      "file": "20260831022214_rls_tenant_hardening.sql",
+      "sha256": "1f2507e62fbdd1a1f9ac747f9c177a17b76c583d99a40fe63afb9e52155e98ab",
+      "bytes": 46274
+    },
+    {
+      "index": 15,
+      "file": "20260831023000_workspace_onboarding.sql",
+      "sha256": "c470c6400b38749cc73cf19c10477edd73b8c3b5deb6f90a97e53b6e8b164551",
+      "bytes": 2713
+    },
+    {
+      "index": 16,
+      "file": "20260831040000_authoring_transactions.sql",
+      "sha256": "85a568f6689de6a8d269773052910bc09cfb406947d25e22b3d264cdfc536d2a",
+      "bytes": 8681
+    },
+    {
+      "index": 17,
+      "file": "20260901090000_ai_workflow_transactions.sql",
+      "sha256": "fa548055883a539ca0e08c2025379d90a346e47dfb33d1fcd04a42512fb32a65",
+      "bytes": 14645
+    },
+    {
+      "index": 18,
+      "file": "20260903100000_image_asset_workflow.sql",
+      "sha256": "4636894bc1c9de2c3bc471b8f77a57a8e9797526fa98259f2d65e1f43d3aa962",
+      "bytes": 6968
+    },
+    {
+      "index": 19,
+      "file": "20260903120000_render_workflow.sql",
+      "sha256": "651dfcad9daa962b2d4e7a069404721e7d191f0770d831cb303117134c47c688",
+      "bytes": 5407
+    },
+    {
+      "index": 20,
+      "file": "20260903130000_preflight_workflow.sql",
+      "sha256": "ef46d78cda2ff33d63d0bef08fac6a8d2ec32652d7762d71cb3976399fcf0f95",
+      "bytes": 3623
+    },
+    {
+      "index": 21,
+      "file": "20260904100000_publishing_package_workflow.sql",
+      "sha256": "3ed5202aa53bc41e4c8eb7b31844f0c9ea3754eea0b14d62e20fbb9bb9dc16ff",
+      "bytes": 7631
+    },
+    {
+      "index": 22,
+      "file": "20260904120000_collaboration_invitations.sql",
+      "sha256": "1c69774c12a3f0eebb3e936509d1573f5e3e4ac53d140bccd8712383bf683391",
+      "bytes": 7592
+    },
+    {
+      "index": 23,
+      "file": "20260904130000_collaboration_approval_hardening.sql",
+      "sha256": "1863eb1e384ad39153b20d768bd5f86d08078ce413378a69fbd0a0eb6718c28b",
+      "bytes": 1031
+    },
+    {
+      "index": 24,
+      "file": "20260905050000_admin_flag_transactions.sql",
+      "sha256": "d614db559ff8c3ceb5bcec93504d08625bbb8f725e25c62d5071234ceef9e312",
+      "bytes": 1725
+    },
+    {
+      "index": 25,
+      "file": "20260905060000_book_retrieval.sql",
+      "sha256": "0d1198a756c6a63993f8c45e36ca0312cbd62f0beaf99b5354d6949db8722def",
+      "bytes": 6305
+    },
+    {
+      "index": 26,
+      "file": "20260905070000_referral_transactions.sql",
+      "sha256": "fa79a749ca619d6063ecc4d54b8af07a8aa960dc91505b589bfad6154e4bae88",
+      "bytes": 10400
+    },
+    {
+      "index": 27,
+      "file": "20260905120000_publishing_worker_leases.sql",
+      "sha256": "2c9b78a08405e5792ed1c631b1395265587b41ac702ed76a78c435d0acacefee",
+      "bytes": 10609
+    },
+    {
+      "index": 28,
+      "file": "20260906100000_account_support_data_rights.sql",
+      "sha256": "6557bf748dccc328d9c6551eb0f16c91d8815783cf668ae6121204d021cc7ff8",
+      "bytes": 3177
+    },
+    {
+      "index": 29,
+      "file": "20260907100000_metadata_ai_workflow.sql",
+      "sha256": "0407694bc6d1594434449979f7b199c54dc9ec78a71ecc942d2061af4358fa50",
+      "bytes": 9622
+    },
+    {
+      "index": 30,
+      "file": "20260907110000_asset_quarantine.sql",
+      "sha256": "c51b703dd860d4986933fadf8245645caff6199eefcb49da2383081e6129ee97",
+      "bytes": 9373
+    },
+    {
+      "index": 31,
+      "file": "20260909090000_manuscript_image_import.sql",
+      "sha256": "967d5428032d2ffcb79ceca2f83058ed4cf1c434264fe2c5c89dff53e1489f14",
+      "bytes": 8537
+    },
+    {
+      "index": 32,
+      "file": "20260909150000_manuscript_import_receipts.sql",
+      "sha256": "a33937800db8e84f2bb96b46113c1f12794fddcc12908d8f69a5fc6c8c8a7238",
+      "bytes": 8457
+    },
+    {
+      "index": 33,
+      "file": "20260910100000_manuscript_import_jobs.sql",
+      "sha256": "95a392eaaed9373f3c205651d03b7848485c20bc2911ba99861a4d1bc61fb6d6",
+      "bytes": 12680
+    },
+    {
+      "index": 34,
+      "file": "20260911100000_manuscript_import_health.sql",
+      "sha256": "891c61aff17770abcc3fca6ddb6e8c14ec0dab871a3ce9acc2edda65f9817602",
+      "bytes": 1319
+    },
+    {
+      "index": 35,
+      "file": "20260911110000_ai_review_jobs.sql",
+      "sha256": "b6f801ed15256298d16cb6ca736867db75869d2059d33cb25a7f4788e0edd259",
+      "bytes": 7083
+    },
+    {
+      "index": 36,
+      "file": "20260911120000_chapter_creation_requests.sql",
+      "sha256": "4146fe1176cf941e3993da5b9ee458f376fb1ec98f37f14ea507d42f0c4e9395",
+      "bytes": 2956
+    },
+    {
+      "index": 37,
+      "file": "20260912090000_image_completion_receipts.sql",
+      "sha256": "dc1b13003b31d65cd5a098dfc4e660be86e11556c26f5b2f5fe203d71ce9704c",
+      "bytes": 628
+    },
+    {
+      "index": 38,
+      "file": "20260912100000_image_completion_credit_guard.sql",
+      "sha256": "251a87a0966ceee1e66df40284fb92b8ebceaef848be742349404e55228d68e3",
+      "bytes": 2804
+    },
+    {
+      "index": 39,
+      "file": "20260912110000_image_credit_reservations.sql",
+      "sha256": "c2c912c6a47cb1f7c5e597685fae1ff1fd945ae7db8c502c72cb55a33ca3a67b",
+      "bytes": 3168
+    },
+    {
+      "index": 40,
+      "file": "20260912120000_community_creation.sql",
+      "sha256": "bd20f4a6b5a24300271f9c6a7568e1db3ec9e463e1b70fc0b68aa963855c978a",
+      "bytes": 1404
+    },
+    {
+      "index": 41,
+      "file": "20260912130000_auth_profile_and_advisor_fixes.sql",
+      "sha256": "3fec1a9abd138f07ea23d886011088f47e8b39a04764f33d46d71ad2c82ae4f9",
+      "bytes": 842
+    },
+    {
+      "index": 42,
+      "file": "20260912140000_paid_generation_defaults.sql",
+      "sha256": "79d705dfd114bf359c01b7d3e8fe001e6af3942d2479fcea105a7b1013fc29e4",
+      "bytes": 5307
+    },
+    {
+      "index": 43,
+      "file": "20260912150000_plan_publication_controls.sql",
+      "sha256": "b005d7ac27dc0b7d301242bd4b8b01eb2318c9a7a4c268737291b28405333cac",
+      "bytes": 633
+    },
+    {
+      "index": 44,
+      "file": "20260912160000_audiobook_workflow.sql",
+      "sha256": "aa7897faf93e49ddbeb4a27a91b5d1e1e1e34a2a48d1c8de0423f124a771983a",
+      "bytes": 23516
+    },
+    {
+      "index": 45,
+      "file": "20260912170000_audiobook_idempotency_hardening.sql",
+      "sha256": "3450f31671c94ec7c3fdefad0fa103a5608dc833c993f847da98eddaf33b920f",
+      "bytes": 1472
+    },
+    {
+      "index": 46,
+      "file": "20260912175000_pgcrypto_digest_compatibility.sql",
+      "sha256": "911f140498d8560810e60c4edfe192860cca7b196dc574bab2fe8c96dc5c9373",
+      "bytes": 3114
+    },
+    {
+      "index": 47,
+      "file": "20260912180000_translation_workflow.sql",
+      "sha256": "5134d309006e0908376d5915dbfe60d02f8ec069bcc5a55312e924552830f3ea",
+      "bytes": 26067
+    },
+    {
+      "index": 48,
+      "file": "20260912190000_retailer_sales_imports.sql",
+      "sha256": "095b0a0ea3d422460ffdba89ac664ec9967c70c77263d6372d162a800cf763ab",
+      "bytes": 13510
+    },
+    {
+      "index": 49,
+      "file": "20260919030000_metadata_single_active_request.sql",
+      "sha256": "88a6933589ab0c66b165d033f98134210c7652e04b66c535218bc15d4e30d069",
+      "bytes": 492
+    },
+    {
+      "index": 50,
+      "file": "20260919040000_metadata_service_receipts.sql",
+      "sha256": "153acbf3186ca8d3ba71cc549e34ee4cb52db9e0cf849ae4acc697761bdddc49",
+      "bytes": 781
+    },
+    {
+      "index": 51,
+      "file": "20260919050000_metadata_credit_reservations.sql",
+      "sha256": "364f4fca53507f2d07500a40d9da9fabe468c12a5d43af029d6afdffa11f1d94",
+      "bytes": 2721
+    },
+    {
+      "index": 52,
+      "file": "20260919060000_shared_text_credit_reservations.sql",
+      "sha256": "bbe38d3d5ebd2b686a50efa38ef1301ec1b2521429dbee8d00901abcbacb0bec",
+      "bytes": 4066
+    },
+    {
+      "index": 53,
+      "file": "20260919070000_media_credit_accounting_lock.sql",
+      "sha256": "78825c4b21591c606de88052f5eacd27dbf2b925b7aea47fbbf905cf3f878b7a",
+      "bytes": 986
+    },
+    {
+      "index": 54,
+      "file": "20260919080000_media_request_immutability.sql",
+      "sha256": "cd33ce0324230e407eef01c18f31d0322c3477b68004d2dbd5731527fe8a02d0",
+      "bytes": 1181
+    },
+    {
+      "index": 55,
+      "file": "20260919090000_atomic_credit_deduction.sql",
+      "sha256": "dfac5097184dcb73588b126bf8a99339867333ffcd04deb481be46e5ea0c015c",
+      "bytes": 3200
+    },
+    {
+      "index": 56,
+      "file": "20260919100000_funded_usage_quotes.sql",
+      "sha256": "90aec3603fb532099d14e7b78553563917278dead842bf3481c784d4b34a4041",
+      "bytes": 7970
+    },
+    {
+      "index": 57,
+      "file": "20260919110000_funded_dispatch_claim.sql",
+      "sha256": "c43f88da7356fc5f5cb47da96aa1e897ac058d14237c250b51ff91cd699c00fe",
+      "bytes": 4315
+    },
+    {
+      "index": 58,
+      "file": "20260919120000_quoted_translation_queue.sql",
+      "sha256": "eaeb16b9b9ee5a69e0d88e3ca25f84e325f1b29be8e84c005bbb620218b1318a",
+      "bytes": 3198
+    },
+    {
+      "index": 59,
+      "file": "20260919130000_quoted_translation_completion.sql",
+      "sha256": "e6a6fb256051040dc3d8b0d954cdc20a64022b30beb5d156f3f11bdf93c75ee6",
+      "bytes": 3524
+    },
+    {
+      "index": 60,
+      "file": "20260919140000_cancel_undispatched_translation.sql",
+      "sha256": "b3921eab60317f62a66e6d5999ef1ecfac9181a6adb29336f0086177a5f27b3d",
+      "bytes": 4703
+    },
+    {
+      "index": 61,
+      "file": "20260919150000_translation_quote_proposals.sql",
+      "sha256": "6f8dbe22628615cbda24baa3bbad0d1795bdeb085ae1087e82c19f573085ce4a",
+      "bytes": 8290
+    },
+    {
+      "index": 62,
+      "file": "20260919160000_translation_quote_requests.sql",
+      "sha256": "ee11e0e43a170dbe6573901bc9e3425e3e909b876b36b5abf96ca8120f971cbc",
+      "bytes": 7195
+    },
+    {
+      "index": 63,
+      "file": "20260919170000_translation_quote_worker.sql",
+      "sha256": "ee776c1588dbde24c54d002653d17101a87666704d3033998dd63f60ae06e8d3",
+      "bytes": 7718
+    },
+    {
+      "index": 64,
+      "file": "20260919180000_retire_legacy_translation_queue.sql",
+      "sha256": "83cf4f0a7b72d4c0c076e566ddc21c447d8a056e328582c56e7511af9782d5e0",
+      "bytes": 1169
+    },
+    {
+      "index": 65,
+      "file": "20260919190000_story_blueprints.sql",
+      "sha256": "0374ecdefe33bfd5ad2bdac450c89ab0d338a03a13e3250adf3abd8c8673e77c",
+      "bytes": 13646
+    },
+    {
+      "index": 66,
+      "file": "20260919200000_story_blueprint_quote_proposals.sql",
+      "sha256": "7b0a05a54f33edc5f46b222af0fd76d8d7172d57da0162c060b74e703ddc089f",
+      "bytes": 49502
+    },
+    {
+      "index": 67,
+      "file": "20260923040940_audiobook_qc_review_signoffs.sql",
+      "sha256": "0d5e07d87095a41c71fdde232d172f6ceb793da699b65b5fb749b7a09ef3f433",
+      "bytes": 2934
+    },
+    {
+      "index": 68,
+      "file": "20260923053015_audiobook_google_play_export_jobs.sql",
+      "sha256": "4aefd8f70a1d6f4ecebf41f02f9a2f75f2add1a213512cd0ee0f152ebae40b9f",
+      "bytes": 19014
+    },
+    {
+      "index": 69,
+      "file": "20260924090000_book_retrieval_rich_nodes.sql",
+      "sha256": "aff991531847ee082011f9edbeff563704e478d34db1154d21b149515af47b91",
+      "bytes": 2674
+    },
+    {
+      "index": 70,
+      "file": "20260924150000_image_manual_hold_release.sql",
+      "sha256": "248308cdb4529aa46c253ddf402ee8300ebc83802bca976e6a254e7f61e4be42",
+      "bytes": 2809
+    },
+    {
+      "index": 71,
+      "file": "20260924160000_image_single_flight_reservation.sql",
+      "sha256": "1ee252061325d43b6b23b744cac04c099a4b299f466ca23851a152ae12057b4a",
+      "bytes": 3034
+    },
+    {
+      "index": 72,
+      "file": "20260924170000_google_play_ebook_export.sql",
+      "sha256": "dcff9f923fec3b801d75439bf2801d0fb3d2e9f6cad9d385dcb10ad422925ffc",
+      "bytes": 11240
+    },
+    {
+      "index": 73,
+      "file": "20260924180000_book_bible_evidence.sql",
+      "sha256": "773222ae8bf573eeaf2b5121e4a8ce8b9137c2930075c16d85f32478205a5cb8",
+      "bytes": 3328
+    },
+    {
+      "index": 74,
+      "file": "20260924190000_ai_review_uncertain_hold.sql",
+      "sha256": "3ce05eae8818d6003af227ec185d2500e012073e43945137d863ba7be2a71559",
+      "bytes": 4408
+    },
+    {
+      "index": 75,
+      "file": "20260924200000_ai_review_service_receipts.sql",
+      "sha256": "ad2b6e36f759abe0796642ce7c23fb33acac5f826e27738bb885c836277d4ab2",
+      "bytes": 860
+    },
+    {
+      "index": 76,
+      "file": "20260924210000_ai_review_manual_hold_release.sql",
+      "sha256": "cd2b21187646e6b706daf95760c3abeddb37cd6aa8fcb84ac0d4cb2856a95735",
+      "bytes": 3275
+    },
+    {
+      "index": 77,
+      "file": "20260924220000_ai_review_receipt_recovery.sql",
+      "sha256": "fa4dc8e3210e23af1e957d7d19049aca343e583d6940622add9234ac3939ce4d",
+      "bytes": 3778
+    },
+    {
+      "index": 78,
+      "file": "20260924230000_book_bible_service_receipts.sql",
+      "sha256": "aaaf594c6af864ebc72e218db5df3ac42ca77c81732d56e8aa9d06866bace281",
+      "bytes": 835
+    },
+    {
+      "index": 79,
+      "file": "20260924231000_book_bible_ai_workflow.sql",
+      "sha256": "5fed4fba2fe5d5b81da16a14fd8c6c4d16fba31159eb5dbf9d65a897243bd311",
+      "bytes": 9122
+    },
+    {
+      "index": 80,
+      "file": "20260924232000_book_bible_manual_hold_release.sql",
+      "sha256": "44889a1308338521524867f58704c3e4d4d6c9080aae0004fff828dc9fa7d8f2",
+      "bytes": 3087
+    },
+    {
+      "index": 81,
+      "file": "20260924233000_book_bible_reading_batches.sql",
+      "sha256": "ced61cd1bf31004f5c0738bde2c9fd0de17f57c88026bfa5391b82a9ff0cfb68",
+      "bytes": 520
+    },
+    {
+      "index": 82,
+      "file": "20260925100000_metadata_token_quote_acceptance.sql",
+      "sha256": "7b13e99cb90ab3c09f296dc78223b8186d68b4586237da310e148f0d1ce49cd9",
+      "bytes": 23963
+    },
+    {
+      "index": 83,
+      "file": "20260925103000_quoted_metadata_worker.sql",
+      "sha256": "e33c6e7114428857526d089ea5c3aeae45964486767c3b67fd5b6d1667a9cbb7",
+      "bytes": 8691
+    },
+    {
+      "index": 84,
+      "file": "20260925110000_ai_review_token_quotes.sql",
+      "sha256": "708d5a05a304b5be98286391d4fd5c540839e5655ef1ea159e9facb6e9d3811a",
+      "bytes": 14804
+    },
+    {
+      "index": 85,
+      "file": "20260925120000_ai_review_token_quote_acceptance.sql",
+      "sha256": "7a8d7905b0cdb7b49914c077e07282c5f5f77af3d7a36035e4d229d377fd5430",
+      "bytes": 10179
+    },
+    {
+      "index": 86,
+      "file": "20260925130000_quoted_ai_review_worker.sql",
+      "sha256": "3c661eac6bd108608ceac86f9b5ae8c1c7ac0a5eebe47bc3a1591e10311d4ce8",
+      "bytes": 13412
+    },
+    {
+      "index": 87,
+      "file": "20260925140000_book_bible_token_quotes.sql",
+      "sha256": "0964404de4294c248281757356e7070eb2308fe2b68278eccd9d632a1906b66d",
+      "bytes": 58243
+    },
+    {
+      "index": 88,
+      "file": "20260928090000_image_quote_snapshots.sql",
+      "sha256": "df365af449d9c1195f8b562a6a9def5d4d5a001be7a34245f7fe0fe3aefd69de",
+      "bytes": 5724
+    },
+    {
+      "index": 89,
+      "file": "20260928100000_image_quote_price_validation.sql",
+      "sha256": "6d3bccd417ecf525b08c60088d79957a00273c101c95f2709902338c52337889",
+      "bytes": 3998
+    },
+    {
+      "index": 90,
+      "file": "20260928110000_image_quote_acceptance.sql",
+      "sha256": "8e48a56937f2c02f5af9505478f91703b204d7b8bf842b997a6a67ba58147f31",
+      "bytes": 9996
+    },
+    {
+      "index": 91,
+      "file": "20260928120000_quoted_image_leases.sql",
+      "sha256": "243cb4912b384cf038cb42e4dbd8fc939979bc991c85696e5eb6e1790f1b5b7e",
+      "bytes": 8908
+    },
+    {
+      "index": 92,
+      "file": "20260928130000_quoted_image_receipts.sql",
+      "sha256": "107d71f2e19154c0214bbb2afa2b36d4af688ac491f3c9df806b10af5f205371",
+      "bytes": 3659
+    },
+    {
+      "index": 93,
+      "file": "20260928140000_quoted_image_completion.sql",
+      "sha256": "37199178c4aa9ad9b96b3268fcec6106b2557489779a6fa53364a2a40dbf0bda",
+      "bytes": 8576
+    },
+    {
+      "index": 94,
+      "file": "20260929130000_retailer_sales_analytics.sql",
+      "sha256": "1e31067e64cc9325d08a4b3913005cd53a911f0c5f9d3771c86da18c955e1ed9",
+      "bytes": 6270
+    },
+    {
+      "index": 95,
+      "file": "20260929150000_platform_admin_report_moderation.sql",
+      "sha256": "d737d697e00c5b57cee92feaf6ca318b56c0848f065bf9c6945353a3e87ac875",
+      "bytes": 14377
+    },
+    {
+      "index": 96,
+      "file": "20260929170000_illustration_review_workflow.sql",
+      "sha256": "57ed98f17bf0a5bda873465a4c371c754b82206b76a93f8948a56ddd518d1555",
+      "bytes": 23175
+    },
+    {
+      "index": 97,
+      "file": "20261003030000_atomic_artwork_completion.sql",
+      "sha256": "65d524e11dd034b45cb01c9cbca94a6da44ea75a84805ff57633dbe32d078c08",
+      "bytes": 11659
+    },
+    {
+      "index": 98,
+      "file": "20261003043000_text_quote_recovery_completion.sql",
+      "sha256": "2ec224a2b61b8ec318deb65a4fb6e34bc5bcbad77a4f7a96af9053aceac41d26",
+      "bytes": 32351
+    },
+    {
+      "index": 99,
+      "file": "20261003044000_image_bible_quote_permissions.sql",
+      "sha256": "3fbfb597445ed4ee683e14f8d45c991d8a8e9ed59487079d0d8c5d163153dabb",
+      "bytes": 9263
+    },
+    {
+      "index": 100,
+      "file": "20261005023000_book_bible_quote_receipt_binding.sql",
+      "sha256": "dad47acc328ca3d04e74a6e767d7c43a39e3a9e01cd274bf1c58b63d55f5f924",
+      "bytes": 4142
+    },
+    {
+      "index": 101,
+      "file": "20261005060000_narration_quote_snapshots.sql",
+      "sha256": "f08be998bc05f1e024d9e513ecb4cdcf06784e89d30075b7c7aa6a78cdf7fecf",
+      "bytes": 20016
+    },
+    {
+      "index": 102,
+      "file": "20261005070000_narration_chapter_quote_snapshots.sql",
+      "sha256": "0bde822d2bed91811ac3be88342acd0f061b9c4c36c250aad62cf4a218a1ddb6",
+      "bytes": 12090
+    },
+    {
+      "index": 103,
+      "file": "20261005080000_funded_narration_chapter_acceptance.sql",
+      "sha256": "37441a212c140d44545dd176aac71e2d7dc617f25ac56ddbe532b0b52e0286d1",
+      "bytes": 23312
+    },
+    {
+      "index": 104,
+      "file": "20261005090000_quoted_narration_leases.sql",
+      "sha256": "ff70bdfea0206a5a3788b6e08dd06a10666e123e6268cd6db974efef5e8c9d36",
+      "bytes": 16792
+    },
+    {
+      "index": 105,
+      "file": "20261005100000_quoted_narration_receipts.sql",
+      "sha256": "1ea885e7ce4c342e2dad20e9438c478c9860c922132d3cec7ed9a1fe649cb2e1",
+      "bytes": 6364
+    },
+    {
+      "index": 106,
+      "file": "20261005110000_quoted_narration_completion.sql",
+      "sha256": "24eaaed5ab1262f4882cf221e88070da06b422067492a3aa0513a905aeafad67",
+      "bytes": 23790
+    },
+    {
+      "index": 107,
+      "file": "20261010050000_stripe_webhook_transactions.sql",
+      "sha256": "f78ea45c1c34d854d09250bdf7478e0973d2cecae806d806c5a4691a7a819ddd",
+      "bytes": 9934
+    },
+    {
+      "index": 108,
+      "file": "20261013100000_manual_book_bible_recovery.sql",
+      "sha256": "118b1e0c86590de04b547b0f11d69923cf1f85223b4c792529d1e20f74e37639",
+      "bytes": 27502
+    },
+    {
+      "index": 109,
+      "file": "20261013110000_canonical_import_reading_text.sql",
+      "sha256": "13392a69fc8b225ee4c2da51c06d795a00f25ddeb0bfec370777c733151d95ee",
+      "bytes": 6872
+    },
+    {
+      "index": 110,
+      "file": "20261023120101_metadata_trigger_execution_hardening.sql",
+      "sha256": "a0875d43b764e20f13e09ca451f4c8a275d9fa1d0b2f1401a49ad354c863a824"
+    }
+  ],
+  "verification": {
+    "catalogMatches": true,
+    "profileUnchanged": true,
+    "authUsersPreserved": 1,
+    "storedObjects": 0,
+    "rlsEnabledOnAllApplicationTables": true,
+    "anonymousSecurityDefinerAdvisoryRemoved": true,
+    "onboardingAndTenantIsolation": "live transaction passed; rolled back; no persisted test rows",
+    "freshSqlSuite": "110 migrations and 72 SQL assertion files passed",
+    "populatedUpgrade": "45 historical migrations plus 65 upgrades; five guarded aborts passed",
+    "crypto": "public/extensions/nonstandard schema checks passed",
+    "inventoryTests": 3
+  },
+  "backup": {
+    "scope": "application-only; not full project disaster recovery",
+    "snapshotSha256": "9ba2c4f012bf96a4282a185e5524e4cac247a8f54f7e23ab88c4094579c7a120",
+    "restore": "PGlite archived application schema and typed profile restore verified before upgrade",
+    "authAndSettingsExported": false
+  },
+  "remainingAdvisors": {
+    "security": [
+      {
+        "name": "rls_enabled_no_policy",
+        "level": "INFO",
+        "count": 37,
+        "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy"
+      },
+      {
+        "name": "extension_in_public",
+        "level": "WARN",
+        "count": 1,
+        "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0014_extension_in_public"
+      },
+      {
+        "name": "authenticated_security_definer_function_executable",
+        "level": "WARN",
+        "count": 22,
+        "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable"
+      },
+      {
+        "name": "auth_leaked_password_protection",
+        "level": "WARN",
+        "count": 1,
+        "remediation": "https://supabase.com/docs/guides/auth/password-security#password-strength-and-leaked-password-protection"
+      }
+    ],
+    "performance": [
+      {
+        "name": "unindexed_foreign_keys",
+        "level": "INFO",
+        "count": 117,
+        "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0001_unindexed_foreign_keys"
+      },
+      {
+        "name": "unused_index",
+        "level": "INFO",
+        "count": 51,
+        "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0005_unused_index"
+      }
+    ]
+  },
+  "releaseBoundaries": {
+    "deployed": false,
+    "paidProviderCalls": false,
+    "retailerSubmission": false,
+    "fullProductAcceptance": false,
+    "mobile": "parked",
+    "stripe": "deferred"
+  }
+}

@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 109 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 110 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -16,7 +16,8 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
-const targetEnd = '20261013110000_canonical_import_reading_text.sql';
+const targetEnd = '20261023120101_metadata_trigger_execution_hardening.sql';
+const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
 const guardedTranslation = '20260919120000_quoted_translation_queue.sql';
@@ -108,7 +109,7 @@ async function expectedReadingTextGuard(migration, fixture, historical, signatur
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 109, 'This reviewed rehearsal pins the 45 -> 109 target; review before extending');
+  assert.equal(names.length, 110, 'This reviewed rehearsal pins the 45 -> 110 target; review before extending');
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
@@ -118,7 +119,7 @@ try {
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
   }));
   const manifest = migrations.map(({ name, sha256 }) => `${name} ${sha256}`).join('\n');
-  console.log(`Ordered source manifest sha256=${createHash('sha256').update(manifest).digest('hex')} baseline=45 upgrade=64`);
+  console.log(`Ordered source manifest sha256=${createHash('sha256').update(manifest).digest('hex')} baseline=45 upgrade=${migrations.length - 45}`);
   await db.exec(await readFile(join(root, 'tests/security/local-supabase-fixture.sql'), 'utf8'));
   for (const migration of migrations.slice(0, 45)) await migrate(migration, 'baseline');
   step = 'committed populated historical fixture';
@@ -132,7 +133,7 @@ try {
     if (migration.name === guardedMetadata) await expectedGuard(migration, fixture, historical, 'duplicate metadata');
     if (migration.name === guardedTranslation) await expectedGuard(migration, fixture, historical, 'function drift');
     if (migration.name === guardedBible) await expectedGuard(migration, fixture, historical, 'nonfinite canon revision');
-    if (migration.name === targetEnd) {
+    if (migration.name === guardedReadingText) {
       for (const signature of ['public.create_book_chapters(uuid,jsonb,uuid)', 'public.complete_manuscript_import(uuid,uuid,uuid,text,jsonb,jsonb,jsonb)']) {
         await expectedReadingTextGuard(migration, fixture, historical, signature);
       }
