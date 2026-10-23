@@ -4,15 +4,15 @@ This audits the original full-product goal, not merely the latest editor feature
 Sources: `PRD-SOW.txt` sections 2, 5 and 16; `PLAN.md`; current source and the
 native/local evidence linked below. User overrides: mobile parked, Stripe deferred.
 Implemented source is not synonymous with a live, commercially accepted service.
-Current full-suite application source: `f8e59fe`, including the dormant retrieval
-adapter repair and canonical source reader. Full clean-source verify and isolated
-production web build pass; see `SEARCH_SOURCE_READER_CHECKPOINT.md` for exact
-counts and native CI status. The `eca8d2a` follow-up changes only browser-test
-timing and provider-test documentation, not application code. The existing
-loopback web/API still run older `a22a4aa`; the new source was not deployed or
-served there. Hosted schema remains at 111 migrations; application-only recovery
-through 111 is verified. See `CHAPTER_TITLE_CHECKPOINT.md` for earlier
-hosted/native evidence boundaries.
+Current web/runtime source: `09ba22b`. Frozen source passes 451 web tests,
+TypeScript, production build and native author/files CI 39998579555. Real
+Google sign-in, onboarding, manual chapter persistence, Book Bible persistence
+and exact source reading now pass through the local production app and hosted
+Supabase. See `BOOK_WORKSPACE_NAVIGATION_CHECKPOINT.md` for exact boundaries.
+The latest full monorepo verify remains `f8e59fe`; API, workers and processing
+source are unchanged by the navigation fix. Hosted schema remains at 111
+migrations; application-only recovery through 111 is verified. See
+`CHAPTER_TITLE_CHECKPOINT.md` for earlier hosted/recovery evidence.
 
 The operator supplied an initial and replacement key and approved USD5 total
 synthetic provider tests. Both authenticate, but probes did not verify
@@ -24,11 +24,11 @@ Further paid calls are stopped; see
 
 | Workflow | Current implementation/evidence | Remaining acceptance |
 | --- | --- | --- |
-| Accounts, workspaces and library | Supabase Auth/BFF, Google configuration, onboarding RPC, dashboard; prior native onboarding/tenant checks | Fresh user Google-login/dashboard result; final hosted API origin and production redirect configuration |
+| Accounts, workspaces and library | Supabase Auth/BFF, actual Google sign-in, operator workspace onboarding and aggregate dashboard verified through the local production app; native tenant checks | Final hosted API origin and production redirect configuration |
 | Upload and import | Private assets, quarantine/scanning, immutable sources, DOCX/EPUB/TXT and limited PDF; native author/files acceptance | Private scanner/document service supervision and author-hosted upload acceptance |
 | Write and edit | Canonical editor, chapter creation/order/title, formatting, page breaks, revisions, manual-save recovery; mounted browser and native author checks | Representative beta-author manuscripts, including unsupported-layout disclosure |
 | Story/content/proofreading | Separate token-count consent, approved model/price catalog, funded quote, durable jobs, review and explicit apply | Rotate exposed key, resolve provider quota/billing, approve customer model/rates and complete funded quality/cost/recovery exercise |
-| Book Bible and memory | Manual canon and recoverable AI extraction, current-version PostgreSQL full-text retrieval, exact canonical source reader with historical-version warning | Hosted reader and funded extraction acceptance; semantic/relationship recall remains a separate evaluation gate |
+| Book Bible and memory | Manual canon and recoverable AI extraction, current-version PostgreSQL FTS, exact source reader; operator character/chapter pin persisted across reload and source reading verified against hosted data | Deployed-service and funded extraction acceptance; semantic/relationship recall remains a separate evaluation gate |
 | Illustrations and covers | Paid image quote/recovery, asset versions/approval, image placement and cover composition | Approved OpenAI image catalog, private workers and funded provider acceptance |
 | Layout, preview and export | Saved editions, typography/trim/spacing, EPUB/PDF, private readers, deterministic preflight and retailer ZIP packages | Hosted services; representative physical print and retailer ingestion acceptance; documented RTL/tagged-PDF limitations |
 | Publishing and sales | Export-first channel adapters, package history, manual submission and retailer-report import | Authorized retailer submission remains manual unless an official integration is separately approved; real report-format acceptance |
@@ -66,8 +66,8 @@ Further paid calls are stopped; see
 3. Google login and real dashboard/workspace/manual-save behavior now pass in
    the operator's Chrome session against the local production app and hosted
    Supabase. The private service-hosting choice remains open. See
-   `BOOK_WORKSPACE_NAVIGATION_CHECKPOINT.md` for this evidence and the pending
-   updated-source checks; this does not prove a deployed customer session.
+   `BOOK_WORKSPACE_NAVIGATION_CHECKPOINT.md` for the completed local/native
+   checks; this does not prove a deployed customer session.
 4. Full project disaster recovery, hosted operational acceptance and retailer
    acceptance remain distinct from the tested application-only recovery and
    native disposable fixture checks.
