@@ -49,6 +49,8 @@ class Book {
     required this.status,
     this.subtitle,
     this.genre,
+    this.language = 'en',
+    this.createdBy = '',
   });
 
   factory Book.fromJson(Map<String, dynamic> j) => Book(
@@ -59,6 +61,8 @@ class Book {
         authorName: j['author_name'] as String? ?? '',
         genre: j['genre'] as String?,
         status: j['status'] as String? ?? 'draft',
+        language: j['language'] as String? ?? 'en',
+        createdBy: j['created_by'] as String? ?? '',
       );
 
   final String id;
@@ -68,6 +72,23 @@ class Book {
   final String authorName;
   final String? genre;
   final String status;
+  final String language;
+  final String createdBy;
+}
+
+class ManuscriptImportJob {
+  const ManuscriptImportJob(this.id, this.bookId, this.assetId, this.status,
+      this.attempts, this.errorCode);
+  final String id, bookId, assetId, status;
+  final int attempts;
+  final String? errorCode;
+  bool get running => status == 'queued' || status == 'running';
+}
+
+class ManuscriptImportReport {
+  const ManuscriptImportReport(this.chapterIds, this.imageCount, this.warnings);
+  final List<String> chapterIds, warnings;
+  final int imageCount;
 }
 
 class Chapter {

@@ -4,15 +4,18 @@ import 'package:http/http.dart' as http;
 
 import '../asset_upload.dart';
 import '../auth.dart';
+import '../book_workflow.dart';
 import '../models.dart';
 
 class AssetsScreen extends StatefulWidget {
   const AssetsScreen(
       {super.key,
       required this.auth,
+      this.selectManuscript = false,
       this.selectFile,
       this.storageClientFactory});
   final AuthState auth;
+  final bool selectManuscript;
   final Future<XFile?> Function()? selectFile;
   final http.Client Function()? storageClientFactory;
   @override
@@ -109,13 +112,23 @@ class _AssetsScreenState extends State<AssetsScreen> {
           openFile(acceptedTypeGroups: [
             XTypeGroup(
                 label: 'Bookworm documents and images',
-                extensions: assetMimeTypes.keys.toList(),
+                extensions: widget.selectManuscript
+                    ? manuscriptImportExtensions
+                    : assetMimeTypes.keys.toList(),
                 mimeTypes: assetMimeTypes.values.toSet().toList(),
                 uniformTypeIdentifiers: const ['public.data'])
           ]));
       if (file == null || !mounted) return;
       upload.api.ensureCurrent();
       final size = await file.length();
+      if (widget.selectManuscript &&
+          (!manuscriptImportExtensions
+                  .contains(file.name.split('.').last.toLowerCase()) ||
+              size < 1 ||
+              size > maxManuscriptImportBytes)) {
+        throw ApiError(422, 'invalid_manuscript',
+            'Choose a non-empty TXT, DOCX, EPUB or PDF up to 20 MiB.', '');
+      }
       if (!mounted) return;
       final accepted = await showDialog<bool>(
           context: context,
@@ -134,7 +147,9 @@ class _AssetsScreenState extends State<AssetsScreen> {
                 ],
               ));
       if (accepted != true || !mounted) return;
-      await upload.upload(file, type: upload.pending?.type ?? _kind);
+      await upload.upload(file,
+          type: upload.pending?.type ??
+              (widget.selectManuscript ? 'manuscript' : _kind));
       if (mounted)
         setState(() => _message =
             'Upload verified and screened. Your file is saved in Assets.');
@@ -221,7 +236,10 @@ class _AssetsScreenState extends State<AssetsScreen> {
   Widget build(BuildContext context) {
     final pending = _upload?.pending;
     return Scaffold(
-      appBar: AppBar(title: const Text('Files & artwork')),
+      appBar: AppBar(
+          title: Text(widget.selectManuscript
+              ? 'Choose a manuscript'
+              : 'Files & artwork')),
       body: SafeArea(
           child: RefreshIndicator(
               onRefresh: _load,
@@ -232,10 +250,13 @@ class _AssetsScreenState extends State<AssetsScreen> {
                   Text('Bring your book to life',
                       style: Theme.of(context).textTheme.headlineSmall),
                   const SizedBox(height: 8),
-                  const Text(
-                      'DOCX, EPUB, PDF, text, Markdown, PNG, JPEG, WebP or GIF. Up to 100 MiB per file. Files remain private and must pass screening.'),
+                  Text(widget.selectManuscript
+                      ? 'Choose a screened TXT, DOCX, EPUB or PDF up to 20 MiB, or upload one below. Uploading does not start an import. Scanned PDFs need OCR first.'
+                      : 'DOCX, EPUB, PDF, text, Markdown, PNG, JPEG, WebP or GIF. Up to 100 MiB per file. Files remain private and must pass screening.'),
                   const SizedBox(height: 20),
-                  if (pending == null && !_recoveryUnavailable) ...[
+                  if (!widget.selectManuscript &&
+                      pending == null &&
+                      !_recoveryUnavailable) ...[
                     DropdownButtonFormField<String>(
                         initialValue: _kind,
                         isExpanded: true,
@@ -305,6 +326,22 @@ class _AssetsScreenState extends State<AssetsScreen> {
                             ? Icons.image_outlined
                             : Icons.description_outlined),
                         title: Text(asset.name),
+                        onTap: widget.selectManuscript &&
+                                canImportAsset(asset) &&
+                                !_busy
+                            ? () {
+                                try {
+                                  _upload!.api.ensureCurrent();
+                                  Navigator.pop(context, asset);
+                                } on Exception catch (error) {
+                                  setState(() => _message = _safeError(error));
+                                }
+                              }
+                            : null,
+                        trailing:
+                            widget.selectManuscript && canImportAsset(asset)
+                                ? const Icon(Icons.chevron_right)
+                                : null,
                         subtitle: Text(
                             '${_labels[asset.type] ?? asset.type} · ${(asset.sizeBytes / 1024).toStringAsFixed(1)} KiB\n'
                             '${asset.scanStatus == 'clean' ? 'Screening passed' : 'Not cleared for use: ${asset.scanStatus ?? 'awaiting screening'}'}')),

@@ -32,7 +32,7 @@ const assetKinds = ['source_document', 'manuscript', 'illustration', 'cover'];
 final _uuid = RegExp(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$');
 String _digest(Uint8List bytes) => sha256.convert(bytes).toString();
-String _requestId() {
+String newRequestUuid() {
   final random = Random.secure();
   final bytes = List.generate(16, (_) => random.nextInt(256));
   bytes[6] = (bytes[6] & 15) | 64;
@@ -253,7 +253,8 @@ class NativeAssetUpload {
               'Select the original unchanged file to resume this upload.');
         }
         final draft = old ??
-            PendingAssetUpload(_requestId(), name, mime, size, checksum, type);
+            PendingAssetUpload(
+                newRequestUuid(), name, mime, size, checksum, type);
         // Save retry identity before any server mutation; failure here sends nothing.
         if (old == null) {
           await storage.write(key: _key, value: jsonEncode(draft.toJson()));

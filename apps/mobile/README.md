@@ -19,6 +19,21 @@ replace the original disconnected mobile scaffolding. Stripe remains deferred.
   again. Status checks are read-only. Discard removes local retry metadata only.
 - File access from Home, including workspaces without books. Narrow-screen and
   enlarged-text tests cover sign-in and the file flow.
+- Private book creation from Home, with title, author, language and optional
+  subtitle/genre. A securely saved request identity survives reply loss and
+  restart; opening the screen checks for the original book without creating one.
+- Chapter creation uses the existing idempotent server request, including after
+  a lost reply or another editor renames the chapter. An explicit resume action
+  recovers that chapter; refresh itself does not post a creation request.
+- Native manuscript selection reuses Files & artwork and its real signed upload
+  workflow. Import accepts screened TXT, DOCX, EPUB and PDF up to **20 MiB**
+  (the general asset upload ceiling remains 100 MiB). Scanned PDFs need OCR.
+- Import confirmation names the target book and preserves existing chapters.
+  Jobs continue server-side after navigation. Refresh/recovery is read-only;
+  retrying a failed job is separately confirmed. The original source identity
+  is retained, and a saved receipt—not merely a successful job flag—confirms
+  conversion. Authors can review conversion warnings and open imported chapters
+  in the versioned manuscript editor. No AI generation occurs in this workflow.
 
 The tests use synthetic accounts, fake API/Storage transports and the real Dart
 Storage SDK serializer. They do not establish real device picker, Keychain,
@@ -76,8 +91,8 @@ Native artwork preview/insertion and dedicated table editing are not finished;
 the screen labels those limits rather than flattening their saved data. Current
 checks use synthetic transports, not live device storage or hosted acceptance.
 
-1. Complete native book creation/import, artwork preview/insertion and table
-   editing. Verify editor/receipt recovery against an isolated native service
+1. Complete native artwork preview/insertion and table editing. Verify the new
+   create/import flow and editor/receipt recovery against an isolated native service
    stack and actual device secure storage before calling mobile release-ready.
 2. Replace legacy AI calls with the existing paid quote, consent, acceptance,
    original-job recovery and review/apply contracts. Never enable free generation
@@ -94,4 +109,4 @@ checks use synthetic transports, not live device storage or hosted acceptance.
 
 Cross-agent continuation: repository `docs/AGENT_HANDOFF.md`, the main Codex
 handoff in `C:/Users/Asus/Memory-Ai`, and
-`Codex Sessions/2026-10/2026-10-23-mobile-manuscript-continuation.md`.
+`Codex Sessions/2026-10/2026-10-23-mobile-create-import-continuation.md`.

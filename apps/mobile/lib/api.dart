@@ -175,18 +175,172 @@ class ApiClient {
   Future<void> createWorkspace(String name) =>
       _post('/v1/workspaces', {'name': name});
 
-  Future<List<Book>> listBooks(String workspaceId) async => [
-        for (final b
-            in (await _get('/v1/books', {'workspaceId': workspaceId}))['books']
-                as List)
-          Book.fromJson((b as Map).cast<String, dynamic>()),
-      ];
+  Book _book(Object? row, String workspaceId, [String? bookId]) {
+    if (row is! Map<String, dynamic> ||
+        row['id'] is! String ||
+        (row['id'] as String).isEmpty ||
+        (bookId != null && row['id'] != bookId) ||
+        row['workspace_id'] != workspaceId ||
+        row['title'] is! String ||
+        row['author_name'] is! String ||
+        row['status'] is! String ||
+        (row['subtitle'] != null && row['subtitle'] is! String) ||
+        (row['genre'] != null && row['genre'] is! String) ||
+        (row['language'] != null && row['language'] is! String) ||
+        (row['created_by'] != null && row['created_by'] is! String))
+      throw _invalid();
+    return Book.fromJson(row);
+  }
 
-  Future<List<Chapter>> listChapters(String bookId) async => [
-        for (final c
-            in (await _get('/v1/books/$bookId/chapters'))['chapters'] as List)
-          Chapter.fromJson((c as Map).cast<String, dynamic>()),
-      ];
+  Future<List<Book>> listBooks(String workspaceId) async {
+    final rows =
+        (await _get('/v1/books', {'workspaceId': workspaceId}))['books'];
+    if (rows is! List) throw _invalid();
+    final books = rows.map((row) => _book(row, workspaceId)).toList();
+    if (books.map((b) => b.id).toSet().length != books.length) throw _invalid();
+    return List.unmodifiable(books);
+  }
+
+  Future<({Book book, String role})> getBook(
+      String bookId, String workspaceId) async {
+    final result = await _get('/v1/books/${Uri.encodeComponent(bookId)}');
+    if (result['role'] is! String) throw _invalid();
+    return (
+      book: _book(result['book'], workspaceId, bookId),
+      role: result['role'] as String
+    );
+  }
+
+  Future<Book> createBook(String workspaceId, String userId, String requestId,
+      Map<String, String> details) async {
+    final book = _book(
+        await _post('/v1/books',
+            {...details, 'workspaceId': workspaceId, 'requestId': requestId}),
+        workspaceId,
+        requestId);
+    if (book.createdBy != userId) throw _invalid();
+    return book;
+  }
+
+  Chapter _chapter(Object? row, String bookId) {
+    if (row is! Map<String, dynamic> ||
+        row['id'] is! String ||
+        (row['id'] as String).isEmpty ||
+        row['book_id'] != bookId ||
+        row['title'] is! String ||
+        row['status'] is! String ||
+        row['order_index'] is! int ||
+        row['order_index'] < 0) throw _invalid();
+    return Chapter.fromJson(row);
+  }
+
+  Future<List<Chapter>> listChapters(String bookId) async {
+    final rows = (await _get(
+        '/v1/books/${Uri.encodeComponent(bookId)}/chapters'))['chapters'];
+    if (rows is! List) throw _invalid();
+    final chapters = rows.map((row) => _chapter(row, bookId)).toList();
+    if (chapters.map((c) => c.id).toSet().length != chapters.length)
+      throw _invalid();
+    return List.unmodifiable(chapters);
+  }
+
+  Future<Chapter> createChapter(
+          String bookId, String title, String requestId) async =>
+      _chapter(
+          (await _post('/v1/books/${Uri.encodeComponent(bookId)}/chapters',
+              {'title': title, 'idempotencyKey': requestId}))['chapter'],
+          bookId);
+
+  ManuscriptImportJob _importJob(Object? row, String bookId,
+      [String? assetId]) {
+    if (row is! Map<String, dynamic> ||
+        !_isUuid(row['id']) ||
+        row['book_id'] != bookId ||
+        !_isUuid(row['source_asset_id']) ||
+        (assetId != null && row['source_asset_id'] != assetId) ||
+        !['queued', 'running', 'succeeded', 'failed'].contains(row['status']) ||
+        row['attempts'] is! int ||
+        row['attempts'] < 0 ||
+        row['attempts'] > 5 ||
+        (row['error_code'] != null &&
+            (row['error_code'] is! String ||
+                !RegExp(r'^[a-z][a-z0-9_]{0,79}$')
+                    .hasMatch(row['error_code'])))) throw _invalid();
+    return ManuscriptImportJob(row['id'], bookId, row['source_asset_id'],
+        row['status'], row['attempts'], row['error_code']);
+  }
+
+  static bool _isUuid(Object? value) =>
+      value is String &&
+      RegExp(r'^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$',
+              caseSensitive: false)
+          .hasMatch(value);
+
+  Future<List<ManuscriptImportJob>> listImportJobs(String bookId) async {
+    final rows = (await _get(
+        '/v1/books/${Uri.encodeComponent(bookId)}/import-jobs'))['jobs'];
+    if (rows is! List || rows.length > 50) throw _invalid();
+    final jobs = rows.map((row) => _importJob(row, bookId)).toList();
+    if (jobs.map((j) => j.id).toSet().length != jobs.length ||
+        jobs.map((j) => j.assetId).toSet().length != jobs.length)
+      throw _invalid();
+    return List.unmodifiable(jobs);
+  }
+
+  Future<ManuscriptImportJob> queueImport(
+          String bookId, String assetId) async =>
+      _importJob(
+          (await _post('/v1/books/${Uri.encodeComponent(bookId)}/import-jobs',
+              {'assetId': assetId}))['job'],
+          bookId,
+          assetId);
+
+  Future<ManuscriptImportJob> retryImport(
+      String bookId, ManuscriptImportJob job) async {
+    final saved = _importJob(
+        (await _post(
+                '/v1/books/${Uri.encodeComponent(bookId)}/import-jobs/${Uri.encodeComponent(job.id)}/retry'))[
+            'job'],
+        bookId,
+        job.assetId);
+    if (saved.id != job.id) throw _invalid();
+    return saved;
+  }
+
+  Future<ManuscriptImportReport?> getImportReport(
+      String bookId, String assetId) async {
+    final body = await _get(
+        '/v1/books/${Uri.encodeComponent(bookId)}/imports/${Uri.encodeComponent(assetId)}');
+    if (!body.containsKey('import')) throw _invalid();
+    final result = body['import'];
+    if (result == null) return null;
+    if (result is! Map ||
+        result['sourceAssetId'] != assetId ||
+        result['chapters'] is! List ||
+        result['assetIds'] is! List ||
+        result['report'] is! Map) throw _invalid();
+    final chapters = result['chapters'] as List,
+        images = result['assetIds'] as List;
+    final report = result['report'] as Map, warnings = report['warnings'];
+    if (chapters.isEmpty ||
+        chapters.length > 500 ||
+        images.length > 100 ||
+        !images.every(_isUuid) ||
+        images.toSet().length != images.length ||
+        warnings is! List ||
+        warnings.length > 100 ||
+        !warnings.every((w) => w is String && w.length <= 2000) ||
+        report['chapterCount'] != chapters.length ||
+        report['imageCount'] != images.length ||
+        !chapters.every((c) =>
+            c is Map &&
+            _isUuid(c['id']) &&
+            (c['book_id'] == null || c['book_id'] == bookId))) throw _invalid();
+    final ids = chapters.map((c) => c['id'] as String).toList();
+    if (ids.toSet().length != ids.length) throw _invalid();
+    return ManuscriptImportReport(List.unmodifiable(ids), images.length,
+        List<String>.unmodifiable(warnings));
+  }
 
   Future<({ChapterDocument document, String role})> getChapterDocument(
       String chapterId, String bookId) async {
@@ -346,13 +500,22 @@ class ApiClient {
       _post('/v1/assets/$assetId/confirm',
           {'checksumSha256': checksumSha256, 'sizeBytes': sizeBytes});
 
-  Future<List<TaskItem>> listTasks(String workspaceId,
-          {String? status}) async =>
-      [
-        for (final t in (await _get('/v1/tasks',
-            {'workspaceId': workspaceId, 'status': status}))['tasks'] as List)
-          TaskItem.fromJson((t as Map).cast<String, dynamic>()),
-      ];
+  Future<List<TaskItem>> listTasks(String workspaceId, {String? status}) async {
+    final rows = (await _get(
+        '/v1/tasks', {'workspaceId': workspaceId, 'status': status}))['tasks'];
+    if (rows is! List) throw _invalid();
+    return List.unmodifiable(rows.map((row) {
+      if (row is! Map<String, dynamic> ||
+          row['id'] is! String ||
+          row['workspace_id'] != workspaceId ||
+          row['title'] is! String ||
+          row['status'] is! String ||
+          row['priority'] is! String ||
+          (row['description'] != null && row['description'] is! String) ||
+          (row['due_at'] != null && row['due_at'] is! String)) throw _invalid();
+      return TaskItem.fromJson(row);
+    }));
+  }
 
   Future<void> createTask(String workspaceId, String title) =>
       _post('/v1/tasks', {'workspaceId': workspaceId, 'title': title});
