@@ -48,9 +48,27 @@ API routes: `GET /v1/chapters/{chapterId}/title`,
   acceptance, not a fresh hosted Google user-session test.
 - Web/API typechecks and 18 OpenAPI contract tests pass.
 
-These serial SQL cases are not a new multi-connection race claim. Full clean
-source verification, native CI, hosted migration and runtime refresh are recorded
-in the continuation evidence when completed. Do not infer them from this list.
+These serial SQL cases are not a new multi-connection race claim.
+
+## Follow-up acceptance
+
+- `5c326301f46fcb3fbc6c2dd2716a31d9289d04ae` passes the isolated production web
+  build and native author/files CI `39976538049`. The earlier native run caught
+  a title-lock rendering race; the follow-up publishes the dirty/busy lock in the
+  input event and waits for the rendered state in its browser assertion.
+- Native database CI `39974749745` passed on `86be9c6`; its migration is unchanged
+  in the UI-only follow-up. The live project now has 111 migrations. The title SQL
+  acceptance also passed in a rolled-back live transaction: profile/Auth identity
+  unchanged; no test books, chapters, versions or Storage objects left behind.
+- The full clean-source suite first reached the populated-upgrade rehearsal and
+  stopped at its deliberate 110-migration pin. The reviewed target is now 111,
+  retaining all five negative drift/atomicity guards. Additional populated-row
+  probes verify revision-zero backfill without invented receipts, explicit
+  rename/replay, stale conflicts, delayed-write closure, unchanged chapter
+  identity/order/document pointer and both immutable versions. Rollback restores
+  every historical projection. The extended rehearsal passes locally.
+- Full clean-source verification after that test-only extension and local runtime
+  refresh remain separate acceptance steps; use the final continuation receipt.
 
 ## Migration boundary
 

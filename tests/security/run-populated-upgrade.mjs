@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 110 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 111 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -16,7 +16,7 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
-const targetEnd = '20261023120101_metadata_trigger_execution_hardening.sql';
+const targetEnd = '20261023153000_chapter_title_changes.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -109,7 +109,7 @@ async function expectedReadingTextGuard(migration, fixture, historical, signatur
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 110, 'This reviewed rehearsal pins the 45 -> 110 target; review before extending');
+  assert.equal(names.length, 111, 'This reviewed rehearsal pins the 45 -> 111 target; review before extending');
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
@@ -145,6 +145,53 @@ try {
   await verifyHistoricalIsolation(db, fixture);
   await verifyUpgradeGates(db, fixture);
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Post-upgrade role/grant/paid-default gates preserve historical data');
+  step = 'historical chapter title revision and explicit rename recovery';
+  assert.equal((await db.query('select count(*)::int as n from public.chapters where title_revision<>0')).rows[0].n, 0,
+    'Legacy titles start at revision zero without inventing previous title edits');
+  assert.equal((await db.query('select count(*)::int as n from public.chapter_title_changes')).rows[0].n, 0,
+    'Upgrade creates no historical title receipts');
+  for (const tenant of fixture.tenants) {
+    await db.exec('begin; set local role authenticated;');
+    try {
+      await db.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({ sub: tenant.user, role: 'authenticated' })]);
+      const preservedChapter = async () => (await db.query("select to_jsonb(c)-'title'-'title_revision'-'updated_at' as data from public.chapters c where id=$1", [tenant.chapter])).rows;
+      const preservedVersions = async () => (await db.query('select to_jsonb(v) as data from public.document_versions v where chapter_id=$1 order by id', [tenant.chapter])).rows;
+      const originalChapter = await preservedChapter(), originalVersions = await preservedVersions();
+      assert.equal(originalVersions.length, 2, 'Probe uses both immutable historical manuscript versions');
+      const operation = randomUUID(), title = `Explicit historical title ${tenant.label}`;
+      const digest = createHash('sha256').update(title).digest('hex');
+      const result = async (sql, args) => (await db.query(sql, args)).rows[0].result;
+      assert.equal((await result('select public.get_chapter_title_change($1,$2,0,$3) as result',
+        [tenant.chapter, operation, digest])).status, 'not_found', 'Legacy title has no invented saved outcome');
+      const saved = await result('select public.change_chapter_title($1,$2,0,$3) as result', [tenant.chapter, operation, title]);
+      assert.equal(saved.status, 'saved');
+      assert.deepEqual(saved.receipt, { title, revision: 1 });
+      assert.equal(saved.current.title, title);
+      assert.equal(saved.current.revision, 1);
+      assert.deepEqual(await result('select public.change_chapter_title($1,$2,0,$3) as result',
+        [tenant.chapter, operation, title]), saved, 'Replaying the historical rename does not advance its revision');
+      assert.deepEqual(await result('select public.close_chapter_title_change($1,$2,0,$3) as result',
+        [tenant.chapter, operation, digest]), saved, 'Closure cannot undo a committed historical rename');
+      const stale = await result('select public.change_chapter_title($1,$2,0,$3) as result',
+        [tenant.chapter, randomUUID(), 'Stale historical title']);
+      assert.equal(stale.status, 'conflict');
+      assert.deepEqual(stale.current, saved.current, 'Stale revision cannot replace the explicitly renamed title');
+      const closedOperation = randomUUID(), closedTitle = 'Closed historical request';
+      const closedDigest = createHash('sha256').update(closedTitle).digest('hex');
+      const closed = await result('select public.close_chapter_title_change($1,$2,1,$3) as result',
+        [tenant.chapter, closedOperation, closedDigest]);
+      assert.equal(closed.status, 'closed');
+      assert.deepEqual(await result('select public.change_chapter_title($1,$2,1,$3) as result',
+        [tenant.chapter, closedOperation, closedTitle]), closed, 'A delayed request cannot bypass closure on an upgraded chapter');
+      assert.deepEqual(closed.current, saved.current, 'Closure leaves the historical chapter title and revision unchanged');
+      assert.deepEqual(await preservedChapter(), originalChapter, 'Rename preserves chapter identity, ordering and manuscript pointer');
+      assert.deepEqual(await preservedVersions(), originalVersions, 'Rename neither rewrites nor appends immutable manuscript history');
+    } finally { await db.exec('rollback;'); }
+  }
+  assert.equal((await db.query('select count(*)::int as n from public.chapter_title_changes')).rows[0].n, 0, 'Title probes leave no receipts after rollback');
+  assert.equal((await db.query('select count(*)::int as n from public.chapters where title_revision<>0')).rows[0].n, 0, 'Rollback restores original title revisions');
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Historical title recovery probes preserve every historical relation');
+  console.log('PASS historical title revision backfill, explicit rename/replay, stale conflict, late-write closure, manuscript preservation and rollback without invented receipts');
   step = 'historical Book Bible incarnation and durable manual update';
   const incarnations = new Set();
   for (const tenant of fixture.tenants) {
