@@ -1,9 +1,10 @@
 # Customer-owned AI connections
 
-Status: encrypted credential storage/settings are implemented in the local
-candidate; acceptance and activation are tracked in
-`docs/AI_CONNECTION_VAULT_CHECKPOINT.md`. **Customer-key generation routing and
-subscription connections are not implemented or enabled.** Reviewed 2026-10-24
+Status: encrypted credential storage/settings are implemented; acceptance and
+activation are tracked in `docs/AI_CONNECTION_VAULT_CHECKPOINT.md`. The explicit
+five-provider text adapter layer is documented in
+`docs/CUSTOMER_PROVIDER_ADAPTERS.md`. **Payer-bound customer-key worker routing
+and subscription connections are not implemented or enabled.** Reviewed 2026-10-24
 UTC. This is a build contract, not evidence that every subscription is usable or
 paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
 
@@ -52,6 +53,12 @@ requested on the user's behalf during the review.
 
 - `services/ai/gateway.py`: `Provider` protocol, `OpenAIProvider(api_key=...)`,
   deterministic mock and request receipts. Registry currently only OpenAI/mock.
+- `services/ai/customer_provider.py` and `customer_protocol.py`: explicit,
+  single-use customer-key text adapters for all five allowlisted providers.
+  Fixed HTTPS destinations, exact model/route policy and request digest, bounded
+  output and provider-specific tool/usage parsing. They are deliberately absent
+  from the default registry and HTTP service selector. No vault secret resolver
+  or payer/job authorization is implied by constructing an adapter.
 - `services/api/src/lib/image-generation.ts` and `speech-generation.ts`: current
   server-owned OpenAI clients. Do not mutate process-wide environment variables
   or shared clients to choose a customer's credential.

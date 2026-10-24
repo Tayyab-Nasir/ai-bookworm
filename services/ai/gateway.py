@@ -12,8 +12,11 @@ from typing import Any, Protocol
 class Usage:
     inputTokens: int = 0
     outputTokens: int = 0
-    estimatedCostUsd: float = 0.0
+    estimatedCostUsd: float | None = 0.0
     measuredTokens: list[dict[str, str]] | None = None
+    # Allowlisted observed counters, not managed-AI price dimensions. Customer
+    # providers report unknown cost as None until a payer/rate policy exists.
+    providerTokenUsage: dict[str, int] | None = None
 
     def to_dict(self) -> dict:
         value = {
@@ -23,6 +26,8 @@ class Usage:
         }
         if self.measuredTokens is not None:
             value["measuredTokens"] = self.measuredTokens
+        if self.providerTokenUsage is not None:
+            value["providerTokenUsage"] = self.providerTokenUsage
         return value
 
 
@@ -32,9 +37,10 @@ class Completion:
     tool_calls: list[dict] = field(default_factory=list)  # [{"name":..., "input":{...}}]
     usage: Usage = field(default_factory=Usage)
     model: str | None = None
-    # OpenAI's request identifier is the only provider receipt identifier the
-    # paid worker may persist. Never substitute an internal job ID for it.
+    # Transport request ID, not an internal job ID or a response object ID.
+    # Existing managed-AI workers still require their documented request ID.
     request_id: str | None = None
+    response_id: str | None = None
 
 
 class Provider(Protocol):
@@ -154,6 +160,7 @@ def completion_from_dict(d: dict) -> Completion:
         usage=Usage(**d.get("usage", {})),
         model=d.get("model"),
         request_id=d.get("requestId", d.get("request_id")),
+        response_id=d.get("responseId", d.get("response_id")),
     )
 
 
@@ -178,3 +185,14 @@ def get_provider(name: str | None = None) -> Provider:
 
 def default_model(provider_name: str) -> str:
     return os.environ.get("DEFAULT_AI_MODEL") or _DEFAULT_MODELS.get(provider_name, "mock-1")
+
+
+def get_customer_provider(name: str, **kwargs) -> Provider:
+    """Explicit adapter seam; intentionally absent from the default registry.
+
+    Only an authorized payer-bound worker may supply the credential, reviewed
+    model policy and expected request digest. No key or policy is read from env.
+    """
+    from customer_provider import CustomerProvider
+
+    return CustomerProvider(name, **kwargs)

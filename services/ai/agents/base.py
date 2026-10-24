@@ -57,6 +57,7 @@ class AgentResult:
     provider: str | None = None
     model: str | None = None
     requestId: str | None = None
+    responseId: str | None = None
 
     def to_dict(self) -> dict:
         d: dict[str, Any] = {
@@ -74,6 +75,8 @@ class AgentResult:
             d["model"] = self.model
         if self.requestId:
             d["requestId"] = self.requestId
+        if self.responseId:
+            d["responseId"] = self.responseId
         return d
 
 
@@ -188,9 +191,13 @@ class BaseAgent:
         except ProviderOutcomeUnknown:
             raise
         except AgentValidationError as e:
+            if getattr(self.provider, "outcome_requires_review", False):
+                raise ProviderOutcomeUnknown("Customer-provider output requires review; do not retry.") from None
             # wholesale failure: no partial suggestions/diagnostics
             result = AgentResult(jobId=job_id, status="failed", error=f"validation: {e}")
         except Exception as e:
+            if getattr(self.provider, "outcome_requires_review", False):
+                raise ProviderOutcomeUnknown("Customer-provider output requires review; do not retry.") from None
             result = AgentResult(jobId=job_id, status="failed", error=str(e))
         finally:
             self._prepared_request = None
@@ -215,11 +222,12 @@ class BaseAgent:
         )
         usage.inputTokens += completion.usage.inputTokens
         usage.outputTokens += completion.usage.outputTokens
-        usage.estimatedCostUsd += completion.usage.estimatedCostUsd
+        usage.estimatedCostUsd = completion.usage.estimatedCostUsd
         # This service makes one provider call per agent run. Preserve the
         # provider-measured split exactly; a paid worker must fail closed when
         # it is absent rather than treating it as zero usage.
         usage.measuredTokens = completion.usage.measuredTokens
+        usage.providerTokenUsage = completion.usage.providerTokenUsage
 
         if not completion.tool_calls and completion.text.strip():
             raise AgentValidationError(
@@ -239,6 +247,7 @@ class BaseAgent:
             provider=getattr(self.provider, "name", None),
             model=completion.model or self.model,
             requestId=completion.request_id,
+            responseId=completion.response_id,
         )
 
     def provider_request(self, request: dict) -> tuple[list[dict], list[dict], dict | str | None]:
