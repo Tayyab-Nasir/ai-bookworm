@@ -49,19 +49,22 @@ class Policy(StrictModel):
                            self.upstream, tuple(self.responseUpstreams))
 
 
-class Scope(StrictModel):
-    grantId: str = Field(pattern=UUID)
-    jobId: str = Field(pattern=UUID)
+class PreparationScope(StrictModel):
     workspaceId: str = Field(pattern=UUID)
     bookId: str = Field(pattern=UUID)
+    provider: Literal["openai", "anthropic", "google", "openrouter", "xai"]
+    agentType: Literal["writer", "proofreader", "copyeditor", "consistency", "metadata", "bookbible"]
+    policy: Policy
+
+
+class Scope(PreparationScope):
+    grantId: str = Field(pattern=UUID)
+    jobId: str = Field(pattern=UUID)
     ownerId: str = Field(pattern=UUID)
     connectionId: str = Field(pattern=UUID)
     credentialRevision: int = Field(ge=1, le=2147483647)
     leaseToken: str = Field(pattern=UUID)
-    provider: Literal["openai", "anthropic", "google", "openrouter", "xai"]
-    agentType: Literal["writer", "proofreader", "copyeditor", "consistency", "metadata", "bookbible"]
     expectedRequestSha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    policy: Policy
 
 
 class ContextPolicy(StrictModel):
@@ -162,21 +165,29 @@ class CustomerTextResultStore(AiReviewResultStore):
     label = "Customer text"
 
 
-def build_customer_agent(dispatch: VerifiedDispatch):
-    s, req = dispatch.scope, dispatch.request
-    executor = InMemoryExecutor(chapters=req.input.chapters, style_guide=req.input.styleGuide,
-                                bible=req.input.bookBible, search_results=req.input.relatedContext)
+def prepare_customer_agent(s: PreparationScope, req: AgentRequest):
+    """Same actual prompt/tools/wire for read-only preparation and dispatch."""
+    # PostgreSQL JSONB reorders object keys. Canonicalize all nested source data
+    # before agents embed it in prompt strings; preserve array/reading order.
+    content = strict_json(json_bytes(req.input.model_dump()))
+    executor = InMemoryExecutor(chapters=content["chapters"], style_guide=content["styleGuide"],
+                                bible=content["bookBible"], search_results=content["relatedContext"])
     # No provider or key is needed to prepare/validate a request.
     agent = get_agent(s.agentType, None, executor, s.policy.model)
     agent.max_output_tokens = min(s.policy.maxOutputTokens, 6000) if s.agentType == "bookbible" else s.policy.maxOutputTokens
-    request = {"workspaceId": s.workspaceId, "bookId": s.bookId, "chapterIds": req.input.chapterIds,
-               "book": req.input.book, "userInstruction": req.input.userInstruction,
+    request = {"workspaceId": s.workspaceId, "bookId": s.bookId, "chapterIds": content["chapterIds"],
+               "book": content["book"], "userInstruction": content["userInstruction"],
                "contextPolicy": req.contextPolicy.model_dump()}
     prepared = agent.provider_request(request)
     messages, tools, choice = prepared
     wire = prepare_customer_request(s.provider, s.policy.policy(), messages, tools, s.policy.model,
                                     max_output_tokens=agent.max_output_tokens, tool_choice=choice)
-    if not hmac.compare_digest(wire.sha256, s.expectedRequestSha256):
+    return agent, request, prepared, wire
+
+
+def build_customer_agent(dispatch: VerifiedDispatch):
+    agent, request, prepared, wire = prepare_customer_agent(dispatch.scope, dispatch.request)
+    if not hmac.compare_digest(wire.sha256, dispatch.scope.expectedRequestSha256):
         raise DispatchRejected()
     return agent, request, prepared
 

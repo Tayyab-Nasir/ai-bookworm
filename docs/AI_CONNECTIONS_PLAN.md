@@ -9,7 +9,9 @@ fee reservation, exact-revision resolver and uncertain-outcome foundation is in
 `docs/CUSTOMER_AI_JOBS.md`; receipt-only completion and pending proposal storage
 are in `docs/CUSTOMER_AI_COMPLETION.md`. The default-off private worker factory,
 non-secret context accessor and receipt-only recovery are in
-`docs/CUSTOMER_AI_WORKER.md`. **Queue/public routing and subscription connections
+`docs/CUSTOMER_AI_WORKER.md`. Authenticated canonical source loading and private,
+non-billable actual-prompt hashing are in `docs/CUSTOMER_AI_PREPARATION.md`.
+**Queue/public routing and subscription connections
 are not implemented or enabled.** Reviewed 2026-10-24
 UTC. This is a build contract, not evidence that every subscription is usable or
 paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
@@ -78,6 +80,11 @@ requested on the user's behalf during the review.
 - `services/api/src/lib/quoted-*-worker.ts`, quote routes and SQL job functions:
   reservation, immutable request identity, leased execution and unknown-outcome
   recovery must be retained when adding a payer/credential selector.
+- `customer-ai-source.ts`, `customer-ai-prepare.ts` and `customer_prepare_http.py`:
+  exact current saved-node source, authenticated RLS reads, full canonical hashes,
+  opt-in context and shared deterministic prompt/wire preparation. These helpers
+  remain unregistered; they do not authorize a job or perform a paid call.
+  Related-reference provenance and whole-book batching are still required.
 - `supabase/migrations/20261024040000_customer_ai_jobs.sql`: separate customer-key
   billing mode, private immutable authorization, explicit paid-plan/fee policy,
   single-use encrypted-secret dispatch resolution and pre-dispatch-only release.
