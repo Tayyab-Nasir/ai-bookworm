@@ -3,7 +3,7 @@
  * owner's exact credential revision and one-way dispatch claim in the database.
  * Nothing imports this into public routes or the managed-AI workers yet.
  */
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { inspect } from "node:util";
 import { z } from "zod";
 import { aiProvider, type CredentialBinding } from "./ai-connection-vault.js";
@@ -35,7 +35,17 @@ function jsonTree(value: unknown, depth = 0): void {
     return;
   }
   if (typeof value === "number" && Number.isFinite(value) && (!Number.isInteger(value) || Number.isSafeInteger(value))) return;
-  if (Array.isArray(value)) { for (const item of value) jsonTree(item, depth + 1); return; }
+  if (Array.isArray(value)) {
+    if (Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length) throw new CustomerDispatchError();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (Object.keys(descriptors).length !== value.length + 1) throw new CustomerDispatchError();
+    for (let index = 0; index < value.length; index++) {
+      const item = descriptors[String(index)];
+      if (!item || !item.enumerable || !("value" in item)) throw new CustomerDispatchError();
+      jsonTree(item.value, depth + 1);
+    }
+    return;
+  }
   if (typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
     for (const [key, property] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
       if (Buffer.from(key, "utf8").toString("utf8") !== key || !property.enumerable || !("value" in property)) throw new CustomerDispatchError();
@@ -45,6 +55,38 @@ function jsonTree(value: unknown, depth = 0): void {
     return;
   }
   throw new CustomerDispatchError();
+}
+
+// Only the fixed ASCII scope keys are canonicalized. Request hashing uses the
+// exact UTF-8 requestJson sent on the wire, not another language's number format.
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
+  if (value !== null && typeof value === "object") return "{" + Object.entries(value)
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => JSON.stringify(key) + ":" + canonical(item)).join(",") + "}";
+  return JSON.stringify(value);
+}
+function freezeTree<T>(value: T): T {
+  if (value !== null && typeof value === "object") { for (const item of Object.values(value)) freezeTree(item); Object.freeze(value); }
+  return value;
+}
+/** A detached immutable source snapshot and the Python verifier's exact digest.
+ * Does not authorize a job or expose a key. Never log the request snapshot.
+ */
+export function prepareCustomerDispatch(scopeInput: CustomerDispatchScope, requestInput: unknown) {
+  try {
+    jsonTree(scopeInput); jsonTree(requestInput);
+    const scope = freezeTree(customerDispatchScope.parse(scopeInput));
+    const requestJson = JSON.stringify(requestInput);
+    if (Buffer.byteLength(requestJson, "utf8") > 400000) throw new CustomerDispatchError();
+    // Fail before claiming a dispatch, even for heavily escaped source text or
+    // the largest permitted credential. This is only an upper-bound sizing stub.
+    if (Buffer.byteLength(JSON.stringify({ format: FORMAT, scope, requestJson, apiKey: "x".repeat(4096),
+      issuedAt: Number.MAX_SAFE_INTEGER, expiresAt: Number.MAX_SAFE_INTEGER }), "utf8") > MAX_PAYLOAD) throw new CustomerDispatchError();
+    const request = freezeTree(JSON.parse(requestJson) as unknown);
+    const sourceSha256 = createHash("sha256").update(requestJson, "utf8").digest("hex");
+    const fingerprint = createHash("sha256").update(canonical({ format: FORMAT, scope, sourceSha256 }), "utf8").digest("hex");
+    return Object.freeze({ scope, request, fingerprint });
+  } catch { throw new CustomerDispatchError(); }
 }
 
 /** Base64 is NOT encryption. Never log/persist the returned wire Buffer.
@@ -75,14 +117,14 @@ export function customerDispatchSigner(keyId: string, signingKey: Buffer, now = 
       let bytes: Buffer | undefined;
       try {
         if (disposed) throw new CustomerDispatchError();
-        jsonTree(scopeInput); jsonTree(request);
-        const scope = customerDispatchScope.parse(scopeInput), binding = credential.binding;
+        const prepared = prepareCustomerDispatch(scopeInput, request);
+        const scope = prepared.scope, binding = credential.binding;
         if (binding.ownerId.toLowerCase() !== scope.ownerId || binding.provider !== scope.provider ||
             binding.connectionId.toLowerCase() !== scope.connectionId || binding.revision !== scope.credentialRevision ||
             !Buffer.isBuffer(credential.secret) || credential.secret.length < 16 || credential.secret.length > 4096) throw new CustomerDispatchError();
         const apiKey = credential.secret.toString("utf8");
         if (!/^[A-Za-z0-9_\-./+=]+$/u.test(apiKey)) throw new CustomerDispatchError();
-        const requestJson = JSON.stringify(request), scopeJson = JSON.stringify(scope);
+        const requestJson = JSON.stringify(prepared.request), scopeJson = JSON.stringify(scope);
         if (requestJson.includes(apiKey) || scopeJson.includes(apiKey)) throw new CustomerDispatchError();
         const issuedAt = now();
         if (!Number.isSafeInteger(issuedAt) || issuedAt < 1) throw new CustomerDispatchError();

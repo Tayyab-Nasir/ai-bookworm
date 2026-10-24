@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { test } from "node:test";
-import { customerDispatchSigner, type CustomerDispatchScope } from "./lib/customer-ai-dispatch.js";
+import { customerDispatchSigner, prepareCustomerDispatch, type CustomerDispatchScope } from "./lib/customer-ai-dispatch.js";
 
 const scope = (): CustomerDispatchScope => ({ grantId: randomUUID(), jobId: randomUUID(), workspaceId: randomUUID(), bookId: randomUUID(),
   ownerId: randomUUID(), connectionId: randomUUID(), credentialRevision: 3, leaseToken: randomUUID(), provider: "openai", agentType: "writer",
@@ -35,10 +35,15 @@ test("credential binding and bounded safe JSON are checked with static errors", 
   for (const binding of invalid) assert.throws(() => signer.sign(s, { input: {} }, { ...c, binding }), /could not be prepared/);
   const cyclic: Record<string, unknown> = {}; cyclic.self = cyclic;
   const getter = Object.defineProperty({}, "input", { enumerable: true, get() { throw new Error("must not run"); } });
+  let executed = false;
+  const arrayGetter = Object.defineProperty(["a"], "0", { enumerable: true, get() { executed = true; return "a"; } });
+  const arraySerializer = Object.assign(["a"], { toJSON() { executed = true; return ["b"]; } });
   for (const request of [undefined, NaN, Infinity, { input: undefined }, cyclic, getter, { input: "x".repeat(524288) },
-    { input: "\uD800" }, { input: c.secret.toString() }, { input: new Date() }, { input: 1n }]) {
+    { input: "\uD800" }, { input: c.secret.toString() }, { input: new Date() }, { input: 1n },
+    { input: arrayGetter }, { input: arraySerializer }, { input: new Array(3) }]) {
     assert.throws(() => signer.sign(s, request, c), error => error instanceof Error && error.message === "Customer dispatch could not be prepared. No request was sent.");
   }
+  assert.equal(executed, false, "unsafe serializers/getters must not execute");
   const envelope = signer.sign(s, { input: {} }, c); envelope.dispose(); assert.throws(() => envelope.takeBody()); signer.dispose();
 });
 
@@ -51,6 +56,7 @@ test("TypeScript signature crosses Python verification, real agent and durable r
     assert.equal(p.status, 0, "Synthetic cross-language fixture failed: " + p.stderr.toString()); return JSON.parse(p.stdout.toString());
   };
   const [s, request] = run("import json; from test_customer_dispatch import fixture; print(json.dumps(fixture(),ensure_ascii=False))");
+  const prepared = prepareCustomerDispatch(s, request);
   const signer = customerDispatchSigner("synthetic", Buffer.from(Array.from({ length: 32 }, (_, i) => i)), () => 1900000000);
   const body = signer.sign(s, request, credentials(s)).takeBody();
   const result = run(`import json,sys,tempfile
@@ -63,7 +69,28 @@ with tempfile.TemporaryDirectory() as directory:
  first=execute_dispatch(verify(body),store,now=lambda:NOW,_test_transport=transport('openai',calls))
  again=execute_dispatch(verify(body),SqliteReceipts(store.path),now=lambda:NOW,_test_transport=transport('openai',calls))
  assert first==again and len(calls)==1
- print(json.dumps({'status':first['status'],'cost':first['usage']['estimatedCostUsd'],'calls':len(calls)}))`, body);
+ print(json.dumps({'status':first['status'],'cost':first['usage']['estimatedCostUsd'],'calls':len(calls),'fingerprint':verify(body).fingerprint}))`, body);
   body.fill(0); signer.dispose();
-  assert.deepEqual(result, { status: "succeeded", cost: null, calls: 1 });
+  assert.deepEqual(result, { status: "succeeded", cost: null, calls: 1, fingerprint: prepared.fingerprint });
+});
+
+test("fingerprint snapshot is detached, immutable and exact-byte cross-language compatible", () => {
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["path", "systemroot", "windir", "temp", "tmp", "bookworm_python"].includes(key.toLowerCase())));
+  Object.assign(env, { PYTHONPATH: join(root, "services/ai"), PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1" });
+  const s = scope(), request = { input: { book: { title: "雨 🌧 café\u2028\u2029", ratio: 1e-7, count: -0, order: ["x", "y"] } } };
+  const p = prepareCustomerDispatch(s, request), signer = customerDispatchSigner("synthetic", Buffer.alloc(32, 7), () => 1900000000);
+  request.input.book.title = "changed"; s.policy.model = "changed";
+  assert.equal((p.request as typeof request).input.book.title, "雨 🌧 café\u2028\u2029");
+  assert.throws(() => { p.scope.policy.model = "changed"; });
+  assert.throws(() => { (p.request as typeof request).input.book.order.push("changed"); });
+  const body = signer.sign(p.scope, p.request, credentials(p.scope)).takeBody();
+  const child = spawnSync(process.execPath, [join(root, "scripts/run-python.mjs"), "-c",
+    "import sys; from customer_dispatch import verify_dispatch; print(verify_dispatch(sys.stdin.buffer.read(),{'synthetic':bytes([7])*32},now=1900000000).fingerprint)"],
+    { cwd: root, env, input: body, timeout: 20000, maxBuffer: 1048576 });
+  body.fill(0); signer.dispose();
+  assert.equal(child.status, 0, "Synthetic digest verification failed: " + child.stderr.toString());
+  assert.equal(child.stdout.toString().trim(), p.fingerprint);
+  assert.notEqual(prepareCustomerDispatch(p.scope, request).fingerprint, p.fingerprint);
+  assert.throws(() => prepareCustomerDispatch(p.scope, { input: "x".repeat(400001) }));
 });

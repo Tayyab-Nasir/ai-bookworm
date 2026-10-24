@@ -7,8 +7,10 @@ five-provider text adapter layer is documented in
 documented in `docs/CUSTOMER_DISPATCH_CHECKPOINT.md`. The local database payer,
 fee reservation, exact-revision resolver and uncertain-outcome foundation is in
 `docs/CUSTOMER_AI_JOBS.md`; receipt-only completion and pending proposal storage
-are in `docs/CUSTOMER_AI_COMPLETION.md`. **Customer-key worker routing and subscription
-connections are not implemented or enabled.** Reviewed 2026-10-24
+are in `docs/CUSTOMER_AI_COMPLETION.md`. The default-off private worker factory,
+non-secret context accessor and receipt-only recovery are in
+`docs/CUSTOMER_AI_WORKER.md`. **Queue/public routing and subscription connections
+are not implemented or enabled.** Reviewed 2026-10-24
 UTC. This is a build contract, not evidence that every subscription is usable or
 paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
 
@@ -43,6 +45,7 @@ cost charge, automatic funding-source fallback or subscription quota bypass.
 Primary sources actually opened during this review:
 
 - [OpenAI Sign in with ChatGPT quickstart](https://developers.openai.com/siwc/quickstart): commercial eligibility and separate inference scopes.
+- [OpenAI client request](https://developers.openai.com/siwc/request-client-id): commercial interest-form route; no Bookworm application submitted.
 - [OpenAI pricing](https://learn.chatgpt.com/docs/pricing): API-key charges are separate from subscription usage.
 - [Anthropic authentication and credential use](https://code.claude.com/docs/en/legal-and-compliance): own-app credential restrictions and the distinct unmodified-Claude-Code conditions.
 - [Google Gemini CLI terms](https://geminicli.com/docs/resources/tos-privacy/): direct third-party use of its backing service is restricted.
@@ -70,14 +73,16 @@ requested on the user's behalf during the review.
   exact-byte signed short-lived handoff, explicit credential binding, actual-agent
   request verification and durable single-dispatch receipts. The private HTTP
   factory is deliberately unregistered and requires a future database authorizer.
-  It does not implement the payer/resolver/fee contract or activate customer jobs.
+  Its authorizer/registration remain activation dependencies. The new explicit
+  customer worker composes the payer-bound database RPCs but is not mounted.
 - `services/api/src/lib/quoted-*-worker.ts`, quote routes and SQL job functions:
   reservation, immutable request identity, leased execution and unknown-outcome
   recovery must be retained when adding a payer/credential selector.
 - `supabase/migrations/20261024040000_customer_ai_jobs.sql`: separate customer-key
   billing mode, private immutable authorization, explicit paid-plan/fee policy,
   single-use encrypted-secret dispatch resolution and pre-dispatch-only release.
-  No policy or entitlement seeded; no completion/retention path or worker enabled.
+  No policy or entitlement seeded. Receipt-only completion and an unmounted
+  worker factory are implemented separately; retention/activation remain open.
 - `services/api/src/lib/ai-connection-vault.ts`, account AI connection routes,
   the dedicated non-public `bookworm_credentials` schema and `/settings/ai`
   implement credential management. The private decryption helper is not a
