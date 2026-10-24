@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 113 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 114 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -16,7 +16,8 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
-const targetEnd = '20261024040000_customer_ai_jobs.sql';
+const guardedCustomerJobs = '20261024040000_customer_ai_jobs.sql';
+const targetEnd = '20261024050000_customer_ai_completion.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -134,9 +135,10 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 113, 'This reviewed rehearsal pins the 45 -> 113 target; review before extending');
+  assert.equal(names.length, 114, 'This reviewed rehearsal pins the 45 -> 114 target; review before extending');
   assert.equal(names[110], '20261023153000_chapter_title_changes.sql');
   assert.equal(names[111], '20261024020000_ai_connection_vault.sql');
+  assert.equal(names[112], guardedCustomerJobs);
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
@@ -152,6 +154,10 @@ try {
   step = 'committed populated historical fixture';
   const fixture = await seedUpgradeBaseline(db);
   const historical = await captureHistoricalState(db, fixture);
+  const historicalRun = randomUUID();
+  await db.query(`insert into public.ai_runs(id,workspace_id,provider,model,tokens_in,tokens_out,estimated_cost,status)
+    values($1,$2,'synthetic-historical','synthetic-original',9,3,1.25,'succeeded')`, [historicalRun, fixture.tenants[0].workspace]);
+  const historicalRunBefore = (await db.query('select to_jsonb(r) as value from public.ai_runs r where id=$1', [historicalRun])).rows[0].value;
   step = 'pre-upgrade historical authorization probes';
   await verifyHistoricalIsolation(db, fixture);
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Pre-upgrade authorization probes are non-mutating');
@@ -165,7 +171,7 @@ try {
         await expectedReadingTextGuard(migration, fixture, historical, signature);
       }
     }
-    if (migration.name === targetEnd) {
+    if (migration.name === guardedCustomerJobs) {
       await expectedCustomerGuard(migration, fixture, historical, 'public.reserve_text_job_credit()',
         "if new.billing_mode='quoted' then return new; end if;", 'unexpected text reservation definition');
       await expectedCustomerGuard(migration, fixture, historical, 'public.deduct_job_credits(uuid,uuid,uuid,text,integer,uuid)',
@@ -275,6 +281,16 @@ try {
   assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_policies')).rows[0].n, 0);
   assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_jobs')).rows[0].n, 0);
   console.log('PASS populated upgrade customer jobs: no inherited policy or quota, owner/revision binding, paid-plan isolation, single-use resolution, no duplicate fee or ambiguous refund');
+  step = 'customer receipt-only completion after populated upgrade';
+  const historicalRunAfter = (await db.query('select to_jsonb(r) as value from public.ai_runs r where id=$1', [historicalRun])).rows[0].value;
+  assert.equal(historicalRunAfter.cost_payer, 'platform');
+  const { cost_payer, ...unchangedRun } = historicalRunAfter;
+  assert.deepEqual(unchangedRun, historicalRunBefore, 'Payer backfill preserves all historical model, token, cost and identity evidence');
+  await db.exec(await readFile(join(root, 'tests/security/customer-ai-completion.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Customer completion fixtures roll back without historical changes');
+  assert.deepEqual((await db.query('select to_jsonb(r) as value from public.ai_runs r where id=$1', [historicalRun])).rows[0].value, historicalRunAfter);
+  assert.equal((await db.query("select count(*)::int as n from public.ai_runs where cost_payer='customer'")).rows[0].n, 0);
+  console.log('PASS populated upgrade customer completion: historical costs unchanged, unknown customer cost distinct from zero, five-provider/six-agent receipt recovery, atomic rollback, immutable outcomes and no inherited customer activity');
   step = 'existing synthetic paid quote lifecycle helpers on upgraded schema';
   await verifyPaidQuoteFixtures(async statement => {
     const results = await db.exec(statement);

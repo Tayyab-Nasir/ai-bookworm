@@ -229,7 +229,9 @@ export interface AiRun {
   model: string;
   tokens_in: number;
   tokens_out: number;
-  estimated_cost: number;
+  /** Customer-owned API costs are unknown, not free. Never coerce null to zero. */
+  estimated_cost: number | null;
+  cost_payer: "platform" | "customer";
   latency_ms: number | null;
   status: string;
   created_at: string;

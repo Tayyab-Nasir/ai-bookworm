@@ -82,7 +82,7 @@ fee modes, legacy-debit isolation, leases, cancellation, single-use resolution,
 post-dispatch reauthorization and charged/zero-fee unknown-outcome holds.
 
 `tests/security/run-populated-upgrade.mjs` now pins historical migration 45 through
-113. It preserves historical rows, proves no inherited customer policy/job/quota,
+114 (including [receipt-only completion](CUSTOMER_AI_COMPLETION.md)). It preserves historical rows, proves no inherited customer policy/job/quota,
 reuses the new SQL suite, and adds atomic-abort probes for both guarded function
 rewrites (seven total drift/legacy-data probes). These targeted local runs passed
 2026-10-24. Full frozen-source/build/native evidence belongs in the dated Obsidian
@@ -96,10 +96,11 @@ handoff; this document does not claim a hosted or real-provider acceptance resul
    provider-request digest/fingerprint calculation, private sender and worker.
    SQL verifies document identities, not that arbitrary submitted text matches
    canonical content; the authenticated server must build it from authorized data.
-3. Implement receipt-bound completion/recovery and proposal insertion. `review`
-   is deliberately not automatically released or settled. Never invoke a managed
-   OpenAI completion RPC with a customer job or record unknown cost as zero in
-   `ai_runs.estimated_cost` (currently non-null). No success RPC exists here yet.
+3. Connect the [receipt-only completion RPC](CUSTOMER_AI_COMPLETION.md) to the
+   authenticated worker/recovery flow and verify the full browser path. It saves
+   proposals without applying them, and can settle `review` only from the exact
+   saved result. Never use managed OpenAI completion for a customer job or coerce
+   its nullable, unknown provider cost to zero. No route is activated yet.
 4. Audit live receipt ACLs, durable ambiguous outcomes, multi-connection races and
    cross-worker lock ordering on native PostgreSQL. In-memory serial tests alone
    are not native concurrency acceptance.

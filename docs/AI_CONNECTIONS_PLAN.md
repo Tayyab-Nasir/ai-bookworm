@@ -6,7 +6,8 @@ five-provider text adapter layer is documented in
 `docs/CUSTOMER_PROVIDER_ADAPTERS.md`; the signed internal dispatch/receipt seam is
 documented in `docs/CUSTOMER_DISPATCH_CHECKPOINT.md`. The local database payer,
 fee reservation, exact-revision resolver and uncertain-outcome foundation is in
-`docs/CUSTOMER_AI_JOBS.md`. **Customer-key completion/worker routing and subscription
+`docs/CUSTOMER_AI_JOBS.md`; receipt-only completion and pending proposal storage
+are in `docs/CUSTOMER_AI_COMPLETION.md`. **Customer-key worker routing and subscription
 connections are not implemented or enabled.** Reviewed 2026-10-24
 UTC. This is a build contract, not evidence that every subscription is usable or
 paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
