@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 112 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 113 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -16,7 +16,7 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
-const targetEnd = '20261024020000_ai_connection_vault.sql';
+const targetEnd = '20261024040000_customer_ai_jobs.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -106,11 +106,37 @@ async function expectedReadingTextGuard(migration, fixture, historical, signatur
   console.log(`PASS expected canonical reading-text drift and atomic rollback ${signature}`);
 }
 
+async function expectedCustomerGuard(migration, fixture, historical, signature, marker, message) {
+  step = `expected customer authorization definition guard: ${signature}`;
+  await db.exec('begin;');
+  try {
+    const { rows: [{ definition }] } = await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature]);
+    assert.equal(definition.split(marker).length, 2, 'Drift probe changes exactly one reviewed guard target');
+    // Harmless whitespace is enough to refuse an unreviewed body, not silently
+    // rewrite a similar-looking function after operator/schema drift.
+    await db.exec(definition.replace(marker, marker.replace(':=', ':= ').replace("if new.billing_mode=", "if new.billing_mode =")));
+    const before = (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition;
+    assert.notEqual(before, definition);
+    await db.exec('savepoint customer_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001' && error.message === message);
+    await db.exec('rollback to savepoint customer_guard;');
+    assert.equal((await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition, before);
+    for (const table of ['bookworm_credentials.customer_ai_policies', 'bookworm_credentials.customer_ai_jobs']) {
+      assert.equal((await db.query('select to_regclass($1) as target', [table])).rows[0].target, null);
+    }
+    assert.equal((await db.query("select to_regprocedure('public.guard_customer_ai_job()') as target")).rows[0].target, null);
+    assert.equal((await db.query("select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid='public.ai_jobs'::regclass and conname='ai_jobs_billing_mode_check'")).rows[0].definition.includes('customer_key'), false);
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS expected customer definition drift and atomic rollback ${signature}`);
+}
+
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 112, 'This reviewed rehearsal pins the 45 -> 112 target; review before extending');
+  assert.equal(names.length, 113, 'This reviewed rehearsal pins the 45 -> 113 target; review before extending');
   assert.equal(names[110], '20261023153000_chapter_title_changes.sql');
+  assert.equal(names[111], '20261024020000_ai_connection_vault.sql');
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
@@ -138,6 +164,12 @@ try {
       for (const signature of ['public.create_book_chapters(uuid,jsonb,uuid)', 'public.complete_manuscript_import(uuid,uuid,uuid,text,jsonb,jsonb,jsonb)']) {
         await expectedReadingTextGuard(migration, fixture, historical, signature);
       }
+    }
+    if (migration.name === targetEnd) {
+      await expectedCustomerGuard(migration, fixture, historical, 'public.reserve_text_job_credit()',
+        "if new.billing_mode='quoted' then return new; end if;", 'unexpected text reservation definition');
+      await expectedCustomerGuard(migration, fixture, historical, 'public.deduct_job_credits(uuid,uuid,uuid,text,integer,uuid)',
+        "v_request:=jsonb_build_object('userId',p_user_id", 'unexpected legacy deduction definition');
     }
     await migrate(migration, 'upgrade');
     assert.deepEqual(await captureHistoricalState(db, fixture), historical, `Historical identities/content/versions/balances/ownership unchanged after ${migration.name}`);
@@ -237,6 +269,12 @@ try {
   await db.exec(await readFile(join(root, 'tests/security/ai-connection-vault.test.sql'), 'utf8'));
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Credential vault creation and rollback probes leave all historical data unchanged');
   console.log('PASS populated upgrade credential vault: no inherited credentials, owner RLS, preserved settlement schema grants, encrypted-only RPCs, CAS, revocation, closure and rollback');
+  step = 'customer payer lifecycle after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/customer-ai-jobs.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Customer policy/job fixtures and rollback leave historical rows unchanged');
+  assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_policies')).rows[0].n, 0);
+  assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_jobs')).rows[0].n, 0);
+  console.log('PASS populated upgrade customer jobs: no inherited policy or quota, owner/revision binding, paid-plan isolation, single-use resolution, no duplicate fee or ambiguous refund');
   step = 'existing synthetic paid quote lifecycle helpers on upgraded schema';
   await verifyPaidQuoteFixtures(async statement => {
     const results = await db.exec(statement);
@@ -247,7 +285,7 @@ try {
       : typeof value === 'boolean' ? value ? 't' : 'f' : String(value);
   });
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Reused paid lifecycle fixtures roll back without changing historical rows');
-  console.log(`PASS populated upgrade: 45 historical migrations + committed rows + ${migrations.length - 45} upgrades + five guarded aborts + reused synthetic paid lifecycle helpers.`);
+  console.log(`PASS populated upgrade: 45 historical migrations + committed rows + ${migrations.length - 45} upgrades + seven guarded aborts + reused synthetic paid lifecycle helpers.`);
   console.log('NOT PROVEN: hosted history/drift, real backup/restore, native concurrency, GoTrue/PostgREST/Storage HTTP, provider receipts, worker drain or production rollout authority.');
 } catch (error) {
   // Never print SQL, function definitions, row contents or raw database error detail.

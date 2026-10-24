@@ -4,8 +4,10 @@ Status: encrypted credential storage/settings are implemented; acceptance and
 activation are tracked in `docs/AI_CONNECTION_VAULT_CHECKPOINT.md`. The explicit
 five-provider text adapter layer is documented in
 `docs/CUSTOMER_PROVIDER_ADAPTERS.md`; the signed internal dispatch/receipt seam is
-documented in `docs/CUSTOMER_DISPATCH_CHECKPOINT.md`. **Payer-bound customer-key worker routing
-and subscription connections are not implemented or enabled.** Reviewed 2026-10-24
+documented in `docs/CUSTOMER_DISPATCH_CHECKPOINT.md`. The local database payer,
+fee reservation, exact-revision resolver and uncertain-outcome foundation is in
+`docs/CUSTOMER_AI_JOBS.md`. **Customer-key completion/worker routing and subscription
+connections are not implemented or enabled.** Reviewed 2026-10-24
 UTC. This is a build contract, not evidence that every subscription is usable or
 paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
 
@@ -71,6 +73,10 @@ requested on the user's behalf during the review.
 - `services/api/src/lib/quoted-*-worker.ts`, quote routes and SQL job functions:
   reservation, immutable request identity, leased execution and unknown-outcome
   recovery must be retained when adding a payer/credential selector.
+- `supabase/migrations/20261024040000_customer_ai_jobs.sql`: separate customer-key
+  billing mode, private immutable authorization, explicit paid-plan/fee policy,
+  single-use encrypted-secret dispatch resolution and pre-dispatch-only release.
+  No policy or entitlement seeded; no completion/retention path or worker enabled.
 - `services/api/src/lib/ai-connection-vault.ts`, account AI connection routes,
   the dedicated non-public `bookworm_credentials` schema and `/settings/ai`
   implement credential management. The private decryption helper is not a
