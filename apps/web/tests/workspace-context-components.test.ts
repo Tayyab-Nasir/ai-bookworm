@@ -14,7 +14,7 @@ const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
 const available = [A, B].map((id, index) => ({ id, name: `Workspace ${index}`, organization_id: `org-${id}` }));
 const asset = (id: string, workspaceId: string) => ({ id, workspace_id: workspaceId, name: id, mime_type: "image/png", size_bytes: 68, checksum: "a".repeat(64) });
-const overview = (id: string) => ({ workspace: { id, role: "owner" }, books: [], summary: {}, usage: { usage: {}, creditBalance: 0, entitlements: { plan: { name: "private" }, entitlements: {} } }, recentJobs: [], activity: [], sales: { status: "not_connected" } });
+const overview = (id: string) => ({ viewerId: A, workspace: { id, role: "owner" }, books: [], summary: {}, usage: { usage: {}, creditBalance: 0, entitlements: { plan: { name: "private" }, entitlements: {} } }, recentJobs: [], activity: [], sales: { status: "not_connected" } });
 const settle = async () => { await setImmediate(); };
 function deferred<T>() {
   let resolveValue!: (value: T) => void; let rejectValue!: (reason: Error) => void;
@@ -39,7 +39,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
   const assigned: string[] = [];
   if (options.remembered) values.set("bookworm:workspaceId", options.remembered);
   const url = new URL(`http://fixture.local/${options.query ?? ""}`);
-  const window = { location: { href: url.href, search: url.search, origin: url.origin, assign(value: string) { assigned.push(value); } }, history: { replaceState(_state: unknown, _unused: string, value: URL) { window.location.href = value.href; window.location.search = value.search; } }, localStorage: {
+  const window = { addEventListener() {}, removeEventListener() {}, location: { href: url.href, search: url.search, origin: url.origin, assign(value: string) { assigned.push(value); } }, history: { replaceState(_state: unknown, _unused: string, value: URL) { window.location.href = value.href; window.location.search = value.search; } }, localStorage: {
     getItem(key: string) { if (options.blockedStorage) throw new Error("Storage blocked"); return values.get(key) ?? null; },
     setItem(key: string, value: string) { if (options.blockedStorage) throw new Error("Storage blocked"); values.set(key, value); },
     removeItem(key: string) { if (options.blockedStorage) throw new Error("Storage blocked"); values.delete(key); },
@@ -62,6 +62,9 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
   vm.runInNewContext(compile(readFileSync(resolve("apps/web/lib/workspace-selection.ts"), "utf8")), { exports: helperExports, window, URL });
   const pure = (file: string) => { const exports = {}; vm.runInNewContext(compile(readFileSync(resolve(file), "utf8")), { exports }); return exports; };
   const artwork = pure("apps/web/lib/approved-artwork.ts"); const csv = pure("apps/web/lib/sales-csv.ts");
+  const browserSession = {};
+  vm.runInNewContext(compile(readFileSync(resolve("apps/web/lib/browser-session.ts"), "utf8")), { exports: browserSession, AbortSignal,
+    fetch: async () => ({ ok: true, json: async () => ({ user: { id: A, email: "author@example.test" } }) }) });
   const exports: Record<string, any> = {};
   const require = (name: string): any => {
     if (name === "react") return react;
@@ -84,6 +87,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
     if (name.endsWith("/epub-reader")) return readerHelpers;
     if (name.endsWith("/private-download")) return { privateDownloadUrl };
+    if (name.endsWith("/browser-session")) return browserSession;
     if (name.endsWith("/approved-artwork")) return artwork;
     if (name.endsWith("/manuscript-setup")) return { readSetupCheckpoint: () => null, setupKey: () => "fixture" };
     if (name.endsWith("/sales-csv")) return csv;
@@ -93,7 +97,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
   };
   const source = readFileSync(resolve(path), "utf8") + (options.inner ? `\nexport { ${options.inner} as auditInner };` : "");
   let key = 0;
-  vm.runInNewContext(compile(source), { exports, require, window, URL, URLSearchParams, crypto: { randomUUID: () => `fixture-request-${++key}` }, navigator: { clipboard: { writeText: api.copyInvitation ?? (async () => {}) } }, fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user", displayName: "Fixture author" } }) }) }, { filename: path });
+  vm.runInNewContext(compile(source), { exports, require, window, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, URL, URLSearchParams, crypto: { randomUUID: () => `fixture-request-${++key}` }, navigator: { clipboard: { writeText: api.copyInvitation ?? (async () => {}) } }, fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user", displayName: "Fixture author" } }) }) }, { filename: path });
   const render = () => { stateCursor = 0; refCursor = 0; memoCursor = 0; effectCursor = 0; effects.length = 0; callbacks.length = 0; return (options.inner ? exports.auditInner : exports.default)(options.props ?? {}); };
   return { render, states, refs, effects, callbacks, values, window, assigned, setProps(value: object) { options.props = value; } };
 }

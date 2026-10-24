@@ -43,6 +43,13 @@ export function makeAuthPlugin(supabaseFactory: SupabaseFactory) {
       if (typeof data.user.id !== "string" || !data.user.id.trim()) throw unavailable();
       req.userId = data.user.id;
       req.userToken = token;
+      const actor = req.headers["x-bookworm-actor"];
+      if (actor !== undefined) {
+        if (typeof actor !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor)) {
+          throw new AppError(422, "A valid original account identity is required for this request.");
+        }
+        if (actor !== req.userId) throw new AppError(409, "Your account changed. Reload saved data before continuing.");
+      }
     });
   });
 }

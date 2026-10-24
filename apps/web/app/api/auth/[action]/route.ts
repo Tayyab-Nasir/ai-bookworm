@@ -27,6 +27,16 @@ export async function POST(request: NextRequest, context: { params: Promise<{ ac
     const callback = `${origin}/auth/callback?next=${encodeURIComponent(next)}`;
 
     if (action === "logout") {
+      const actor = request.headers.get("x-bookworm-actor");
+      if (actor !== null) {
+        if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor)) return finish(authError(422, "A valid original account identity is required."));
+        const { data: identity, error: identityError } = await supabase.auth.getUser();
+        if (identityError || !identity.user) return finish(authError(401, "Your session has expired. Please sign in."));
+        const { data } = await supabase.auth.getSession();
+        if (!data.session || actor !== identity.user.id || actor !== data.session.user.id) {
+          return finish(authError(409, "Your account changed. Reload before signing out."));
+        }
+      }
       const { error } = await supabase.auth.signOut({ scope: "local" });
       if (error && error.status !== 401 && error.status !== 403) return finish(authError(503, "Could not sign out. Please retry."));
       return finish(NextResponse.json({ ok: true, redirectTo: "/login" }));

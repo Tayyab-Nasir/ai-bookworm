@@ -57,6 +57,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/analytics-admin-mounted.mjs
+      - name: Verify account-bound dashboard, administration and workspace creation in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/session-safety-mounted.mjs
       - name: Build production author interface
         env:
           NODE_ENV: production

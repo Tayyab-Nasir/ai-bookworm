@@ -96,6 +96,7 @@ export function dashboardRoutes(app: FastifyInstance) {
 
     reply.header("cache-control", "private, no-store");
     return {
+      viewerId: req.userId,
       workspace: { id: workspace.id, name: workspace.name, organizationId: workspace.organization_id, role },
       books: bookRows,
       summary: {

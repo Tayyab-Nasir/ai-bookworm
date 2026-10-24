@@ -52,11 +52,13 @@ async function fixture({ width = 1280, styled = false } = {}) {
     body {font-family:var(--font-inter);color:#fff}` });
   await page.evaluate(() => {
     window.calls = []; window.reads = []; window.gates = {}; window.query = "";
+    window.account = "11111111-1111-4111-8111-111111111111";
+    window.fetch = async () => Response.json({ user: { id: window.account, email: "author@example.test" } });
     window.defer = name => new Promise((resolve, reject) => { window.gates[name] = { resolve, reject }; });
     window.sales = id => ({ imports: [{ id: id + "-receipt", file_name: id + " receipt.csv", row_count: 1, source: "amazon_kdp", period_start: "2026-09-01", period_end: "2026-09-30", created_at: "2026-10-01T00:00:00Z" }],
       summary: { available: true, status: "imported", imports: 1, units: 2, royaltyCents: id === "b" ? 123 : 456, reportedProceedsCents: null, currency: "USD", currencies: [] },
       analytics: { available: true, windowStart: "2026-09-01", windowEnd: "2026-10-01", monthCount: 1, monthly: [{ month: "2026-09-01", currency: "USD", units: 2, royaltyCents: 123, reportedProceedsCents: null }], books: [], sources: [], bookCount: 0, booksTruncated: false } });
-    window.overview = (id, suffix = "") => ({ workspace: { id, name: `Workspace ${id.toUpperCase()}`, organizationId: `${id}-organization`, role: "writer" },
+    window.overview = (id, suffix = "") => ({ viewerId: window.account, workspace: { id, name: `Workspace ${id.toUpperCase()}`, organizationId: `${id}-organization`, role: "writer" },
       books: [{ id: `${id}-book`, workspace_id: id, title: id.toUpperCase() + " book" + suffix, status: "draft", language: "en", author_name: "Fixture author", genre: null }],
       summary: { activeBooks: 1, inProductionBooks: 1, publishedBooks: 0, assets: 7, visualAssets: 3, pendingJobs: 1, failedJobs: 0, readyPackages: 2 },
       usage: { entitlements: { plan: { name: `${id}-private-plan` }, entitlements: { ai_credits_monthly: 500 } }, usage: { ai_credits: 37 }, creditBalance: id === "a" ? 1717 : 2828 },
@@ -124,15 +126,17 @@ for (const stage of ["workspaces", "overview"]) for (const status of [401, 403, 
   });
 }
 
-for (const outcome of ["success", "failure"]) test(`dashboard ignores an older StrictMode workspace-list ${outcome}`, async () => {
+for (const outcome of ["success", "failure"]) test(`dashboard ignores an older focus-replaced workspace-list ${outcome}`, async () => {
   const page = await fixture();
   try {
     await page.evaluate(() => {
       let count = 0;
       window.api.listWorkspaces = () => ++count === 1 ? window.defer("older-list") : Promise.resolve({ workspaces: [{ id: "b", name: "Workspace B" }] });
       window.api.getDashboardOverview = async id => { window.reads.push(id); return window.overview(id); };
-      window.renderDashboard(true);
+      window.renderDashboard();
     });
+    await page.waitForFunction(() => !!window.gates["older-list"]);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect(page.getByRole("heading", { name: "B book", exact: true })).toBeVisible();
     await page.evaluate(async outcome => {
       if (outcome === "success") window.gates["older-list"].resolve({ workspaces: [{ id: "a", name: "Workspace A" }] });
@@ -247,7 +251,7 @@ for (const mismatch of ["workspace", "book"]) test(`dashboard refuses a ${mismat
       };
       window.renderDashboard();
     }, mismatch);
-    await expect(page.getByRole("alert")).toContainText("Dashboard response does not match the requested workspace");
+    await expect(page.getByRole("alert")).toContainText("Dashboard response does not match the requested account and workspace");
     await expect(page.getByRole("region", { name: "Publishing operations", exact: true })).toHaveCount(0);
     await expect(page.getByRole("heading", { name: /[AB] book/ })).toHaveCount(0);
     assert.deepEqual(await page.evaluate(() => window.calls), []);

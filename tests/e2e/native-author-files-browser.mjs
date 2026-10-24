@@ -281,6 +281,8 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     assert.equal(dashboardResponse.status, 200);
     assert.equal(dashboardResponse.cache, 'private, no-store, max-age=0');
     const dashboard = dashboardResponse.body, scopedBooks = dashboard.books.map(book => book.id);
+    const authorIdentity = await page.evaluate(async () => (await (await fetch('/api/auth/session')).json()).user.id);
+    assert.equal(dashboard.viewerId, authorIdentity);
     assert.equal(dashboard.workspace.id, workspace.id); assert.equal(dashboard.pipeline.length, 4);
     for (const [kind, table] of [['import', 'manuscript_import_jobs'], ['ai', 'ai_jobs'], ['publishing', 'publishing_jobs'], ['audiobook_export', 'audiobook_google_play_export_jobs']]) {
       const scoped = () => ['ai', 'audiobook_export'].includes(kind)
@@ -330,14 +332,50 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     succeeded('returning author foreign-book refusal');
     stage = 'native retailer fixture and private service acceptance';
     const retailer = await prepareRetailer();
-    stage = 'retailer owner login through actual Auth';
+    stage = 'real cookie account replacement without remounting the old dashboard';
     await page.goto(`${webOrigin}/dashboard`);
-    await page.getByRole('button', { name: 'Sign out', exact: true }).click();
-    await page.waitForURL(`${webOrigin}/login`);
-    await page.getByLabel('Email', { exact: true }).fill(retailer.email);
-    await page.getByLabel('Password', { exact: true }).fill(retailer.password);
-    await page.getByRole('button', { name: /sign in/i }).click();
-    await page.waitForURL(`${webOrigin}/dashboard`);
+    await expect(page.getByRole('heading', { name: 'Native browser manuscript', exact: true })).toBeVisible();
+    const accountPage = await page.context().newPage();
+    accountPage.setDefaultTimeout(30_000);
+    accountPage.on('pageerror', error => errors.push({ kind: browserErrorSummary(error), stage }));
+    await accountPage.goto(`${webOrigin}/dashboard`);
+    await accountPage.getByRole('button', { name: 'Sign out', exact: true }).click();
+    await accountPage.waitForURL(`${webOrigin}/login`);
+    await accountPage.getByLabel('Email', { exact: true }).fill(retailer.email);
+    await accountPage.getByLabel('Password', { exact: true }).fill(retailer.password);
+    await accountPage.getByRole('button', { name: /sign in/i }).click();
+    await accountPage.waitForURL(`${webOrigin}/dashboard`);
+    const replacement = await accountPage.evaluate(async () => {
+      const user = (await (await fetch('/api/auth/session')).json()).user;
+      const spaces = await (await fetch('/api/backend/v1/workspaces')).json();
+      return { user, workspaceId: spaces.workspaces[0].id, workspaceCount: spaces.workspaces.length };
+    });
+    assert.notEqual(replacement.user.id, authorIdentity);
+    await page.bringToFront();
+    // Actual server cookies changed through the real login UI. The events only
+    // trigger this mounted tab's revalidation; they do not fake its identity.
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(page.getByRole('heading', { name: 'Native browser manuscript', exact: true })).toHaveCount(0);
+    await expect(page.locator(`a[title="${replacement.user.email}"]`)).toBeVisible();
+    await page.getByRole('combobox', { name: 'Workspace', exact: true }).selectOption(replacement.workspaceId);
+    await expect(page.getByRole('region', { name: 'Workspace summary', exact: true })).toBeVisible();
+    const bound = await page.evaluate(async ({ oldActor, currentActor, workspaceId }) => {
+      const mismatch = { 'x-bookworm-actor': oldActor, 'content-type': 'application/json' };
+      const dashboard = await fetch(`/api/backend/v1/dashboard?workspaceId=${workspaceId}`, { headers: mismatch });
+      const create = await fetch('/api/backend/v1/workspaces', { method: 'POST', headers: mismatch, body: JSON.stringify({ name: 'Must not be created for another account' }) });
+      const logout = await fetch('/api/auth/logout', { method: 'POST', headers: mismatch, body: '{}' });
+      const verified = await fetch(`/api/backend/v1/dashboard?workspaceId=${workspaceId}`, { headers: { 'x-bookworm-actor': currentActor } });
+      const session = await (await fetch('/api/auth/session')).json();
+      const spaces = await (await fetch('/api/backend/v1/workspaces')).json();
+      return { dashboard: dashboard.status, create: create.status, logout: logout.status, viewerId: (await verified.json()).viewerId,
+        sessionId: session.user.id, workspaceCount: spaces.workspaces.length };
+    }, { oldActor: authorIdentity, currentActor: replacement.user.id, workspaceId: replacement.workspaceId });
+    assert.deepEqual(bound, { dashboard: 409, create: 409, logout: 409, viewerId: replacement.user.id,
+      sessionId: replacement.user.id, workspaceCount: replacement.workspaceCount });
+    await screenshot('account-replacement-dashboard');
+    await accountPage.close();
+    succeeded('real account replacement clears the old dashboard and refuses old-actor reads, creation and logout');
+    stage = 'retailer owner authenticated through actual Auth';
     const { runNativeRetailerBrowser } = await import('./native-author-files-publishing.mjs');
     await runNativeRetailerBrowser({ page, retailer, service, screenshot, onStage: value => {
       stage = value; console.log(`STAGE native browser ${stage}`);

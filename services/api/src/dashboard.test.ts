@@ -109,6 +109,7 @@ test("dashboard returns tenant-scoped operational truth without private job inpu
   assert.equal(response.statusCode, 200);
   assert.match(String(response.headers["cache-control"]), /private/);
   const body = response.json();
+  assert.equal(body.viewerId, "11111111-1111-1111-1111-111111111111");
   assert.equal(body.workspace.role, "owner");
   assert.equal(body.books.length, 2);
   assert.deepEqual(body.summary, { activeBooks: 2, inProductionBooks: 1, publishedBooks: 1, assets: 3, visualAssets: 2, pendingJobs: 4, failedJobs: 4, readyPackages: 1 });

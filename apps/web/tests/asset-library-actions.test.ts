@@ -4,6 +4,7 @@ import vm from "node:vm";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
 import ts from "typescript";
+import { ApiClientError } from "@bookworm/api-client";
 
 const workspace = "11111111-1111-4111-8111-111111111111";
 const otherWorkspace = "22222222-2222-4222-8222-222222222222";
@@ -36,6 +37,7 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
   const assigned: string[] = [];
   const values = new Map<string, string>();
   const window = {
+    addEventListener() {}, removeEventListener() {},
     location: { href: `https://app.example/assets?ws=${workspace}`, search: `?ws=${workspace}`, assign(value: string) { assigned.push(value); } },
     localStorage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) },
     history: { replaceState(_state: unknown, _title: string, next: URL) { window.location.href = next.href; window.location.search = next.search; } },
@@ -46,7 +48,7 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
     listAssets: async () => ({ assets: [file] }), listFolders: async () => ({ folders: [] }), listBooks: async () => ({ books: [] }),
     listAssetVersions: async () => ({ versions: [version] }), getAssetUsage: async () => ({ links: [] }),
     getAssetDownloadUrl: async () => signed(), getAssetAccess: async () => ({ canEdit: true }),
-    listImageGenerationJobs: async () => ({ jobs: [] }), adminAccess: async () => ({ admin: false }), ...overrides,
+    listImageGenerationJobs: async () => ({ jobs: [] }), adminAccess: async () => ({ admin: false, viewerId: workspace }), ...overrides,
   };
   const compile = (source: string) => ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const selection: Record<string, any> = {};
@@ -67,13 +69,22 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
     if (name.endsWith("/AssetBrowser")) return { default: "AssetBrowser" };
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
     if (name.endsWith("/workspace-selection")) return selection;
+    if (name === "@bookworm/api-client") return { ApiClientError };
     throw new Error(`Unexpected test import: ${name}`);
   };
   class Clock extends Date { static now() { return now; } }
   const exports: Record<string, any> = {};
   const path = account ? "apps/web/components/AccountMenu.tsx" : "apps/web/app/assets/page.tsx";
   const source = readFileSync(path, "utf8") + (account ? "" : "\nexport { AssetsPageInner, verifiedDownloadVersion, verifiedDownloadLink };");
-  vm.runInNewContext(compile(source), { exports, require, window, URL, URLSearchParams, Date: Clock, fetch: async () => ({ ok: true, json: async () => ({ user: { email: "author@example.test" } }) }) });
+  let signedOut = false;
+  const fetch = async (url: string) => {
+    if (url === "/api/auth/logout") signedOut = true;
+    return Response.json({ user: { id: workspace, email: "author@example.test" } }, { status: signedOut && url === "/api/auth/session" ? 401 : 200 });
+  };
+  const sessionModule: Record<string, unknown> = {};
+  vm.runInNewContext(compile(readFileSync("apps/web/lib/browser-session.ts", "utf8")), { exports: sessionModule, AbortSignal, fetch });
+  const accountRequire = (name: string) => name.endsWith("/browser-session") ? sessionModule : require(name);
+  vm.runInNewContext(compile(source), { exports, require: accountRequire, window, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, AbortSignal, URL, URLSearchParams, Date: Clock, Headers, fetch });
   const render = () => { stateIndex = 0; refIndex = 0; effects.length = 0; callbacks.length = 0; return account ? exports.AccountMenu() : exports.AssetsPageInner(); };
   const initialize = async () => {
     render(); effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
@@ -188,6 +199,9 @@ test("account settings remains an accessible mobile link and preserves sign-out 
   const link = control(tree, "Account settings and support"); assert(link);
   assert.equal(link.type, "Link"); assert.equal(link.props.href, "/settings/data-rights");
   assert(!link.props.className.split(/\s+/).includes("hidden"));
+  assert.equal(control(tree, "Checking account…").props.disabled, true);
+  h.effects[0](); await settle(); tree = h.render();
+  assert.equal(control(tree, "Sign out").props.disabled, false);
   await control(tree, "Sign out").props.onClick(); await settle();
   assert.deepEqual(h.assigned, ["/login"]);
 });

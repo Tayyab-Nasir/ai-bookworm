@@ -731,6 +731,7 @@ export interface RetailerSalesImport {
 }
 
 export interface DashboardOverview {
+  viewerId: string;
   workspace: { id: string; name: string; organizationId: string; role: string };
   books: Book[];
   summary: {
@@ -886,15 +887,17 @@ export function createClient(opts: ClientOptions) {
     request<T>("POST", path, { "x-service-token": serviceToken }, body);
 
   return {
-    listWorkspaces: () => call<{ workspaces: Workspace[] }>("GET", "/v1/workspaces"),
-    getDashboardOverview: (workspaceId: string) =>
-      call<DashboardOverview>("GET", `/v1/dashboard?workspaceId=${encodeURIComponent(workspaceId)}`),
+    listWorkspaces: (expectedActorId?: string) => call<{ workspaces: Workspace[] }>("GET", "/v1/workspaces", undefined, true,
+      expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
+    getDashboardOverview: (workspaceId: string, expectedActorId?: string) =>
+      call<DashboardOverview>("GET", `/v1/dashboard?workspaceId=${encodeURIComponent(workspaceId)}`, undefined, true,
+        expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
     listRetailerSalesImports: (workspaceId: string) =>
       call<{ imports: RetailerSalesImport[]; summary: RetailerSalesSummary; analytics: RetailerSalesAnalytics }>("GET", `/v1/sales/imports?workspaceId=${encodeURIComponent(workspaceId)}`),
     importRetailerSales: (body: { workspaceId: string; source: RetailerSource; fileName: string; supersedeImportId?: string | null; rows: RetailerSalesRowInput[] }) =>
       call<{ importId: string; rowCount: number; duplicate: boolean }>("POST", "/v1/sales/imports", body, false),
-    createWorkspace: (body: { name: string; orgName?: string; slug?: string }) =>
-      call<Workspace>("POST", "/v1/workspaces", body),
+    createWorkspace: (body: { name: string; orgName?: string; slug?: string }, expectedActorId?: string) =>
+      call<Workspace>("POST", "/v1/workspaces", body, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
     listBooks: (workspaceId: string) =>
       call<{ books: Book[] }>("GET", `/v1/books?workspaceId=${encodeURIComponent(workspaceId)}`),
     createBook: (body: CreateBookRequest) => call<Book>("POST", "/v1/books", body),
@@ -1231,7 +1234,8 @@ export function createClient(opts: ClientOptions) {
     qualifyReferral: (referredUserId: string, serviceToken: string) =>
       callService<{ qualified: boolean; held?: boolean; rewarded?: boolean }>("/v1/referrals/qualify", { referredUserId }, serviceToken),
     // Step 14: admin console (403 for non-admins)
-    adminAccess: () => call<{ admin: boolean }>("GET", "/v1/admin/access"),
+    adminAccess: (expectedActorId?: string, signal?: AbortSignal) => call<{ admin: boolean; viewerId: string }>("GET", "/v1/admin/access", undefined, true,
+      expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}, signal),
     adminModerationReports: (filter: {
       status?: AdminModerationStatus | "all";
       entityType?: "post" | "comment";

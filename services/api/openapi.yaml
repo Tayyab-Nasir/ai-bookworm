@@ -721,15 +721,19 @@ paths:
     get:
       operationId: adminAccess
       summary: Verify platform administrator access
-      description: Requires a verified user listed in ADMIN_USER_IDS; workspace ownership alone is insufficient.
+      description: Requires a verified user listed in ADMIN_USER_IDS; workspace ownership alone is insufficient. Returns the verified viewerId in a private no-store response. An optional x-bookworm-actor header must match the verified caller, never a claimed privilege.
+      parameters:
+        - { name: x-bookworm-actor, in: header, required: false, schema: { type: string, format: uuid } }
       responses:
         "200":
           description: Platform administrator
           content:
             application/json:
-              schema: { type: object, required: [admin], properties: { admin: { type: boolean, const: true } } }
+              schema: { type: object, required: [admin, viewerId], properties: { admin: { type: boolean, const: true }, viewerId: { type: string, format: uuid } } }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /v1/admin/users:
     get:
       operationId: adminListUsers
@@ -3009,6 +3013,7 @@ paths:
       description: Returns the complete visible library, exact asset and execution-queue totals, publishing-package history, paid usage, safe recent jobs, activity, and explicit retailer-sales provenance. The four execution queues are manuscript imports, AI jobs (including narration and translation), publishing jobs, and Google Play audiobook exports. Quote preparation remains in individual studios. Recent jobs are the newest twelve, not a complete active-job inventory. A missing count or incomplete book scope fails unavailable instead of reporting zero. Job navigation never executes or retries work. Historical outputs are not current-file checks, retailer acceptance, or sales. No private job inputs, storage paths, or raw errors are returned.
       parameters:
         - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: x-bookworm-actor, in: header, required: false, description: Refuses account crossover before the handler; browser callers bind both the read and the response to the verified session., schema: { type: string, format: uuid } }
       responses:
         "200":
           description: Current workspace dashboard
@@ -3018,8 +3023,9 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [workspace, books, summary, usage, pipeline, recentJobs, activity, sales]
+                required: [viewerId, workspace, books, summary, usage, pipeline, recentJobs, activity, sales]
                 properties:
+                  viewerId: { type: string, format: uuid, description: Verified authenticated caller, not a workspace owner or a client-supplied identity }
                   workspace: { type: object }
                   books: { type: array, items: { $ref: "#/components/schemas/Book" } }
                   summary: { type: object }
@@ -3056,6 +3062,7 @@ paths:
                   sales: { $ref: "#/components/schemas/RetailerSalesSummary" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /v1/sales/imports:

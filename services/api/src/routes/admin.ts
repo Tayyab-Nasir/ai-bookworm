@@ -36,7 +36,10 @@ const aiJobView = z.object({
 
 export function adminRoutes(app: FastifyInstance) {
   app.adminRoutes((a) => {
-    a.get("/admin/access", async () => ({ admin: true }));
+    a.get("/admin/access", async (req, reply) => {
+      reply.header("cache-control", "private, no-store");
+      return { admin: true, viewerId: req.userId };
+    });
     // Platform-wide community reports. This route intentionally selects only
     // community data and omits reporter/author identifiers and private books.
     a.get("/admin/moderation/reports", async (req, reply) => {

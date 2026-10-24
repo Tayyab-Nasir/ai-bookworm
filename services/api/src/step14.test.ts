@@ -146,7 +146,8 @@ test("admin routes: 403 for non-admin, 401 without token", async () => {
   const nonAdmin = await app.inject({ method: "GET", url: "/v1/admin/users", headers: as("good") });
   assert.equal(nonAdmin.statusCode, 403);
   const adminAccess = await app.inject({ method: "GET", url: "/v1/admin/access", headers: as("admin") });
-  assert.deepEqual(adminAccess.json(), { admin: true });
+  assert.deepEqual(adminAccess.json(), { admin: true, viewerId: "admin-1" });
+  assert.equal(adminAccess.headers["cache-control"], "private, no-store");
   const deniedAccess = await app.inject({ method: "GET", url: "/v1/admin/access", headers: as("good") });
   assert.equal(deniedAccess.statusCode, 403);
   await app.close();

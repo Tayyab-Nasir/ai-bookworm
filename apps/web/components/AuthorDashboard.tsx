@@ -8,6 +8,7 @@ import { apiClient } from "./api";
 import { AuthorHeader } from "./AuthorShell";
 import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../lib/workspace-selection";
 import { jobLink } from "../lib/job-link";
+import { readBrowserSession } from "../lib/browser-session";
 
 function statusLabel(status: Book["status"]) {
   return status.replace("_", " ");
@@ -53,12 +54,19 @@ export default function AuthorDashboard() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("My publishing studio");
   const currentLoad = useRef<object | null>(null);
   const requestedWorkspace = useRef<string | null>(null);
+  const loadedAccount = useRef<string | null>(null);
+  const formAccount = useRef<string | null>(null);
+  const createFlight = useRef<object | null>(null);
+  const mounted = useRef(true);
 
   const load = useCallback(async (requestedId?: string) => {
+    if (!mounted.current) return;
     const request = {};
     currentLoad.current = request;
+    loadedAccount.current = null;
     const current = () => currentLoad.current === request;
     if (requestedId !== undefined) requestedWorkspace.current = requestedId;
     if (requestedWorkspace.current === null) {
@@ -71,10 +79,29 @@ export default function AuthorDashboard() {
     setBooks([]);
     setOverview(null);
     try {
-      const spaces = await api.listWorkspaces();
+      const account = await readBrowserSession();
+      if (!current()) return;
+      const spaces = await api.listWorkspaces(account.id);
+      if (!current()) return;
+      // Keep unavailable explicit selections recoverable, but do not expose even
+      // workspace names until the response is bound to the current account.
+      let selectionError: unknown;
+      let selected: Workspace | null = null;
+      try { selected = resolveWorkspace(spaces.workspaces, requestedWorkspace.current); }
+      catch (reason) { selectionError = reason; }
+      const result = selected ? await api.getDashboardOverview(selected.id, account.id) : null;
+      if (!current()) return;
+      if (result && (result.viewerId !== account.id || result.workspace.id !== selected!.id
+        || result.books.some((book) => book.workspace_id !== selected!.id))) {
+        throw new Error("Dashboard response does not match the requested account and workspace. Reload before continuing.");
+      }
+      await readBrowserSession(account.id);
       if (!current()) return;
       setWorkspaces(spaces.workspaces);
-      const selected = resolveWorkspace(spaces.workspaces, requestedWorkspace.current);
+      if (selectionError) throw selectionError;
+      loadedAccount.current = account.id;
+      if (formAccount.current !== account.id) setWorkspaceName("My publishing studio");
+      formAccount.current = account.id;
       if (!selected) {
         requestedWorkspace.current = null;
         return;
@@ -82,13 +109,8 @@ export default function AuthorDashboard() {
 
       requestedWorkspace.current = selected.id;
       if (requestedId !== undefined) replaceWorkspaceQuery(selected.id);
-      const result = await api.getDashboardOverview(selected.id);
-      if (!current()) return;
-      if (result.workspace.id !== selected.id || result.books.some((book) => book.workspace_id !== selected.id)) {
-        throw new Error("Dashboard response does not match the requested workspace. Reload before continuing.");
-      }
       setWorkspace(selected);
-      setBooks(result.books);
+      setBooks(result!.books);
       setOverview(result);
       setError(null);
       rememberWorkspace(spaces.workspaces, selected.id);
@@ -102,21 +124,54 @@ export default function AuthorDashboard() {
   }, [api]);
 
   async function createWorkspace(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setCreating(true); setError(null);
+    event.preventDefault();
+    const actor = loadedAccount.current;
+    if (!actor || createFlight.current) return;
+    const flight = {};
+    createFlight.current = flight;
+    setCreating(true); setError(null);
     const request = currentLoad.current;
-    const values = new FormData(event.currentTarget);
+    const current = () => mounted.current && currentLoad.current === request && createFlight.current === flight;
+    const name = workspaceName.trim();
+    let dispatched = false;
     try {
-      const created = await api.createWorkspace({ name: String(values.get("name") ?? "").trim() });
-      if (currentLoad.current !== request) return;
-      setCreating(false);
+      await readBrowserSession(actor);
+      if (!current()) return;
+      dispatched = true;
+      const created = await api.createWorkspace({ name }, actor);
+      if (!current()) return;
+      await readBrowserSession(actor);
+      if (!current()) return;
       await load(created.id);
-    } catch (reason) { if (currentLoad.current === request) setError(reason instanceof Error ? reason.message : "Workspace creation failed."); }
-    finally { if (currentLoad.current === request) setCreating(false); }
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "Workspace creation failed. Reload before trying again."); }
+    finally {
+      // A focus refresh invalidates the old UI confirmation, not an accepted
+      // server write. Release this flight without unlocking a newer request.
+      if (createFlight.current === flight) {
+        createFlight.current = null;
+        if (mounted.current) {
+          setCreating(false);
+          // A superseding focus read may have finished before the write did.
+          // Confirm the *current* account's library, never adopt the old reply
+          // or expose an empty form that can immediately create a duplicate.
+          if (dispatched && currentLoad.current !== request) void load();
+        }
+      }
+    }
   }
 
   useEffect(() => {
+    mounted.current = true;
     void load();
-    return () => { currentLoad.current = null; };
+    const focus = () => { void load(); };
+    const visible = () => { if (document.visibilityState === "visible") void load(); };
+    window.addEventListener("focus", focus);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      mounted.current = false; currentLoad.current = null; loadedAccount.current = null; createFlight.current = null;
+      window.removeEventListener("focus", focus);
+      document.removeEventListener("visibilitychange", visible);
+    };
   }, [load]);
 
   const createHref = workspace?.id ? `/books/new?ws=${encodeURIComponent(workspace.id)}` : "/books/new";
@@ -167,7 +222,7 @@ export default function AuthorDashboard() {
         <p className="mt-2 text-sm leading-6 text-[#aaa]">This is your private home for manuscripts, images, collaborators, and publishing projects.</p>
         <label htmlFor="workspaceName" className="mt-5 block text-sm">Workspace name</label>
         <div className="mt-2 flex flex-col gap-3 sm:flex-row">
-          <input id="workspaceName" name="name" required maxLength={120} defaultValue="My publishing studio" className="min-h-12 flex-1 rounded-xl border border-white/15 bg-black px-4" />
+          <input id="workspaceName" name="name" required maxLength={120} value={workspaceName} onChange={(event) => setWorkspaceName(event.target.value)} className="min-h-12 flex-1 rounded-xl border border-white/15 bg-black px-4" />
           <button disabled={creating} className="rounded-full bg-white px-6 py-3 font-semibold text-black disabled:opacity-50">{creating ? "Creating…" : "Create workspace"}</button>
         </div>
       </form>}

@@ -47,6 +47,40 @@ const invoke = (action: string, body: unknown, cookie?: string) => POST(request(
 const cookies = (response: NextResponse) => response.cookies.getAll().map(({ name, value }) => `${name}=${value}`).join("; ");
 const login = () => invoke("login", { email: user.email, password: "fixture-password" });
 
+test("workspace reads, creation and admin access preserve optional actor fences before forwarding", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const upstream = "http://api.example.test/v1/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  for (const [path, method, handler] of [
+    [["v1", "workspaces"], "GET", backendGet], [["v1", "workspaces"], "POST", backendPost],
+    [["v1", "dashboard"], "GET", backendGet], [["v1", "admin", "access"], "GET", backendGet],
+  ] as const) {
+    for (const [actor, status] of [[undefined, 200], ["", 422], ["invalid", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor === undefined ? {} : { "x-bookworm-actor": actor }) },
+      }), { params: Promise.resolve({ path: [...path] }) });
+      assert.equal(response.status, status);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + (status === 200 ? 1 : 0));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), actor ?? null);
+      assert.match(response.headers.get("cache-control")!, /no-store/);
+    }
+  }
+});
+
+test("actor-bound logout refuses a different account without invoking sign-out", async () => {
+  const signedIn = await login();
+  for (const [actor, status] of [["invalid", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+    const before = calls.filter(call => new URL(call.url).pathname === "/auth/v1/logout").length;
+    const input = request("logout", {}, cookies(signedIn)); input.headers.set("x-bookworm-actor", actor);
+    const response = await POST(input, { params: Promise.resolve({ action: "logout" }) });
+    assert.equal(response.status, status);
+    assert.equal(calls.filter(call => new URL(call.url).pathname === "/auth/v1/logout").length, before + (status === 200 ? 1 : 0));
+    if (status !== 200) assert.equal(response.cookies.getAll().some(cookie => cookie.maxAge === 0), false);
+  }
+});
+
 test("source passage proxy requires a current session and same-origin request and keeps text private", async () => {
   const signedIn = await login(), authProvider = provider;
   const path = ["v1", "books", "88888888-8888-4888-8888-888888888888", "search", "evidence"];
