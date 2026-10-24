@@ -26,6 +26,8 @@ import { publishingRoutes } from "./routes/publishing.js";
 import { readerRoutes } from "./routes/reader.js";
 import { savedPrintRoutes } from "./routes/saved-print.js";
 import { accountRoutes } from "./routes/account.js";
+import { aiConnectionRoutes } from "./routes/ai-connections.js";
+import { isAiConnectionPath, safeRequestLog } from "./lib/redact.js";
 import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
 import { metadataQuoteRoutes } from "./routes/metadata-quotes.js";
 import { aiReviewQuoteRoutes } from "./routes/ai-review-quotes.js";
@@ -48,12 +50,18 @@ export async function buildApp(
   opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner; enableLegacyMetadataGenerationForTests?: boolean; enableLegacyAiReviewForTests?: boolean } = {},
 ): Promise<FastifyInstance> {
   const env = loadEnv();
-  const app = Fastify({ logger: { level: env.LOG_LEVEL } });
+  const app = Fastify({ logger: { level: env.LOG_LEVEL, serializers: { req: safeRequestLog } } });
+
+  app.addHook("onRequest", async (req, reply) => {
+    if (!isAiConnectionPath(req.url)) return;
+    reply.header("cache-control", "private, no-store");
+    reply.header("pragma", "no-cache");
+  });
 
   // Scrub logs (MASTER-BUILD-SPEC 17): never log manuscript text, tokens,
   // secrets, signed URLs. Applies to Fastify's own req/res log lines.
   app.addHook("onSend", async (req) => {
-    req.log.info({ req: redactObject({ method: req.method, url: req.url, headers: req.headers }) }, "request");
+    req.log.info({ req: isAiConnectionPath(req.url) ? safeRequestLog(req) : redactObject({ method: req.method, url: req.url, headers: req.headers }) }, "request");
   });
 
   healthRoutes(app, supabaseFactory);
@@ -94,6 +102,7 @@ export async function buildApp(
     communityRoutes(v1);
     referralRoutes(v1);
     accountRoutes(v1);
+    aiConnectionRoutes(v1);
     adminRoutes(v1);
     stripeWebhookRoutes(v1, opts); // own JSON parser keeps raw body for sig check
   }, { prefix: "/v1" });

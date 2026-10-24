@@ -311,6 +311,9 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await expect(page.locator('.tiptap')).toContainText('Captain');
     succeeded('workspace pipeline matches all four native queues and opens saved import without retrying it');
 
+    stage = 'private AI connection lifecycle';
+    const { runNativeAiConnections } = await import('./native-ai-connections.mjs');
+    await runNativeAiConnections({ page, setup, service, webOrigin, apiOrigin, userId: user.id, screenshot });
     stage = 'logout and private session removal';
     await page.goto(`${webOrigin}/dashboard`);
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();

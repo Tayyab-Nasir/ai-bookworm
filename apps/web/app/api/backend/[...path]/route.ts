@@ -35,7 +35,8 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       || (path[3] === "title-changes" && ((path.length === 5 && ["GET", "PUT"].includes(request.method))
         || (path.length === 6 && path[5] === "close" && request.method === "POST")))
     );
-    const boundRequest = manualBible || packageRequest || manualSave || chapterTitle || request.headers.has("x-bookworm-actor");
+    const aiConnection = path[1] === "account" && path[2] === "ai-connections";
+    const boundRequest = aiConnection || manualBible || packageRequest || manualSave || chapterTitle || request.headers.has("x-bookworm-actor");
     const actor = boundRequest ? request.headers.get("x-bookworm-actor") : null;
     if (boundRequest && (!actor || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor))) {
       return auth.finish(authError(422, "The original account identity is required for this saved request."));
@@ -52,6 +53,9 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new AuthConfigurationError("Invalid API_URL configuration.");
     const web = new URL(appOrigin(request));
     const loopback = (url: URL) => ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    if (aiConnection && base.protocol !== "https:" && !loopback(base)) {
+      throw new AuthConfigurationError("AI key connections require HTTPS to the workspace service, except on local loopback.");
+    }
     const port = (url: URL) => url.port || (url.protocol === "https:" ? "443" : "80");
     if (base.origin === web.origin || (loopback(base) && loopback(web) && port(base) === port(web))) {
       throw new AuthConfigurationError("The workspace service must use a separate API server and port, not the Bookworm web server.");

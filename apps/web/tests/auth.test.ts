@@ -81,6 +81,33 @@ test("actor-bound logout refuses a different account without invoking sign-out",
   }
 });
 
+test("AI connection reads, writes and recovery always require the original actor at the cookie proxy", async () => {
+  process.env.API_URL = "https://api.example.test";
+  const signedIn = await login(), authProvider = provider, upstream = "https://api.example.test/v1/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  for (const [suffix, method, handler] of [[[], "GET", backendGet], [["openai"], "PUT", backendPut], [["openai"], "DELETE", backendDelete], [["openai", "check"], "POST", backendPost], [["openai", "close"], "POST", backendPost]] as const) {
+    const path = ["v1", "account", "ai-connections", ...suffix];
+    for (const [actor, status] of [[undefined, 422], ["invalid", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, { method,
+        headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) } }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, status); const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + (status === 200 ? 1 : 0));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+      assert.match(response.headers.get("cache-control")!, /no-store/);
+    }
+  }
+});
+
+test("AI keys are never forwarded to a non-loopback plaintext API service", async () => {
+  const signedIn = await login();
+  const response = await backendPut(new NextRequest("http://localhost:3000/api/backend/v1/account/ai-connections/openai", { method: "PUT",
+    headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", "x-bookworm-actor": user.id, "content-type": "application/json" },
+    body: JSON.stringify({ apiKey: "synthetic-private-api-key" }) }), { params: Promise.resolve({ path: ["v1", "account", "ai-connections", "openai"] }) });
+  assert.equal(response.status, 503); assert.match((await response.json()).error.message, /require HTTPS/);
+  assert.equal(calls.some(call => new URL(call.url).hostname === "api.example.test"), false);
+});
+
 test("source passage proxy requires a current session and same-origin request and keeps text private", async () => {
   const signedIn = await login(), authProvider = provider;
   const path = ["v1", "books", "88888888-8888-4888-8888-888888888888", "search", "evidence"];

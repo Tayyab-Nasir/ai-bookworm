@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 111 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 112 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -16,7 +16,7 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
-const targetEnd = '20261023153000_chapter_title_changes.sql';
+const targetEnd = '20261024020000_ai_connection_vault.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -109,7 +109,8 @@ async function expectedReadingTextGuard(migration, fixture, historical, signatur
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 111, 'This reviewed rehearsal pins the 45 -> 111 target; review before extending');
+  assert.equal(names.length, 112, 'This reviewed rehearsal pins the 45 -> 112 target; review before extending');
+  assert.equal(names[110], '20261023153000_chapter_title_changes.sql');
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
@@ -232,6 +233,10 @@ try {
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'New reading projections leave historical versions and receipts untouched');
   console.log('PASS populated upgrade reading projection: table cells, authoritative empty text, Unicode whitespace, unchanged canonical content and historical rollback');
   console.log('PASS preserved historical projections, tenant/role/quarantine isolation, tenant-scoped profiles/ledger, retired RPCs, service-only pinned RPCs, rich citations, legacy-unverified Stripe receipts and zero unentitled image capacity');
+  step = 'private credential vault permissions and recovery after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/ai-connection-vault.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Credential vault creation and rollback probes leave all historical data unchanged');
+  console.log('PASS populated upgrade credential vault: no inherited credentials, owner RLS, preserved settlement schema grants, encrypted-only RPCs, CAS, revocation, closure and rollback');
   step = 'existing synthetic paid quote lifecycle helpers on upgraded schema';
   await verifyPaidQuoteFixtures(async statement => {
     const results = await db.exec(statement);

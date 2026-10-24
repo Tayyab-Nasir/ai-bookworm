@@ -156,7 +156,7 @@ export default function DataRightsPage() {
               Requests enter a private review queue. Nothing is deleted automatically from this screen.
             </p>
           </div>
-          <Link href="/settings/password" className={buttonStyle}>Change password</Link>
+          <div className="flex flex-wrap gap-2"><Link href="/settings/ai" className={buttonStyle}>AI connections</Link><Link href="/settings/password" className={buttonStyle}>Change password</Link></div>
         </div>
 
         <nav aria-label="Data rights sections" className="mt-6 flex flex-wrap gap-2">

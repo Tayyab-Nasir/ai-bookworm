@@ -1,9 +1,11 @@
 # Customer-owned AI connections
 
-Status: requested and source-audited, **not implemented or enabled**. Reviewed
-2026-10-24 UTC. This document is a build contract, not a claim that credentials
-can already be saved, that every subscription is usable, or that paid provider
-acceptance passed. Stripe remains deferred; mobile remains parked.
+Status: encrypted credential storage/settings are implemented in the local
+candidate; acceptance and activation are tracked in
+`docs/AI_CONNECTION_VAULT_CHECKPOINT.md`. **Customer-key generation routing and
+subscription connections are not implemented or enabled.** Reviewed 2026-10-24
+UTC. This is a build contract, not evidence that every subscription is usable or
+paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
 
 ## Three separate billing/identity modes
 
@@ -56,8 +58,11 @@ requested on the user's behalf during the review.
 - `services/api/src/lib/quoted-*-worker.ts`, quote routes and SQL job functions:
   reservation, immutable request identity, leased execution and unknown-outcome
   recovery must be retained when adding a payer/credential selector.
-- New account-bound dashboard/proxy checks are a foundation, not sufficient
-  credential-vault or provider-routing implementation.
+- `services/api/src/lib/ai-connection-vault.ts`, account AI connection routes,
+  the dedicated non-public `bookworm_credentials` schema and `/settings/ai`
+  implement credential management. The private decryption helper is not a
+  job authorization check and has no HTTP reveal/resolver route. Provider
+  routing still requires the payer-bound worker contract below.
 
 ## Required implementation sequence
 

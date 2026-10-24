@@ -29,6 +29,10 @@ jobs:
         run: node node_modules/playwright/cli.js install --with-deps chromium
       - name: Verify inert reader and browser-worker isolation
         run: node tests/e2e/native-author-files-browser-guard.mjs
+      - name: Verify private AI connection recovery and account changes in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/ai-connections-mounted.mjs
       - name: Verify inline previews and attachment downloads in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium

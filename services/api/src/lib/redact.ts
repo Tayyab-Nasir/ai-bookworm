@@ -3,10 +3,20 @@
 const SENSITIVE_KEYS = new Set([
   "text", "content", "manuscript", "body", "token", "secret", "password",
   "authorization", "cookie", "x-service-token", "signed_url", "signedUrl",
-  "upload_url", "uploadUrl", "api_key", "apiKey",
+  "upload_url", "uploadurl", "signedurl", "api_key", "apikey", "ciphertext", "auth_tag", "authtag", "keyring", "ai_connection_vault_keyring_json",
 ]);
 
 const SIGNED_URL_RE = /[?&](X-Amz-Signature|Signature|token|sig)=/i;
+
+export function isAiConnectionPath(url: string): boolean {
+  return url.split("?", 1)[0].startsWith("/v1/account/ai-connections");
+}
+
+/** Runs before Fastify's incoming-request log, including malformed JSON. */
+export function safeRequestLog(req: { method?: string; url?: string }): Record<string, unknown> {
+  const url = req.url ?? "";
+  return { method: req.method, url: isAiConnectionPath(url) ? "/v1/account/ai-connections/[redacted]" : url };
+}
 
 export function redactValue(key: string, value: unknown): unknown {
   if (SENSITIVE_KEYS.has(key.toLowerCase())) return "[redacted]";

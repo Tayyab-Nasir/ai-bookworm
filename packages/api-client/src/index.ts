@@ -4,6 +4,7 @@
 import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task, Approval, WorkspaceMember, Edition, BookBibleItem as CanonicalBookBibleItem } from "@bookworm/types";
 import type { BookNode } from "@bookworm/book-model";
 import { parseBookOverview } from "@bookworm/api-client/book-overview";
+import { parseAiConnections, parseAiConnectionMutation, parseAiConnectionReceipt, type AiProvider, type AiConnectionMutation, type AiConnectionPending } from "@bookworm/api-client/ai-connections";
 export { parseBookOverview, type BookOverview } from "@bookworm/api-client/book-overview";
 
 export interface ChapterDocument { chapterId: string; version: number; nodes: BookNode[] }
@@ -887,6 +888,20 @@ export function createClient(opts: ClientOptions) {
     request<T>("POST", path, { "x-service-token": serviceToken }, body);
 
   return {
+    recoverAiConnection: (pending: AiConnectionPending, expectedActor: string, close = false, signal?: AbortSignal) => {
+      const { provider, ...body } = pending;
+      return call<unknown>("POST", `/v1/account/ai-connections/${encodeURIComponent(provider)}/${close ? "close" : "check"}`, body, false, { "x-bookworm-actor": expectedActor }, signal)
+        .then(value => parseAiConnectionReceipt(value, expectedActor, pending, close));
+    },
+    listAiConnections: (expectedActor: string, signal?: AbortSignal) =>
+      call<unknown>("GET", "/v1/account/ai-connections", undefined, false, { "x-bookworm-actor": expectedActor }, signal)
+        .then(value => parseAiConnections(value, expectedActor)),
+    saveAiConnection: (provider: AiProvider, body: AiConnectionMutation & { apiKey: string }, expectedActor: string, signal?: AbortSignal) =>
+      call<unknown>("PUT", `/v1/account/ai-connections/${encodeURIComponent(provider)}`, body, false, { "x-bookworm-actor": expectedActor }, signal)
+        .then(value => parseAiConnectionMutation(value, expectedActor, provider, body, "save")),
+    revokeAiConnection: (provider: AiProvider, body: AiConnectionMutation, expectedActor: string, signal?: AbortSignal) =>
+      call<unknown>("DELETE", `/v1/account/ai-connections/${encodeURIComponent(provider)}`, body, false, { "x-bookworm-actor": expectedActor }, signal)
+        .then(value => parseAiConnectionMutation(value, expectedActor, provider, body, "revoke")),
     listWorkspaces: (expectedActorId?: string) => call<{ workspaces: Workspace[] }>("GET", "/v1/workspaces", undefined, true,
       expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
     getDashboardOverview: (workspaceId: string, expectedActorId?: string) =>

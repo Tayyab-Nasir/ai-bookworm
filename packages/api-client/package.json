@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./book-overview": "./src/book-overview.ts",
+    "./ai-connections": "./src/ai-connections.ts",
     "./email": "./src/email.ts"
   },
   "scripts": {

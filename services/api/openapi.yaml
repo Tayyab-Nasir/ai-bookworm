@@ -3513,6 +3513,114 @@ paths:
         "201": { description: Support request created }
         "401": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /v1/account/ai-connections:
+    get:
+      tags: [v1]
+      operationId: listAiConnections
+      summary: Read the signed-in user's masked AI key metadata
+      description: Private no-store response. Saved does not imply valid, funded or usable for generation. There is no key reveal endpoint.
+      parameters: [{ $ref: "#/components/parameters/AiConnectionActor" }]
+      responses:
+        "200":
+          description: Owner-only metadata and storage availability
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [viewerId, canSave, generationAvailable, connections]
+                properties:
+                  viewerId: { type: string, format: uuid }
+                  canSave: { type: boolean }
+                  generationAvailable: { type: boolean, enum: [false] }
+                  connections: { type: array, maxItems: 5, items: { $ref: "#/components/schemas/AiConnection" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/account/ai-connections/{provider}:
+    parameters:
+      - { $ref: "#/components/parameters/AiConnectionActor" }
+      - { $ref: "#/components/parameters/AiConnectionProvider" }
+    put:
+      tags: [v1]
+      operationId: saveAiConnection
+      summary: Save or replace an encrypted API key with revision checking
+      description: No provider call or generation charge. Uses an independent server encryption key and durable operation ID. Never replay plaintext after an uncertain response; use check/close. Body limit 8192 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [connectionId, operationId, expectedRevision, apiKey]
+              properties:
+                connectionId: { type: string, format: uuid }
+                operationId: { type: string, format: uuid }
+                expectedRevision: { type: integer, minimum: 1, maximum: 2147483646, nullable: true }
+                apiKey: { type: string, minLength: 16, maxLength: 4096, writeOnly: true, pattern: '^[A-Za-z0-9_./+=-]+$' }
+      responses:
+        "200": { $ref: "#/components/responses/AiConnectionMutation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [v1]
+      operationId: revokeAiConnection
+      summary: Remove the saved encrypted key and advance its revision
+      description: Keeps safe metadata/history. Does not revoke the key at its provider or cancel already accepted provider work. Works without the encryption key ring.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AiConnectionIntent" }
+      responses:
+        "200": { $ref: "#/components/responses/AiConnectionMutation" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/account/ai-connections/{provider}/check:
+    post:
+      tags: [v1]
+      operationId: checkAiConnectionOperation
+      summary: Read-only recovery of a key save/removal receipt
+      description: Opaque intent is sent in a POST body to keep it out of URL history. No key, provider call or mutation. not_found is not proof that a delayed save cannot arrive.
+      parameters: [{ $ref: "#/components/parameters/AiConnectionActor" }, { $ref: "#/components/parameters/AiConnectionProvider" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AiConnectionRecovery" }
+      responses:
+        "200": { $ref: "#/components/responses/AiConnectionRecovery" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/account/ai-connections/{provider}/close:
+    post:
+      tags: [v1]
+      operationId: closeAiConnectionOperation
+      summary: Close an unresolved key change without resending a key
+      description: Serializes with the original write. Returns an existing receipt or inserts a closure that refuses any late write with that operation ID. Does not undo a completed save/removal.
+      parameters: [{ $ref: "#/components/parameters/AiConnectionActor" }, { $ref: "#/components/parameters/AiConnectionProvider" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AiConnectionRecovery" }
+      responses:
+        "200": { $ref: "#/components/responses/AiConnectionRecovery" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/account/data-requests:
     get:
       tags: [v1]
@@ -3803,6 +3911,17 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
 components:
   parameters:
+    AiConnectionActor:
+      name: X-Bookworm-Actor
+      in: header
+      required: true
+      description: Expected signed-in user UUID, verified by proxy and API. Does not supply authority. Missing is 422; account mismatch is 409.
+      schema: { type: string, format: uuid }
+    AiConnectionProvider:
+      name: provider
+      in: path
+      required: true
+      schema: { type: string, enum: [openai, anthropic, google, openrouter, xai] }
     ManualChapterActor:
       name: X-Bookworm-Actor
       in: header
@@ -3835,6 +3954,36 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    AiConnection:
+      type: object
+      additionalProperties: false
+      required: [id, provider, revision, status, keySuffix, lastOperationId, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        provider: { type: string, enum: [openai, anthropic, google, openrouter, xai] }
+        revision: { type: integer, minimum: 1 }
+        status: { type: string, enum: [saved, revoked] }
+        keySuffix: { type: string, nullable: true, minLength: 4, maxLength: 4 }
+        lastOperationId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    AiConnectionIntent:
+      type: object
+      additionalProperties: false
+      required: [connectionId, operationId, expectedRevision]
+      properties:
+        connectionId: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        expectedRevision: { type: integer, nullable: true, minimum: 1, maximum: 2147483646 }
+    AiConnectionRecovery:
+      type: object
+      additionalProperties: false
+      required: [connectionId, operationId, expectedRevision, action]
+      properties:
+        connectionId: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        expectedRevision: { type: integer, nullable: true, minimum: 1, maximum: 2147483646 }
+        action: { type: string, enum: [save, revoke] }
     ChapterTitleChange:
       type: object
       additionalProperties: false
@@ -5189,6 +5338,36 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
   responses:
+    AiConnectionMutation:
+      description: Masked metadata for the confirmed revision and operation
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [viewerId, connection]
+            properties:
+              viewerId: { type: string, format: uuid }
+              connection: { $ref: "#/components/schemas/AiConnection" }
+    AiConnectionRecovery:
+      description: Safe operation receipt; no credential, ciphertext or key fingerprint
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [viewerId, receipt]
+            properties:
+              viewerId: { type: string, format: uuid }
+              receipt:
+                type: object
+                required: [connectionId, operationId, expectedRevision, provider, action, status, revision]
+                properties:
+                  connectionId: { type: string, format: uuid }
+                  operationId: { type: string, format: uuid }
+                  expectedRevision: { type: integer, nullable: true }
+                  provider: { type: string, enum: [openai, anthropic, google, openrouter, xai] }
+                  action: { type: string, enum: [save, revoke] }
+                  status: { type: string, enum: [not_found, closed, saved, revoked] }
+                  revision: { type: integer, nullable: true }
     ChapterTitleChange:
       description: Exact private rename result; a missing result must be recovered or explicitly closed
       headers: { Cache-Control: { schema: { type: string, const: 'private, no-store' } } }
