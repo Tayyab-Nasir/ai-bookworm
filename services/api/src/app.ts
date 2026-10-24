@@ -27,6 +27,7 @@ import { readerRoutes } from "./routes/reader.js";
 import { savedPrintRoutes } from "./routes/saved-print.js";
 import { accountRoutes } from "./routes/account.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
+import { customerAiRoutes, type CustomerAiPreparation } from "./routes/customer-ai.js";
 import { isAiConnectionPath, safeRequestLog } from "./lib/redact.js";
 import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
 import { metadataQuoteRoutes } from "./routes/metadata-quotes.js";
@@ -47,7 +48,7 @@ import type { AssetMalwareScanner } from "./lib/asset-scanner.js";
 
 export async function buildApp(
   supabaseFactory: SupabaseFactory = defaultSupabaseFactory,
-  opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner; enableLegacyMetadataGenerationForTests?: boolean; enableLegacyAiReviewForTests?: boolean } = {},
+  opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner; customerAiPreparation?: CustomerAiPreparation; enableLegacyMetadataGenerationForTests?: boolean; enableLegacyAiReviewForTests?: boolean } = {},
 ): Promise<FastifyInstance> {
   const env = loadEnv();
   const app = Fastify({ logger: { level: env.LOG_LEVEL, serializers: { req: safeRequestLog } } });
@@ -103,6 +104,7 @@ export async function buildApp(
     referralRoutes(v1);
     accountRoutes(v1);
     aiConnectionRoutes(v1);
+    customerAiRoutes(v1, { preparation: opts.customerAiPreparation });
     adminRoutes(v1);
     stripeWebhookRoutes(v1, opts); // own JSON parser keeps raw body for sig check
   }, { prefix: "/v1" });

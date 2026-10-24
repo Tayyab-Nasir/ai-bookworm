@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 115 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 116 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -17,7 +17,7 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
 const guardedCustomerJobs = '20261024040000_customer_ai_jobs.sql';
-const targetEnd = '20261024060000_customer_ai_worker_context.sql';
+const targetEnd = '20261024070000_customer_ai_preparations.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -135,7 +135,7 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 115, 'This reviewed rehearsal pins the 45 -> 115 target; review before extending');
+  assert.equal(names.length, 116, 'This reviewed rehearsal pins the 45 -> 116 target; review before extending');
   assert.equal(names[110], '20261023153000_chapter_title_changes.sql');
   assert.equal(names[111], '20261024020000_ai_connection_vault.sql');
   assert.equal(names[112], guardedCustomerJobs);
@@ -292,6 +292,12 @@ try {
   assert.deepEqual((await db.query('select to_jsonb(r) as value from public.ai_runs r where id=$1', [historicalRun])).rows[0].value, historicalRunAfter);
   assert.equal((await db.query("select count(*)::int as n from public.ai_runs where cost_payer='customer'")).rows[0].n, 0);
   console.log('PASS populated upgrade customer completion: historical costs unchanged, unknown customer cost distinct from zero, five-provider/six-agent receipt recovery, atomic rollback, immutable outcomes and no inherited customer activity');
+  step = 'customer durable preparation and exact confirmation after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/customer-ai-preparations.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Customer preparation and recovery probes preserve every historical projection');
+  assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_preparations')).rows[0].n, 0);
+  assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_policies')).rows[0].n, 0);
+  console.log('PASS populated upgrade durable customer requests: exact consent, one fee/job, status after revocation, no source exposure, expiry, closure, receipt-only recovery and rate limits; no policy seeded');
   step = 'existing synthetic paid quote lifecycle helpers on upgraded schema';
   await verifyPaidQuoteFixtures(async statement => {
     const results = await db.exec(statement);

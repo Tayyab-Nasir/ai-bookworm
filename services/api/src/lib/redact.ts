@@ -9,7 +9,8 @@ const SENSITIVE_KEYS = new Set([
 const SIGNED_URL_RE = /[?&](X-Amz-Signature|Signature|token|sig)=/i;
 
 export function isAiConnectionPath(url: string): boolean {
-  return url.split("?", 1)[0].startsWith("/v1/account/ai-connections");
+  const path = url.split("?", 1)[0];
+  return path.startsWith("/v1/account/ai-connections") || path.startsWith("/v1/account/customer-ai");
 }
 
 /** Runs before Fastify's incoming-request log, including malformed JSON. */

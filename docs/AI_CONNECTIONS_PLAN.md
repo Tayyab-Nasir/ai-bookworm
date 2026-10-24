@@ -13,8 +13,10 @@ non-secret context accessor and receipt-only recovery are in
 non-billable actual-prompt hashing are in `docs/CUSTOMER_AI_PREPARATION.md`.
 Explicit database authorization, durable receipt transport and unmounted private
 service composition are in `docs/CUSTOMER_AI_DATABASE.md`.
-**Queue/public routing and subscription connections
-are not implemented or enabled.** Reviewed 2026-10-24
+Durable prepare/confirm/status/cancel/receipt recovery routes are in
+`docs/CUSTOMER_AI_CONFIRMATION.md`; creation requires explicit preparation
+configuration and is default-off. **Queue activation, author-facing customer
+generation UI and subscription connections remain pending.** Reviewed 2026-10-24
 UTC. This is a build contract, not evidence that every subscription is usable or
 paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
 
@@ -39,22 +41,49 @@ cost charge, automatic funding-source fallback or subscription quota bypass.
 
 | Provider | API-key target | Consumer-plan connection for this hosted commercial app |
 | --- | --- | --- |
-| OpenAI | Supported BYOK target | Official Sign in with ChatGPT plan usage exists, but commercial access is a limited trial for selected partners. Bookworm eligibility/client approval is not established. A Pro subscription is not credit for an `sk-` API key. |
-| Anthropic / Claude | Supported BYOK target | Do not offer our own Claude.ai login or route Pro/Max tokens through our gateway. Anthropic separately permits running its unmodified Claude Code product under specific conditions; that is not permission to treat its OAuth credentials as a general API key. No such integration is enabled. |
-| Google / Gemini | Supported BYOK target | The official guidance found for third-party apps directs them to Gemini API / Vertex AI, not consumer Google AI / Antigravity subscription pass-through. Google social login already used for Bookworm identity does not grant model access. |
-| xAI / Grok | Supported BYOK target | API billing is documented as separate from Grok billing. No public subscription authorization contract suitable for Bookworm has been verified. Do not advertise plan reuse based on shared account login. |
+| OpenAI | Supported BYOK target | Official Sign in with ChatGPT can authorize eligible Plus/Pro plan usage in participating apps. Commercial access requires a selected-partner client registration; Bookworm approval is not established. Public OSS/local registration is not permission for this hosted commercial service. A Pro subscription does not fund an `sk-` API key. |
+| Anthropic / Claude | Supported BYOK target | Current guidance directs developers building for others to API keys or supported cloud providers. Anthropic may permit particular third-party tools at its discretion, with usage-credit charges rather than included subscription limits. No Bookworm permission has been verified. Do not route Claude Code/Claude.ai tokens through our gateway. |
+| Google / Gemini | Supported BYOK target | Some Google AI plans include eligible Cloud credits that can help fund Gemini API use through the customer's billing project, subject to redemption, eligibility and prepay requirements. This is not Gemini chat-limit pass-through. Bookworm's Google social login does not grant model access. |
+| xAI / Grok | Supported BYOK target | API billing remains separate. The newer X Subscription documents shared usage on eligible first-party Grok/Cursor surfaces, not arbitrary hosted applications. No Bookworm subscription authorization contract has been verified. |
 | OpenRouter | Supported BYOK target | Its own API credits/key authorization are not another vendor's consumer subscription. Verify its official OAuth/API contract before implementation. |
 | Additional providers | Future explicit allowlist/adapters | Verify official commercial authorization, capabilities, models and billing independently. No arbitrary credential forwarding or custom endpoint URL in the first release. |
 
 Primary sources actually opened during this review:
 
+- [ChatGPT plan connections](https://learn.chatgpt.com/docs/sign-in-with-chatgpt): eligible plans, separate identity/usage consent, user-controlled limits and possible app fees.
+- [OpenAI plan-usage scope](https://developers.openai.com/siwc/token-sharing-open-source): public OSS/local guidance versus the commercial interest-form requirement.
+- [OpenAI account-specific models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference): discover the authorized account's models; the documented plan flow uses Responses, not private chat endpoints.
 - [OpenAI Sign in with ChatGPT quickstart](https://developers.openai.com/siwc/quickstart): commercial eligibility and separate inference scopes.
 - [OpenAI client request](https://developers.openai.com/siwc/request-client-id): commercial interest-form route; no Bookworm application submitted.
 - [OpenAI pricing](https://learn.chatgpt.com/docs/pricing): API-key charges are separate from subscription usage.
+- [Anthropic subscription authentication](https://support.claude.com/en/articles/13189465-log-in-to-your-claude-account): developer API-key guidance and limited discretionary third-party access.
 - [Anthropic authentication and credential use](https://code.claude.com/docs/en/legal-and-compliance): own-app credential restrictions and the distinct unmodified-Claude-Code conditions.
+- [Google developer benefits](https://developers.google.com/profile/help/faq) and [Gemini API billing](https://ai.google.dev/gemini-api/docs/billing): eligible subscription-linked Cloud credits and billing-account/prepay conditions.
 - [Google Gemini CLI terms](https://geminicli.com/docs/resources/tos-privacy/): direct third-party use of its backing service is restricted.
 - [Google's response about consumer-plan access in third-party apps](https://discuss.ai.google.dev/t/supported-gemini-subscription-access-for-a-third-party-vs-code-extension/189889): directs applications to API/Cloud access instead.
 - [xAI API account FAQ](https://docs.x.ai/console/faq/accounts): separate API billing.
+- [X Subscription usage limits](https://docs.x.ai/x-subscription/usage-limits): eligible first-party surfaces only.
+
+### Subscription-access follow-up — 2026-10-24 05:56 UTC
+
+The user explicitly wants existing paid subscriptions to be usable where
+officially supported. The sources above were refreshed for this follow-up;
+older linked CLI/legal sources remain prior-review evidence. Treat ChatGPT
+commercial partner registration as an integration dependency, not a blanket
+technical impossibility. No interest form has been submitted or agreement
+accepted. Do not change the repository's visibility to qualify for OSS access.
+
+Proposed UI separates **Bookworm credits**, **My API key**, and **Connected
+subscription**. Show the last option as unavailable for a provider until both
+commercial authorization and the user's eligible account are verified. Keep
+Bookworm login distinct from inference consent. Discover permitted models and
+capabilities per account; do not promise that a text connection includes image
+generation, translation, or audiobook speech without endpoint/model acceptance.
+
+Keep provider quota/charges and Bookworm platform fees separate. Provider-paid
+usage is not automatically free Bookworm service, and no platform price has
+been approved. On quota exhaustion, expiry or revocation, stop and ask the user
+before changing funding sources. No paid API test was made by this review.
 
 These are time-sensitive findings. Recheck before implementation or public
 availability claims. No legal agreement was accepted or new provider access
