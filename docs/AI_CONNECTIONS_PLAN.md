@@ -3,7 +3,8 @@
 Status: encrypted credential storage/settings are implemented; acceptance and
 activation are tracked in `docs/AI_CONNECTION_VAULT_CHECKPOINT.md`. The explicit
 five-provider text adapter layer is documented in
-`docs/CUSTOMER_PROVIDER_ADAPTERS.md`. **Payer-bound customer-key worker routing
+`docs/CUSTOMER_PROVIDER_ADAPTERS.md`; the signed internal dispatch/receipt seam is
+documented in `docs/CUSTOMER_DISPATCH_CHECKPOINT.md`. **Payer-bound customer-key worker routing
 and subscription connections are not implemented or enabled.** Reviewed 2026-10-24
 UTC. This is a build contract, not evidence that every subscription is usable or
 paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
@@ -62,6 +63,11 @@ requested on the user's behalf during the review.
 - `services/api/src/lib/image-generation.ts` and `speech-generation.ts`: current
   server-owned OpenAI clients. Do not mutate process-wide environment variables
   or shared clients to choose a customer's credential.
+- `services/api/src/lib/customer-ai-dispatch.ts` and Python `customer_dispatch.py`:
+  exact-byte signed short-lived handoff, explicit credential binding, actual-agent
+  request verification and durable single-dispatch receipts. The private HTTP
+  factory is deliberately unregistered and requires a future database authorizer.
+  It does not implement the payer/resolver/fee contract or activate customer jobs.
 - `services/api/src/lib/quoted-*-worker.ts`, quote routes and SQL job functions:
   reservation, immutable request identity, leased execution and unknown-outcome
   recovery must be retained when adding a payer/credential selector.
