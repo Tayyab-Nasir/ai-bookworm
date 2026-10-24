@@ -193,7 +193,7 @@ def build_customer_agent(dispatch: VerifiedDispatch):
 
 
 def execute_dispatch(dispatch: VerifiedDispatch, store: ReceiptStore, *,
-                     now=None, _test_transport: httpx.MockTransport | None = None) -> dict:
+                     now=None, reauthorize_scope=None, _test_transport: httpx.MockTransport | None = None) -> dict:
     """Caller must authorize the persisted owner/payer/lease/revision FIRST.
     A reserve/save timeout always leaves an unresolved fence, never a retry.
     """
@@ -218,6 +218,13 @@ def execute_dispatch(dispatch: VerifiedDispatch, store: ReceiptStore, *,
         # Storage latency must not extend a short-lived authorization.
         if (int(time.time()) if now is None else now()) >= dispatch.expires_at:
             raise ProviderOutcomeUnknown("Customer dispatch expired after reservation; requires review.")
+        if reauthorize_scope is not None:
+            # The HTTP composition supplies the DB callback, not a cached boolean.
+            # Reservation I/O must not conceal revocation or a source/lease change.
+            if reauthorize_scope(scope.model_dump()) is not True:
+                raise ProviderOutcomeUnknown("Customer authorization changed after reservation; requires review.")
+            if (int(time.time()) if now is None else now()) >= dispatch.expires_at:
+                raise ProviderOutcomeUnknown("Customer dispatch expired during authorization; requires review.")
         agent.provider = CustomerProvider(scope.provider, api_key=dispatch.credential, policy=scope.policy.policy(),
             expected_request_sha256=scope.expectedRequestSha256, _test_transport=_test_transport)
         result = agent.run(request, job_id=scope.jobId, prepared_request=prepared).to_dict()

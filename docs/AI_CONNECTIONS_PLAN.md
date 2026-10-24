@@ -11,6 +11,8 @@ are in `docs/CUSTOMER_AI_COMPLETION.md`. The default-off private worker factory,
 non-secret context accessor and receipt-only recovery are in
 `docs/CUSTOMER_AI_WORKER.md`. Authenticated canonical source loading and private,
 non-billable actual-prompt hashing are in `docs/CUSTOMER_AI_PREPARATION.md`.
+Explicit database authorization, durable receipt transport and unmounted private
+service composition are in `docs/CUSTOMER_AI_DATABASE.md`.
 **Queue/public routing and subscription connections
 are not implemented or enabled.** Reviewed 2026-10-24
 UTC. This is a build contract, not evidence that every subscription is usable or

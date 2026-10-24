@@ -82,6 +82,18 @@ def test_no_customer_generation_route_is_registered_in_real_app():
     assert not any("customer-text" in route.path for route in main.app.routes)
 
 
+def test_environment_receipt_store_cannot_implicitly_activate_dispatch(monkeypatch):
+    for name in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "AI_SERVICE_TOKEN"):
+        monkeypatch.setenv(name, "synthetic-ambient-configuration")
+    app = FastAPI()
+    app.include_router(customer_dispatch_router(service_token="synthetic-service-auth",
+        signing_keys={"synthetic": SIGNING_KEY}, authorize_scope=lambda scope: True))
+    with TestClient(app) as client:
+        response = client.post(PATH, content=sign(*fixture()), headers={
+            "x-service-token": "synthetic-service-auth", "content-type": "application/json"})
+    assert response.status_code == 503 and "not activated" in response.text
+
+
 def test_chunked_and_dishonest_length_bodies_are_bounded(tmp_path):
     calls = []
     def chunks():

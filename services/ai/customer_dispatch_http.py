@@ -1,6 +1,6 @@
 """Unregistered internal router factory. No environment flag can activate it.
 
-Requires a future database authorizer as an explicit dependency, in addition to
+Requires a database authorizer and receipt store as explicit dependencies, plus
 service auth and a dedicated MAC. Main/default managed-AI endpoints are unchanged.
 Do not expose through a public proxy, request-body logging or error-body tracing.
 """
@@ -14,13 +14,13 @@ from collections.abc import Callable
 from fastapi import APIRouter, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 
-from customer_dispatch import (MAX_BYTES, CustomerTextResultStore, DispatchRejected, ReceiptConflict,
+from customer_dispatch import (MAX_BYTES, DispatchRejected, ReceiptConflict,
     ReceiptUnavailable, execute_dispatch, verify_dispatch)
 from gateway import ProviderOutcomeUnknown
 
 
 def customer_dispatch_router(*, service_token: str | None, signing_keys: dict[str, bytes],
-                             authorize_scope: Callable | None = None, store_factory=CustomerTextResultStore,
+                             authorize_scope: Callable | None = None, store_factory: Callable | None = None,
                              _clock=lambda: int(time.time()), _test_transport=None) -> APIRouter:
     router = APIRouter()
     # Immutable key map copy: rotation requires rebuilding the configured router.
@@ -28,8 +28,9 @@ def customer_dispatch_router(*, service_token: str | None, signing_keys: dict[st
 
     @router.post("/v1/internal/customer-text/dispatch", status_code=201, include_in_schema=False)
     async def dispatch(request: Request):
-        if (not service_token or not service_token.isascii() or not 16 <= len(service_token) <= 4096
-            or not keys or authorize_scope is None):
+        if (not service_token or not service_token.isascii() or not service_token.isprintable()
+            or " " in service_token or not 16 <= len(service_token) <= 4096
+            or not keys or not callable(authorize_scope) or not callable(store_factory)):
             raise HTTPException(503, "Customer dispatch is not activated.")
         token = request.headers.get("x-service-token", "")
         if not token.isascii() or not hmac.compare_digest(token, service_token):
@@ -55,7 +56,8 @@ def customer_dispatch_router(*, service_token: str | None, signing_keys: dict[st
             if await run_in_threadpool(authorize_scope, verified.scope.model_dump()) is not True:
                 raise HTTPException(403, "Customer job authorization is unavailable.")
             store = await run_in_threadpool(store_factory)
-            return await run_in_threadpool(execute_dispatch, verified, store, now=_clock, _test_transport=_test_transport)
+            return await run_in_threadpool(execute_dispatch, verified, store, now=_clock,
+                reauthorize_scope=authorize_scope, _test_transport=_test_transport)
         except HTTPException:
             raise
         except DispatchRejected:
