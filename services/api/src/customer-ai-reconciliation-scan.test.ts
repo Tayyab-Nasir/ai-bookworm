@@ -21,9 +21,9 @@ test("bounded pages advance exact microseconds past all actions and surface oper
   const actions: string[] = [];
   const scan = customerAiReconciliationScan(db.sb, { reconcile: async job => { actions.push("reconcile:" + job); return released; },
     recoverReceipt: async job => { actions.push("receipt:" + job); return settled; } }, { pageSize: 2 });
-  assert.deepEqual(await scan.scan(), { scanned: 2, events: [{ jobId: ids[1], status: "review" }], cycleComplete: false });
-  assert.deepEqual(await scan.scan(), { scanned: 2, events: [{ jobId: ids[2], status: "investigate" }, { jobId: ids[3], status: "released" }], cycleComplete: false });
-  assert.deepEqual(await scan.scan(), { scanned: 1, events: [{ jobId: ids[4], status: "settled" }], cycleComplete: true });
+  assert.deepEqual(await scan.scan(), { scanned: 2, events: [{ jobId: ids[1], status: "review" }], cycleComplete: false, reviewRequired: false });
+  assert.deepEqual(await scan.scan(), { scanned: 2, events: [{ jobId: ids[2], status: "investigate" }, { jobId: ids[3], status: "released" }], cycleComplete: false, reviewRequired: false });
+  assert.deepEqual(await scan.scan(), { scanned: 1, events: [{ jobId: ids[4], status: "settled" }], cycleComplete: true, reviewRequired: false });
   await scan.scan();
   assert.equal(db.calls[1]?.p_after_created_at, row(1, "review").created_at);
   assert.equal(db.calls[1]?.p_after_job_id, ids[1]); assert.equal(db.calls[3]?.p_after_created_at, null);
@@ -72,7 +72,7 @@ test("close drains the current action and stops further rows, without closing th
   await assert.rejects(scan.scan(), /already running/u);
   let closed = false; const closing = scan.close().then(() => { closed = true; });
   assert.equal(closed, false); release();
-  assert.deepEqual(await pending, { scanned: 1, events: [{ jobId: ids[0], status: "released" }], cycleComplete: false });
+  assert.deepEqual(await pending, { scanned: 1, events: [{ jobId: ids[0], status: "released" }], cycleComplete: false, reviewRequired: false });
   await closing; assert.equal(receipts, 0); await assert.rejects(scan.scan(), /closed/u);
 });
 
@@ -83,8 +83,30 @@ test("abort before or during an action prevents further work and never repeats a
     recoverReceipt: async () => settled }, { pageSize: 2 });
   const pre = new AbortController(); pre.abort();
   assert.equal((await scan.scan(pre.signal)).scanned, 0); assert.equal(db.calls.length, 0);
-  assert.deepEqual(await scan.scan(signal.signal), { scanned: 1, events: [{ jobId: ids[0], status: "unconfirmed" }], cycleComplete: false });
+  assert.deepEqual(await scan.scan(signal.signal), { scanned: 1, events: [{ jobId: ids[0], status: "unconfirmed" }], cycleComplete: false, reviewRequired: false });
   // New scan starts after the previous cursor; reset by completing the short page.
   // A stale RPC response with the same cursor is rejected, not treated as safe.
   await assert.rejects(scan.scan(), /unavailable/u); assert.equal(calls, 1);
+});
+
+test("saturated uncertainty returns earlier page results and retains the last completed cursor", async () => {
+  const entries = Array.from({ length: 1026 }, (_, i) => ({
+    job_id: `20000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    created_at: "2026-10-28T13:00:00.123456+00:00", action: "reconcile",
+  }));
+  const pages = Array.from({ length: 10 }, (_, i) => entries.slice(i * 100, i * 100 + 100));
+  pages.push(entries.slice(1000)); pages.push(entries.slice(1025));
+  const db = database(pages); let actions = 0;
+  const scan = customerAiReconciliationScan(db.sb, { reconcile: async job => {
+    actions++; if (job === entries[1000]!.job_id) return released; throw new Error("unknown");
+  }, recoverReceipt: async () => settled }, { pageSize: 100 });
+  for (let i = 0; i < 10; i++) await scan.scan();
+  const partial = await scan.scan();
+  assert.equal(partial.scanned, 25); assert.equal(partial.events.length, 25);
+  assert.deepEqual(partial.events[0], { jobId: entries[1000]!.job_id, status: "released" });
+  assert.equal(partial.reviewRequired, true); assert.equal(partial.cycleComplete, false); assert.equal(actions, 1025);
+  assert.equal(scan.acknowledgeForExplicitReplay(entries[0]!.job_id), true);
+  const resumed = await scan.scan();
+  assert.equal(db.calls[11]?.p_after_job_id, entries[1024]!.job_id);
+  assert.equal(resumed.scanned, 1); assert.equal(actions, 1026);
 });

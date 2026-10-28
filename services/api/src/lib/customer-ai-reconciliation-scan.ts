@@ -5,7 +5,6 @@
  */
 import { z } from "zod";
 import type { SupabaseClient } from "./supabase.js";
-import type { customerAiComposition } from "./customer-ai-composition.js";
 
 const id = z.string().uuid().regex(/^[0-9a-f-]+$/u);
 const timestamp = z.string().max(40).regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}(?::?\d{2})?)$/u);
@@ -13,7 +12,10 @@ const row = z.object({ job_id: id, created_at: timestamp,
   action: z.enum(["none", "investigate", "review", "reconcile", "receipt_available"]) }).strict();
 const reconcileResult = z.object({ state: z.enum(["settled", "released", "requires_review", "unchanged"]), suppressionCleared: z.boolean() }).strict();
 const receiptResult = z.object({ state: z.literal("settled"), suppressionCleared: z.boolean() }).strict();
-type Runtime = Pick<ReturnType<typeof customerAiComposition>, "reconcile" | "recoverReceipt">;
+type Runtime = {
+  reconcile(jobId: string, signal?: AbortSignal): Promise<z.infer<typeof reconcileResult>>;
+  recoverReceipt(jobId: string, signal?: AbortSignal): Promise<z.infer<typeof receiptResult>>;
+};
 type Cursor = { createdAt: string; jobId: string };
 type Event = { jobId: string; status: "investigate" | "review" | "unconfirmed" | "unchanged" | "settled" | "released" };
 
@@ -35,27 +37,29 @@ export function customerAiReconciliationScan(sb: SupabaseClient, runtime: Runtim
       if (closed || active || !id.safeParse(jobId).success) throw new Error("Customer AI maintenance is unavailable.");
       return uncertain.delete(jobId);
     },
-    async scan(signal?: AbortSignal): Promise<{ scanned: number; events: Event[]; cycleComplete: boolean }> {
+    async scan(signal?: AbortSignal): Promise<{ scanned: number; events: Event[]; cycleComplete: boolean; reviewRequired: boolean }> {
       if (closed) throw new Error("Customer AI maintenance is closed.");
       if (active) throw new Error("Customer AI maintenance is already running.");
       if (signal !== undefined && !(signal instanceof AbortSignal)) throw new Error("Customer AI maintenance is unavailable.");
-      if (signal?.aborted) return { scanned: 0, events: [], cycleComplete: false };
+      if (signal?.aborted) return { scanned: 0, events: [], cycleComplete: false, reviewRequired: uncertain.size >= 1024 };
       const perform = async () => {
         const response = await sb.rpc("discover_customer_ai_reconciliation_candidates", {
           p_limit: limit, p_after_created_at: cursor?.createdAt ?? null, p_after_job_id: cursor?.jobId ?? null,
         }).abortSignal(AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : [])]));
-        if (signal?.aborted || closed) return { scanned: 0, events: [], cycleComplete: false };
+        if (signal?.aborted || closed) return { scanned: 0, events: [], cycleComplete: false, reviewRequired: uncertain.size >= 1024 };
         if (response.error) throw new Error();
         const rows = z.array(row).max(limit).parse(response.data);
         if (new Set(rows.map(item => item.job_id)).size !== rows.length
           || rows.some(item => item.job_id === cursor?.jobId && item.created_at === cursor.createdAt)) throw new Error();
         let scanned = 0; const events: Event[] = [];
         for (const item of rows) {
-          if (signal?.aborted || closed) return { scanned, events, cycleComplete: false };
+          if (signal?.aborted || closed) return { scanned, events, cycleComplete: false, reviewRequired: uncertain.size >= 1024 };
           if (uncertain.has(item.job_id)) events.push({ jobId: item.job_id, status: "unconfirmed" });
           else if (item.action === "investigate" || item.action === "review") events.push({ jobId: item.job_id, status: item.action });
           else if (item.action === "reconcile" || item.action === "receipt_available") {
-            if (uncertain.size >= 1024) throw new Error("review required");
+            // Return previously completed outcomes and retain the last completed
+            // cursor. Never drop page events when local uncertainty is saturated.
+            if (uncertain.size >= 1024) return { scanned, events, cycleComplete: false, reviewRequired: true };
             try {
               const result = item.action === "reconcile"
                 ? reconcileResult.parse(await runtime.reconcile(item.job_id, signal))
@@ -71,7 +75,7 @@ export function customerAiReconciliationScan(sb: SupabaseClient, runtime: Runtim
         }
         const cycleComplete = rows.length < limit;
         if (cycleComplete) cursor = undefined;
-        return { scanned, events, cycleComplete };
+        return { scanned, events, cycleComplete, reviewRequired: uncertain.size >= 1024 };
       };
       const operation = perform(); active = operation;
       try { return await operation; }

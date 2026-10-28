@@ -24,7 +24,8 @@ function fixture() {
     connectionId: scope.connectionId, revision: scope.credentialRevision });
   const signer = customerDispatchSigner("test", randomBytes(32));
   const calls: string[] = []; let receipt = false, dispatched = 0, resolveCount = 0;
-  const hooks: { fail?: string; service?: () => Promise<Response>; rows?: unknown[]; recover?: () => Promise<Response> } = {};
+  const hooks: { fail?: string; service?: () => Promise<Response>; rows?: unknown[]; maintenanceRows?: unknown[];
+    recover?: () => Promise<Response>; reconcile?: () => Promise<Response> } = {};
   const databaseFetch: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const name = url.pathname.split("/").at(-1)!; calls.push(name);
@@ -32,13 +33,14 @@ function fixture() {
     if (name === hooks.fail) return json({ error: "synthetic" }, 503, { "retry-after": "1" });
     const args = JSON.parse(String(init?.body ?? "{}"));
     if (name === "discover_customer_ai_ready_jobs") return json(hooks.rows ?? [{ job_id: job.id, created_at: "2026-10-28T13:00:00.123456+00:00", ready: true }]);
+    if (name === "discover_customer_ai_reconciliation_candidates") return json(hooks.maintenanceRows ?? []);
     assert.equal(args.p_job_id, job.id);
     if (name === "claim_customer_ai_job") return json(job);
     if (name === "prepare_customer_ai_dispatch") return json({ scope, request });
     if (name === "resolve_customer_ai_dispatch") { resolveCount++; return json({ scope, request, credential }); }
     if (name === "complete_customer_ai_job") return receipt ? json(completed) : json({ message: "absent" }, 404);
     if (name === "hold_customer_ai_job") return json({ ...job, status: "failed", lease_token: null, error_code: "customer_provider_outcome_unknown" });
-    if (name === "reconcile_customer_ai_job") return json("unchanged");
+    if (name === "reconcile_customer_ai_job") return hooks.reconcile ? hooks.reconcile() : json("unchanged");
     if (name === "recover_customer_ai_receipt") return hooks.recover ? hooks.recover() : json("settled");
     throw new Error("Unexpected synthetic operation");
   };
@@ -79,6 +81,45 @@ test("receipt recovery is explicit, makes no provider request and drains before 
   await assert.rejects(runtime.recoverReceipt(f.scope.jobId), /closed/u); assert.equal(closed, false);
   release(); assert.deepEqual(await running, { state: "settled", suppressionCleared: false }); await closing;
   assert.deepEqual(f.calls, ["recover_customer_ai_receipt"]); assert.equal(f.dispatched(), 0); f.config.signer.dispose();
+});
+
+test("maintenance scan shares the configured service client without reentering its own guard", async () => {
+  const f = fixture();
+  f.hooks.maintenanceRows = [{ job_id: f.scope.jobId, created_at: "2026-10-28T13:00:00.123456+00:00", action: "reconcile" }];
+  f.hooks.reconcile = async () => json("released");
+  const runtime = customerAiComposition(f.config);
+  assert.deepEqual(await runtime.scanMaintenance(), { scanned: 1, events: [{ jobId: f.scope.jobId, status: "released" }],
+    cycleComplete: true, reviewRequired: false });
+  assert.deepEqual(f.calls, ["discover_customer_ai_reconciliation_candidates", "reconcile_customer_ai_job"]);
+  assert.equal(f.dispatched(), 0); await runtime.close(); f.config.signer.dispose();
+});
+
+test("maintenance discovery is one attempt and static errors omit upstream data", async () => {
+  const f = fixture(); f.hooks.fail = "discover_customer_ai_reconciliation_candidates";
+  const runtime = customerAiComposition(f.config);
+  await assert.rejects(runtime.scanMaintenance(), error => { assert.ok(error instanceof Error);
+    assert.equal(error.message, "Customer AI maintenance is unavailable."); assert.doesNotMatch(error.stack ?? "", /synthetic-service-role-key/u); return true; });
+  assert.deepEqual(f.calls, ["discover_customer_ai_reconciliation_candidates"]);
+  assert.equal(f.dispatched(), 0); await runtime.close(); f.config.signer.dispose();
+});
+
+test("composition shutdown drains maintenance action and stops subsequent page work", async () => {
+  const f = fixture(); let release!: () => void, started!: () => void;
+  const began = new Promise<void>(done => { started = done; });
+  f.hooks.maintenanceRows = [
+    { job_id: f.scope.jobId, created_at: "2026-10-28T13:00:00.123456+00:00", action: "reconcile" },
+    { job_id: randomUUID(), created_at: "2026-10-28T13:00:01.123456+00:00", action: "receipt_available" },
+  ];
+  f.hooks.reconcile = async () => { started(); await new Promise<void>(done => { release = done; }); return json("released"); };
+  const runtime = customerAiComposition(f.config), pending = runtime.scanMaintenance(); await began;
+  await assert.rejects(runtime.tick(), /already running/u);
+  assert.throws(() => runtime.acknowledgeMaintenanceReplay(f.scope.jobId), /already running/u);
+  let closed = false; const closing = runtime.close().then(() => { closed = true; });
+  assert.equal(closed, false); release();
+  assert.deepEqual(await pending, { scanned: 1, events: [{ jobId: f.scope.jobId, status: "released" }],
+    cycleComplete: false, reviewRequired: false });
+  await closing; assert.equal(f.calls.filter(name => name === "recover_customer_ai_receipt").length, 0);
+  assert.equal(f.dispatched(), 0); await assert.rejects(runtime.scanMaintenance(), /closed/u); f.config.signer.dispose();
 });
 
 test("lost dispatch reply recovers durable receipt without a second provider send", async () => {

@@ -8,6 +8,42 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { uploadTusArchive } from "./lib/audiobook-google-play-export-worker.js";
 
+async function listenFetchable(server: ReturnType<typeof createServer>, probe: typeof fetch = fetch): Promise<number> {
+  // Windows can allocate ports that WHATWG fetch rejects before connecting.
+  // Probe the actual ephemeral port without credentials; retry only that case.
+  for (let attempt = 0; attempt < 20; attempt++) {
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const address = server.address(); assert(address && typeof address !== "string");
+    try {
+      const response = await probe(`http://127.0.0.1:${address.port}/_probe`, { signal: AbortSignal.timeout(2000), redirect: "error" });
+      assert.equal(response.status, 204);
+      return address.port;
+    } catch (error) {
+      server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (!(error instanceof TypeError && error.cause instanceof Error && error.cause.message === "bad port")) throw error;
+    }
+  }
+  throw new Error("Could not acquire a fetch-compatible local test port.");
+}
+
+test("HTTP fixture retries only forbidden fetch ports and closes on other errors", async () => {
+  const server = createServer((_req, res) => { res.writeHead(204); res.end(); });
+  let probes = 0;
+  try {
+    const port = await listenFetchable(server, async (input, init) => {
+      if (++probes === 1) throw new TypeError("fetch failed", { cause: new Error("bad port") });
+      return fetch(input, init);
+    });
+    assert(port > 0); assert(probes >= 2 && probes <= 20);
+  } finally {
+    server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+  const failingServer = createServer(); const failure = new TypeError("fetch failed", { cause: new Error("other network failure") });
+  let failedProbes = 0;
+  await assert.rejects(listenFetchable(failingServer, async () => { failedProbes++; throw failure; }), error => error === failure);
+  assert.equal(failedProbes, 1); assert.equal(failingServer.listening, false);
+});
+
 test("private export upload recovers over real HTTP without redirecting credentials", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "bookworm-export-http-"));
   const path = join(directory, "archive.zip");
@@ -16,17 +52,22 @@ test("private export upload recovers over real HTTP without redirecting credenti
   try {
     for (const mode of ["stored-reply-lost", "unstored-reply-lost", "redirect-create", "redirect-patch", "invalid-offset", "timeout", "cancel"] as const) {
       await t.test(mode, async () => {
-        let offset = 0; let patches = 0; let heads = 0; let leaks = 0; let deletes = 0;
+        let offset = 0; let patches = 0; let heads = 0; let leaks = 0; let deletes = 0; let posts = 0; let cancellationReached = false;
         const received: Buffer[] = [];
         const serverErrors: unknown[] = [];
         const abort = new AbortController();
         const server = createServer(async (req, res) => {
           try {
+            if (req.url === "/_probe") {
+              assert.equal(req.method, "GET"); assert.equal(req.headers.authorization, undefined); assert.equal(req.headers.apikey, undefined);
+              res.writeHead(204); res.end(); return;
+            }
             if (req.url === "/leak") { leaks++; res.writeHead(200); res.end(); return; }
             assert.equal(req.headers.authorization, "Bearer fixture-service-key");
             assert.equal(req.headers.apikey, "fixture-service-key");
             assert.equal(req.headers["tus-resumable"], "1.0.0");
             if (req.method === "POST") {
+              posts++;
               if (mode === "timeout") return;
               res.writeHead(mode === "redirect-create" ? 307 : 201, {
                 location: mode === "redirect-create" ? "/leak" : "/storage/v1/upload/resumable/test",
@@ -43,18 +84,17 @@ test("private export upload recovers over real HTTP without redirecting credenti
             const chunk = Buffer.concat(chunks);
             assert.equal(Number(req.headers["upload-offset"]), offset);
             if (mode === "redirect-patch") { res.writeHead(307, { location: "/leak" }); res.end(); return; }
-            if (mode === "cancel") { abort.abort(new Error("fixture_cancelled")); req.socket.destroy(); return; }
+            if (mode === "cancel") { cancellationReached = true; abort.abort(new Error("fixture_cancelled")); req.socket.destroy(); return; }
             if (patches === 1 && (mode === "unstored-reply-lost" || mode === "invalid-offset")) { req.socket.destroy(); return; }
             received.push(chunk); offset += chunk.length;
             if (patches === 1 && mode === "stored-reply-lost") { req.socket.destroy(); return; }
             res.writeHead(204, { "upload-offset": String(offset) }); res.end();
           } catch (error) { serverErrors.push(error); res.destroy(); }
         });
-        server.listen(0, "127.0.0.1"); await once(server, "listening");
-        const address = server.address(); assert(address && typeof address !== "string");
+        const port = await listenFetchable(server);
         try {
           const upload = uploadTusArchive(path, "workspaces/fixture/audiobook-exports/test.zip", {
-            projectUrl: `http://127.0.0.1:${address.port}`, serviceKey: "fixture-service-key", signal: abort.signal,
+            projectUrl: `http://127.0.0.1:${port}`, serviceKey: "fixture-service-key", signal: abort.signal,
             requestTimeoutMs: mode === "timeout" ? 50 : 2000,
           });
           if (mode === "stored-reply-lost" || mode === "unstored-reply-lost") {
@@ -64,6 +104,8 @@ test("private export upload recovers over real HTTP without redirecting credenti
             assert.equal(createHash("sha256").update(Buffer.concat(received)).digest("hex"), createHash("sha256").update(bytes).digest("hex"));
           } else {
             await assert.rejects(upload, mode === "cancel" ? /fixture_cancelled/ : /export_storage_/);
+            if (mode === "timeout") assert.equal(posts, 1, "timeout must reach the stalled upload creation");
+            if (mode === "cancel") assert.equal(cancellationReached, true, "cancellation must occur during upload");
             if (mode === "invalid-offset") assert.equal(patches, 1, "invalid server offsets must not resend bytes");
             if (mode === "redirect-patch") assert.equal(patches, 3, "retries must be bounded");
           }
