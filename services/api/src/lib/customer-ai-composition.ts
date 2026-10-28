@@ -17,6 +17,8 @@ export function customerAiComposition(config: {
 }) {
   const invalid = () => new Error("Customer AI composition configuration is invalid.");
   const lifetime = new AbortController();
+  // Shutdown stops intake without aborting the current worker's receipt/hold recovery.
+  const intake = new AbortController();
   let scheduler: ReturnType<typeof customerAiScheduler>;
   try {
     if (!config || typeof config.allowLoopbackHttp !== "undefined" && typeof config.allowLoopbackHttp !== "boolean"
@@ -42,11 +44,12 @@ export function customerAiComposition(config: {
     try { return await operation; } finally { if (active === operation) active = undefined; }
   }
   return {
-    tick: (signal?: AbortSignal) => run(() => scheduler.tick(signal)),
+    tick: (signal?: AbortSignal) => run(() => scheduler.tick(signal, intake.signal)),
     reconcile: (jobId: string, signal?: AbortSignal) => run(() => scheduler.reconcile(jobId, { signal })),
     close(): Promise<void> {
       if (closing) return closing;
       closed = true;
+      intake.abort();
       // Stop new work immediately, but allow the current worker to finish its
       // bounded receipt/hold recovery before cancelling the shared transport.
       closing = (async () => { try { await active; } catch { /* caller observes its own result */ } finally { lifetime.abort(); } })();

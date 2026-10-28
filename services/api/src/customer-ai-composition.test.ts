@@ -24,14 +24,14 @@ function fixture() {
     connectionId: scope.connectionId, revision: scope.credentialRevision });
   const signer = customerDispatchSigner("test", randomBytes(32));
   const calls: string[] = []; let receipt = false, dispatched = 0, resolveCount = 0;
-  const hooks: { fail?: string; service?: () => Promise<Response> } = {};
+  const hooks: { fail?: string; service?: () => Promise<Response>; rows?: unknown[] } = {};
   const databaseFetch: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const name = url.pathname.split("/").at(-1)!; calls.push(name);
     assert.equal(init?.redirect, "error");
     if (name === hooks.fail) return json({ error: "synthetic" }, 503, { "retry-after": "1" });
     const args = JSON.parse(String(init?.body ?? "{}"));
-    if (name === "discover_customer_ai_ready_jobs") return json([{ job_id: job.id, created_at: "2026-10-28T13:00:00.123456+00:00", ready: true }]);
+    if (name === "discover_customer_ai_ready_jobs") return json(hooks.rows ?? [{ job_id: job.id, created_at: "2026-10-28T13:00:00.123456+00:00", ready: true }]);
     assert.equal(args.p_job_id, job.id);
     if (name === "claim_customer_ai_job") return json(job);
     if (name === "prepare_customer_ai_dispatch") return json({ scope, request });
@@ -107,6 +107,23 @@ test("shutdown stops intake but drains the current dispatch and receipt", async 
   await assert.rejects(runtime.tick(), /closed/u); assert.equal(closed, false);
   release(); assert.equal((await running).uncertain, 0); await closing;
   assert.equal(f.calls.at(-1), "complete_customer_ai_job"); assert.equal(f.dispatched(), 1); f.config.signer.dispose();
+});
+
+test("shutdown during a multi-job page drains only the active job", async () => {
+  const f = fixture(); let release!: () => void, started!: () => void;
+  const began = new Promise<void>(done => { started = done; });
+  f.hooks.rows = [
+    { job_id: f.scope.jobId, created_at: "2026-10-28T13:00:00.123456+00:00", ready: true },
+    { job_id: randomUUID(), created_at: "2026-10-28T13:00:01.123456+00:00", ready: true },
+  ];
+  f.hooks.service = async () => { started(); await new Promise<void>(done => { release = done; }); f.saveReceipt(); return json({}); };
+  const runtime = customerAiComposition(f.config), running = runtime.tick(); await began;
+  const closing = runtime.close(); release();
+  assert.deepEqual(await running, { scanned: 1, attempted: 1, uncertain: 0, suppressed: 0, cycleComplete: false });
+  await closing;
+  assert.equal(f.calls.filter(name => name === "claim_customer_ai_job").length, 1);
+  assert.equal(f.calls.at(-1), "complete_customer_ai_job"); assert.equal(f.dispatched(), 1);
+  f.config.signer.dispose();
 });
 
 test("invalid configuration fails closed without including secrets", () => {

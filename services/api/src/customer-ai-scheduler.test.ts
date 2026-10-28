@@ -49,6 +49,16 @@ test("abort stops before further claims and resume keeps the last processed curs
   assert.deepEqual(attempted, [ids[0], ids[1]]);
 });
 
+test("intake stop after discovery prevents claims without aborting a worker", async () => {
+  const controller = new AbortController(); let release!: (value: unknown) => void, attempts = 0;
+  const sb = { rpc: () => ({ abortSignal: () => new Promise(resolve => { release = resolve; }) }) } as unknown as SupabaseClient;
+  const scheduler = customerAiScheduler(sb, { run: async id => { attempts++; return success(id); } });
+  const pending = scheduler.tick(undefined, controller.signal);
+  controller.abort(); release({ data: [row(0)], error: null });
+  assert.deepEqual(await pending, { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false });
+  assert.equal(attempts, 0);
+});
+
 test("rejects overlapping scans, malformed responses, and exposes no upstream errors", async () => {
   let release!: (value: unknown) => void;
   const sb = { rpc: () => ({ abortSignal: () => new Promise(resolve => { release = resolve; }) }) } as unknown as SupabaseClient;

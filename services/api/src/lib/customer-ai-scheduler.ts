@@ -67,23 +67,23 @@ export function customerAiScheduler(sb: SupabaseClient, worker: Worker, options:
         running = false;
       }
     },
-    async tick(signal?: AbortSignal): Promise<{ scanned: number; attempted: number; uncertain: number; suppressed: number; cycleComplete: boolean }> {
+    async tick(signal?: AbortSignal, intakeSignal?: AbortSignal): Promise<{ scanned: number; attempted: number; uncertain: number; suppressed: number; cycleComplete: boolean }> {
       if (running) throw new Error("Customer AI scheduler is already running.");
-      if (signal?.aborted) return { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false };
+      if (signal?.aborted || intakeSignal?.aborted) return { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false };
       if (uncertain.size >= 1024) throw new SchedulerReviewRequired();
       running = true;
       try {
         const response = await sb.rpc("discover_customer_ai_ready_jobs", {
           p_limit: pageSize, p_after_created_at: cursor?.createdAt ?? null, p_after_job_id: cursor?.jobId ?? null,
         }).abortSignal(AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : [])]));
-        if (signal?.aborted) return { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false };
+        if (signal?.aborted || intakeSignal?.aborted) return { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false };
         if (response.error) throw new Error();
         const rows = z.array(row).max(pageSize).parse(response.data);
         if (new Set(rows.map(item => item.job_id)).size !== rows.length
           || rows.some(item => item.job_id === cursor?.jobId && item.created_at === cursor.createdAt)) throw new Error();
         let scanned = 0, attempted = 0, uncertainCount = 0, suppressed = 0;
         for (const item of rows) {
-          if (signal?.aborted) return { scanned, attempted, uncertain: uncertainCount, suppressed, cycleComplete: false };
+          if (signal?.aborted || intakeSignal?.aborted) return { scanned, attempted, uncertain: uncertainCount, suppressed, cycleComplete: false };
           if (item.ready && uncertain.has(item.job_id)) suppressed++;
           if (item.ready && !uncertain.has(item.job_id)) {
             if (uncertain.size >= 1024) throw new SchedulerReviewRequired();
