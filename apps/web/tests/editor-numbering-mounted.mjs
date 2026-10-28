@@ -331,6 +331,321 @@ for (const outcome of ["success", "failure"]) for (const action of ["save", "his
   } finally { await page.close(); }
 });
 
+test("restore is bound to the original account before sending and hides private manuscript on account change", async () => {
+  const page = await fixture(1280, true); let actor = "different-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => { window.confirm = () => true; window.restoreCalls = []; window.bookwormApi.restoreDocumentVersion = async (...args) => {
+      window.restoreCalls.push(args); throw new Error("unexpected restore"); }; });
+    await page.getByRole("button", { name: "Restore version 1" }).click();
+    await page.getByText(/original account could not be verified/i).waitFor();
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    assert.equal(await page.evaluate(() => window.restoreCalls.length), 0);
+    actor = "fixture-author";
+    await page.getByRole("button", { name: "Recheck original account" }).click();
+    await page.getByRole("button", { name: "Retry original restore" }).waitFor();
+  } finally { await page.close(); }
+});
+
+test("account switch after an uncertain restore keeps the original request and prevents private response adoption", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => { window.confirm = () => true; window.restoreCalls = [];
+      window.bookwormApi.restoreDocumentVersion = (...args) => { window.restoreCalls.push(args); return new Promise(resolve => {
+        window.finishRestore = () => resolve({ version: 2, versionId: "saved-version", document: { chapterId: "chapter", version: 2,
+          nodes: [{ id: "restored", type: "paragraph", text: "Private restored manuscript" }] } }); }); }; });
+    await page.getByText("Imported first step", { exact: true }).click(); await page.keyboard.press("End"); await page.keyboard.type(" unsaved");
+    await page.getByRole("button", { name: "Restore version 1" }).click();
+    await page.waitForFunction(() => typeof window.finishRestore === "function");
+    actor = "different-author"; await page.evaluate(() => window.finishRestore());
+    await page.getByText(/original account could not be verified/i).waitFor();
+    assert.equal(await page.getByText("Private restored manuscript").count(), 0);
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    assert.equal(await page.evaluate(() => window.restoreCalls[0][3]), "fixture-author");
+    actor = "fixture-author"; await page.getByRole("button", { name: "Recheck original account" }).click();
+    await page.getByRole("button", { name: "Retry original restore" }).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /unsaved/);
+    assert.equal(await page.evaluate(() => window.restoreCalls.length), 1);
+  } finally { await page.close(); }
+});
+
+test("lost restore reply retries exactly the same account and operation before adopting the confirmed version", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => { window.confirm = () => true; window.restoreCalls = [];
+      window.bookwormApi.restoreDocumentVersion = async (...args) => { window.restoreCalls.push(args);
+        if (window.restoreCalls.length === 1) throw new Error("synthetic lost response");
+        window.bookwormApi.getChapterDocument = async chapterId => ({ role: "owner", document: { chapterId, version: 2,
+          nodes: [{ id: "confirmed", type: "paragraph", text: "Confirmed restored text" }] } });
+        return { version: 2, versionId: "restored-version", document: { chapterId: "chapter", version: 2,
+          nodes: [{ id: "confirmed", type: "paragraph", text: "Confirmed restored text" }] } }; }; });
+    await page.getByRole("button", { name: "Restore version 1" }).click();
+    await page.getByRole("button", { name: "Retry original restore" }).waitFor();
+    await page.getByRole("button", { name: "Retry original restore" }).click();
+    await page.getByText("Confirmed restored text", { exact: true }).waitFor();
+    const calls = await page.evaluate(() => window.restoreCalls);
+    assert.deepEqual(calls[0], calls[1]); assert.equal(calls[0][3], "fixture-author");
+  } finally { await page.close(); }
+});
+
+test("a replayed restore receipt cannot replace a newer saved chapter or local draft", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => { window.confirm = () => true;
+      window.bookwormApi.restoreDocumentVersion = async () => {
+        window.bookwormApi.getChapterDocument = async chapterId => ({ role: "owner", document: { chapterId, version: 3,
+          nodes: [{ id: "newer", type: "paragraph", text: "Newer collaborator text" }] } });
+        return { version: 2, versionId: "saved-version", document: { chapterId: "chapter", version: 2,
+          nodes: [{ id: "old", type: "paragraph", text: "Old restored text" }] } };
+      }; });
+    await page.getByText("Imported first step", { exact: true }).click(); await page.keyboard.press("End"); await page.keyboard.type(" unsaved");
+    await page.getByRole("button", { name: "Restore version 1" }).click();
+    await page.getByText(/current chapter is already at version 3/i).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /unsaved/);
+    assert.equal(await page.getByText("Old restored text", { exact: true }).count(), 0);
+    assert.equal(await page.getByText("Restored as version 2.", { exact: true }).count(), 0);
+    await page.getByRole("button", { name: "Retry original restore" }).waitFor();
+  } finally { await page.close(); }
+});
+
+test("equal-version current content must match the restore receipt before adoption", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => { window.confirm = () => true;
+      window.bookwormApi.restoreDocumentVersion = async () => {
+        window.bookwormApi.getChapterDocument = async chapterId => ({ role: "owner", document: { chapterId, version: 2,
+          nodes: [{ id: "current", type: "paragraph", text: "Different current content" }] } });
+        return { version: 2, versionId: "saved-version", document: { chapterId: "chapter", version: 2,
+          nodes: [{ id: "receipt", type: "paragraph", text: "Receipt content" }] } };
+      }; });
+    await page.getByRole("button", { name: "Restore version 1" }).click();
+    await page.getByText(/does not match the restore receipt/i).waitFor();
+    assert.equal(await page.getByText("Receipt content", { exact: true }).count(), 0);
+    assert.equal(await page.getByText("Different current content", { exact: true }).count(), 0);
+    await page.getByRole("button", { name: "Retry original restore" }).waitFor();
+  } finally { await page.close(); }
+});
+
+test("chapter and history loads bind one account and refuse an account switch during the read", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => {
+      window.loadActors = [];
+      window.bookwormApi.getChapterDocument = (chapterId, expectedActor) => { window.loadActors.push(expectedActor);
+        return new Promise(resolve => { window.finishLoad = () => resolve({ role: "owner", document: { chapterId, version: 1,
+          nodes: [{ id: "old-account", type: "paragraph", text: "Old account private chapter" }] } }); }); };
+      window.bookwormApi.listDocumentVersions = async (_chapterId, expectedActor) => { window.loadActors.push(expectedActor); return { versions: [] }; };
+      window.renderBookEditor({ initialChapterId: "second" });
+    });
+    await page.waitForFunction(() => typeof window.finishLoad === "function");
+    actor = "different-author";
+    assert.equal(await page.getByText("Author manuscript", { exact: true }).isVisible(), false);
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    await page.evaluate(() => window.finishLoad());
+    await page.getByRole("alert").waitFor();
+    assert.equal(await page.getByText("Old account private chapter").count(), 0);
+    assert.deepEqual(await page.evaluate(() => window.loadActors), ["fixture-author", "fixture-author"]);
+    assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).count(), 0);
+  } finally { await page.close(); }
+});
+
+test("chapter switching verifies the original editor account before loading or exposing metadata", async () => {
+  const page = await fixture(1280, true); let actor = "different-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => { window.documentReads = []; window.confirm = () => true; });
+    await page.getByRole("button", { name: "02 Second chapter", exact: true }).click();
+    await page.getByText(/original account could not be verified/i).waitFor();
+    assert.equal(await page.getByText("Author manuscript", { exact: true }).isVisible(), false);
+    assert.deepEqual(await page.evaluate(() => window.documentReads), []);
+    actor = "fixture-author"; await page.getByRole("button", { name: "Recheck original account" }).click();
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+  } finally { await page.close(); }
+});
+
+test("a pending chapter account check blocks the save keyboard shortcut synchronously", async () => {
+  const page = await fixture(1280, true); let releaseSession, first = true;
+  try {
+    await page.getByText("Imported first step", { exact: true }).click(); await page.keyboard.press("End"); await page.keyboard.type(" unsaved");
+    await page.route("**/api/auth/session", route => {
+      if (!first) return route.fulfill({ json: { user: { id: "fixture-author" } } });
+      first = false;
+      return new Promise(resolve => { releaseSession = () => { route.fulfill({ json: { user: { id: "fixture-author" } } }); resolve(); }; });
+    });
+    await page.evaluate(() => { window.confirm = () => true; window.requests = []; });
+    await page.getByRole("button", { name: "02 Second chapter", exact: true }).click();
+    while (!releaseSession) await new Promise(resolve => setTimeout(resolve, 10));
+    await page.keyboard.press("Control+s");
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+    releaseSession();
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+  } finally { await page.close(); }
+});
+
+test("superseded chapter load cannot leave the next empty or failed book hidden", async () => {
+  for (const mode of ["empty", "error"]) {
+    const page = await fixture(1280, true);
+    try {
+      await page.evaluate(mode => {
+        window.bookwormApi.getChapterDocument = chapterId => new Promise(resolve => {
+          window.finishSuperseded = () => resolve({ role: "owner", document: { chapterId, version: 1,
+            nodes: [{ id: "old", type: "paragraph", text: "Superseded private manuscript" }] } }); });
+        window.bookwormApi.getBook = async id => {
+          if (id === "next-book" && mode === "error") throw new Error("Next book unavailable");
+          return { book: { id, workspace_id: "workspace", title: "Next empty book" }, role: "owner" }; };
+        window.bookwormApi.listChapters = async id => ({ chapters: id === "next-book" ? [] : [{ id: "chapter", title: "First chapter" }, { id: "second", title: "Second chapter" }] });
+      }, mode);
+      await page.getByRole("button", { name: "02 Second chapter", exact: true }).click();
+      await page.waitForFunction(() => typeof window.finishSuperseded === "function");
+      await page.evaluate(() => window.renderBookEditor({ bookId: "next-book" }));
+      if (mode === "empty") await page.getByText("Add your first chapter to start writing.").waitFor();
+      else await page.getByRole("alert").waitFor();
+      assert.equal(await page.getByText("Checking the original account…").count(), 0);
+      await page.evaluate(() => window.finishSuperseded());
+      assert.equal(await page.getByText("Superseded private manuscript").count(), 0);
+    } finally { await page.close(); }
+  }
+});
+
+test("intentional book change clears the old account overlay before loading the new account", async () => {
+  const page = await fixture(1280, true); let actor = "different-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.getByRole("button", { name: "02 Second chapter", exact: true }).click();
+    await page.getByText(/original account could not be verified/i).waitFor();
+    await page.evaluate(() => {
+      window.bookwormApi.getBook = async id => ({ book: { id, workspace_id: "workspace", title: "New account book" }, role: "owner" });
+      window.bookwormApi.listChapters = async () => ({ chapters: [] });
+      window.renderBookEditor({ bookId: "next-book" });
+    });
+    await page.getByText("Add your first chapter to start writing.").waitFor();
+    assert.equal(await page.getByText(/original account could not be verified/i).count(), 0);
+  } finally { await page.close(); }
+});
+
+test("manual save hides an old draft when the account changes before the write", async () => {
+  const page = await fixture(1280, true); let actor = "different-author";
+  try {
+    await page.getByText("Imported first step", { exact: true }).click(); await page.keyboard.press("End"); await page.keyboard.type(" private draft");
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.getByRole("button", { name: "Save chapter", exact: true }).click();
+    await page.getByText(/original account could not be verified/i).waitFor();
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    actor = "fixture-author"; await page.getByRole("button", { name: "Recheck original account" }).click();
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /private draft/);
+  } finally { await page.close(); }
+});
+
+test("manual save retains its recovery pointer and hides a response after an account switch", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.getByText("Imported first step", { exact: true }).click(); await page.keyboard.press("End"); await page.keyboard.type(" private draft");
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => { window.requests = [];
+      window.bookwormApi.saveChapterDocument = (chapterId, body, expectedActor) => {
+        window.requests.push({ body, expectedActor }); return new Promise(resolve => { window.finishSave = () => resolve({ version: 2,
+          document: { chapterId, version: 2, nodes: body.nodes } }); }); }; });
+    await page.getByRole("button", { name: "Save chapter", exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishSave === "function");
+    actor = "different-author"; await page.evaluate(() => window.finishSave());
+    await page.getByText(/original account could not be verified/i).waitFor();
+    assert.equal(await page.evaluate(() => window.requests[0].expectedActor), "fixture-author");
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:manual-save:"))), true);
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+  } finally { await page.close(); }
+});
+
+test("comparison version reads retain original actor and hide late responses after account switch", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => {
+      window.versionActors = [];
+      window.bookwormApi.listDocumentVersions = async () => ({ versions: [
+        { id: "v1", version_number: 1, created_at: "2026-10-05T12:00:00Z", plain_text: "A" },
+        { id: "v2", version_number: 2, created_at: "2026-10-05T12:00:00Z", plain_text: "B" }] });
+      window.bookwormApi.getDocumentVersion = (_chapter, versionId, expectedActor) => {
+        window.versionActors.push(expectedActor);
+        return new Promise(resolve => { (window.versionReleases ??= []).push(() => resolve({
+          version: { id: versionId, version_number: versionId === "v1" ? 1 : 2 },
+          document: { chapterId: "chapter", version: versionId === "v1" ? 1 : 2,
+            nodes: [{ id: "private", type: "paragraph", text: "Private version detail" }] } })); }); };
+      window.renderBookEditor({ initialChapterId: "chapter" });
+    });
+    await page.getByRole("checkbox", { name: "Select version 1" }).check();
+    await page.getByRole("checkbox", { name: "Select version 2" }).check();
+    await page.getByRole("button", { name: "Compare selected" }).click();
+    await page.getByRole("button", { name: "Compare blocks & formatting" }).click();
+    await page.waitForFunction(() => window.versionReleases?.length === 2);
+    actor = "different-author"; await page.evaluate(() => window.versionReleases.forEach(release => release()));
+    await page.getByText(/original account could not be verified/i).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.versionActors), ["fixture-author", "fixture-author"]);
+    assert.equal(await page.getByText("Private version detail", { exact: true }).isVisible().catch(() => false), false);
+  } finally { await page.close(); }
+});
+
+test("book and chapter list reads reject account changes before private metadata is shown", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => {
+      window.bookActors = [];
+      window.bookwormApi.getBook = (_id, expectedActor) => { window.bookActors.push(expectedActor);
+        return new Promise(resolve => { window.finishBook = () => resolve({ book: { id: "book", workspace_id: "workspace",
+          title: "Private old account book" }, role: "owner" }); }); };
+      window.bookwormApi.listChapters = async (_id, expectedActor) => { window.bookActors.push(expectedActor);
+        return { chapters: [{ id: "second", title: "Private old account chapter" }] }; };
+      window.renderBookEditor({ initialChapterId: "second" });
+    });
+    await page.waitForFunction(() => typeof window.finishBook === "function");
+    actor = "different-author"; await page.evaluate(() => window.finishBook());
+    await page.getByRole("alert").waitFor();
+    assert.deepEqual(await page.evaluate(() => window.bookActors), ["fixture-author", "fixture-author"]);
+    assert.equal(await page.getByText("Private old account book").count(), 0);
+    assert.equal(await page.getByText("Private old account chapter").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).count(), 0);
+  } finally { await page.close(); }
+});
+
+test("story plan load retains the original account fence before revealing book metadata", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => {
+      window.bookwormApi.getStoryBlueprint = (_id, expectedActor) => { window.planActor = expectedActor;
+        return new Promise(resolve => { window.finishPlan = () => resolve({ blueprint: null }); }); };
+      window.renderBookEditor({ initialChapterId: "second", initialDraftPlanItemId: "plan" });
+    });
+    await page.waitForFunction(() => typeof window.finishPlan === "function");
+    actor = "different-author"; await page.evaluate(() => window.finishPlan());
+    await page.getByRole("alert").waitFor();
+    assert.equal(await page.evaluate(() => window.planActor), "fixture-author");
+    assert.equal(await page.getByText("Author manuscript", { exact: true }).count(), 0);
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+  } finally { await page.close(); }
+});
+
+test("restore rejects wrong chapter or revision without adopting the response", async () => {
+  for (const bad of ["chapter", "version"]) {
+    const page = await fixture(1280, true);
+    try {
+      await page.evaluate(bad => { window.confirm = () => true;
+        window.bookwormApi.restoreDocumentVersion = async () => ({ version: 2, versionId: "saved-version",
+          document: { chapterId: bad === "chapter" ? "second" : "chapter", version: bad === "version" ? 3 : 2,
+            nodes: [{ id: "bad", type: "paragraph", text: "Wrong restored manuscript" }] } }); }, bad);
+      await page.getByRole("button", { name: "Restore version 1" }).click();
+      await page.getByRole("button", { name: "Retry original restore" }).waitFor();
+      assert.equal(await page.getByText("Wrong restored manuscript").count(), 0);
+      assert.equal(await page.getByText("Restored as version 2.").count(), 0);
+    } finally { await page.close(); }
+  }
+});
+
 test("failed chapter deep-link stays empty/read-only and retries the requested chapter", async () => {
   const page = await fixture(375, true);
   try {
@@ -829,15 +1144,37 @@ test("inconsistent current content cannot clear a confirmed original save pointe
 });
 
 test("account switch blocks manual recovery before any API call and keeps the original pointer", async () => {
-  const page = await manualSaveFixture();
+  const page = await manualSaveFixture(); let actor = "another-author";
   try {
-    await page.route("**/api/auth/session", route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ user: { id: "another-author" } }) }));
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
     await page.getByRole("button", { name: "Check saved status", exact: true }).click();
-    await page.getByText(/Your account changed/).waitFor();
+    await page.getByText(/original account could not be verified/i).waitFor();
     assert.equal(await page.evaluate(() => window.manualReads), 0);
     assert.equal(await page.evaluate(() => window.requests.length), 1);
-    assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "false");
     assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:manual-save:"))), true);
+    actor = "fixture-author"; await page.getByRole("button", { name: "Recheck original account" }).click();
+    assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "false");
+  } finally { await page.close(); }
+});
+
+test("manual recovery binds current reads and hides a late response after an account switch", async () => {
+  const page = await manualSaveFixture(); let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => {
+      const original = window.bookwormApi.getChapterDocument;
+      window.recoveryActors = [];
+      window.bookwormApi.getChapterDocument = (chapterId, expectedActor) => { window.recoveryActors.push(expectedActor);
+        return new Promise(resolve => { window.finishCurrentRecovery = async () => resolve(await original(chapterId, expectedActor)); }); };
+      window.bookwormApi.listDocumentVersions = async (_chapterId, expectedActor) => { window.recoveryActors.push(expectedActor); return { versions: [] }; };
+    });
+    await page.getByRole("button", { name: "Check saved status", exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishCurrentRecovery === "function");
+    actor = "another-author"; await page.evaluate(() => window.finishCurrentRecovery());
+    await page.getByText(/original account could not be verified/i).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.recoveryActors), ["fixture-author", "fixture-author"]);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:manual-save:"))), true);
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
   } finally { await page.close(); }
 });
 

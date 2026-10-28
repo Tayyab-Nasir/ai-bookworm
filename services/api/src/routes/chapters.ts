@@ -82,6 +82,7 @@ export function chapterRoutes(app: FastifyInstance) {
   });
 
   app.post("/chapters/:chapterId/versions/:versionId/restore", async (req) => {
+    checkChapterActor(req, true);
     const { chapterId, versionId } = req.params as { chapterId: string; versionId: string };
     const body = z.object({ expectedVersion: z.number().int().nonnegative(), operationId: z.string().min(1).max(200) }).safeParse(req.body);
     if (!body.success) throw new AppError(422, "expectedVersion and operationId required");

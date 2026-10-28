@@ -41,6 +41,19 @@ async function fixture({ role = "writer", initial = [row()], race = false } = {}
 test("manual save read is private, author-bound, read-only and keeps missing outcomes unresolved", async () => {
   const f = await fixture(); try { const r = await f.read(); assert.equal(r.statusCode, 200); assert.equal(r.json().status, "not_found"); assert.equal(r.headers["cache-control"], "private, no-store"); assert.equal(f.writes(), 0); } finally { await f.app.close(); }
 });
+test("restore requires the original actor before loading or writing a revision", async () => {
+  const f = await fixture(); const url = `/chapters/${chapter}/versions/v1/restore`;
+  const send = (actor?: string) => f.app.inject({ method: "POST", url,
+    headers: actor ? { "x-bookworm-actor": actor } : {}, payload: { expectedVersion: 1, operationId: operation } });
+  try {
+    assert.equal((await send()).statusCode, 422);
+    assert.equal((await send("invalid")).statusCode, 422);
+    assert.equal((await send("44444444-4444-4444-8444-444444444444")).statusCode, 409);
+    assert.equal(f.writes(), 0);
+    const saved = await send(user); assert.equal(saved.statusCode, 200); assert.equal(saved.json().document.chapterId, chapter);
+    assert.equal(f.writes(), 1);
+  } finally { await f.app.close(); }
+});
 test("manual save closure appends one unchanged version and is recoverable after a lost reply", async () => {
   const f = await fixture(); try {
     assert.equal((await f.close()).json().status, "closed"); assert.deepEqual(f.rows[1].content_json.nodes, body);

@@ -11,6 +11,11 @@ try {
   const requests = [], receipts = new Map();
   let conflict = false, failHistory = false;
   const chapter = '44444444-4444-4444-8444-444444444444';
+  await page.route(`**/api/backend/v1/chapters/${chapter}/document`, async route => {
+    if (route.request().method() === 'GET' && failHistory) return route.fulfill({ json: { role: 'owner',
+      document: { chapterId: chapter, version: 2, nodes: [{ id: 'restored', type: 'paragraph', text: 'Confirmed restored manuscript.' }] } } });
+    return route.continue();
+  });
   await page.route(`**/api/backend/v1/chapters/${chapter}/versions`, async route => {
     if (failHistory) return route.fulfill({ status: 503, json: { error: { message: 'fixture history outage' } } });
     return route.continue();

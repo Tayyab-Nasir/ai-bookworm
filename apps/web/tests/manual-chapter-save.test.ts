@@ -54,13 +54,15 @@ test("manual save transports bind the actor and never generate a new closure req
   try {
     const api = createClient({ baseUrl: "/api/backend" });
     await api.saveChapterDocument(scope.chapterId, { nodes, expectedVersion: 2, operationId: pointer.operationId }, scope.userId);
+    await api.restoreDocumentVersion(scope.chapterId, "saved-version", { expectedVersion: 2, operationId: pointer.operationId }, scope.userId);
     await api.getManualChapterSaveStatus(scope.chapterId, pointer.operationId, 2, scope.userId);
     await api.closeManualChapterSave(scope.chapterId, pointer.operationId, 2, scope.userId);
-    assert.deepEqual(calls.map(c => c.init?.method), ["PUT", "GET", "POST"]);
+    assert.deepEqual(calls.map(c => c.init?.method), ["PUT", "POST", "GET", "POST"]);
     assert.ok(calls.every(c => new Headers(c.init?.headers).get("x-bookworm-actor") === scope.userId && !new Headers(c.init?.headers).has("idempotency-key") && c.init?.credentials === "same-origin"));
-    assert.equal(calls[1].init?.body, undefined);
-    assert.match(calls[1].url, /\?expectedVersion=2$/);
-    assert.deepEqual(JSON.parse(String(calls[2].init?.body)), { expectedVersion: 2 });
+    assert.deepEqual(JSON.parse(String(calls[1].init?.body)), { expectedVersion: 2, operationId: pointer.operationId });
+    assert.equal(calls[2].init?.body, undefined);
+    assert.match(calls[2].url, /\?expectedVersion=2$/);
+    assert.deepEqual(JSON.parse(String(calls[3].init?.body)), { expectedVersion: 2 });
   } finally { globalThis.fetch = original; }
 });
 

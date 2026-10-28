@@ -933,8 +933,9 @@ export function createClient(opts: ClientOptions) {
       call<BookBibleMutationResult>("GET", `/v1/books/${encodeURIComponent(bookId)}/bible/requests/${encodeURIComponent(requestId)}`, undefined, true, { "x-bookworm-actor": expectedActorId }),
     closeBookBibleMutation: (bookId: string, requestId: string, expectedActorId: string) =>
       call<BookBibleMutationResult>("POST", `/v1/books/${encodeURIComponent(bookId)}/bible/requests/${encodeURIComponent(requestId)}/close`, {}, false, { "x-bookworm-actor": expectedActorId }),
-    getStoryBlueprint: (bookId: string) =>
-      call<{ blueprint: StoryBlueprint | null; role: string }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint`),
+    getStoryBlueprint: (bookId: string, expectedActor?: string) =>
+      call<{ blueprint: StoryBlueprint | null; role: string }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint`, undefined, true,
+        expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     saveStoryBlueprint: (bookId: string, body: SaveStoryBlueprintRequest) =>
       call<{ blueprint: StoryBlueprint; role: string }>("PUT", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint`, body),
     materializeStoryBlueprintChapter: (bookId: string, planItemId: string, body: MaterializeStoryBlueprintChapterRequest) =>
@@ -980,18 +981,19 @@ export function createClient(opts: ClientOptions) {
       call<{ chapter: Chapter; role: string; document: ChapterDocument }>("GET", `/v1/chapters/${chapterId}/document`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}, signal),
     getChapterSaveStatus: (chapterId: string, operationId: string) =>
       call<{ status: "not_found"; operationId: string } | { status: "saved"; operationId: string; versionId: string; document: ChapterDocument }>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/saves?${new URLSearchParams({ operationId })}`),
-    listDocumentVersions: (chapterId: string) =>
-      call<{ versions: DocumentVersionSummary[] }>("GET", `/v1/chapters/${chapterId}/versions`),
-    getDocumentVersion: (chapterId: string, versionId: string) =>
-      call<DocumentVersionSnapshot>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/versions/${encodeURIComponent(versionId)}`),
+    listDocumentVersions: (chapterId: string, expectedActorId?: string) =>
+      call<{ versions: DocumentVersionSummary[] }>("GET", `/v1/chapters/${chapterId}/versions`, undefined, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
+    getDocumentVersion: (chapterId: string, versionId: string, expectedActor?: string) =>
+      call<DocumentVersionSnapshot>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/versions/${encodeURIComponent(versionId)}`, undefined, true,
+        expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     saveChapterDocument: (chapterId: string, body: { nodes: BookNode[]; expectedVersion: number; operationId: string; changeSummary?: string }, expectedActorId?: string) =>
       call<{ version: number; versionId: string; document: ChapterDocument }>("PUT", `/v1/chapters/${chapterId}/document`, body, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
     getManualChapterSaveStatus: (chapterId: string, operationId: string, expectedVersion: number, expectedActorId: string) =>
       call<ManualChapterSaveResult>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/manual-saves/${encodeURIComponent(operationId)}?${new URLSearchParams({ expectedVersion: String(expectedVersion) })}`, undefined, false, { "x-bookworm-actor": expectedActorId }),
     closeManualChapterSave: (chapterId: string, operationId: string, expectedVersion: number, expectedActorId: string) =>
       call<ManualChapterSaveResult>("POST", `/v1/chapters/${encodeURIComponent(chapterId)}/manual-saves/${encodeURIComponent(operationId)}/close`, { expectedVersion }, false, { "x-bookworm-actor": expectedActorId }),
-    restoreDocumentVersion: (chapterId: string, versionId: string, body: { expectedVersion: number; operationId: string }) =>
-      call<{ version: number; versionId: string; document: ChapterDocument }>("POST", `/v1/chapters/${chapterId}/versions/${versionId}/restore`, body),
+    restoreDocumentVersion: (chapterId: string, versionId: string, body: { expectedVersion: number; operationId: string }, expectedActorId: string) =>
+      call<{ version: number; versionId: string; document: ChapterDocument }>("POST", `/v1/chapters/${chapterId}/versions/${versionId}/restore`, body, false, { "x-bookworm-actor": expectedActorId }),
     applyOperation: (chapterId: string, op: DocumentOperation) =>
       call<{ version: number }>("POST", `/v1/chapters/${chapterId}/operations`, op),
     createAssetUploadUrl: (body: { workspaceId: string; requestId?: string; filename: string; mimeType: string; sizeBytes: number; folderId?: string | null; type?: string }) =>

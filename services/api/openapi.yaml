@@ -154,6 +154,32 @@ paths:
         '409': { description: Account changed or concurrent write won; read original status }
         '422': { description: Invalid actor, UUID, expected revision or unsupported saved content }
         '503': { description: Database workflow unavailable; preserve original request }
+  /v1/chapters/{chapterId}/versions/{versionId}/restore:
+    post:
+      operationId: restoreDocumentVersion
+      summary: Restore a saved chapter revision under the original account
+      description: Requires the original actor and current editing membership. Retain the same operationId and expectedVersion if the response is lost; retrying that exact request recovers its existing write. A 409 can require checking saved history before any new decision.
+      parameters:
+        - { name: chapterId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: versionId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/ManualChapterActor" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedVersion, operationId]
+              properties:
+                expectedVersion: { type: integer, minimum: 0 }
+                operationId: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '200': { description: Restored saved revision }
+        '401': { description: Authentication required }
+        '403': { description: Current editing membership required }
+        '404': { description: Chapter or saved revision unavailable }
+        '409': { description: Account or revision changed; retain the original request }
+        '422': { description: Original actor or request is invalid }
   /v1/chapters/{chapterId}/versions/{versionId}:
     get:
       operationId: getDocumentVersion
