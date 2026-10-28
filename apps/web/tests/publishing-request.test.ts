@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createClient } from "@bookworm/api-client";
-import { packageRecoveryKey, readPackagePointer, persistPackagePointer, clearPackagePointer, validatePackageResult, type PackagePointer } from "../lib/publishing-request";
+import { packageRecoveryKey, readPackagePointer, persistPackagePointer, clearPackagePointer, validatePackageResult, signedDownloadDeadline, downloadExpired, nextDownloadClockWait, type PackagePointer } from "../lib/publishing-request";
 
 const id = (n: number) => `d1000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const pointer: PackagePointer = { schema: 1, userId: id(1), request: { bookId: id(2), editionId: id(3), channel: "kdp", renderJobId: id(4), preflightJobId: id(5), idempotencyKey: id(6) } };
@@ -68,4 +68,32 @@ test("package SDK keeps body request ID and actor, uses read-only recovery and n
     let calls = 0; globalThis.fetch = async () => { calls++; throw new Error("reply lost"); };
     await assert.rejects(() => api.createPublishingJob(pointer.request, id(1)), /reply lost/); assert.equal(calls, 1);
   } finally { globalThis.fetch = before; }
+});
+
+
+test("private package deadlines use request start and reject unsafe URLs and invalid lifetimes", () => {
+  const start = {wall: 1000, monotonic: 500};
+  const deadline = signedDownloadDeadline({url: "https://storage.example/signed.zip", expiresIn: 300}, start);
+  assert.deepEqual(deadline, {wall: 301000, monotonic: 300500});
+  assert.equal(downloadExpired(deadline, {wall: 1001, monotonic: 300500}), true);
+  assert.equal(downloadExpired(deadline, {wall: 301000, monotonic: 501}), true);
+  for (const download of [
+    {url: "javascript:alert(1)", expiresIn: 300},
+    {url: "http://remote.example/file", expiresIn: 300},
+    {url: "https://storage.example/signed.zip", expiresIn: 301},
+    {url: "https://storage.example/signed.zip", expiresIn: 0},
+  ]) assert.equal(signedDownloadDeadline(download, start), null);
+  assert.equal(signedDownloadDeadline(null, start), null);
+  assert.equal(signedDownloadDeadline({url: "https://storage.example/signed.zip", expiresIn: 300}, {wall: NaN, monotonic: 1}), null);
+});
+
+test("package clock schedules expired-between-render-and-effect deadlines immediately", () => {
+  const deadline = {wall: 1000, monotonic: 800};
+  const rendered = {wall: 999, monotonic: 799};
+  assert.equal(nextDownloadClockWait([deadline], rendered, {wall: 1000, monotonic: 800}), 0);
+  assert.equal(nextDownloadClockWait([deadline], rendered, {wall: 1200, monotonic: 799}), 0);
+  assert.equal(nextDownloadClockWait([deadline], rendered, {wall: 999, monotonic: 900}), 0);
+  assert.equal(nextDownloadClockWait([deadline], {wall: 1000, monotonic: 800}, {wall: 1001, monotonic: 801}), null);
+  assert.equal(nextDownloadClockWait([null], rendered, rendered), null);
+  assert.equal(nextDownloadClockWait([{wall: 40000, monotonic: 40000}], rendered, rendered), 10000);
 });

@@ -51,6 +51,32 @@ export function clearPackagePointer(storage: Pick<Storage, "getItem" | "removeIt
   if (storage.getItem(key) !== null) throw new Error("Export confirmed, but recovery could not be cleared. Recover this same request again.");
 }
 
+export type DownloadClock = { wall: number; monotonic: number };
+export const downloadClock = (): DownloadClock => ({ wall: Date.now(), monotonic: performance.now() });
+export function downloadExpired(deadline: DownloadClock | null, now: DownloadClock): boolean {
+  return !deadline || now.wall >= deadline.wall || now.monotonic >= deadline.monotonic;
+}
+/** Update immediately if a link expired after the last rendered clock sample. */
+export function nextDownloadClockWait(deadlines: (DownloadClock | null)[], rendered: DownloadClock, now: DownloadClock): number | null {
+  const live = deadlines.filter((deadline): deadline is DownloadClock => !!deadline && !downloadExpired(deadline, rendered));
+  if (!live.length) return null;
+  return Math.max(0, Math.min(10_000, ...live.map(deadline => Math.min(deadline.wall - now.wall, deadline.monotonic - now.monotonic))));
+}
+/** A slow response never extends the lifetime of a private package URL. */
+export function signedDownloadDeadline(download: { url: string; expiresIn: number } | null, startedAt: DownloadClock): DownloadClock | null {
+  if (!download || !Number.isFinite(startedAt.wall) || !Number.isFinite(startedAt.monotonic)) return null;
+  try {
+    validateReaderDownload(download);
+    const seconds = download.expiresIn;
+    if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 300) return null;
+    return { wall: startedAt.wall + seconds * 1000, monotonic: startedAt.monotonic + seconds * 1000 };
+  } catch { return null; }
+}
+
+export function packageDownloadDeadline(job: PublishingPackageJob, startedAt: DownloadClock): DownloadClock | null {
+  return signedDownloadDeadline(job.package?.download ?? null, startedAt);
+}
+
 export function validatePackageResult(value: unknown, pointer: PackagePointer): PublishingPackageJob {
   const request = pointer.request;
   if (!record(value) || typeof value.id !== "string" || !uuid.test(value.id) || value.requestId !== request.idempotencyKey

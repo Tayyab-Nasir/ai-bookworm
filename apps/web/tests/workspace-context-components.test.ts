@@ -8,6 +8,7 @@ import ts from "typescript";
 import * as readerHelpers from "../lib/epub-reader";
 import { privateDownloadUrl } from "../lib/private-download";
 import { renderLinksDeadline } from "../lib/pdf-proof";
+import * as publishingRequests from "../lib/publishing-request";
 import { jobLink } from "../lib/job-link";
 import { BookNodeSchema } from "@bookworm/book-model/schema";
 
@@ -44,7 +45,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     getItem(key: string) { if (options.blockedStorage) throw new Error("Storage blocked"); return values.get(key) ?? null; },
     setItem(key: string, value: string) { if (options.blockedStorage) throw new Error("Storage blocked"); values.set(key, value); },
     removeItem(key: string) { if (options.blockedStorage) throw new Error("Storage blocked"); values.delete(key); },
-  }, sessionStorage: { getItem: () => null }, setTimeout: (callback: () => void, milliseconds: number) => { const timer = setTimeout(callback, milliseconds); timer.unref(); return timer; }, clearTimeout };
+  }, sessionStorage: { getItem: () => null }, setTimeout: (callback: () => void, milliseconds: number) => { if (api.fixtureSetTimeout) return api.fixtureSetTimeout(callback, milliseconds); const timer = setTimeout(callback, milliseconds); timer.unref(); return timer; }, clearTimeout };
   const jsx = (type: unknown, props: any, key?: string | number) => ({ type, props, key: key === undefined ? null : String(key) });
   const react = {
     useState(initial: any) { const index = stateCursor++; if (!(index in states)) states[index] = initial; return [states[index], (value: any) => { states[index] = typeof value === "function" ? value(states[index]) : value; }]; },
@@ -94,6 +95,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
     if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "SavedPdfProof", "RetailerPackageRequest"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
     if (name.endsWith("/pdf-proof")) return { renderLinksDeadline };
+    if (name.endsWith("/publishing-request")) return { ...publishingRequests, downloadClock: api.fixtureDownloadClock ?? publishingRequests.downloadClock };
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
     if (name.endsWith("/epub-reader")) return readerHelpers;
     if (name.endsWith("/private-download")) return { privateDownloadUrl };
@@ -108,7 +110,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
   };
   const source = readFileSync(resolve(path), "utf8") + (options.inner ? `\nexport { ${options.inner} as auditInner };` : "");
   let key = 0;
-  vm.runInNewContext(compile(source), { exports, require, window, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, URL, URLSearchParams, crypto: { randomUUID: () => `fixture-request-${++key}` }, navigator: { clipboard: { writeText: api.copyInvitation ?? (async () => {}) } }, fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user", displayName: "Fixture author" } }) }) }, { filename: path });
+  vm.runInNewContext(compile(source), { exports, require, window, performance, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, URL, URLSearchParams, crypto: { randomUUID: () => `fixture-request-${++key}` }, navigator: { clipboard: { writeText: api.copyInvitation ?? (async () => {}) } }, fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user", displayName: "Fixture author" } }) }) }, { filename: path });
   const render = () => { stateCursor = 0; refCursor = 0; memoCursor = 0; effectCursor = 0; effects.length = 0; callbacks.length = 0; return (options.inner ? exports.auditInner : exports.default)(options.props ?? {}); };
   return { render, states, refs, effects, callbacks, values, window, assigned, setProps(value: object) { options.props = value; } };
 }
@@ -868,7 +870,7 @@ test("Assets permission retained retry cannot cross an A-to-B-to-A scope replace
 });
 
 test("Publishing history marks unavailable completed packages honestly and recovers restored files without regeneration", async () => {
-  const saved = { asset: { id: B, size_bytes: 1024, checksum: "a".repeat(64) }, download: { url: "https://storage.example/saved.zip" } };
+  const saved = { asset: { id: B, size_bytes: 1024, checksum: "a".repeat(64) }, download: { url: "https://storage.example/saved.zip", expiresIn: 300 } };
   let artifact: typeof saved | null = null;
   let generated = 0;
   const api = {
@@ -893,6 +895,32 @@ test("Publishing history marks unavailable completed packages honestly and recov
     nodes(h.render()).find(node => node.type === "button" && node.props.children === "Refresh").props.onClick();
     await settle(); assertAvailability(value !== null);
   }
+});
+
+test("Publishing history withdraws a link expiring between render and effect", async () => {
+  let clock = { wall: 1000, monotonic: 1000 };
+  const timers: { callback: () => void; delay: number }[] = [];
+  const api = {
+    fixtureDownloadClock: () => ({ ...clock }),
+    fixtureSetTimeout: (callback: () => void, delay: number) => { timers.push({ callback, delay }); return 1; },
+    getBook: async () => ({ book: { id: B, workspace_id: A, language: "en", title: "Fixture book" }, role: "owner" }),
+    listEditions: async () => ({ editions: [{ id: A, book_id: B, type: "ebook", language: "en", edition_metadata_json: { kind: "ebook" } }] }),
+    listPublishingJobs: async () => ({ jobs: [{ id: "saved-package", editionId: A, channel: "kdp", status: "succeeded", createdAt: "2026-10-17T00:00:00Z", package: { asset: { id: B, size_bytes: 1024, checksum: "a".repeat(64) }, download: { url: "https://storage.example/saved.zip", expiresIn: 1 } } }] }),
+    listChapters: async () => ({ chapters: [] }), listAssets: async () => ({ assets: [] }),
+  };
+  const h = harness("apps/web/components/PublishingStudio.tsx", api, { props: { bookId: B } });
+  h.render(); await h.callbacks.find(fn => fn.toString().includes("api.getBook"))!();
+  const before = h.render();
+  assert(nodes(before).some(node => node.type === "a" && node.props.children === "Download private ZIP"));
+  const expiryEffect = h.effects.find(fn => fn.toString().includes("visibilitychange")); assert(expiryEffect);
+  clock = { wall: 2001, monotonic: 2001 };
+  expiryEffect();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 0, "expired links visible at render require immediate withdrawal");
+  timers[0].callback();
+  const after = h.render();
+  assert.equal(nodes(after).some(node => node.type === "a" && node.props.children === "Download private ZIP"), false);
+  assert(nodes(after).some(node => node.type === "span" && typeof node.props.children === "string" && node.props.children.includes("Private link expired")));
 });
 
 test("Publishing render refreshes the real saved reader once; unsaved edits preserve its selected older snapshot", async () => {

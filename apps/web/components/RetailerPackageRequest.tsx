@@ -3,11 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { PublishingPackageJob, PublishingPackageRequest } from "@bookworm/api-client";
 import { apiClient } from "./api";
-import { clearPackagePointer, packageRecoveryKey, persistPackagePointer, readPackagePointer, validatePackageResult, type PackagePointer } from "../lib/publishing-request";
+import { clearPackagePointer, packageRecoveryKey, persistPackagePointer, readPackagePointer, validatePackageResult, downloadClock, type DownloadClock, type PackagePointer } from "../lib/publishing-request";
 
 type Props = {
   bookId: string; request: Omit<PublishingPackageRequest, "idempotencyKey"> | null;
-  canEdit: boolean; disabled: boolean; onBusy: (busy: boolean) => void; onJob: (job: PublishingPackageJob) => void;
+  canEdit: boolean; disabled: boolean; onBusy: (busy: boolean) => void; onJob: (job: PublishingPackageJob, startedAt: DownloadClock) => void;
 };
 const button = "min-h-11 rounded-full border border-white/25 px-4 py-2 text-sm disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white";
 
@@ -75,6 +75,7 @@ export default function RetailerPackageRequest(props: Props) {
       if (!current()) return;
       saved.current = intent; setPointer(intent);
       if (action === "close") { setCloseUncertain(true); setCloseConfirmed(false); }
+      const requestStartedAt = downloadClock();
       let job: unknown;
       if (action === "recover" || action === "close") {
         const result = action === "recover"
@@ -98,7 +99,7 @@ export default function RetailerPackageRequest(props: Props) {
       if (action === "create" || action === "retry") {
         if (confirmed.status !== "succeeded") throw new Error("Export creation is not confirmed. Recover the original request.");
       }
-      props.onJob(confirmed);
+      props.onJob(confirmed, requestStartedAt);
       if (confirmed.status === "queued" || confirmed.status === "running") {
         setNotice("This export is already in progress. Recover its status again; no new export is needed."); return;
       }

@@ -13,7 +13,9 @@ const bundle = await build({
     import { ApiClientError } from "@bookworm/api-client";
     window.ApiClientError = ApiClientError;
     const root = createRoot(document.getElementById("root"));
-    window.renderStudio = props => root.render(React.createElement(Studio, props));
+    window.renderStudio = props => root.render(React.createElement(React.Fragment, null,
+      React.createElement("output", { "aria-label": "Committed narration permission" }, props.canEdit ? "Can edit" : "Read only"),
+      React.createElement(Studio, props)));
     window.renderPublishing = bookId => root.render(React.createElement(Publishing, { bookId }));
     window.unmountStudio = () => root.render(null);`, resolveDir: process.cwd(), loader: "tsx" },
   bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", outdir: "memory",
@@ -170,7 +172,7 @@ async function publishingAction(operation) {
     window.actionResult = { save: window.savedEdition, render: window.renderResult, preflight: window.preflightResult, package: window.packageJob,
       "package history": { jobs: [window.packageJob] }, "audio export": { job: window.exportJob },
       "cancel export": { job: { ...window.exportJob, status: "cancelled" } },
-      "export history": { jobs: [{ ...window.exportJob, status: "succeeded", downloadUrl: "https://storage.example/old-view-private-archive" }] } }[operation];
+      "export history": { jobs: [{ ...window.exportJob, status: "succeeded", downloadUrl: "https://storage.example/old-view-private-archive", downloadExpiresIn: 300 }] } }[operation];
     window.actionCalls = [];
     window.api[method] = async (...args) => {
       if (operation === "package history" && args[0] !== oldBook) return { jobs: [] };
@@ -782,6 +784,7 @@ test("late acceptance cannot run stale callbacks after a permission downgrade", 
     await page.getByRole("button", { name: "Accept & generate chapter" }).click();
     await expect.poll(() => page.evaluate(() => Boolean(window.gates.purchase))).toBe(true);
     await render(page, props({ canEdit: false }));
+    await expect(page.getByRole("status", { name: "Committed narration permission" })).toHaveText("Read only");
     await page.evaluate(({ quoteId, project }) => window.gates.purchase.resolve({ quoteId, accepted: true,
       project: { id: project, billingMode: "quoted", status: "queued", reservedCredits: "3224" } }), { quoteId: QUOTE, project: uuid(20) });
     await expect(page.getByText("Accepted narration · queued", { exact: true })).toBeVisible();

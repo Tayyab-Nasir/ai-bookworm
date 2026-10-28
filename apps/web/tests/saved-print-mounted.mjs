@@ -28,6 +28,7 @@ const pdfXref = Buffer.byteLength(pdfSource);
 pdfSource += `xref\n0 ${pdfOffsets.length}\n0000000000 65535 f \n${pdfOffsets.slice(1).map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${pdfOffsets.length} /Root 1 0 R >>\nstartxref\n${pdfXref}\n%%EOF\n`;
 const pdfBytes = Buffer.from(pdfSource);
 const pngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==", "base64");
+const zipBytes = Buffer.from("PKsynthetic-retailer-package");
 const audioBytes = Buffer.from("ID3synthetic-private-segment"); // Transport fixture only, not a narration-quality test.
 const primaryDigest = createHash("sha256").update(pdfBytes).digest("hex");
 const coverDigest = createHash("sha256").update(pngBytes).digest("hex");
@@ -45,6 +46,7 @@ const bundles = await Promise.all([false, true].map(parent => build({ stdin: { c
        const select = useCallback(value => { window.selected.push(value); setSelected(value); }, []);
        const invalidate = useCallback(jobId => { window.invalidated.push(jobId); setSelected(current => current?.jobId === jobId ? null : current); }, []);
        return React.createElement("main", {className: "mx-auto max-w-5xl p-4 sm:p-8"},
+         React.createElement("output", {"aria-label":"Committed proof settings"}, props.dirty ? "Dirty" : "Saved"),
          React.createElement(Library, {...props, onSelect: select, onInvalidate: invalidate}),
          React.createElement("output", {"aria-label":"Selected print source"}, selected?.jobId ?? "No selected print"),
          selected && React.createElement("div", null, selected.artifacts.map(artifact => React.createElement("a", {key: artifact.asset.id,
@@ -79,9 +81,9 @@ const storage = createServer((request, response) => {
     response.writeHead(404); response.end(); return;
   }
   const filename = url.searchParams.get("download");
-  const bytes = url.pathname.endsWith(".mp3") ? audioBytes : url.pathname.endsWith(".png") ? pngBytes : pdfBytes;
+  const bytes = url.pathname.endsWith(".zip") ? zipBytes : url.pathname.endsWith(".mp3") ? audioBytes : url.pathname.endsWith(".png") ? pngBytes : pdfBytes;
   response.writeHead(200, {
-    "content-type": url.pathname.endsWith(".mp3") ? "audio/mpeg" : url.pathname.endsWith(".png") ? "image/png" : "application/pdf",
+    "content-type": url.pathname.endsWith(".zip") ? "application/zip" : url.pathname.endsWith(".mp3") ? "audio/mpeg" : url.pathname.endsWith(".png") ? "image/png" : "application/pdf",
     "content-length": bytes.length, "cache-control": "no-store",
     // Real HTTP lets full Chrome load its PDF viewer. Only Download gets attachment disposition.
     "content-disposition": filename ? `attachment; filename*=UTF-8''${encodeURIComponent(filename)}` : "inline",
@@ -362,6 +364,152 @@ test("actual Studio distinguishes unavailable package history and restores its l
   } finally { await page.close(); }
 });
 
+test("retailer download uses attachment, expires and refreshes without creating another package", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.packageJobs = [{ id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
+        createdAt: "2026-10-13T12:00:00.000Z", ruleVersion: "test-rules", package: {
+          asset: { id: window.ids.asset, size_bytes: 1024, checksum: "a".repeat(64) },
+          download: { url: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 1 },
+        } }];
+      window.bookwormApi.listPublishingJobs = async () => { window.requests.push({method: "GET", action: "packages"}); return {jobs: structuredClone(window.packageJobs)}; };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const link = history.getByRole("link", { name: "Download private ZIP" });
+    await expect(link).toBeVisible();
+    assert.equal(new URL(await link.getAttribute("href")).searchParams.get("download"), "kdp-export.zip");
+    const appUrl = page.url();
+    const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
+    assert.equal(download.suggestedFilename(), "kdp-export.zip");
+    assert.deepEqual(await readFile(await download.path()), zipBytes);
+    assert.equal(page.url(), appUrl);
+    await expect(link).toHaveCount(0, { timeout: 5000 });
+    await expect(history.getByText(/Private link expired or could not be verified/)).toBeVisible();
+    await page.evaluate(() => { window.packageJobs[0].package.download.expiresIn = 300; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(link).toBeVisible();
+    // A suspended tab may not fire its timer before the user's click.
+    await page.evaluate(() => { const now = Date.now; Date.now = () => now() + 301_000; });
+    await link.click();
+    await expect(link).toHaveCount(0);
+    assert.equal(page.url(), appUrl);
+    await page.evaluate(() => { window.packageJobs[0].package.download.url = "javascript:alert(1)"; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(link).toHaveCount(0);
+    await expect(history.getByText(/Private link expired or could not be verified/)).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method === "POST")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Google Play audiobook archive expires and renews separately from retailer packages", async () => {
+  const { page, errors } = await fixture({ parent: true, audio: true });
+  try {
+    await page.evaluate(() => {
+      window.audioExports = [{ id: window.ids.job, editionId: window.ids.edition, status: "succeeded", progressChapters: 1, progressTotal: 1,
+        createdAt: "2026-10-13T12:00:00.000Z", synthesizedVoiceDisclosureRequired: true, downloadExpiresIn: 1,
+        downloadUrl: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "googleplay-audiobook.zip") }];
+      window.bookwormApi.listAudiobookGooglePlayExports = async () => { window.requests.push({method: "GET", action: "audio-exports"}); return {jobs: structuredClone(window.audioExports)}; };
+    });
+    const history = page.getByRole("heading", {name: "Export history", exact: true}).locator("..");
+    await history.getByRole("button", {name: "Refresh", exact: true}).click();
+    const section = page.getByText("Google Play · 1 chapters").locator("../..").locator("..");
+    const link = page.getByRole("link", {name: "Download private ZIP", exact: true});
+    await expect(link).toBeVisible();
+    assert.equal(new URL(await link.getAttribute("href")).searchParams.get("download"), "googleplay-audiobook.zip");
+    const appUrl = page.url();
+    const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
+    assert.equal(download.suggestedFilename(), "googleplay-audiobook.zip");
+    assert.deepEqual(await readFile(await download.path()), zipBytes);
+    assert.equal(page.url(), appUrl);
+    await expect(link).toHaveCount(0, {timeout: 5000});
+    await expect(page.getByText(/Private link expired or could not be verified. Refresh export history/)).toBeVisible();
+    await page.evaluate(() => {window.audioExports[0].downloadExpiresIn = 300; window.audioExports[0].downloadUrl += "&download=Book-123.zip";});
+    await history.getByRole("button", {name: "Refresh", exact: true}).click();
+    await expect(link).toBeVisible();
+    assert.equal(new URL(await link.getAttribute("href")).searchParams.get("download"), "Book-123.zip");
+    await page.evaluate(() => { window.originalNow = Date.now; Date.now = () => window.originalNow() + 301_000; });
+    await link.click(); await expect(link).toHaveCount(0); assert.equal(page.url(), appUrl);
+    await page.evaluate(() => {
+      Date.now = window.originalNow; window.audioExports[0].downloadExpiresIn = 1;
+      window.bookwormApi.listAudiobookGooglePlayExports = async () => { window.requests.push({method: "GET", action: "audio-exports"}); await new Promise(resolve => setTimeout(resolve, 1200)); return {jobs: structuredClone(window.audioExports)}; };
+    });
+    await history.getByRole("button", {name: "Refresh", exact: true}).click();
+    await expect(link).toHaveCount(0);
+    await expect(page.getByText("Device clock moved backwards. Reload this page before renewing private links.")).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method === "POST")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a private archive link already expired when its slow response arrives is never offered", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.listPublishingJobs = async () => {
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        return { jobs: [{ id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
+          createdAt: "2026-10-13T12:00:00Z", package: { asset: { id: window.ids.asset, size_bytes: 1024, checksum: "a".repeat(64) },
+            download: { url: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 1 } } }] };
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText(/Private link expired or could not be verified/)).toBeVisible();
+    await expect(history.getByRole("link", { name: "Download private ZIP" })).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a backwards clock withdraws archive links until the page is reloaded", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      const job = { id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
+        createdAt: "2026-10-13T12:00:00Z", package: { asset: { id: window.ids.asset, size_bytes: 1024, checksum: "a".repeat(64) },
+          download: { url: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 300 } } };
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [job] });
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const link = history.getByRole("link", { name: "Download private ZIP" });
+    await expect(link).toBeVisible();
+    await page.evaluate(() => { window.originalNow = Date.now; Date.now = () => window.originalNow() - 60_000; });
+    await link.click();
+    await expect(link).toHaveCount(0);
+    await expect(history.getByText("Device clock moved backwards. Reload this page before renewing private links.")).toBeVisible();
+    await page.evaluate(() => { Date.now = window.originalNow; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(link).toHaveCount(0);
+    await expect(history.getByText("Device clock moved backwards. Reload this page before renewing private links.")).toBeVisible();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const audio of [false, true]) test(`switching books hides previous ${audio ? "audiobook" : "retailer"} archive links before the new load`, async () => {
+  const { page, errors } = await fixture({ parent: true, audio });
+  try {
+    await page.evaluate(({ audio }) => {
+      const url = window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "archive.zip");
+      if (audio) window.bookwormApi.listAudiobookGooglePlayExports = async () => ({ jobs: [{ id: window.ids.job, editionId: window.ids.edition, status: "succeeded", progressChapters: 1, progressTotal: 1, createdAt: "2026-10-13T12:00:00Z", synthesizedVoiceDisclosureRequired: true, downloadExpiresIn: 300, downloadUrl: url }] });
+      else window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{ id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded", createdAt: "2026-10-13T12:00:00Z", package: { asset: { id: window.ids.asset, size_bytes: 1024, checksum: "a".repeat(64) }, download: { url, expiresIn: 300 } } }] });
+    }, { audio });
+    const header = page.getByRole("heading", { name: audio ? "Export history" : "Package history", exact: true }).locator("..");
+    await header.getByRole("button", { name: "Refresh", exact: true }).click();
+    const link = page.getByRole("link", { name: "Download private ZIP" });
+    await expect(link).toBeVisible();
+    await page.evaluate(() => {
+      const old = window.bookwormApi.getBook;
+      window.bookwormApi.getBook = bookId => bookId === window.ids.otherAsset ? new Promise(() => {}) : old(bookId);
+      window.showStudio(window.ids.otherAsset);
+    });
+    await expect(link).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("actual Studio downloads a private audio segment without replacing its player or leaving the app", async () => {
   const { page, errors } = await fixture({ parent: true, audio: true });
   try {
@@ -554,8 +702,12 @@ test("unsaved settings immediately clear saved links and reject an in-flight old
     await page.evaluate(() => { window.holdDownload = true; window.setProofProps({ dirty: false, disabled: false }); });
     await page.getByRole("button", { name: "Open saved print", exact: true }).click(); await page.waitForFunction(() => window.downloadWaiters.length === 1);
     await page.evaluate(() => { window.setProofProps({ dirty: true, disabled: true }); });
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
     await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeDisabled();
-    await page.evaluate(() => window.downloadWaiters[0]()); assert.equal(await page.getByRole("link", { name: "Download exact saved interior" }).count(), 0);
+    await page.evaluate(async () => { window.downloadWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    assert.deepEqual(await page.evaluate(() => window.selected.map(result => result.jobId)), [ids.job]);
+    await expect(page.getByRole("status", { name: "Selected print source" })).toHaveText("No selected print");
+    assert.equal(await page.getByRole("link", { name: "Download exact saved interior" }).count(), 0);
   } finally { await page.close(); }
 });
 test("five-minute expiry clears parent proof selection without a render request", async () => {

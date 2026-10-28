@@ -13,12 +13,17 @@ import SavedPdfProof from "./SavedPdfProof";
 import { renderLinksDeadline } from "../lib/pdf-proof";
 import RetailerPackageRequest from "./RetailerPackageRequest";
 import { privateDownloadUrl } from "../lib/private-download";
+import { packageDownloadDeadline, signedDownloadDeadline, downloadClock, downloadExpired, nextDownloadClockWait, type DownloadClock } from "../lib/publishing-request";
 
 import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
 export { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
 type Channel = PreflightResult["requestedChannel"];
+type TimedPackageJob = PublishingPackageJob & { downloadExpiresAt: DownloadClock | null };
+type TimedAudioExport = AudiobookGooglePlayExportJob & { downloadExpiresAt: DownloadClock | null };
+const timeAudio = (job: AudiobookGooglePlayExportJob, startedAt: DownloadClock): TimedAudioExport => ({ ...job, downloadExpiresAt: job.downloadUrl && job.downloadExpiresIn ? signedDownloadDeadline({ url: job.downloadUrl, expiresIn: job.downloadExpiresIn }, startedAt) : null });
+const timePackage = (job: PublishingPackageJob, startedAt: DownloadClock): TimedPackageJob => ({ ...job, downloadExpiresAt: packageDownloadDeadline(job, startedAt) });
 const CHANNEL_FORMATS: Record<RetailerChannel, Kind[]> = { kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"] };
 
 const fieldClass = "mt-2 block w-full rounded-xl border border-white/10 bg-black/60 px-3 py-2.5 text-white outline-none focus:border-white/35";
@@ -33,7 +38,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [narrationChapterId, setNarrationChapterId] = useState("");
   const [audiobookProjects, setAudiobookProjects] = useState<AudiobookProjectResult[]>([]);
-  const [googlePlayExports, setGooglePlayExports] = useState<AudiobookGooglePlayExportJob[]>([]);
+  const [googlePlayExports, setGooglePlayExports] = useState<TimedAudioExport[]>([]);
   const exportRequestKey = useRef<string | null>(null);
   const [googlePlayIdentifier, setGooglePlayIdentifier] = useState("");
   const [googlePlayCoverId, setGooglePlayCoverId] = useState("");
@@ -45,7 +50,15 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [rendered, setRendered] = useState<(RenderedEditionResult & { expiresAt?: number }) | null>(null);
   const [readerRefreshKey, setReaderRefreshKey] = useState("");
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
-  const [publishingJobs, setPublishingJobs] = useState<PublishingPackageJob[]>([]);
+  const [publishingJobs, setPublishingJobs] = useState<TimedPackageJob[]>([]);
+  const [packageClock, setPackageClock] = useState(downloadClock());
+  const [packageClockFault, setPackageClockFault] = useState(false);
+  const observedClock = useRef(packageClock), clockFault = useRef(false);
+  const observePackageClock = () => {
+    const now = downloadClock();
+    if (now.wall < observedClock.current.wall || now.monotonic < observedClock.current.monotonic) { clockFault.current = true; setPackageClockFault(true); }
+    observedClock.current = now; setPackageClock(now); return now;
+  };
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const currentBook = useRef(bookId); currentBook.current = bookId;
@@ -56,6 +69,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
   const activeEdition = editions.find((edition) => edition.id === activeId) ?? null;
   const currentIdentity = book?.id === bookId;
+  const linkEpoch = viewEpoch.current;
   const editable = currentIdentity && EDIT_ROLES.has(role);
   // Navigation invalidates replies, not durable work already accepted by the server.
   const captureView = () => {
@@ -77,11 +91,12 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     setRendered(null); setPreflight(null); setNotice(null); exportRequestKey.current = null;
     setGooglePlayIdentifier(""); setGooglePlayCoverId("");
     try {
+      const historyStartedAt = downloadClock();
       const [identity, editionResult, packageHistory, chapterResult] = await Promise.all([api.getBook(bookId), api.listEditions(bookId), api.listPublishingJobs(bookId), api.listChapters(bookId)]);
       if (!valid()) return;
       const assetResult = await api.listAssets(identity.book.workspace_id);
       if (!valid()) return;
-      setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setPublishingJobs(packageHistory.jobs); setChapters(chapterResult.chapters);
+      setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setPublishingJobs(packageHistory.jobs.map(job => timePackage(job, historyStartedAt))); observePackageClock(); setChapters(chapterResult.chapters);
       setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
       if (editionResult.editions[0]) {
         currentEdition.current = editionResult.editions[0].id;
@@ -91,7 +106,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             api.listAudiobookProjects(editionResult.editions[0].id), api.listAudiobookGooglePlayExports(editionResult.editions[0].id),
           ]);
           if (!valid()) return;
-          setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs);
+          setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs.map(job => timeAudio(job, historyStartedAt))); observePackageClock();
         } else { setAudiobookProjects([]); setGooglePlayExports([]); }
       }
       else { currentEdition.current = null; setActiveId(null); setForm({ ...DEFAULT_FORM, language: identity.book.language }); setGooglePlayExports([]); }
@@ -108,6 +123,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     return () => window.clearTimeout(timer);
   }, [rendered, invalidatePrint]);
   useEffect(() => {
+    const update = () => { observePackageClock(); };
+    const now = downloadClock();
+    const wait = nextDownloadClockWait([...publishingJobs, ...googlePlayExports].map(job => job.downloadExpiresAt), packageClock, now);
+    const timer = wait !== null && !clockFault.current ? window.setTimeout(update, wait) : undefined;
+    window.addEventListener("focus", update); document.addEventListener("visibilitychange", update);
+    return () => { if (timer !== undefined) window.clearTimeout(timer); window.removeEventListener("focus", update); document.removeEventListener("visibilitychange", update); };
+  }, [publishingJobs, googlePlayExports, packageClock]);
+  useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
@@ -121,8 +144,9 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       if (pending) return;
       pending = true;
       try {
+        const startedAt = downloadClock();
         const result = await api.listAudiobookGooglePlayExports(activeId);
-        if (active && valid()) setGooglePlayExports(result.jobs);
+        if (active && valid()) { setGooglePlayExports(result.jobs.map(job => timeAudio(job, startedAt))); observePackageClock(); }
       } catch { /* Keep the last known job state visible; manual refresh remains available. */ }
       finally { pending = false; }
     };
@@ -145,8 +169,9 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     setGooglePlayIdentifier(""); setGooglePlayCoverId(""); setNotice(null);
     setActiveId(edition.id); setForm(formFromEdition(edition, book?.language)); setDirty(false); setRendered(null); setPreflight(null); setError(null);
     setAudiobookProjects([]); setGooglePlayExports([]);
+    const historyStartedAt = downloadClock();
     if (edition.type === "audiobook") void Promise.all([api.listAudiobookProjects(edition.id), api.listAudiobookGooglePlayExports(edition.id)])
-      .then(([projects, exports]) => { if (valid()) { setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs); } })
+      .then(([projects, exports]) => { if (valid()) { setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs.map(job => timeAudio(job, historyStartedAt))); observePackageClock(); } })
       .catch(() => { if (valid()) setError("Could not load audiobook history."); });
     else { setAudiobookProjects([]); setGooglePlayExports([]); }
   };
@@ -173,9 +198,10 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       setEditions((current) => [saved, ...current.filter((edition) => edition.id !== saved.id)]);
       setActiveId(saved.id); setForm(formFromEdition(saved, book?.language)); setDirty(false); setNotice("Edition settings saved.");
       if (saved.type === "audiobook") {
+        const historyStartedAt = downloadClock();
         const [projects, exports] = await Promise.all([api.listAudiobookProjects(saved.id), api.listAudiobookGooglePlayExports(saved.id)]);
         if (!valid()) return;
-        setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs);
+        setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs.map(job => timeAudio(job, historyStartedAt))); observePackageClock();
       }
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not save the edition."); }
     finally { if (valid()) setBusy(null); }
@@ -204,7 +230,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     if (busy) return;
     const valid = captureView(); if (!valid()) return;
     setBusy("history"); setError(null);
-    try { const result = await api.listPublishingJobs(bookId); if (valid()) setPublishingJobs(result.jobs); }
+    const startedAt = downloadClock();
+    try { const result = await api.listPublishingJobs(bookId); if (valid()) { setPublishingJobs(result.jobs.map(job => timePackage(job, startedAt))); observePackageClock(); } }
     catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh package history."); }
     finally { if (valid()) setBusy(null); }
   };
@@ -223,13 +250,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const valid = captureView(); if (!valid()) return;
     setBusy("audiobook"); setError(null); setNotice(null);
     try {
+      const startedAt = downloadClock();
       const { job } = await api.createAudiobookGooglePlayExport(activeId, {
         identifier: googlePlayIdentifier.trim(), coverAssetId: googlePlayCoverId,
         idempotencyKey: exportRequestKey.current ?? (exportRequestKey.current = crypto.randomUUID()),
       });
       if (!valid()) return;
       exportRequestKey.current = null;
-      setGooglePlayExports((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      setGooglePlayExports((current) => [timeAudio(job, startedAt), ...current.filter((item) => item.id !== job.id)]); observePackageClock();
       setNotice("Export queued. You can leave this page; progress and the private download will remain in export history.");
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not create the Google Play audio archive."); }
     finally { if (valid()) setBusy(null); }
@@ -240,9 +268,10 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const valid = captureView(); if (!valid()) return;
     setBusy("audiobook"); setError(null);
     try {
+      const startedAt = downloadClock();
       const { job } = await api.cancelAudiobookGooglePlayExport(jobId);
       if (!valid()) return;
-      setGooglePlayExports((current) => current.map((item) => item.id === job.id ? job : item));
+      setGooglePlayExports((current) => current.map((item) => item.id === job.id ? timeAudio(job, startedAt) : item)); observePackageClock();
       setNotice(job.status === "cancelled" ? "Export cancelled." : "Cancellation requested. The worker will stop at its next safe checkpoint.");
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not cancel the export."); }
     finally { if (valid()) setBusy(null); }
@@ -252,7 +281,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     if (!activeId || form.kind !== "audiobook") return;
     const valid = captureView(); if (!valid()) return;
     setError(null);
-    try { const result = await api.listAudiobookGooglePlayExports(activeId); if (valid()) setGooglePlayExports(result.jobs); }
+    const startedAt = downloadClock();
+    try { const result = await api.listAudiobookGooglePlayExports(activeId); if (valid()) { setGooglePlayExports(result.jobs.map(job => timeAudio(job, startedAt))); observePackageClock(); } }
     catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh export history."); }
   };
 
@@ -401,7 +431,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
                     {running && <div className="mt-3"><div className="flex justify-between text-xs text-white/45"><span>{job.status === "queued" ? "Waiting for an export worker" : "Assembling and verifying private files"}</span><span>{job.progressChapters}/{job.progressTotal} chapters</span></div><div role="progressbar" aria-label="Audiobook export progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-emerald-200 transition-[width]" style={{ width: `${progress}%` }} /></div></div>}
                     {job.status === "failed" && <p className="mt-3 text-xs text-red-100">Export failed ({job.errorCode ?? "unknown_error"}). Correct the source or cover and queue a new attempt.</p>}
                     {job.status === "cancelled" && <p className="mt-3 text-xs text-white/45">This export was cancelled before completion.</p>}
-                    <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">{job.downloadUrl && job.synthesizedVoiceDisclosureRequired && <a href={job.downloadUrl} download className="font-medium underline">Download private ZIP</a>}
+                    <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">{job.downloadUrl && job.synthesizedVoiceDisclosureRequired && currentIdentity && currentBook.current === bookId && ( !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <a href={privateDownloadUrl(job.downloadUrl, new URL(job.downloadUrl).searchParams.get("download") || "googleplay-audiobook.zip")} download className="font-medium underline" onClick={event => { const now = observePackageClock(); if (!currentIdentity || currentBook.current !== bookId || viewEpoch.current !== linkEpoch || clockFault.current || downloadExpired(job.downloadExpiresAt, now)) event.preventDefault(); }}>Download private ZIP</a> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified. Refresh export history to renew it."}</span>)}
                       {job.totalDurationSeconds && <span className="text-xs text-white/45">{Math.floor(job.totalDurationSeconds / 60)} min · disclose “Synthesized voice” on upload</span>}
                       {running && <button type="button" onClick={() => void cancelGooglePlayExport(job.id)} disabled={!editable || Boolean(busy)} className="text-xs text-white/55 underline disabled:opacity-40">Cancel export</button>}</div>
                   </li>;
@@ -433,7 +463,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             request={activeId && !dirty && channel !== "export" && channelCompatible && rendered && preflight && preflight.requestedChannel === channel && preflight.errors === 0
               ? { bookId, editionId: activeId, channel, renderJobId: rendered.jobId, preflightJobId: preflight.jobId } : null}
             onBusy={working => { setBusy(working ? "package" : null); if (working) setNotice(null); }}
-            onJob={job => setPublishingJobs(current => [job, ...current.filter(item => item.id !== job.id)])} />
+            onJob={(job, startedAt) => { setPublishingJobs(current => [timePackage(job, startedAt), ...current.filter(item => item.id !== job.id)]); observePackageClock(); }} />
           <p className="mt-3 text-xs leading-relaxed text-white/50">New packages include metadata.json with your saved listing text and README.txt with manual handoff steps. These are for your review, not an automatic retailer import. Older packages remain unchanged.</p>
           {channel === "export" && <p className="mt-4 text-sm text-white/55">Choose a retailer above to create its versioned package. Universal exports are the rendered EPUB/PDF files shown in the render section.</p>}
           {channel !== "export" && (!rendered || !preflight) && <p className="mt-4 text-sm text-white/55">Render this saved edition and run a {channel} preflight to enable packaging.</p>}
@@ -442,7 +472,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           <div className="mt-7 flex items-center justify-between border-t border-white/10 pt-5"><h3 className="font-medium">Package history</h3><button type="button" onClick={() => void refreshHistory()} disabled={Boolean(busy)} className="text-sm text-white/55 underline disabled:opacity-40">{busy === "history" ? "Refreshing…" : "Refresh"}</button></div>
           {activePublishingJobs.length ? <ul className="mt-4 space-y-3">{activePublishingJobs.map((job) => <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium capitalize">{job.channel === "barnesnoble" ? "Barnes & Noble" : job.channel === "googleplay" ? "Google Play Books" : job.channel} package</p><p className="mt-1 text-xs text-white/40">{new Date(job.createdAt).toLocaleString()} · {job.ruleVersion ?? "rules pending"}</p></div><span className={`rounded-full px-3 py-1 text-xs ${job.status === "succeeded" && job.package ? "bg-emerald-400/15 text-emerald-100" : job.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{job.status === "succeeded" ? (job.package ? "ready" : "unavailable") : job.status}</span></div>
-            {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span><a href={job.package.download.url} download className="underline">Download private ZIP</a></div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
+            {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <a href={privateDownloadUrl(job.package.download.url, `${job.channel}-export.zip`)} download className="underline" onClick={event => { const now = observePackageClock(); if (!currentIdentity || currentBook.current !== bookId || viewEpoch.current !== linkEpoch || clockFault.current || downloadExpired(job.downloadExpiresAt, now)) event.preventDefault(); }}>Download private ZIP</a> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified. Refresh package history to renew it."}</span>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
           </li>)}</ul> : <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p>}
         </section>}
       </div>
