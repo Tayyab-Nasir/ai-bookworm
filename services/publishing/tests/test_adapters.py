@@ -112,6 +112,143 @@ def test_google_play_fails_closed_when_epubcheck_is_unavailable(monkeypatch):
     assert any(item["code"] == "GOOGLE-EPUBCHECK-UNAVAILABLE" for item in result["findings"])
 
 
+@pytest.mark.parametrize(("status", "code"), [
+    ("invalid", "APPLE-EPUBCHECK-ERROR"),
+    ("unavailable", "APPLE-EPUBCHECK-UNAVAILABLE"),
+])
+def test_apple_epubcheck_blocks_invalid_and_unavailable_saved_artifacts(monkeypatch, status, code):
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    calls = []
+    def check(epub):
+        calls.append(epub)
+        return EpubCheckResult(status, 1 if status == "invalid" else 0)
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    ctx = {**_ctx(), "channel": "apple"}
+    result = get_adapter("apple").validate(ctx)
+    assert calls == [ctx["artifact"]]  # Both findings share one validation per run.
+    assert any(f["code"] == code and f["severity"] == "error" for f in result["findings"])
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        get_adapter("apple").build_package(ctx, {"book.epub": ctx["artifact"]})
+
+
+def test_apple_validates_packaged_bytes_and_records_manual_handoff(monkeypatch):
+    import hashlib
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    ctx = {**_ctx(), "channel": "apple"}
+    ctx["book"] = copy.deepcopy(VALID)
+    ctx["book"]["metadata"]["description"] = "A" * 60
+    saved_epub = ctx["artifact"]
+    # The stale proof context must never determine which bytes are validated.
+    ctx["artifact"] = b"not the saved EPUB"
+    seen = []
+    def check(epub):
+        seen.append(epub)
+        return EpubCheckResult("valid", 0, 2)
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    package = get_adapter("apple").build_package(ctx, {"book.epub": saved_epub})[0]
+    assert seen == [saved_epub]
+    assert get_adapter("apple").capabilities().can_submit is False
+    with zipfile.ZipFile(BytesIO(package.data)) as archive:
+        assert archive.read("book.epub") == saved_epub
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["files"]["book.epub"] == hashlib.sha256(saved_epub).hexdigest()
+        report = json.loads(archive.read("preflight.json"))
+        assert any(f["code"] == "APPLE-EPUBCHECK-WARNING" for f in report["findings"])
+        readme = archive.read("README.txt").decode()
+        assert "not a Transporter .itmsp package" in readme
+        assert "Apple Books Publishing Portal" in readme
+        assert "not Apple approval" in readme
+
+
+def test_apple_package_rejects_invalid_saved_bytes_despite_valid_stale_proof(monkeypatch):
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    ctx = {**_ctx(), "channel": "apple"}
+    ctx["book"] = copy.deepcopy(VALID)
+    ctx["book"]["metadata"]["description"] = "A" * 60
+    saved_epub = ctx["artifact"]
+    ctx["artifact"] = b"different proof"
+    ctx["_apple_epubcheck_result"] = EpubCheckResult("valid")
+    seen = []
+    def check(epub):
+        seen.append(epub)
+        return EpubCheckResult("invalid", 1) if epub == saved_epub else EpubCheckResult("valid")
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        get_adapter("apple").build_package(ctx, {"book.epub": saved_epub})
+    assert seen == [saved_epub]
+
+
+def test_apple_preflight_never_accepts_a_caller_supplied_cached_result(monkeypatch):
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    ctx = {**_ctx(), "channel": "apple", "_apple_epubcheck_result": EpubCheckResult("valid")}
+    seen = []
+    def check(epub):
+        seen.append(epub)
+        return EpubCheckResult("invalid", 1)
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    result = get_adapter("apple").validate(ctx)
+    assert seen == [ctx["artifact"]]
+    assert any(item["code"] == "APPLE-EPUBCHECK-ERROR" for item in result["findings"])
+
+
+def test_apple_metadata_only_preflight_warns_that_epub_was_not_checked(monkeypatch):
+    import rules.apple_v1 as apple_rules
+    def unexpected(_epub):
+        raise AssertionError("preliminary preflight has no EPUB to validate")
+    monkeypatch.setattr(apple_rules, "run_epubcheck", unexpected)
+    result = get_adapter("apple").validate({**_ctx(artifact=False), "channel": "apple"})
+    assert any(item["code"] == "APPLE-EPUBCHECK-NO-ARTIFACT" and item["severity"] == "warning"
+               for item in result["findings"])
+
+
+@pytest.mark.parametrize("status", ["valid", "invalid", "unavailable"])
+def test_apple_package_endpoint_checks_exact_saved_epub_once(monkeypatch, status):
+    from fastapi import HTTPException
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    book = copy.deepcopy(VALID)
+    book["metadata"]["description"] = "A" * 60
+    epub, _ = render_epub(book, parse_edition(EBOOK))
+    calls = []
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult(status, 1 if status == "invalid" else 0)
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    request = PackageRequest(channel="apple", editionConfig=EBOOK, bookModel=book,
+                             artifactsBase64={"book.epub": base64.b64encode(epub).decode()})
+    if status == "valid":
+        result = build_package(request)
+        assert result["errors"] == 0
+        assert result["ruleVersion"] == "core-1.0.9+apple-1.2.0"
+        with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.epub") == epub
+    else:
+        with pytest.raises(HTTPException) as exc:
+            build_package(request)
+        assert exc.value.status_code == 422
+    assert calls == [epub]
+
+
+def test_apple_preflight_uses_effective_edition_description_and_identifier(monkeypatch):
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    monkeypatch.setattr(apple_rules, "run_epubcheck", lambda _epub: EpubCheckResult("valid"))
+    ctx = {**_ctx(), "channel": "apple"}
+    ctx["book"] = copy.deepcopy(VALID)
+    ctx["book"]["metadata"].update(description="A" * 60, isbn13="9780306406157")
+    ctx["edition"] = {"kind": "ebook", "metadata_overrides": {"description": "short", "isbn13": ""}}
+    codes = {f["code"] for f in get_adapter("apple").validate(ctx)["findings"]}
+    assert {"APPLE-DESCRIPTION-LENGTH", "APPLE-VENDOR-ID"} <= codes
+    ctx["book"]["metadata"].update(description="short", isbn13="")
+    ctx["edition"]["metadata_overrides"] = {"description": "B" * 60, "isbn13": "9780306406157"}
+    codes = {f["code"] for f in get_adapter("apple").validate(ctx)["findings"]}
+    assert not {"APPLE-DESCRIPTION-LENGTH", "APPLE-VENDOR-ID"} & codes
+
+
 def test_build_package_deterministic_export_zip():
     adapter = get_adapter("kdp")
     blob, _ = render_epub(VALID, parse_edition(EBOOK))

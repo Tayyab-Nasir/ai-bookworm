@@ -23,6 +23,7 @@ if command["action"] == "fixture":
 elif command["action"] == "dispatch":
     db, calls = DatabaseFixture(), []
     app = create_customer_private_app(database_url=ROOT, service_role_key=DB_KEY,
+        deployment_id="deploy", service_id="service",
         service_token="synthetic-private-service-token", signing_keys={"synthetic": SIGNING_KEY}, mode="test",
         _test_database_transport=httpx.MockTransport(db.send), _test_provider_transport=transport("openai", calls),
         _test_clock=lambda: NOW)

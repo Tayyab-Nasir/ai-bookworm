@@ -37,6 +37,7 @@ async def main():
             raise RuntimeError("Synthetic provider gate timeout")
         return delegate.handle_request(request)
     app = create_customer_private_app(database_url=ROOT, service_role_key=DB_KEY, service_token=TOKEN,
+        deployment_id="deploy", service_id="service",
         signing_keys={"synthetic": SIGNING_KEY}, mode="test", _test_database_transport=httpx.MockTransport(db.send),
         _test_provider_transport=httpx.MockTransport(provider), _test_clock=lambda: NOW)
     owned = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

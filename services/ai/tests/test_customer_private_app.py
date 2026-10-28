@@ -25,11 +25,12 @@ def no_real_network(monkeypatch):
 
 def config(**overrides):
     return {"database_url": ROOT, "service_role_key": DB_KEY, "service_token": TOKEN,
-            "signing_keys": {"synthetic": SIGNING_KEY}, **overrides}
+            "deployment_id": "deploy", "service_id": "service", "signing_keys": {"synthetic": SIGNING_KEY}, **overrides}
 
 
 @pytest.mark.parametrize("overrides", [
     {"service_token": "short"}, {"service_token": "bad token with spaces"},
+    {"deployment_id": "bad\nid"}, {"service_id": ""}, {"deployment_id": "x" * 129},
     {"signing_keys": {}}, {"signing_keys": {"invalid key": b"x" * 32}},
     {"signing_keys": {"ok": b"x" * 31}}, {"signing_keys": {"ok": "x" * 32}},
     {"database_url": "https://user:synthetic-secret@example.test"},

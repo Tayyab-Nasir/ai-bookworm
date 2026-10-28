@@ -15,6 +15,7 @@ from adapters import get_adapter  # noqa: E402
 from editions import parse_edition  # noqa: E402
 from epub_renderer import render_epub  # noqa: E402
 from publication_metadata import effective_publication_metadata  # noqa: E402
+from rules import load_ruleset  # noqa: E402
 
 app = FastAPI(title="bookworm-publishing")
 
@@ -127,13 +128,19 @@ def build_package(req: PackageRequest) -> dict:
         "cover_bytes": artifacts.get("cover.png"),
         "cover_pdf_bytes": artifacts.get("cover.pdf"),
     }
-    validation = adapter.validate(ctx)
-    if validation["errors"]:
+    # Apple validates inside build_package against the exact ZIP-bound bytes.
+    # Running it here as well doubles the potentially long EPUBCheck process.
+    validation = None if req.channel == "apple" else adapter.validate(ctx)
+    if validation is not None and validation["errors"]:
         raise HTTPException(422, "the saved artifacts no longer pass channel validation")
     try:
         packages = adapter.build_package(ctx, artifacts)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+    if validation is None:
+        # A returned Apple package is possible only after its own zero-error
+        # validation; its version comes from the same immutable ruleset.
+        validation = {"ruleVersion": load_ruleset(req.channel).version, "errors": 0}
     return {
         "channel": req.channel,
         "ruleVersion": validation["ruleVersion"],

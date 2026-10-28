@@ -10,10 +10,11 @@ from fastapi.responses import JSONResponse
 
 from customer_protocol import strict_json
 
-DOMAIN = "bookworm-customer-service-identity-v1"
+DOMAIN = "bookworm-customer-service-identity-v2"
 
 
-def customer_identity_router(*, service_token: str, signing_keys: dict[str, bytes]) -> APIRouter:
+def customer_identity_router(*, service_token: str, signing_keys: dict[str, bytes],
+                             deployment_id: str, service_id: str) -> APIRouter:
     keys = dict(signing_keys)
     router = APIRouter()
 
@@ -36,17 +37,21 @@ def customer_identity_router(*, service_token: str, signing_keys: dict[str, byte
                         raise HTTPException(413, "Service identity challenge exceeds its limit.")
                     data.extend(chunk)
             value = strict_json(bytes(data))
-            if type(value) is not dict or set(value) != {"keyId", "nonce"}:
+            if type(value) is not dict or set(value) != {"version", "deploymentId", "serviceId", "keyId", "nonce"}:
                 raise ValueError()
             kid, nonce = value["keyId"], value["nonce"]
-            if (type(kid) is not str or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", kid) is None or kid not in keys
+            if (type(value["version"]) is not int or value["version"] != 2
+                    or type(value["deploymentId"]) is not str or value["deploymentId"] != deployment_id
+                    or type(value["serviceId"]) is not str or value["serviceId"] != service_id
+                    or type(kid) is not str or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", kid) is None or kid not in keys
                     or type(nonce) is not str or re.fullmatch(r"[A-Za-z0-9_-]{43}", nonce) is None):
                 raise ValueError()
             decoded = base64.b64decode(nonce + "=", altchars=b"-_", validate=True)
             if len(decoded) != 32 or base64.urlsafe_b64encode(decoded).decode().rstrip("=") != nonce:
                 raise ValueError()
-            proof = hmac.new(keys[kid], f"{DOMAIN}\n{kid}\n{nonce}".encode("ascii"), hashlib.sha256).hexdigest()
-            return JSONResponse({"keyId": kid, "nonce": nonce, "proof": proof}, headers={"cache-control": "no-store"})
+            proof = hmac.new(keys[kid], f"{DOMAIN}\n{deployment_id}\n{service_id}\n{kid}\n{nonce}".encode("ascii"), hashlib.sha256).hexdigest()
+            return JSONResponse({"version": 2, "deploymentId": deployment_id, "serviceId": service_id,
+                                 "keyId": kid, "nonce": nonce, "proof": proof}, headers={"cache-control": "no-store"})
         except HTTPException:
             raise
         except Exception:

@@ -19,6 +19,7 @@ from customer_service import customer_service_router
 
 def create_customer_private_app(*, database_url: str, service_role_key: str,
                                 service_token: str, signing_keys: dict[str, bytes],
+                                deployment_id: str, service_id: str,
                                 mode: str = "production", allow_loopback_http: bool = False,
                                 _test_database_transport: httpx.MockTransport | None = None,
                                 _test_provider_transport: httpx.MockTransport | None = None,
@@ -30,6 +31,8 @@ def create_customer_private_app(*, database_url: str, service_role_key: str,
                 or type(service_token) is not str or not service_token.isascii()
                 or not service_token.isprintable() or any(c.isspace() for c in service_token)
                 or not 16 <= len(service_token) <= 4096
+                or type(deployment_id) is not str or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", deployment_id) is None
+                or type(service_id) is not str or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", service_id) is None
                 or type(signing_keys) is not dict or not 1 <= len(signing_keys) <= 8):
             raise ValueError()
         for key_id, key in signing_keys.items():
@@ -45,7 +48,8 @@ def create_customer_private_app(*, database_url: str, service_role_key: str,
         database = CustomerAiDatabase(database_url, service_role_key, allow_loopback_http=allow_loopback_http,
                                       _test_transport=_test_database_transport)
         app = FastAPI(title="bookworm-private-customer-ai", docs_url=None, redoc_url=None, openapi_url=None)
-        app.include_router(customer_identity_router(service_token=service_token, signing_keys=dict(signing_keys)))
+        app.include_router(customer_identity_router(service_token=service_token, signing_keys=dict(signing_keys),
+                                                    deployment_id=deployment_id, service_id=service_id))
         app.include_router(customer_service_router(service_token=service_token, signing_keys=dict(signing_keys),
             database=database, _clock=_test_clock or (lambda: int(time.time())), _test_provider_transport=_test_provider_transport))
         return app

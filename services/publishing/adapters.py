@@ -168,6 +168,11 @@ class ExportAdapter:
                      + ("For Google Play Books, upload book.epub in an existing single-book Partner Center Content tab; this generic filename is not for bulk upload.\n"
                         "Run EpubCheck and review Google's processing result, pricing, territories and Review tab before you click Publish.\n"
                         if self.CHANNEL == "googleplay" else "")
+                     + ("For Apple Books, extract this ZIP; it is not a Transporter .itmsp package. Use the Apple Books Publishing Portal to upload book.epub and, if provided, cover.png.\n"
+                        "Apple requires EPUBCheck validation; the included preflight records the result for this saved EPUB, not Apple approval.\n"
+                        "Review your Apple Books agreement, publisher, original publication date, subject categories, permanent Vendor ID, rights, pricing and territories in Apple's account.\n"
+                        "Apple requires cover art before release; a pre-order may have different requirements.\n"
+                        if self.CHANNEL == "apple" else "")
                      + "Confirm rights, ISBN entitlement, territories, pricing and required AI-content disclosures yourself.\n"
                      "Inspect the retailer preview or physical proof before approving publication.\n"
                      "manifest.json records checksums and the validation rule version; zero errors is not retailer approval.\n"
@@ -219,6 +224,18 @@ class AppleBooksAdapter(ExportAdapter):
                                 can_check_status=False,
                                 required_metadata=("title", "author", "language", "description",
                                                    "categories"))
+
+    def validate(self, ctx: dict) -> dict:
+        ctx = dict(ctx)
+        ctx.pop("_apple_epubcheck_result", None)
+        return super().validate(ctx)
+
+    def build_package(self, ctx: dict, artifacts: dict[str, bytes]) -> list[PackageArtifact]:
+        # Validate the bytes actually exported, not a caller-supplied proof context.
+        if "book.epub" in artifacts:
+            ctx = {**ctx, "artifact": artifacts["book.epub"], "cover_bytes": artifacts.get("cover.png")}
+            ctx.pop("_apple_epubcheck_result", None)
+        return super().build_package(ctx, artifacts)
 
 
 class BarnesNobleAdapter(ExportAdapter):
