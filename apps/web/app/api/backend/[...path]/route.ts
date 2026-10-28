@@ -35,7 +35,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       || (path[3] === "title-changes" && ((path.length === 5 && ["GET", "PUT"].includes(request.method))
         || (path.length === 6 && path[5] === "close" && request.method === "POST")))
     );
-    const aiConnection = path[1] === "account" && path[2] === "ai-connections";
+    const aiConnection = path[1] === "account" && ["ai-connections", "customer-ai"].includes(path[2]);
     const boundRequest = aiConnection || manualBible || packageRequest || manualSave || chapterTitle || request.headers.has("x-bookworm-actor");
     const actor = boundRequest ? request.headers.get("x-bookworm-actor") : null;
     if (boundRequest && (!actor || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor))) {

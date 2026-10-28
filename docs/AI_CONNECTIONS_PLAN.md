@@ -15,8 +15,10 @@ Explicit database authorization, durable receipt transport and unmounted private
 service composition are in `docs/CUSTOMER_AI_DATABASE.md`.
 Durable prepare/confirm/status/cancel/receipt recovery routes are in
 `docs/CUSTOMER_AI_CONFIRMATION.md`; creation requires explicit preparation
-configuration and is default-off. **Queue activation, author-facing customer
-generation UI and subscription connections remain pending.** Reviewed 2026-10-24
+configuration and is default-off. The customer-key chapter author review and
+recovery UI is implemented at `/books/[bookId]/ai`; see
+`docs/CUSTOMER_AI_AUTHOR_WORKFLOW.md`. **Queue activation, published plan prices
+and allowances, live provider acceptance and subscription connections remain pending.** Reviewed 2026-10-24
 UTC. This is a build contract, not evidence that every subscription is usable or
 paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
 
@@ -26,15 +28,19 @@ paid provider acceptance passed. Stripe remains deferred; mobile remains parked.
    entitlements, credit reservation/settlement and unconfirmed-outcome holds.
 2. **Bring your own API key (BYOK):** a particular user's approved provider key;
    provider usage is billed by that provider. An API key does not convert a paid
-   chat subscription into API credit. Bookworm's platform fee/entitlement policy
-   is a separate product decision, currently awaiting the user's answer.
+   chat subscription into API credit. On 2026-10-24 the owner selected inclusion
+   in an eligible paid Bookworm plan, with no additional Bookworm service
+   credits per request. Provider charges and quota remain separate.
 3. **Official connected subscription:** only a provider-supported, eligible
    commercial OAuth/partner integration, with the user's consent and revocation
    controls. Ordinary social login is not inference authorization. Never borrow
    an installed agent's tokens or collect chat passwords, cookies or sessions.
+   When officially available, this also uses paid Bookworm plan inclusion,
+   without additional Bookworm service credits per request.
 
-Current paid-feature gates remain unchanged until an explicit BYOK pricing and
-entitlement contract is selected. No silently free platform AI, duplicated AI
+Paid-plan inclusion does not mean free access or unlimited requests. A current
+eligible paid plan and configured allowance remain mandatory; published plan
+prices and allowances still require product approval. No silently free platform AI, duplicated AI
 cost charge, automatic funding-source fallback or subscription quota bypass.
 
 ## Provider-specific findings
@@ -81,8 +87,8 @@ capabilities per account; do not promise that a text connection includes image
 generation, translation, or audiobook speech without endpoint/model acceptance.
 
 Keep provider quota/charges and Bookworm platform fees separate. Provider-paid
-usage is not automatically free Bookworm service, and no platform price has
-been approved. On quota exhaustion, expiry or revocation, stop and ask the user
+usage is included in an eligible paid Bookworm plan, not free Bookworm service;
+no numerical plan price has been approved. On quota exhaustion, expiry or revocation, stop and ask the user
 before changing funding sources. No paid API test was made by this review.
 
 These are time-sensitive findings. Recheck before implementation or public

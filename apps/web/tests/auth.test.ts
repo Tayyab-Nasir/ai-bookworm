@@ -108,6 +108,27 @@ test("AI keys are never forwarded to a non-loopback plaintext API service", asyn
   assert.equal(calls.some(call => new URL(call.url).hostname === "api.example.test"), false);
 });
 
+test("customer AI preparation, confirmation and recovery require actor and HTTPS before forwarding", async () => {
+  const signedIn = await login(), authProvider = provider;
+  provider = (url, init) => url.hostname === "api.example.test" ? Response.json({ accepted: true }) : authProvider(url, init);
+  for (const action of ["options", "prepare", "status", "confirm", "cancel", "recover", "close"]) {
+    const path = ["v1", "account", "customer-ai", action];
+    for (const [actor, status] of [[undefined, 422], ["invalid", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      process.env.API_URL = "https://api.example.test";
+      const before = calls.filter(c => new URL(c.url).hostname === "api.example.test").length;
+      const req = () => new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, { method: "POST",
+        headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) } });
+      assert.equal((await backendPost(req(), { params: Promise.resolve({ path }) })).status, status);
+      assert.equal(calls.filter(c => new URL(c.url).hostname === "api.example.test").length, before + (status === 200 ? 1 : 0));
+      if (actor === user.id) {
+        process.env.API_URL = "http://api.example.test";
+        assert.equal((await backendPost(req(), { params: Promise.resolve({ path }) })).status, 503);
+        assert.equal(calls.filter(c => new URL(c.url).hostname === "api.example.test").length, before + 1);
+      }
+    }
+  }
+});
+
 test("source passage proxy requires a current session and same-origin request and keeps text private", async () => {
   const signedIn = await login(), authProvider = provider;
   const path = ["v1", "books", "88888888-8888-4888-8888-888888888888", "search", "evidence"];

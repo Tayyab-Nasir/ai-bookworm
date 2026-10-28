@@ -5,6 +5,7 @@ import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task
 import type { BookNode } from "@bookworm/book-model";
 import { parseBookOverview } from "@bookworm/api-client/book-overview";
 import { parseAiConnections, parseAiConnectionMutation, parseAiConnectionReceipt, type AiProvider, type AiConnectionMutation, type AiConnectionPending } from "@bookworm/api-client/ai-connections";
+import { customerAiClient } from "@bookworm/api-client/customer-ai";
 export { parseBookOverview, type BookOverview } from "@bookworm/api-client/book-overview";
 
 export interface ChapterDocument { chapterId: string; version: number; nodes: BookNode[] }
@@ -888,6 +889,7 @@ export function createClient(opts: ClientOptions) {
     request<T>("POST", path, { "x-service-token": serviceToken }, body);
 
   return {
+    ...customerAiClient((action, body, actor, signal) => call<unknown>("POST", `/v1/account/customer-ai/${action}`, body, false, { "x-bookworm-actor": actor }, signal)),
     recoverAiConnection: (pending: AiConnectionPending, expectedActor: string, close = false, signal?: AbortSignal) => {
       const { provider, ...body } = pending;
       return call<unknown>("POST", `/v1/account/ai-connections/${encodeURIComponent(provider)}/${close ? "close" : "check"}`, body, false, { "x-bookworm-actor": expectedActor }, signal)
@@ -916,7 +918,7 @@ export function createClient(opts: ClientOptions) {
     listBooks: (workspaceId: string) =>
       call<{ books: Book[] }>("GET", `/v1/books?workspaceId=${encodeURIComponent(workspaceId)}`),
     createBook: (body: CreateBookRequest) => call<Book>("POST", "/v1/books", body),
-    getBook: (bookId: string) => call<{ book: Book; role: string }>("GET", `/v1/books/${bookId}`),
+    getBook: (bookId: string, expectedActor?: string, signal?: AbortSignal) => call<{ book: Book; role: string }>("GET", `/v1/books/${bookId}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}, signal),
     getBookOverview: (bookId: string) => call<unknown>("GET", `/v1/books/${encodeURIComponent(bookId)}/overview`)
       .then(value => parseBookOverview(value, bookId)),
     updateBook: (bookId: string, body: Partial<Omit<CreateBookRequest, "workspaceId" | "requestId" | "subtitle" | "genre">> & { subtitle?: string | null; genre?: string | null; expectedUpdatedAt: string }) =>
@@ -951,7 +953,7 @@ export function createClient(opts: ClientOptions) {
       call<StoryBlueprintProposalResult>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/proposals/${encodeURIComponent(proposalId)}`),
     applyStoryBlueprintProposal: (bookId: string, proposalId: string, expectedRevision: number) =>
       call<{ applied: true; revision: number }>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/proposals/${encodeURIComponent(proposalId)}/apply`, { expectedRevision }),
-    listChapters: (bookId: string) => call<{ chapters: Chapter[] }>("GET", `/v1/books/${bookId}/chapters`),
+    listChapters: (bookId: string, expectedActor?: string, signal?: AbortSignal) => call<{ chapters: Chapter[] }>("GET", `/v1/books/${bookId}/chapters`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}, signal),
     createChapter: (bookId: string, body: { title: string; nodes?: BookNode[]; idempotencyKey?: string }) =>
       call<{ chapter: Chapter }>("POST", `/v1/books/${bookId}/chapters`, body),
     reorderChapters: (bookId: string, body: { orderedIds: string[]; expectedIds: string[] }) =>
@@ -974,8 +976,8 @@ export function createClient(opts: ClientOptions) {
       call<ChapterTitleChangeResult>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/title-changes/${encodeURIComponent(operationId)}?${new URLSearchParams({ expectedRevision: String(expectedRevision), titleDigest })}`, undefined, false, { "x-bookworm-actor": expectedActorId }),
     closeChapterTitleChange: (chapterId: string, operationId: string, expectedRevision: number, titleDigest: string, expectedActorId: string) =>
       call<ChapterTitleChangeResult>("POST", `/v1/chapters/${encodeURIComponent(chapterId)}/title-changes/${encodeURIComponent(operationId)}/close`, { expectedRevision, titleDigest }, false, { "x-bookworm-actor": expectedActorId }),
-    getChapterDocument: (chapterId: string) =>
-      call<{ chapter: Chapter; role: string; document: ChapterDocument }>("GET", `/v1/chapters/${chapterId}/document`),
+    getChapterDocument: (chapterId: string, expectedActor?: string, signal?: AbortSignal) =>
+      call<{ chapter: Chapter; role: string; document: ChapterDocument }>("GET", `/v1/chapters/${chapterId}/document`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}, signal),
     getChapterSaveStatus: (chapterId: string, operationId: string) =>
       call<{ status: "not_found"; operationId: string } | { status: "saved"; operationId: string; versionId: string; document: ChapterDocument }>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/saves?${new URLSearchParams({ operationId })}`),
     listDocumentVersions: (chapterId: string) =>

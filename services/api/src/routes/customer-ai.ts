@@ -19,16 +19,22 @@ const selection = z.object({ workspaceId: id, bookId: id, connectionId: id, cred
 const preparation = z.object({ operationId: id, selection, policyId: id, source: customerSourceInput }).strict();
 const option = z.object({ id, provider: customerDispatchScope.shape.provider, agentType: customerDispatchScope.shape.agentType,
   policy: customerDispatchScope.shape.policy, platformFee: fee, expiresAt: z.string().datetime({ offset: true }) }).strict();
+const sourceVersion = z.object({ chapterId: id, documentVersionId: id, version: z.number().int().min(1).max(999999999) }).strict();
 const saved = z.object({ operationId: id, jobId: id.nullable(), workspaceId: id, bookId: id, connectionId: id,
   credentialRevision: revision, policyId: id, provider: customerDispatchScope.shape.provider, agentType: customerDispatchScope.shape.agentType,
-  model: customerDispatchScope.shape.policy.shape.model, maxOutputTokens: z.number().int().min(1).max(128000),
+  model: customerDispatchScope.shape.policy.shape.model, upstream: customerDispatchScope.shape.policy.shape.upstream,
+  maxOutputTokens: z.number().int().min(1).max(128000), sourceVersions: z.array(sourceVersion).min(1).max(100),
   platformFee: fee, providerCostStatus: z.literal("unknown"), contextOmitted: z.number().int().min(0).max(121),
   chapterCount: z.number().int().min(1).max(100), status: z.enum(["prepared", "expired", "closed", "queued", "running", "succeeded", "cancelled", "requires_review"]),
   createdAt: z.string().datetime({ offset: true }), expiresAt: z.string().datetime({ offset: true }) }).strict()
-  .refine(row => ["prepared", "expired", "closed"].includes(row.status) ? row.jobId === null : row.jobId !== null);
-const receipt = z.union([saved, z.object({ operationId: id, status: z.literal("not_found") }).strict()]);
+  .refine(row => (["prepared", "expired", "closed"].includes(row.status) ? row.jobId === null : row.jobId !== null)
+    && row.chapterCount === row.sourceVersions.length && new Set(row.sourceVersions.map(s => s.chapterId)).size === row.chapterCount);
+const receipt = z.union([saved, z.object({ operationId: id, status: z.literal("not_found") }).strict(),
+  z.object({ operationId: id, bookId: id, status: z.literal("closed_before_prepare") }).strict()]);
 const operation = z.object({ operationId: id }).strict();
-const confirmation = operation.extend({ expectedPlatformFeeCredits: z.number().int().min(0).max(1000000), consent: z.literal(true) }).strict();
+// Operator decision: customer-funded AI is included in an eligible paid plan.
+// Historical credit-fee receipts remain readable/cancellable/recoverable only.
+const confirmation = operation.extend({ expectedPlatformFeeCredits: z.literal(0), consent: z.literal(true) }).strict();
 export type CustomerAiPreparation = ReturnType<typeof customerAiPreparation>;
 
 function input<T extends z.ZodTypeAny>(schema: T, value: unknown): z.output<T> {
@@ -59,7 +65,7 @@ export function customerAiRoutes(app: FastifyInstance, options: { preparation?: 
         if (error.code === "42501") throw new AppError(403, "Current account and book access are required.");
         if (error.code === "23514") {
           if (args.p_action === "recover") throw new AppError(409, "The saved provider receipt could not be accepted. Keep this request for review.");
-          throw new AppError(403, "A current approved policy, paid access and available allowance or credits are required.");
+          throw new AppError(403, "A current approved policy, paid plan and available request allowance are required.");
         }
         if (error.code === "22023") throw new AppError(422, "Review the request and confirm its exact platform fee and provider charges.");
         if (error.code === "P0429") throw new AppError(429, "Too many preparations. Wait before creating another request.");
@@ -76,7 +82,7 @@ export function customerAiRoutes(app: FastifyInstance, options: { preparation?: 
     }));
     if (!values.success || new Set(values.data.map(row => row.id)).size !== values.data.length
       || values.data.some(row => row.provider !== selected.provider || row.agentType !== selected.agentType || Date.parse(row.expiresAt) <= Date.now())) throw unavailable();
-    return values.data;
+    return values.data.filter(row => row.platformFee.mode === "platform_plan" && row.platformFee.credits === 0);
   }
   app.post("/account/customer-ai/options", config, async req => {
     actor(req); enabled(); const selected = input(selection, req.body); req.body = undefined;
@@ -101,12 +107,23 @@ export function customerAiRoutes(app: FastifyInstance, options: { preparation?: 
       p_request_sha256: prepared.requestSha256, p_request: prepared.source.request, p_sources: prepared.source.sourceVersions,
       p_context_omitted: prepared.contextOmitted,
     }), value.operationId);
-    if (result.status === "not_found" || result.workspaceId !== value.selection.workspaceId || result.bookId !== value.source.bookId
+    if (!("sourceVersions" in result) || result.workspaceId !== value.selection.workspaceId || result.bookId !== value.source.bookId
       || result.connectionId !== value.selection.connectionId || result.credentialRevision !== value.selection.credentialRevision
       || result.policyId !== selected.id || result.provider !== selected.provider || result.agentType !== selected.agentType
-      || result.model !== selected.policy.model || result.platformFee.mode !== selected.platformFee.mode || result.platformFee.credits !== selected.platformFee.credits
+      || result.model !== selected.policy.model || result.upstream !== selected.policy.upstream
+      || result.platformFee.mode !== selected.platformFee.mode || result.platformFee.credits !== selected.platformFee.credits
       || result.maxOutputTokens !== prepared.maxOutputTokens || result.contextOmitted !== prepared.contextOmitted
-      || result.chapterCount !== prepared.source.sourceVersions.length) throw unavailable();
+      || result.sourceVersions.length !== prepared.source.sourceVersions.length
+      || result.sourceVersions.some((s, i) => { const original = prepared.source.sourceVersions[i];
+        return s.chapterId !== original.chapterId || s.documentVersionId !== original.documentVersionId || s.version !== original.version; })) throw unavailable();
+    return { viewerId: req.userId, receipt: result };
+  });
+  app.post("/account/customer-ai/close", config, async req => {
+    actor(req); const value = input(operation.extend({ bookId: id }).strict(), req.body); req.body = undefined;
+    const result = checkedReceipt(await rpc("close_customer_ai_preparation", {
+      p_owner_id: req.userId, p_book_id: value.bookId, p_operation_id: value.operationId,
+    }), value.operationId);
+    if (!("bookId" in result) || result.bookId !== value.bookId || !["closed_before_prepare", "closed", "cancelled"].includes(result.status)) throw unavailable();
     return { viewerId: req.userId, receipt: result };
   });
   for (const action of ["status", "confirm", "cancel", "recover"] as const) app.post(`/account/customer-ai/${action}`, config, async req => {

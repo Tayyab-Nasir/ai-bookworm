@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { ApiClientError, type AiJobReview, type AiJobWithSuggestions, type AiReviewModelChoice, type AiReviewUsageQuote } from "@bookworm/api-client";
 import type { AiSuggestion } from "@bookworm/types";
 import { apiClient } from "./api";
@@ -536,6 +537,7 @@ export default function AiAssistantPanel({
 
   return <section aria-labelledby="ai-assistant-title" className="rounded-2xl border border-white/10 p-4">
     <h2 id="ai-assistant-title" className="text-sm font-medium">AI assistant</h2>
+    <Link href={`/books/${bookId}/ai`} className="mt-2 inline-block text-xs underline underline-offset-4">Use your own AI connection ↗</Link>
     <p className="mt-1 text-xs leading-5 text-white/45">Saved Book Bible canon and style guide are optional quote sources. Every edit waits for your approval.</p>
     <label className="mt-4 block text-xs text-white/55" htmlFor="ai-mode">Task</label>
     <select id="ai-mode" value={mode} onChange={(event) => setMode(event.target.value as Mode)} disabled={processing || !!pendingRequest} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">

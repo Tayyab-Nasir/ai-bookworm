@@ -33,6 +33,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/ai-connections-mounted.mjs
+      - name: Verify customer-key source review, exact consent and recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/customer-ai-mounted.mjs
       - name: Verify inline previews and attachment downloads in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium

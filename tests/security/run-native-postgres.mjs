@@ -10,6 +10,7 @@ import { paidQuoteLifecycleRaces } from './native-paid-quote-lifecycle.mjs';
 import { moderationResolutionRaces } from './native-moderation-resolution.mjs';
 import { manualBookBibleRecoveryRaces } from './native-manual-book-bible-recovery.mjs';
 import { customerAiCompletionRaces } from './native-customer-ai-completion.mjs';
+import { customerAiPreparationRaces } from './native-customer-ai-preparations.mjs';
 import { verifyAudiobookSegmentationFixtures } from './audiobook-segmentation-lifecycle.mjs';
 import { verifyNarrationQuoteFixtures, verifyNarrationChapterQuoteFixtures } from './narration-quote-lifecycle.mjs';
 import { verifyNarrationFundedFixtures } from './narration-funded-lifecycle.mjs';
@@ -613,6 +614,7 @@ try {
   await moderationResolutionRaces({ sql, session, until, database });
   await manualBookBibleRecoveryRaces({ sql, session, until, database });
   await customerAiCompletionRaces({ sql, session, until, database });
+  await customerAiPreparationRaces({ sql, session, until, database });
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');

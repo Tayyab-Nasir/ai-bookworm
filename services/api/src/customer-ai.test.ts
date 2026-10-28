@@ -19,7 +19,7 @@ function backend() {
     credentialRevision: 1, provider: "openai", agentType: "writer" };
   const policy = { id: policyId, provider: "openai", agentType: "writer", policy: { model: "synthetic-1",
     responseModels: ["synthetic-1"], maxOutputTokens: 1024, upstream: null as string | null, responseUpstreams: [] as string[] },
-    platformFee: { mode: "per_request_credits", credits: 2 }, expiresAt: new Date(Date.now() + 3600000).toISOString() };
+    platformFee: { mode: "platform_plan", credits: 0 }, expiresAt: new Date(Date.now() + 3600000).toISOString() };
   const settings = { error: "", loseAfter: "", policyRows: undefined as unknown[] | undefined,
     alterReceipt: (r: any): unknown => r, privateCalls: 0, privateError: false };
   const receipts = new Map<string, any>(), calls: { name: string; args: Record<string, any> }[] = [];
@@ -37,13 +37,17 @@ function backend() {
         if (!old) {
           r = { operationId: op, jobId: null, workspaceId: args.p_workspace_id, bookId: args.p_book_id,
             connectionId: args.p_connection_id, credentialRevision: args.p_revision, policyId: args.p_policy_id,
-            provider: policy.provider, agentType: policy.agentType, model: policy.policy.model,
+            provider: policy.provider, agentType: policy.agentType, model: policy.policy.model, upstream: policy.policy.upstream,
             maxOutputTokens: policy.agentType === "bookbible" ? Math.min(policy.policy.maxOutputTokens, 6000) : policy.policy.maxOutputTokens,
             platformFee: structuredClone(policy.platformFee), providerCostStatus: "unknown", contextOmitted: args.p_context_omitted,
-            chapterCount: args.p_sources.length, status: "prepared", createdAt: new Date().toISOString(),
+            chapterCount: args.p_sources.length, sourceVersions: args.p_sources, status: "prepared", createdAt: new Date().toISOString(),
             expiresAt: new Date(Date.now() + 900000).toISOString() };
           receipts.set(op, r);
         }
+      } else if (name === "close_customer_ai_preparation") {
+        if (!old) { r = { operationId: op, bookId: args.p_book_id, status: "closed_before_prepare" }; receipts.set(op, r); }
+        else if (r.bookId !== args.p_book_id || !["closed_before_prepare", "prepared", "closed", "queued", "cancelled"].includes(r.status)) return { error: { code: "40001" }, data: null };
+        else if (r.status !== "closed_before_prepare") r.status = r.jobId ? "cancelled" : "closed";
       } else {
         assert.equal(name, "customer_ai_request_action");
         if (args.p_action === "confirm" && r.status === "prepared") { jobs++; r.status = "queued"; r.jobId = randomUUID(); }
@@ -90,7 +94,7 @@ test("canonical preparation is durable without job/key/provider activation; exac
   try {
     const choices = await f.send("options", body.selection); assert.equal(choices.statusCode, 200, choices.body);
     assert.deepEqual(choices.json().options[0], { id: db.policy.id, provider: "openai", agentType: "writer", model: "synthetic-1",
-      maxOutputTokens: 1024, upstream: null, platformFee: { mode: "per_request_credits", credits: 2 }, providerCostStatus: "unknown", expiresAt: db.policy.expiresAt });
+      maxOutputTokens: 1024, upstream: null, platformFee: { mode: "platform_plan", credits: 0 }, providerCostStatus: "unknown", expiresAt: db.policy.expiresAt });
     const prepare = await f.send("prepare", body); assert.equal(prepare.statusCode, 200, prepare.body);
     assert.equal(prepare.headers["cache-control"], "private, no-store"); assert.equal(db.jobs(), 0);
     const saved = prepare.json().receipt; assert.equal(saved.status, "prepared"); assert.equal(saved.jobId, null);
@@ -101,14 +105,14 @@ test("canonical preparation is durable without job/key/provider activation; exac
     assert(!prepare.body.includes("requestSha256")); assert(!prepare.body.includes(body.source.userInstruction!));
     assert.equal((await f.send("prepare", body)).statusCode, 200, "Durable operation bypasses process-local idempotency Map");
     db.settings.loseAfter = "customer_ai_request_action";
-    const confirm = await f.send("confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 2, consent: true });
+    const confirm = await f.send("confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 0, consent: true });
     assert.equal(confirm.statusCode, 503); assert.equal(db.jobs(), 1);
   } finally { await f.app.close(); }
   db.settings.loseAfter = "";
   const recovered = await fixture(db); try {
     const status = await recovered.send("status", { operationId: body.operationId }); assert.equal(status.statusCode, 200);
     assert.equal(status.json().receipt.status, "queued"); const job = status.json().receipt.jobId;
-    const again = await recovered.send("confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 2, consent: true });
+    const again = await recovered.send("confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 0, consent: true });
     assert.equal(again.statusCode, 200); assert.equal(again.json().receipt.jobId, job); assert.equal(db.jobs(), 1);
     assert.equal(db.settings.privateCalls, 2, "Status/confirmation never invoke preparation or generation");
     assert(!recovered.logs.join("").includes("private-response-lost-detail"));
@@ -124,12 +128,30 @@ test("lost preparation is read-only recoverable without resending manuscript or 
     assert.deepEqual(f.db.calls.at(-1)!.args, { p_owner_id: ids.owner, p_operation_id: body.operationId, p_action: "status", p_expected_fee: null, p_consent: false });
   } finally { await f.app.close(); }
 });
+
+test("lost close survives creation shutdown and status recovery without preparation or provider work", async () => {
+  const db = backend(), body = db.body(), f = await fixture(db, false);
+  try {
+    db.settings.loseAfter = "close_customer_ai_preparation";
+    assert.equal((await f.send("close", { operationId: body.operationId, bookId: ids.book })).statusCode, 503);
+    db.settings.loseAfter = "";
+    const r = await f.send("status", { operationId: body.operationId });
+    assert.equal(r.statusCode, 200); assert.deepEqual(r.json().receipt, { operationId: body.operationId, bookId: ids.book, status: "closed_before_prepare" });
+    assert.equal((await f.send("close", { operationId: body.operationId, bookId: ids.book })).statusCode, 200);
+    assert.equal((await f.send("close", { operationId: body.operationId, bookId: ids.other })).statusCode, 409);
+    assert.equal(db.settings.privateCalls, 0); assert.equal(db.jobs(), 0);
+    for (const delta of [{ bookId: ids.other }, { status: "not_found" }, { status: "queued" }, { request: "forbidden" }]) {
+      db.settings.alterReceipt = receipt => ({ ...receipt, ...delta });
+      assert.equal((await f.send("close", { operationId: body.operationId, bookId: ids.book })).statusCode, 503);
+    }
+  } finally { await f.app.close(); }
+});
 test("configuration removal blocks creation but preserves status, cancellation and receipt-only recovery", async () => {
   const db = backend(), f = await fixture(db), body = db.body(), pending = db.body();
-  await f.send("prepare", body); await f.send("confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 2, consent: true });
+  await f.send("prepare", body); await f.send("confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 0, consent: true });
   await f.send("prepare", pending); await f.app.close();
   const disabled = await fixture(db, false); try {
-    for (const [action, payload] of [["options", db.selected], ["prepare", db.body()], ["confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 2, consent: true }]] as const) {
+    for (const [action, payload] of [["options", db.selected], ["prepare", db.body()], ["confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 0, consent: true }]] as const) {
       const n = db.calls.length; assert.equal((await disabled.send(action, payload)).statusCode, 503); assert.equal(db.calls.length, n);
     }
     assert.equal((await disabled.send("status", { operationId: body.operationId })).json().receipt.status, "queued");
@@ -139,10 +161,11 @@ test("configuration removal blocks creation but preserves status, cancellation a
     assert.equal(db.settings.privateCalls, 2); assert.equal(db.jobs(), 1);
   } finally { await disabled.app.close(); }
 });
-test("all six operations require the original authenticated actor and exact body shape before service RPC", async () => {
+test("all seven operations require the original authenticated actor and exact body shape before service RPC", async () => {
   const f = await fixture(), b = f.db.body(); try {
-    for (const [action, payload] of [["options", b.selection], ["prepare", b], ["confirm", { operationId: b.operationId, expectedPlatformFeeCredits: 2, consent: true }],
-      ["status", { operationId: b.operationId }], ["cancel", { operationId: b.operationId }], ["recover", { operationId: b.operationId }]] as const) {
+    for (const [action, payload] of [["options", b.selection], ["prepare", b], ["confirm", { operationId: b.operationId, expectedPlatformFeeCredits: 0, consent: true }],
+      ["status", { operationId: b.operationId }], ["cancel", { operationId: b.operationId }], ["recover", { operationId: b.operationId }],
+      ["close", { operationId: b.operationId, bookId: ids.book }]] as const) {
       assert.equal((await f.send(action, payload, null)).statusCode, 422);
       assert.equal((await f.send(action, payload, ids.other)).statusCode, 409);
       assert.equal((await f.send(action, { ...payload, ownerId: ids.other })).statusCode, 422);
@@ -160,10 +183,36 @@ test("client cannot choose endpoints, source text, unknown context or unconsente
       { source: { ...body.source, bookId: ids.other } }, { source: { ...body.source, agentType: "proofreader" } },
       { apiKey: "never-in-browser-request" } ]) assert.equal((await f.send("prepare", { ...body, ...change })).statusCode, 422);
     for (const c of [{ consent: false }, { expectedPlatformFeeCredits: -1 }, { expectedPlatformFeeCredits: 1.5 }, { consent: null }])
-      assert.equal((await f.send("confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 2, consent: true, ...c })).statusCode, 422);
+      assert.equal((await f.send("confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 0, consent: true, ...c })).statusCode, 422);
     assert.equal(f.db.calls.length, 0); assert.equal(f.db.settings.privateCalls, 0);
   } finally { await f.app.close(); }
 });
+test("paid-plan access excludes request credit fees while keeping historical receipts recoverable", async () => {
+  const f = await fixture(), body = f.db.body(); try {
+    const legacyPolicy = { ...f.db.policy, id: randomUUID(), platformFee: { mode: "per_request_credits", credits: 2 } };
+    f.db.settings.policyRows = [legacyPolicy, f.db.policy];
+    const options = await f.send("options", body.selection);
+    assert.equal(options.statusCode, 200); assert.equal(options.json().options.length, 1);
+    assert.deepEqual(options.json().options[0].platformFee, { mode: "platform_plan", credits: 0 });
+    assert.equal((await f.send("prepare", { ...body, policyId: legacyPolicy.id })).statusCode, 409);
+    f.db.settings.policyRows = [legacyPolicy];
+    assert.deepEqual((await f.send("options", body.selection)).json().options, []);
+    assert.equal(f.db.settings.privateCalls, 0); assert.equal(f.db.source.reads.length, 0);
+    const calls = f.db.calls.length;
+    assert.equal((await f.send("confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 2, consent: true })).statusCode, 422);
+    assert.equal(f.db.calls.length, calls, "Credit-fee confirmation must stop before a service mutation");
+    f.db.settings.policyRows = undefined;
+    assert.equal((await f.send("prepare", body)).statusCode, 200);
+    const historical = f.db.receipts.get(body.operationId)!;
+    historical.platformFee = { mode: "per_request_credits", credits: 2 };
+    assert.deepEqual((await f.send("status", { operationId: body.operationId })).json().receipt.platformFee, historical.platformFee);
+    assert.equal((await f.send("close", { operationId: body.operationId, bookId: ids.book })).json().receipt.status, "closed");
+    historical.status = "running"; historical.jobId = randomUUID();
+    assert.equal((await f.send("recover", { operationId: body.operationId })).json().receipt.status, "succeeded");
+    assert.equal(f.db.jobs(), 0, "Historical receipt recovery never creates a new job");
+  } finally { await f.app.close(); }
+});
+
 test("stale or forged policy catalog fails before canonical loading and private service", async () => {
   const f = await fixture(); try {
     const p = f.db.policy;
@@ -200,7 +249,9 @@ for (const [code, status] of [["42501", 403], ["40001", 409], ["23505", 409], ["
 test("receipts reject wrong identity, hidden source, fee, model and lifecycle metadata", async () => {
   const f = await fixture(); try {
     for (const delta of [{ operationId: ids.other }, { connectionId: ids.other }, { credentialRevision: 2 }, { policyId: ids.other },
-      { bookId: ids.other }, { provider: "xai" }, { model: "different" }, { chapterCount: 2 }, { contextOmitted: 1 },
+      { bookId: ids.other }, { provider: "xai" }, { model: "different" }, { chapterCount: 2 }, { contextOmitted: 1 }, { upstream: "unapproved" },
+      { sourceVersions: [{ chapterId: ids.chapter, documentVersionId: ids.other, version: 1 }] },
+      { sourceVersions: [{ chapterId: ids.chapter, documentVersionId: ids.version, version: 2 }] },
       { platformFee: { mode: "per_request_credits", credits: 3 } }, { requestSha256: "a".repeat(64) }, { status: "queued", jobId: null }]) {
       f.db.settings.alterReceipt = r => ({ ...r, ...delta });
       assert.equal((await f.send("prepare", f.db.body())).statusCode, 503);
@@ -225,7 +276,7 @@ test("all five providers and six text agents preserve their exact selected model
         const r = await f.send("prepare", db.body()); assert.equal(r.statusCode, 200, `${provider}/${agentType}: ${r.body}`);
         assert.equal(r.json().receipt.provider, provider); assert.equal(r.json().receipt.agentType, agentType);
         assert.equal(r.json().receipt.maxOutputTokens, agentType === "bookbible" ? 6000 : 9000);
-        assert.equal(r.json().receipt.platformFee.credits, 2); assert.equal(db.jobs(), 0);
+        assert.equal(r.json().receipt.platformFee.credits, 0); assert.equal(db.jobs(), 0);
       } finally { await f.app.close(); }
     }
   }

@@ -103,7 +103,8 @@ do $$ declare f customer_preparation_fixture; r jsonb; options jsonb; changed js
  r:=pg_temp.prepare_request(); assert r->>'status'='prepared' and r->'jobId'='null'::jsonb;
  assert r=pg_temp.prepare_request() and r=pg_temp.request_action('status'),'Lost prepare reply is recoverable without another write';
  assert r->>'providerCostStatus'='unknown' and r->>'chapterCount'='1' and r->>'contextOmitted'='0';
- assert not(r ?| array['request','sourceVersions','requestSha256','apiKey','grantId','keySuffix']);
+ assert r->'sourceVersions'=f.sources and r->'upstream'='null';
+ assert not(r ?| array['request','requestSha256','apiKey','grantId','keySuffix']);
  assert public.customer_ai_request_action(f.other_user,f.op,'status')->>'status'='not_found';
  assert not exists(select 1 from public.ai_jobs where book_id=f.b),'Prepare created a job';
  assert not exists(select 1 from public.credit_ledger where reference_type='customer_ai_platform_fee' and user_id=f.u),'Prepare charged a fee';
