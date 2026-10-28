@@ -121,7 +121,7 @@ def main():
         assert hashlib.sha256(google_epub).hexdigest() == google["sha256"]
         preflight = check_json(container, "/preflight", {**google_request, "channel": "googleplay"})
         assert preflight["errors"] == 0, preflight["findings"]
-        assert preflight["ruleVersion"] == "core-1.0.8+google-play-1.1.0"
+        assert preflight["ruleVersion"] == "core-1.0.9+google-play-1.1.0"
         mp3 = docker("exec", container, "python", "-c",
             "import base64,subprocess; from audio_assembly import ffmpeg_executable; "
             "r=subprocess.run([ffmpeg_executable(),'-v','error','-f','lavfi','-i','sine=frequency=440:duration=1',"

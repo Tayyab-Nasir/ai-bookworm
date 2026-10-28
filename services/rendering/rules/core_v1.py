@@ -6,11 +6,12 @@ channel-specific thresholds live in the channel rule modules.
 from editions import language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
 from print_fonts import BASE_FONTS, EMBEDDED_FONTS, print_font_issues
+from rtl_text import cover_rtl_issues
 from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.8"
+VERSION = "core-1.0.9"
 
 
 def _find(code, msg, loc=""):
@@ -165,7 +166,7 @@ def check_print_layout(ctx):
 
 
 def check_print_glyphs(ctx):
-    return [_find("PRINT_GLYPH_UNSUPPORTED", issue["message"], issue["location"])[0]
+    return [_find(issue.get("code", "PRINT_GLYPH_UNSUPPORTED"), issue["message"], issue["location"])[0]
             for issue in print_font_issues(ctx.get("book") or {}, ctx.get("edition") or {})]
 
 
@@ -198,10 +199,11 @@ def check_rtl_typography(ctx):
     language = metadata.get("language")
     direction = resolve_text_direction(language, edition.get("text_direction", "auto"))
     requires_rtl = language_requires_rtl_shaping(language) or direction == "rtl"
+    out = [_find("RTL_COVER_TEXT_UNSUPPORTED", issue["message"], issue["location"])[0]
+           for issue in cover_rtl_issues(metadata, edition)]
     if not requires_rtl:
-        return []
-    out = []
-    if edition.get("kind") == "print":
+        return out
+    if edition.get("kind") == "print" or (edition.get("kind") == "ebook" and edition.get("flow") == "fixed"):
         out += _find("RTL_PRINT_FONT_UNSUPPORTED",
                      "RTL print PDF requires an embedded shaping-capable font; base PDF fonts are not safe for this script",
                      "edition.text_direction")

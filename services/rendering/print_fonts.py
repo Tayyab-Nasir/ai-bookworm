@@ -12,6 +12,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
 from manuscript import inline_runs, table_rows
+from rtl_text import requires_bidi_layout
 
 BASE_FONTS = {"Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"}
 EMBEDDED_FONTS = {"BookwormVera", "BookwormVera-Bold"}
@@ -70,7 +71,13 @@ def _missing(text: str, font_name: str) -> list[str]:
 
 def print_font_issues(book: dict, edition: dict) -> list[dict[str, str]]:
     """Check only text the print renderer emits, using its effective marked font."""
-    if edition.get("kind") != "print":
+    if edition.get("kind") == "ebook" and edition.get("flow", "reflowable") == "fixed":
+        from editions import FixedLayout
+        from publication_metadata import effective_publication_metadata
+        layout = FixedLayout.model_validate(edition.get("fixed_layout") or {}).model_dump()
+        book = {**book, "metadata": effective_publication_metadata(book.get("metadata") or {}, edition.get("metadata_overrides") or {})}
+        edition = {**layout, "kind": "print", "front_matter": edition.get("front_matter") or {}}
+    elif edition.get("kind") != "print":
         return []
     typography = edition.get("typography") or {}
     body = typography.get("body_font", "Times-Roman")
@@ -80,6 +87,8 @@ def print_font_issues(book: dict, edition: dict) -> list[dict[str, str]]:
     issues = []
 
     def check(text, font, location):
+        if requires_bidi_layout(text):
+            issues.append({"code": "RTL_TEXT_UNSUPPORTED", "location": location, "message": "Text requires bidirectional shaping, which is not available for print or fixed-layout EPUB."})
         missing = _missing(text or "", font)
         if missing:
             codes = ", ".join(missing[:8]) + (" …" if len(missing) > 8 else "")

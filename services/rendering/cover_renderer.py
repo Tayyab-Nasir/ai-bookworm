@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 from editions import EbookEdition, PrintEdition, cover_requires_unsupported_rtl_typography
 from print_fonts import _missing
+from rtl_text import cover_rtl_issues
 from publication_metadata import effective_publication_metadata
 
 COVER_RENDERER_VERSION = "cover-1.4.0"
@@ -119,6 +120,9 @@ def compose_front_cover(
         book.get("metadata", {}), edition.metadata_overrides if edition.kind == "ebook" else None)
     if cover_requires_unsupported_rtl_typography(edition, metadata):
         raise ValueError("RTL cover text requires an embedded shaping-capable font; the base-font cover renderer cannot produce it safely")
+    issues = cover_rtl_issues(metadata, edition.model_dump())
+    if issues:
+        raise ValueError(issues[0]["message"])
     for enabled, key in ((edition.cover.title_on_cover, "title"),
                          (edition.cover.subtitle_on_cover, "subtitle"),
                          (edition.cover.author_on_cover, "author")):

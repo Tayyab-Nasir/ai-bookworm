@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from editions import (  # noqa: E402
     cover_requires_unsupported_rtl_typography,
+    edition_requires_rtl_typography,
     parse_edition,
     print_requires_unsupported_rtl_typography,
 )
@@ -31,6 +32,7 @@ from pdf_renderer import render_pdf, RENDERER_VERSION as PDF_RENDERER_VERSION  #
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
 from print_fonts import print_font_issues  # noqa: E402
+from rtl_text import cover_rtl_issues  # noqa: E402
 from wrap_cover import VERSION as WRAP_VERSION, render_wrap_cover  # noqa: E402
 from preflight import Finding  # noqa: E402
 from audio_assembly import assemble_audio_with_quality, encode_narration_pcm  # noqa: E402
@@ -287,8 +289,13 @@ def render(req: RenderRequest) -> RenderResponse:
         raise HTTPException(422, str(e)) from e
     if edition.kind == "print" and print_requires_unsupported_rtl_typography(edition, metadata):
         raise HTTPException(422, "RTL print PDF requires an embedded shaping-capable font; the base-font renderer cannot produce it safely")
+    if edition.kind == "ebook" and edition.flow == "fixed" and edition_requires_rtl_typography(edition, metadata):
+        raise HTTPException(422, "RTL fixed EPUB requires bidirectional shaping, which is not available.")
     if cover_requires_unsupported_rtl_typography(edition, metadata):
         raise HTTPException(422, "RTL cover text requires an embedded shaping-capable font; the base-font cover renderer cannot produce it safely")
+    cover_issues = cover_rtl_issues(metadata, edition.model_dump())
+    if cover_issues:
+        raise HTTPException(422, cover_issues[0]["message"])
     font_issues = print_font_issues(req.bookModel, edition.model_dump())
     if font_issues:
         raise HTTPException(422, font_issues[0]["message"])
@@ -332,7 +339,9 @@ def preflight(req: PreflightRequest) -> dict:
         raise HTTPException(422, str(e)) from e
     rtl_render_blocked = (
         (edition.kind == "print" and print_requires_unsupported_rtl_typography(edition, metadata))
+        or (edition.kind == "ebook" and edition.flow == "fixed" and edition_requires_rtl_typography(edition, metadata))
         or cover_requires_unsupported_rtl_typography(edition, metadata)
+        or bool(cover_rtl_issues(metadata, edition.model_dump()))
     )
     # Return actionable findings before a known-unsupported renderer can emit an
     # unreadable PDF or raster cover. Supplied base64 remains validated here.

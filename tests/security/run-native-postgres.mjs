@@ -16,6 +16,7 @@ import { customerAiReconciliationDiscoveryRaces } from './native-customer-ai-rec
 import { customerAiReceiptRecoveryRaces } from './native-customer-ai-receipt-recovery.mjs';
 import { customerAiMaintenanceJournalRaces } from './native-customer-ai-maintenance-journal.mjs';
 import { customerAiMaintenanceLookupRaces } from './native-customer-ai-maintenance-lookup.mjs';
+import { customerAiMaintenanceSlotRaces } from './native-customer-ai-maintenance-slots.mjs';
 import { verifyAudiobookSegmentationFixtures } from './audiobook-segmentation-lifecycle.mjs';
 import { verifyNarrationQuoteFixtures, verifyNarrationChapterQuoteFixtures } from './narration-quote-lifecycle.mjs';
 import { verifyNarrationFundedFixtures } from './narration-funded-lifecycle.mjs';
@@ -625,6 +626,7 @@ try {
   await customerAiReceiptRecoveryRaces({ sql, session, until, database });
   await customerAiMaintenanceJournalRaces({ sql, session, until, database });
   await customerAiMaintenanceLookupRaces({ sql, session, until, database });
+  await customerAiMaintenanceSlotRaces({ sql, session, until, database });
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');

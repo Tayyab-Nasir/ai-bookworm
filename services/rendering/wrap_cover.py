@@ -17,6 +17,7 @@ from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import Paragraph
 
 from editions import PrintEdition
+from rtl_text import requires_bidi_layout
 from kdp_print import kdp_page_count, kdp_page_range
 from print_fonts import _missing
 
@@ -69,6 +70,8 @@ def render_wrap_cover(front: bytes, interior: bytes, edition: PrintEdition) -> t
     width, height, spine = wrap_geometry(edition, count)
     config = edition.wrap_cover
     for value in (config.back_text, config.spine_text):
+        if requires_bidi_layout(value):
+            raise ValueError("Wrap cover text requires bidirectional shaping, which is not available.")
         if _missing(value, "BookwormVera"):
             raise ValueError("back or spine text contains characters unsupported by the cover font")
     tw, th = edition.trim_in
