@@ -30,6 +30,38 @@ export function customerAiScheduler(sb: SupabaseClient, worker: Worker, options:
   // Fail closed on saturation instead of evicting uncertain identities.
   const uncertain = new Set<string>();
   return {
+    /** Explicit service-only receipt recovery. The database validates the saved
+     * receipt and may settle it; this never dispatches a provider or releases a
+     * hold. A lost reply remains unknown and is never automatically retried.
+     */
+    async recoverReceipt(jobId: string, input: { signal?: AbortSignal } = {}) {
+      if (running) throw new Error("Customer AI scheduler is already running.");
+      if (!id.safeParse(jobId).success || !input || typeof input !== "object"
+        || Object.keys(input).some(key => key !== "signal")
+        || (input.signal !== undefined && !(input.signal instanceof AbortSignal)) || input.signal?.aborted) {
+        throw new Error("Customer AI receipt recovery is unavailable.");
+      }
+      running = true;
+      const deadline = AbortSignal.any([AbortSignal.timeout(15_000), ...(input.signal ? [input.signal] : [])]);
+      let stopWaiting: (() => void) | undefined;
+      try {
+        const interrupted = new Promise<never>((_, reject) => {
+          stopWaiting = () => reject(new Error());
+          deadline.addEventListener("abort", stopWaiting, { once: true });
+          if (deadline.aborted) stopWaiting();
+        });
+        const response = await Promise.race([
+          sb.rpc("recover_customer_ai_receipt", { p_job_id: jobId }).abortSignal(deadline), interrupted,
+        ]);
+        if (deadline.aborted || response.error || response.data !== "settled") throw new Error();
+        return { state: "settled" as const, suppressionCleared: uncertain.delete(jobId) };
+      } catch {
+        throw new Error("Customer AI receipt recovery is unavailable.");
+      } finally {
+        if (stopWaiting) deadline.removeEventListener("abort", stopWaiting);
+        running = false;
+      }
+    },
     /** Explicit service-only reconciliation may release an exhausted/expired
      * undispatched job or hold an expired dispatched job for review. It never
      * invokes a provider. A lost reply is unknown; a later explicit replay is

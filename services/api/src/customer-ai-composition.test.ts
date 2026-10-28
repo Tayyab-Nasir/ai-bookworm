@@ -24,7 +24,7 @@ function fixture() {
     connectionId: scope.connectionId, revision: scope.credentialRevision });
   const signer = customerDispatchSigner("test", randomBytes(32));
   const calls: string[] = []; let receipt = false, dispatched = 0, resolveCount = 0;
-  const hooks: { fail?: string; service?: () => Promise<Response>; rows?: unknown[] } = {};
+  const hooks: { fail?: string; service?: () => Promise<Response>; rows?: unknown[]; recover?: () => Promise<Response> } = {};
   const databaseFetch: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const name = url.pathname.split("/").at(-1)!; calls.push(name);
@@ -39,6 +39,7 @@ function fixture() {
     if (name === "complete_customer_ai_job") return receipt ? json(completed) : json({ message: "absent" }, 404);
     if (name === "hold_customer_ai_job") return json({ ...job, status: "failed", lease_token: null, error_code: "customer_provider_outcome_unknown" });
     if (name === "reconcile_customer_ai_job") return json("unchanged");
+    if (name === "recover_customer_ai_receipt") return hooks.recover ? hooks.recover() : json("settled");
     throw new Error("Unexpected synthetic operation");
   };
   const serviceFetch: typeof fetch = async (_input, init) => {
@@ -60,12 +61,24 @@ test("synthetic composed discovery, single dispatch and receipt completion", asy
 });
 
 test("SDK transport does not retry discovery or reconciliation despite Retry-After", async () => {
-  for (const name of ["discover_customer_ai_ready_jobs", "reconcile_customer_ai_job"]) {
+  for (const name of ["discover_customer_ai_ready_jobs", "reconcile_customer_ai_job", "recover_customer_ai_receipt"]) {
     const f = fixture(); f.hooks.fail = name; const runtime = customerAiComposition(f.config);
-    await assert.rejects(name.startsWith("discover") ? runtime.tick() : runtime.reconcile(f.scope.jobId));
+    await assert.rejects(name.startsWith("discover") ? runtime.tick() : name.startsWith("reconcile")
+      ? runtime.reconcile(f.scope.jobId) : runtime.recoverReceipt(f.scope.jobId));
     assert.equal(f.calls.filter(value => value === name).length, 1);
     assert.equal(f.dispatched(), 0); await runtime.close(); f.config.signer.dispose();
   }
+});
+
+test("receipt recovery is explicit, makes no provider request and drains before close", async () => {
+  const f = fixture(); let release!: () => void, started!: () => void;
+  const began = new Promise<void>(done => { started = done; });
+  f.hooks.recover = async () => { started(); await new Promise<void>(done => { release = done; }); return json("settled"); };
+  const runtime = customerAiComposition(f.config), running = runtime.recoverReceipt(f.scope.jobId); await began;
+  let closed = false; const closing = runtime.close().then(() => { closed = true; });
+  await assert.rejects(runtime.recoverReceipt(f.scope.jobId), /closed/u); assert.equal(closed, false);
+  release(); assert.deepEqual(await running, { state: "settled", suppressionCleared: false }); await closing;
+  assert.deepEqual(f.calls, ["recover_customer_ai_receipt"]); assert.equal(f.dispatched(), 0); f.config.signer.dispose();
 });
 
 test("lost dispatch reply recovers durable receipt without a second provider send", async () => {

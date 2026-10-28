@@ -46,6 +46,7 @@ export function customerAiComposition(config: {
   return {
     tick: (signal?: AbortSignal) => run(() => scheduler.tick(signal, intake.signal)),
     reconcile: (jobId: string, signal?: AbortSignal) => run(() => scheduler.reconcile(jobId, { signal })),
+    recoverReceipt: (jobId: string, signal?: AbortSignal) => run(() => scheduler.recoverReceipt(jobId, { signal })),
     close(): Promise<void> {
       if (closing) return closing;
       closed = true;

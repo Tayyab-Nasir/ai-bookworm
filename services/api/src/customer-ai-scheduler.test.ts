@@ -141,3 +141,42 @@ test("abort during reconciliation cannot clear suppression from a late response"
   await Promise.resolve();
   assert.equal((await scheduler.tick()).suppressed, 1);
 });
+
+test("receipt recovery binds one service RPC to the exact job and only confirmed settlement clears suppression", async () => {
+  let data: unknown = "unchanged", rpcError: unknown = null; const calls: Array<{ name: string; args: unknown }> = [];
+  const sb = { rpc(name: string, args: unknown) { calls.push({ name, args }); return { abortSignal: async () => ({
+    data: name === "discover_customer_ai_ready_jobs" ? [row(0)] : data, error: rpcError }) }; } } as unknown as SupabaseClient;
+  let workerCalls = 0;
+  const scheduler = customerAiScheduler(sb, { run: async jobId => { workerCalls++; return { jobId, status: "completion_unknown" }; } }, { pageSize: 2 });
+  await scheduler.tick();
+  await assert.rejects(scheduler.recoverReceipt(ids[0]), /receipt recovery is unavailable/u);
+  assert.equal((await scheduler.tick()).suppressed, 1);
+  data = { jobId: ids[1], state: "settled" };
+  await assert.rejects(scheduler.recoverReceipt(ids[0]), /receipt recovery is unavailable/u);
+  data = "settled"; rpcError = { message: "synthetic secret" };
+  await assert.rejects(scheduler.recoverReceipt(ids[0]), error => {
+    assert.ok(error instanceof Error); assert.doesNotMatch(error.stack ?? "", /synthetic secret/u); return true;
+  });
+  rpcError = null;
+  assert.deepEqual(await scheduler.recoverReceipt(ids[0]), { state: "settled", suppressionCleared: true });
+  assert.deepEqual(calls.filter(call => call.name === "recover_customer_ai_receipt"),
+    Array.from({ length: 4 }, () => ({ name: "recover_customer_ai_receipt", args: { p_job_id: ids[0] } })));
+  assert.equal(workerCalls, 1);
+  assert.ok(!calls.some(call => /cancel|release|dispatch/u.test(call.name)));
+});
+
+test("lost or aborted receipt recovery does not retry or clear suppression on a late reply", async () => {
+  const controller = new AbortController(); let resolve!: (value: unknown) => void; let calls = 0;
+  const sb = { rpc(name: string) { if (name === "recover_customer_ai_receipt") calls++; return { abortSignal: () =>
+    name === "discover_customer_ai_ready_jobs" ? Promise.resolve({ data: [row(0)], error: null })
+      : new Promise(done => { resolve = done; }) }; } } as unknown as SupabaseClient;
+  const scheduler = customerAiScheduler(sb, { run: async jobId => ({ jobId, status: "completion_unknown" }) }, { pageSize: 2 });
+  await scheduler.tick();
+  const pending = scheduler.recoverReceipt(ids[0], { signal: controller.signal });
+  await assert.rejects(scheduler.tick(), /already running/u);
+  controller.abort();
+  await assert.rejects(pending, /receipt recovery is unavailable/u);
+  resolve({ data: "settled", error: null }); await Promise.resolve();
+  assert.equal((await scheduler.tick()).suppressed, 1);
+  assert.equal(calls, 1);
+});
