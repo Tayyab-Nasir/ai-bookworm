@@ -64,6 +64,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const currentBook = useRef(bookId); currentBook.current = bookId;
   const currentEdition = useRef(activeId); currentEdition.current = activeId;
   const viewEpoch = useRef(0);
+  const audioHistoryEpoch = useRef(0), audioProjectEpoch = useRef(0);
+  const audioMutation = useRef<object | null>(null), audioManualRead = useRef<object | null>(null);
   const adoptPrint = useCallback((result: RenderedEditionResult, expiresAt: number) => { setRendered({ ...result, expiresAt }); setPreflight(null); setNotice("Saved print proof opened. Run fresh preflight before creating a package."); }, []);
   const invalidatePrint = useCallback((jobId: string) => { setRendered(current => current?.jobId === jobId ? null : current); setPreflight(null); }, []);
 
@@ -76,6 +78,36 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const version = viewEpoch.current;
     return () => currentIdentity && currentBook.current === bookId && viewEpoch.current === version;
   };
+  const audioScope = (editionId: string) => {
+    const epoch = viewEpoch.current;
+    return () => currentBook.current === bookId && currentEdition.current === editionId && viewEpoch.current === epoch;
+  };
+  const readAudioHistory = async (editionId: string, reportError: boolean, alive: () => boolean = () => true) => {
+    if (audioMutation.current || (!reportError && audioManualRead.current)) return;
+    const manual = reportError ? {} : null; if (manual) audioManualRead.current = manual;
+    const scoped = audioScope(editionId), ticket = ++audioHistoryEpoch.current, startedAt = downloadClock();
+    const valid = () => scoped() && alive() && audioHistoryEpoch.current === ticket && !audioMutation.current;
+    try {
+      const result = await api.listAudiobookGooglePlayExports(editionId);
+      if (valid()) { setGooglePlayExports(result.jobs.map(job => timeAudio(job, startedAt))); observePackageClock(); }
+    } catch (reason) { if (valid() && reportError) setError(reason instanceof Error ? reason.message : "Could not refresh export history."); }
+    finally { if (manual && audioManualRead.current === manual) audioManualRead.current = null; }
+  };
+  const readAudioProjects = async (editionId: string, reportError: boolean) => {
+    const scoped = audioScope(editionId), ticket = ++audioProjectEpoch.current;
+    const valid = () => scoped() && audioProjectEpoch.current === ticket;
+    try { const result = await api.listAudiobookProjects(editionId); if (valid()) setAudiobookProjects(result.projects); }
+    catch (reason) { if (valid() && reportError) setError(reason instanceof Error ? reason.message : "Could not load audiobook history."); }
+  };
+  const beginAudioMutation = () => {
+    if (audioMutation.current) return null;
+    const token = {}; audioMutation.current = token; audioManualRead.current = null; audioHistoryEpoch.current++; return token;
+  };
+  const finishAudioMutation = (token: object, editionId: string, valid: () => boolean) => {
+    if (audioMutation.current !== token) return;
+    audioMutation.current = null; audioHistoryEpoch.current++;
+    if (valid()) void readAudioHistory(editionId, false);
+  };
   const coverAssets = useMemo(() => assets.filter((asset) => asset.mime_type.startsWith("image/") && asset.checksum !== "pending" && !asset.deleted_at), [assets]);
   const activePublishingJobs = useMemo(() => publishingJobs.filter((job) => !activeId || job.editionId === activeId), [publishingJobs, activeId]);
   const channelCompatible = form.kind !== "audiobook" && (channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind));
@@ -83,6 +115,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
   const load = useCallback(async () => {
     const version = ++viewEpoch.current;
+    audioHistoryEpoch.current++; audioProjectEpoch.current++; audioMutation.current = null; audioManualRead.current = null;
     const valid = () => viewEpoch.current === version && currentBook.current === bookId;
     setBusy("load");
     setBook(null); setRole("viewer"); setEditions([]); setAssets([]); setChapters([]); setPublishingJobs([]);
@@ -102,15 +135,12 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
         currentEdition.current = editionResult.editions[0].id;
         setActiveId(editionResult.editions[0].id); setForm(formFromEdition(editionResult.editions[0], identity.book.language));
         if (editionResult.editions[0].type === "audiobook") {
-          const [projects, exports] = await Promise.all([
-            api.listAudiobookProjects(editionResult.editions[0].id), api.listAudiobookGooglePlayExports(editionResult.editions[0].id),
-          ]);
+          await Promise.all([readAudioProjects(editionResult.editions[0].id, true), readAudioHistory(editionResult.editions[0].id, true)]);
           if (!valid()) return;
-          setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs.map(job => timeAudio(job, historyStartedAt))); observePackageClock();
         } else { setAudiobookProjects([]); setGooglePlayExports([]); }
       }
       else { currentEdition.current = null; setActiveId(null); setForm({ ...DEFAULT_FORM, language: identity.book.language }); setGooglePlayExports([]); }
-      setDirty(false); setError(null);
+      setDirty(false);
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not load publishing settings."); }
     finally { if (valid()) setBusy(null); }
   }, [api, bookId]);
@@ -137,18 +167,12 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const hasActiveGooglePlayExport = googlePlayExports.some((job) => job.status === "queued" || job.status === "running");
   useEffect(() => {
     if (!activeId || form.kind !== "audiobook" || !hasActiveGooglePlayExport) return;
-    const valid = captureView();
     let active = true;
     let pending = false;
     const refresh = async () => {
-      if (pending) return;
+      if (pending || audioMutation.current) return;
       pending = true;
-      try {
-        const startedAt = downloadClock();
-        const result = await api.listAudiobookGooglePlayExports(activeId);
-        if (active && valid()) { setGooglePlayExports(result.jobs.map(job => timeAudio(job, startedAt))); observePackageClock(); }
-      } catch { /* Keep the last known job state visible; manual refresh remains available. */ }
-      finally { pending = false; }
+      try { await readAudioHistory(activeId, false, () => active); } finally { pending = false; }
     };
     const timer = window.setInterval(() => void refresh(), 4_000);
     return () => { active = false; window.clearInterval(timer); };
@@ -163,23 +187,21 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     if (busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
     const version = ++viewEpoch.current;
+    audioManualRead.current = null;
     currentEdition.current = edition.id;
     const valid = () => version === viewEpoch.current && currentBook.current === bookId && currentEdition.current === edition.id;
     exportRequestKey.current = null;
     setGooglePlayIdentifier(""); setGooglePlayCoverId(""); setNotice(null);
     setActiveId(edition.id); setForm(formFromEdition(edition, book?.language)); setDirty(false); setRendered(null); setPreflight(null); setError(null);
     setAudiobookProjects([]); setGooglePlayExports([]);
-    const historyStartedAt = downloadClock();
-    if (edition.type === "audiobook") void Promise.all([api.listAudiobookProjects(edition.id), api.listAudiobookGooglePlayExports(edition.id)])
-      .then(([projects, exports]) => { if (valid()) { setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs.map(job => timeAudio(job, historyStartedAt))); observePackageClock(); } })
-      .catch(() => { if (valid()) setError("Could not load audiobook history."); });
+    if (edition.type === "audiobook") void Promise.all([readAudioProjects(edition.id, true), readAudioHistory(edition.id, true)]);
     else { setAudiobookProjects([]); setGooglePlayExports([]); }
   };
 
   const newEdition = (kind: Kind) => {
     if (!editable || busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
-    ++viewEpoch.current; currentEdition.current = null;
+    ++viewEpoch.current; audioManualRead.current = null; currentEdition.current = null;
     exportRequestKey.current = null;
     setGooglePlayIdentifier(""); setGooglePlayCoverId(""); setNotice(null);
     setActiveId(null); setForm({ ...DEFAULT_FORM, kind, language: book?.language ?? "en" }); setDirty(true); setRendered(null); setPreflight(null); setError(null); setAudiobookProjects([]); setGooglePlayExports([]);
@@ -198,10 +220,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       setEditions((current) => [saved, ...current.filter((edition) => edition.id !== saved.id)]);
       setActiveId(saved.id); setForm(formFromEdition(saved, book?.language)); setDirty(false); setNotice("Edition settings saved.");
       if (saved.type === "audiobook") {
-        const historyStartedAt = downloadClock();
-        const [projects, exports] = await Promise.all([api.listAudiobookProjects(saved.id), api.listAudiobookGooglePlayExports(saved.id)]);
+        await Promise.all([readAudioProjects(saved.id, true), readAudioHistory(saved.id, true)]);
         if (!valid()) return;
-        setAudiobookProjects(projects.projects); setGooglePlayExports(exports.jobs.map(job => timeAudio(job, historyStartedAt))); observePackageClock();
       }
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not save the edition."); }
     finally { if (valid()) setBusy(null); }
@@ -240,14 +260,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     if (!activeId || busy) return;
     const editionId = activeId, valid = captureView(); if (!valid()) return;
     setBusy("audiobook"); setError(null);
-    try { const result = await api.listAudiobookProjects(editionId); if (valid()) setAudiobookProjects(result.projects); }
-    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh audiobook progress."); }
+    try { await readAudioProjects(editionId, true); }
     finally { if (valid()) setBusy(null); }
   };
 
   const exportGooglePlayAudiobook = async () => {
     if (!editable || !activeId || form.kind !== "audiobook" || dirty || busy || !googlePlayIdentifier.trim() || !googlePlayCoverId) return;
     const valid = captureView(); if (!valid()) return;
+    const editionId = activeId, flight = beginAudioMutation(); if (!flight) return;
     setBusy("audiobook"); setError(null); setNotice(null);
     try {
       const startedAt = downloadClock();
@@ -260,30 +280,29 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       setGooglePlayExports((current) => [timeAudio(job, startedAt), ...current.filter((item) => item.id !== job.id)]); observePackageClock();
       setNotice("Export queued. You can leave this page; progress and the private download will remain in export history.");
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not create the Google Play audio archive."); }
-    finally { if (valid()) setBusy(null); }
+    finally { finishAudioMutation(flight, editionId, valid); if (valid()) setBusy(null); }
   };
 
   const cancelGooglePlayExport = async (jobId: string) => {
-    if (!editable || busy) return;
+    if (!editable || busy || !activeId) return;
     const valid = captureView(); if (!valid()) return;
+    const editionId = activeId, flight = beginAudioMutation(); if (!flight) return;
     setBusy("audiobook"); setError(null);
     try {
       const startedAt = downloadClock();
       const { job } = await api.cancelAudiobookGooglePlayExport(jobId);
       if (!valid()) return;
       setGooglePlayExports((current) => current.map((item) => item.id === job.id ? timeAudio(job, startedAt) : item)); observePackageClock();
-      setNotice(job.status === "cancelled" ? "Export cancelled." : "Cancellation requested. The worker will stop at its next safe checkpoint.");
+      setNotice(job.status === "cancelled" ? "Export cancelled." : job.status === "running" ? "Cancellation requested. The worker will stop at its next safe checkpoint." : job.status === "succeeded" ? "Export finished before cancellation. Refresh history to renew its private download." : job.status === "failed" ? "Export failed before cancellation. Review its saved failure." : "The cancellation outcome remains unconfirmed. Refresh history to check.");
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not cancel the export."); }
-    finally { if (valid()) setBusy(null); }
+    finally { finishAudioMutation(flight, editionId, valid); if (valid()) setBusy(null); }
   };
 
   const refreshGooglePlayExports = async () => {
     if (!activeId || form.kind !== "audiobook") return;
     const valid = captureView(); if (!valid()) return;
     setError(null);
-    const startedAt = downloadClock();
-    try { const result = await api.listAudiobookGooglePlayExports(activeId); if (valid()) { setGooglePlayExports(result.jobs.map(job => timeAudio(job, startedAt))); observePackageClock(); } }
-    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh export history."); }
+    await readAudioHistory(activeId, true);
   };
 
   const leave = (event: React.MouseEvent<HTMLAnchorElement>) => { if (dirty && !window.confirm("Leave and discard unsaved edition settings?")) event.preventDefault(); };

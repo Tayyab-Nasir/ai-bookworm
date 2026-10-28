@@ -97,7 +97,7 @@ test.after(async () => {
 await new Promise((resolve, reject) => { storage.once("error", reject); storage.listen(0, "127.0.0.1", resolve); });
 const storageOrigin = `http://127.0.0.1:${storage.address().port}`;
 
-async function fixture({ parent = false, width = 1280, disabled = false, audio = false } = {}) {
+async function fixture({ parent = false, width = 1280, disabled = false, audio = false, audioFailure = null } = {}) {
   const page = await browser.newPage({ viewport: { width, height: 980 } }); page.setDefaultTimeout(6000);
   const errors = []; page.on("pageerror", error => errors.push(error.message));
   // Different hosts enforce cross-origin download behavior without intercepting Chrome's PDF viewer.
@@ -163,6 +163,7 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
       createPublishingJob: async () => { window.requests.push({ method: "POST", action: "package" }); throw new Error("Unexpected package request"); },
     };
   }, { ids, disabled, primaryDigest, primarySize: pdfBytes.length, coverDigest, coverSize: pngBytes.length, audio, storageOrigin });
+  if (audioFailure) await page.evaluate(kind => { window.bookwormApi[kind] = async () => { throw new Error(`Initial ${kind} failure`); }; }, audioFailure);
   for (const file of bundles[parent ? 1 : 0].outputFiles.filter(file => file.path.endsWith(".css"))) await page.addStyleTag({ content: file.text });
   await page.addScriptTag({ content: bundles[parent ? 1 : 0].outputFiles.find(file => file.path.endsWith(".js")).text });
   await page.evaluate(({ parent, book }) => parent ? window.showStudio(book) : window.mountLibrary(), { parent, book: ids.book });
@@ -793,4 +794,121 @@ test("actual Studio blocks an expired print link even before a suspended timer f
     await expect(page.getByRole("link", { name: "Download private file", exact: true })).toHaveCount(0);
     assert.equal(downloads, 0); assert.deepEqual(errors, []);
   } finally { await page.close(); }
+});
+
+
+async function seedAudioRace(page) {
+  await page.evaluate(async () => {
+    window.audioReads=[]; window.audioQueueCalls=[]; window.audioCancelCalls=[]; window.audioWaiters=[]; window.holdAudio=false;
+    window.makeAudioJob=(id,status,n)=>({id,editionId:window.ids.edition,status,progressChapters:status==="succeeded"?n:0,progressTotal:n,createdAt:"2026-10-13T12:00:00Z",downloadUrl:null,downloadExpiresIn:null,synthesizedVoiceDisclosureRequired:true});
+    window.audioState=[window.makeAudioJob(window.ids.job,"running",1)];
+    window.bookwormApi.listAssets=async()=>({assets:[{id:window.ids.cover,workspace_id:window.ids.workspace,mime_type:"image/png",name:"Fixture cover",checksum:"a".repeat(64),deleted_at:null}]});
+    window.bookwormApi.listChapters=async()=>({chapters:[{id:window.ids.asset,book_id:window.ids.book,title:"Chapter"}]});
+    window.bookwormApi.listAudiobookGooglePlayExports=async editionId=>{
+      const snapshot=structuredClone(window.audioState);window.audioReads.push({editionId,snapshot});
+      if(window.holdAudio){window.holdAudio=false;await new Promise(resolve=>window.audioWaiters.push(resolve));}
+      return {jobs:snapshot};
+    };
+    window.bookwormApi.createAudiobookGooglePlayExport=async (editionId,body)=>{window.audioQueueCalls.push({editionId,body});
+      const job=window.makeAudioJob(window.ids.otherJob,"queued",2); window.audioState=[job,...window.audioState];return {job};};
+    window.bookwormApi.cancelAudiobookGooglePlayExport=async id=>{window.audioCancelCalls.push(id);const job=window.makeAudioJob(id,"cancelled",1);
+      window.audioState=window.audioState.map(x=>x.id===id?job:x);return {job};};
+    window.showStudio(null); await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));window.showStudio(window.ids.book);
+  });
+  await page.getByRole("heading",{name:"Saved audio & delivery"}).waitFor();
+  await expect(page.getByText("Google Play · 1 chapters")).toBeVisible();
+}
+
+test("audio export history ignores a slower previous manual refresh",async()=>{
+  const {page,errors}=await fixture({parent:true,audio:true});try{
+    await seedAudioRace(page);
+    const section=page.getByRole("heading",{name:"Export history"}).locator("..");
+    await page.evaluate(()=>{window.holdAudio=true});await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>window.audioWaiters.length===1);
+    await page.evaluate(()=>{window.audioState=[window.makeAudioJob(window.ids.job,"succeeded",1)]});await section.getByRole("button",{name:"Refresh"}).click();
+    await expect(page.getByText("succeeded",{exact:true})).toBeVisible();
+    await page.evaluate(async()=>{window.audioWaiters[0]();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+    assert.equal(await page.getByText("succeeded",{exact:true}).count(),1,"older read must not replace newest state");assert.equal(await page.getByRole("button",{name:"Cancel export"}).count(),0);assert.deepEqual(errors,[]);
+  }finally{await page.close()}
+});
+
+test("late audio history cannot erase a confirmed queued export",async()=>{
+  const {page,errors}=await fixture({parent:true,audio:true});try{
+    await seedAudioRace(page);
+    const section=page.getByRole("heading",{name:"Export history"}).locator("..");await page.evaluate(()=>{window.holdAudio=true});
+    await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>window.audioWaiters.length===1);
+    await page.getByLabel("ISBN-13 or publisher book ID").fill("9780306406157");await page.getByLabel("Audiobook cover").selectOption({label:"Fixture cover"});
+    await page.getByRole("button",{name:"Queue Google Play archive"}).click();
+    await expect(page.getByText("Google Play · 2 chapters")).toBeVisible();
+    await page.evaluate(async()=>{window.audioWaiters[0]();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+    assert.equal(await page.getByText("Google Play · 2 chapters").count(),1,"older read must not erase the queued job");assert.equal(await page.evaluate(()=>window.audioQueueCalls.length),1);assert.deepEqual(errors,[]);
+  }finally{await page.close()}
+});
+
+test("late audio history cannot reverse confirmed cancellation",async()=>{
+  const {page,errors}=await fixture({parent:true,audio:true});try{
+    await seedAudioRace(page);const section=page.getByRole("heading",{name:"Export history"}).locator("..");
+    await page.evaluate(()=>{window.holdAudio=true});await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>window.audioWaiters.length===1);
+    await page.getByRole("button",{name:"Cancel export"}).click();await expect(page.getByText("This export was cancelled before completion.")).toBeVisible();
+    await page.evaluate(async()=>{window.audioWaiters[0]();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+    assert.equal(await page.getByText("This export was cancelled before completion.").count(),1,"older read must not reverse cancellation");assert.equal(await page.getByRole("button",{name:"Cancel export"}).count(),0);
+    assert.equal(await page.evaluate(()=>window.audioCancelCalls.length),1);assert.deepEqual(errors,[]);
+  }finally{await page.close()}
+});
+
+
+test("audio polling does not run while a queue mutation is in flight",async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true});try{
+   await page.clock.install({time:new Date("2026-10-13T12:00:00Z")});await seedAudioRace(page);
+   await page.evaluate(()=>{window.bookwormApi.createAudiobookGooglePlayExport=(editionId,body)=>{window.audioQueueCalls.push({editionId,body});return new Promise(resolve=>{window.finishQueue=()=>{const job=window.makeAudioJob(window.ids.otherJob,"queued",2);window.audioState=[job,...window.audioState];resolve({job})}})};});
+   await page.getByLabel("ISBN-13 or publisher book ID").fill("9780306406157");await page.getByLabel("Audiobook cover").selectOption({label:"Fixture cover"});
+   await page.getByRole("button",{name:"Queue Google Play archive"}).click();await page.waitForFunction(()=>typeof window.finishQueue==="function");
+   const before=await page.evaluate(()=>window.audioReads.length);await page.clock.fastForward(4100);
+   assert.equal(await page.evaluate(()=>window.audioReads.length),before,"poll attempted while mutation outcome pending");
+   await page.evaluate(()=>window.finishQueue());await expect(page.getByText("Google Play · 2 chapters")).toBeVisible();assert.deepEqual(errors,[]);
+ }finally{await page.close()}
+});
+
+test("stale audio history failure cannot overwrite a newer success",async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true});try{
+   await seedAudioRace(page);const section=page.getByRole("heading",{name:"Export history"}).locator("..");
+   await page.evaluate(()=>{let first=true;window.bookwormApi.listAudiobookGooglePlayExports=async()=>{if(first){first=false;await new Promise(resolve=>window.finishOldRead=resolve);throw new Error("old failure")}return {jobs:[window.makeAudioJob(window.ids.job,"succeeded",1)]};};});
+   await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>typeof window.finishOldRead==="function");
+   await section.getByRole("button",{name:"Refresh"}).click();await expect(page.getByText("succeeded",{exact:true})).toBeVisible();
+   await page.evaluate(async()=>{window.finishOldRead();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+   assert.equal(await page.getByText("old failure").count(),0);assert.equal(await page.getByText("succeeded",{exact:true}).count(),1);assert.deepEqual(errors,[]);
+ }finally{await page.close()}
+});
+
+
+for(const method of ["listAudiobookProjects","listAudiobookGooglePlayExports"]) test(`initial audio history failure remains visible: ${method}`,async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true,audioFailure:method});try{
+   await expect(page.getByRole("alert")).toContainText(`Initial ${method} failure`);
+   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+   assert.equal(await page.getByText(`Initial ${method} failure`).count(),1);assert.deepEqual(errors,[]);
+ }finally{await page.close()}
+});
+
+test("a pending manual history read is not superseded by an automatic poll",async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true});try{
+   await page.clock.install({time:new Date("2026-10-13T12:00:00Z")});await seedAudioRace(page);
+   const section=page.getByRole("heading",{name:"Export history"}).locator("..");
+   await page.evaluate(()=>{window.audioReads=[];window.bookwormApi.listAudiobookGooglePlayExports=async()=>{window.audioReads.push("started");if(window.audioReads.length===1){await new Promise(resolve=>window.failManual=resolve);throw new Error("Manual history failed")}throw new Error("Automatic history failed");};});
+   await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>typeof window.failManual==="function");
+   await page.clock.fastForward(4100);assert.equal(await page.evaluate(()=>window.audioReads.length),1,"poll superseded manual refresh");
+   await page.evaluate(()=>window.failManual());await expect(page.getByRole("alert")).toContainText("Manual history failed");assert.deepEqual(errors,[]);
+ }finally{await page.close()}
+});
+
+
+test("a later narration progress refresh wins over pending edition history",async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true});try{
+   await seedAudioRace(page);
+   await page.evaluate(()=>{let first=true;window.bookwormApi.listAudiobookProjects=async()=>{
+     if(first){first=false;await new Promise(resolve=>window.finishOldProjects=resolve);return {projects:[{id:window.ids.job,chapterId:window.ids.asset,status:"running",segmentCount:1,billingMode:"quoted",creditUnits:1,voice:"marin",segments:[]}]}}
+     return {projects:[{id:window.ids.job,chapterId:window.ids.asset,status:"failed",segmentCount:1,billingMode:"quoted",creditUnits:1,voice:"marin",segments:[]}]};};});
+   await page.getByRole("button",{name:/audiobook.*en.*draft/i}).nth(1).click();await page.waitForFunction(()=>typeof window.finishOldProjects==="function");
+   await page.getByRole("button",{name:"Refresh progress"}).click();await expect(page.getByText("failed",{exact:true})).toBeVisible();
+   await page.evaluate(async()=>{window.finishOldProjects();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+   assert.equal(await page.getByText("failed",{exact:true}).count(),1,"older projects history replaced refreshed status");assert.deepEqual(errors,[]);
+ }finally{await page.close()}
 });
