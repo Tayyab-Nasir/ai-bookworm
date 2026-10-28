@@ -8,12 +8,14 @@ import { errorHandlerPlugin } from "./plugins/error-handler.js";
 import { credentialVault } from "./lib/ai-connection-vault.js";
 import { safeRequestLog } from "./lib/redact.js";
 import type { SupabaseFactory } from "./lib/supabase.js";
+import { syntheticCustomerAiReadiness } from "./testing/customer-ai-readiness-fixture.js";
+import type { CustomerAiReadiness } from "./lib/customer-ai-readiness.js";
 const owner = randomUUID(), foreign = randomUUID(), connectionId = randomUUID(), operationId = randomUUID();
 const now = new Date().toISOString();
 const key = randomBytes(40).toString("hex");
 const input = { connectionId, operationId, expectedRevision: null, apiKey: key };
 const row = { id: connectionId, owner_id: owner, provider: "openai", status: "saved", revision: 1, key_suffix: key.slice(-4), last_operation_id: operationId, created_at: now, updated_at: now };
-async function fixture(options: { rows?: unknown[]; enabled?: boolean; error?: { code?: string }; fail?: boolean; rpcData?: unknown } = {}) {
+async function fixture(options: { rows?: unknown[]; enabled?: boolean; error?: { code?: string }; fail?: boolean; rpcData?: unknown; readiness?: CustomerAiReadiness; preparationAvailable?: boolean } = {}) {
   const calls: { token?: string; name: string; args: Record<string, unknown> }[] = [], logs: string[] = [];
   const app = Fastify({ logger: { level: "info", stream: { write: (line: string) => { logs.push(line); } }, serializers: { req: safeRequestLog } } });
   const vault = credentialVault({ AI_CONNECTION_VAULT_KEYRING_JSON: JSON.stringify({ active: "test", keys: { test: randomBytes(32).toString("base64") } }) });
@@ -27,7 +29,7 @@ async function fixture(options: { rows?: unknown[]; enabled?: boolean; error?: {
     rpc: async (name: string, args: Record<string, unknown>) => { calls.push({ token, name, args }); if (options.fail) throw new Error(key); return { data: options.rpcData ?? row, error: options.error ?? null }; },
   })) as unknown as SupabaseFactory;
   app.addHook("onRequest", async (_req, reply) => { reply.header("cache-control", "private, no-store"); });
-  await app.register(async child => { await child.register(errorHandlerPlugin); await child.register(makeAuthPlugin(factory)); aiConnectionRoutes(child, { vault: () => options.enabled === false ? null : vault }); }, { prefix: "/v1" });
+  await app.register(async child => { await child.register(errorHandlerPlugin); await child.register(makeAuthPlugin(factory)); aiConnectionRoutes(child, { vault: () => options.enabled === false ? null : vault, readiness: options.readiness, preparationAvailable: options.preparationAvailable }); }, { prefix: "/v1" });
   const send = (method = "GET", body?: unknown, actor: string | null = owner, path = "") => app.inject({ method: method as "GET", url: `/v1/account/ai-connections${path}`, headers: { authorization: "Bearer good", ...(actor ? { "x-bookworm-actor": actor } : {}) }, ...(body ? { payload: body } : {}) });
   return { app, calls, logs, send, vault };
 }
@@ -37,6 +39,22 @@ test("owner-scoped listing returns only masked metadata, funding/validity are ne
     assert.deepEqual(Object.keys(response.json().connections[0]).sort(), ["createdAt", "id", "keySuffix", "lastOperationId", "provider", "revision", "status", "updatedAt"]);
   } finally { await f.app.close(); }
   const foreignRows = await fixture({ rows: [{ ...row, owner_id: foreign }] }); try { assert.equal((await foreignRows.send()).statusCode, 503); } finally { await foreignRows.app.close(); }
+});
+test("generation availability requires preparation and trusted current readiness", async () => {
+  let enabled = true;
+  const ready = syntheticCustomerAiReadiness(() => enabled);
+  for (const [options, expected] of [
+    [{ preparationAvailable: true, readiness: ready }, true],
+    [{ preparationAvailable: false, readiness: ready }, false],
+    [{ preparationAvailable: true }, false],
+    [{ preparationAvailable: true, readiness: { check: async () => true } }, false],
+  ] as const) {
+    const f = await fixture(options); try { assert.equal((await f.send()).json().generationAvailable, expected); assert.equal(f.calls.length, 0); }
+    finally { await f.app.close(); }
+  }
+  enabled = false; const f = await fixture({ preparationAvailable: true, readiness: ready });
+  try { assert.equal((await f.send()).json().generationAvailable, false); assert.equal(f.calls.length, 0); }
+  finally { await f.app.close(); }
 });
 test("save sends an authenticated encrypted envelope and derived owner, never plaintext to SQL", async () => {
   const f = await fixture(); try { const response = await f.send("PUT", input, owner, "/openai"); assert.equal(response.statusCode, 200, response.body);

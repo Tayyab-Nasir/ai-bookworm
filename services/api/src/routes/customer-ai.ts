@@ -9,6 +9,7 @@ import { customerDispatchScope } from "../lib/customer-ai-dispatch.js";
 import type { customerAiPreparation } from "../lib/customer-ai-prepare.js";
 import { customerSourceInput } from "../lib/customer-ai-source.js";
 import { boundedSupabaseFetch } from "../lib/supabase.js";
+import { isCustomerAiReady, type CustomerAiReadiness } from "../lib/customer-ai-readiness.js";
 
 const id = z.string().uuid().regex(/^[a-f0-9-]+$/u);
 const revision = z.number().int().min(1).max(2147483647);
@@ -53,10 +54,11 @@ function checkedReceipt(value: unknown, operationId: string) {
   return parsed.data;
 }
 
-export function customerAiRoutes(app: FastifyInstance, options: { preparation?: CustomerAiPreparation } = {}) {
+export function customerAiRoutes(app: FastifyInstance, options: { preparation?: CustomerAiPreparation; readiness?: CustomerAiReadiness } = {}) {
   const preparer = options.preparation;
   const config = { bodyLimit: 131072, config: { durableIdempotency: true } };
   const enabled = () => { if (!preparer) throw new AppError(503, "Customer-key generation is not activated."); return preparer; };
+  const requireReady = async () => { if (!await isCustomerAiReady(options.readiness)) throw new AppError(503, "Customer-key generation is not activated."); };
   async function rpc(name: string, args: Record<string, unknown>) {
     try {
       const { data, error } = await app.supabaseFactory(undefined, boundedSupabaseFetch(AbortSignal.timeout(15_000))).rpc(name, args);
@@ -85,14 +87,14 @@ export function customerAiRoutes(app: FastifyInstance, options: { preparation?: 
     return values.data.filter(row => row.platformFee.mode === "platform_plan" && row.platformFee.credits === 0);
   }
   app.post("/account/customer-ai/options", config, async req => {
-    actor(req); enabled(); const selected = input(selection, req.body); req.body = undefined;
+    actor(req); enabled(); await requireReady(); const selected = input(selection, req.body); req.body = undefined;
     const values = await policies(req.userId, selected);
     return { viewerId: req.userId, options: values.map(row => ({ id: row.id, provider: row.provider, agentType: row.agentType,
       model: row.policy.model, maxOutputTokens: row.agentType === "bookbible" ? Math.min(row.policy.maxOutputTokens, 6000) : row.policy.maxOutputTokens,
       upstream: row.policy.upstream, platformFee: row.platformFee, providerCostStatus: "unknown" as const, expiresAt: row.expiresAt })) };
   });
   app.post("/account/customer-ai/prepare", config, async req => {
-    actor(req); const service = enabled(), value = input(preparation, req.body); req.body = undefined;
+    actor(req); const service = enabled(); await requireReady(); const value = input(preparation, req.body); req.body = undefined;
     if (value.source.bookId !== value.selection.bookId || value.source.agentType !== value.selection.agentType) throw new AppError(422, "Source and AI selection must match.");
     const selected = (await policies(req.userId, value.selection)).find(row => row.id === value.policyId);
     if (!selected) throw new AppError(409, "The selected policy is no longer available. Reload the options.");
@@ -101,6 +103,7 @@ export function customerAiRoutes(app: FastifyInstance, options: { preparation?: 
     if (prepared.source.ownerId !== req.userId || prepared.source.workspaceId !== value.selection.workspaceId
       || prepared.source.bookId !== value.source.bookId || prepared.source.agentType !== value.source.agentType
       || prepared.provider !== selected.provider || prepared.model !== selected.policy.model) throw unavailable();
+    await requireReady();
     const result = checkedReceipt(await rpc("prepare_customer_ai_request", {
       p_operation_id: value.operationId, p_owner_id: req.userId, p_workspace_id: prepared.source.workspaceId, p_book_id: prepared.source.bookId,
       p_connection_id: value.selection.connectionId, p_revision: value.selection.credentialRevision, p_policy_id: selected.id,
@@ -128,7 +131,7 @@ export function customerAiRoutes(app: FastifyInstance, options: { preparation?: 
   });
   for (const action of ["status", "confirm", "cancel", "recover"] as const) app.post(`/account/customer-ai/${action}`, config, async req => {
     actor(req);
-    if (action === "confirm") enabled(); // Status/cancel/recovery survive configuration or key revocation.
+    if (action === "confirm") { enabled(); await requireReady(); } // Status/cancel/recovery survive outages.
     const value = action === "confirm" ? input(confirmation, req.body) : input(operation, req.body); req.body = undefined;
     const result = checkedReceipt(await rpc("customer_ai_request_action", {
       p_owner_id: req.userId, p_operation_id: value.operationId, p_action: action,

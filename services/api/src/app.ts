@@ -45,10 +45,11 @@ import { redactObject } from "./lib/redact.js";
 import type { StripeFactory } from "./lib/stripe.js";
 import type { ImageGenerator } from "./lib/image-generation.js";
 import type { AssetMalwareScanner } from "./lib/asset-scanner.js";
+import type { CustomerAiReadiness } from "./lib/customer-ai-readiness.js";
 
 export async function buildApp(
   supabaseFactory: SupabaseFactory = defaultSupabaseFactory,
-  opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner; customerAiPreparation?: CustomerAiPreparation; enableLegacyMetadataGenerationForTests?: boolean; enableLegacyAiReviewForTests?: boolean } = {},
+  opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner; customerAiPreparation?: CustomerAiPreparation; customerAiReadiness?: CustomerAiReadiness; enableLegacyMetadataGenerationForTests?: boolean; enableLegacyAiReviewForTests?: boolean } = {},
 ): Promise<FastifyInstance> {
   const env = loadEnv();
   const app = Fastify({ logger: { level: env.LOG_LEVEL, serializers: { req: safeRequestLog } } });
@@ -103,8 +104,8 @@ export async function buildApp(
     communityRoutes(v1);
     referralRoutes(v1);
     accountRoutes(v1);
-    aiConnectionRoutes(v1);
-    customerAiRoutes(v1, { preparation: opts.customerAiPreparation });
+    aiConnectionRoutes(v1, { preparationAvailable: !!opts.customerAiPreparation, readiness: opts.customerAiReadiness });
+    customerAiRoutes(v1, { preparation: opts.customerAiPreparation, readiness: opts.customerAiReadiness });
     adminRoutes(v1);
     stripeWebhookRoutes(v1, opts); // own JSON parser keeps raw body for sig check
   }, { prefix: "/v1" });

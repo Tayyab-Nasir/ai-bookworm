@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import { aiProvider, apiKeyInput, credentialVault, type CredentialVault } from "../lib/ai-connection-vault.js";
 import { boundedSupabaseFetch } from "../lib/supabase.js";
+import { isCustomerAiReady, type CustomerAiReadiness } from "../lib/customer-ai-readiness.js";
 
 const mutation = z.object({ connectionId: z.string().uuid().transform(value => value.toLowerCase()), operationId: z.string().uuid().transform(value => value.toLowerCase()), expectedRevision: z.number().int().min(1).max(2_147_483_646).nullable() }).strict();
 const saveInput = mutation.extend({ apiKey: apiKeyInput }).strict();
@@ -39,7 +40,7 @@ function dbError(error: { code?: string } | null): void {
   throw new AppError(503, "AI key storage is unavailable. Any submitted change is unconfirmed; reload saved status.");
 }
 
-export function aiConnectionRoutes(app: FastifyInstance, options: { vault?: () => CredentialVault | null } = {}) {
+export function aiConnectionRoutes(app: FastifyInstance, options: { vault?: () => CredentialVault | null; preparationAvailable?: boolean; readiness?: CustomerAiReadiness } = {}) {
   const vault = options.vault ?? credentialVault;
   const config = { bodyLimit: 8192, config: { durableIdempotency: true } };
   // Check is read-only. POST keeps recovery IDs out of URL history; no secrets.
@@ -74,7 +75,8 @@ export function aiConnectionRoutes(app: FastifyInstance, options: { vault?: () =
       if (new Set(connections.map(row => row.provider)).size !== connections.length) throw new AppError(503, "AI connection details could not be verified.");
       let canSave = false;
       try { canSave = vault() !== null; } catch { /* Listing and revocation remain possible when encryption is misconfigured. */ }
-      return { viewerId: req.userId, canSave, generationAvailable: false, connections };
+      const generationAvailable = options.preparationAvailable === true && await isCustomerAiReady(options.readiness);
+      return { viewerId: req.userId, canSave, generationAvailable, connections };
     } catch (error) { if (error instanceof AppError) throw error; throw new AppError(503, "AI connection details are unavailable. Reload to check saved status."); }
   });
   for (const method of ["PUT", "DELETE"] as const) app.route({

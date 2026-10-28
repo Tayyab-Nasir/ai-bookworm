@@ -10,6 +10,7 @@ import { idempotencyPlugin } from "./plugins/idempotency.js";
 import { safeRequestLog, isAiConnectionPath } from "./lib/redact.js";
 import { ids, sha, sourceFixture } from "./testing/customer-ai-fixture.js";
 import type { SupabaseFactory } from "./lib/supabase.js";
+import { syntheticCustomerAiReadiness } from "./testing/customer-ai-readiness-fixture.js";
 
 // Transport fixture only. Real authorization, fee and lifecycle assertions are
 // in customer-ai-preparations.test.sql; no provider/database network is used.
@@ -21,7 +22,7 @@ function backend() {
     responseModels: ["synthetic-1"], maxOutputTokens: 1024, upstream: null as string | null, responseUpstreams: [] as string[] },
     platformFee: { mode: "platform_plan", credits: 0 }, expiresAt: new Date(Date.now() + 3600000).toISOString() };
   const settings = { error: "", loseAfter: "", policyRows: undefined as unknown[] | undefined,
-    alterReceipt: (r: any): unknown => r, privateCalls: 0, privateError: false };
+    alterReceipt: (r: any): unknown => r, privateCalls: 0, privateError: false, ready: true, dropDuringPrepare: false, checksUntilDrop: null as number | null };
   const receipts = new Map<string, any>(), calls: { name: string; args: Record<string, any> }[] = [];
   let jobs = 0;
   const factory: SupabaseFactory = (token, fetcher) => {
@@ -67,6 +68,7 @@ function backend() {
   const preparer = customerAiPreparation(factory, { serviceUrl: "https://private-ai.example", serviceToken: "synthetic-service-token",
     fetcher: async (url, init) => {
       settings.privateCalls++; assert.equal(url, "https://private-ai.example/v1/internal/customer-text/prepare");
+      if (settings.dropDuringPrepare) settings.ready = false;
       assert.equal(init?.redirect, "error"); assert(init?.signal); assert(!String(init?.body).includes(source.actor.accessToken));
       if (settings.privateError) throw new Error("private-upstream-detail");
       const { scope, requestJson } = JSON.parse(String(init?.body));
@@ -82,7 +84,10 @@ async function fixture(db = backend(), enabled = true) {
   app.addHook("onRequest", async (req, reply) => { if (isAiConnectionPath(req.url)) reply.header("cache-control", "private, no-store"); });
   await app.register(async child => {
     await child.register(errorHandlerPlugin); await child.register(makeAuthPlugin(db.factory)); await child.register(idempotencyPlugin);
-    customerAiRoutes(child, enabled ? { preparation: db.preparer } : {});
+    customerAiRoutes(child, enabled ? { preparation: db.preparer, readiness: syntheticCustomerAiReadiness(() => {
+      if (db.settings.checksUntilDrop !== null && --db.settings.checksUntilDrop === 0) db.settings.ready = false;
+      return db.settings.ready;
+    }) } : {});
   }, { prefix: "/v1" });
   const send = (action: string, payload: unknown, actor: string | null = ids.owner, suffix = "") => app.inject({ method: "POST",
     url: `/v1/account/customer-ai/${action}${suffix}`, headers: { authorization: "Bearer synthetic-user-session",
@@ -160,6 +165,40 @@ test("configuration removal blocks creation but preserves status, cancellation a
     assert.equal((await disabled.send("cancel", { operationId: body.operationId })).statusCode, 409);
     assert.equal(db.settings.privateCalls, 2); assert.equal(db.jobs(), 1);
   } finally { await disabled.app.close(); }
+});
+test("readiness loss blocks preparation and confirmation but preserves status and closure", async () => {
+  const f = await fixture(), body = f.db.body(), raced = f.db.body();
+  try {
+    assert.equal((await f.send("prepare", body)).statusCode, 200);
+    f.db.settings.ready = false;
+    const prior = f.db.calls.length;
+    for (const [action, payload] of [["options", body.selection], ["prepare", raced],
+      ["confirm", { operationId: body.operationId, expectedPlatformFeeCredits: 0, consent: true }]] as const)
+      assert.equal((await f.send(action, payload)).statusCode, 503);
+    assert.equal(f.db.calls.length, prior); assert.equal(f.db.jobs(), 0);
+    assert.equal((await f.send("status", { operationId: body.operationId })).json().receipt.status, "prepared");
+    assert.equal((await f.send("close", { operationId: body.operationId, bookId: ids.book })).json().receipt.status, "closed");
+    f.db.settings.ready = true; f.db.settings.dropDuringPrepare = true;
+    assert.equal((await f.send("prepare", raced)).statusCode, 503);
+    assert(!f.db.calls.some(c => c.name === "prepare_customer_ai_request" && c.args.p_operation_id === raced.operationId));
+    assert.equal(f.db.jobs(), 0);
+  } finally { await f.app.close(); }
+});
+test("readiness revoked during confirmation prevents enqueue; queued recovery and cancellation remain available", async () => {
+  const f = await fixture(), body = f.db.body(), queued = f.db.body();
+  const confirm = (operationId: string) => ({ operationId, expectedPlatformFeeCredits: 0, consent: true });
+  try {
+    assert.equal((await f.send("prepare", body)).statusCode, 200);
+    assert.equal((await f.send("prepare", queued)).statusCode, 200);
+    assert.equal((await f.send("confirm", confirm(queued.operationId))).statusCode, 200);
+    f.db.settings.checksUntilDrop = 2;
+    const prior = f.db.calls.length;
+    assert.equal((await f.send("confirm", confirm(body.operationId))).statusCode, 503);
+    assert.equal(f.db.calls.length, prior); assert.equal(f.db.jobs(), 1);
+    assert.equal((await f.send("recover", { operationId: queued.operationId })).json().receipt.status, "succeeded");
+    assert.equal((await f.send("cancel", { operationId: body.operationId })).json().receipt.status, "closed");
+    assert.equal(f.db.jobs(), 1);
+  } finally { await f.app.close(); }
 });
 test("all seven operations require the original authenticated actor and exact body shape before service RPC", async () => {
   const f = await fixture(), b = f.db.body(); try {
@@ -292,21 +331,22 @@ test("malformed or oversized JSON, URL and request ID canaries never enter respo
     assert.equal(f.db.calls.length, 0);
   } finally { await f.app.close(); }
 });
-test("real API registration defaults creation off and applies private cache headers; explicit dependency enables preparation only", async () => {
+test("real API registration requires both preparation and verified readiness", async () => {
   const { loadEnv, resetEnvCache } = await import("@bookworm/config");
   resetEnvCache();
   loadEnv({ SUPABASE_URL: "http://127.0.0.1:1", SUPABASE_ANON_KEY: "synthetic-anon", SUPABASE_SERVICE_ROLE_KEY: "synthetic-service",
     REDIS_URL: "redis://127.0.0.1:1", QDRANT_URL: "http://127.0.0.1:1", NODE_ENV: "test", LOG_LEVEL: "error" });
   const { buildApp } = await import("./app.js");
   try {
-    for (const enabled of [false, true]) {
-      const db = backend(), app = await buildApp(db.factory, enabled ? { customerAiPreparation: db.preparer } : {});
+    for (const mode of ["off", "preparation_only", "ready"] as const) {
+      const db = backend(), app = await buildApp(db.factory, mode === "off" ? {} : { customerAiPreparation: db.preparer,
+        ...(mode === "ready" ? { customerAiReadiness: syntheticCustomerAiReadiness() } : {}) });
       try {
         const headers = { authorization: "Bearer synthetic-user-session", "x-bookworm-actor": ids.owner };
         const r = await app.inject({ method: "POST", url: "/v1/account/customer-ai/prepare", headers, payload: db.body() });
-        assert.equal(r.statusCode, enabled ? 200 : 503, r.body);
+        assert.equal(r.statusCode, mode === "ready" ? 200 : 503, r.body);
         assert.equal(r.headers["cache-control"], "private, no-store"); assert.equal(r.headers.pragma, "no-cache");
-        assert.equal(db.jobs(), 0); assert.equal(db.settings.privateCalls, enabled ? 1 : 0);
+        assert.equal(db.jobs(), 0); assert.equal(db.settings.privateCalls, mode === "ready" ? 1 : 0);
         const status = await app.inject({ method: "POST", url: "/v1/account/customer-ai/status", headers, payload: { operationId: randomUUID() } });
         assert.equal(status.statusCode, 200); assert.equal(status.json().receipt.status, "not_found");
       } finally { await app.close(); }
