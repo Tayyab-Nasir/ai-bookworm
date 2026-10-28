@@ -12,6 +12,7 @@ import { manualBookBibleRecoveryRaces } from './native-manual-book-bible-recover
 import { customerAiCompletionRaces } from './native-customer-ai-completion.mjs';
 import { customerAiPreparationRaces } from './native-customer-ai-preparations.mjs';
 import { customerAiReconciliationRaces } from './native-customer-ai-reconciliation.mjs';
+import { customerAiReconciliationDiscoveryRaces } from './native-customer-ai-reconciliation-discovery.mjs';
 import { verifyAudiobookSegmentationFixtures } from './audiobook-segmentation-lifecycle.mjs';
 import { verifyNarrationQuoteFixtures, verifyNarrationChapterQuoteFixtures } from './narration-quote-lifecycle.mjs';
 import { verifyNarrationFundedFixtures } from './narration-funded-lifecycle.mjs';
@@ -617,6 +618,7 @@ try {
   await customerAiCompletionRaces({ sql, session, until, database });
   await customerAiPreparationRaces({ sql, session, until, database });
   await customerAiReconciliationRaces({ sql, session, until, database });
+  await customerAiReconciliationDiscoveryRaces({ sql, session, until, database });
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');
