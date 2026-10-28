@@ -13,6 +13,7 @@ import httpx
 from fastapi import FastAPI
 
 from customer_database import CustomerAiDatabase
+from customer_identity_http import customer_identity_router
 from customer_service import customer_service_router
 
 
@@ -44,6 +45,7 @@ def create_customer_private_app(*, database_url: str, service_role_key: str,
         database = CustomerAiDatabase(database_url, service_role_key, allow_loopback_http=allow_loopback_http,
                                       _test_transport=_test_database_transport)
         app = FastAPI(title="bookworm-private-customer-ai", docs_url=None, redoc_url=None, openapi_url=None)
+        app.include_router(customer_identity_router(service_token=service_token, signing_keys=dict(signing_keys)))
         app.include_router(customer_service_router(service_token=service_token, signing_keys=dict(signing_keys),
             database=database, _clock=_test_clock or (lambda: int(time.time())), _test_provider_transport=_test_provider_transport))
         return app
