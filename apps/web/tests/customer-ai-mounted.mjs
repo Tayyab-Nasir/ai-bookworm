@@ -107,6 +107,29 @@ test('exact saved source, model, separate charges and explicit consent; success 
   assert.equal(await p.evaluate(()=>window.calls.some(c=>c.url.includes('/apply'))),false);
  }finally{await p.close()}
 });
+test('checking an unchanged preparation preserves its review but requires fresh consent',async()=>{
+ const p=await fixture();try{
+  await prepare(p);await expect(p.getByText('Ready for review',{exact:true})).toBeVisible();
+  const consent=p.getByLabel(/I reviewed this source and direction/);await consent.check();
+  await p.getByRole('button',{name:'Check saved status'}).click();
+  await expect(p.getByText(direction,{exact:true})).toBeVisible();await expect(consent).not.toBeChecked();
+  await expect(p.getByRole('button',{name:'Confirm & queue request'})).toBeDisabled();
+  assert.equal(await count(p,'prepare'),1);assert.equal(await count(p,'status'),1);assert.equal(await count(p,'confirm'),0);assert.equal(await p.evaluate(()=>window.jobs),0);
+  assert(!JSON.stringify(await p.evaluate(()=>Object.values({...sessionStorage}))).includes(direction));
+  await consent.check();await expect(p.getByRole('button',{name:'Confirm & queue request'})).toBeEnabled();
+ }finally{await p.close()}
+});
+test('a changed prepared receipt or queued outcome never retains private review',async()=>{
+ for(const mode of ['model','source','queued']){const p=await fixture();try{
+  await prepare(p);await expect(p.getByText('Ready for review',{exact:true})).toBeVisible();
+  await p.evaluate(mode=>{const r=Object.values(window.operations)[0];if(mode==='model')r.model='different-model';
+   if(mode==='source')r.sourceVersions[0].version++;if(mode==='queued'){r.status='queued';r.jobId=crypto.randomUUID()}},mode);
+  await p.getByRole('button',{name:'Check saved status'}).click();
+  await expect(p.getByText(direction,{exact:true})).toHaveCount(0);
+  assert.equal(await p.getByRole('button',{name:'Confirm & queue request'}).count(),0);
+  assert.equal(await count(p,'confirm'),0);assert.equal(await p.evaluate(()=>window.jobs),0);
+ }finally{await p.close()}}
+});
 test('lost confirmation reply recovers one queued job across remount without another confirmation',async()=>{
  const p=await fixture();try{await prepare(p);await expect(p.getByText('Ready for review',{exact:true})).toBeVisible();await p.evaluate(()=>window.mode='confirm-lost-after');await confirm(p);
   await expect(p.getByRole('alert')).toContainText('unconfirmed');await p.evaluate(()=>window.unmount());await p.evaluate(()=>window.mount());

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hmac
 import time
 import asyncio
+import threading
 from collections.abc import Callable
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +18,37 @@ from starlette.concurrency import run_in_threadpool
 from customer_dispatch import (MAX_BYTES, DispatchRejected, ReceiptConflict,
     ReceiptUnavailable, execute_dispatch, verify_dispatch)
 from gateway import ProviderOutcomeUnknown
+
+
+class _DispatchOwnership:
+    """Exactly one side owns credential cleanup across task cancellation.
+
+    A worker claims before touching the dispatch. If the awaiting handler is
+    cancelled before that claim, it clears the pending dispatch and a worker
+    arriving later cannot execute it. After claim only the worker clears it.
+    """
+    def __init__(self, dispatch):
+        self._lock = threading.Lock()
+        self._pending = dispatch
+
+    def abandon_pending(self):
+        with self._lock:
+            dispatch, self._pending = self._pending, None
+        if dispatch is not None:
+            dispatch.clear()
+
+    def execute(self, store, **kwargs):
+        with self._lock:
+            dispatch, self._pending = self._pending, None
+        if dispatch is None:
+            raise DispatchRejected()
+        try:
+            return execute_dispatch(dispatch, store, **kwargs)
+        finally:
+            # execute_dispatch already clears on every path. Preserve cleanup
+            # even if it failed before reaching its own finally block.
+            if dispatch.credential is not None:
+                dispatch.clear()
 
 
 def customer_dispatch_router(*, service_token: str | None, signing_keys: dict[str, bytes],
@@ -44,6 +76,7 @@ def customer_dispatch_router(*, service_token: str | None, signing_keys: dict[st
             raise HTTPException(413, "Customer dispatch envelope exceeds its limit.")
         data = bytearray()
         verified = None
+        ownership = None
         try:
             async with asyncio.timeout(15):
                 async for chunk in request.stream():
@@ -56,7 +89,9 @@ def customer_dispatch_router(*, service_token: str | None, signing_keys: dict[st
             if await run_in_threadpool(authorize_scope, verified.scope.model_dump()) is not True:
                 raise HTTPException(403, "Customer job authorization is unavailable.")
             store = await run_in_threadpool(store_factory)
-            return await run_in_threadpool(execute_dispatch, verified, store, now=_clock,
+            ownership = _DispatchOwnership(verified)
+            verified = None  # The ownership capsule now controls cleanup.
+            return await run_in_threadpool(ownership.execute, store, now=_clock,
                 reauthorize_scope=authorize_scope, _test_transport=_test_transport)
         except HTTPException:
             raise
@@ -70,6 +105,8 @@ def customer_dispatch_router(*, service_token: str | None, signing_keys: dict[st
             raise HTTPException(503, "Customer dispatch is unavailable. Do not retry automatically.") from None
         finally:
             data[:] = b"\0" * len(data)
+            if ownership is not None:
+                ownership.abandon_pending()
             if verified is not None:
                 verified.clear()
 

@@ -7,7 +7,7 @@ import { customerUuid, type CustomerAiOption, type CustomerAiReceipt, type Custo
 import type { Book, Chapter } from "@bookworm/types";
 import { apiClient } from "./api";
 import { readBrowserSession } from "../lib/browser-session";
-import { readCustomerAiPending, saveCustomerAiPending, clearCustomerAiPending } from "../lib/customer-ai-recovery";
+import { readCustomerAiPending, saveCustomerAiPending, clearCustomerAiPending, sameReviewedPreparation } from "../lib/customer-ai-recovery";
 import styles from "./CustomerAiStudio.module.css";
 
 const tasks: { id: CustomerTextAgent; label: string }[] = [
@@ -121,7 +121,11 @@ export default function CustomerAiStudio({ bookId }: { bookId: string }) {
   });
   const check = () => run(async (owner, signal, epoch) => {
     if (!pending) return; const r = await api.getCustomerAiStatus(bookId, pending, owner, signal);
-    if (await acceptRead(owner, epoch)) { setReceipt(r); setReview(null); }
+    if (await acceptRead(owner, epoch)) {
+      const keepReview = review?.operation === pending && readCustomerAiPending(owner, bookId) === pending
+        && sameReviewedPreparation(receipt, r, pending);
+      setReceipt(r); if (!keepReview) setReview(null);
+    }
   });
   const close = () => run(async (owner, signal, epoch) => {
     if (!pending) return; const r = await api.closeCustomerAi(bookId, pending, owner, signal);

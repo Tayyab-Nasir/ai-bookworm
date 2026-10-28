@@ -1,4 +1,30 @@
-import { customerUuid, type CustomerAiReceipt } from "@bookworm/api-client/customer-ai";
+import { customerUuid, type CustomerAiReceipt, type CustomerAiSaved } from "@bookworm/api-client/customer-ai";
+
+const receiptScalars = ["operationId", "workspaceId", "bookId", "connectionId", "credentialRevision", "policyId",
+  "provider", "agentType", "model", "upstream", "maxOutputTokens", "providerCostStatus", "chapterCount",
+  "contextOmitted", "createdAt", "expiresAt", "status", "jobId"] as const satisfies readonly (keyof CustomerAiSaved)[];
+type ComparedFields = typeof receiptScalars[number] | "platformFee" | "sourceVersions";
+const allReceiptFieldsCompared: Exclude<keyof CustomerAiSaved, ComparedFields> extends never ? true : never = true;
+void allReceiptFieldsCompared;
+
+/** These values have already passed the strict customer receipt parser.
+ * Never use a recovered receipt to recreate private review by itself. */
+export function sameReviewedPreparation(previous: CustomerAiReceipt | null, current: CustomerAiReceipt,
+  operation: string, now = Date.now()): boolean {
+  if (!previous || !("sourceVersions" in previous) || !("sourceVersions" in current)
+    || previous.status !== "prepared" || current.status !== "prepared"
+    || previous.jobId !== null || current.jobId !== null
+    || previous.operationId !== operation || current.operationId !== operation
+    || !Number.isFinite(now) || !Number.isFinite(Date.parse(current.expiresAt)) || Date.parse(current.expiresAt) <= now) return false;
+  return receiptScalars.every(field => previous[field] === current[field])
+    && previous.platformFee.mode === current.platformFee.mode && previous.platformFee.credits === current.platformFee.credits
+    && previous.sourceVersions.length === current.sourceVersions.length
+    && previous.sourceVersions.every((source, index) => {
+      const other = current.sourceVersions[index];
+      return other !== undefined && source.chapterId === other.chapterId
+        && source.documentVersionId === other.documentVersionId && source.version === other.version;
+    });
+}
 function key(actor: string, book: string) {
   if (!customerUuid.test(actor) || !customerUuid.test(book)) throw new Error("Recheck the account and book before continuing.");
   return `bookworm:customer-ai:${actor}:${book}`;

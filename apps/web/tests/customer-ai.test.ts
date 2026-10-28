@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { createClient } from "../../../packages/api-client/src/index.js";
 import { parseCustomerAiOptions, parseCustomerAiReceipt, type CustomerAiPreparation, type CustomerAiSaved, type CustomerAiOption } from "../../../packages/api-client/src/customer-ai.js";
-import { readCustomerAiPending, saveCustomerAiPending, clearCustomerAiPending } from "../lib/customer-ai-recovery.js";
+import { readCustomerAiPending, saveCustomerAiPending, clearCustomerAiPending, sameReviewedPreparation } from "../lib/customer-ai-recovery.js";
 const actor = randomUUID(), other = randomUUID(), book = randomUUID(), operationId = randomUUID();
 const selection = { workspaceId: randomUUID(), bookId: book, connectionId: randomUUID(), credentialRevision: 1, provider: "openai" as const, agentType: "writer" as const };
 const option: CustomerAiOption = { id: randomUUID(), provider: "openai", agentType: "writer", model: "synthetic-1", upstream: null, maxOutputTokens: 1024,
@@ -14,6 +14,29 @@ const saved: CustomerAiSaved = { ...selection, operationId, jobId: null, policyI
   chapterCount: 1, status: "prepared", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 900000).toISOString() };
 const body: CustomerAiPreparation = { operationId, selection, policyId: option.id, source: { bookId: book, agentType: "writer", chapters: [source], userInstruction: "Synthetic direction",
   contextPolicy: { includeBookBible: false, includeStyleGuide: false, includeRelatedContext: false, semanticTopK: 5, maxTokens: 4096 } } };
+
+test("preserved review requires the same complete prepared receipt and unexpired operation", () => {
+  assert.equal(sameReviewedPreparation(saved, structuredClone(saved), operationId), true);
+  assert.equal(sameReviewedPreparation(null, saved, operationId), false);
+  assert.equal(sameReviewedPreparation(saved, { operationId, status: "not_found" }, operationId), false);
+  assert.equal(sameReviewedPreparation(saved, saved, other), false);
+  assert.equal(sameReviewedPreparation(saved, saved, operationId, Date.parse(saved.expiresAt)), false);
+  const changes: Partial<CustomerAiSaved>[] = [
+    { operationId: other }, { workspaceId: other }, { bookId: other }, { connectionId: other }, { credentialRevision: 2 },
+    { policyId: other }, { provider: "xai" }, { agentType: "proofreader" }, { model: "different" }, { upstream: "different" },
+    { maxOutputTokens: 2048 }, { providerCostStatus: "unknown", platformFee: { mode: "per_request_credits", credits: 2 } },
+    { platformFee: { mode: "platform_plan", credits: 1 } }, { chapterCount: 2 }, { contextOmitted: 1 },
+    { createdAt: new Date(Date.parse(saved.createdAt) + 1).toISOString() },
+    { expiresAt: new Date(Date.parse(saved.expiresAt) + 1).toISOString() }, { status: "expired" },
+    { jobId: other }, { sourceVersions: [{ ...source, chapterId: other }] },
+    { sourceVersions: [{ ...source, documentVersionId: other }] }, { sourceVersions: [{ ...source, version: 2 }] },
+    { sourceVersions: [] },
+  ];
+  for (const change of changes) assert.equal(sameReviewedPreparation(saved, { ...saved, ...change }, operationId), false, JSON.stringify(change));
+  const second = { chapterId: other, documentVersionId: randomUUID(), version: 2 };
+  const multiple = { ...saved, chapterCount: 2, sourceVersions: [source, second] };
+  assert.equal(sameReviewedPreparation(multiple, { ...multiple, sourceVersions: [second, source] }, operationId), false);
+});
 
 test("customer client actor binding, exact source/policy/fee receipt and bounded no-random-id transport", async () => {
   const original = globalThis.fetch, calls: { url: string; init: RequestInit }[] = [];
