@@ -36,6 +36,33 @@ export async function customerAiPreparationRaces({sql,session,until,database}) {
    'releases',(select count(*) from public.credit_ledger where user_id='${f.u}' and source='generation_release'))`));
   assert.deepEqual(actual,expected);
  }
+ // Native PostgreSQL has microsecond clock precision; one independently
+ // evaluated clock per column can violate the exact 15-minute constraint.
+ for (let i=0;i<8;i++) {
+  const f=await fixture(); await sql(`begin; ${f.prepare} commit;`);
+  assert.equal(await sql(`select expires_at-created_at=interval '15 minutes' from bookworm_credentials.customer_ai_preparations where owner_id='${f.u}' and operation_id='${f.op}';`),'t');
+ }
+ {
+  const f=await fixture(),policy=randomUUID();
+  await sql(`insert into bookworm_credentials.customer_ai_policies(id,provider,agent_type,model_policy,fee_mode,fee_credits,enabled,expires_at)
+   select '${policy}',provider,agent_type,model_policy,fee_mode,fee_credits,true,clock_timestamp()+interval '3 minutes'
+   from bookworm_credentials.customer_ai_policies where id='${f.policy}';`);
+  await sql(`begin; ${f.prepare.replace(f.policy,policy)} commit;`);
+  assert.equal(await sql(`select r.expires_at=p.expires_at and r.expires_at>r.created_at and r.expires_at<r.created_at+interval '15 minutes'
+   from bookworm_credentials.customer_ai_preparations r join bookworm_credentials.customer_ai_policies p on p.id=r.policy_id
+   where r.owner_id='${f.u}' and r.operation_id='${f.op}';`),'t');
+  await sql(`do $$ begin
+   begin
+    insert into bookworm_credentials.customer_ai_preparations(owner_id,operation_id,workspace_id,book_id,connection_id,credential_revision,
+     policy_id,request_sha256,request_snapshot,source_versions,context_omitted,created_at,expires_at)
+    select owner_id,gen_random_uuid(),workspace_id,book_id,connection_id,credential_revision,policy_id,request_sha256,request_snapshot,
+     source_versions,context_omitted,created_at,created_at+interval '15 minutes 1 microsecond'
+    from bookworm_credentials.customer_ai_preparations where owner_id='${f.u}' and operation_id='${f.op}';
+    assert false,'More than 15 minutes must fail';
+   exception when check_violation then null; end;
+  end $$;`);
+ }
+ console.log('PASS native customer preparation: one timestamp, exact 15-minute bound and earlier policy expiry');
  for(const rollback of [false,true]) {
   const f=await fixture(),r=await contend(f.close,f.prepare,rollback);
   if(rollback) {assert.equal(r.code,0,r.stderr);assert.equal((await status(f)).status,'prepared')}

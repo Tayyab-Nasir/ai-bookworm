@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 117 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 119 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -17,7 +17,7 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
 const guardedCustomerJobs = '20261024040000_customer_ai_jobs.sql';
-const targetEnd = '20261024080000_customer_ai_author_recovery.sql';
+const targetEnd = '20261028020000_customer_ai_preparation_timestamp.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -135,7 +135,8 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 117, 'This reviewed rehearsal pins the 45 -> 117 target; review before extending');
+  assert.equal(names.length, 119, 'This reviewed rehearsal pins the 45 -> 119 target; review before extending');
+  assert.equal(names[117], '20261028010000_customer_ai_ready_discovery.sql');
   assert.equal(names[110], '20261023153000_chapter_title_changes.sql');
   assert.equal(names[111], '20261024020000_ai_connection_vault.sql');
   assert.equal(names[112], guardedCustomerJobs);
