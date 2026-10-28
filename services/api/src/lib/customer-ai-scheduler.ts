@@ -25,7 +25,7 @@ export function customerAiScheduler(sb: SupabaseClient, worker: Worker, options:
     throw new Error("Customer AI scheduler configuration is invalid.");
   }
   let cursor: Cursor | undefined;
-  let running = false;
+  let running = false, discoveryPending = false;
   // Unknown outcomes are never automatically dispatched again in this instance.
   // Fail closed on saturation instead of evicting uncertain identities.
   const uncertain = new Set<string>();
@@ -101,13 +101,29 @@ export function customerAiScheduler(sb: SupabaseClient, worker: Worker, options:
     },
     async tick(signal?: AbortSignal, intakeSignal?: AbortSignal): Promise<{ scanned: number; attempted: number; uncertain: number; suppressed: number; cycleComplete: boolean }> {
       if (running) throw new Error("Customer AI scheduler is already running.");
+      if (discoveryPending) throw new Error("Customer AI scheduler is unavailable.");
       if (signal?.aborted || intakeSignal?.aborted) return { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false };
       if (uncertain.size >= 1024) throw new SchedulerReviewRequired();
       running = true;
       try {
-        const response = await sb.rpc("discover_customer_ai_ready_jobs", {
+        const deadline = AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : []), ...(intakeSignal ? [intakeSignal] : [])]);
+        const operation = Promise.resolve(sb.rpc("discover_customer_ai_ready_jobs", {
           p_limit: pageSize, p_after_created_at: cursor?.createdAt ?? null, p_after_job_id: cursor?.jobId ?? null,
-        }).abortSignal(AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : [])]));
+        }).abortSignal(deadline)).finally(() => { discoveryPending = false; });
+        discoveryPending = true;
+        let onAbort: (() => void) | undefined;
+        let response: Awaited<typeof operation>;
+        try {
+          const stopped = new Promise<never>((_, reject) => {
+            onAbort = () => reject(new Error());
+            deadline.addEventListener("abort", onAbort, { once: true });
+            if (deadline.aborted) onAbort();
+          });
+          response = await Promise.race([operation, stopped]);
+        } catch (error) {
+          if (signal?.aborted || intakeSignal?.aborted) return { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false };
+          throw error;
+        } finally { if (onAbort) deadline.removeEventListener("abort", onAbort); }
         if (signal?.aborted || intakeSignal?.aborted) return { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false };
         if (response.error) throw new Error();
         const rows = z.array(row).max(pageSize).parse(response.data);

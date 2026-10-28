@@ -16,6 +16,21 @@ function database(pages: unknown[]) {
 }
 const success = async (jobId: string): Promise<CustomerAiOutcome> => ({ jobId, status: "succeeded" });
 
+test("shutdown interrupts non-cooperative discovery; late rows cannot start a worker", { timeout: 2000 }, async () => {
+  let release!: (response: unknown) => void, claims = 0, calls = 0;
+  const pending = new Promise(resolve => { release = resolve; });
+  const sb = { rpc() { calls++; return { abortSignal() { return pending; } }; } } as unknown as SupabaseClient;
+  const scheduler = customerAiScheduler(sb, { run: async id => { claims++; return success(id); } });
+  const stop = new AbortController(), tick = scheduler.tick(undefined, stop.signal);
+  stop.abort();
+  assert.deepEqual(await tick, { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false });
+  await assert.rejects(scheduler.tick(), /scheduler is unavailable/u);
+  assert.equal(calls, 1);
+  release({ data: [row(0)], error: null });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(claims, 0);
+});
+
 test("advances exact microsecond cursor across non-ready rows and wraps at scan end", async () => {
   const db = database([[row(0, false), row(1)], [row(2)], []]); const attempted: string[] = [];
   const scheduler = customerAiScheduler(db.sb, { run: async id => { attempted.push(id); return success(id); } }, { pageSize: 2 });

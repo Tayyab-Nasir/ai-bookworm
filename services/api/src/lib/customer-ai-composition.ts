@@ -16,6 +16,7 @@ export function customerAiComposition(config: {
   databaseUrl: string; serviceRoleKey: string; serviceUrl: string; serviceToken: string;
   vault: CredentialVault; signer: ReturnType<typeof customerDispatchSigner>;
   pageSize?: number; mode?: "development" | "test" | "production"; allowLoopbackHttp?: boolean;
+  rpcTimeoutMs?: number; dispatchTimeoutMs?: number;
   databaseFetch?: typeof fetch; serviceFetch?: typeof fetch;
 }) {
   const invalid = () => new Error("Customer AI composition configuration is invalid.");
@@ -23,6 +24,7 @@ export function customerAiComposition(config: {
   // Shutdown stops intake without aborting the current worker's receipt/hold recovery.
   const intake = new AbortController();
   let scheduler: ReturnType<typeof customerAiScheduler>;
+  let worker: ReturnType<typeof customerAiWorker>;
   let maintenance: ReturnType<typeof customerAiSlotController>;
   let slots: ReturnType<typeof customerAiMaintenanceSlots>;
   let journal: ReturnType<typeof customerAiMaintenanceJournal>;
@@ -38,8 +40,9 @@ export function customerAiComposition(config: {
     const sb = createClient(url.origin, config.serviceRoleKey, { db: { retry: false },
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
       global: { fetch: boundedSupabaseFetch(lifetime.signal, config.databaseFetch) } });
-    const worker = customerAiWorker(sb, { serviceUrl: config.serviceUrl, serviceToken: config.serviceToken,
-      vault: config.vault, signer: config.signer, allowLoopbackHttp: config.allowLoopbackHttp, fetcher: config.serviceFetch });
+    worker = customerAiWorker(sb, { serviceUrl: config.serviceUrl, serviceToken: config.serviceToken,
+      vault: config.vault, signer: config.signer, allowLoopbackHttp: config.allowLoopbackHttp, fetcher: config.serviceFetch,
+      rpcTimeoutMs: config.rpcTimeoutMs, dispatchTimeoutMs: config.dispatchTimeoutMs });
     const pageSize = config.pageSize ?? 1;
     scheduler = customerAiScheduler(sb, worker, { pageSize });
     const privateConfig = { databaseUrl: config.databaseUrl, serviceRoleKey: config.serviceRoleKey,
@@ -56,7 +59,12 @@ export function customerAiComposition(config: {
     try { return await operation; } finally { if (active === operation) active = undefined; }
   }
   return {
-    tick: (signal?: AbortSignal) => run(() => scheduler.tick(signal, intake.signal)),
+    tick: (signal?: AbortSignal) => run(async () => {
+      worker.assertTransportHealthy();
+      const result = await scheduler.tick(signal, intake.signal);
+      worker.assertTransportHealthy();
+      return result;
+    }),
     reconcile: (jobId: string, signal?: AbortSignal) => run(() => scheduler.reconcile(jobId, { signal })),
     recoverReceipt: (jobId: string, signal?: AbortSignal) => run(() => scheduler.recoverReceipt(jobId, { signal })),
     scanMaintenance: (signal?: AbortSignal) => run(() => maintenance.tick(signal)),

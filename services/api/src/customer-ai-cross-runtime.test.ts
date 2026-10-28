@@ -49,9 +49,10 @@ test("TypeScript scheduler signs a job consumed by the actual Python ASGI app wi
     }
     throw new Error("Unexpected synthetic database operation");
   };
-  const serviceFetch: typeof fetch = async (_url, init) => {
+  const serviceFetch: typeof fetch = async (input, init) => {
     posts++; assert.equal(init?.redirect, "error");
-    const body = init?.body as Buffer;
+    assert(input instanceof Request);
+    const body = Buffer.from(await input.arrayBuffer());
     const proof = bridge({ action: "dispatch", body: body.toString("base64") });
     assert.equal(proof.status, 201); assert.equal(proof.providerCalls, 1); assert.equal(proof.receiptCount, 1);
     receipt = proof.result;
@@ -61,7 +62,7 @@ test("TypeScript scheduler signs a job consumed by the actual Python ASGI app wi
   const runtime = customerAiComposition({ databaseUrl: "https://database.invalid", serviceRoleKey: "synthetic-private-database-token",
     serviceUrl: "https://private.invalid", serviceToken: "synthetic-private-service-token", mode: "test", vault, signer, databaseFetch, serviceFetch });
   try {
-    assert.deepEqual(await runtime.tick(), { scanned: 1, attempted: 1, uncertain: 0, suppressed: 0, cycleComplete: false });
+    await assert.rejects(runtime.tick(), /unresolved operation/u);
     assert.equal(posts, 1);
     assert.deepEqual(events, ["discover_customer_ai_ready_jobs", "claim_customer_ai_job", "prepare_customer_ai_dispatch",
       "resolve_customer_ai_dispatch", "complete_customer_ai_job"]);

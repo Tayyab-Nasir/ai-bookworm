@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { credentialVault } from "./lib/ai-connection-vault.js";
 import { customerDispatchSigner, prepareCustomerDispatch, type CustomerDispatchScope } from "./lib/customer-ai-dispatch.js";
 import { customerAiComposition } from "./lib/customer-ai-composition.js";
+import { customerAiLifecycle, runCustomerAiLoop } from "./lib/customer-ai-loop.js";
 
 const token = "synthetic-internal-service-token";
 const json = (value: unknown, status = 200, headers: Record<string, string> = {}) => new Response(JSON.stringify(value),
@@ -26,12 +27,14 @@ function fixture() {
   const calls: string[] = []; let receipt = false, dispatched = 0, resolveCount = 0;
   const maintenanceAttempt = randomUUID();
   const hooks: { fail?: string; service?: () => Promise<Response>; rows?: unknown[]; maintenanceRows?: unknown[];
+    stallName?: string; stall?: () => Promise<Response>;
     recover?: () => Promise<Response>; reconcile?: () => Promise<Response>; execute?: () => Promise<Response> } = {};
   const databaseFetch: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
     const name = url.pathname.split("/").at(-1)!; calls.push(name);
     assert.equal(init?.redirect, "error");
     assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-service-role-key");
+    if (name === hooks.stallName && hooks.stall) return hooks.stall();
     if (name === hooks.fail) return json({ error: "synthetic" }, 503, { "retry-after": "1" });
     const args = JSON.parse(String(init?.body ?? "{}"));
     if (name === "discover_customer_ai_ready_jobs") return json(hooks.rows ?? [{ job_id: job.id, created_at: "2026-10-28T13:00:00.123456+00:00", ready: true }]);
@@ -68,6 +71,51 @@ test("synthetic composed discovery, single dispatch and receipt completion", asy
   assert.equal(f.dispatched(), 1); assert.equal(f.resolved(), 1);
   await runtime.close(); f.config.signer.dispose();
 });
+
+test("close interrupts a non-cooperative discovery and ignores late rows", { timeout: 2000 }, async () => {
+  const f = fixture(); let release!: (value: Response) => void, started!: () => void;
+  const began = new Promise<void>(resolve => { started = resolve; });
+  const late = new Promise<Response>(resolve => { release = resolve; });
+  f.hooks.stallName = "discover_customer_ai_ready_jobs";
+  f.hooks.stall = () => { started(); return late; };
+  const runtime = customerAiComposition(f.config), tick = runtime.tick();
+  await began;
+  await runtime.close();
+  assert.equal((await tick).attempted, 0);
+  release(json([{ job_id: f.scope.jobId, created_at: "2026-10-28T13:00:00.123456+00:00", ready: true }]));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert(!f.calls.includes("claim_customer_ai_job")); assert.equal(f.dispatched(), 0);
+  f.config.signer.dispose();
+});
+
+for (const kind of ["post", "rpc"] as const) {
+  test(`unsettled worker ${kind} stops the loop instead of refreshing progress`, { timeout: 2000 }, async () => {
+    const f = fixture(); let release!: (value: Response) => void;
+    const delayed = new Promise<Response>(resolve => { release = resolve; });
+    f.hooks.rows = [];
+    if (kind === "post") f.hooks.service = () => delayed;
+    else { f.hooks.stallName = "resolve_customer_ai_dispatch"; f.hooks.stall = () => delayed; }
+    const runtime = customerAiComposition({ ...f.config, dispatchTimeoutMs: 15, rpcTimeoutMs: 15 });
+    const lifecycle = customerAiLifecycle({ scope: { deploymentId: "d", projectRef: "p", serviceId: "s", keyId: "k" }, ttlMs: 5_000 });
+    let scans = 0, before: Promise<unknown> | undefined;
+    const running = runCustomerAiLoop(runtime, { signal: new AbortController().signal, idleDelayMs: 100, lifecycle,
+      onMaintenance: () => {
+        if (++scans === 2) {
+          before = lifecycle.verifyWorker(new AbortController().signal);
+          f.hooks.rows = [{ job_id: f.scope.jobId, created_at: "2026-10-28T13:00:00.123456+00:00", ready: true }];
+        }
+      } });
+    await assert.rejects(running, /loop stopped unexpectedly/u);
+    assert(before); await before;
+    await assert.rejects(lifecycle.verifyWorker(new AbortController().signal), /progress is unavailable/u);
+    assert.equal(f.dispatched(), kind === "post" ? 1 : 0);
+    assert.equal(f.calls.filter(x => x === "resolve_customer_ai_dispatch").length, 1);
+    assert(!f.calls.some(x => /release|cancel|deduct/u.test(x)));
+    release(json({ ignored: true }));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    f.config.signer.dispose();
+  });
+}
 
 test("SDK transport does not retry discovery or reconciliation despite Retry-After", async () => {
   for (const name of ["discover_customer_ai_ready_jobs", "reconcile_customer_ai_job", "recover_customer_ai_receipt"]) {
@@ -165,10 +213,10 @@ test("composition shutdown drains maintenance action and stops subsequent page w
   assert.equal(f.dispatched(), 0); await assert.rejects(runtime.scanMaintenance(), /closed/u); f.config.signer.dispose();
 });
 
-test("lost dispatch reply recovers durable receipt without a second provider send", async () => {
+test("lost dispatch reply recovers durable receipt, then stops unhealthy transport", async () => {
   const f = fixture(); f.hooks.service = async () => { f.saveReceipt(); throw new Error("synthetic-secret-must-not-leak"); };
   const runtime = customerAiComposition(f.config);
-  assert.equal((await runtime.tick()).uncertain, 0);
+  await assert.rejects(runtime.tick(), /unresolved operation/u);
   assert.equal(f.resolved(), 1); assert.equal(f.dispatched(), 1);
   assert.equal(f.calls.filter(name => name === "complete_customer_ai_job").length, 1);
   await runtime.close(); f.config.signer.dispose();
@@ -190,7 +238,7 @@ test("caller abort prevents new claims and does not prevent receipt recovery aft
   const already = new AbortController(); already.abort();
   assert.equal((await runtime.tick(already.signal)).attempted, 0); assert.equal(f.calls.length, 0);
   f.hooks.service = async () => { f.saveReceipt(); controller.abort(); throw new Error("synthetic disconnected response"); };
-  assert.equal((await runtime.tick(controller.signal)).uncertain, 0);
+  await assert.rejects(runtime.tick(controller.signal), /unresolved operation/u);
   assert.equal(f.dispatched(), 1); assert.equal(f.calls.at(-1), "complete_customer_ai_job");
   await runtime.close(); f.config.signer.dispose();
 });
