@@ -61,7 +61,7 @@ test("TypeScript scheduler signs a job consumed by the actual Python ASGI app wi
   const runtime = customerAiComposition({ databaseUrl: "https://database.invalid", serviceRoleKey: "synthetic-private-database-token",
     serviceUrl: "https://private.invalid", serviceToken: "synthetic-private-service-token", mode: "test", vault, signer, databaseFetch, serviceFetch });
   try {
-    assert.deepEqual(await runtime.tick(), { scanned: 1, attempted: 1, uncertain: 0, suppressed: 0, cycleComplete: true });
+    assert.deepEqual(await runtime.tick(), { scanned: 1, attempted: 1, uncertain: 0, suppressed: 0, cycleComplete: false });
     assert.equal(posts, 1);
     assert.deepEqual(events, ["discover_customer_ai_ready_jobs", "claim_customer_ai_job", "prepare_customer_ai_dispatch",
       "resolve_customer_ai_dispatch", "complete_customer_ai_job"]);

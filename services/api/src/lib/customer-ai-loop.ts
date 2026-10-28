@@ -3,12 +3,14 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { customerAiComposition } from "./customer-ai-composition.js";
 
-type Runtime = Pick<ReturnType<typeof customerAiComposition>, "tick" | "close">;
+type Runtime = Pick<ReturnType<typeof customerAiComposition>, "tick" | "scanMaintenance" | "close">;
+type MaintenanceSummary = Awaited<ReturnType<Runtime["scanMaintenance"]>>;
 
-export async function runCustomerAiLoop(runtime: Runtime, options: { signal: AbortSignal; idleDelayMs?: number }): Promise<void> {
+export async function runCustomerAiLoop(runtime: Runtime, options: { signal: AbortSignal; idleDelayMs?: number; onMaintenance?: (summary: MaintenanceSummary) => void }): Promise<void> {
   const idleDelayMs = options?.idleDelayMs ?? 2_000;
-  if (!runtime || typeof runtime.tick !== "function" || typeof runtime.close !== "function"
+  if (!runtime || typeof runtime.tick !== "function" || typeof runtime.scanMaintenance !== "function" || typeof runtime.close !== "function"
     || !options || !(options.signal instanceof AbortSignal)
+    || (options.onMaintenance !== undefined && typeof options.onMaintenance !== "function")
     || !Number.isInteger(idleDelayMs) || idleDelayMs < 100 || idleDelayMs > 30_000) {
     throw new Error("Customer AI loop configuration is invalid.");
   }
@@ -26,9 +28,12 @@ export async function runCustomerAiLoop(runtime: Runtime, options: { signal: Abo
   let failed = false;
   try {
     while (!stopped) {
+      const maintenance = await runtime.scanMaintenance();
+      if (stopped) break;
+      options.onMaintenance?.(maintenance);
       const result = await runtime.tick();
       if (stopped) break;
-      if (result.cycleComplete) {
+      if (result.cycleComplete && maintenance.slotsCycleComplete && maintenance.candidatesCycleComplete) {
         try { await delay(idleDelayMs, undefined, { signal: wake.signal }); }
         catch { if (!stopped) throw new Error(); }
       }

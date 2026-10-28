@@ -868,22 +868,32 @@ test("renaming a chapter preserves its unsaved manuscript and updates the chapte
     });
     const manuscript = page.getByRole("textbox", { name: "Manuscript editor" });
     await manuscript.click(); await page.keyboard.press("Control+End"); await page.keyboard.insertText(" Local unsaved ending.");
-    const before = await manuscript.innerText();
+    // Compare the document model, not table controls rendered inside the editor.
+    const before = await manuscript.evaluate(element => element.editor.getJSON());
     await page.getByRole("button", { name: "Edit chapter title", exact: true }).click();
     await page.getByLabel("New chapter title", { exact: true }).fill("A revised opening");
     await page.waitForFunction(() => Array.from(document.querySelectorAll("button")).find(button => button.textContent === "Save chapter")?.disabled === true);
     assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
     await page.getByRole("button", { name: "Save title", exact: true }).click();
     await page.getByRole("status").filter({ hasText: "Chapter title saved" }).waitFor();
-    assert.equal(await manuscript.innerText(), before);
+    assert.deepEqual(await manuscript.evaluate(element => element.editor.getJSON()), before);
     assert.equal(await page.getByRole("navigation", { name: "Chapters" }).getByText("A revised opening", { exact: true }).count(), 1);
     assert.equal(await page.evaluate(() => window.requests.length), 0);
     assert.equal(await page.evaluate(() => window.titleRequests.length), 1);
     await page.waitForFunction(() => Array.from(document.querySelectorAll("button")).find(button => button.textContent === "Save chapter")?.disabled === false);
+    await page.waitForFunction(() => document.querySelector(".ProseMirror")?.getAttribute("contenteditable") === "true");
+    await page.getByRole("button", { name: "Edit table", exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isEnabled(), true);
     await page.getByRole("button", { name: "Save chapter", exact: true }).click();
     await page.waitForFunction(() => window.requests.length === 1);
-    assert.match(JSON.stringify(await page.evaluate(() => window.requests[0].nodes)), /Local unsaved ending/);
+    const { saved, original } = await page.evaluate(() => ({ saved: window.requests[0].nodes, original: window.nodes }));
+    const savedLists = saved.filter(node => node.type === "listItem");
+    assert.deepEqual(savedLists.map(({ attributes: { richText, ...attributes }, ...node }) => ({ ...node, attributes })),
+      original.filter(node => node.type === "listItem"));
+    for (const node of savedLists) assert.deepEqual(node.attributes.richText, [{ type: "text", text: node.text, marks: [] }]);
+    assert.deepEqual(saved.find(node => node.type === "table"), original.find(node => node.type === "table"));
+    assert.equal(saved.at(-1).type, "paragraph");
+    assert.equal(saved.at(-1).text, " Local unsaved ending.");
     await page.screenshot({ path: resolve(artifacts, "chapter-title-keeps-manuscript.png"), fullPage: true });
   } finally { await page.close(); }
 });

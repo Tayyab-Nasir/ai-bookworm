@@ -6,7 +6,9 @@ import { createClient } from "@supabase/supabase-js";
 import { boundedSupabaseFetch } from "./supabase.js";
 import { customerAiWorker } from "./customer-ai-worker.js";
 import { customerAiScheduler } from "./customer-ai-scheduler.js";
-import { customerAiReconciliationScan } from "./customer-ai-reconciliation-scan.js";
+import { customerAiMaintenanceSlots } from "./customer-ai-maintenance-slots.js";
+import { customerAiMaintenanceJournal } from "./customer-ai-maintenance-journal.js";
+import { customerAiSlotController } from "./customer-ai-slot-controller.js";
 import type { CredentialVault } from "./ai-connection-vault.js";
 import type { customerDispatchSigner } from "./customer-ai-dispatch.js";
 
@@ -21,7 +23,9 @@ export function customerAiComposition(config: {
   // Shutdown stops intake without aborting the current worker's receipt/hold recovery.
   const intake = new AbortController();
   let scheduler: ReturnType<typeof customerAiScheduler>;
-  let maintenance: ReturnType<typeof customerAiReconciliationScan>;
+  let maintenance: ReturnType<typeof customerAiSlotController>;
+  let slots: ReturnType<typeof customerAiMaintenanceSlots>;
+  let journal: ReturnType<typeof customerAiMaintenanceJournal>;
   try {
     if (!config || typeof config.allowLoopbackHttp !== "undefined" && typeof config.allowLoopbackHttp !== "boolean"
       || config.allowLoopbackHttp && !["development", "test"].includes(config.mode ?? "")
@@ -36,13 +40,13 @@ export function customerAiComposition(config: {
       global: { fetch: boundedSupabaseFetch(lifetime.signal, config.databaseFetch) } });
     const worker = customerAiWorker(sb, { serviceUrl: config.serviceUrl, serviceToken: config.serviceToken,
       vault: config.vault, signer: config.signer, allowLoopbackHttp: config.allowLoopbackHttp, fetcher: config.serviceFetch });
-    scheduler = customerAiScheduler(sb, worker, { pageSize: config.pageSize });
-    // The scanner uses internal scheduler methods. Calling the public guarded
-    // methods here would re-enter `run` and reject its own maintenance scan.
-    maintenance = customerAiReconciliationScan(sb, {
-      reconcile: (jobId, signal) => scheduler.reconcile(jobId, { signal }),
-      recoverReceipt: (jobId, signal) => scheduler.recoverReceipt(jobId, { signal }),
-    }, { pageSize: config.pageSize });
+    const pageSize = config.pageSize ?? 1;
+    scheduler = customerAiScheduler(sb, worker, { pageSize });
+    const privateConfig = { databaseUrl: config.databaseUrl, serviceRoleKey: config.serviceRoleKey,
+      mode: config.mode, allowLoopbackHttp: config.allowLoopbackHttp, databaseFetch: config.databaseFetch };
+    slots = customerAiMaintenanceSlots(privateConfig, sb);
+    journal = customerAiMaintenanceJournal(privateConfig, sb);
+    maintenance = customerAiSlotController(sb, slots, journal, { pageSize });
   } catch { lifetime.abort(); throw invalid(); }
   let closed = false, active: Promise<unknown> | undefined, closing: Promise<void> | undefined;
   async function run<T>(action: () => Promise<T>): Promise<T> {
@@ -55,12 +59,7 @@ export function customerAiComposition(config: {
     tick: (signal?: AbortSignal) => run(() => scheduler.tick(signal, intake.signal)),
     reconcile: (jobId: string, signal?: AbortSignal) => run(() => scheduler.reconcile(jobId, { signal })),
     recoverReceipt: (jobId: string, signal?: AbortSignal) => run(() => scheduler.recoverReceipt(jobId, { signal })),
-    scanMaintenance: (signal?: AbortSignal) => run(() => maintenance.scan(signal)),
-    acknowledgeMaintenanceReplay: (jobId: string) => {
-      if (closed) throw new Error("Customer AI composition is closed.");
-      if (active) throw new Error("Customer AI composition is already running.");
-      return maintenance.acknowledgeForExplicitReplay(jobId);
-    },
+    scanMaintenance: (signal?: AbortSignal) => run(() => maintenance.tick(signal)),
     close(): Promise<void> {
       if (closing) return closing;
       closed = true;
@@ -68,7 +67,8 @@ export function customerAiComposition(config: {
       const maintenanceStop = maintenance.close();
       // Stop new work immediately, but allow the current worker to finish its
       // bounded receipt/hold recovery before cancelling the shared transport.
-      closing = (async () => { try { await maintenanceStop; await active; } catch { /* caller observes its own result */ } finally { lifetime.abort(); } })();
+      closing = (async () => { try { await maintenanceStop; await active; } catch { /* caller observes its own result */ }
+        finally { slots.close(); journal.close(); lifetime.abort(); } })();
       return closing;
     },
   };

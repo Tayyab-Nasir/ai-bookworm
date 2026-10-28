@@ -52,10 +52,12 @@ type Outcome<T, I> = { status: "confirmed"; value: T } | { status: "unknown"; re
 type SlotRow = z.infer<typeof slotRow>;
 type ObservationRow = z.infer<typeof observationRow>;
 
+// An injected client is trusted internal composition only; its owner must
+// enforce service-role scope, bounded transport and disabled SDK retries.
 export function customerAiMaintenanceSlots(config: {
   databaseUrl: string; serviceRoleKey: string; mode?: "development" | "test" | "production";
   allowLoopbackHttp?: boolean; databaseFetch?: typeof fetch;
-}) {
+}, sharedClient?: SupabaseClient) {
   const invalid = () => new Error("Customer AI maintenance slot configuration is invalid.");
   const lifetime = new AbortController(); let sb: SupabaseClient;
   try {
@@ -66,7 +68,7 @@ export function customerAiMaintenanceSlots(config: {
     const url = new URL(config.databaseUrl), loopback = ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname);
     if (url.username || url.password || url.search || url.hash || !["", "/"].includes(url.pathname)
       || !(url.protocol === "https:" || (config.allowLoopbackHttp === true && loopback && url.protocol === "http:"))) throw invalid();
-    sb = createClient(url.origin, config.serviceRoleKey, { db: { retry: false },
+    sb = sharedClient ?? createClient(url.origin, config.serviceRoleKey, { db: { retry: false },
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
       global: { fetch: boundedSupabaseFetch(lifetime.signal, config.databaseFetch) } });
   } catch { lifetime.abort(); throw invalid(); }

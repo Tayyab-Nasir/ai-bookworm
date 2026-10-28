@@ -14,10 +14,12 @@ const receipt = identity.extend({ state: z.enum(["pending", "completed", "needs_
 export type CustomerAiMaintenanceIdentity = z.infer<typeof identity>;
 type JournalOutcome = { status: "confirmed"; receipt: z.infer<typeof receipt> } | { status: "unknown"; identity: CustomerAiMaintenanceIdentity };
 
+// An injected client is trusted internal composition only; its owner must
+// enforce service-role scope, bounded transport and disabled SDK retries.
 export function customerAiMaintenanceJournal(config: {
   databaseUrl: string; serviceRoleKey: string; mode?: "development" | "test" | "production";
   allowLoopbackHttp?: boolean; databaseFetch?: typeof fetch;
-}) {
+}, sharedClient?: SupabaseClient) {
   const invalid = () => new Error("Customer AI maintenance journal configuration is invalid.");
   const lifetime = new AbortController();
   let sb: SupabaseClient;
@@ -29,7 +31,7 @@ export function customerAiMaintenanceJournal(config: {
     const url = new URL(config.databaseUrl), loopback = ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname);
     if (url.username || url.password || url.search || url.hash || !["", "/"].includes(url.pathname)
       || !(url.protocol === "https:" || (config.allowLoopbackHttp === true && loopback && url.protocol === "http:"))) throw invalid();
-    sb = createClient(url.origin, config.serviceRoleKey, { db: { retry: false },
+    sb = sharedClient ?? createClient(url.origin, config.serviceRoleKey, { db: { retry: false },
       auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
       global: { fetch: boundedSupabaseFetch(lifetime.signal, config.databaseFetch) } });
   } catch { lifetime.abort(); throw invalid(); }
