@@ -57,13 +57,13 @@ export function customerAiPreparation(factory: SupabaseFactory, options: {
         const response = await fetcher(endpoint, { method: "POST", redirect: "error", signal,
           headers: { "content-type": "application/json", "x-service-token": serviceToken }, body });
         if (response.status !== 200 || response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
-          await response.body?.cancel().catch(() => {});
+          void response.body?.cancel().catch(() => {});
           if (response.status === 422) throw new AppError(422, "Selected saved context cannot fit this AI request. Review the source and context limit.");
           throw unavailable();
         }
         const length = response.headers.get("content-length");
         if (!response.body || (length !== null && (!/^\d{1,10}$/u.test(length) || Number(length) > 16384))) {
-          await response.body?.cancel().catch(() => {}); throw unavailable();
+          void response.body?.cancel().catch(() => {}); throw unavailable();
         }
         let size = 0;
         const stream = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({

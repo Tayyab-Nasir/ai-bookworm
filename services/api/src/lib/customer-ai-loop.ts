@@ -73,6 +73,13 @@ type State = { scope: Scope; ttl: number; clock: Clock; claimed: boolean; stoppe
 const states = new WeakMap<CustomerAiLifecycle, State>();
 const unavailable = () => new Error("Customer AI worker progress is unavailable.");
 
+/** Only lifecycle objects constructed here can supply local progress proof.
+ * This is read-only: callers cannot claim the loop or update its progress. */
+export async function verifyCustomerAiLifecycle(lifecycle: CustomerAiLifecycle, signal: AbortSignal) {
+  if (!states.has(lifecycle)) throw unavailable();
+  return lifecycle.verifyWorker(signal);
+}
+
 function readClock(clock: Clock) {
   const time = clock();
   if (!time || !Number.isSafeInteger(time.wall) || time.wall < 0 || !Number.isSafeInteger(time.monotonic) || time.monotonic < 0) throw unavailable();

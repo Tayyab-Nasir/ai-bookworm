@@ -218,24 +218,30 @@ class KdpAdapter(ExportAdapter):
                                 required_metadata=("title", "author", "language", "description"))
 
 
-class AppleBooksAdapter(ExportAdapter):
-    CHANNEL = "apple"
-    _CAPS = ChannelCapabilities(formats=("epub",), can_submit=False,
-                                can_check_status=False,
-                                required_metadata=("title", "author", "language", "description",
-                                                   "categories"))
+class EpubCheckedExportAdapter(ExportAdapter):
+    """Check the exact saved EPUB; never trust a caller's cached result."""
+    EPUBCHECK_CACHE: str = ""
 
     def validate(self, ctx: dict) -> dict:
         ctx = dict(ctx)
-        ctx.pop("_apple_epubcheck_result", None)
+        ctx.pop(self.EPUBCHECK_CACHE, None)
         return super().validate(ctx)
 
     def build_package(self, ctx: dict, artifacts: dict[str, bytes]) -> list[PackageArtifact]:
         # Validate the bytes actually exported, not a caller-supplied proof context.
         if "book.epub" in artifacts:
             ctx = {**ctx, "artifact": artifacts["book.epub"], "cover_bytes": artifacts.get("cover.png")}
-            ctx.pop("_apple_epubcheck_result", None)
+            ctx.pop(self.EPUBCHECK_CACHE, None)
         return super().build_package(ctx, artifacts)
+
+
+class AppleBooksAdapter(EpubCheckedExportAdapter):
+    CHANNEL = "apple"
+    EPUBCHECK_CACHE = "_apple_epubcheck_result"
+    _CAPS = ChannelCapabilities(formats=("epub",), can_submit=False,
+                                can_check_status=False,
+                                required_metadata=("title", "author", "language", "description",
+                                                   "categories"))
 
 
 class BarnesNobleAdapter(ExportAdapter):
@@ -252,8 +258,9 @@ class LuluAdapter(ExportAdapter):
                                 required_metadata=("title", "author", "language"))
 
 
-class GooglePlayAdapter(ExportAdapter):
+class GooglePlayAdapter(EpubCheckedExportAdapter):
     CHANNEL = "googleplay"
+    EPUBCHECK_CACHE = "_google_epubcheck_result"
     _CAPS = ChannelCapabilities(formats=("epub",), can_submit=False,
                                 can_check_status=False,
                                 required_metadata=("title", "author", "language"))

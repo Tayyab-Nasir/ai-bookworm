@@ -87,7 +87,7 @@ def test_google_play_requires_embedded_front_cover_and_builds_single_title_hando
            "cover_bytes": cover.getvalue()}
     result = adapter.validate(ctx)
     assert result["errors"] == 0, result["findings"]
-    assert result["ruleVersion"] == "core-1.0.9+google-play-1.1.0"
+    assert result["ruleVersion"] == "core-1.0.9+google-play-1.2.0"
     exported = adapter.build_package(ctx, {"book.epub": epub})[0]
     assert exported.path == "googleplay-export.zip"
     with zipfile.ZipFile(BytesIO(exported.data)) as archive:
@@ -110,6 +110,85 @@ def test_google_play_fails_closed_when_epubcheck_is_unavailable(monkeypatch):
     monkeypatch.setattr(google_rules, "run_epubcheck", lambda _epub: EpubCheckResult("unavailable"))
     result = get_adapter("googleplay").validate({**_ctx(), "channel": "googleplay"})
     assert any(item["code"] == "GOOGLE-EPUBCHECK-UNAVAILABLE" for item in result["findings"])
+
+
+def test_google_metadata_only_preflight_marks_epub_unchecked(monkeypatch):
+    import rules.google_play_v1 as google_rules
+    def unexpected(_epub):
+        raise AssertionError("preliminary preflight has no EPUB to validate")
+    monkeypatch.setattr(google_rules, "run_epubcheck", unexpected)
+    result = get_adapter("googleplay").validate({**_ctx(artifact=False), "channel": "googleplay"})
+    assert any(item["code"] == "GOOGLE-EPUBCHECK-NO-ARTIFACT" and item["severity"] == "warning"
+               for item in result["findings"])
+
+
+def _google_saved_epub():
+    from PIL import Image
+    edition = {"kind": "ebook", "cover": {"asset_id": "google-test-cover"}}
+    cover = BytesIO()
+    Image.new("RGB", (800, 1200), "#43536a").save(cover, "PNG")
+    epub, _ = render_epub(VALID, parse_edition(edition), cover.getvalue())
+    return edition, epub
+
+
+@pytest.mark.parametrize("status", ["valid", "invalid", "unavailable"])
+def test_google_package_endpoint_checks_exact_saved_epub_once(monkeypatch, status):
+    from fastapi import HTTPException
+    from epubcheck_runner import EpubCheckResult
+    import rules.google_play_v1 as google_rules
+    edition, epub = _google_saved_epub()
+    calls = []
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult(status, 1 if status == "invalid" else 0, 2 if status == "valid" else 0)
+    monkeypatch.setattr(google_rules, "run_epubcheck", check)
+    request = PackageRequest(channel="googleplay", editionConfig=edition, bookModel=VALID,
+                             artifactsBase64={"book.epub": base64.b64encode(epub).decode()})
+    if status == "valid":
+        result = build_package(request)
+        assert result["errors"] == 0
+        with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.epub") == epub
+            report = json.loads(archive.read("preflight.json"))
+            assert any(item["code"] == "GOOGLE-EPUBCHECK-WARNING" for item in report["findings"])
+    else:
+        with pytest.raises(HTTPException) as exc:
+            build_package(request)
+        assert exc.value.status_code == 422
+    assert calls == [epub]
+
+
+def test_google_ignores_stale_validation_and_checks_packaged_bytes(monkeypatch):
+    from epubcheck_runner import EpubCheckResult
+    import rules.google_play_v1 as google_rules
+    edition, epub = _google_saved_epub()
+    calls = []
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult("invalid", 1)
+    monkeypatch.setattr(google_rules, "run_epubcheck", check)
+    ctx = {"book": VALID, "edition": edition, "artifact": epub, "channel": "googleplay",
+           "_google_epubcheck_result": EpubCheckResult("valid")}
+    result = get_adapter("googleplay").validate(ctx)
+    assert any(item["code"] == "GOOGLE-EPUBCHECK-ERROR" for item in result["findings"])
+    ctx["artifact"] = b"stale proof"
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        get_adapter("googleplay").build_package(ctx, {"book.epub": epub})
+    assert calls == [epub, epub]
+
+
+def test_google_package_rejects_missing_embedded_cover_despite_stale_context(monkeypatch):
+    from epubcheck_runner import EpubCheckResult
+    import rules.google_play_v1 as google_rules
+    monkeypatch.setattr(google_rules, "run_epubcheck", lambda _epub: EpubCheckResult("valid"))
+    edition, valid_epub = _google_saved_epub()
+    no_cover, _ = render_epub(VALID, parse_edition(EBOOK))
+    ctx = {"book": VALID, "edition": edition, "artifact": valid_epub, "channel": "googleplay",
+           "_google_epubcheck_result": EpubCheckResult("valid")}
+    actual = get_adapter("googleplay").validate({**ctx, "artifact": no_cover})
+    assert any(item["code"] == "GOOGLE-EPUB-COVER" for item in actual["findings"])
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        get_adapter("googleplay").build_package(ctx, {"book.epub": no_cover})
 
 
 @pytest.mark.parametrize(("status", "code"), [

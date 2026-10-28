@@ -105,7 +105,9 @@ export function customerAiWorker(sb: SupabaseClient, options: {
           body: wire as unknown as NonNullable<Parameters<typeof fetch>[1]>["body"] });
         // Never trust the transport body (success OR failure) for settlement.
         // The AI service saves its private receipt before answering HTTP.
-        await response.body?.cancel().catch(() => {});
+        // Cancellation is best effort: a response stream may never settle its
+        // cancel promise. Continue with receipt-only recovery in that case.
+        void response.body?.cancel().catch(() => {});
       } catch { /* No raw exceptions, secret-bearing bodies or retries. */ }
       finally { secret?.fill(0); wire?.fill(0); }
       if (!resolutionAttempted || !fingerprint) return { status: "preparation_failed", jobId };

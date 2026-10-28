@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 125 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 126 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -17,7 +17,7 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
 const guardedCustomerJobs = '20261024040000_customer_ai_jobs.sql';
-const targetEnd = '20261028090000_customer_ai_maintenance_slots.sql';
+const targetEnd = '20261028100000_customer_ai_function_catalog_diagnostic.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -135,7 +135,7 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 125, 'This reviewed rehearsal pins the 45 -> 125 target; review before extending');
+  assert.equal(names.length, 126, 'This reviewed rehearsal pins the 45 -> 126 target; review before extending');
   assert.equal(names[117], '20261028010000_customer_ai_ready_discovery.sql');
   assert.equal(names[118], '20261028020000_customer_ai_preparation_timestamp.sql');
   assert.equal(names[119], '20261028030000_customer_ai_reconciliation.sql');
@@ -143,6 +143,7 @@ try {
   assert.equal(names[121], '20261028050000_customer_ai_receipt_recovery.sql');
   assert.equal(names[122], '20261028070000_customer_ai_maintenance_journal.sql');
   assert.equal(names[123], '20261028080000_customer_ai_maintenance_lookup.sql');
+  assert.equal(names[124], '20261028090000_customer_ai_maintenance_slots.sql');
   assert.equal(names[110], '20261023153000_chapter_title_changes.sql');
   assert.equal(names[111], '20261024020000_ai_connection_vault.sql');
   assert.equal(names[112], guardedCustomerJobs);
@@ -310,6 +311,10 @@ try {
   assert.deepEqual(await captureHistoricalState(db, fixture), historical);
   assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_preparation_closures')).rows[0].n, 0);
   console.log('PASS populated upgrade author recovery: canonical revision metadata, late-write rejection, no ambiguous refund, private ACLs and bounded closure rate');
+  step = 'customer function catalog diagnostic after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/customer-ai-function-catalog.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Catalog mutation tests roll back without changing historical data');
+  console.log('PASS populated upgrade function catalog diagnostic: limited RPC grants and configuration checks, drift and rollback');
   step = 'existing synthetic paid quote lifecycle helpers on upgraded schema';
   await verifyPaidQuoteFixtures(async statement => {
     const results = await db.exec(statement);

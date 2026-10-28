@@ -128,9 +128,9 @@ def build_package(req: PackageRequest) -> dict:
         "cover_bytes": artifacts.get("cover.png"),
         "cover_pdf_bytes": artifacts.get("cover.pdf"),
     }
-    # Apple validates inside build_package against the exact ZIP-bound bytes.
+    # EPUB-checked channels validate inside build_package against ZIP-bound bytes.
     # Running it here as well doubles the potentially long EPUBCheck process.
-    validation = None if req.channel == "apple" else adapter.validate(ctx)
+    validation = None if req.channel in {"apple", "googleplay"} else adapter.validate(ctx)
     if validation is not None and validation["errors"]:
         raise HTTPException(422, "the saved artifacts no longer pass channel validation")
     try:
@@ -138,7 +138,7 @@ def build_package(req: PackageRequest) -> dict:
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     if validation is None:
-        # A returned Apple package is possible only after its own zero-error
+        # A returned package is possible only after its own zero-error
         # validation; its version comes from the same immutable ruleset.
         validation = {"ruleVersion": load_ruleset(req.channel).version, "errors": 0}
     return {

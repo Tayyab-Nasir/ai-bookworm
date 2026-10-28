@@ -78,6 +78,24 @@ test("lost HTTP reply and failed HTTP status recover the receipt without trustin
   }
 });
 
+test("stalled or rejected response cancellation cannot block receipt-only recovery", { timeout: 2000 }, async () => {
+  for (const receipt of [true, false]) for (const cancellation of ["pending", "rejected"] as const) {
+    const f = fixture(); let cancellations = 0;
+    f.hooks.fetch = async () => {
+      f.state.receipt = receipt;
+      return new Response(new ReadableStream({ cancel() {
+        cancellations++;
+        return cancellation === "pending" ? new Promise<void>(() => {}) : Promise.reject(new Error(syntheticKey));
+      } }), { status: receipt ? 201 : 503 });
+    };
+    const result = await f.worker().run(f.job.id);
+    assert.equal(result.status, receipt ? "succeeded" : "requires_review");
+    assert.equal(cancellations, 1); assert.equal(f.state.postCount, 1); assert.equal(f.state.resolutionCount, 1);
+    assert.equal(f.state.held, !receipt); assert(!f.events.some(name => /cancel|release|deduct/u.test(name)));
+    assert(!JSON.stringify(result).includes(syntheticKey)); f.cleared();
+  }
+});
+
 test("absent receipt keeps a hold, never retries POST or releases the platform reservation", async () => {
   const f = fixture(); f.hooks.fetch = async () => { throw new Error(syntheticKey); };
   const result = await f.worker().run(f.job.id);

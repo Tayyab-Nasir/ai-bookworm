@@ -109,6 +109,25 @@ test("cancellation bounds a stalled response body and does not retry", async () 
   await assert.rejects(customerAiPreparation(f.factory, { ...options(), fetcher }).prepare(f.actor, f.input, policy(), controller.signal), reject(503));
   assert.equal(calls, 1); assert.equal(cancelled, true);
 });
+test("stalled or rejected response cancellation cannot block invalid preparation replies", { timeout: 2000 }, async () => {
+  for (const mode of ["status", "context-limit", "content-type", "length"] as const) {
+    for (const cancellation of ["pending", "rejected"] as const) {
+      const f = sourceFixture(); let calls = 0, cancellations = 0;
+      const fetcher: typeof fetch = async () => {
+        calls++;
+        return new Response(new ReadableStream({ cancel() {
+          cancellations++;
+          return cancellation === "pending" ? new Promise<void>(() => {}) : Promise.reject(new Error("private-cancel-detail"));
+        } }), { status: mode === "status" ? 503 : mode === "context-limit" ? 422 : 200,
+          headers: { "content-type": mode === "content-type" ? "text/plain" : "application/json",
+            ...(mode === "length" ? { "content-length": "16385" } : {}) } });
+      };
+      await assert.rejects(customerAiPreparation(f.factory, { ...options(), fetcher }).prepare(f.actor, f.input, policy()),
+        reject(mode === "context-limit" ? 422 : 503));
+      assert.equal(calls, 1); assert.equal(cancellations, 1);
+    }
+  }
+});
 test("operator-only service URL validation; HTTP allowed solely by explicit loopback opt-in", () => {
   const f = sourceFixture();
   for (const serviceUrl of ["http://private-ai.example", "https://x.example/path", "https://x.example?key=x", "https://x.example/#x", "https://user:password@x.example", "file:///x", "http://localhost:9000"]) {

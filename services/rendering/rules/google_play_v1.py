@@ -14,8 +14,8 @@ from epubcheck_runner import EpubCheckResult, run_epubcheck
 from preflight import Finding, Rule, _open_epub
 from rules._channel import make_ruleset, metadata_rules
 
-VERSION = "google-play-1.1.0"
-EFFECTIVE_DATE = "2026-09-24"
+VERSION = "google-play-1.2.0"
+EFFECTIVE_DATE = "2026-10-28"
 SOURCE_REF = "https://support.google.com/books/partner/answer/3424254?hl=en"
 
 
@@ -69,6 +69,8 @@ def check_google_epubcheck_errors(ctx):
 
 
 def check_google_epubcheck_warnings(ctx):
+    if (ctx.get("edition") or {}).get("kind") == "ebook" and not ctx.get("artifact"):
+        return [Finding(code="GOOGLE-EPUBCHECK-NO-ARTIFACT", message="This preliminary check has no EPUB; validate the saved EPUB before packaging", location="artifact")]
     result = _check_result(ctx)
     if result is None or result.warnings == 0:
         return []
