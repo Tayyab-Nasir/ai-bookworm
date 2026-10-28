@@ -75,7 +75,7 @@ async function fixture(width = 1280, parent = false, realReview = false) {
     if (parent) window.nodes.push({ id: "table", type: "table", text: "Research facts", rows: [["Research facts"]] });
     window.saved = structuredClone(window.nodes);
     window.documentReads = []; window.requests = []; window.creations = 0; window.restores = 0;
-    const chapters = [{ id: "chapter", title: "First chapter" }, { id: "second", title: "Second chapter" }];
+    const chapters = [{ id: "chapter", book_id: "book", title: "First chapter" }, { id: "second", book_id: "book", title: "Second chapter" }];
     window.bookwormApi = {
       getBook: async () => ({ book: { id: "book", workspace_id: "workspace", title: "Author manuscript" }, role: "owner" }),
       listChapters: async () => ({ chapters }),
@@ -465,6 +465,108 @@ test("chapter switching verifies the original editor account before loading or e
   } finally { await page.close(); }
 });
 
+test("ambiguous chapter reorder stays fenced after checking any observed order", async () => {
+  for (const observed of ["requested", "previous", "different"]) {
+    const page = await fixture(1280, true);
+    try {
+      await page.evaluate(observed => {
+        window.reorderCalls = [];
+        window.bookwormApi.reorderChapters = async (bookId, body, actor) => { window.reorderCalls.push({ bookId, body, actor }); throw new Error("lost order reply"); };
+        window.bookwormApi.listChapters = async (_bookId, actor) => {
+          window.orderReadActor = actor;
+          const rows = [{ id: "chapter", book_id: "book", title: "First chapter" }, { id: "second", book_id: "book", title: "Second chapter" }];
+          return { chapters: observed === "requested" ? rows.reverse() : observed === "previous" ? rows : [...rows, { id: "third", book_id: "book", title: "Third chapter" }] };
+        };
+      }, observed);
+      await page.getByRole("button", { name: "Move Second chapter up" }).click();
+      await page.getByRole("region", { name: "Unconfirmed chapter order" }).waitFor();
+      await page.getByRole("button", { name: "Check saved chapter order" }).click();
+      await page.getByText(observed === "requested" ? "The current order matches the requested order."
+        : observed === "previous" ? "The current order matches the previous order."
+        : "The current order differs from both the previous and requested orders.", { exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Move Second chapter up" }).isDisabled(), true);
+      assert.equal(await page.getByRole("button", { name: "Add chapter" }).isDisabled(), true);
+      const result = await page.evaluate(() => ({ calls: window.reorderCalls, actor: window.orderReadActor }));
+      assert.equal(result.calls.length, 1); assert.equal(result.calls[0].actor, "fixture-author"); assert.equal(result.actor, "fixture-author");
+      assert.match(await page.getByRole("region", { name: "Unconfirmed chapter order" }).innerText(), /cannot prove who changed it or cancel/);
+    } finally { await page.close(); }
+  }
+});
+
+test("confirmed reorder binds the actor and refreshes the saved list before enabling changes", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.reorderCalls = [];
+      const rows = [{ id: "second", book_id: "book", title: "Second chapter" }, { id: "chapter", book_id: "book", title: "First chapter" }];
+      window.bookwormApi.reorderChapters = async (bookId, body, actor) => { window.reorderCalls.push({ bookId, body, actor }); return { chapters: rows }; };
+      window.bookwormApi.listChapters = async (_bookId, actor) => { window.orderReadActor = actor; return { chapters: rows }; };
+    });
+    await page.getByRole("button", { name: "Move Second chapter up" }).click();
+    await page.getByText("Chapter order was saved. The list shows the latest verified order.", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("region", { name: "Unconfirmed chapter order" }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "01 Second chapter", exact: true }).count(), 1);
+    assert.deepEqual(await page.evaluate(() => [window.reorderCalls[0].actor, window.orderReadActor]), ["fixture-author", "fixture-author"]);
+  } finally { await page.close(); }
+});
+
+test("chapter reorder refuses an account switch before any structure write", async () => {
+  const page = await fixture(1280, true); let actor = "different-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => { window.reorderCalls = 0; window.bookwormApi.reorderChapters = async () => { window.reorderCalls++; throw new Error(); }; });
+    await page.getByRole("button", { name: "Move Second chapter up" }).click();
+    await page.getByText(/original account could not be verified/i).waitFor();
+    assert.equal(await page.evaluate(() => window.reorderCalls), 0);
+  } finally { await page.close(); }
+});
+
+test("transient account check failure before reorder sends nothing and allows a fresh attempt", async () => {
+  const page = await fixture(1280, true); let first = true;
+  try {
+    await page.locator('button:has-text("Edit chapter title"):not([disabled])').waitFor();
+    await page.route("**/api/auth/session", route => {
+      if (first) { first = false; return route.fulfill({ status: 503, json: { error: "unavailable" } }); }
+      return route.fulfill({ json: { user: { id: "fixture-author" } } });
+    });
+    await page.evaluate(() => {
+      window.reorderCalls = [];
+      const rows = [{ id: "second", book_id: "book", title: "Second chapter" }, { id: "chapter", book_id: "book", title: "First chapter" }];
+      window.bookwormApi.reorderChapters = async (bookId, body, actor) => { window.reorderCalls.push({ bookId, body, actor }); return { chapters: rows }; };
+      window.bookwormApi.listChapters = async () => ({ chapters: rows });
+    });
+    await page.getByRole("button", { name: "Move Second chapter up" }).click();
+    await page.getByText("Could not verify your account. No chapter reorder was sent. Try again.", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.reorderCalls.length), 0);
+    assert.equal(await page.getByRole("region", { name: "Unconfirmed chapter order" }).count(), 0);
+    const move = page.getByRole("button", { name: "Move Second chapter up" });
+    assert.equal(await move.isDisabled(), false);
+    await move.click();
+    await page.getByText("Chapter order was saved. The list shows the latest verified order.", { exact: true }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.reorderCalls.map(call => call.actor)), ["fixture-author"]);
+  } finally { await page.close(); }
+});
+
+test("chapter creation keeps the original actor and request after an account switch", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => { window.createCalls = [];
+      window.bookwormApi.createChapter = (bookId, body, expectedActor) => { window.createCalls.push({ bookId, body, expectedActor });
+        return new Promise(resolve => { window.finishCreate = () => resolve({ chapter: { id: "created", book_id: "book", title: body.title } }); }); }; });
+    await page.getByLabel("New chapter", { exact: true }).fill("New synthetic chapter");
+    await page.getByRole("button", { name: "Add chapter", exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishCreate === "function");
+    actor = "different-author"; await page.evaluate(() => window.finishCreate());
+    await page.getByText(/original account could not be verified/i).waitFor();
+    assert.equal(await page.evaluate(() => window.createCalls[0].expectedActor), "fixture-author");
+    actor = "fixture-author"; await page.getByRole("button", { name: "Recheck original account" }).click();
+    await page.getByRole("button", { name: "Retry chapter creation", exact: true }).waitFor();
+    assert.match(await page.locator("#chapter-creation-recovery").innerText(), /deleted.*create it again/);
+    assert.equal(await page.evaluate(() => window.createCalls.length), 1);
+  } finally { await page.close(); }
+});
+
 test("a pending chapter account check blocks the save keyboard shortcut synchronously", async () => {
   const page = await fixture(1280, true); let releaseSession, first = true;
   try {
@@ -680,7 +782,7 @@ test("unconfirmed chapter creation keeps its original request across a chapter d
       window.bookwormApi.createChapter = async (bookId, body) => {
         window.createBodies.push(structuredClone(body));
         if (window.createBodies.length === 1) return new Promise((resolve, reject) => { window.failOriginalCreation = () => reject(new Error("Original creation outcome unconfirmed")); });
-        return { chapter: { id: "created", title: body.title } };
+        return { chapter: { id: "created", book_id: bookId, title: body.title } };
       };
     });
     await page.getByLabel("New chapter", { exact: true }).fill("Original chapter intent");
@@ -688,7 +790,7 @@ test("unconfirmed chapter creation keeps its original request across a chapter d
     await page.getByRole("button", { name: "Add & review AI brief", exact: true }).click();
     await page.waitForFunction(() => typeof window.failOriginalCreation === "function");
     await page.evaluate(() => { window.bookwormApi.listChapters = async () => ({ chapters: [
-      { id: "chapter", title: "First chapter" }, { id: "second", title: "Second chapter" }, { id: "created", title: "Original chapter intent" },
+      { id: "chapter", book_id: "book", title: "First chapter" }, { id: "second", book_id: "book", title: "Second chapter" }, { id: "created", book_id: "book", title: "Original chapter intent" },
     ] }); });
     await page.evaluate(() => window.renderBookEditor({ initialChapterId: "second" }));
     await page.getByText("second saved manuscript", { exact: true }).waitFor();
@@ -840,7 +942,9 @@ for (const refreshFails of [false, true]) test(`actual chapter creation opens pr
       api.createChapter = async (bookId, body) => {
         flow.creations.push({ bookId, ...structuredClone(body) });
         if (flow.creations.length === 1) throw new Error("Creation reply unconfirmed");
-        return { chapter: { id: "paid-chapter", title: body.title } };
+        api.listChapters = async () => ({ chapters: [{ id: "chapter", book_id: bookId, title: "First chapter" },
+          { id: "second", book_id: bookId, title: "Second chapter" }, { id: "paid-chapter", book_id: bookId, title: body.title }] });
+        return { chapter: { id: "paid-chapter", book_id: bookId, title: body.title } };
       };
       api.listAiJobs = async () => ({ jobs: flow.review ? [structuredClone(flow.review)] : [] });
       const quote = { requestId: crypto.randomUUID(), status: "ready", agentType: "writer", model: "fixture-writer-model",

@@ -4,6 +4,7 @@ import Fastify from "fastify";
 import { bookRoutes } from "./routes/books.js";
 import { AppError } from "./errors.js";
 
+const actor = "11111111-1111-4111-8111-111111111111", other = "22222222-2222-4222-8222-222222222222";
 async function fixture(role = "editor", code?: string) {
   const calls: { name: string; args: unknown }[] = [];
   const app = Fastify();
@@ -20,7 +21,7 @@ async function fixture(role = "editor", code?: string) {
       },
     };
   }) as never);
-  app.addHook("preHandler", async (req) => { req.userToken = "user-token"; req.userId = "author"; });
+  app.addHook("preHandler", async (req) => { req.userToken = "user-token"; req.userId = actor; });
   app.setErrorHandler((error, _req, reply) => {
     reply.status(error instanceof AppError ? error.status : 500).send({
       error: error instanceof Error ? error.message : "Unknown error",
@@ -40,6 +41,23 @@ test("chapter create forwards stable request data to the authenticated atomic RP
     }
     assert.deepEqual(calls[0], { name: "create_book_chapter_once", args: { p_book_id: "book", p_title: "First", p_nodes: null, p_request_key: "request-one" } });
     assert.deepEqual(calls[1], calls[0]);
+  } finally { await app.close(); }
+});
+
+test("chapter create and reorder validate a supplied original actor but retain direct API compatibility", async () => {
+  const { app, calls } = await fixture();
+  try {
+    for (const [method, url, payload] of [
+      ["POST", "/books/book/chapters", { title: "First", idempotencyKey: "request-one" }],
+      ["PUT", "/books/book/chapters/order", { orderedIds: [], expectedIds: [] }],
+    ] as const) {
+      for (const [header, status] of [[undefined, method === "POST" ? 201 : 200], ["invalid", 422], [other, 409], [actor, method === "POST" ? 201 : 200]] as const) {
+        const before = calls.length;
+        const response = await app.inject({ method, url, payload, headers: header ? { "x-bookworm-actor": header } : {} });
+        assert.equal(response.statusCode, status);
+        assert.equal(calls.length, before + (status < 300 ? 1 : 0));
+      }
+    }
   } finally { await app.close(); }
 });
 

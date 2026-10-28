@@ -8,6 +8,7 @@ import { apiClient } from "./api";
 import { AuthorHeader } from "./AuthorShell";
 import { readSetupCheckpoint, recoverManuscriptReport, runManuscriptSetup, setupKey, type SetupCheckpoint, type SetupStage } from "../lib/manuscript-setup";
 import { rememberWorkspace, resolveWorkspace } from "../lib/workspace-selection";
+import { editorAccount } from "../lib/manual-chapter-save";
 
 type SetupMode = "blank" | "import" | "ai";
 const stageLabels: Record<SetupStage, string> = { creating: "Creating book...", uploading: "Uploading source...", scanning: "Checking source...", importing: "Importing chapters...", drafting: "Queuing first draft..." };
@@ -18,6 +19,7 @@ export default function BookSetupClient() {
   const [workspaceId, setWorkspaceId] = useState("");
   const [userId, setUserId] = useState("");
   const [ready, setReady] = useState(false);
+  const [accountHidden, setAccountHidden] = useState(false);
   const [mode, setMode] = useState<SetupMode>("blank");
   const [title, setTitle] = useState("");
   const [authorName, setAuthorName] = useState("");
@@ -193,8 +195,7 @@ export default function BookSetupClient() {
     setError(null);
     setNotice(null);
     try {
-      const session = await fetch("/api/auth/session", { cache: "no-store" });
-      if (!session.ok || (await session.json()).user?.id !== userId) throw new Error("Your session changed. Reload and sign in before continuing.");
+      await editorAccount(userId);
       if (importJob?.status === "failed" && checkpoint) {
         const { job } = await api.retryManuscriptImport(checkpoint.bookId, importJob.id);
         setImportJob(job); setNotice("Import queued for another attempt. Your original and existing book are preserved.");
@@ -212,7 +213,10 @@ export default function BookSetupClient() {
         let starter = saved.starter;
         if (!starter) {
           setSaveStage("drafting");
-          const { chapter } = await api.createChapter(result.bookId, { title: "Chapter 1", idempotencyKey: `story-starter-chapter:${result.bookId}` });
+          await editorAccount(userId);
+          const { chapter } = await api.createChapter(result.bookId, { title: "Chapter 1", idempotencyKey: `story-starter-chapter:${result.bookId}` }, userId);
+          await editorAccount(userId);
+          if (!chapter || chapter.book_id !== result.bookId || typeof chapter.id !== "string" || !chapter.id) throw new Error("The starter chapter could not be verified. Retry this same setup.");
           starter = { chapterId: chapter.id };
           saved = { ...saved, starter, savedAt: Date.now() };
           saveCheckpoint(saved);
@@ -222,10 +226,11 @@ export default function BookSetupClient() {
       else if (result.job) { setImportJob(result.job); setNotice("Import queued. Processing continues on the server if you leave this page."); }
       else { setReport(result.report); setNotice(result.report ? "Your manuscript is imported. Review the results before editing." : "This source is already imported. Open the editor to review the saved chapters."); }
     } catch (reason) {
+      try { await editorAccount(userId); } catch { setAccountHidden(true); }
       const message = reason instanceof Error ? reason.message : "Could not finish book setup.";
       setError(current.current?.bookCreated === false
         ? `${message} Creation may have reached the server. Retry uses the same book request; do not start a second book.`
-        : current.current ? `${message} Your existing book is preserved; retry continues the same setup.`
+          : current.current ? `${message} Your existing book is preserved. If Chapter 1 was created and then deleted, retrying the same setup can create it again; check the chapter list first.`
           : `${message} Check your library before trying again.`);
     } finally {
       setSaving(false);
@@ -285,6 +290,11 @@ export default function BookSetupClient() {
 
   return (
     <>
+    {accountHidden && <main className="mx-auto max-w-3xl p-8 text-white">
+      <p role="alert">The original account could not be verified. This setup is hidden; sign back in to the original account to continue.</p>
+      <button type="button" onClick={() => void editorAccount(userId).then(() => setAccountHidden(false)).catch(() => setError("Sign back in to the original account and recheck."))}>Recheck original account</button>
+    </main>}
+    <div hidden={accountHidden}>
     <AuthorHeader workspaceId={workspaceId || undefined} />
     <main className="mx-auto max-w-4xl px-4 pb-16 pt-8 sm:px-6 lg:px-8 lg:pt-12">
       <Link href={workspaceId ? `/dashboard?ws=${encodeURIComponent(workspaceId)}` : "/dashboard"} className="text-sm font-medium text-[#b8b8b8] underline decoration-white/25 underline-offset-4 hover:text-white">← Back to library</Link>
@@ -432,7 +442,7 @@ export default function BookSetupClient() {
           <p className="mt-5 border-t border-white/[0.08] pt-5 text-[13px] leading-5 text-[#969696]">Bookworm prepares export packages. You review and submit them through the retailer’s supported workflow; this does not publish your book automatically.</p>
         </aside>
       </div>
-    </main>
+    </main></div>
     </>
   );
 }

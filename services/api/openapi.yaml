@@ -1043,11 +1043,13 @@ paths:
       tags: [v1]
       operationId: createChapter
       summary: Create a chapter with optional replay protection
+      description: The web proxy requires x-bookworm-actor. Direct API clients may omit it for compatibility; when supplied it must match the authenticated user.
       parameters:
         - name: bookId
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - { name: x-bookworm-actor, in: header, required: false, schema: { type: string, format: uuid }, description: Original actor; required by the web proxy. }
       requestBody:
         required: true
         content:
@@ -1088,6 +1090,29 @@ paths:
                       type: object
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/chapters/order:
+    put:
+      operationId: reorderChapters
+      summary: Reorder chapters against a previously observed order
+      description: The web proxy requires x-bookworm-actor; direct API clients may omit it. A lost reply is unconfirmed. Reading current order does not prove who changed it or cancel an in-flight request.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: x-bookworm-actor, in: header, required: false, schema: { type: string, format: uuid }, description: Original actor; required by the web proxy. }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderedIds, expectedIds]
+              properties:
+                orderedIds: { type: array, maxItems: 500, items: { type: string, format: uuid } }
+                expectedIds: { type: array, maxItems: 500, items: { type: string, format: uuid } }
+      responses:
+        '200': { description: Saved chapter order }
+        '403': { $ref: "#/components/responses/Error" }
+        '409': { description: Original account or expected order changed }
+        '422': { $ref: "#/components/responses/Error" }
   /v1/admin/jobs/ai/{id}/release-image-hold:
     post:
       operationId: adminReleaseUnconfirmedImageHold

@@ -9,6 +9,7 @@ import * as readerHelpers from "../lib/epub-reader";
 import { privateDownloadUrl } from "../lib/private-download";
 import { renderLinksDeadline } from "../lib/pdf-proof";
 import { jobLink } from "../lib/job-link";
+import { BookNodeSchema } from "@bookworm/book-model/schema";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -65,6 +66,15 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
   const browserSession = {};
   vm.runInNewContext(compile(readFileSync(resolve("apps/web/lib/browser-session.ts"), "utf8")), { exports: browserSession, AbortSignal,
     fetch: async () => ({ ok: true, json: async () => ({ user: { id: A, email: "author@example.test" } }) }) });
+  const manualChapterSave = {};
+  vm.runInNewContext(compile(readFileSync(resolve("apps/web/lib/manual-chapter-save.ts"), "utf8")), {
+    exports: manualChapterSave,
+    require: (name: string) => {
+      if (name === "@bookworm/book-model/schema") return { BookNodeSchema };
+      throw new Error(`Unexpected manual-save helper import: ${name}`);
+    },
+    fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user" } }) }),
+  });
   const exports: Record<string, any> = {};
   const require = (name: string): any => {
     if (name === "react") return react;
@@ -88,6 +98,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/epub-reader")) return readerHelpers;
     if (name.endsWith("/private-download")) return { privateDownloadUrl };
     if (name.endsWith("/browser-session")) return browserSession;
+    if (name.endsWith("/manual-chapter-save")) return manualChapterSave;
     if (name.endsWith("/approved-artwork")) return artwork;
     if (name.endsWith("/manuscript-setup")) return { readSetupCheckpoint: () => null, setupKey: () => "fixture" };
     if (name.endsWith("/sales-csv")) return csv;
@@ -716,10 +727,14 @@ for (const component of ["AuthorDashboard", "BillingCenter", "CollaborationCente
     assert(initialize); await initialize(); await settle();
     tree = h.render();
     assert.equal(tree.type, "Fragment", "header and main must remain siblings");
-    assert.equal(tree.props.children[0].type, "Header");
-    assert.equal(tree.props.children[0].props.workspaceId, B);
-    assert.equal(tree.props.children[1].type, "main");
-    assert(!nodes(tree.props.children[1]).some(node => node.type === "Header"));
+    const layout = component === "BookSetupClient"
+      ? tree.props.children.find((child: any) => child?.type === "div" && child.props.hidden === false)
+      : tree;
+    assert(layout, "the verified account's layout must be visible");
+    assert.equal(layout.props.children[0].type, "Header");
+    assert.equal(layout.props.children[0].props.workspaceId, B);
+    assert.equal(layout.props.children[1].type, "main");
+    assert(!nodes(layout.props.children[1]).some(node => node.type === "Header"));
   });
 }
 

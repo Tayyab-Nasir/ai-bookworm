@@ -66,6 +66,18 @@ test("manual save transports bind the actor and never generate a new closure req
   } finally { globalThis.fetch = original; }
 });
 
+test("chapter create, reorder and setup preserve the original actor in web transport", async () => {
+  const original = globalThis.fetch, calls: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = async (input, init) => { calls.push({ url: String(input), init }); return Response.json({}); };
+  try {
+    const api = createClient({ baseUrl: "/api/backend" });
+    await api.createChapter(scope.bookId, { title: "First", idempotencyKey: pointer.operationId }, scope.userId);
+    await api.reorderChapters(scope.bookId, { orderedIds: [scope.chapterId], expectedIds: [scope.chapterId] }, scope.userId);
+    assert.equal(calls.length, 2);
+    for (const call of calls) assert.equal(new Headers(call.init?.headers).get("x-bookworm-actor"), scope.userId);
+  } finally { globalThis.fetch = original; }
+});
+
 test("recovery confirms immutable saved content and rejects foreign or inconsistent receipts", async () => {
   const checked = { ...pointer, digest: await chapterSaveDigest(nodes) };
   const result = { status: "saved", operationId: pointer.operationId, bookId: scope.bookId, chapterId: scope.chapterId, expectedVersion: 2, currentVersion: 7,

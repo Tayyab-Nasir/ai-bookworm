@@ -22,7 +22,7 @@ test("chapter creation writes only the chapter; a draft brief prefills the paid 
     ts.forEachChild(node, inspect);
   };
   inspect(creation);
-  assert.deepEqual(apiCalls, ["createChapter"]);
+  assert.deepEqual(apiCalls, ["createChapter", "listChapters"]);
   assert.ok(calls.includes("setInitialDraftInstruction"));
   assert.ok(calls.includes("setDraftPlanTargetChapterId"));
   assert.doesNotMatch(source, /api\.createAiJob|retryableAiDraft|pendingDraft/);

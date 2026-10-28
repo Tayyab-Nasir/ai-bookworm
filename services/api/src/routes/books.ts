@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
+import { checkChapterActor } from "../lib/manual-chapter-save.js";
 import { requireWorkspaceMember, requireWorkspaceEditor } from "../lib/authorize.js";
 import { randomUUID } from "node:crypto";
 import { BookModelSchema } from "@bookworm/book-model";
@@ -86,6 +87,7 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
   });
 
   app.post("/books/:bookId/chapters", async (req, reply) => {
+    checkChapterActor(req);
     const { bookId } = req.params as { bookId: string };
     const body = z.object({ title: z.string().trim().min(1).max(500), nodes: nodesSchema.optional(), idempotencyKey: z.string().trim().min(8).max(200).optional() }).safeParse(req.body);
     if (!body.success) throw new AppError(422, "invalid chapter", { issues: body.error.issues });
@@ -101,6 +103,7 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
   });
 
   app.put("/books/:bookId/chapters/order", async (req) => {
+    checkChapterActor(req);
     const { bookId } = req.params as { bookId: string };
     const body = z.object({ orderedIds: z.array(z.string().uuid()).max(500), expectedIds: z.array(z.string().uuid()).max(500) }).safeParse(req.body);
     if (!body.success) throw new AppError(422, "invalid chapter order");
