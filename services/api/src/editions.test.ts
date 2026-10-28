@@ -13,7 +13,7 @@ process.env.LOG_LEVEL = "error";
 const { buildApp } = await import("./app.js");
 const { loadRenderImages } = await import("./routes/editions.js");
 type Row = Record<string, unknown>;
-interface Store { tables: Record<string, Row[]> }
+interface Store { tables: Record<string, Row[]>; activityFailure?: "throw" | "reject" }
 
 function fakeSupabase(store: Store) {
   return {
@@ -22,6 +22,10 @@ function fakeSupabase(store: Store) {
       : { data: { user: null }, error: { message: "bad" } } },
     storage: { from: () => ({ download: async () => ({ data: new Blob(["approved cover bytes"]), error: null }) }) },
     from: (table: string) => {
+      if (table === "activity_events" && store.activityFailure) {
+        if (store.activityFailure === "throw") throw new Error("activity transport unavailable");
+        return { insert: () => Promise.reject(new Error("activity transport unavailable")) };
+      }
       const rows = (store.tables[table] ??= []);
       const filters: ((row: Row) => boolean)[] = [];
       let insert: Row | null = null;
@@ -92,6 +96,22 @@ test("editor creates a normalized print edition with a confirmed cover and HTTPS
   assert.equal(store.tables.activity_events.length, 1);
   await app.close();
 });
+
+for (const activityFailure of ["throw", "reject"] as const) {
+  test(`edition creation succeeds when the activity write ${activityFailure}s`, async () => {
+    const store = baseStore();
+    store.activityFailure = activityFailure;
+    const app = await buildApp(() => fakeSupabase(store));
+    try {
+      const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth,
+        payload: { config: { kind: "ebook" } } });
+      assert.equal(response.statusCode, 201, response.body);
+      assert.equal(store.tables.editions.length, 1);
+      assert.equal(response.json().id, store.tables.editions[0].id);
+      assert.equal(store.tables.activity_events.length, 0);
+    } finally { await app.close(); }
+  });
+}
 
 test("edition input rejects unsafe QR destinations and unconfirmed cover assets", async () => {
   const store = baseStore();
