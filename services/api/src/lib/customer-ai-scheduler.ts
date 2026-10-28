@@ -12,18 +12,14 @@ const timestamp = z.string().max(40).regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}
 const row = z.object({ job_id: id, created_at: timestamp, ready: z.boolean() }).strict();
 type Cursor = { createdAt: string; jobId: string };
 type Worker = { run(jobId: string, signal?: AbortSignal): Promise<CustomerAiOutcome> };
-const reconciliation = z.object({ jobId: id, state: z.enum([
-  "settled", "released", "undispatched_safe_to_retry", "undispatched_exhausted", "in_flight", "dispatched", "unknown",
-]) }).strict();
-// This seam is deliberately injected and unregistered. A production adapter
-// must use a narrowly scoped, service-only database RPC with locked, durable
-// evidence; an arbitrary callback is not authority to retry or release work.
-type Reconcile = (jobId: string, signal: AbortSignal) => Promise<unknown>;
+const reconciliation = z.enum(["settled", "released", "requires_review", "unchanged"]);
 class SchedulerReviewRequired extends Error {
   constructor() { super("Customer AI scheduler requires outcome review."); }
 }
 
-export function customerAiScheduler(sb: SupabaseClient, worker: Worker, options: { pageSize?: number; reconcile?: Reconcile } = {}) {
+// The supplied client must be service-role scoped and configured without SDK retries.
+// Construction does not register a launcher or authorize browser access.
+export function customerAiScheduler(sb: SupabaseClient, worker: Worker, options: { pageSize?: number } = {}) {
   const pageSize = options.pageSize ?? 20;
   if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100 || !worker || typeof worker.run !== "function") {
     throw new Error("Customer AI scheduler configuration is invalid.");
@@ -34,13 +30,16 @@ export function customerAiScheduler(sb: SupabaseClient, worker: Worker, options:
   // Fail closed on saturation instead of evicting uncertain identities.
   const uncertain = new Set<string>();
   return {
-    /** Explicit review only; never mutates a job, refunds or calls the worker.
-     * The next normal tick still relies on discovery and the atomic DB claim.
+    /** Explicit service-only reconciliation may release an exhausted/expired
+     * undispatched job or hold an expired dispatched job for review. It never
+     * invokes a provider. A lost reply is unknown; a later explicit replay is
+     * safe only because the database RPC itself is idempotent and fenced.
      */
-    async reconcile(jobId: string, input: { allowUndispatchedRetry?: boolean; signal?: AbortSignal } = {}) {
+    async reconcile(jobId: string, input: { signal?: AbortSignal } = {}) {
       if (running) throw new Error("Customer AI scheduler is already running.");
-      if (!id.safeParse(jobId).success || !options.reconcile
-        || (input.allowUndispatchedRetry !== undefined && typeof input.allowUndispatchedRetry !== "boolean")) {
+      if (!id.safeParse(jobId).success || !input || typeof input !== "object"
+        || Object.keys(input).some(key => key !== "signal")
+        || (input.signal !== undefined && !(input.signal instanceof AbortSignal))) {
         throw new Error("Customer AI reconciliation is unavailable.");
       }
       if (input.signal?.aborted) throw new Error("Customer AI reconciliation is unavailable.");
@@ -53,12 +52,14 @@ export function customerAiScheduler(sb: SupabaseClient, worker: Worker, options:
           deadline.addEventListener("abort", stopWaiting, { once: true });
           if (deadline.aborted) stopWaiting();
         });
-        const evidence = reconciliation.parse(await Promise.race([options.reconcile(jobId, deadline), interrupted]));
-        if (deadline.aborted || evidence.jobId !== jobId) throw new Error();
-        const cleared = evidence.state === "settled" || evidence.state === "released"
-          || (evidence.state === "undispatched_safe_to_retry" && input.allowUndispatchedRetry === true);
+        const response = await Promise.race([
+          sb.rpc("reconcile_customer_ai_job", { p_job_id: jobId }).abortSignal(deadline), interrupted,
+        ]);
+        if (deadline.aborted || response.error) throw new Error();
+        const state = reconciliation.parse(response.data);
+        const cleared = state === "settled" || state === "released";
         const wasSuppressed = cleared && uncertain.delete(jobId);
-        return { state: evidence.state, suppressionCleared: wasSuppressed };
+        return { state, suppressionCleared: wasSuppressed };
       } catch {
         throw new Error("Customer AI reconciliation is unavailable.");
       } finally {

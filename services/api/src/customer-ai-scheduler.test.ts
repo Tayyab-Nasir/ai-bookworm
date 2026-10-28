@@ -79,54 +79,55 @@ test("bounded uncertain tracking stops new work and reports that review is requi
   assert.equal(attempts, 1024);
 });
 
-test("explicit reconciliation keeps uncertain jobs suppressed unless durable evidence permits clearing", async () => {
-  const db = database(Array.from({ length: 9 }, () => [row(0)]));
-  let verdict: unknown = { jobId: ids[0], state: "unknown" }, attempts = 0;
-  const scheduler = customerAiScheduler(db.sb, { run: async jobId => {
-    attempts++; return { jobId, status: "completion_unknown" };
-  } }, { pageSize: 2, reconcile: async () => verdict });
+test("reconciliation uses the exact service RPC and only clears confirmed terminal states", async () => {
+  let state: unknown = "unchanged", attempts = 0; const calls: Array<{ name: string; args: unknown }> = [];
+  const sb = { rpc(name: string, args: unknown) { calls.push({ name, args }); return { abortSignal: async () =>
+    ({ data: name === "discover_customer_ai_ready_jobs" ? [row(0)] : state, error: null }) }; } } as unknown as SupabaseClient;
+  const scheduler = customerAiScheduler(sb, { run: async jobId => { attempts++; return { jobId, status: "completion_unknown" }; } }, { pageSize: 2 });
   await scheduler.tick();
-  for (const state of ["unknown", "in_flight", "dispatched", "undispatched_exhausted", "undispatched_safe_to_retry"]) {
-    verdict = { jobId: ids[0], state };
-    assert.deepEqual(await scheduler.reconcile(ids[0]), { state, suppressionCleared: false });
+  for (const value of ["unchanged", "requires_review"]) {
+    state = value;
+    assert.deepEqual(await scheduler.reconcile(ids[0]), { state: value, suppressionCleared: false });
     assert.equal((await scheduler.tick()).suppressed, 1);
   }
   assert.equal(attempts, 1);
-  verdict = { jobId: ids[0], state: "undispatched_safe_to_retry" };
-  assert.deepEqual(await scheduler.reconcile(ids[0], { allowUndispatchedRetry: true }),
-    { state: "undispatched_safe_to_retry", suppressionCleared: true });
-  // This calls the injected worker again only after explicit review; its real
-  // specific-ID claim and resolver independently fence all dispatch authority.
-  assert.equal((await scheduler.tick()).attempted, 1);
-  verdict = { jobId: ids[0], state: "settled" };
-  assert.deepEqual(await scheduler.reconcile(ids[0]), { state: "settled", suppressionCleared: true });
+  state = "released";
+  assert.deepEqual(await scheduler.reconcile(ids[0]), { state, suppressionCleared: true });
+  assert.deepEqual(calls.filter(call => call.name === "reconcile_customer_ai_job"),
+    Array.from({ length: 3 }, () => ({ name: "reconcile_customer_ai_job", args: { p_job_id: ids[0] } })));
+  await scheduler.tick();
+  state = "settled";
+  assert.deepEqual(await scheduler.reconcile(ids[0]), { state, suppressionCleared: true });
 });
 
-test("reconciliation rejects spoofed identity, malformed evidence and abort without clearing suppression", async () => {
-  const db = database([[row(0)], [row(0)]]); let verdict: unknown = { jobId: ids[1], state: "settled" };
-  const scheduler = customerAiScheduler(db.sb, { run: async jobId => ({ jobId, status: "completion_unknown" }) },
-    { pageSize: 2, reconcile: async () => verdict });
+test("reconciliation rejects malformed or failed evidence and invalid inputs without clearing suppression", async () => {
+  let data: unknown = { jobId: ids[1], state: "settled" }, error: unknown = null, calls = 0;
+  const sb = { rpc(name: string) { calls++; return { abortSignal: async () => ({ data: name === "discover_customer_ai_ready_jobs" ? [row(0)] : data, error }) }; } } as unknown as SupabaseClient;
+  const scheduler = customerAiScheduler(sb, { run: async jobId => ({ jobId, status: "completion_unknown" }) }, { pageSize: 2 });
   await scheduler.tick();
   await assert.rejects(scheduler.reconcile(ids[0]), /reconciliation is unavailable/u);
-  verdict = { jobId: ids[0], state: "settled", secret: "private" };
-  await assert.rejects(scheduler.reconcile(ids[0]), error => {
-    assert.ok(error instanceof Error); assert.doesNotMatch(error.stack ?? "", /private/u); return true;
-  });
-  const abort = new AbortController(); abort.abort();
+  data = "undispatched_safe_to_retry";
+  await assert.rejects(scheduler.reconcile(ids[0]), /reconciliation is unavailable/u);
+  data = "settled"; error = { message: "private secret" };
+  await assert.rejects(scheduler.reconcile(ids[0]), e => { assert.ok(e instanceof Error); assert.doesNotMatch(e.stack ?? "", /private secret/u); return true; });
+  error = null;
+  const abort = new AbortController(); abort.abort(); const before = calls;
   await assert.rejects(scheduler.reconcile(ids[0], { signal: abort.signal }), /reconciliation is unavailable/u);
+  await assert.rejects(scheduler.reconcile(ids[0], { allowUndispatchedRetry: true } as never), /reconciliation is unavailable/u);
+  assert.equal(calls, before);
   assert.equal((await scheduler.tick()).suppressed, 1);
 });
 
 test("abort during reconciliation cannot clear suppression from a late response", async () => {
-  const db = database([[row(0)], [row(0)]]); const controller = new AbortController();
-  let resolve!: (value: unknown) => void;
-  const scheduler = customerAiScheduler(db.sb, { run: async jobId => ({ jobId, status: "completion_unknown" }) },
-    { pageSize: 2, reconcile: () => new Promise(done => { resolve = done; }) });
+  const controller = new AbortController(); let resolve!: (value: unknown) => void;
+  const sb = { rpc(name: string) { return { abortSignal: () => name === "discover_customer_ai_ready_jobs"
+    ? Promise.resolve({ data: [row(0)], error: null }) : new Promise(done => { resolve = done; }) }; } } as unknown as SupabaseClient;
+  const scheduler = customerAiScheduler(sb, { run: async jobId => ({ jobId, status: "completion_unknown" }) }, { pageSize: 2 });
   await scheduler.tick();
   const pending = scheduler.reconcile(ids[0], { signal: controller.signal });
   controller.abort();
   await assert.rejects(pending, /reconciliation is unavailable/u);
-  resolve({ jobId: ids[0], state: "settled" });
+  resolve({ data: "settled", error: null });
   await Promise.resolve();
   assert.equal((await scheduler.tick()).suppressed, 1);
 });
