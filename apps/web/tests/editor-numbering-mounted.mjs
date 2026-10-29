@@ -1308,7 +1308,9 @@ test("renaming a chapter preserves its unsaved manuscript and updates the chapte
       };
     });
     const manuscript = page.getByRole("textbox", { name: "Manuscript editor" });
-    await manuscript.click(); await page.keyboard.press("Control+End"); await page.keyboard.insertText(" Local unsaved ending.");
+    await page.waitForFunction(() => document.querySelector(".ProseMirror")?.getAttribute("contenteditable") === "true");
+    await manuscript.getByText("Imported first step", { exact: true }).click();
+    await page.keyboard.press("End"); await page.keyboard.insertText(" Local unsaved ending.");
     // Compare the document model, not table controls rendered inside the editor.
     const before = await manuscript.evaluate(element => element.editor.getJSON());
     await page.getByRole("button", { name: "Edit chapter title", exact: true }).click();
@@ -1330,11 +1332,11 @@ test("renaming a chapter preserves its unsaved manuscript and updates the chapte
     const { saved, original } = await page.evaluate(() => ({ saved: window.requests[0].nodes, original: window.nodes }));
     const savedLists = saved.filter(node => node.type === "listItem");
     assert.deepEqual(savedLists.map(({ attributes: { richText, ...attributes }, ...node }) => ({ ...node, attributes })),
-      original.filter(node => node.type === "listItem"));
+      original.filter(node => node.type === "listItem").map(node => node.id === "first" ? { ...node, text: `${node.text} Local unsaved ending.` } : node));
     for (const node of savedLists) assert.deepEqual(node.attributes.richText, [{ type: "text", text: node.text, marks: [] }]);
     assert.deepEqual(saved.find(node => node.type === "table"), original.find(node => node.type === "table"));
     assert.equal(saved.at(-1).type, "paragraph");
-    assert.equal(saved.at(-1).text, " Local unsaved ending.");
+    assert.equal(saved.at(-1).text, "");
     await page.screenshot({ path: resolve(artifacts, "chapter-title-keeps-manuscript.png"), fullPage: true });
   } finally { await page.close(); }
 });
@@ -1357,5 +1359,62 @@ test("late save recovery cannot adopt an old chapter or remove its recovery poin
     assert.equal(await page.locator(".ProseMirror").getAttribute("contenteditable"), "true");
     assert.equal(await page.getByRole("region", { name: "Manual save recovery" }).count(), 0);
     assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:manual-save:"))), true);
+  } finally { await page.close(); }
+});
+
+for (const scenario of ["wrong-book", "foreign-chapter", "duplicate-chapter", "malformed-list"]) {
+  test("initial author load refuses " + scenario + " without opening a chapter", async () => {
+    const page = await fixture(1280, true);
+    try {
+      await page.evaluate(kind => {
+        window.documentReads = [];
+        window.bookwormApi.getBook = async () => ({ book: { id: kind === "wrong-book" ? "book" : "other", workspace_id: "workspace", title: "Other manuscript" }, role: "owner" });
+        window.bookwormApi.listChapters = async () => kind === "malformed-list" ? { chapters: null } : { chapters: kind === "duplicate-chapter" ? [{ id: "chapter", book_id: "other", title: "One" }, { id: "chapter", book_id: "other", title: "Two" }] : [{ id: "chapter", book_id: kind === "foreign-chapter" ? "book" : "other", title: "One" }] };
+        window.renderBookEditor({ bookId: "other" });
+      }, scenario);
+      await page.getByRole("alert").filter({ hasText: "The book or chapter list could not be verified. Try loading this book again." }).waitFor({ timeout: 4000 });
+      assert.deepEqual(await page.evaluate(() => window.documentReads), []);
+      assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    } finally { await page.close(); }
+  });
+}
+
+test("a verified retry loads the intended book after a mismatched chapter response", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.documentReads = [];
+      window.bookwormApi.getBook = async () => ({ book: { id: "other", workspace_id: "workspace", title: "Other manuscript" }, role: "owner" });
+      window.bookwormApi.listChapters = async () => ({ chapters: [{ id: "chapter", book_id: "book", title: "Wrong book" }] });
+      window.renderBookEditor({ bookId: "other" });
+    });
+    await page.getByRole("alert").filter({ hasText: "The book or chapter list could not be verified." }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.documentReads), []);
+    await page.evaluate(() => { window.bookwormApi.listChapters = async () => ({ chapters: [{ id: "chapter", book_id: "other", title: "Intended chapter" }] }); });
+    await page.getByRole("button", { name: "Retry loading book" }).click();
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.documentReads), ["chapter"]);
+    assert.equal(await page.getByRole("heading", { name: "Other manuscript" }).count(), 1);
+  } finally { await page.close(); }
+});
+
+
+test("uppercase book and chapter UUIDs load canonical manuscript scope", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      const book = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", chapter = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      window.scopeCalls = []; window.documentReads = [];
+      window.bookwormApi.getBook = async id => { window.scopeCalls.push(["book", id]); return { book: { id: book, workspace_id: "workspace", title: "Canonical manuscript" }, role: "owner" }; };
+      window.bookwormApi.listChapters = async id => { window.scopeCalls.push(["chapters", id]); return { chapters: [{ id: chapter, book_id: book, title: "Canonical chapter" }] }; };
+      window.bookwormApi.getChapterTitle = async id => ({ bookId: book, chapterId: id, title: "Canonical chapter", revision: 0, updatedAt: "2026-10-23T15:00:00Z", role: "owner" });
+      window.bookwormApi.getChapterDocument = async id => { window.documentReads.push(id); return { role: "owner", document: { chapterId: id, version: 1, nodes: structuredClone(window.nodes) } }; };
+      window.renderBookEditor({ bookId: book.toUpperCase(), initialChapterId: chapter.toUpperCase() });
+    });
+    await page.getByRole("heading", { name: "Canonical manuscript" }).waitFor();
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.deepEqual(await page.evaluate(() => window.scopeCalls), [["book", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"], ["chapters", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]]);
+    assert.deepEqual(await page.evaluate(() => window.documentReads), ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]);
+    assert.equal(await page.getByRole("navigation", { name: "Chapters" }).getByText("Canonical chapter", { exact: true }).count(), 1);
   } finally { await page.close(); }
 });

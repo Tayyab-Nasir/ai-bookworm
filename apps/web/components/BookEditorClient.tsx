@@ -19,7 +19,11 @@ import { chapterSaveDigest, chapterSaveKey, clearChapterSave, editorAccount, par
 
 const EDIT_ROLES = new Set(["owner","admin","editor","writer","illustrator","designer"]);
 
-export default function BookEditorClient({ bookId, initialChapterId, initialAiJobId, initialDraftPlanItemId }: { bookId: string; initialChapterId?: string; initialAiJobId?: string; initialDraftPlanItemId?: string }) {
+const canonicalUuid = (value: string | undefined) => value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value.toLowerCase() : value;
+
+export default function BookEditorClient({ bookId: requestedBookId, initialChapterId: propChapterId, initialAiJobId, initialDraftPlanItemId }: { bookId: string; initialChapterId?: string; initialAiJobId?: string; initialDraftPlanItemId?: string }) {
+  const bookId = canonicalUuid(requestedBookId)!;
+  const initialChapterId = canonicalUuid(propChapterId);
   const api = apiClient();
   const [book, setBook] = useState<Book | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -130,6 +134,12 @@ export default function BookEditorClient({ bookId, initialChapterId, initialAiJo
       const [identity, result] = await Promise.all([api.getBook(bookId, userId), api.listChapters(bookId, userId)]);
       await editorAccount(userId);
       if (cancelled) return;
+      if (!identity?.book || identity.book.id !== bookId || typeof identity.book.workspace_id !== "string" || !identity.book.workspace_id
+        || typeof identity.role !== "string" || !Array.isArray(result?.chapters)
+        || result.chapters.some(chapter => !chapter || chapter.book_id !== bookId || typeof chapter.id !== "string" || !chapter.id || typeof chapter.title !== "string")
+        || new Set(result.chapters.map(chapter => chapter.id)).size !== result.chapters.length) {
+        throw new Error("The book or chapter list could not be verified. Try loading this book again.");
+      }
       const selected = initialChapterId ? result.chapters.find((chapter) => chapter.id === initialChapterId) : result.chapters[0];
       let instruction: string | undefined, planTarget: string | null = null, planMessage: string | null = null;
       if (selected && initialDraftPlanItemId) {
