@@ -21,7 +21,8 @@ const statusNames = { prepared: "Ready for review", expired: "Review expired", c
   queued: "Queued", running: "Processing or awaiting a receipt", succeeded: "Result saved for review", cancelled: "Cancelled before dispatch",
   requires_review: "Provider outcome needs review", not_found: "No saved receipt yet" };
 
-export default function CustomerAiStudio({ bookId }: { bookId: string }) {
+export default function CustomerAiStudio({ bookId: requestedBookId }: { bookId: string }) {
+  const bookId = customerUuid.test(requestedBookId.toLowerCase()) ? requestedBookId.toLowerCase() : requestedBookId;
   const api = apiClient(), lifecycle = useRef({ epoch: 0, alive: false, flight: -1, abort: new AbortController() });
   const reviewHeading = useRef<HTMLHeadingElement>(null);
   const [desk, setDesk] = useState<Desk | null>(null), [busy, setBusy] = useState(true), [error, setError] = useState("");

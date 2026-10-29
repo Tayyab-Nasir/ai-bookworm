@@ -6,11 +6,11 @@ import { resolve } from 'node:path';
 import { readFile, mkdir } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { chromium, expect } from '@playwright/test';
-const ids={a:'11111111-1111-4111-8111-111111111111',other:'22222222-2222-4222-8222-222222222222',book:'33333333-3333-4333-8333-333333333333',
+const ids={a:'11111111-1111-4111-8111-111111111111',other:'22222222-2222-4222-8222-222222222222',book:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
  ws:'44444444-4444-4444-8444-444444444444',chapter:'55555555-5555-4555-8555-555555555555',version:'66666666-6666-4666-8666-666666666666',
  connection:'77777777-7777-4777-8777-777777777777',policy:'88888888-8888-4888-8888-888888888888'};
 const direction='Let the lighthouse keeper discover an unsigned letter.';
-const bundle=await build({stdin:{contents:`import React from 'react';import{createRoot}from'react-dom/client';import Studio from './apps/web/components/CustomerAiStudio';const root=createRoot(document.getElementById('root'));window.mount=()=>root.render(React.createElement(React.StrictMode,null,React.createElement(Studio,{bookId:'${ids.book}'})));window.unmount=()=>root.render(null);`,resolveDir:process.cwd(),loader:'tsx'},
+const bundle=await build({stdin:{contents:`import React from 'react';import{createRoot}from'react-dom/client';import Studio from './apps/web/components/CustomerAiStudio';const root=createRoot(document.getElementById('root'));window.mount=(bookId='${ids.book}')=>root.render(React.createElement(React.StrictMode,null,React.createElement(Studio,{bookId})));window.unmount=()=>root.render(null);`,resolveDir:process.cwd(),loader:'tsx'},
  bundle:true,write:false,outdir:resolve('.git/bookworm-native-browser/customer-bundle'),platform:'browser',format:'iife',jsx:'automatic',plugins:[{name:'links',setup(b){
  b.onResolve({filter:/^next\/link$/},()=>({path:'link',namespace:'fixture'}));
  b.onLoad({filter:/^link$/,namespace:'fixture'},()=>({contents:"import React from 'react';export default function Link(p){return React.createElement('a',p)}",resolveDir:process.cwd()}));
@@ -36,7 +36,7 @@ async function fixture({enabled=true,corrupt=false,blocked=false,role='writer'}=
    if(actor!==window.actor)return error();
    const chapter={id:ids.chapter,book_id:ids.book,title:'The letter at low tide',current_document_version_id:ids.version,order_index:0};
    if(url.endsWith('/ai-connections'))return Response.json({viewerId:actor,canSave:true,generationAvailable:window.enabled,connections:[{id:ids.connection,provider:'openai',status:'saved',revision:1,keySuffix:'TEST',lastOperationId:ids.policy,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}]});
-   if(url.endsWith(`/books/${ids.book}`))return Response.json({book:{id:ids.book,workspace_id:ids.ws,title:actor===ids.a?'The Lighthouse Letters':'A different account book'},role:window.role});
+   if(url.toLowerCase().endsWith(`/books/${ids.book}`))return Response.json({book:{id:ids.book,workspace_id:ids.ws,title:actor===ids.a?'The Lighthouse Letters':'A different account book'},role:window.role});
    if(url.endsWith('/chapters'))return Response.json({chapters:[chapter]});
    if(url.endsWith('/document')) {
     if(window.mode==='document-deferred')await new Promise(r=>window.gates.document=r);
@@ -204,5 +204,28 @@ test('responsive review layout, visible keyboard focus, expiry and synthetic scr
   await p.evaluate(()=>{const r=Object.values(window.operations)[0];r.expiresAt=new Date(Date.now()-1).toISOString();r.createdAt=new Date(Date.now()-1000).toISOString()});
   await p.getByRole('button',{name:'Check saved status'}).click();await expect(p.getByText('This preparation has expired. Close it before starting another.',{exact:true})).toBeVisible();
   assert.equal(await p.getByRole('button',{name:'Confirm & queue request'}).count(),0);
+ }finally{await p.close()}
+});
+
+
+test('uppercase book UUID opens customer AI workspace and uses canonical account-scoped requests',async()=>{
+ const p=await fixture();try{
+  await p.evaluate(()=>window.mount(window.ids.book.toUpperCase()));
+  await expect(p.getByText('The Lighthouse Letters',{exact:true})).toBeVisible();
+  await p.getByLabel('Direction (required)',{exact:true}).fill(direction);
+  await p.getByRole('button',{name:'Load approved models'}).click();
+  await expect(p.getByRole('button',{name:'Prepare for review'})).toBeEnabled();
+  await p.getByRole('button',{name:'Prepare for review'}).click();
+  await expect(p.getByText('Ready for review',{exact:true})).toBeVisible();
+  const prepared=await p.evaluate(()=>window.calls.find(c=>c.url.endsWith('/prepare')));
+  assert.equal(prepared.actor,ids.a);assert.equal(prepared.body.source.bookId,ids.book);
+  assert.equal(prepared.body.selection.bookId,ids.book);
+  assert.equal(await p.evaluate(()=>window.jobs),0);
+  const stored=await p.evaluate(()=>sessionStorage.getItem(`bookworm:customer-ai:${window.ids.a}:${window.ids.book}`));
+  assert.equal(stored,prepared.body.operationId);
+  await p.evaluate(()=>window.unmount());await p.evaluate(()=>window.mount(window.ids.book));
+  await expect(p.getByText('Ready for review',{exact:true})).toBeVisible();
+  await expect(p.getByText(/recovered without its original direction/)).toBeVisible();
+  assert.equal(await count(p,'prepare'),1);assert.equal(await count(p,'confirm'),0);
  }finally{await p.close()}
 });
