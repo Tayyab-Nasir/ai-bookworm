@@ -66,6 +66,13 @@ class BookBibleAgent(BaseAgent):
     def __init__(self, provider, executor, model: str = "mock-1"):
         super().__init__(provider, executor, model)
         self._evidence_refs: set[tuple[str, str, str, str]] = set()
+        self.allow_quoted_context = False
+
+    def required_context_budget(self, budget: int) -> int:
+        # Only the managed quote path may admit extra provenance. Its API
+        # counts the exact prompt before paid acceptance and pins the hash.
+        # Customer-key and unquoted jobs keep their original ceiling.
+        return budget * 4 // 3 if self.allow_quoted_context else budget
 
     def build_user_message(self, request: dict) -> str:
         self._evidence_refs = set()

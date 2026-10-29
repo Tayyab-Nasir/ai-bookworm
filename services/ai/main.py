@@ -108,7 +108,7 @@ def create_job(req: CreateAiJobRequest, x_service_token: str | None = Header(def
         if req.maxOutputTokens is None or req.model is None or req.expectedInputSha256 is None:
             raise HTTPException(status_code=422, detail="Quoted generation requires a model, output bound and request hash.")
         try:
-            agent, agent_request = build_text_agent(req, provider, req.model)
+            agent, agent_request = build_text_agent(req, provider, req.model, quoted_context=True)
             prepared = agent.provider_request(agent_request)
             canonical = provider_payload(agent, prepared)
         except ValueError as exc:
@@ -185,13 +185,15 @@ def canonical_story_blueprint_request_hash(request: dict) -> str:
     return hashlib.sha256(json.dumps(request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def build_text_agent(req, provider, model: str):
+def build_text_agent(req, provider, model: str, *, quoted_context: bool = False):
     agent_type = getattr(req, "agentType", "story_blueprint")
     executor = InMemoryExecutor(
         chapters=req.input.chapters, style_guide=req.input.styleGuide, bible=req.input.bookBible,
         search_results=req.input.relatedContext,
     )
     agent = get_agent(agent_type, provider, executor, model)
+    if agent_type == "bookbible":
+        agent.allow_quoted_context = quoted_context
     agent.max_output_tokens = min(req.maxOutputTokens or 6000, 6000) if agent_type == "bookbible" else req.maxOutputTokens
     return agent, {
         "workspaceId": req.workspaceId,
@@ -215,7 +217,7 @@ def story_blueprint_generation_request(req: StoryBlueprintQuoteRequest | TextQuo
     provider = provider or get_provider()
     if provider.name != "openai":
         raise HTTPException(status_code=503, detail="Quoted text generation requires OpenAI.")
-    agent, agent_request = build_text_agent(req, provider, req.model)
+    agent, agent_request = build_text_agent(req, provider, req.model, quoted_context=True)
     return provider_payload(agent, agent.provider_request(agent_request))
 
 

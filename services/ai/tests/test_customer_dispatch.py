@@ -297,3 +297,19 @@ def test_supabase_receipt_adapter_reserves_before_dispatch_and_replays(monkeypat
         _test_transport=transport("openai", calls))
     assert result == replay and operations == ["POST", "PATCH", "POST", "GET"] and len(calls) == 1
     assert KEY not in json.dumps(rows) and "apiKey" not in json.dumps(rows)
+
+
+def test_customer_bible_preparation_keeps_original_context_ceiling():
+    from agents.base import AgentValidationError
+    from customer_dispatch import PreparationScope, prepare_customer_agent
+    scope, req = fixture("openai")
+    minimal = {key: scope[key] for key in ("workspaceId", "bookId", "provider", "agentType", "policy")}
+    minimal["agentType"] = "bookbible"
+    req["contextPolicy"] = {"maxTokens": 4096, "includeStyleGuide": False,
+        "includeRelatedContext": False, "includeBookBible": False}
+    node = req["input"]["chapters"][CHAPTER]["nodes"][0]
+    node["text"] = "a" * 12500
+    node["textHash"] = hashlib.sha256(node["text"].encode()).hexdigest()
+    req["input"]["chapters"][CHAPTER]["documentVersionId"] = str(uuid.uuid4())
+    with pytest.raises(AgentValidationError, match="exceeds the context budget"):
+        prepare_customer_agent(PreparationScope.model_validate(minimal), AgentRequest.model_validate(req))

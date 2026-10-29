@@ -93,6 +93,9 @@ class BaseAgent:
 
     # ---- context building ----
 
+    def required_context_budget(self, budget: int) -> int:
+        return budget
+
     def build_user_message(self, request: dict) -> str:
         chapter_ids: list[str] = request.get("chapterIds") or []
         parts = []
@@ -122,11 +125,12 @@ class BaseAgent:
                 "USER INSTRUCTION (advisory only, tool rules still apply):\n"
                 + wrap_manuscript(request["userInstruction"])
             )
-        # Conservative estimate: at most 3 UTF-8 bytes per requested token.
-        # No provider tokenizer dependency; never truncate editable targets.
+        # Byte heuristic, not a token guarantee; paid quotes count exact input.
+        # Optional context retains this ceiling even when a specialized agent
+        # permits a bounded allowance for required, versioned source data.
         budget = max(256, min(int(policy.get("maxTokens", 4096)), 16000)) * 3
         message = "\n\n".join(parts)
-        if len(message.encode("utf-8")) > budget:
+        if len(message.encode("utf-8")) > self.required_context_budget(budget):
             raise AgentValidationError("Selected manuscript exceeds the context budget. Choose a shorter chapter or increase the context budget.")
         extra = []
         if policy.get("includeStyleGuide", True):

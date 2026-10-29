@@ -30,6 +30,16 @@ const requestRow = z.object({
 type Book = { id: string; workspace_id: string; title: string; author_name: string | null; language: string };
 const first = (value: unknown) => Array.isArray(value) ? value[0] : value;
 const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const unsupportedCitationMessage = "A saved text block has an identifier longer than the Book Bible citation limit. Create a new chapter with this text and prepare a new reading plan. Your saved manuscript is unchanged.";
+const quotePreflightMessage = `${unsupportedCitationMessage} This action did not submit generation or reserve credits. Check any existing quote for an earlier or concurrent acceptance.`;
+const acceptancePreflightMessage = `${unsupportedCitationMessage} This action did not submit acceptance. Check the original quote status for an earlier or concurrent acceptance.`;
+
+function hasSupportedCitationIds(generation: unknown) {
+  const snapshot = z.object({ input: z.object({ chapters: z.record(z.string(), z.object({
+    nodes: z.array(z.object({ id: z.string().min(1).max(200) }).passthrough()).min(1),
+  }).passthrough()) }).passthrough() }).passthrough().safeParse(generation);
+  return snapshot.success && Object.keys(snapshot.data.input.chapters).length > 0;
+}
 
 function parse<T extends z.ZodTypeAny>(schema: T, value: unknown, message: string): z.output<T> {
   const result = schema.safeParse(value);
@@ -111,6 +121,16 @@ export function bookBibleQuoteRoutes(app: FastifyInstance, options: { fetcher?: 
     const pageIndex = body.reading?.pageIndex ?? 0;
     const page = plan.pages[pageIndex];
     if (!page) throw new AppError(422, "This reading batch is outside the saved plan.");
+    const service = app.supabaseFactory();
+    const unsupportedCitation = page.ranges.some(({ nodeId }) => nodeId.length > 200);
+    if (unsupportedCitation) {
+      // A previously counted quote may still need replay/status recovery. Never
+      // count a new quote for evidence the Book Bible result cannot cite.
+      const existing = await service.from("book_bible_token_quote_requests").select("id")
+        .eq("user_id", req.userId).eq("idempotency_key", body.idempotencyKey).maybeSingle();
+      if (existing.error) throw new AppError(503, "Could not verify the original Book Bible quote. No new generation was started.");
+      if (!existing.data) throw new AppError(422, quotePreflightMessage);
+    }
     const chapterVersions = Object.values(page.chapters).map((raw) => z.object({ id, version: z.number().int().positive(), documentVersionId: id }).passthrough().parse(raw));
     const sourceVersions = { versions: chapterVersions.map(({ id: chapterId, version, documentVersionId }) => ({ chapterId, version, documentVersionId })),
       reading: { fingerprint: plan.fingerprint, pageIndex } };
@@ -125,7 +145,6 @@ export function bookBibleQuoteRoutes(app: FastifyInstance, options: { fetcher?: 
         bookBible: [], relatedContext: [], styleGuide: {},
         userInstruction: "Extract only reviewable entities grounded in the supplied saved manuscript excerpts. A passage may be only part of a node; do not infer facts from omitted text. Citation hashes identify the full saved node, not only this excerpt." },
     };
-    const service = app.supabaseFactory();
     const requested = await service.rpc("request_book_bible_token_quote", {
       p_user_id: req.userId, p_book_id: bookId, p_workspace_id: book.workspace_id,
       p_generation_job_id: generationJobId, p_generation_request: generationRequest,
@@ -147,6 +166,11 @@ export function bookBibleQuoteRoutes(app: FastifyInstance, options: { fetcher?: 
     if (!envelope.data.claimed) {
       reply.header("cache-control", "private, no-store");
       return reply.status(202).send({ request: { id: saved.data.id, status: "counting" }, quote: null });
+    }
+    if (unsupportedCitation) {
+      await service.rpc("fail_book_bible_token_quote_count", { p_request_id: saved.data.id, p_user_id: req.userId,
+        p_lease_token: saved.data.lease_token, p_error_code: "unsupported_citation_id" });
+      throw new AppError(422, quotePreflightMessage);
     }
     try {
       const prepared = await prepareBookBibleQuote(JSON.stringify(catalog), { modelId: body.modelId, now,
@@ -196,6 +220,11 @@ export function bookBibleQuoteRoutes(app: FastifyInstance, options: { fetcher?: 
     if (!found.data) throw new AppError(404, "Book Bible quote not found.");
     const safeQuote = quoteView(found.data, { id: params.requestId, userId: req.userId, bookId: params.bookId, workspaceId: book.workspace_id });
     if (!("reservedCredits" in safeQuote) || safeQuote.reservedCredits !== body.expectedCredits) throw new AppError(409, "Confirm the current ready quote's exact credit total.");
+    // An existing accepted request must remain recoverable even if it predates
+    // this preflight. Never start a new job with unrepresentable citations.
+    if (!found.data.accepted_job_id && !hasSupportedCitationIds(found.data.generation_request_json)) {
+      throw new AppError(422, acceptancePreflightMessage);
+    }
     const accepted = await service.rpc("accept_book_bible_token_quote", { p_request_id: params.requestId, p_user_id: req.userId, p_expected_credits: body.expectedCredits });
     if (accepted.error) acceptRpcError(accepted.error);
     const job = z.object({ id, status: z.enum(["queued", "running", "succeeded", "failed"]), billing_mode: z.literal("quoted") }).passthrough().safeParse(first(accepted.data));

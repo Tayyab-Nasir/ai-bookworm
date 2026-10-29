@@ -5,6 +5,7 @@ import Fastify from "fastify";
 import { makeAuthPlugin } from "./plugins/auth.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
 import { bookBibleQuoteRoutes } from "./routes/book-bible-quotes.js";
+import { buildBibleReadingPlan } from "./lib/bible-reading-plan.js";
 
 const BOOK = "11111111-1111-4111-8111-111111111111";
 const WORKSPACE = "22222222-2222-4222-8222-222222222222";
@@ -38,6 +39,7 @@ function setup(role = "writer") {
     book_bible_items: [], style_guides: [], book_bible_token_quote_requests: [], ai_jobs: [], usage_events: [], credit_reservations: [],
   };
   const rpcCalls: { name: string; args: Row }[] = [];
+  let afterQuoteRead: (() => void) | undefined;
   const factory = ((token?: string) => ({
     auth: { getUser: async (value: string) => ({ data: { user: value === "valid" ? { id: USER } : null }, error: null }) },
     async rpc(name: string, args: Row) {
@@ -45,7 +47,7 @@ function setup(role = "writer") {
       if (name === "request_book_bible_token_quote") {
         const existing = state.book_bible_token_quote_requests.find((item) => item.user_id === args.p_user_id
           && item.idempotency_key === args.p_idempotency_key);
-        if (existing) return { data: { request: { ...existing }, claimed: false }, error: null };
+        if (existing) return { data: { request: { ...existing }, claimed: existing.test_claimed === true }, error: null };
         const request = { id: randomUUID(), user_id: args.p_user_id, workspace_id: args.p_workspace_id,
           book_id: args.p_book_id, generation_job_id: args.p_generation_job_id,
           generation_request_json: args.p_generation_request, catalog_json: args.p_catalog,
@@ -71,6 +73,7 @@ function setup(role = "writer") {
       }
       if (name === "accept_book_bible_token_quote") {
         const request = state.book_bible_token_quote_requests.find((item) => item.id === args.p_request_id)!;
+        if (request.accepted_job_id) return { data: { ...state.ai_jobs.find(job => job.id === request.accepted_job_id) }, error: null };
         const job = { id: request.generation_job_id, book_id: request.book_id, created_by: request.user_id,
           billing_mode: "quoted", status: "queued" };
         Object.assign(request, { accepted_job_id: job.id, accepted_at: new Date().toISOString() });
@@ -93,7 +96,9 @@ function setup(role = "writer") {
           let found = rows.filter((row) => filters.every((filter) => filter(row)));
           if (sort) found = [...found].sort((a, b) => String(a[sort]).localeCompare(String(b[sort])) * (ascending ? 1 : -1));
           const row = found[0];
-          return { data: row ? columns === "*" ? { ...row } : Object.fromEntries(columns.split(",").map((column) => [column, row[column]])) : null, error: null };
+          const data = row ? columns === "*" ? { ...row } : Object.fromEntries(columns.split(",").map((column) => [column, row[column]])) : null;
+          if (table === "book_bible_token_quote_requests" && columns === "*" && afterQuoteRead) { const callback = afterQuoteRead; afterQuoteRead = undefined; callback(); }
+          return { data, error: null };
         },
         then(resolve: (value: unknown) => unknown) {
           let found = rows.filter((row) => filters.every((filter) => filter(row)));
@@ -106,7 +111,7 @@ function setup(role = "writer") {
     },
     __token: token,
   })) as never;
-  return { state, rpcCalls, factory };
+  return { state, rpcCalls, factory, onNextQuoteRead(callback: () => void) { afterQuoteRead = callback; } };
 }
 
 async function makeApp(factory: ReturnType<typeof setup>["factory"], fetcher: typeof fetch) {
@@ -243,4 +248,103 @@ test("Book Bible quote status is scoped, read-only, and never calls the provider
   assert.equal(countCalls, 0); assert.deepEqual(rpcCalls, []);
   const otherBook = await app.inject({ method: "GET", url: `/v1/books/${"66666666-6666-4666-8666-666666666666"}/bible/quotes/${requestId}`, headers: auth });
   assert.equal(otherBook.statusCode, 404);
+});
+
+
+test("invalid saved citation IDs fail before counting, while the 200-code-unit boundary works", async (t) => {
+  withEnv(t);
+  const { factory, state, rpcCalls } = setup(); let calls = 0;
+  const app = await makeApp(factory, async () => { calls++; return Response.json({ inputTokens: 420, inputSha256: "a".repeat(64),
+    model: "gpt-6-astra-2026-09-01", maxOutputTokens: 1200, agentType: "bookbible" }); }); t.after(() => app.close());
+  for (const nodeId of ["x".repeat(201), "\u{1f600}".repeat(101)]) {
+    state.document_versions[0]!.content_json.nodes[0].id = nodeId;
+    const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes`, headers: auth, payload: payload() });
+    assert.equal(response.statusCode, 422, response.body);
+    assert.match(response.body, /identifier longer than the Book Bible citation limit/);
+    assert.equal(calls, 0); assert.deepEqual(rpcCalls, []);
+    assert.deepEqual(state.book_bible_token_quote_requests, []); assert.deepEqual(state.credit_reservations, []);
+  }
+  state.document_versions[0]!.content_json.nodes[0].id = "\u{1f600}".repeat(100);
+  const boundary = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes`, headers: auth, payload: payload() });
+  assert.equal(boundary.statusCode, 201, boundary.body); assert.equal(calls, 1);
+});
+
+test("old unsupported-citation quotes remain recoverable but cannot initiate a new paid job", async (t) => {
+  withEnv(t);
+  const { factory, state, rpcCalls } = setup(); let calls = 0;
+  const app = await makeApp(factory, async () => { calls++; return Response.json({ inputTokens: 420, inputSha256: "a".repeat(64),
+    model: "gpt-6-astra-2026-09-01", maxOutputTokens: 1200, agentType: "bookbible" }); }); t.after(() => app.close());
+  // Simulate a ready legacy quote originally produced before this guard.
+  const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes`, headers: auth, payload: payload() });
+  assert.equal(created.statusCode, 201, created.body);
+  const row = state.book_bible_token_quote_requests[0]!;
+  const invalid = "\u{1f600}".repeat(101);
+  state.document_versions[0]!.content_json.nodes[0].id = invalid;
+  row.generation_request_json.input.chapters[CHAPTER].nodes[0].id = invalid;
+  const plan = buildBibleReadingPlan([{ id: CHAPTER, title: "The Map", order: 0, version: 3,
+    documentVersionId: VERSION, nodes: [{ id: invalid, text: SOURCE }] }], 4096);
+  row.source_versions_json.reading.fingerprint = plan.fingerprint;
+  const replay = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes`, headers: auth, payload: payload() });
+  assert.equal(replay.statusCode, 200, replay.body); assert.equal(calls, 1);
+  const requestId = created.json().quote.requestId, credits = created.json().quote.reservedCredits;
+  const denied = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes/${requestId}/accept`, headers: auth,
+    payload: { expectedCredits: credits } });
+  assert.equal(denied.statusCode, 422, denied.body);
+  assert.equal(rpcCalls.some(({ name }) => name === "accept_book_bible_token_quote"), false);
+  assert.deepEqual(state.ai_jobs, []); assert.deepEqual(state.credit_reservations, []);
+  row.accepted_job_id = row.generation_job_id; row.accepted_at = new Date().toISOString();
+  state.ai_jobs = [{ id: row.generation_job_id, book_id: BOOK, created_by: USER, billing_mode: "quoted", status: "queued" }];
+  const status = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/bible/quotes/${requestId}`, headers: auth });
+  assert.equal(status.statusCode, 200, status.body); assert.equal(status.json().job.id, row.generation_job_id);
+  const acceptedReplay = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes/${requestId}/accept`, headers: auth,
+    payload: { expectedCredits: credits } });
+  assert.equal(acceptedReplay.statusCode, 202, acceptedReplay.body); assert.equal(acceptedReplay.json().jobId, row.generation_job_id);
+  assert.equal(state.ai_jobs.length, 1); assert.equal(calls, 1);
+});
+
+
+test("context budget failure gives actionable guidance without reserving credits", async (t) => {
+  withEnv(t);
+  const { factory, state } = setup(); let calls = 0;
+  const app = await makeApp(factory, async () => { calls++; return Response.json({ detail: "Selected manuscript exceeds the context budget. Choose a shorter chapter or increase the context budget." }, { status: 422 }); }); t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes`, headers: auth, payload: payload() });
+  assert.equal(response.statusCode, 422, response.body);
+  assert.match(response.body, /split this text into smaller saved chapters/);
+  assert.equal(calls, 1); assert.equal(state.book_bible_token_quote_requests[0]!.status, "failed");
+  assert.deepEqual(state.ai_jobs, []); assert.deepEqual(state.credit_reservations, []);
+});
+
+test("unrecognized AI service errors never disclose details", async (t) => {
+  withEnv(t);
+  const { factory } = setup();
+  const app = await makeApp(factory, async () => Response.json({ detail: "private upstream details" }, { status: 422 })); t.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes`, headers: auth, payload: payload() });
+  assert.equal(response.statusCode, 503, response.body);
+  assert.doesNotMatch(response.body, /private upstream details/);
+});
+
+
+test("rejected legacy acceptance does not claim a concurrent acceptance did not occur", async (t) => {
+  withEnv(t);
+  const { factory, state, rpcCalls, onNextQuoteRead } = setup();
+  const app = await makeApp(factory, async () => Response.json({ inputTokens: 420, inputSha256: "a".repeat(64),
+    model: "gpt-6-astra-2026-09-01", maxOutputTokens: 1200, agentType: "bookbible" })); t.after(() => app.close());
+  const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes`, headers: auth, payload: payload() });
+  assert.equal(created.statusCode, 201, created.body);
+  const row = state.book_bible_token_quote_requests[0]!;
+  row.generation_request_json.input.chapters[CHAPTER].nodes[0].id = "😀".repeat(101);
+  onNextQuoteRead(() => {
+    row.accepted_job_id = row.generation_job_id; row.accepted_at = new Date().toISOString();
+    state.ai_jobs.push({ id: row.generation_job_id, book_id: BOOK, created_by: USER, billing_mode: "quoted", status: "queued" });
+  });
+  const requestId = created.json().quote.requestId;
+  const denied = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes/${requestId}/accept`, headers: auth,
+    payload: { expectedCredits: created.json().quote.reservedCredits } });
+  assert.equal(denied.statusCode, 422, denied.body);
+  assert.match(denied.body, /This action did not submit acceptance/);
+  assert.match(denied.body, /Check the original quote status for an earlier or concurrent acceptance/);
+  assert.equal(rpcCalls.some(({ name }) => name === "accept_book_bible_token_quote"), false);
+  const status = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/bible/quotes/${requestId}`, headers: auth });
+  assert.equal(status.statusCode, 200, status.body);
+  assert.equal(status.json().job.id, row.generation_job_id);
 });

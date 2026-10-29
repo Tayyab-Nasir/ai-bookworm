@@ -57,10 +57,18 @@ export async function prepareBookBibleQuote(rawCatalog: string | undefined, inpu
       headers: { "content-type": "application/json", "x-service-token": token }, body: JSON.stringify(request),
     });
     const body = await response.text();
-    if (!response.ok || Buffer.byteLength(body) > 65_536) throw new Error("count unavailable");
+    if (Buffer.byteLength(body) > 65_536) throw new Error("count unavailable");
+    if (response.status === 422) {
+      let detail: unknown;
+      try { detail = JSON.parse(body)?.detail; } catch { /* Treat malformed errors as unavailable. */ }
+      if (detail === "Selected manuscript exceeds the context budget. Choose a shorter chapter or increase the context budget.") {
+        throw new AppError(422, "This reading batch exceeds the AI context limit. Select fewer chapters or split this text into smaller saved chapters, then prepare a new reading plan. This quote action did not submit generation or reserve credits. Check any existing quote for an earlier or concurrent acceptance.");
+      }
+    }
+    if (!response.ok) throw new Error("count unavailable");
     counted = countReply.parse(JSON.parse(body));
     if (counted.model !== request.model || counted.maxOutputTokens !== request.maxOutputTokens) throw new Error("count identity mismatch");
-  } catch { throw new AppError(503, "Could not verify Book Bible token usage. No generation or credit reservation was started."); }
+  } catch (error) { if (error instanceof AppError) throw error; throw new AppError(503, "Could not verify Book Bible token usage. No generation or credit reservation was started."); }
   if (counted.inputTokens > entry.maxInputTokens) throw new AppError(422, "Book Bible input exceeds the selected model limit.");
   const finishedAt = z.string().datetime().parse((options.clock ?? (() => new Date().toISOString()))());
   const currentCatalog = bookBibleCatalog(rawCatalog, finishedAt);

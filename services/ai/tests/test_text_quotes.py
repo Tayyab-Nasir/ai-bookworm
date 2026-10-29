@@ -231,3 +231,99 @@ def test_counter_uses_only_wire_input_fields_and_no_retry(monkeypatch):
     request = {"model": "test", "input": [], "tools": [], "max_output_tokens": 42}
     assert main.count_story_blueprint_input(request) == 123
     assert captured == [{"model": "test", "input": [], "tools": []}]
+
+
+def test_bible_long_multilingual_provenance_counts_and_dispatches_exact_snapshot(configured):
+    client, provider, counts, reservations, saved = configured
+    body = payload("bookbible")
+    node_ids = ["界" * 198 + f"{i:02}" for i in range(13)]
+    text_hash = hashlib.sha256(b"a").hexdigest()
+    body["input"]["chapters"][CHAPTER]["nodes"] = [
+        {"id": node_id, "text": "a", "textHash": text_hash} for node_id in node_ids
+    ]
+    body["input"]["book"] = {"title": "界" * 500, "author": "界" * 300, "language": "en"}
+    body["contextPolicy"] = {"maxTokens": 4096, "includeBookBible": False,
+        "includeStyleGuide": False, "includeRelatedContext": False}
+    quote = client.post("/v1/ai/text/quote", headers=HEADERS, json=body)
+    assert quote.status_code == 200, quote.text
+    encoded = counts[0]["input"][1]["content"].encode("utf8")
+    assert 4096 * 3 < len(encoded) <= 4096 * 4
+    assert not provider.calls and not reservations
+    checked = client.post("/v1/ai/text/request-hash", headers=HEADERS, json=body)
+    assert checked.status_code == 200 and checked.json()["inputSha256"] == quote.json()["inputSha256"]
+    result = result_for("bookbible")
+    result["toolCalls"][0]["input"]["candidates"][0]["sourceRefs"][0].update(nodeId=node_ids[0], textHash=text_hash)
+    provider.responses = [result]
+    dispatched = client.post("/v1/ai/jobs", headers=HEADERS, json={**body, "idempotencyKey": "unicode-bible",
+        "expectedInputSha256": quote.json()["inputSha256"]})
+    assert dispatched.status_code == 201, dispatched.text
+    assert dispatched.json()["status"] == "succeeded"
+    call = provider.calls[0]
+    actual = openai_request(call["messages"], call["tools"], call["model"],
+        max_output_tokens=call["maxOutputTokens"], tool_choice=call["toolChoice"])
+    assert actual == counts[0]
+    assert main.canonical_story_blueprint_request_hash(actual) == quote.json()["inputSha256"]
+
+
+def test_bible_legacy_context_payload_and_optional_context_budget_stay_identical(configured, monkeypatch):
+    from agents.bookbible import BookBibleAgent
+    client, provider, counts, reservations, saved = configured
+    body = payload("bookbible")
+    body["contextPolicy"] = {"maxTokens": 4096, "includeStyleGuide": True, "includeRelatedContext": False, "includeBookBible": False}
+    body["input"]["styleGuide"] = {"tone": "x" * 16000}
+    first = client.post("/v1/ai/text/request-hash", headers=HEADERS, json=body)
+    assert first.status_code == 200, first.text
+    with monkeypatch.context() as patch:
+        patch.setattr(BookBibleAgent, "required_context_budget", lambda self, budget: budget)
+        old = client.post("/v1/ai/text/request-hash", headers=HEADERS, json=body)
+    assert old.status_code == 200, old.text
+    assert first.json()["inputSha256"] == old.json()["inputSha256"]
+    assert provider.calls == [] and counts == [] and reservations == []
+
+
+def test_bible_new_context_limit_rejects_oversized_required_text_before_provider_count(configured):
+    client, provider, counts, reservations, saved = configured
+    body = payload("bookbible")
+    body["contextPolicy"] = {"maxTokens": 4096, "includeStyleGuide": False,
+        "includeRelatedContext": False, "includeBookBible": False}
+    body["input"]["chapters"][CHAPTER]["nodes"][0]["text"] = "x" * (4096 * 4)
+    response = client.post("/v1/ai/text/quote", headers=HEADERS, json=body)
+    assert response.status_code == 422, response.text
+    assert "exceeds the context budget" in response.json()["detail"]
+    assert counts == [] and provider.calls == [] and reservations == []
+
+
+def test_bible_quote_counted_before_upgrade_dispatches_identical_request(configured, monkeypatch):
+    from agents.bookbible import BookBibleAgent
+    client, provider, counts, reservations, saved = configured
+    body = payload("bookbible")
+    body["contextPolicy"] = {"maxTokens": 4096, "includeStyleGuide": False,
+        "includeRelatedContext": False, "includeBookBible": False}
+    with monkeypatch.context() as patch:
+        patch.setattr(BookBibleAgent, "required_context_budget", lambda self, budget: budget)
+        old_quote = client.post("/v1/ai/text/quote", headers=HEADERS, json=body)
+    assert old_quote.status_code == 200, old_quote.text
+    assert len(counts) == 1 and provider.calls == [] and reservations == []
+    provider.responses = [result_for("bookbible")]
+    response = client.post("/v1/ai/jobs", headers=HEADERS, json={**body, "idempotencyKey": "legacy-bible-replay",
+        "expectedInputSha256": old_quote.json()["inputSha256"]})
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "succeeded" and len(provider.calls) == 1
+    call = provider.calls[0]
+    actual = openai_request(call["messages"], call["tools"], call["model"],
+        max_output_tokens=call["maxOutputTokens"], tool_choice=call["toolChoice"])
+    assert actual == counts[0]
+    assert main.canonical_story_blueprint_request_hash(actual) == old_quote.json()["inputSha256"]
+
+
+def test_unquoted_bible_keeps_original_context_ceiling(configured):
+    client, provider, counts, reservations, saved = configured
+    body = payload("bookbible")
+    body["contextPolicy"] = {"maxTokens": 4096, "includeStyleGuide": False,
+        "includeRelatedContext": False, "includeBookBible": False}
+    body["input"]["chapters"][CHAPTER]["nodes"][0]["text"] = "a" * 12500
+    response = client.post("/v1/ai/jobs", headers=HEADERS, json={**body, "idempotencyKey": "unquoted-bible"})
+    assert response.status_code == 201, response.text
+    assert response.json()["status"] == "failed"
+    assert "exceeds the context budget" in response.json()["error"]
+    assert not provider.calls and not counts
