@@ -912,3 +912,209 @@ test("a later narration progress refresh wins over pending edition history",asyn
    assert.equal(await page.getByText("failed",{exact:true}).count(),1,"older projects history replaced refreshed status");assert.deepEqual(errors,[]);
  }finally{await page.close()}
 });
+
+test("unconfirmed edition creation keeps settings and blocks duplicate until explicit risk acknowledgment", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => { window.createdEditions = []; window.bookwormApi.createEdition = async (bookId, body, actor) => {
+      window.createdEditions.push({bookId,body,actor});
+      if (window.createdEditions.length === 1) throw new Error("reply lost after commit");
+      return {id:window.ids.otherAsset,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,metadata_overrides:{}},updated_at:new Date().toISOString(),status:"draft"};
+    }; });
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click();
+    await page.getByLabel("Language",{exact:true}).fill("fr");
+    await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    const warning=page.getByText(/A previous new-edition save may have completed/); await expect(warning).toBeVisible();
+    await expect(page.getByLabel("Language",{exact:true})).toHaveValue("fr");
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeDisabled();
+    const permit=page.getByRole("button",{name:"Allow another create despite duplicate risk",exact:true}); await expect(permit).toBeDisabled();
+    assert.equal(await page.evaluate(()=>window.createdEditions.length),1);
+    await page.getByLabel("I understand that another create can duplicate the earlier request.").check();
+    await permit.click(); await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeEnabled();
+    await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    await expect(page.getByText("Edition settings saved.",{exact:true})).toBeVisible();
+    assert.equal(await page.evaluate(()=>window.createdEditions.length),2);
+    assert.deepEqual(await page.evaluate(()=>window.createdEditions.map(call=>call.actor)),[ids.asset,ids.asset]);
+    assert.deepEqual(errors,[]);
+  } finally { await page.close(); }
+});
+
+test("an unverified creation reply cannot unlock another edition create", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => { window.editionCreateCalls=0; window.bookwormApi.createEdition = async (_bookId,body) => {window.editionCreateCalls++; return {id:window.ids.asset,book_id:window.ids.otherAsset,type:body.config.kind,language:body.language,edition_metadata_json:body.config};}; });
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click(); await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeDisabled();
+    assert.equal(await page.evaluate(()=>window.editionCreateCalls),1);
+  } finally { await page.close(); }
+});
+
+test("unconfirmed creation remains blocked after changing book within the mounted studio", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    await page.evaluate(()=>{window.createCount=0;window.bookwormApi.createEdition=async()=>{window.createCount++;throw new Error("reply lost");}; const old=window.bookwormApi.listEditions;window.bookwormApi.listEditions=async book=>book===window.ids.book?old(book):({editions:[]});});
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click(); await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await page.evaluate(()=>window.showStudio(window.ids.otherAsset));
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeEnabled();
+    await page.evaluate(()=>window.showStudio(window.ids.book));
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    assert.equal(await page.evaluate(()=>window.createCount),1);
+  } finally { await page.close(); }
+});
+
+test("a creation reply missing its saved configuration remains unconfirmed", async () => {
+  const {page}=await fixture({parent:true});try{
+    await page.evaluate(()=>{window.bookwormApi.createEdition=async(bookId,body)=>({id:window.ids.asset,book_id:bookId,type:body.config.kind,language:body.language,updated_at:new Date().toISOString()});});
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click(); await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeDisabled();
+  }finally{await page.close()}
+});
+
+test("original actor owns the unconfirmed edition guard and late account-switch replies cannot adopt", async () => {
+  const {page}=await fixture({parent:true}); let account=ids.asset;
+  try{
+    await page.route("**/api/auth/session",route=>route.fulfill({json:{user:{id:account}}}));
+    await page.evaluate(()=>{window.calls=[];window.bookwormApi.createEdition=async(bookId,body,actor)=>{window.calls.push({bookId,body,actor});await new Promise(resolve=>window.releaseEdition=resolve);return {id:window.ids.otherEdition,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,metadata_overrides:{}},updated_at:new Date().toISOString(),status:"draft"};};});
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click();await page.getByLabel("Language",{exact:true}).fill("fr");
+    await page.getByRole("button",{name:"Save edition",exact:true}).click();await page.waitForFunction(()=>typeof window.releaseEdition==='function');
+    account=ids.otherAsset;await page.evaluate(()=>window.releaseEdition());
+    await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();
+    await expect(page.getByLabel("Language",{exact:true})).toHaveCount(0);
+    assert.equal(await page.evaluate(()=>window.calls[0].actor),ids.asset);
+    await page.getByRole("button",{name:"Verify original account",exact:true}).click();await expect(page.getByText(/Your account changed/)).toBeVisible();
+    account=ids.asset;await page.getByRole("button",{name:"Verify original account",exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await expect(page.getByLabel("Language",{exact:true})).toHaveValue("fr");
+    await page.getByLabel("I understand that another create can duplicate the earlier request.").check();
+    await page.getByRole("button",{name:"Allow another create despite duplicate risk",exact:true}).click();
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeEnabled();
+  }finally{await page.close()}
+});
+
+for(const secondOutcome of ["success","uncertain"]) test(`unconfirmed book A survives book B ${secondOutcome} and return`,async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(mode=>{window.createCount=0;const old=window.bookwormApi.listEditions;window.bookwormApi.listEditions=async book=>book===window.ids.book?old(book):({editions:[]});window.bookwormApi.createEdition=async(bookId,body)=>{window.createCount++;if(bookId===window.ids.book||mode==='uncertain')throw Error('ambiguous');return {id:window.ids.otherEdition,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,metadata_overrides:{}},updated_at:new Date().toISOString(),status:'draft'};};},secondOutcome);
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+  await page.evaluate(()=>window.showStudio(window.ids.otherAsset));await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  if(secondOutcome==='success')await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();else await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+  await page.evaluate(()=>window.showStudio(window.ids.book));await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await page.getByRole('button',{name:'New EPUB',exact:true}).click();await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+  assert.equal(await page.evaluate(()=>window.createCount),2);
+ }finally{await page.close()}
+});
+
+test('a valid-shaped reply with altered edition settings remains unconfirmed',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{window.bookwormApi.createEdition=async(bookId,body)=>({id:window.ids.otherEdition,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,flow:'fixed',metadata_overrides:{}},updated_at:new Date().toISOString(),status:'draft'});});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+ }finally{await page.close()}
+});
+
+test('edition validation detail remains visible alongside uncertainty warning',async()=>{
+ const {page}=await fixture({parent:true});try{await page.evaluate(()=>{window.bookwormApi.createEdition=async()=>{throw Error('Check the cover settings.');};});await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect(page.getByText(/Check the cover settings/)).toBeVisible();await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();}finally{await page.close()}
+});
+
+test('two same-turn saves cannot dispatch twice while account preflight is pending',async()=>{
+ const {page}=await fixture({parent:true});let held=null,sessionCalls=0;
+ try{
+  await page.waitForLoadState('networkidle');
+  await page.route('**/api/auth/session',route=>{sessionCalls++;if(sessionCalls===1){held=route;return;}return route.fulfill({json:{user:{id:ids.asset}}});});
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async(bookId,body)=>{window.creationCalls++;return {id:window.ids.otherEdition,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,metadata_overrides:{}},updated_at:new Date().toISOString(),status:'draft'};};});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+  await page.evaluate(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent?.trim()==='Save edition');b.dispatchEvent(new MouseEvent('click',{bubbles:true}));b.dispatchEvent(new MouseEvent('click',{bubbles:true}));});
+  await expect.poll(()=>sessionCalls).toBeGreaterThan(0);await page.waitForTimeout(200);assert.equal(sessionCalls,1,'duplicate preflight was started');
+  await held.fulfill({json:{user:{id:ids.asset}}});await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();assert.equal(await page.evaluate(()=>window.creationCalls),1);
+ }finally{await page.close()}
+});
+
+test('account preflight failure sends no edition and does not create a false uncertainty warning',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({status:503,json:{error:'unavailable'}}));
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('must not execute');};});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await expect(page.getByText(/Your session could not be verified/)).toBeVisible();await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();await expect(page.getByText(/A previous new-edition save may have completed/)).toHaveCount(0);assert.equal(await page.evaluate(()=>window.creationCalls),0);
+  await page.unroute('**/api/auth/session');await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();
+ }finally{await page.close()}
+});
+
+test('book change while account preflight is pending never sends old-book creation',async()=>{
+ const {page}=await fixture({parent:true});let held=null;try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>{if(!held){held=route;return;}return route.fulfill({json:{user:{id:ids.asset}}});});
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('must not execute');};const old=window.bookwormApi.listEditions;window.bookwormApi.listEditions=async book=>book===window.ids.book?old(book):({editions:[]});});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect.poll(()=>held!==null).toBe(true);
+  await page.evaluate(()=>window.showStudio(window.ids.otherAsset));await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();await held.fulfill({json:{user:{id:ids.asset}}});await page.waitForTimeout(250);assert.equal(await page.evaluate(()=>window.creationCalls),0);
+ }finally{await page.close()}
+});
+
+test('account switch before edition save hides original form and sends no write',async()=>{
+ const {page}=await fixture({parent:true});let account=ids.otherAsset;try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('must not execute');};});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveCount(0);assert.equal(await page.evaluate(()=>window.creationCalls),0);
+  account=ids.asset;await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();
+ }finally{await page.close()}
+});
+
+test('account switch before editing an existing edition sends no update',async()=>{
+ const {page}=await fixture({parent:true});let account=ids.otherAsset;try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
+  await page.evaluate(()=>{window.updateCalls=0;window.bookwormApi.updateEdition=async()=>{window.updateCalls++;throw Error('must not execute');};});
+  await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();assert.equal(await page.evaluate(()=>window.updateCalls),0);
+  account=ids.asset;await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');
+ }finally{await page.close()}
+});
+
+test('edition load carries the verified actor on book and edition reads',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{const book=window.bookwormApi.getBook,editions=window.bookwormApi.listEditions,chapters=window.bookwormApi.listChapters;window.actorReads=[];window.bookwormApi.getBook=async(id,actor)=>{window.actorReads.push(['book',actor]);return book(id)};window.bookwormApi.listEditions=async(id,actor)=>{window.actorReads.push(['editions',actor]);return editions(id)};window.bookwormApi.listChapters=async(id,actor)=>{window.actorReads.push(['chapters',actor]);return chapters(id)};window.showStudio(null)});
+  await expect(page.getByRole('heading',{name:'Edition settings',exact:true})).toHaveCount(0);await page.evaluate(()=>window.showStudio(window.ids.book));await expect(page.getByRole('heading',{name:'Edition settings',exact:true})).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>window.actorReads.length)).toBe(3);
+  assert.deepEqual(await page.evaluate(()=>window.actorReads),[['book',ids.asset],['editions',ids.asset],['chapters',ids.asset]]);
+ }finally{await page.close()}
+});
+
+for (const mismatch of ['wrong-id','wrong-book','wrong-settings','wrong-language','missing-revision','lost-reply']) test(`edition update ${mismatch} leaves edits intact and warns about an uncertain outcome`,async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(mode=>{window.updateCalls=[];window.bookwormApi.updateEdition=async(id,body,actor)=>{window.updateCalls.push({id,body,actor});if(mode==='lost-reply')throw Error('reply lost');const result={id,book_id:window.ids.book,type:body.config.kind,language:body.language,edition_metadata_json:body.config,updated_at:new Date().toISOString(),status:'draft'};if(mode==='wrong-id')result.id=window.ids.otherEdition;if(mode==='wrong-book')result.book_id=window.ids.otherAsset;if(mode==='wrong-settings')result.edition_metadata_json={...body.config,trim_size:'7x10'};if(mode==='wrong-language')result.language='de';if(mode==='missing-revision')result.updated_at='not-a-date';return result;};},mismatch);
+  await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await expect(page.getByText(/The update may have been saved; your edits remain here/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();assert.equal(await page.evaluate(()=>window.updateCalls[0].actor),ids.asset);assert.equal(await page.evaluate(()=>window.updateCalls.length),1);
+ }finally{await page.close()}
+});
+
+test('verified edition update adopts matching settings and carries original actor',async()=>{
+ const {page}=await fixture({parent:true});try{await page.evaluate(()=>{window.updateCalls=[];window.bookwormApi.updateEdition=async(id,body,actor)=>{window.updateCalls.push({id,body,actor});return {id,book_id:window.ids.book,type:body.config.kind,language:body.language,edition_metadata_json:body.config,updated_at:new Date().toISOString(),status:'draft'};};});await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();assert.equal(await page.evaluate(()=>window.updateCalls[0].actor),ids.asset);await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();}finally{await page.close()}
+});
+
+test('cross-book edition load is rejected before displaying another book settings',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{window.bookwormApi.listEditions=async()=>({editions:[{id:window.ids.edition,book_id:window.ids.otherAsset,type:'ebook',language:'foreign-secret',edition_metadata_json:{kind:'ebook'}}]});window.showStudio(null)});
+  await expect(page.getByRole('heading',{name:'Edition settings',exact:true})).toHaveCount(0);await page.evaluate(()=>window.showStudio(window.ids.book));
+  await expect(page.getByText(/saved edition list did not match this book/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).not.toHaveValue('foreign-secret');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+ }finally{await page.close()}
+});
+
+test('failed create after account switch hides original form and retains uncertainty',async()=>{
+ const {page}=await fixture({parent:true});let account=ids.asset;try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
+  await page.evaluate(()=>{window.bookwormApi.createEdition=async()=>{await new Promise(resolve=>window.releaseCreateFailure=resolve);throw Error('connection lost');};});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();await page.waitForFunction(()=>typeof window.releaseCreateFailure==='function');
+  account=ids.otherAsset;await page.evaluate(()=>window.releaseCreateFailure());await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveCount(0);
+  account=ids.asset;await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');
+ }finally{await page.close()}
+});
+
+test('risk acknowledgment requires both the original account and the account that loaded this book',async()=>{
+ const {page}=await fixture({parent:true});let account=ids.asset;try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('ambiguous');};const old=window.bookwormApi.listEditions;window.bookwormApi.listEditions=async book=>book===window.ids.book?old(book):({editions:[]});});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+  account=ids.otherAsset;await page.evaluate(()=>window.showStudio(window.ids.otherAsset));await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();await page.evaluate(()=>window.showStudio(window.ids.book));await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+  await page.getByLabel('I understand that another create can duplicate the earlier request.').check();account=ids.asset;await page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true}).click();await expect(page.getByText('This warning belongs to a different account. Leaving or reloading this page removes the warning, but the earlier request could still finish.',{exact:true})).toBeVisible();await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await page.getByRole('button',{name:'New EPUB',exact:true}).click();await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+  account=ids.otherAsset;await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();assert.equal(await page.evaluate(()=>window.creationCalls),1);
+  account=ids.asset;await page.evaluate(()=>window.showStudio(window.ids.otherAsset));await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();await page.evaluate(()=>window.showStudio(window.ids.book));await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await page.getByLabel('I understand that another create can duplicate the earlier request.').check();await page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true}).click();await expect(page.getByText(/A previous new-edition save may have completed/)).toHaveCount(0);
+ }finally{await page.close()}
+});

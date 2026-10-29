@@ -137,7 +137,7 @@ async function publishingAction(operation) {
       ruleVersion: "synthetic", failureCode: null, submissionMode: "manual", package: { asset, download } };
     window.exportJob = { id: jobId, editionId: EDITION, status: "queued", progressChapters: 0, progressTotal: 2, errorCode: null,
       createdAt: "2026-10-05T00:00:00Z", completedAt: null, downloadUrl: null, synthesizedVoiceDisclosureRequired: true };
-    window.savedEdition = { ...window.editions[0], language: "es" };
+    window.savedEdition = { ...window.editions[0], language: "es", edition_metadata_json: { ...window.editions[0].edition_metadata_json, schema_version: "1.0.0" } };
     Object.assign(window.api, {
       updateEdition: async () => window.savedEdition,
       createEdition: async () => window.savedEdition,

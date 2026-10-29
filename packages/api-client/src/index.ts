@@ -1107,12 +1107,12 @@ export function createClient(opts: ClientOptions) {
       call<AiJobWithSuggestions>("GET", `/v1/ai/jobs/requests/${encodeURIComponent(requestKey)}?bookId=${encodeURIComponent(bookId)}`),
     applySuggestion: (id: string) => call<{ suggestionId: string; status: "accepted"; version: number; versionId: string }>("POST", `/v1/ai/suggestions/${id}/apply`),
     rejectSuggestion: (id: string) => call<{ suggestion: AiSuggestion }>("POST", `/v1/ai/suggestions/${id}/reject`),
-    listEditions: (bookId: string) => call<{ editions: Edition[] }>("GET", `/v1/books/${bookId}/editions`),
-    createEdition: (bookId: string, body: { config: EditionConfig; language?: string }) =>
-      call<Edition>("POST", `/v1/books/${bookId}/editions`, body),
+    listEditions: (bookId: string, expectedActorId?: string) => call<{ editions: Edition[] }>("GET", `/v1/books/${bookId}/editions`, undefined, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
+    createEdition: (bookId: string, body: { config: EditionConfig; language?: string }, expectedActorId?: string) =>
+      call<Edition>("POST", `/v1/books/${bookId}/editions`, body, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
     getEdition: (editionId: string) => call<Edition>("GET", `/v1/editions/${editionId}`),
-    updateEdition: (editionId: string, body: { config?: EditionConfig; language?: string; status?: "draft" | "in_review" | "approved" | "archived"; expectedUpdatedAt: string }) =>
-      call<Edition>("PATCH", `/v1/editions/${editionId}`, body),
+    updateEdition: (editionId: string, body: { config?: EditionConfig; language?: string; status?: "draft" | "in_review" | "approved" | "archived"; expectedUpdatedAt: string }, expectedActorId?: string) =>
+      call<Edition>("PATCH", `/v1/editions/${editionId}`, body, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
     renderEdition: (editionId: string, body: { idempotencyKey: string }) =>
       call<RenderedEditionResult>("POST", `/v1/editions/${editionId}/render`, body),
     listEditionRenders: (editionId: string) =>

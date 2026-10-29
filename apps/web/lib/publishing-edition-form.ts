@@ -200,3 +200,27 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
       background_color: form.wrapBackground, text_color: form.wrapTextColor },
   };
 }
+
+/** Check a create reply against the exact server-normalized settings we sent. */
+export function matchesCreatedEditionConfig(config: EditionConfig, saved: unknown): boolean {
+  try {
+    const expected = JSON.parse(JSON.stringify(config)) as { kind: string; metadata_overrides?: unknown; cover?: { qr_code?: { url?: unknown; label?: unknown } } };
+    if (expected.kind === "ebook" && !("metadata_overrides" in expected)) expected.metadata_overrides = {};
+    if (expected.kind !== "audiobook") {
+      const qr = expected.cover?.qr_code;
+      if (typeof qr?.url === "string") qr.url = qr.url.trim();
+      if (typeof qr?.label === "string") qr.label = qr.label.trim();
+    }
+    const canonical = (value: unknown): string => {
+      if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+      if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+      if (Array.isArray(value)) return "[" + value.map(canonical).join(",") + "]";
+      if (typeof value === "object" && value) {
+        const record = value as Record<string, unknown>;
+        return "{" + Object.keys(record).sort().map(key => JSON.stringify(key) + ":" + canonical(record[key])).join(",") + "}";
+      }
+      throw new Error("Unsupported edition setting");
+    };
+    return canonical(expected) === canonical(saved);
+  } catch { return false; }
+}

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import { NextRequest, type NextResponse } from "next/server";
 import { POST } from "../app/api/auth/[action]/route";
 import { GET as session } from "../app/api/auth/session/route";
-import { GET as backendGet, POST as backendPost, PUT as backendPut, DELETE as backendDelete } from "../app/api/backend/[...path]/route";
+import { GET as backendGet, POST as backendPost, PUT as backendPut, PATCH as backendPatch, DELETE as backendDelete } from "../app/api/backend/[...path]/route";
 import { GET as callback } from "../app/auth/callback/route";
 import { safeNext, sameOrigin } from "../lib/auth/policy";
 import { appOrigin } from "../lib/auth/server";
@@ -54,6 +54,9 @@ test("workspace reads, creation and admin access preserve optional actor fences 
   for (const [path, method, handler] of [
     [["v1", "workspaces"], "GET", backendGet], [["v1", "workspaces"], "POST", backendPost],
     [["v1", "dashboard"], "GET", backendGet], [["v1", "admin", "access"], "GET", backendGet],
+    [["v1", "books", "11111111-1111-4111-8111-111111111111", "editions"], "POST", backendPost],
+    [["v1", "books", "11111111-1111-4111-8111-111111111111", "editions"], "GET", backendGet],
+    [["v1", "editions", "11111111-1111-4111-8111-111111111111"], "PATCH", backendPatch],
   ] as const) {
     for (const [actor, status] of [[undefined, 200], ["", 422], ["invalid", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
       const before = calls.filter(call => call.url.startsWith(upstream)).length;

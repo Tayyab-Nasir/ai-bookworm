@@ -17,7 +17,7 @@ test("fixed EPUB page controls survive saving and switching flow", () => {
   const reflowable = toConfig({ ...form, flow: "reflowable" }, saved);
   assert.deepEqual(toConfig({ ...formFromEdition({ ...edition, edition_metadata_json: reflowable }), flow: "fixed" }, reflowable), saved);
 });
-import { applyLayoutPreset, DEFAULT_FORM, resolveEditionRenderSafety, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
+import { applyLayoutPreset, DEFAULT_FORM, resolveEditionRenderSafety, resolveEditionTextDirection, formFromEdition, toConfig, matchesCreatedEditionConfig } from "../lib/publishing-edition-form";
 import type { Edition } from "@bookworm/types";
 
 test("front matter survives save and reload for both book formats", () => {
@@ -273,4 +273,18 @@ test("null-language ebook shaping uses the base language before a saved language
   const book = { ...coverBook, language: "ar" };
   assert.equal(resolveEditionRenderSafety(form, book, edition.edition_metadata_json).rtlCoverTextUnsupported, true);
   assert.equal(resolveEditionRenderSafety(form, book, { kind: "ebook", metadata_overrides: { language: "en" } }).renderBlocked, false);
+});
+
+test("new-edition reply comparison accepts server normalization and rejects changed user settings", () => {
+  const ebook = toConfig({ ...DEFAULT_FORM, kind: "ebook", coverAssetId: "a0000000-0000-4000-8000-000000000001", qrEnabled: true, qrUrl: "  https://example.com/book  ", qrLabel: "  author  " });
+  assert.equal(ebook.kind, "ebook");
+  if (ebook.kind !== "ebook") throw Error();
+  const normalized = { ...ebook, metadata_overrides: {}, cover: { ...ebook.cover!, qr_code: { ...ebook.cover!.qr_code!, url: "https://example.com/book", label: "author" } } };
+  assert(matchesCreatedEditionConfig(ebook, normalized));
+  assert(!matchesCreatedEditionConfig(ebook, { ...normalized, flow: "fixed" }));
+  assert(!matchesCreatedEditionConfig(ebook, { ...normalized, metadata_overrides: { title: "Unexpected" } }));
+  assert(!matchesCreatedEditionConfig(ebook, { ...normalized, cover: { ...normalized.cover, qr_code: { ...normalized.cover.qr_code, url: "https://evil.example/" } } }));
+  const audio = toConfig({ ...DEFAULT_FORM, kind: "audiobook", narrationInstructions: "  clear  " });
+  assert(matchesCreatedEditionConfig(audio, audio));
+  assert(!matchesCreatedEditionConfig(audio, { ...audio, speed: 3 }));
 });

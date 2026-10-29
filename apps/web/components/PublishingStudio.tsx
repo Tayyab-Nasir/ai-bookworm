@@ -13,9 +13,10 @@ import SavedPdfProof from "./SavedPdfProof";
 import { renderLinksDeadline } from "../lib/pdf-proof";
 import RetailerPackageRequest from "./RetailerPackageRequest";
 import { privateDownloadUrl } from "../lib/private-download";
+import { readBrowserSession } from "../lib/browser-session";
 import { packageDownloadDeadline, signedDownloadDeadline, downloadClock, downloadExpired, nextDownloadClockWait, type DownloadClock } from "../lib/publishing-request";
 
-import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
+import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, matchesCreatedEditionConfig, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
 export { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
@@ -61,6 +62,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   };
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const uncertainEditionCreates = useRef(new Map<string, { actor: string }>());
+  const [, setEditionGuardVersion] = useState(0);
+  const [acceptDuplicateRisk, setAcceptDuplicateRisk] = useState(false);
+  const [verifyingEditionRisk, setVerifyingEditionRisk] = useState(false);
+  const editionRiskFlight = useRef<object | null>(null), editionSaveFlight = useRef<object | null>(null);
+  const loadedEditionOwner = useRef<string | null>(null);
+  const [editionSessionHidden, setEditionSessionHidden] = useState(false);
+  const [verifyingEditionSession, setVerifyingEditionSession] = useState(false);
   const currentBook = useRef(bookId); currentBook.current = bookId;
   const currentEdition = useRef(activeId); currentEdition.current = activeId;
   const viewEpoch = useRef(0);
@@ -117,6 +126,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const version = ++viewEpoch.current;
     audioHistoryEpoch.current++; audioProjectEpoch.current++; audioMutation.current = null; audioManualRead.current = null;
     const valid = () => viewEpoch.current === version && currentBook.current === bookId;
+    editionRiskFlight.current = null; editionSaveFlight.current = null; loadedEditionOwner.current = null; setEditionSessionHidden(false); setVerifyingEditionSession(false); setVerifyingEditionRisk(false); setAcceptDuplicateRisk(false);
     setBusy("load");
     setBook(null); setRole("viewer"); setEditions([]); setAssets([]); setChapters([]); setPublishingJobs([]);
     currentEdition.current = null; setActiveId(null); setForm(DEFAULT_FORM); setDirty(false); setError(null);
@@ -124,11 +134,18 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     setRendered(null); setPreflight(null); setNotice(null); exportRequestKey.current = null;
     setGooglePlayIdentifier(""); setGooglePlayCoverId("");
     try {
+      const owner = (await readBrowserSession()).id; if (!valid()) return;
       const historyStartedAt = downloadClock();
-      const [identity, editionResult, packageHistory, chapterResult] = await Promise.all([api.getBook(bookId), api.listEditions(bookId), api.listPublishingJobs(bookId), api.listChapters(bookId)]);
+      const [identity, editionResult, packageHistory, chapterResult] = await Promise.all([api.getBook(bookId, owner), api.listEditions(bookId, owner), api.listPublishingJobs(bookId), api.listChapters(bookId, owner)]);
       if (!valid()) return;
+      if (!identity?.book || identity.book.id !== bookId || !Array.isArray(editionResult?.editions)
+        || editionResult.editions.some(edition => !edition || edition.book_id !== bookId)) {
+        throw new Error("The saved edition list did not match this book. Reload before editing.");
+      }
       const assetResult = await api.listAssets(identity.book.workspace_id);
+      await readBrowserSession(owner);
       if (!valid()) return;
+      loadedEditionOwner.current = owner;
       setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setPublishingJobs(packageHistory.jobs.map(job => timePackage(job, historyStartedAt))); observePackageClock(); setChapters(chapterResult.chapters);
       setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
       if (editionResult.editions[0]) {
@@ -207,14 +224,77 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     setActiveId(null); setForm({ ...DEFAULT_FORM, kind, language: book?.language ?? "en" }); setDirty(true); setRendered(null); setPreflight(null); setError(null); setAudiobookProjects([]); setGooglePlayExports([]);
   };
 
-  const save = async () => {
-    if (!editable || busy) return;
-    const valid = captureView(); if (!valid()) return;
-    setBusy("save"); setError(null); setNotice(null);
+  const verifyEditionOwner = async (owner: string, valid: () => boolean) => {
+    try { await readBrowserSession(owner); }
+    catch (reason) { if (valid() && loadedEditionOwner.current === owner) setEditionSessionHidden(true); throw reason; }
+  };
+  const restoreEditionSession = async () => {
+    const owner = loadedEditionOwner.current, valid = captureView();
+    if (!owner || !valid() || verifyingEditionSession) return;
+    setVerifyingEditionSession(true);
+    try { await readBrowserSession(owner); if (valid() && loadedEditionOwner.current === owner) { setEditionSessionHidden(false); setError(null); } }
+    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Your account could not be verified."); }
+    finally { if (valid()) setVerifyingEditionSession(false); }
+  };
+
+  const acknowledgeEditionRisk = async () => {
+    if (!acceptDuplicateRisk || verifyingEditionRisk || busy || editionRiskFlight.current) return;
+    const pending = uncertainEditionCreates.current.get(bookId), valid = captureView();
+    if (!pending || !valid()) return;
+    if (loadedEditionOwner.current !== pending.actor) {
+      setError("This warning belongs to a different account. Leaving or reloading this page removes the warning, but the earlier request could still finish.");
+      return;
+    }
+    const flight = {}; editionRiskFlight.current = flight; setVerifyingEditionRisk(true);
     try {
-      const saved = activeEdition
-        ? await api.updateEdition(activeEdition.id, { config: toConfig(form, activeEdition.edition_metadata_json), language: form.language, expectedUpdatedAt: activeEdition.updated_at })
-        : await api.createEdition(bookId, { config: toConfig(form), language: form.language });
+      await verifyEditionOwner(pending.actor, valid);
+      if (!valid() || loadedEditionOwner.current !== pending.actor || editionRiskFlight.current !== flight || uncertainEditionCreates.current.get(bookId) !== pending) return;
+      uncertainEditionCreates.current.delete(bookId); setEditionGuardVersion(v => v + 1); setAcceptDuplicateRisk(false);
+      setError(null); setNotice("Another new edition can be saved. The earlier request may still finish.");
+    } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Your account could not be verified."); }
+    finally { if (editionRiskFlight.current === flight) { editionRiskFlight.current = null; if (valid()) setVerifyingEditionRisk(false); } }
+  };
+
+  const matchesEditionReply = (saved: Edition, config: ReturnType<typeof toConfig>, language: string, expectedId?: string) => {
+    const savedConfig = saved?.edition_metadata_json;
+    return Boolean(saved && saved.book_id === bookId && saved.type === config.kind && typeof saved.id === "string"
+      && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(saved.id)
+      && (!expectedId || saved.id === expectedId)
+      && savedConfig && typeof savedConfig === "object" && !Array.isArray(savedConfig) && matchesCreatedEditionConfig(config, savedConfig)
+      && typeof saved.language === "string" && saved.language === language.trim()
+      && typeof saved.updated_at === "string" && Number.isFinite(Date.parse(saved.updated_at)));
+  };
+
+  const save = async () => {
+    if (!editable || busy || editionSaveFlight.current || (!activeId && uncertainEditionCreates.current.has(bookId))) return;
+    if (activeId && !activeEdition) { setError("This edition is no longer in the saved list. Reload before saving."); return; }
+    const valid = captureView(); if (!valid()) return;
+    const flight = {}; editionSaveFlight.current = flight;
+    setBusy("save"); setError(null); setNotice(null);
+    let creating = false;
+    let submitted = false;
+    let owner: string | null = null;
+    try {
+      let saved: Edition;
+      owner = loadedEditionOwner.current; if (!owner) throw new Error("Verify the original account before saving this edition.");
+      await verifyEditionOwner(owner, valid); if (!valid()) return;
+      if (activeEdition) {
+        const config = toConfig(form, activeEdition.edition_metadata_json);
+        submitted = true;
+        saved = await api.updateEdition(activeEdition.id, { config, language: form.language, expectedUpdatedAt: activeEdition.updated_at }, owner);
+        await verifyEditionOwner(owner, valid);
+        if (!matchesEditionReply(saved, config, form.language, activeEdition.id)) throw new Error("The edition update reply could not be verified.");
+      } else {
+        const config = toConfig(form);
+        // The endpoint has no durable request identity. Once dispatched, a failure
+        // cannot distinguish a rejected request from a lost success response.
+        creating = true; submitted = true; uncertainEditionCreates.current.set(bookId, { actor: owner }); setEditionGuardVersion(v => v + 1); setAcceptDuplicateRisk(false);
+        saved = await api.createEdition(bookId, { config, language: form.language }, owner);
+        await verifyEditionOwner(owner, valid);
+        if (!matchesEditionReply(saved, config, form.language)) throw new Error("The edition creation reply could not be verified.");
+        if (!valid()) return;
+        uncertainEditionCreates.current.delete(bookId); setEditionGuardVersion(v => v + 1); creating = false;
+      }
       if (!valid()) return;
       currentEdition.current = saved.id;
       setEditions((current) => [saved, ...current.filter((edition) => edition.id !== saved.id)]);
@@ -223,8 +303,10 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
         await Promise.all([readAudioProjects(saved.id, true), readAudioHistory(saved.id, true)]);
         if (!valid()) return;
       }
-    } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not save the edition."); }
-    finally { if (valid()) setBusy(null); }
+    } catch (reason) {
+      if (valid() && owner) { try { await verifyEditionOwner(owner, valid); } catch { /* Keep the original outcome and hide the old account view. */ } }
+      if (valid()) setError(creating ? `${reason instanceof Error ? reason.message : "Could not save the edition."} The new edition's save outcome is unconfirmed. Review the warning below before another create.` : submitted ? `${reason instanceof Error ? reason.message : "Could not save the edition."} The update may have been saved; your edits remain here. Reload and compare before retrying.` : reason instanceof Error ? reason.message : "Could not save the edition.");
+    } finally { if (editionSaveFlight.current === flight) { editionSaveFlight.current = null; if (valid()) setBusy(null); } }
   };
 
   const render = async () => {
@@ -306,6 +388,12 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   };
 
   const leave = (event: React.MouseEvent<HTMLAnchorElement>) => { if (dirty && !window.confirm("Leave and discard unsaved edition settings?")) event.preventDefault(); };
+  if (editionSessionHidden) return <section role="alert" className="rounded-xl border border-amber-300/30 bg-amber-300/5 p-4 text-sm text-amber-100">
+    <p>We could not verify the account that loaded these edition settings. They are hidden; unsaved changes remain in this page.</p>
+    {error && <p className="mt-2">{error}</p>}
+    <button type="button" disabled={verifyingEditionSession} onClick={() => void restoreEditionSession()} className="mt-3 rounded-lg border border-amber-200/40 px-3 py-2 underline disabled:opacity-40">{verifyingEditionSession ? "Verifying…" : "Verify original account"}</button>
+  </section>;
+
   return <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
     <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
       <div><Link href={`/books/${bookId}`} onClick={leave} className="text-sm text-white/50 hover:text-white">← Manuscript</Link>
@@ -338,8 +426,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       <div className="min-w-0 space-y-6">
         <section className={cardClass} aria-labelledby="edition-settings">
           <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 id="edition-settings" className="text-xl font-semibold">Edition settings</h2><p className="mt-1 text-sm text-white/45">Changes are saved before rendering or validation.</p></div>
-            <button type="button" onClick={() => void save()} disabled={!editable || Boolean(busy) || (!dirty && Boolean(activeId))} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "save" ? "Saving…" : "Save edition"}</button>
+            <button type="button" onClick={() => void save()} disabled={!editable || Boolean(busy) || (!dirty && Boolean(activeId)) || (!activeId && uncertainEditionCreates.current.has(bookId))} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "save" ? "Saving…" : "Save edition"}</button>
           </div>
+          {uncertainEditionCreates.current.has(bookId) && <div role="alert" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/5 p-4 text-sm text-amber-100">
+            <p>A previous new-edition save may have completed, but its reply was not confirmed. Creating another could produce a duplicate. The previous request could still finish after you check.</p>
+            <p className="mt-2">This warning lasts only while this page remains open. Reloading or closing it removes the warning; your unsaved edition settings are not saved.</p>
+            <label className="mt-3 flex items-start gap-2"><input type="checkbox" checked={acceptDuplicateRisk} onChange={event => setAcceptDuplicateRisk(event.target.checked)} />I understand that another create can duplicate the earlier request.</label>
+            <button type="button" disabled={!editable || Boolean(busy) || verifyingEditionRisk || !acceptDuplicateRisk} onClick={() => void acknowledgeEditionRisk()} className="mt-3 rounded-lg border border-amber-200/40 px-3 py-2 underline disabled:opacity-40">Allow another create despite duplicate risk</button>
+          </div>}
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-white/65">Format<select value={form.kind} onChange={(event) => update("kind", event.target.value as Kind)} disabled={Boolean(activeId)} className={fieldClass}><option value="ebook">EPUB ebook</option><option value="print">Print PDF</option><option value="audiobook">AI-narrated audiobook</option></select></label>
             <label className="text-sm text-white/65">Language<input value={form.language} onChange={(event) => update("language", event.target.value)} maxLength={35} className={fieldClass} /></label>
