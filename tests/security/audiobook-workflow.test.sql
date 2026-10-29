@@ -176,8 +176,7 @@ begin
   select * into v_job from public.queue_audiobook_google_play_export(
     'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-paid-1');
   assert v_job.status='queued' and v_job.progress_total=1 and v_job.progress_chapters=0;
-  assert v_job.snapshot_json->>'title'='Audio Book' and jsonb_array_length(v_job.snapshot_json->'chapters')=1;
-  assert v_job.snapshot_json::text not like '%Narrate this saved chapter%', 'export queue leaked manuscript text';
+  assert v_job.snapshot_json is null and v_job.idempotency_key is null and v_job.identifier is null and v_job.lease_token is null, 'queue must redact internal fields';
   assert (select id from public.queue_audiobook_google_play_export(
     'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-paid-1'))=v_job.id,
     'export idempotency replay created a duplicate job';
@@ -197,7 +196,9 @@ begin
     raise exception 'ISBN checksum validation failed';
   exception when invalid_parameter_value then null;
   end;
-  assert has_table_privilege('authenticated','public.audiobook_google_play_export_jobs','select');
+  assert not has_table_privilege('authenticated','public.audiobook_google_play_export_jobs','select');
+  assert has_column_privilege('authenticated','public.audiobook_google_play_export_jobs','id','select');
+  assert not has_column_privilege('authenticated','public.audiobook_google_play_export_jobs','snapshot_json','select');
   assert not has_table_privilege('authenticated','public.audiobook_google_play_export_jobs','update');
 end $$;
 set local request.jwt.claims='{"sub":"a6000000-0000-4000-8000-000000000012","role":"authenticated"}';
@@ -213,6 +214,8 @@ declare v_job public.audiobook_google_play_export_jobs; v_claim public.audiobook
 begin
   select * into v_claim from public.claim_audiobook_google_play_export(300);
   assert v_claim.status='running' and v_claim.lease_token is not null;
+  assert v_claim.snapshot_json->>'title'='Audio Book' and jsonb_array_length(v_claim.snapshot_json->'chapters')=1;
+  assert v_claim.snapshot_json::text not like '%Narrate this saved chapter%', 'export queue leaked manuscript text';
   assert public.progress_audiobook_google_play_export(v_claim.id,v_claim.lease_token,1);
   v_path:=format('workspaces/%s/audiobook-exports/%s/%s.zip',v_claim.workspace_id,v_claim.id,v_claim.lease_token);
   select * into v_done from public.complete_audiobook_google_play_export(
@@ -232,6 +235,7 @@ begin
   assert v_queued.status='cancelled';
   select * into v_running from public.queue_audiobook_google_play_export(
     'a6000000-0000-4000-8000-000000000007','9780306406157','a6000000-0000-4000-8000-000000000013','google-export-cancel-running');
+  perform set_config('test.audio_running_id',v_running.id::text,true);
 end $$;
 reset role;
 set local role service_role;
@@ -245,8 +249,8 @@ do $$
 declare v_job public.audiobook_google_play_export_jobs;
 begin
   select * into v_job from public.cancel_audiobook_google_play_export(
-    (select id from public.audiobook_google_play_export_jobs where idempotency_key='google-export-cancel-running'));
-  assert v_job.status='running' and v_job.cancellation_requested_at is not null;
+    current_setting('test.audio_running_id')::uuid);
+  assert v_job.status='running' and v_job.cancellation_requested_at is null, 'public cancel must redact internal timestamps';
 end $$;
 reset role;
 set local role service_role;
@@ -254,6 +258,7 @@ do $$
 declare v_id uuid; v_state jsonb; v_claim public.audiobook_google_play_export_jobs;
 begin
   select id into strict v_id from public.audiobook_google_play_export_jobs where idempotency_key='google-export-cancel-running';
+  assert (select cancellation_requested_at is not null from public.audiobook_google_play_export_jobs where id=v_id);
   v_state:=public.heartbeat_audiobook_google_play_export(v_id,'a6000000-0000-4000-8000-000000000014',300);
   assert v_state->>'leased'='true' and v_state->>'cancelled'='true';
   update public.audiobook_google_play_export_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=v_id;

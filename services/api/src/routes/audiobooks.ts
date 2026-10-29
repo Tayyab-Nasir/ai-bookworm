@@ -7,6 +7,47 @@ import { assembleChapterAudio, loadChapterAudio } from "../lib/audio-download.js
 import { googlePlayIdentifierSchemaSafe } from "../lib/google-play-audio-export.js";
 
 const BUCKET = "book-assets";
+// Only these columns are available to an authenticated workspace member.
+const EXPORT_COLUMNS = "id,workspace_id,book_id,edition_id,status,progress_chapters,progress_total,error_code,output_size_bytes,total_duration_seconds,created_at,completed_at";
+
+async function signVisibleExports(app: FastifyInstance, caller: SupabaseClient, jobs: Record<string, unknown>[]) {
+  const completed = jobs.filter(job => job.status === "succeeded");
+  const urls = new Map<string, string>();
+  if (!completed.length) return urls;
+  const ids = completed.map(job => job.id);
+  const validId = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
+  if (ids.some(id => !validId(id)) || new Set(ids).size !== ids.length || completed.some(job => !validId(job.workspace_id) || !validId(job.book_id) || !validId(job.edition_id)))
+    throw new AppError(503, "Could not verify audiobook export history.");
+  const expected = new Map(completed.map(job => [job.id as string, job]));
+  const sameScope = (row: Record<string, unknown>) => {
+    const item = expected.get(row.id as string);
+    return !!item && row.workspace_id === item.workspace_id && row.book_id === item.book_id && row.edition_id === item.edition_id && row.status === "succeeded";
+  };
+  const service = app.supabaseFactory();
+  const { data: privateRows, error: privateError } = await service.from("audiobook_google_play_export_jobs")
+    .select("id,workspace_id,book_id,edition_id,status,output_storage_path,identifier").in("id", ids as string[]);
+  if (privateError || !Array.isArray(privateRows) || privateRows.length !== completed.length
+    || new Set(privateRows.map(row => row.id)).size !== completed.length || privateRows.some(row => !sameScope(row)))
+    throw new AppError(503, "Could not verify private audiobook exports.");
+  const authorizeAgain = async () => {
+    const { data, error } = await caller.from("audiobook_google_play_export_jobs").select("id,workspace_id,book_id,edition_id,status").in("id", ids as string[]);
+    if (error || !Array.isArray(data) || data.length !== completed.length || new Set(data.map(row => row.id)).size !== completed.length || data.some(row => !sameScope(row)))
+      throw new AppError(503, "Audiobook export access changed. Refresh history before downloading.");
+  };
+  await authorizeAgain();
+  await Promise.all(privateRows.map(async row => {
+    const prefix = `workspaces/${row.workspace_id}/audiobook-exports/${row.id}/`;
+    const path = row.output_storage_path;
+    if (typeof row.identifier !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(row.identifier)
+      || typeof path !== "string" || !path.startsWith(prefix) || !path.endsWith(".zip") || !validId(path.slice(prefix.length, -4)))
+      throw new AppError(503, "Could not verify the private audiobook archive.");
+    const signed = await service.storage.from(BUCKET).createSignedUrl(path, 300, { download: `${row.identifier}.zip` });
+    if (signed.error || !signed.data?.signedUrl) throw new AppError(503, "Could not prepare a private export download.");
+    urls.set(row.id, signed.data.signedUrl);
+  }));
+  await authorizeAgain();
+  return urls;
+}
 const signoffSchema = z.object({ reportId: z.string().uuid(), listenedToExactAudio: z.literal(true) }).strict();
 const googlePlayExportSchema = z.object({
   identifier: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u)
@@ -101,19 +142,11 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
     const { editionId } = req.params as { editionId: string };
     if (!z.string().uuid().safeParse(editionId).success) throw new AppError(404, "Audiobook edition not found.");
     const userClient = app.supabaseFactory(req.userToken);
-    const { data: jobs, error } = await userClient.from("audiobook_google_play_export_jobs").select("*")
+    const { data: jobs, error } = await userClient.from("audiobook_google_play_export_jobs").select(EXPORT_COLUMNS)
       .eq("edition_id", editionId).order("created_at", { ascending: false }).limit(20);
-    if (error) throw new AppError(503, "Could not load audiobook export history.");
-    const service = (jobs ?? []).some((job) => job.status === "succeeded") ? app.supabaseFactory() : null;
-    const result = await Promise.all((jobs ?? []).map(async (job) => {
-      let downloadUrl: string | null = null;
-      if (service && job.status === "succeeded" && typeof job.output_storage_path === "string") {
-        const signed = await service.storage.from(BUCKET).createSignedUrl(job.output_storage_path, 300, { download: `${job.identifier}.zip` });
-        if (signed.error || !signed.data?.signedUrl) throw new AppError(503, "Could not prepare a private export download.");
-        downloadUrl = signed.data.signedUrl;
-      }
-      return publicExportJob(job, downloadUrl);
-    }));
+    if (error || !Array.isArray(jobs)) throw new AppError(503, "Could not load audiobook export history.");
+    const urls = await signVisibleExports(app, userClient, jobs);
+    const result = jobs.map(job => publicExportJob(job, urls.get(job.id) ?? null));
     reply.header("cache-control", "private, no-store");
     return { jobs: result };
   });
@@ -121,18 +154,12 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
     const { jobId } = req.params as { jobId: string };
     if (!z.string().uuid().safeParse(jobId).success) throw new AppError(404, "Audiobook export not found.");
     const userClient = app.supabaseFactory(req.userToken);
-    const { data: job, error } = await userClient.from("audiobook_google_play_export_jobs").select("*").eq("id", jobId).maybeSingle();
+    const { data: job, error } = await userClient.from("audiobook_google_play_export_jobs").select(EXPORT_COLUMNS).eq("id", jobId).maybeSingle();
     if (error) throw new AppError(503, "Could not refresh audiobook export progress.");
     if (!job) throw new AppError(404, "Audiobook export not found.");
-    let downloadUrl: string | null = null;
-    if (job.status === "succeeded" && typeof job.output_storage_path === "string") {
-      const service = app.supabaseFactory();
-      const signed = await service.storage.from(BUCKET).createSignedUrl(job.output_storage_path, 300, { download: `${job.identifier}.zip` });
-      if (signed.error || !signed.data?.signedUrl) throw new AppError(503, "Could not prepare the private export download.");
-      downloadUrl = signed.data.signedUrl;
-    }
+    const urls = await signVisibleExports(app, userClient, [job]);
     reply.header("cache-control", "private, no-store");
-    return { job: publicExportJob(job, downloadUrl) };
+    return { job: publicExportJob(job, urls.get(jobId) ?? null) };
   });
   app.post("/audiobook-google-play-exports/:jobId/cancel", async (req, reply) => {
     const { jobId } = req.params as { jobId: string };

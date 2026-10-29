@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 127 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 128 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -17,7 +17,7 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
 const guardedCustomerJobs = '20261024040000_customer_ai_jobs.sql';
-const targetEnd = '20261028110000_chapter_restore_ledger.sql';
+const targetEnd = '20261029120000_audiobook_export_column_privacy.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -135,7 +135,9 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 127, 'This reviewed rehearsal pins the 45 -> 127 target; review before extending');
+  assert.equal(names.length, 128, 'This reviewed rehearsal pins the 45 -> 128 target; review before extending');
+  assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
+  assert.equal(names[127], targetEnd);
   assert.equal(names[117], '20261028010000_customer_ai_ready_discovery.sql');
   assert.equal(names[118], '20261028020000_customer_ai_preparation_timestamp.sql');
   assert.equal(names[119], '20261028030000_customer_ai_reconciliation.sql');
@@ -187,7 +189,59 @@ try {
       await expectedCustomerGuard(migration, fixture, historical, 'public.deduct_job_credits(uuid,uuid,uuid,text,integer,uuid)',
         "v_request:=jsonb_build_object('userId',p_user_id", 'unexpected legacy deduction definition');
     }
+    let audioProbe = null;
+    if (migration.name === targetEnd) {
+      step = 'populated audio export before privacy upgrade';
+      const tenant = fixture.tenants[0], edition = randomUUID(), job = randomUUID(), runningJob = randomUUID(), succeededJob = randomUUID(), lease = randomUUID(), outputLease = randomUUID(), key = 'synthetic-upgrade-' + randomUUID(), runningKey = 'synthetic-running-' + randomUUID(), succeededKey = 'synthetic-succeeded-' + randomUUID();
+      const asset = tenant.assets[1].id;
+      await db.query("insert into public.editions(id,book_id,type,language,edition_metadata_json) values($1,$2,'audiobook','en','{\"kind\":\"audiobook\"}')", [edition, tenant.book]);
+      await db.query("insert into public.audiobook_google_play_export_jobs(id,workspace_id,book_id,edition_id,created_by,idempotency_key,identifier,cover_asset_id,snapshot_json,progress_total,status) values($1,$2,$3,$4,$5,$6,'SYNTHETIC',$7,'{\"chapters\":[{}]}',1,'cancelled')", [job, tenant.workspace, tenant.book, edition, tenant.user, key, asset]);
+      await db.query("insert into public.audiobook_google_play_export_jobs(id,workspace_id,book_id,edition_id,created_by,idempotency_key,identifier,cover_asset_id,snapshot_json,progress_total,status,attempts,lease_token,lease_expires_at) values($1,$2,$3,$4,$5,$6,'SYNTHETIC',$7,'{\"chapters\":[{}]}',1,'running',1,$8,clock_timestamp()+interval '10 minutes')", [runningJob, tenant.workspace, tenant.book, edition, tenant.user, runningKey, asset, lease]);
+      const outputPath = `workspaces/${tenant.workspace}/audiobook-exports/${succeededJob}/${outputLease}.zip`;
+      await db.query("insert into public.audiobook_google_play_export_jobs(id,workspace_id,book_id,edition_id,created_by,idempotency_key,identifier,cover_asset_id,snapshot_json,progress_total,progress_chapters,status,output_storage_path,output_sha256,output_size_bytes,total_duration_seconds,completed_at) values($1,$2,$3,$4,$5,$6,'SYNTHETIC',$7,'{\"chapters\":[{}]}',1,1,'succeeded',$8,repeat('a',64),100,300,clock_timestamp())", [succeededJob, tenant.workspace, tenant.book, edition, tenant.user, succeededKey, asset, outputPath]);
+      const before = (await db.query('select to_jsonb(j) as value from public.audiobook_google_play_export_jobs j where id=any($1::uuid[]) order by id',[[job,runningJob,succeededJob]])).rows.map(row=>row.value);
+      const allBefore = (await db.query('select to_jsonb(j) as value from public.audiobook_google_play_export_jobs j order by id')).rows.map(row=>row.value);
+      assert.equal(before.length, 3, 'All three synthetic audio statuses exist before migration');
+      const allCount = allBefore.length, allDigest = createHash('sha256').update(JSON.stringify(allBefore)).digest('hex');
+      assert.ok(allCount >= 3, 'Whole-table snapshot includes every synthetic audio job');
+      audioProbe = { tenant, edition, job, runningJob, succeededJob, lease, key, runningKey, succeededKey, asset, before, allCount, allDigest };
+    }
     await migrate(migration, 'upgrade');
+    if (audioProbe) {
+      step = 'populated audio export after privacy upgrade';
+      const { tenant, edition, job, runningJob, succeededJob, lease, key, runningKey, succeededKey, asset, before, allCount, allDigest } = audioProbe;
+      const after = (await db.query('select to_jsonb(j) as value from public.audiobook_google_play_export_jobs j where id=any($1::uuid[]) order by id',[[job,runningJob,succeededJob]])).rows.map(row=>row.value);
+      assert.deepEqual(after, before, 'Privacy upgrade preserves every stored field in cancelled, running and succeeded jobs');
+      const allAfter = (await db.query('select to_jsonb(j) as value from public.audiobook_google_play_export_jobs j order by id')).rows.map(row=>row.value);
+      assert.equal(allAfter.length, allCount, 'Privacy upgrade does not add or remove any audio export job');
+      assert.equal(createHash('sha256').update(JSON.stringify(allAfter)).digest('hex'), allDigest, 'Privacy upgrade preserves every field of every preexisting audio export job');
+      await db.exec('begin; set local role authenticated;');
+      try {
+        await db.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({sub:tenant.user,role:'authenticated'})]);
+        const reply = (await db.query('select to_jsonb(public.queue_audiobook_google_play_export($1,$2,$3,$4)) as value',[edition,'SYNTHETIC',asset,key])).rows[0].value;
+        assert.equal(reply.id, job); assert.equal(reply.status, 'cancelled');
+        const running = (await db.query('select to_jsonb(public.queue_audiobook_google_play_export($1,$2,$3,$4)) as value',[edition,'SYNTHETIC',asset,runningKey])).rows[0].value;
+        assert.equal(running.id, runningJob); assert.equal(running.status, 'running');
+        const succeeded = (await db.query('select to_jsonb(public.queue_audiobook_google_play_export($1,$2,$3,$4)) as value',[edition,'SYNTHETIC',asset,succeededKey])).rows[0].value;
+        assert.equal(succeeded.id, succeededJob); assert.equal(succeeded.status, 'succeeded');
+        for (const field of ['created_by','idempotency_key','identifier','snapshot_json','lease_token','output_storage_path']) { assert.equal(reply[field],null, 'Authenticated cancelled reply redacts '+field); assert.equal(running[field],null, 'Authenticated running reply redacts '+field); assert.equal(succeeded[field],null, 'Authenticated succeeded reply redacts '+field); }
+      } finally { await db.exec('rollback;'); }
+      await db.exec('begin; set local role authenticated;');
+      try {
+        await db.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({sub:fixture.viewer,role:'authenticated'})]);
+        assert.equal((await db.query('select count(id)::int as n from public.audiobook_google_play_export_jobs where id=$1',[job])).rows[0].n,1,'Workspace viewer sees safe job status');
+        await assert.rejects(db.query('select snapshot_json from public.audiobook_google_play_export_jobs where id=$1',[job]), error => error.code==='42501', 'Workspace viewer cannot read private snapshot');
+      } finally { await db.exec('rollback;'); }
+      await db.exec('begin; set local role service_role;');
+      try {
+        const worker = (await db.query('select id,lease_token,idempotency_key,snapshot_json from public.audiobook_google_play_export_jobs where id=$1',[runningJob])).rows[0];
+        assert.equal(worker.lease_token, lease); assert.equal(worker.idempotency_key,runningKey); assert.deepEqual(worker.snapshot_json,{chapters:[{}]});
+        assert.equal((await db.query("select has_function_privilege('service_role','public.progress_audiobook_google_play_export(uuid,uuid,integer)','execute') as allowed")).rows[0].allowed,true);
+      } finally { await db.exec('rollback;'); }
+      await db.query('delete from public.audiobook_google_play_export_jobs where id=any($1::uuid[])',[[job,runningJob,succeededJob]]);
+      await db.query('delete from public.editions where id=$1',[edition]);
+      console.log('PASS populated audiobook privacy upgrade: all export rows intact including cancelled/running/succeeded, owner replies redacted, viewer denied private columns and worker access retained');
+    }
     assert.deepEqual(await captureHistoricalState(db, fixture), historical, `Historical identities/content/versions/balances/ownership unchanged after ${migration.name}`);
   }
   step = 'upgraded historical authorization and grants';
