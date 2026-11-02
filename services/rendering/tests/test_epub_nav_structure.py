@@ -51,6 +51,7 @@ def test_navigation_rejects_false_or_invalid_table_of_contents(body):
 
 @pytest.mark.parametrize("data", [
     b'<html><body><nav epub:type="toc"',
+    b'<?xml version="1.0" encoding="x-bookworm-unknown"?><html xmlns="http://www.w3.org/1999/xhtml"/>',
     b'<!DOCTYPE html [<!ENTITY leak SYSTEM "file:///not-read">]><html xmlns="http://www.w3.org/1999/xhtml"><body>&leak;</body></html>',
     b'<!DOCTYPE html SYSTEM "https://example.invalid/not-fetched"><html xmlns="http://www.w3.org/1999/xhtml"/>',
     b'<html xmlns="urn:not-xhtml"><body/></html>',

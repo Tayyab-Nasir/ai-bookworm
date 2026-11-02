@@ -21,7 +21,7 @@ class _NavigationLimit(ValueError):
     pass
 
 
-def inspect_navigation(stream, size: int) -> str | None:
+def inspect_navigation(stream, size: int, *, toc_links: list[str] | None = None, alternate_base: list[bool] | None = None) -> str | None:
     """Return a stable finding code, or None when these checks pass."""
     if size < 0 or size > MAX_NAV_BYTES:
         return "NAV_LIMIT"
@@ -42,6 +42,9 @@ def inspect_navigation(stream, size: int) -> str | None:
             raise _NavigationLimit("limit")
         if not stack and name != _XHTML + "html":
             raise _InvalidNavigation("root")
+        if alternate_base is not None and ("http://www.w3.org/XML/1998/namespace|base" in attrs
+                or (name == _XHTML + "base" and "href" in attrs)):
+            alternate_base.append(True)
         frame: dict = {"kind": "other"}
         if name == _XHTML + "nav" and "toc" in attrs.get(_EPUB_TYPE, "").split():
             if _XHTML + "body" not in stack or toc_depth is not None:
@@ -66,6 +69,10 @@ def inspect_navigation(stream, size: int) -> str | None:
             elif name in (_XHTML + "a", _XHTML + "span") and kind == "li":
                 frame = {"kind": "label", "has_text": False, "has_embedded": False,
                          "title": attrs.get("title", ""), "href": attrs.get("href", "")}
+                if name == _XHTML + "a" and toc_links is not None:
+                    if len(toc_links) >= 10_000 or len(frame["href"]) > 4096:
+                        raise _NavigationLimit("links")
+                    toc_links.append(frame["href"])
                 label_depth = len(stack)
             elif label_depth is not None and name in _EMBEDDED:
                 frames[label_depth]["has_embedded"] = True
@@ -129,7 +136,7 @@ def inspect_navigation(stream, size: int) -> str | None:
         parser.Parse(b"", True)
     except _NavigationLimit:
         return "NAV_LIMIT"
-    except (_InvalidNavigation, expat.ExpatError):
+    except (_InvalidNavigation, expat.ExpatError, LookupError):
         return "NAV_XML"
     if toc_count != 1 or invalid_toc:
         return "NO_TOC"

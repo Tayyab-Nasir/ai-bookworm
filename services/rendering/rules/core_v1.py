@@ -8,13 +8,14 @@ import struct
 from editions import language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
 from nav_validation import inspect_navigation
+from epub_toc_targets import inspect_toc_targets
 from print_fonts import BASE_FONTS, EMBEDDED_FONTS, print_font_issues
 from rtl_text import cover_rtl_issues
 from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.13"
+VERSION = "core-1.0.14"
 
 
 def _find(code, msg, loc=""):
@@ -94,6 +95,24 @@ def check_nav(ctx):
     if issue == "NO_TOC":
         return _find(issue, "Navigation document must contain one table of contents with a nonempty ordered list", "OEBPS/nav.xhtml")
     return []
+
+
+def check_toc_targets(ctx):
+    archive = _open_epub(ctx)
+    if archive is None:
+        return []
+    with archive:
+        issue = inspect_toc_targets(archive)
+    messages = {
+        "NAV_TARGET_URL": "A table-of-contents link is not a safe local EPUB URL.",
+        "NAV_TARGET_MISSING": "A table-of-contents link does not resolve to a packaged top-level content document.",
+        "NAV_TARGET_FRAGMENT": "A table-of-contents fragment is missing or ambiguous in its target document.",
+        "NAV_TARGET_PACKAGE": "The EPUB package manifest or spine cannot be verified for navigation.",
+        "NAV_TARGET_XML": "A package or linked document is not well-formed XHTML or SVG.",
+        "NAV_TARGET_LIMIT": "Navigation target verification exceeds supported size or complexity limits.",
+        "NAV_TARGET_UNSUPPORTED": "A navigation target uses a base, URL or fragment form this check cannot verify; review with EPUBCheck.",
+    }
+    return _find(issue, messages[issue], "OEBPS/nav.xhtml") if issue else []
 
 
 def check_chapter_titles(ctx):
@@ -287,6 +306,7 @@ RULESET = RuleSet(name="core", version=VERSION, rules=[
     Rule("CORE-EPUB-002", "error", "epub_structure", "container + OPF present", check_container),
     Rule("CORE-NAV-001", "error", "navigation", "nav document + toc", check_nav),
     Rule("CORE-NAV-002", "error", "navigation", "chapter titles", check_chapter_titles),
+    Rule("CORE-NAV-003", "error", "navigation", "table of contents targets", check_toc_targets),
     Rule("CORE-META-001", "error", "metadata", "required metadata", check_required_metadata),
     Rule("CORE-IMG-001", "error", "images", "image size policy", check_image_sizes),
     Rule("CORE-IMG-002", "error", "images", "image asset references", check_image_refs),

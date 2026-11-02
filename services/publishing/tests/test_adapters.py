@@ -51,7 +51,7 @@ def test_all_channels_registered():
 
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
-    assert result["ruleVersion"] == "core-1.0.13+kdp-1.4.0"
+    assert result["ruleVersion"] == "core-1.0.14+kdp-1.4.0"
     ids = {f["rule_id"] for f in result["findings"]}
     assert not result["findings"] or all(
         rid.startswith(("CORE-", "KDP-")) for rid in ids)
@@ -88,7 +88,7 @@ def test_google_play_requires_embedded_front_cover_and_builds_single_title_hando
            "cover_bytes": cover.getvalue()}
     result = adapter.validate(ctx)
     assert result["errors"] == 0, result["findings"]
-    assert result["ruleVersion"] == "core-1.0.13+google-play-1.2.0"
+    assert result["ruleVersion"] == "core-1.0.14+google-play-1.2.0"
     exported = adapter.build_package(ctx, {"book.epub": epub})[0]
     assert exported.path == "googleplay-export.zip"
     with zipfile.ZipFile(BytesIO(exported.data)) as archive:
@@ -303,7 +303,7 @@ def test_apple_package_endpoint_checks_exact_saved_epub_once(monkeypatch, status
     if status == "valid":
         result = build_package(request)
         assert result["errors"] == 0
-        assert result["ruleVersion"] == "core-1.0.13+apple-1.2.0"
+        assert result["ruleVersion"] == "core-1.0.14+apple-1.2.0"
         with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
             assert archive.read("book.epub") == epub
     else:
@@ -461,7 +461,7 @@ def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
                              artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
     first = build_package(request)
     second = build_package(request)
-    assert first["ruleVersion"] == "core-1.0.13+kdp-1.4.0"
+    assert first["ruleVersion"] == "core-1.0.14+kdp-1.4.0"
     assert first["packages"][0]["sha256"] == second["packages"][0]["sha256"]
     package = base64.b64decode(first["packages"][0]["dataBase64"])
     with zipfile.ZipFile(BytesIO(package)) as archive:
@@ -495,6 +495,24 @@ def test_corrupt_saved_epub_is_rejected_by_package_http(publication_date_publish
         headers={"x-service-token": "publication-date-fixture"},
         json={"channel": channel, "editionConfig": EBOOK, "bookModel": VALID,
               "artifactsBase64": {"book.epub": base64.b64encode(damaged).decode()}})
+    assert response.status_code == 422, response.text
+    assert "packages" not in response.json()
+
+
+def test_kdp_package_rejects_missing_toc_destination(publication_date_publishing_client):
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(blob)) as source, zipfile.ZipFile(output, "w") as target:
+        for item in source.infolist():
+            data = source.read(item)
+            if item.filename == "OEBPS/nav.xhtml":
+                assert b'href="ch0000.xhtml"' in data
+                data = data.replace(b'href="ch0000.xhtml"', b'href="missing.xhtml"', 1)
+            target.writestr(item, data)
+    response = publication_date_publishing_client.post("/v1/publishing/package",
+        headers={"x-service-token": "publication-date-fixture"},
+        json={"channel": "kdp", "editionConfig": EBOOK, "bookModel": VALID,
+              "artifactsBase64": {"book.epub": base64.b64encode(output.getvalue()).decode()}})
     assert response.status_code == 422, response.text
     assert "packages" not in response.json()
 
