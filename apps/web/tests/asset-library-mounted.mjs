@@ -105,7 +105,7 @@ test("removing a library asset requires explicit confirmation", async () => {
   try {
     await page.evaluate(() => { window.api.deleteAsset = async asset => { window.calls.push({ operation: "delete", asset }); return { assetId: asset, deleted: true }; }; });
     const remove = page.getByRole("button", { name: "Remove My draft.pdf", exact: true });
-    page.once("dialog", dialog => { assert.match(dialog.message(), /Remove.*My draft\.pdf/); return dialog.dismiss(); });
+    page.once("dialog", dialog => { assert.match(dialog.message(), /Remove.*My draft\.pdf/); assert.match(dialog.message(), /Books that use this file may no longer display or export it/); assert.match(dialog.message(), /cannot currently be restored from the library/); return dialog.dismiss(); });
     await remove.click();
     assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "delete").length), 0);
     await expect(page.getByRole("button", { name: /^My draft\.pdf/ })).toBeVisible();

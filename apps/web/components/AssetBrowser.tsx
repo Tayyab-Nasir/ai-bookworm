@@ -94,7 +94,7 @@ export default function AssetBrowser({
   const remove = async (asset: Asset) => {
     if (!active || !permissions.manage || !onDelete || removalFlight.current || refreshRequiredAfter.current !== null) return;
     const beforeConfirm = removalEpoch.current;
-    if (!window.confirm(`Remove “${asset.name.replace(/[\u0000-\u001f\u007f]/g, " ")}” from this library? The file will no longer appear here.`)) return;
+    if (!window.confirm(`Remove “${asset.name.replace(/[\u0000-\u001f\u007f]/g, " ")}” from this library? Books that use this file may no longer display or export it. Removed files cannot currently be restored from the library.`)) return;
     if (beforeConfirm !== removalEpoch.current || !mounted.current || removalFlight.current) return;
     const currentScope = scopeEpoch.current;
     ++removalEpoch.current;
