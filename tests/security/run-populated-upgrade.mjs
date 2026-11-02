@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 130 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 131 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -19,7 +19,8 @@ const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
 const guardedCustomerJobs = '20261024040000_customer_ai_jobs.sql';
 const audioPrivacy = '20261029120000_audiobook_export_column_privacy.sql';
 const intakeGuard = '20261102160000_account_intake_guard.sql';
-const targetEnd = '20261102170000_data_rights_confirmation_rpc.sql';
+const confirmationRpc = '20261102170000_data_rights_confirmation_rpc.sql';
+const targetEnd = '20261103100000_asset_client_delete_guard.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -137,10 +138,11 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 130, 'This reviewed rehearsal pins the 45 -> 130 target; review before extending');
+  assert.equal(names.length, 131, 'This reviewed rehearsal pins the 45 -> 131 target; review before extending');
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
   assert.equal(names[127], audioPrivacy);
   assert.equal(names[128], intakeGuard);
+  assert.equal(names[129], confirmationRpc);
   assert.equal(names[117], '20261028010000_customer_ai_ready_discovery.sql');
   assert.equal(names[118], '20261028020000_customer_ai_preparation_timestamp.sql');
   assert.equal(names[119], '20261028030000_customer_ai_reconciliation.sql');
@@ -225,9 +227,13 @@ try {
       await db.exec(await readFile(join(root,'tests/security/account-intake-hardening.test.sql'),'utf8'));
       console.log('PASS populated intake guard: historical rows preserved and direct-role privilege assertions passed');
     }
-    if (migration.name === targetEnd) {
+    if (migration.name === confirmationRpc) {
       await db.exec(await readFile(join(root,'tests/security/data-rights-confirmation-rpc.test.sql'),'utf8'));
       console.log('PASS populated confirmation RPC: authenticated identity, exact confirmation, bounds, duplicates and actor isolation');
+    }
+    if (migration.name === targetEnd) {
+      await db.exec(await readFile(join(root,'tests/security/asset-client-delete-guard.test.sql'),'utf8'));
+      console.log('PASS populated asset deletion guard: client denial and service cleanup');
     }
     if (audioProbe) {
       step = 'populated audio export after privacy upgrade';
