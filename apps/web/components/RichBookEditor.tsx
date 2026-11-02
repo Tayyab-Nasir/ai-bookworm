@@ -14,7 +14,7 @@ export interface EditorValidationError { message: string; draftText: string; edi
 export interface EditorDocument { chapterId: string; version: number; nodes: BookNode[] }
 export interface RichBookEditorProps {
   document: EditorDocument; permissions: EditorPermission;
-  workspaceId: string;
+  workspaceId: string; actorId: string;
   onChange: (nodes: BookNode[]) => void;
   onValidationChange?: (error: EditorValidationError | null) => void;
 }
@@ -30,6 +30,7 @@ const CanonicalAttributes = Extension.create({
 
 const PreservedBlock = Node.create({
   name: "preservedBlock", group: "block", atom: true, selectable: true,
+  addOptions() { return { workspaceId: "", actorId: "" }; },
   addNodeView() { return ReactNodeViewRenderer(ManuscriptBlockView); },
   parseHTML() { return []; },
   renderHTML({ node }) {
@@ -53,7 +54,7 @@ const NumberedList = OrderedList.extend({
 
 export function chapterToPmDoc(chapter: ModelChapter) { return nodesToEditor(chapter.nodes); }
 
-export default function RichBookEditor({ document, permissions, workspaceId, onChange, onValidationChange }: RichBookEditorProps) {
+export default function RichBookEditor({ document, permissions, workspaceId, actorId, onChange, onValidationChange }: RichBookEditorProps) {
   const [artworkOpen, setArtworkOpen] = useState(false);
   const [numberingError, setNumberingError] = useState<string | null>(null);
   const [startInput, setStartInput] = useState("1");
@@ -63,7 +64,7 @@ export default function RichBookEditor({ document, permissions, workspaceId, onC
   const validationRef = useRef(onValidationChange);
   validationRef.current = onValidationChange;
   const editor = useEditor({
-    extensions: [StarterKit.configure({ codeBlock: false, horizontalRule: false, link: false, orderedList: false }), NumberedList, CanonicalAttributes, PreservedBlock],
+    extensions: [StarterKit.configure({ codeBlock: false, horizontalRule: false, link: false, orderedList: false }), NumberedList, CanonicalAttributes, PreservedBlock.configure({ workspaceId, actorId })],
     editable: permissions === "editor", immediatelyRender: false, content: nodesToEditor(document.nodes),
     editorProps: { attributes: { class: "min-h-[540px] break-words font-serif outline-none text-[17px] leading-8 text-[#29251f] [&_h1]:my-6 [&_h1]:text-3xl [&_h2]:my-5 [&_h2]:text-2xl [&_h3]:text-xl [&_p]:my-3 [&_blockquote]:border-l-2 [&_blockquote]:border-black/30 [&_blockquote]:pl-5 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:pl-6 [&_ol]:list-decimal [&_ol]:list-inside [&_ol>li]:my-3 [&_ol>li>p:first-child]:inline", "aria-label": "Manuscript editor", role: "textbox", "aria-multiline": "true" } },
     onUpdate({ editor: current, transaction: update }) {
@@ -135,6 +136,6 @@ export default function RichBookEditor({ document, permissions, workspaceId, onC
     {permissions === "viewer" && <p className="px-6 pt-4 text-sm text-white/50">Read-only access</p>}
     {numberingError && <p role="alert" className="px-6 py-3 text-sm text-red-200">{numberingError} These edits have not been sent to save.</p>}
     <div className="rounded-b-2xl bg-[#f5f1e8] px-5 py-8 sm:px-10 lg:px-12"><EditorContent editor={editor} /></div>
-    {artworkOpen && permissions === "editor" && <ArtworkPicker workspaceId={workspaceId} onInsert={insertBlock} onClose={() => { setArtworkOpen(false); editor?.commands.focus(); }} />}
+    {artworkOpen && permissions === "editor" && <ArtworkPicker workspaceId={workspaceId} actorId={actorId} onInsert={insertBlock} onClose={() => { setArtworkOpen(false); editor?.commands.focus(); }} />}
   </div>;
 }

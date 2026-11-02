@@ -8,6 +8,7 @@ import { logActivity } from "../lib/activity.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import { loadRenderImages, renderImagesFingerprint, assertRenderImagesCurrent } from "../lib/render-images.js";
+import { boundedServiceText } from "../lib/bounded-service-response.js";
 export { loadRenderImages } from "../lib/render-images.js";
 
 const BUCKET = "book-assets";
@@ -442,16 +443,11 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
         redirect: "error",
         signal: AbortSignal.timeout(150_000),
       });
-      const declaredLength = Number(response.headers.get("content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > 220_000_000) {
-        throw new AppError(503, "The renderer response exceeded the supported size.");
-      }
-      const responseText = await response.text();
+      const responseText = await boundedServiceText(response, 220_000_000, "The renderer response exceeded the supported size.");
       if (response.status === 422) {
         throw new AppError(422, "This saved edition needs a supported typography configuration. Run preflight to review the required changes.");
       }
       if (!response.ok) throw new AppError(503, "The renderer could not complete this edition.");
-      if (responseText.length > 220_000_000) throw new AppError(503, "The renderer response exceeded the supported size.");
       let raw: unknown;
       try { raw = JSON.parse(responseText); } catch { throw new AppError(503, "The renderer returned an invalid response."); }
       const renderedResult = renderResponseSchema.safeParse(raw);

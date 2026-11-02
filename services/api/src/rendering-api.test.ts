@@ -537,6 +537,25 @@ test("preflight rejects a validator response for another channel", async () => {
   await app.close();
 });
 
+test("preflight stops an oversized streamed validator response without saving findings", async () => {
+  const store = baseStore();
+  let cancelled = false;
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: async () => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) { controller.enqueue(new Uint8Array(1_000_001)); },
+    cancel() { cancelled = true; },
+  }), { headers: { "content-length": "1" } }) });
+  try {
+    const response = await app.inject({ method: "POST", url: "/v1/publishing/validate", headers: auth, payload: {
+      bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: "preflight-oversized-stream-1",
+    } });
+    assert.equal(response.statusCode, 503);
+    assert.match(response.body, /exceeded the supported size/);
+    assert.equal(cancelled, true);
+    assert.equal(store.tables.publishing_jobs[0].status, "failed");
+    assert.equal(store.tables.publishing_validations.length, 0);
+  } finally { await app.close(); }
+});
+
 test("editor creates a durable private retailer package and can list, read, and replay it", async () => {
   const store = baseStore();
   store.tables.editions[0].language = "fa";

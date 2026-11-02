@@ -571,7 +571,10 @@ for (const source of ["saved", "new"]) test(`actual Studio downloads ${source} c
     await expect(preview).toBeVisible();
     const previewUrl = await preview.getAttribute("src");
     assert(previewUrl.startsWith("data:image/png;base64,"));
-    assert.equal(new URL(await page.getByAltText("Rendered book cover", { exact: true }).getAttribute("src")).searchParams.has("download"), false);
+    const cover = page.getByAltText("Rendered book cover", { exact: true });
+    await expect(cover).toBeVisible();
+    assert.equal(await cover.getAttribute("referrerpolicy"), "no-referrer");
+    assert.equal(new URL(await cover.getAttribute("src")).searchParams.has("download"), false);
     await expect.poll(() => preview.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
     assert.equal(await page.locator('iframe[title="Rendered print edition preview"]').count(), 0);
     await preview.screenshot({ path: resolve(artifacts, `${source}-print-inline-preview.png`) });
@@ -586,6 +589,48 @@ for (const source of ["saved", "new"]) test(`actual Studio downloads ${source} c
     }
     assert.equal(downloads, 2);
     assert.deepEqual(await page.evaluate(() => window.requests.filter(request => request.method === "POST").map(request => request.action)), source === "new" ? ["render"] : []);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const failure of ["origin", "path", "token"]) test(`new render refuses a cover preview with invalid ${failure}`, async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(failure => { window.bookwormApi.renderEdition = async () => {
+      const result = structuredClone(window.results[window.ids.job]);
+      const cover = result.artifacts.find(artifact => artifact.role === "rendered_cover");
+      if (failure === "origin") cover.download.url = cover.download.url.replace("127.0.0.1", "localhost");
+      if (failure === "path") cover.download.url = cover.download.url.replace("cover.png", "other.png");
+      if (failure === "token") cover.download.url += "&token=other";
+      return result;
+    }; }, failure);
+    await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    await expect(page.getByText("Cover preview could not be verified.", { exact: false })).toBeVisible();
+    await expect(page.getByAltText("Rendered book cover", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(2);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a delayed cover session check cannot reveal a previous account's preview", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      const original = window.fetch; let checks = 0;
+      window.fetch = async (...args) => {
+        if (args[0] === "/api/auth/session" && window.delayCoverCheck) {
+          checks++;
+          if (checks === 2) await new Promise(resolve => { window.releaseCoverCheck = resolve; });
+          return Response.json({ user: { id: window.fixtureActor }, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}` });
+        }
+        return original(...args);
+      };
+      window.bookwormApi.renderEdition = async () => { window.delayCoverCheck = true; return structuredClone(window.results[window.ids.job]); };
+    });
+    await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    await page.waitForFunction(() => typeof window.releaseCoverCheck === "function");
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.dispatchEvent(new Event("focus")); window.releaseCoverCheck(); });
+    await expect(page.getByAltText("Rendered book cover", { exact: true })).toHaveCount(0);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

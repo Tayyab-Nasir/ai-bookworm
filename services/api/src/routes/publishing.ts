@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { renderImagesFingerprint, assertRenderImagesCurrent } from "../lib/render-images.js";
 import { AppError } from "../errors.js";
+import { boundedServiceText } from "../lib/bounded-service-response.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "../lib/authoring.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import type { SupabaseClient } from "../lib/supabase.js";
@@ -377,11 +378,8 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
         redirect: "error",
         signal: AbortSignal.timeout(150_000),
       });
-      const declaredLength = Number(response.headers.get("content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > 2_000_000) throw new AppError(503, "The validator response exceeded the supported size.");
-      const responseText = await response.text();
+      const responseText = await boundedServiceText(response, 2_000_000, "The validator response exceeded the supported size.");
       if (!response.ok) throw new AppError(503, "The edition validator could not complete this request.");
-      if (responseText.length > 2_000_000) throw new AppError(503, "The validator response exceeded the supported size.");
       let raw: unknown;
       try { raw = JSON.parse(responseText); } catch { throw new AppError(503, "The validator returned an invalid response."); }
       const validation = preflightResponseSchema.safeParse(raw);
@@ -523,12 +521,9 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
         body: JSON.stringify({ channel: body.channel, editionConfig: config, bookModel: model, artifactsBase64 }),
         redirect: "error", signal: AbortSignal.timeout(150_000),
       });
-      const declaredLength = Number(response.headers.get("content-length"));
-      if (Number.isFinite(declaredLength) && declaredLength > 280_000_000) throw new AppError(503, "The publishing package response exceeded the supported size.");
-      const responseText = await response.text();
+      const responseText = await boundedServiceText(response, 280_000_000, "The publishing package response exceeded the supported size.");
       if (response.status === 422) throw new AppError(422, "The saved render no longer passes channel validation. Run preflight and render again.");
       if (!response.ok) throw new AppError(503, "The publishing package service could not complete this request.");
-      if (responseText.length > 280_000_000) throw new AppError(503, "The publishing package response exceeded the supported size.");
       let raw: unknown;
       try { raw = JSON.parse(responseText); } catch { throw new AppError(503, "The publishing package service returned an invalid response."); }
       const packaged = packageServiceResponseSchema.safeParse(raw);

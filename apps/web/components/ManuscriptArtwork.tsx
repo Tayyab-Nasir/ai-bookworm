@@ -8,37 +8,74 @@ import type { Asset } from "@bookworm/types";
 import { apiClient } from "./api";
 import ManuscriptTable from "./ManuscriptTable";
 import { isArtworkPlaceable } from "../lib/approved-artwork";
+import { readArtifactSession } from "../lib/browser-session";
 
 const field = "mt-1 block min-h-11 w-full rounded-lg border border-black/20 bg-white px-3 py-2 text-sm text-black outline-none focus-visible:ring-2 focus-visible:ring-black";
 const action = "min-h-11 rounded-lg border border-black/20 px-3 py-2 text-sm text-black outline-none hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-black disabled:opacity-40";
 
-function usePrivateImage(assetId: string | null, versionNumber: number | null = null) {
+function verifiedPreview(result: { url: string; expiresIn: number }, workspaceId: string, assetId: string, versionNumber: number | null, storageOrigin: string) {
+  try {
+    if (typeof result?.url !== "string" || result.url.length > 8192 || result.url !== result.url.trim() || !Number.isSafeInteger(result.expiresIn) || result.expiresIn < 1 || result.expiresIn > 300) throw Error();
+    const url = new URL(result.url);
+    const path = decodeURIComponent(url.pathname);
+    const prefix = `/storage/v1/object/sign/book-assets/workspaces/${workspaceId}/assets/${assetId}/`;
+    const rest = path.startsWith(prefix) ? path.slice(prefix.length) : "";
+    const match = /^v([1-9]\d*)\/([a-zA-Z0-9._-]+)$/.exec(rest);
+    if (url.origin !== storageOrigin || url.username || url.password || url.hash || !match
+      || (versionNumber !== null && Number(match[1]) !== versionNumber)
+      || url.searchParams.getAll("token").length !== 1 || !url.searchParams.get("token")
+      || [...url.searchParams.keys()].some(key => key !== "token")) throw Error();
+    return url.href;
+  } catch { throw Error("The private artwork preview could not be verified."); }
+}
+
+function usePrivateImage(assetId: string | null, versionNumber: number | null, workspaceId: string, actorId: string) {
   const [attempt, setAttempt] = useState(0);
-  const key = assetId ? `${assetId}:${versionNumber ?? "current"}` : null;
+  const generation = useRef(0);
+  const key = assetId ? `${actorId}:${workspaceId}:${assetId}:${versionNumber ?? "current"}` : null;
   const [state, setState] = useState<{ key: string | null; url: string | null; error: string | null }>({ key: null, url: null, error: null });
   useEffect(() => {
     let cancelled = false;
+    const sequence = ++generation.current;
+    const current = () => !cancelled && sequence === generation.current;
     setState({ key, url: null, error: null });
-    if (assetId) void apiClient().getAssetDownloadUrl(assetId, versionNumber ?? undefined).then(({ url }) => {
-      if (!cancelled) setState({ key, url, error: null });
-    }).catch((reason) => {
-      if (!cancelled) setState({ key, url: null, error: reason instanceof Error ? reason.message : "Artwork preview unavailable." });
-    });
-    return () => { cancelled = true; };
-  }, [assetId, attempt, key, versionNumber]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (assetId && workspaceId && actorId) void (async () => {
+      const started = Date.now();
+      const { storageOrigin } = await readArtifactSession(actorId);
+      if (!current()) return;
+      const result = await apiClient().getAssetDownloadUrl(assetId, versionNumber ?? undefined);
+      if (!current()) return;
+      const verified = await readArtifactSession(actorId);
+      if (!current()) return;
+      if (verified.storageOrigin !== storageOrigin) throw Error("The private artwork preview could not be verified.");
+      const url = verifiedPreview(result, workspaceId, assetId, versionNumber, storageOrigin);
+      const remaining = started + result.expiresIn * 1000 - Date.now();
+      if (remaining <= 0) throw Error("The private artwork preview expired.");
+      if (current()) { setState({ key, url, error: null }); timer = setTimeout(() => { if (current()) setState({ key, url: null, error: "The private preview expired. Refresh to try again." }); }, remaining); }
+    })().catch((reason) => { if (current()) setState({ key, url: null, error: reason instanceof Error ? reason.message : "Artwork preview unavailable." }); });
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [assetId, attempt, key, versionNumber, workspaceId, actorId]);
+  useEffect(() => {
+    const refresh = () => { generation.current++; setState({ key, url: null, error: null }); setAttempt(value => value + 1); };
+    const visible = () => { if (document.visibilityState === "visible") refresh(); };
+    window.addEventListener("focus", refresh); document.addEventListener("visibilitychange", visible);
+    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", visible); };
+  }, [key]);
+  const renderedGeneration = generation.current;
   return {
     url: state.key === key ? state.url : null,
     error: state.key === key ? state.error : null,
-    fail: () => setState({ key, url: null, error: "The private preview expired or could not be loaded. Refresh to try again." }),
+    fail: () => { if (renderedGeneration === generation.current) setState(current => current.key === key && current.url === state.url ? { key, url: null, error: "The private preview expired or could not be loaded. Refresh to try again." } : current); },
     retry: () => setAttempt((value) => value + 1),
   };
 }
 
-export function ManuscriptBlockView({ node, editor, selected, updateAttributes, deleteNode }: NodeViewProps) {
+export function ManuscriptBlockView({ node, editor, extension, selected, updateAttributes, deleteNode }: NodeViewProps) {
   const original = node.attrs.canonical as BookNode | undefined;
   const assetId = original?.type === "image" && typeof original.assetId === "string" ? original.assetId : null;
   const versionNumber = typeof original?.assetVersionNumber === "number" ? original.assetVersionNumber : null;
-  const preview = usePrivateImage(assetId, versionNumber);
+  const preview = usePrivateImage(assetId, versionNumber, extension.options.workspaceId, extension.options.actorId);
   const editable = useEditorState({ editor, selector: ({ editor: current }) => current.isEditable });
   const [settings, setSettings] = useState(false);
   const id = useId();
@@ -90,7 +127,7 @@ export function ManuscriptBlockView({ node, editor, selected, updateAttributes, 
   </NodeViewWrapper>;
 }
 
-export function ArtworkPicker({ workspaceId, onInsert, onClose }: { workspaceId: string; onInsert: (node: BookNode) => void; onClose: () => void }) {
+export function ArtworkPicker({ workspaceId, actorId, onInsert, onClose }: { workspaceId: string; actorId: string; onInsert: (node: BookNode) => void; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [loading, setLoading] = useState(true);
@@ -104,30 +141,61 @@ export function ArtworkPicker({ workspaceId, onInsert, onClose }: { workspaceId:
   const [focalX, setFocalX] = useState(50);
   const [focalY, setFocalY] = useState(50);
   const selectedAsset = assets.find((asset) => asset.id === selected);
-  const preview = usePrivateImage(selected || null, selectedAsset?.current_version_number ?? null);
+  const preview = usePrivateImage(selected || null, selectedAsset?.current_version_number ?? null, workspaceId, actorId);
   const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [inserting, setInserting] = useState(false);
+  const insertFlight = useRef(false), mounted = useRef(true), insertEpoch = useRef(0);
+  const selection = { selected, version: selectedAsset?.current_version_number, preview: preview.url, loadedUrl, alt, decorative, caption, width, printPlacement, focalX, focalY };
+  const latestSelection = useRef(selection); latestSelection.current = selection;
   const titleId = useId();
-  useEffect(() => { const element = dialog.current; element?.showModal(); return () => element?.close(); }, []);
+  useEffect(() => { mounted.current = true; const element = dialog.current; element?.showModal(); return () => { mounted.current = false; element?.close(); }; }, []);
+  useEffect(() => {
+    const invalidate = () => { insertEpoch.current++; setLoading(true); setSelected(""); setRefresh(value => value + 1); };
+    const visible = () => { if (document.visibilityState === "visible") invalidate(); };
+    window.addEventListener("focus", invalidate); document.addEventListener("visibilitychange", visible);
+    return () => { insertEpoch.current++; window.removeEventListener("focus", invalidate); document.removeEventListener("visibilitychange", visible); };
+  }, []);
   useEffect(() => {
     let cancelled = false;
+    const epoch = insertEpoch.current;
+    const current = () => !cancelled && epoch === insertEpoch.current;
     setLoading(true); setError(null); setSelected("");
-    void apiClient().listAssets(workspaceId).then(({ assets: rows }) => {
-      if (!cancelled) setAssets(rows.filter(isArtworkPlaceable));
-    }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not load artwork."); })
-      .finally(() => { if (!cancelled) setLoading(false); });
+    void (async () => {
+      await readArtifactSession(actorId);
+      if (!current()) return;
+      const { assets: rows } = await apiClient().listAssets(workspaceId, undefined, actorId);
+      if (!current()) return;
+      await readArtifactSession(actorId);
+      if (!current()) return;
+      if (rows.some(asset => asset.workspace_id !== workspaceId)) throw Error("The artwork list does not match this workspace.");
+      setAssets(rows.filter(isArtworkPlaceable));
+    })().catch((reason) => { if (current()) setError(reason instanceof Error ? reason.message : "Could not load artwork."); })
+      .finally(() => { if (current()) setLoading(false); });
     return () => { cancelled = true; };
-  }, [workspaceId, refresh]);
+  }, [workspaceId, actorId, refresh]);
 
   return <dialog ref={dialog} aria-labelledby={titleId} onCancel={onClose} className="fixed inset-0 m-auto max-h-[90dvh] w-[min(92vw,780px)] overflow-y-auto rounded-2xl bg-[#f5f1e8] p-5 text-black shadow-2xl backdrop:bg-black/75 sm:p-8">
     <div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-black/50">Manuscript / artwork</p><h2 id={titleId} className="mt-2 font-serif text-3xl">Give this page a picture.</h2></div><button type="button" className={action} onClick={onClose}>Close</button></div>
     <p className="mt-3 text-sm leading-6 text-black/65">Choose a private image from this workspace. Upload or generate artwork in Assets first. Only files cleared for use can be placed.</p>
     {loading ? <p className="py-10 text-sm" role="status">Loading workspace artwork…</p> : error ? <div role="alert" className="py-6"><p>{error}</p><button type="button" className={`${action} mt-3`} onClick={() => setRefresh((v) => v + 1)}>Retry artwork list</button></div> : !assets.length ? <div className="my-6 rounded-xl border border-dashed border-black/25 p-6 text-sm leading-6">No usable images in this workspace yet. Save your chapter before opening Assets to upload or generate an illustration.<button type="button" className={`${action} mt-3 block`} onClick={() => setRefresh((v) => v + 1)}>Refresh library</button></div> : <form className="mt-6 grid gap-6 sm:grid-cols-2" onSubmit={(event) => {
       event.preventDefault();
-      if (!selected || !preview.url || loadedUrl !== preview.url || (!decorative && !alt.trim())) return;
-      if (!selectedAsset?.current_version_number) return;
-      onInsert({ id: crypto.randomUUID(), type: "image", assetId: selected, assetVersionNumber: selectedAsset.current_version_number,
-        altText: decorative ? "" : alt.trim(), caption: caption.trim(), attributes: { widthPercent: width, decorative, printPlacement, printFocalX: focalX, printFocalY: focalY } });
+      if (insertFlight.current || !selected || !preview.url || loadedUrl !== preview.url || (!decorative && !alt.trim()) || !selectedAsset?.current_version_number) return;
+      const original = selection, epoch = insertEpoch.current; insertFlight.current = true; setInserting(true);
+      void (async () => {
+        await readArtifactSession(actorId);
+        if (!mounted.current || epoch !== insertEpoch.current) return;
+        const { assets: fresh } = await apiClient().listAssets(workspaceId, undefined, actorId);
+        await readArtifactSession(actorId);
+        const current = latestSelection.current;
+        if (!mounted.current || epoch !== insertEpoch.current || Object.keys(original).some(key => original[key as keyof typeof original] !== current[key as keyof typeof current])) return;
+        const same = fresh.filter(asset => asset.workspace_id === workspaceId && asset.id === selected);
+        if (same.length !== 1 || !isArtworkPlaceable(same[0]) || same[0].current_version_number !== selectedAsset.current_version_number
+          || same[0].checksum !== selectedAsset.checksum || same[0].storage_path !== selectedAsset.storage_path) throw Error("This image changed or is no longer available. Refresh the artwork list.");
+        onInsert({ id: crypto.randomUUID(), type: "image", assetId: selected, assetVersionNumber: selectedAsset.current_version_number!,
+          altText: decorative ? "" : alt.trim(), caption: caption.trim(), attributes: { widthPercent: width, decorative, printPlacement, printFocalX: focalX, printFocalY: focalY } });
+      })().catch((reason) => { if (mounted.current && epoch === insertEpoch.current) setError(reason instanceof Error ? reason.message : "Your account could not be verified. Reopen the artwork picker and try again."); })
+        .finally(() => { insertFlight.current = false; if (mounted.current) setInserting(false); });
     }}>
       <div className="space-y-4">
         <label className="block text-xs text-black/70">Workspace image<select aria-label="Workspace image" autoFocus required className={field} value={selected} onChange={(event) => { setSelected(event.target.value); setLoadedUrl(null); }}><option value="">Choose artwork…</option>{assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
@@ -141,7 +209,7 @@ export function ArtworkPicker({ workspaceId, onInsert, onClose }: { workspaceId:
         {preview.url ? <img src={preview.url} alt={decorative ? "" : alt} onLoad={() => setLoadedUrl(preview.url)} onError={preview.fail} referrerPolicy="no-referrer" className="max-h-80 max-w-full object-contain" /> : <p role="status" className="text-center text-sm text-black/60">{preview.error ?? (selected ? "Checking private image access…" : "Your illustration will appear here.")}</p>}
         {preview.error && <button type="button" className={`${action} mt-3`} onClick={preview.retry}>Refresh preview</button>}
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-black/15 pt-4 sm:col-span-2"><p className="text-xs text-black/60">Inserted at your cursor. Save the chapter to keep it.</p><button type="submit" disabled={!selected || !preview.url || loadedUrl !== preview.url || (!decorative && !alt.trim())} className="min-h-11 rounded-full bg-black px-5 py-2 text-sm font-medium text-white disabled:opacity-40">Insert illustration</button></div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-black/15 pt-4 sm:col-span-2"><p className="text-xs text-black/60">Inserted at your cursor. Save the chapter to keep it.</p><button type="submit" disabled={inserting || !selected || !preview.url || loadedUrl !== preview.url || (!decorative && !alt.trim())} className="min-h-11 rounded-full bg-black px-5 py-2 text-sm font-medium text-white disabled:opacity-40">{inserting ? "Checking account…" : "Insert illustration"}</button></div>
     </form>}
   </dialog>;
 }
