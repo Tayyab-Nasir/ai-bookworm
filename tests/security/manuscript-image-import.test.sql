@@ -52,6 +52,7 @@ begin
    assert false, 'pending source imported';
  exception when invalid_parameter_value then null; end;
  result := public.complete_manuscript_image_import(actor,book,source,repeat('a',64),chapters,images,'{"warnings":[]}');
+ assert (select r.result from public.book_import_receipts r where r.book_id=book and r.source_asset_id=source and r.source_checksum=repeat('a',64))=result, 'image completion response differs from durable receipt';
  assert jsonb_array_length(result->'chapters')=1, 'chapter missing';
  assert (select scan_status from public.asset_versions where asset_id=image)='clean', 'user image mislabeled trusted_generated';
  assert (select scan_scanner from public.asset_versions where asset_id=image)='fixture-scanner', 'scanner audit missing';

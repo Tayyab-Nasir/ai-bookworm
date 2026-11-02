@@ -74,3 +74,18 @@ test("empty queue is idle", async () => {
   const sb = { rpc: async () => ({ data: [], error: null }) };
   assert.deepEqual(await runOneDocumentJob(sb as never), { status: "idle" });
 });
+
+test("a post-commit lease cancellation does not fail the already succeeded import", async () => {
+  const f = fixture({ recovered: "succeeded" });
+  const client = f.sb as unknown as { rpc: (name: string, args: Record<string, unknown>) => Promise<unknown> };
+  const originalRpc = client.rpc.bind(client);
+  client.rpc = async (name: string, args: Record<string, unknown>) => name === "renew_manuscript_import_lease"
+    ? { data: false, error: null } : originalRpc(name, args);
+  const result = await runOneDocumentJob(f.sb, { leaseSeconds: 0.03, execute: async input => {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(input.signal?.aborted, true);
+    return { chapters: [], assetIds: [], sourceAssetId: job.source_asset_id, report: { warnings: [], chapterCount: 0, imageCount: 0 } } as never;
+  } });
+  assert.deepEqual(result, { status: "succeeded", jobId: job.id });
+  assert.ok(!f.calls.some(call => call.name === "fail_manuscript_import"));
+});

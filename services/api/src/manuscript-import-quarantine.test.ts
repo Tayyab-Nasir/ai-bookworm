@@ -46,6 +46,11 @@ interface FixtureOptions {
   embeddedAssets?: Array<Record<string, unknown>>;
   receipt?: unknown;
   receiptError?: boolean;
+  afterCommitRole?: string | null;
+  moveBookAfterCommit?: boolean;
+  revokeDuringReceipt?: boolean;
+  hideCallerReceipt?: boolean;
+  revokeDuringCallerReceipt?: boolean;
 }
 
 function parserDocument(nodes: Array<Record<string, unknown>> = [{ id: "paragraph-1", type: "paragraph", text: "Imported chapter text." }]) {
@@ -125,7 +130,10 @@ async function fixture(options: FixtureOptions = {}) {
           return builder;
         };
       }
-      builder.maybeSingle = async () => ({ ...result, data: Array.isArray(result.data) ? result.data[0] ?? null : result.data });
+      builder.maybeSingle = async () => {
+        if (table === "book_import_receipts" && options.revokeDuringReceipt && result.data) rows.workspace_members.data = null;
+        return { ...result, data: Array.isArray(result.data) ? result.data[0] ?? null : result.data };
+      };
       builder.single = async () => ({ ...result, data: Array.isArray(result.data) ? result.data[0] ?? null : result.data });
       builder.then = (resolve: (value: unknown) => unknown) => resolve(result);
       return builder;
@@ -140,10 +148,14 @@ async function fixture(options: FixtureOptions = {}) {
     rpc: async (name: string, args: Record<string, unknown>) => {
       rpcCalls.push({ name, args });
       if (["enqueue_manuscript_import", "retry_manuscript_import"].includes(name)) return { data: (rows.manuscript_import_jobs.data as unknown[])[0], error: null };
-      if (name === "complete_manuscript_import") return { data: {
-        chapters: [{ id: CHAPTER_ID, title: "Opening" }], sourceAssetId: ASSET_ID,
-        assetIds: (args.p_images as Array<{ id: string }>).map((image) => image.id), report: args.p_report,
-      }, error: null };
+      if (name === "complete_manuscript_import") {
+        const result = { chapters: [{ id: CHAPTER_ID, title: "Opening" }], sourceAssetId: ASSET_ID,
+          assetIds: (args.p_images as Array<{ id: string }>).map((image) => image.id), report: args.p_report };
+        rows.book_import_receipts.data = { source_checksum: SOURCE_CHECKSUM, result };
+        if (options.afterCommitRole !== undefined) rows.workspace_members.data = options.afterCommitRole === null ? null : { role: options.afterCommitRole };
+        if (options.moveBookAfterCommit) rows.books.data = { ...(rows.books.data as Record<string, unknown>), workspace_id: USER_ID };
+        return { data: result, error: null };
+      }
       return name === "create_book_chapters"
         ? { data: [{ id: CHAPTER_ID, title: "Opening" }], error: null }
         : { data: null, error: null };
@@ -159,7 +171,16 @@ async function fixture(options: FixtureOptions = {}) {
     });
   }) as typeof fetch;
 
-  const app = await buildApp(() => supabase as never, { assetScanner: { name: "fixture-scanner", scan: async ({ bytes }) => {
+  const caller = { ...supabase, from(table: string) {
+    const query = supabase.from(table) as Record<string, any>;
+    if (table === "book_import_receipts" && options.hideCallerReceipt) query.maybeSingle = async () => ({ data: null, error: null });
+    else if (table === "book_import_receipts" && options.revokeDuringCallerReceipt) {
+      const read = query.maybeSingle as () => Promise<{ data: unknown; error: unknown }>;
+      query.maybeSingle = async () => { const value = await read(); if (value.data) rows.workspace_members.data = null; return value; };
+    }
+    return query;
+  } };
+  const app = await buildApp((token) => (token ? caller : supabase) as never, { assetScanner: { name: "fixture-scanner", scan: async ({ bytes }) => {
     scannedImages.push(bytes); return { verdict: "clean", signature: "fixture-v1" };
   } } });
   return {
@@ -170,6 +191,7 @@ async function fixture(options: FixtureOptions = {}) {
     scannedImages,
     downloads,
     uploads,
+    setRole: (value: string | null) => { rows.workspace_members.data = value === null ? null : { role: value }; },
     close: async () => {
       globalThis.fetch = originalFetch;
       await app.close();
@@ -188,6 +210,7 @@ test("a clean current source version reaches the parser and persists imported ch
     });
 
     assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.headers["cache-control"], "private, no-store");
     assert.equal(ctx.parserCalls.length, 1);
     assert.equal(ctx.parserCalls[0]?.url, "http://document.internal/parse");
     assert.equal(new Headers(ctx.parserCalls[0]?.init?.headers).get("x-service-token"), "fixture-document-service-token");
@@ -475,5 +498,64 @@ test("failed import retry is scoped to the authorized book and audited through R
       && call.args[0] === "book_id" && call.args[1] === BOOK_ID));
     assert.equal((await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import-jobs/not-a-uuid/retry`, headers: AUTH,
       payload: {} })).statusCode, 422);
+  } finally { await ctx.close(); }
+});
+
+test("synchronous import never returns the committed receipt after membership revocation", async () => {
+  const ctx = await fixture({ afterCommitRole: null });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH, payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, 403);
+    assert.equal(ctx.rpcCalls.filter(call => call.name === "complete_manuscript_import").length, 1);
+    assert.doesNotMatch(response.body, /Imported chapter text|Saved opening|sourceAssetId/);
+    ctx.setRole("viewer");
+    const recovered = await ctx.app.inject({ method: "GET", url: `/v1/books/${BOOK_ID}/imports/${ASSET_ID}`, headers: AUTH });
+    assert.equal(recovered.statusCode, 200, recovered.body);
+    assert.equal(recovered.json().import.sourceAssetId, ASSET_ID);
+  } finally { await ctx.close(); }
+});
+
+test("receipt lookup rechecks membership before returning data", async () => {
+  const ctx = await fixture({ receipt: { source_checksum: SOURCE_CHECKSUM, result: savedImport }, revokeDuringReceipt: true });
+  try {
+    const response = await ctx.app.inject({ method: "GET", url: `/v1/books/${BOOK_ID}/imports/${ASSET_ID}`, headers: AUTH });
+    assert.equal(response.statusCode, 403);
+    assert.doesNotMatch(response.body, /Saved opening|sourceAssetId/);
+  } finally { await ctx.close(); }
+});
+test("a service-only receipt is never returned when caller RLS cannot read it", async () => {
+  const ctx = await fixture({ hideCallerReceipt: true });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH, payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, 503);
+    assert.equal(ctx.rpcCalls.filter(call => call.name === "complete_manuscript_import").length, 1);
+    assert.doesNotMatch(response.body, /Imported chapter text|sourceAssetId/);
+  } finally { await ctx.close(); }
+});
+test("synchronous import rechecks access after caller receipt arrives", async () => {
+  const ctx = await fixture({ revokeDuringCallerReceipt: true });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH, payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, 403);
+    assert.equal(ctx.rpcCalls.filter(call => call.name === "complete_manuscript_import").length, 1);
+    assert.doesNotMatch(response.body, /Imported chapter text|sourceAssetId/);
+  } finally { await ctx.close(); }
+});
+
+test("a downgraded member can read their saved import", async () => {
+  const ctx = await fixture({ afterCommitRole: "viewer" });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH, payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().sourceAssetId, ASSET_ID);
+  } finally { await ctx.close(); }
+});
+test("a book moved between workspaces does not return the original workspace receipt", async () => {
+  const ctx = await fixture({ moveBookAfterCommit: true });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH, payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, 403);
+    assert.equal(ctx.rpcCalls.filter(call => call.name === "complete_manuscript_import").length, 1);
+    assert.doesNotMatch(response.body, /Imported chapter text|sourceAssetId/);
   } finally { await ctx.close(); }
 });

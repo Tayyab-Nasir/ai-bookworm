@@ -40,9 +40,13 @@ begin
  assert claimed.id=first_job.id and claimed.status='running' and claimed.attempts=1 and claimed.lease_token is not null, 'job not claimed';
  assert public.renew_manuscript_import_lease(claimed.id,claimed.lease_token,30), 'lease did not renew';
  result := public.complete_leased_manuscript_import(claimed.id,claimed.lease_token,
-   '[{"title":"Opening","nodes":[{"id":"e8000000-0000-4000-8000-000000000001","type":"paragraph","text":"Queued text"}]}]',
-   '[]','{"warnings":[],"chapterCount":1,"imageCount":0}');
+   '[{"title":"Opening","nodes":[{"id":"e8000000-0000-4000-8000-000000000001","type":"paragraph","text":"Queued text"},{"id":"art","type":"image","assetId":"c8000000-0000-4000-8000-000000000099"}]}]',
+   '[{"id":"c8000000-0000-4000-8000-000000000099","name":"image.png","mimeType":"image/png","sizeBytes":50,"checksum":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","storagePath":"workspaces/c8000000-0000-4000-8000-000000000003/assets/c8000000-0000-4000-8000-000000000099/v1/imported.png","scanner":"fixture","signature":"v1"}]',
+   '{"warnings":[],"chapterCount":1,"imageCount":1}');
  assert result->>'sourceAssetId'=source::text and jsonb_array_length(result->'chapters')=1, 'receipt not committed';
+ assert result->'assetIds' = '["c8000000-0000-4000-8000-000000000099"]'::jsonb, 'leased receipt omitted the imported image';
+ assert (select scan_status='clean' from public.asset_versions where asset_id='c8000000-0000-4000-8000-000000000099'), 'leased import did not retain a clean image version';
+ assert (select r.result from public.book_import_receipts r where r.book_id=book and r.source_asset_id=source and r.source_checksum=claimed.source_checksum)=result, 'leased completion response differs from durable receipt';
  assert (select status from public.manuscript_import_jobs where id=claimed.id)='succeeded', 'job not completed';
  assert (select count(*) from public.chapters where book_id=book)=1, 'chapter missing';
  begin

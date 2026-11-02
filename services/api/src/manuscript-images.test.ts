@@ -17,10 +17,11 @@ function fixture(options: { verdict?: "clean" | "infected"; scannerDown?: boolea
   const stored = new Map<string, Buffer>();
   let committed: Record<string, any> | undefined;
   let commitName: string | undefined;
+  let savedReceipt: unknown = options.receipt ?? null;
   const result = (ids: string[]) => ({ chapters: [{ id: CHAPTER }], assetIds: ids, sourceAssetId: SOURCE, report: { warnings: [] } });
   const service = {
     from() { const query = { select: () => query, eq: () => query,
-      maybeSingle: async () => ({ data: options.receipt ?? null, error: null }) }; return query; },
+      maybeSingle: async () => ({ data: savedReceipt, error: null }) }; return query; },
     storage: { from() { return {
       upload: async (path: string, bytes: Buffer) => { calls.push("upload"); stored.set(path, bytes); return { error: null }; },
       download: async (path: string) => ({ data: new Blob([Uint8Array.from(options.storageMismatch ? Buffer.from("bad") : stored.get(path)!)]), error: null }),
@@ -29,8 +30,10 @@ function fixture(options: { verdict?: "clean" | "infected"; scannerDown?: boolea
     rpc: async (name: string, args: Record<string, any>) => {
       calls.push("commit"); committed = args; commitName = name;
       if (options.uncertain) throw new Error("lost reply");
-      return options.rpcCode ? { data: null, error: { code: options.rpcCode } }
-        : { data: result(options.raced ? [PARSER_IMAGE] : args.p_images.map((i: any) => i.id)), error: null };
+      if (options.rpcCode) return { data: null, error: { code: options.rpcCode } };
+      const saved = result(options.raced ? [PARSER_IMAGE] : args.p_images.map((i: any) => i.id));
+      savedReceipt = { source_checksum: "a".repeat(64), result: saved };
+      return { data: saved, error: null };
     },
   };
   const input = { service: service as never, scanner: { name: "fixture-scanner", scan: async () => {
@@ -95,13 +98,13 @@ test("bad checksums, base64 and unknown image references never reach a commit", 
   assert.equal(embeddedImagesSchema.safeParse([{ ...image, storagePath: "foreign" }]).success, false);
 });
 
-test("failed readback and definite transaction rejection clean only new temporary files", async () => {
-  for (const options of [{ storageMismatch: true }, { rpcCode: "22023" }]) {
-    const f = fixture(options);
-    await assert.rejects(importManuscriptImages(f.input));
-    assert.equal(f.stored.size, 0);
-    assert.equal(f.calls.at(-1), "cleanup");
-  }
+test("pre-dispatch readback failure cleans new temporary files; a dispatched refusal retains them", async () => {
+  const before = fixture({ storageMismatch: true });
+  await assert.rejects(importManuscriptImages(before.input));
+  assert.equal(before.stored.size, 0); assert.equal(before.calls.at(-1), "cleanup");
+  const after = fixture({ rpcCode: "22023" });
+  await assert.rejects(importManuscriptImages(after.input));
+  assert.equal(after.stored.size, 1); assert.ok(!after.calls.includes("cleanup"));
 });
 
 test("lost commit reply retains potentially referenced files; replay skips scan and upload", async () => {
@@ -114,10 +117,10 @@ test("lost commit reply retains potentially referenced files; replay skips scan 
   assert.deepEqual(replay.calls, []);
 });
 
-test("a concurrent winner's receipt retains its assets and removes this request's unused files", async () => {
+test("a concurrent winner's receipt leaves this request's uploads for reconciliation", async () => {
   const f = fixture({ raced: true });
   assert.deepEqual((await importManuscriptImages(f.input)).assetIds, [PARSER_IMAGE]);
-  assert.equal(f.stored.size, 0);
+  assert.equal(f.stored.size, 1);
 });
 
 test("parser response boundary rejects oversized declarations and malformed JSON", async () => {

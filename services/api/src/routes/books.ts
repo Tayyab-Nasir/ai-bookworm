@@ -119,9 +119,12 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
     const params = z.object({ bookId: z.string().uuid(), assetId: z.string().uuid() }).safeParse(req.params);
     if (!params.success) throw new AppError(422, "Valid book and source asset IDs required");
     const sb = app.supabaseFactory(req.userToken);
-    await loadBook(sb, params.data.bookId, req.userId);
+    const initial = await loadBook(sb, params.data.bookId, req.userId);
+    const receipt = await readImportReceipt(sb, params.data.bookId, params.data.assetId);
+    const current = await loadBook(sb, params.data.bookId, req.userId);
+    if (current.book.workspace_id !== initial.book.workspace_id) throw new AppError(403, "Book access changed during receipt lookup.");
     reply.header("cache-control", "private, no-store");
-    return { import: await readImportReceipt(sb, params.data.bookId, params.data.assetId) };
+    return { import: receipt };
   });
 
   app.post("/books/:bookId/import", async (req, reply) => {
@@ -130,8 +133,17 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
     const body = z.object({ assetId: z.string().uuid() }).safeParse(req.body);
     if (!body.success) throw new AppError(422, "assetId required");
     const sb = app.supabaseFactory(req.userToken);
-    return executeManuscriptImport({ sb, service: app.supabaseFactory(),
+    const initial = await loadBook(sb, bookId, req.userId, true);
+    await executeManuscriptImport({ sb, service: app.supabaseFactory(),
       scanner: options.assetScanner ?? createHttpAssetScanner(), bookId, actorId: req.userId, assetId: body.data.assetId });
+    // Do not return the service-role result: access can change while the import runs.
+    const current = await loadBook(sb, bookId, req.userId);
+    if (current.book.workspace_id !== initial.book.workspace_id) throw new AppError(403, "Book access changed during import.");
+    const receipt = await readImportReceipt(sb, bookId, body.data.assetId);
+    const final = await loadBook(sb, bookId, req.userId);
+    if (final.book.workspace_id !== initial.book.workspace_id) throw new AppError(403, "Book access changed during import.");
+    if (!receipt) throw new AppError(503, "The saved import could not be verified. Check the original request later.");
+    return receipt;
   });
 
   app.get("/books", async (req) => {

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import type { BookNode } from "@bookworm/book-model";
 import type { SupabaseClient } from "./supabase.js";
@@ -140,16 +141,18 @@ export async function importManuscriptImages(input: {
       p_report: report.data,
     });
     if (error || !data) {
-      if (error && ["22023", "42501", "23505", "P0002", "40001"].includes(error.code)) mayHaveCommitted = false;
       throw new AppError(error?.code === "42501" ? 403 : error?.code === "23505" ? 409 : 503,
         "Import completion could not be confirmed. Your original is safe; retry to check the saved import.");
     }
-    // A concurrent request may have won; its receipt identifies the files to retain.
+    // A completion reply alone cannot prove which private objects are referenced.
+    // Keep every dispatched upload; later reconciliation can inspect orphans.
     const completed = resultSchema.safeParse(data);
     if (!completed.success) throw new AppError(503, "Import receipt could not be verified; private files were retained safely");
-    const retained = new Set<string>(completed.data.assetIds);
-    await cleanup(prepared.filter((image) => !retained.has(image.id)).map((image) => image.storagePath));
-    return completed.data;
+    const saved = await readImportReceipt(service, input.bookId, input.sourceAssetId, input.sourceChecksum);
+    if (!saved || !isDeepStrictEqual(saved, completed.data)) {
+      throw new AppError(503, "Import receipt could not be verified; private files were retained safely");
+    }
+    return saved;
   } catch (error) {
     if (!mayHaveCommitted) await cleanup(uploaded);
     throw error instanceof AppError ? error : new AppError(503, "Import completion is uncertain. The original and private image files were retained; retry to check the saved import.");
