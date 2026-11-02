@@ -100,6 +100,105 @@ async function openFile(page, name = /^My draft\.pdf/) {
   await expect(page.getByRole("status").filter({ hasText: "Loading file details" })).toHaveCount(0);
 }
 
+test("removing a library asset requires explicit confirmation", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => { window.api.deleteAsset = async asset => { window.calls.push({ operation: "delete", asset }); return { assetId: asset, deleted: true }; }; });
+    const remove = page.getByRole("button", { name: "Remove My draft.pdf", exact: true });
+    page.once("dialog", dialog => { assert.match(dialog.message(), /Remove.*My draft\.pdf/); return dialog.dismiss(); });
+    await remove.click();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "delete").length), 0);
+    await expect(page.getByRole("button", { name: /^My draft\.pdf/ })).toBeVisible();
+    page.once("dialog", dialog => dialog.accept());
+    await remove.click();
+    await expect.poll(() => page.evaluate(() => window.calls.filter(call => call.operation === "delete").length)).toBe(1);
+    assert.equal(await page.evaluate(() => window.calls.find(call => call.operation === "delete").asset), ASSET);
+  } finally { await page.close(); }
+});
+
+test("an unconfirmed removal reports a safe error and refresh clears it", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => { window.api.deleteAsset = async () => { throw new Error("synthetic private diagnostic"); }; });
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Remove My draft.pdf", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toBeVisible();
+    await expect(page.getByText("synthetic private diagnostic")).toHaveCount(0);
+    await page.getByRole("button", { name: "Refresh library", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toBeEnabled();
+  } finally { await page.close(); }
+});
+
+test("refresh cannot duplicate a pending removal or publish its stale failure", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => { window.api.deleteAsset = async () => { window.calls.push({ operation: "delete" }); return window.defer("delete"); }; });
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Remove My draft.pdf", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.calls.filter(call => call.operation === "delete").length)).toBe(1);
+    await page.getByRole("button", { name: "Refresh library", exact: true }).click();
+    const remove = page.getByRole("button", { name: "Remove My draft.pdf", exact: true });
+    await expect(remove).toBeDisabled();
+    await page.evaluate(() => window.gates.delete.reject(new Error("old failure")));
+    await expect(remove).toBeEnabled();
+    await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "delete").length), 1);
+  } finally { await page.close(); }
+});
+
+test("a late removal failure from one workspace cannot unlock or alter another", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => { let count = 0; window.api.deleteAsset = () => window.defer(`delete${++count}`); });
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Remove My draft.pdf", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Boolean(window.gates.delete1))).toBe(true);
+    await page.getByRole("combobox", { name: "Workspace", exact: true }).selectOption(B);
+    const remove = page.getByRole("button", { name: "Remove Other studio draft.pdf", exact: true });
+    await expect(remove).toBeEnabled();
+    page.once("dialog", dialog => dialog.accept());
+    await remove.click();
+    await expect.poll(() => page.evaluate(() => Boolean(window.gates.delete2))).toBe(true);
+    await page.evaluate(() => window.gates.delete1.reject(new Error("old workspace failure")));
+    await expect(remove).toBeDisabled();
+    await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
+    await page.evaluate(() => window.gates.delete2.resolve({ assetId: window.file(window.selected).id, deleted: true }));
+    await expect(remove).toBeEnabled();
+  } finally { await page.close(); }
+});
+
+test("permission revalidation hides a stale removal failure after edit access changes", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => { window.api.deleteAsset = () => window.defer("delete"); });
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Remove My draft.pdf", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Boolean(window.gates.delete))).toBe(true);
+    await page.evaluate(() => { window.api.getAssetAccess = async () => ({ canEdit: false }); window.dispatchEvent(new Event("focus")); });
+    await expect(page.getByText("Read-only access:", { exact: false })).toBeVisible();
+    await page.evaluate(() => window.gates.delete.reject(new Error("old permission failure")));
+    await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
+    await page.evaluate(() => { window.api.getAssetAccess = async () => ({ canEdit: true }); window.dispatchEvent(new Event("focus")); });
+    await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toBeEnabled();
+    await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
+test("an account switch cannot surface a prior actor's removal failure", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => { window.api.deleteAsset = () => window.defer("delete"); });
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Remove My draft.pdf", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Boolean(window.gates.delete))).toBe(true);
+    await page.evaluate(actor => { window.actor = actor; window.dispatchEvent(new Event("focus")); }, B);
+    await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toBeEnabled();
+    await page.evaluate(() => window.gates.delete.reject(new Error("old account failure")));
+    await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
 test("asset upload sends private bytes only to its verified Storage destination", async () => {
   const { page } = await fixture();
   try {

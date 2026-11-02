@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Asset, Folder } from "@bookworm/types";
 
 export interface AssetPermissions {
@@ -13,12 +13,14 @@ export interface AssetBrowserProps {
   folders: Folder[];
   assets: Asset[];
   permissions: AssetPermissions;
+  active?: boolean;
+  operationScope?: object;
   onMove: (assetId: string, folderId: string | null) => void;
   onOpen: (asset: Asset) => void;
   onUpload: (folderId: string | null) => void;
   onNewFolder?: (parentId: string | null, name: string) => void;
   onSeedTemplate?: () => void;
-  onDelete?: (assetId: string) => void;
+  onDelete?: (assetId: string) => void | Promise<void>;
   onRestore?: (assetId: string) => void;
 }
 
@@ -46,6 +48,8 @@ export default function AssetBrowser({
   folders,
   assets,
   permissions,
+  active = true,
+  operationScope,
   onMove,
   onOpen,
   onUpload,
@@ -57,6 +61,30 @@ export default function AssetBrowser({
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const removalEpoch = useRef(0);
+  const removalFlight = useRef(false);
+  const mounted = useRef(false);
+
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
+  useLayoutEffect(() => {
+    setRemoveError(null);
+    return () => { removalEpoch.current++; };
+  }, [assets, permissions.manage, active, operationScope]);
+
+  const remove = async (asset: Asset) => {
+    if (!active || !permissions.manage || !onDelete || removalFlight.current) return;
+    const beforeConfirm = removalEpoch.current;
+    if (!window.confirm(`Remove “${asset.name.replace(/[\u0000-\u001f\u007f]/g, " ")}” from this library? The file will no longer appear here.`)) return;
+    if (beforeConfirm !== removalEpoch.current || !mounted.current || removalFlight.current) return;
+    const current = ++removalEpoch.current;
+    removalFlight.current = true; setRemoving(asset.id); setRemoveError(null);
+    try { await onDelete(asset.id); }
+    catch { if (current === removalEpoch.current) setRemoveError("Removal could not be confirmed. Refresh the library to check before retrying."); }
+    finally { removalFlight.current = false; if (mounted.current) setRemoving(null); }
+  };
 
   const childrenOf = useMemo(() => {
     const m = new Map<string | null, Folder[]>();
@@ -194,6 +222,8 @@ export default function AssetBrowser({
           )}
         </div>
 
+        {removeError && <p role="alert" className="mb-4 rounded-lg border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-100">{removeError}</p>}
+
         {visibleAssets.length === 0 ? (
           <div className="text-center py-12">
             <div className="text-ink-400 mb-2" style={{ fontSize: "48px" }}>
@@ -244,8 +274,11 @@ export default function AssetBrowser({
                   <StatusBadge status={a.status} />
                   {permissions.manage && onDelete && (
                     <button
-                      onClick={() => onDelete(a.id)}
-                      title="Delete"
+                      type="button"
+                      onClick={() => void remove(a)}
+                      disabled={Boolean(removing)}
+                      aria-label={`Remove ${a.name}`}
+                      title="Remove from library"
                       style={{
                         all: "unset",
                         cursor: "pointer",

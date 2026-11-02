@@ -537,6 +537,8 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
           key={`asset-browser:${workspaceId}`}
           folders={folders}
           assets={assets}
+          active={active && verified}
+          operationScope={revision}
           permissions={{ edit: canEdit, approve: canEdit, manage: canEdit }}
           onMove={async (assetId, folderId) => {
             await mutateLibrary(() => api.updateAsset(assetId, { folderId }));
