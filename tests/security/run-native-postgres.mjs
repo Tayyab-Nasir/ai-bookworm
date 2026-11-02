@@ -13,6 +13,7 @@ import { customerAiNativeComposition } from './native-customer-ai-composition.mj
 import { customerAiCompletionRaces } from './native-customer-ai-completion.mjs';
 import { customerAiPreparationRaces } from './native-customer-ai-preparations.mjs';
 import { customerAiReconciliationRaces } from './native-customer-ai-reconciliation.mjs';
+import { customerAiClaimRaces } from './native-customer-ai-claim-races.mjs';
 import { customerAiReconciliationDiscoveryRaces } from './native-customer-ai-reconciliation-discovery.mjs';
 import { customerAiReceiptRecoveryRaces } from './native-customer-ai-receipt-recovery.mjs';
 import { customerAiMaintenanceJournalRaces } from './native-customer-ai-maintenance-journal.mjs';
@@ -625,6 +626,7 @@ try {
   await customerAiCompletionRaces({ sql, session, until, database });
   await customerAiPreparationRaces({ sql, session, until, database });
   await customerAiReconciliationRaces({ sql, session, until, database });
+  await customerAiClaimRaces({ sql, session, until, database });
   await customerAiReconciliationDiscoveryRaces({ sql, session, until, database });
   await customerAiReceiptRecoveryRaces({ sql, session, until, database });
   await customerAiMaintenanceJournalRaces({ sql, session, until, database });
