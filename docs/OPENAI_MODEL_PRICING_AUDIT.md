@@ -1,5 +1,29 @@
 # OpenAI model and pricing checkpoint — 2026-09-24
 
+## Current speech deprecation — checked 2026-11-03
+
+OpenAI has deprecated `gpt-4o-mini-tts` and scheduled its shutdown for
+2027-01-06. Its recommended replacement, `gpt-realtime-2.1-mini`, uses the
+Realtime API and is not supported by the `/v1/audio/speech` endpoint. See the
+[deprecation schedule](https://developers.openai.com/api/docs/deprecations) and
+[text-to-speech guide](https://developers.openai.com/api/docs/guides/text-to-speech).
+Do not substitute the Realtime model name into the legacy Speech API setting.
+
+The current source has a separate, quoted Realtime narration adapter and
+worker for `gpt-realtime-2.1-mini` and `gpt-realtime-2.1`; direct unquoted
+narration is retired. The legacy Speech API implementation and
+`OPENAI_TTS_MODEL` setting remain for historical compatibility and must not be
+treated as the production narration plan. Before activation, complete the
+provider, funding, cost and hosted acceptance described in
+[`NARRATION_TRANSPORT_CHECKPOINT.md`](NARRATION_TRANSPORT_CHECKPOINT.md).
+No provider request or account availability check was made in this review.
+
+Current official references continue to list
+[`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra)
+and [`gpt-image-2.5-sunburst`](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst).
+Model listings do not establish account access or approve commercial prices.
+The figures and other statements below are historical, as of 2026-09-24.
+
 This is a source-code and documentation review, **not** a live provider or
 billing acceptance test. Official sources consulted:
 
