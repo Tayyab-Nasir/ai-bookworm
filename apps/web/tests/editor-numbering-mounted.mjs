@@ -2495,3 +2495,76 @@ test("invalid editor transaction during AI Apply is retained for conflict review
     assert.equal(await page.getByRole('button', { name: 'Save chapter', exact: true }).isDisabled(), true);
   } finally { await page.close(); }
 });
+
+test("same-turn manuscript changes guard navigation and unload", async () => {
+  const page = await fixture(1280, true);
+  try {
+    const result = await page.evaluate(() => {
+      window.confirmations = [];
+      window.confirm = message => { window.confirmations.push(message); return false; };
+      document.querySelector('.ProseMirror').editor.commands.insertContent(' SAME-TURN-NAV');
+      const link = [...document.querySelectorAll('a')].find(a => a.textContent === 'Plan');
+      const allowed = link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+      const unload = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(unload);
+      return { allowed, warned: unload.defaultPrevented, confirmations: window.confirmations.length };
+    });
+    assert.deepEqual(result, { allowed: false, warned: true, confirmations: 1 });
+    assert.match(await page.locator('.ProseMirror').innerText(), /SAME-TURN-NAV/);
+  } finally { await page.close(); }
+});
+
+test("edits during navigation confirmation invalidate permission to leave", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.getByRole('textbox', { name: 'Manuscript editor' }).fill('Initial draft');
+    const allowed = await page.evaluate(() => {
+      window.confirm = () => { document.querySelector('.ProseMirror').editor.commands.insertContent(' DURING-NAV'); return true; };
+      return [...document.querySelectorAll('a')].find(a => a.textContent === 'Plan')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+    });
+    assert.equal(allowed, false);
+    assert.match(await page.locator('.ProseMirror').innerText(), /DURING-NAV/);
+  } finally { await page.close(); }
+});
+
+test("same-turn chapter-title change guards navigation and unload", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.getByRole('button', { name: 'Edit chapter title' }).click();
+    const result = await page.evaluate(() => {
+      window.confirm = () => false;
+      const input = document.querySelector('input[id^="chapter-title-"]');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'New title draft');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const allowed = [...document.querySelectorAll('a')].find(a => a.textContent === 'Plan')
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+      const unload = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(unload);
+      return { allowed, warned: unload.defaultPrevented };
+    });
+    assert.deepEqual(result, { allowed: false, warned: true });
+    assert.equal(await page.getByLabel('New chapter title').inputValue(), 'New title draft');
+  } finally { await page.close(); }
+});
+test('independent navigation warning at reorder dispatch', async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.guardEvidence = null;
+      window.bookwormApi.reorderChapters = async () => {
+        let confirmations = 0; window.confirm = () => { confirmations++; return false; };
+        const link = [...document.querySelectorAll('a')].find(a => a.textContent === 'Plan');
+        link.addEventListener('click', e => e.preventDefault(), { once: true });
+        link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+        const unload = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(unload);
+        window.guardEvidence = { confirmations, unload: unload.defaultPrevented };
+        return await new Promise(() => {});
+      };
+    });
+    await page.waitForTimeout(1000);
+    await page.locator('[aria-label="Move Second chapter up"]').evaluate(button => button.click());
+    await page.waitForFunction(() => window.guardEvidence !== null);
+    const evidence = await page.evaluate(() => window.guardEvidence);
+    console.log('NAV_GUARD_EVIDENCE', JSON.stringify(evidence));
+    assert.deepEqual(evidence, { confirmations: 1, unload: true });
+  } finally { await page.close(); }
+});

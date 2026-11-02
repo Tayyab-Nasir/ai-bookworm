@@ -39,7 +39,10 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   const [editorValidation, setEditorValidationState] = useState<EditorValidationError | null>(null);
   const latestValidation = useRef(editorValidation);
   const setEditorValidation = (value: EditorValidationError | null) => { latestValidation.current = value; setEditorValidationState(value); };
-  const [titleState, setTitleState] = useState<ChapterTitleEditorState>({ dirty: false, busy: false, pending: false });
+  const [titleState, setTitleStateValue] = useState<ChapterTitleEditorState>({ dirty: false, busy: false, pending: false });
+  const titleStateRef = useRef(titleState);
+  const titleRevision = useRef(0);
+  const setTitleState = (value: ChapterTitleEditorState) => { titleStateRef.current = value; titleRevision.current++; setTitleStateValue(value); };
   const titleBlocked = titleState.dirty || titleState.busy || titleState.pending;
   const hasUnsavedChanges = dirty || editorValidation !== null || titleState.dirty;
   const [saving, setSaving] = useState(false);
@@ -275,14 +278,27 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   }, [api, bookId, initialChapterId, initialAiJobId, initialDraftPlanItemId, bookLoadAttempt, loadChapter]);
 
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (hasUnsavedChanges || hasAnyChapterSetup || titleBlocked || manualSave || pendingRestore || pendingOrder || pendingCreation.current) { event.preventDefault(); event.returnValue = ""; } };
+    const hasLiveSetup = () => Array.from(chapterSetups.current.values()).some(value => Boolean(value.title.trim() || value.brief.trim()));
+    const hasLiveDraft = () => liveDraft.current || latestValidation.current !== null;
+    const hasLiveTitle = () => titleStateRef.current.dirty || titleStateRef.current.busy || titleStateRef.current.pending;
+    const flights = () => [structureFlight.current, restoring.current, creatingChapter.current, saveFlight.current];
+    const hasLiveFlight = () => structureFlight.current || restoring.current || creatingChapter.current || saveFlight.current !== null;
+    const warn = (event: BeforeUnloadEvent) => { if (hasLiveDraft() || hasLiveSetup() || hasLiveTitle() || hasLiveFlight() || manualSave || pendingRestore || pendingOrder || pendingCreation.current) { event.preventDefault(); event.returnValue = ""; } };
     const guardNavigation = (event: globalThis.MouseEvent) => {
-      if ((!hasUnsavedChanges && !hasAnyChapterSetup && !titleBlocked && !manualSave && !pendingRestore && !pendingOrder && !pendingCreation.current) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      if ((!hasLiveDraft() && !hasLiveSetup() && !hasLiveTitle() && !hasLiveFlight() && !manualSave && !pendingRestore && !pendingOrder && !pendingCreation.current) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
       if (!(anchor instanceof HTMLAnchorElement) || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
       const destination = new URL(anchor.href, window.location.href);
       if (destination.origin === window.location.origin && destination.pathname === window.location.pathname && destination.search === window.location.search) return;
-      if (!window.confirm(manualSave ? "Leave with an unconfirmed save? Only its recovery ID is stored in this tab, not your draft text. Download your draft first if needed." : pendingCreation.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : hasChapterSetup && !hasUnsavedChanges && !titleBlocked && !pendingRestore ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?")) { event.preventDefault(); event.stopPropagation(); }
+      const revision = draftRevision.current;
+      const titleAtConfirmation = titleRevision.current;
+      const flightsAtConfirmation = JSON.stringify(flights());
+      const setupsBefore = JSON.stringify(Array.from(chapterSetups.current.entries()));
+      const confirmed = window.confirm(manualSave || saveFlight.current !== null ? "Leave with an unconfirmed save? Only its recovery ID is stored in this tab, not your draft text. Download your draft first if needed." : pendingCreation.current || creatingChapter.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder || structureFlight.current ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : pendingRestore || restoring.current ? "Leave with an unconfirmed restore? Keep this page open to recover the original request." : hasChapterSetup && !hasLiveDraft() && !hasLiveTitle() ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?");
+      if (!confirmed || revision !== draftRevision.current || titleAtConfirmation !== titleRevision.current || flightsAtConfirmation !== JSON.stringify(flights()) || setupsBefore !== JSON.stringify(Array.from(chapterSetups.current.entries()))) {
+        event.preventDefault(); event.stopPropagation();
+        if (confirmed) setError("Your draft changed while confirming navigation. Review it before leaving.");
+      }
     };
     window.addEventListener("beforeunload", warn);
     window.document.addEventListener("click", guardNavigation, true);
