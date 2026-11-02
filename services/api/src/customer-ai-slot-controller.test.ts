@@ -85,3 +85,78 @@ test("candidate pages reject duplicates, reordered timestamps and mismatched slo
  await assert.rejects(c.tick(),/unavailable/u);
  response=[row(job)];await assert.rejects(c.tick(),/unavailable/u);await c.close();
 });
+
+test("candidate pages reject invalid dates before opening any recovery slot",async()=>{
+ let opens=0;
+ const slots={async listSlots(){return {status:"confirmed",value:{rows:[],nextCursor:null}};},
+  async open(){opens++;throw new Error("must not open");},async ack(){throw new Error();}} as unknown as Slots;
+ const journal={async read(){throw new Error();},async execute(){throw new Error();}} as unknown as Journal;
+ for(const invalid of ["0000-01-01T00:00:00Z","2026-02-30T12:00:00Z","2026-10-28T24:00:00Z","2026-10-28T12:00:60Z","2026-10-28T12:00:00+25:00"]) {
+  const sb={rpc(){return {abortSignal:async()=>({data:[row(job),row(other,"none",invalid)],error:null})};}} as unknown as SupabaseClient;
+  const c=customerAiSlotController(sb,slots,journal,{pageSize:2});
+  await assert.rejects(c.tick(),/unavailable/u);assert.equal(opens,0,`invalid ${invalid} must reject the whole page`);await c.close();
+ }
+});
+
+test("candidate cursor rejects repeated identity and preserves exact microseconds across offsets",async()=>{
+ const third="10000000-0000-4000-8000-000000000003";
+ const first=row(job,"none","2026-10-28T12:00:00.123455Z");
+ const second=row(other,"none","2026-10-28T13:00:00.123456+01:00");
+ const repeated=row(other,"none","2026-10-28T12:00:00.123457Z");
+ const valid=row(third,"none","2026-10-28T12:00:00.123457Z");
+ const pages=[[first,second],[repeated],[valid]];const calls:Record<string,unknown>[]=[];let opens=0;
+ const sb={rpc(_name:string,args:Record<string,unknown>){calls.push(args);return {abortSignal:async()=>({data:pages.shift(),error:null})};}} as unknown as SupabaseClient;
+ const slots={async listSlots(){return {status:"confirmed",value:{rows:[],nextCursor:null}};},
+  async open(){opens++;throw new Error();},async ack(){throw new Error();}} as unknown as Slots;
+ const journal={async read(){throw new Error();},async execute(){throw new Error();}} as unknown as Journal;
+ const c=customerAiSlotController(sb,slots,journal,{pageSize:2});
+ assert.equal((await c.tick()).candidatesScanned,2);
+ await assert.rejects(c.tick(),/unavailable/u);assert.equal(opens,0);
+ assert.equal((await c.tick()).candidatesScanned,1);
+ for(const call of calls.slice(1)) {assert.equal(call.p_after_created_at,second.created_at);assert.equal(call.p_after_job_id,other);}
+ await c.close();
+});
+
+test("aborted discovery blocks new ticks until its ignored transport settles",async()=>{
+ let resolveRead!:(value:{data:unknown;error:null})=>void,announce!:()=>void;
+ const started=new Promise<void>(resolve=>{announce=resolve;});
+ const pending=new Promise<{data:unknown;error:null}>(resolve=>{resolveRead=resolve;});
+ let calls=0,lists=0,opens=0;
+ const sb={rpc(){calls++;return {abortSignal(){if(calls===1){announce();return pending;}return Promise.resolve({data:[],error:null});}};}} as unknown as SupabaseClient;
+ const slots={async listSlots(){lists++;return {status:"confirmed",value:{rows:[],nextCursor:null}};},
+  async open(){opens++;throw new Error("late response must not open a slot");},async ack(){throw new Error();}} as unknown as Slots;
+ const journal={async read(){throw new Error();},async execute(){throw new Error();}} as unknown as Journal;
+ const c=customerAiSlotController(sb,slots,journal),abort=new AbortController();
+ const tick=c.tick(abort.signal);await started;abort.abort();await assert.rejects(tick,/unavailable/u);
+ await assert.rejects(c.tick(),/unavailable/u);assert.equal(calls,1);assert.equal(lists,1);
+ resolveRead({data:[row()],error:null});await new Promise<void>(resolve=>setImmediate(resolve));
+ const next=await c.tick();assert.equal(next.candidatesScanned,0);assert.equal(opens,0);assert.equal(calls,2);await c.close();
+});
+
+test("closing after aborted discovery ignores its late response",async()=>{
+ let resolveRead!:(value:{data:unknown;error:null})=>void,announce!:()=>void;let opens=0;
+ const started=new Promise<void>(resolve=>{announce=resolve;});
+ const pending=new Promise<{data:unknown;error:null}>(resolve=>{resolveRead=resolve;});
+ const sb={rpc(){return {abortSignal(){announce();return pending;}};}} as unknown as SupabaseClient;
+ const slots={async listSlots(){return {status:"confirmed",value:{rows:[],nextCursor:null}};},
+  async open(){opens++;throw new Error();},async ack(){throw new Error();}} as unknown as Slots;
+ const journal={async read(){throw new Error();},async execute(){throw new Error();}} as unknown as Journal;
+ const c=customerAiSlotController(sb,slots,journal),abort=new AbortController();
+ const tick=c.tick(abort.signal);await started;abort.abort();await assert.rejects(tick,/unavailable/u);await c.close();
+ resolveRead({data:[row()],error:null});await new Promise<void>(resolve=>setImmediate(resolve));
+ assert.equal(opens,0);await assert.rejects(c.tick(),/closed/u);
+});
+
+test("late rejected discovery clears the gate without exposing transport errors",async()=>{
+ let rejectRead!:(reason:Error)=>void,announce!:()=>void,calls=0;
+ const started=new Promise<void>(resolve=>{announce=resolve;});
+ const pending=new Promise<{data:unknown;error:null}>((_resolve,reject)=>{rejectRead=reject;});
+ const sb={rpc(){calls++;return {abortSignal(){if(calls===1){announce();return pending;}return Promise.resolve({data:[],error:null});}};}} as unknown as SupabaseClient;
+ const slots={async listSlots(){return {status:"confirmed",value:{rows:[],nextCursor:null}};},
+  async open(){throw new Error();},async ack(){throw new Error();}} as unknown as Slots;
+ const journal={async read(){throw new Error();},async execute(){throw new Error();}} as unknown as Journal;
+ const c=customerAiSlotController(sb,slots,journal),abort=new AbortController();
+ const tick=c.tick(abort.signal);await started;abort.abort();await assert.rejects(tick,/unavailable/u);
+ rejectRead(new Error("synthetic sensitive transport diagnostic"));await new Promise<void>(resolve=>setImmediate(resolve));
+ assert.equal((await c.tick()).candidatesScanned,0);assert.equal(calls,2);await c.close();
+});

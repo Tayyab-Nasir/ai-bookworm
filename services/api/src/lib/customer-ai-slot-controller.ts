@@ -20,7 +20,8 @@ type Summary = { slotsScanned: number; candidatesScanned: number; events: Event[
 
 function timeKey(value: string): bigint {
   const day=value.slice(0,10), midnight=Date.parse(day+"T00:00:00Z");
-  if(!Number.isFinite(midnight)||new Date(midnight).toISOString().slice(0,10)!==day) throw new Error();
+  if(value.startsWith("0000-")||Number(value.slice(11,13))>23||Number(value.slice(14,16))>59
+   ||Number(value.slice(17,19))>59||!Number.isFinite(midnight)||new Date(midnight).toISOString().slice(0,10)!==day) throw new Error();
   const suffix=value.match(/([+-]\d{2})(?::?(\d{2}))?$/u);
   const normalized=suffix?value.slice(0,-suffix[0].length)+suffix[1]+":"+(suffix[2]??"00"):value;
   const ms=Date.parse(normalized);if(!Number.isFinite(ms))throw new Error();
@@ -38,11 +39,14 @@ export function customerAiSlotController(sb: SupabaseClient, slots: Slots, journ
  if(!Number.isInteger(pageSize)||pageSize<1||pageSize>100||!slots||!journal
   ||typeof slots.open!=="function"||typeof slots.ack!=="function"||typeof slots.listSlots!=="function"
   ||typeof journal.read!=="function"||typeof journal.execute!=="function") throw new Error("Customer AI maintenance controller configuration is invalid.");
- let slotCursor: SlotCursor|undefined,candidateCursor: CandidateCursor|undefined,active: Promise<Summary>|undefined,closed=false;
+ let slotCursor: SlotCursor|undefined,candidateCursor: CandidateCursor|undefined,active: Promise<Summary>|undefined,closed=false,discoveryPending=false;
  return {
   async tick(signal?: AbortSignal): Promise<Summary> {
    if(closed)throw new Error("Customer AI maintenance controller is closed.");
    if(active)throw new Error("Customer AI maintenance controller is already running.");
+   // A timed-out read can still be running when transport ignores cancellation.
+   // Do not accumulate overlapping reads or act on their eventual response.
+   if(discoveryPending)throw new Error("Customer AI maintenance controller is unavailable.");
    if(signal!==undefined&&!(signal instanceof AbortSignal))throw new Error("Customer AI maintenance controller is unavailable.");
    const perform=async():Promise<Summary>=>{
     const output:Summary={slotsScanned:0,candidatesScanned:0,events:[],slotsCycleComplete:false,candidatesCycleComplete:false};
@@ -92,15 +96,20 @@ export function customerAiSlotController(sb: SupabaseClient, slots: Slots, journ
     let abort:(()=>void)|undefined;
     try {
      const interrupted=new Promise<never>((_,reject)=>{abort=()=>reject(new Error());deadline.addEventListener("abort",abort,{once:true});if(deadline.aborted)abort();});
-     const response=await Promise.race([sb.rpc("discover_customer_ai_reconciliation_candidates",{
-      p_limit:pageSize,p_after_created_at:candidateCursor?.createdAt??null,p_after_job_id:candidateCursor?.jobId??null,
-     }).abortSignal(deadline),interrupted]);
+     discoveryPending=true;
+     let operation:Promise<{data:unknown;error:unknown}>;
+     try {
+      operation=Promise.resolve(sb.rpc("discover_customer_ai_reconciliation_candidates",{
+       p_limit:pageSize,p_after_created_at:candidateCursor?.createdAt??null,p_after_job_id:candidateCursor?.jobId??null,
+      }).abortSignal(deadline)).finally(()=>{discoveryPending=false;});
+     } catch(error) {discoveryPending=false;throw error;}
+     const response=await Promise.race([operation,interrupted]);
      if(deadline.aborted||response.error)throw new Error();
      const rows=z.array(candidate).max(pageSize).parse(response.data);
      if(new Set(rows.map(row=>row.job_id)).size!==rows.length)throw new Error();
      let previous=candidateCursor;
      for(const row of rows) {const current={createdAt:row.created_at,jobId:row.job_id};timeKey(current.createdAt);
-      if(previous&&!later(previous,current))throw new Error();previous=current;}
+      if(previous&&(previous.jobId===current.jobId||!later(previous,current)))throw new Error();previous=current;}
      for(const row of rows) {
       if(stopped())return output;
       if(row.action==="review"||row.action==="investigate")output.events.push({jobId:row.job_id,status:row.action});
