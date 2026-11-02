@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { loopbackRelay } from './e2e/native-author-files-relay.mjs';
-import { blockNativeServiceWorkers, browserErrorSummary, nativeBrowserJson } from './e2e/native-author-files-browser.mjs';
+import { blockNativeServiceWorkers, browserErrorSummary, nativeBrowserJson, nativeBrowserStep } from './e2e/native-author-files-browser.mjs';
 import { inspectNativePackage } from './e2e/native-author-files-packages.mjs';
 import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, nativeWebEnvironment, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
 
@@ -50,6 +50,17 @@ test('native service-worker blocker preserves sandbox denial without injecting p
   assert.throws(() => install({ get serviceWorker() { throw new Error('Unexpected getter failure'); } }), /Unexpected getter failure/);
 });
 
+test('native metadata operation labels preserve timeout category without exposing provider content', async () => {
+  assert.equal(await nativeBrowserStep('publishing metadata save response', Promise.resolve(42)), 42);
+  const cause = Object.assign(new Error('private author text and secret URL'), { name: 'TimeoutError' });
+  await assert.rejects(nativeBrowserStep('publishing metadata save response', Promise.reject(cause)), error => {
+    assert.equal(error.name, 'TimeoutError');
+    assert.equal(error.safeStage, 'publishing metadata save response');
+    assert.equal(error.message, 'A labeled native browser operation failed.');
+    assert.equal(JSON.stringify(error).includes('private'), false);
+    return true;
+  });
+});
 test('native browser diagnostics keep error categories without secrets or page content', () => {
   for (const message of ['ResizeObserver loop limit exceeded', 'ResizeObserver loop completed with undelivered notifications.']) {
     assert.equal(browserErrorSummary(new Error(message)), 'ResizeObserver loop');

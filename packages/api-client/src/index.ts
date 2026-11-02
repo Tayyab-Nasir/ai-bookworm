@@ -1180,28 +1180,30 @@ export function createClient(opts: ClientOptions) {
       call<{ job: AudiobookGooglePlayExportJob }>("POST", `/v1/editions/${editionId}/audiobook-google-play-export`, body),
     cancelAudiobookGooglePlayExport: (jobId: string) =>
       call<{ job: AudiobookGooglePlayExportJob }>("POST", `/v1/audiobook-google-play-exports/${jobId}/cancel`, {}),
-    listTranslationProjects: (bookId: string) =>
-      call<{ projects: TranslationProjectResult[] }>("GET", `/v1/books/${bookId}/translations`),
-    getTranslationProject: (projectId: string, includeText = false) =>
-      call<TranslationProjectResult>("GET", `/v1/translations/${projectId}${includeText ? "?includeText=true" : ""}`),
-    adoptTranslationProject: (projectId: string, body: { title: string }) =>
-      call<{ book: Book }>("POST", `/v1/translations/${projectId}/adopt`, body),
-    cancelQuotedTranslation: (projectId: string) =>
-      call<{ projectId: string; status: "cancelled"; releasedCredits: string; cancelledChapters: number }>("POST", `/v1/translations/${projectId}/cancel`, {}),
-    getTranslationBilling: (projectId: string) =>
-      call<TranslationBillingResult>("GET", `/v1/translations/${projectId}/billing`),
-    acceptTranslationQuote: (proposalId: string, expectedCredits: number) =>
-      call<TranslationProjectResult>("POST", `/v1/translation-quotes/${proposalId}/accept`, { expectedCredits }),
-    requestTranslationQuote: (bookId: string, body: { targetLanguage: string; modelId: string; idempotencyKey: string; allowProviderTokenCounting: true }) =>
-      call<TranslationQuoteRequestResult>("POST", `/v1/books/${bookId}/translation-quotes`, body),
-    getTranslationQuoteRequest: (requestId: string) =>
-      call<TranslationQuoteRequestResult>("GET", `/v1/translation-quote-requests/${requestId}`),
-    listTranslationQuoteRequests: (bookId: string) =>
-      call<{ requests: TranslationQuoteRequestResult[] }>("GET", `/v1/books/${bookId}/translation-quotes`),
-    getTranslationProposal: (proposalId: string) =>
-      call<TranslationProposalResult>("GET", `/v1/translation-quotes/${proposalId}`),
-    listTranslationModels: () =>
-      call<{ catalogVersion: string; models: TranslationModelChoice[] }>("GET", "/v1/translations/models"),
+    listTranslationProjects: (bookId: string, expectedActor?: string) =>
+      call<{ projects: TranslationProjectResult[] }>("GET", `/v1/books/${bookId}/translations`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getTranslationProject: (projectId: string, includeText = false, expectedActor?: string) =>
+      call<TranslationProjectResult>("GET", `/v1/translations/${projectId}${includeText ? "?includeText=true" : ""}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    adoptTranslationProject: (projectId: string, body: { title: string }, expectedActor?: string) =>
+      call<{ book: Book }>("POST", `/v1/translations/${projectId}/adopt`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    cancelQuotedTranslation: (projectId: string, expectedActor?: string) =>
+      call<{ projectId: string; status: "cancelled"; releasedCredits: string; cancelledChapters: number }>("POST", `/v1/translations/${projectId}/cancel`, {}, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getTranslationBilling: (projectId: string, expectedActor?: string) =>
+      call<TranslationBillingResult>("GET", `/v1/translations/${projectId}/billing`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    acceptTranslationQuote: (proposalId: string, expectedCredits: number, expectedActor?: string) =>
+      call<TranslationProjectResult>("POST", `/v1/translation-quotes/${proposalId}/accept`, { expectedCredits }, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    requestTranslationQuote: (bookId: string, body: { targetLanguage: string; modelId: string; idempotencyKey: string; allowProviderTokenCounting: true }, expectedActor?: string) =>
+      call<TranslationQuoteRequestResult>("POST", `/v1/books/${bookId}/translation-quotes`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getTranslationQuoteRequest: (requestId: string, expectedActor?: string) =>
+      call<TranslationQuoteRequestResult>("GET", `/v1/translation-quote-requests/${requestId}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    findTranslationQuoteRequest: (bookId: string, requestKey: string, expectedActor: string) =>
+      call<{ viewerId: string; request: TranslationQuoteRequestResult | null }>("GET", `/v1/books/${bookId}/translation-quote-requests/${encodeURIComponent(requestKey)}`, undefined, false, { "x-bookworm-actor": expectedActor }),
+    listTranslationQuoteRequests: (bookId: string, expectedActor?: string) =>
+      call<{ requests: TranslationQuoteRequestResult[] }>("GET", `/v1/books/${bookId}/translation-quotes`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getTranslationProposal: (proposalId: string, expectedActor?: string) =>
+      call<TranslationProposalResult>("GET", `/v1/translation-quotes/${proposalId}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    listTranslationModels: (expectedActor?: string) =>
+      call<{ catalogVersion: string; models: TranslationModelChoice[] }>("GET", "/v1/translations/models", undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
       call<PreflightResult>("POST", "/v1/publishing/validate", body),
     createPublishingJob: (body: PublishingPackageRequest, expectedActorId?: string) =>

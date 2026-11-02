@@ -80,6 +80,19 @@ export function translationRoutes(app: FastifyInstance) {
     if (saved.error) throw new AppError(503,"Could not recover quote requests.");
     reply.header("cache-control","private, no-store");return {requests:(saved.data??[]).map(quoteRequestProgress)};
   });
+  // Read-only recovery for an opaque client-generated key. Missing means only
+  // "not observed"; an earlier request may still arrive after this read.
+  app.get("/books/:bookId/translation-quote-requests/:requestKey", async (req, reply) => {
+    const { bookId, requestKey } = req.params as { bookId: string; requestKey: string };
+    if (!projectIdSchema.safeParse(bookId).success || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(requestKey)) throw new AppError(422, "Valid book and original request key required.");
+    if (req.headers["x-bookworm-actor"] !== req.userId) throw new AppError(422, "The original account identity is required.");
+    await loadBook(app.supabaseFactory(req.userToken), bookId, req.userId);
+    const saved = await app.supabaseFactory().from("translation_quote_requests").select("*")
+      .eq("book_id", bookId).eq("user_id", req.userId).eq("idempotency_key", requestKey).maybeSingle();
+    if (saved.error) throw new AppError(503, "Could not check the original quote request.");
+    reply.header("cache-control", "private, no-store");
+    return { viewerId: req.userId, request: saved.data ? quoteRequestProgress(saved.data) : null };
+  });
   app.post("/books/:bookId/translation-quotes", async (req, reply) => {
     const {bookId}=req.params as {bookId:string};
     const body=z.object({targetLanguage:languageSchema,modelId:z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),

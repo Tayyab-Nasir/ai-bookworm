@@ -26,6 +26,19 @@ export function browserErrorSummary(error) {
     ? error.name : 'Unknown browser error';
 }
 
+class NativeBrowserStageError extends Error {
+  constructor(stage, cause) {
+    super('A labeled native browser operation failed.');
+    this.name = ['TimeoutError', 'AssertionError'].includes(cause?.name) ? cause.name : 'Error';
+    this.safeStage = stage;
+  }
+}
+// Labels are fixed literals supplied by this test; raw browser messages never
+// enter CI diagnostics. Promise.all retains simultaneous click/response setup.
+export async function nativeBrowserStep(stage, operation) {
+  try { return await operation; }
+  catch (error) { throw new NativeBrowserStageError(stage, error); }
+}
 export function blockNativeServiceWorkers() {
   // Playwright's serviceWorkers:'block' init script reads this getter outside
   // a try/catch. Opaque sandboxed reader frames already deny it themselves.
@@ -206,19 +219,31 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await expect(form.getByRole('combobox', { name: 'Source chapter', exact: true })).toHaveValue(chapter.id);
     succeeded('Book Bible save/reload with scanned image and version-pinned chapter');
 
-    stage = 'publishing metadata and responsive memory';
+    stage = 'publishing metadata description input';
     const metadata = page.getByRole('region', { name: 'Publishing metadata', exact: true });
     await metadata.getByRole('textbox', { name: 'Book description', exact: true }).fill('An author-reviewed harbor adventure.');
+    stage = 'publishing metadata keyword input';
     await metadata.getByRole('textbox', { name: 'Keywords · one per line', exact: true }).fill('harbor\nadventure');
-    const [savedMetadata] = await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/metadata') && r.request().method() === 'PUT'),
-      metadata.getByRole('button', { name: 'Save metadata', exact: true }).click()]);
+    stage = 'publishing metadata save';
+    const [savedMetadata] = await Promise.all([
+      nativeBrowserStep('publishing metadata save response', page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/metadata') && r.request().method() === 'PUT')),
+      nativeBrowserStep('publishing metadata save click', metadata.getByRole('button', { name: 'Save metadata', exact: true }).click()),
+    ]);
+    stage = 'publishing metadata response status';
     assert.equal(savedMetadata.status(), 200);
+    stage = 'publishing metadata saved notice';
     await expect(page.getByText('Publishing metadata saved.', { exact: true })).toBeVisible();
+    stage = 'publishing metadata page reload';
     await page.reload();
+    stage = 'publishing metadata description after reload';
     await expect(metadata.getByRole('textbox', { name: 'Book description', exact: true })).toHaveValue('An author-reviewed harbor adventure.');
+    stage = 'publishing metadata keywords after reload';
     await expect(metadata.getByRole('textbox', { name: 'Keywords · one per line', exact: true })).toHaveValue('harbor\nadventure');
+    stage = 'book memory desktop screenshot';
     await screenshot('memory-desktop');
+    stage = 'book memory mobile viewport';
     await page.setViewportSize({ width: 390, height: 844 });
+    stage = 'book memory mobile screenshot';
     await screenshot('memory-mobile');
     succeeded('publishing metadata persistence and desktop/mobile containment');
 
@@ -405,6 +430,7 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     assert.deepEqual(errors, []);
     succeeded('logout, protected-route login, persistent memory and foreign-book refusal');
   } catch (error) {
+    if (error instanceof NativeBrowserStageError) stage = error.safeStage;
     console.error(`Native browser assertion failed at ${stage}.`);
     if (page && !page.isClosed()) await page.screenshot({ path: join(artifacts, 'failure.png'), fullPage: true, timeout: 5000,
       mask: [page.locator('input')] }).catch(() => {});

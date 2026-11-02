@@ -200,3 +200,19 @@ test("quoted cancellation binds authenticated creator and rejects refund/actor i
     } finally { await deniedApp.close(); }
   }
 });
+test("opaque quote recovery lookup is read-only, actor and book scoped, and missing stays unknown", async () => {
+  const key="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", wrong="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const request={id:PROJECT,user_id:USER,book_id:BOOK,idempotency_key:key,status:"queued",chapters_json:[{chapterId:CHAPTER,private:"hidden"}],counts_json:{},proposal_id:null,created_at:"2026-09-19T00:00:00Z",target_language:"es",model_id:"test",catalog_json:{private:"hidden"}};
+  const fake=fakeSupabase("editor",{translation_quote_requests:[request,{...request,id:WORKSPACE,user_id:WORKSPACE,idempotency_key:wrong}]});const app=await buildApp(()=>fake.client);
+  const url=(book:string,k:string)=>`/v1/books/${book}/translation-quote-requests/${k}`;
+  try {
+    const own=await app.inject({method:"GET",url:url(BOOK,key),headers:{authorization:"Bearer good","x-bookworm-actor":USER}});
+    assert.equal(own.statusCode,200,own.body);assert.equal(own.json().viewerId,USER);assert.equal(own.json().request.id,PROJECT);assert.equal(own.body.includes("hidden"),false);assert.equal(own.headers["cache-control"],"private, no-store");
+    const absent=await app.inject({method:"GET",url:url(BOOK,wrong),headers:{authorization:"Bearer good","x-bookworm-actor":USER}});assert.equal(absent.statusCode,200);assert.equal(absent.json().request,null);
+    const noActor=await app.inject({method:"GET",url:url(BOOK,key),headers:{authorization:"Bearer good"}});assert.equal(noActor.statusCode,422);
+    const otherActor=await app.inject({method:"GET",url:url(BOOK,key),headers:{authorization:"Bearer good","x-bookworm-actor":WORKSPACE}});assert.equal(otherActor.statusCode,409);
+    const otherBook=await app.inject({method:"GET",url:url(WORKSPACE,key),headers:{authorization:"Bearer good","x-bookworm-actor":USER}});assert.equal(otherBook.statusCode,404);
+    const noncanonical=await app.inject({method:"GET",url:url(BOOK,key.toUpperCase()),headers:{authorization:"Bearer good","x-bookworm-actor":USER}});assert.equal(noncanonical.statusCode,422);
+    assert.deepEqual(fake.calls,[],"recovery performs no queue, count, or provider call");
+  } finally { await app.close(); }
+});
