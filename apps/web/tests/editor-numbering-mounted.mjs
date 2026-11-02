@@ -177,6 +177,125 @@ test("actual compiled toolbar and numbering controls fit a narrow author screen"
   } finally { await page.close(); }
 });
 
+test("new chapter title and AI brief are protected when leaving the editor", async () => {
+  const page = await fixture(1280, true);
+  try {
+    const unload = () => page.evaluate(() => { const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented; });
+    await page.evaluate(() => { window.confirmations = []; window.confirm = message => { window.confirmations.push(message); return false; }; });
+    assert.equal(await unload(), false);
+    const title = page.getByLabel("New chapter", { exact: true });
+    const brief = page.getByLabel("Optional AI drafting brief", { exact: true });
+    await title.fill("A new chapter");
+    assert.equal(await unload(), true);
+    await title.fill("");
+    await brief.fill("The hero discovers the letter.");
+    assert.equal(await unload(), true);
+    const url = page.url();
+    await page.getByRole("link", { name: "Plan", exact: true }).click();
+    assert.equal(page.url(), url);
+    assert.match((await page.evaluate(() => window.confirmations)).at(-1), /new chapter title and brief/);
+    assert.equal(await brief.inputValue(), "The hero discovers the letter.");
+    assert.equal(await page.evaluate(() => window.creations), 0);
+    await brief.fill("");
+    assert.equal(await unload(), false);
+  } finally { await page.close(); }
+});
+
+test("chapter setup stays scoped to its book and verified account across a mounted book change", async () => {
+  const page = await fixture(1280, true);
+  let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => {
+      const api = window.bookwormApi, getBook = api.getBook, listChapters = api.listChapters;
+      api.getBook = async id => {
+        if (id === "other" && window.holdOtherBook) await new Promise(resolve => { window.releaseOtherBook = resolve; });
+        return id === "other" ? { book: { id, workspace_id: "workspace", title: "Other manuscript" }, role: "owner" } : getBook(id);
+      };
+      api.listChapters = async id => id === "other" ? { chapters: [] } : listChapters(id);
+    });
+    const title = page.getByLabel("New chapter", { exact: true });
+    const brief = page.getByLabel("Optional AI drafting brief", { exact: true });
+    await title.fill("First book title"); await brief.fill("First book private brief");
+    await page.evaluate(() => { window.holdOtherBook = true; window.renderBookEditor({ bookId: "other" }); });
+    await page.waitForFunction(() => typeof window.releaseOtherBook === "function");
+    assert.equal(await page.evaluate(() => { const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented; }), true, "Account and book verification must not disable protection");
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).count(), 0, "The old setup is not exposed while the new book is loading");
+    assert.equal(await page.evaluate(() => window.creations), 0, "A pending book switch cannot create a chapter in the new book");
+    await page.evaluate(() => { window.holdOtherBook = false; window.releaseOtherBook(); });
+    await page.getByRole("heading", { name: "Other manuscript", exact: true }).waitFor();
+    assert.equal(await title.inputValue(), ""); assert.equal(await brief.inputValue(), "");
+    await title.fill("Other book title"); await brief.fill("Other book private brief");
+    await page.evaluate(() => window.renderBookEditor({ bookId: "book" }));
+    await page.getByRole("heading", { name: "Author manuscript", exact: true }).waitFor();
+    assert.equal(await title.inputValue(), "First book title"); assert.equal(await brief.inputValue(), "First book private brief");
+    actor = "other-author";
+    await page.evaluate(() => window.renderBookEditor({ bookId: "other" }));
+    await page.getByRole("heading", { name: "Other manuscript", exact: true }).waitFor();
+    assert.equal(await title.inputValue(), ""); assert.equal(await brief.inputValue(), "");
+    actor = "fixture-author";
+    await page.evaluate(() => window.renderBookEditor({ bookId: "book" }));
+    await page.getByRole("heading", { name: "Author manuscript", exact: true }).waitFor();
+    await page.evaluate(() => window.renderBookEditor({ bookId: "other" }));
+    await page.getByRole("heading", { name: "Other manuscript", exact: true }).waitFor();
+    assert.equal(await title.inputValue(), "Other book title"); assert.equal(await brief.inputValue(), "Other book private brief");
+  } finally { await page.close(); }
+});
+
+test("chapter setup storage stays bounded without discarding prior drafts", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.getBook = async id => ({ book: { id, workspace_id: "workspace", title: `Book ${id}` }, role: "owner" });
+      window.bookwormApi.listChapters = async () => ({ chapters: [] });
+    });
+    const title = page.getByLabel("New chapter", { exact: true });
+    for (let i = 0; i < 32; i++) {
+      const id = `draft-${i}`;
+      await page.evaluate(bookId => window.renderBookEditor({ bookId }), id);
+      await page.getByRole("heading", { name: `Book ${id}`, exact: true }).waitFor();
+      await title.fill(`Draft ${i}`);
+    }
+    await page.evaluate(() => window.renderBookEditor({ bookId: "extra" }));
+    await page.getByRole("heading", { name: "Book extra", exact: true }).waitFor();
+    await title.fill("Too many drafts");
+    await page.getByRole("alert").filter({ hasText: "Too many unsaved chapter setups" }).waitFor();
+    assert.equal(await title.inputValue(), "");
+    await page.evaluate(() => window.renderBookEditor({ bookId: "draft-0" }));
+    await page.getByRole("heading", { name: "Book draft-0", exact: true }).waitFor();
+    assert.equal(await title.inputValue(), "Draft 0");
+  } finally { await page.close(); }
+});
+
+test("creating a chapter clears only that book's setup and preserves another draft", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      const api = window.bookwormApi, getBook = api.getBook, listChapters = api.listChapters, getTitle = api.getChapterTitle;
+      let created = false;
+      api.getBook = async id => id === "other" ? { book: { id, workspace_id: "workspace", title: "Other manuscript" }, role: "owner" } : getBook(id);
+      api.listChapters = async id => id === "other" ? { chapters: created ? [{ id: "other-chapter", book_id: id, title: "Other title" }] : [] } : listChapters(id);
+      api.getChapterTitle = async id => id === "other-chapter" ? { bookId: "other", chapterId: id, title: "Other title", revision: 0, updatedAt: "2026-10-23T15:00:00Z", role: "owner" } : getTitle(id);
+      api.createChapter = async (id, body) => { window.creations++; created = true; return { chapter: { id: "other-chapter", book_id: id, title: body.title } }; };
+    });
+    const title = page.getByLabel("New chapter", { exact: true });
+    await title.fill("First book title");
+    await page.evaluate(() => window.renderBookEditor({ bookId: "other" }));
+    await page.getByRole("heading", { name: "Other manuscript", exact: true }).waitFor();
+    await title.fill("Other title");
+    await page.getByRole("button", { name: "Add chapter", exact: true }).click();
+    await page.getByText("Created Other title.").waitFor();
+    assert.equal(await title.inputValue(), "");
+    assert.equal(await page.evaluate(() => window.creations), 1);
+    await page.evaluate(() => window.renderBookEditor({ bookId: "book" }));
+    await page.getByRole("heading", { name: "Author manuscript", exact: true }).waitFor();
+    assert.equal(await title.inputValue(), "First book title");
+    await page.evaluate(() => window.renderBookEditor({ bookId: "other" }));
+    await page.getByRole("heading", { name: "Other manuscript", exact: true }).waitFor();
+    assert.equal(await title.inputValue(), "");
+  } finally { await page.close(); }
+});
+
 test("actual author page protects invalid unsaved text, blocks writes and recovers after correction", async () => {
   const page = await fixture(1280, true);
   try {
@@ -223,6 +342,9 @@ test("actual author page protects invalid unsaved text, blocks writes and recove
     assert.equal(await page.getByRole("alert").count(), 0);
     await page.getByRole("button", { name: "Save chapter", exact: true }).click();
     await page.getByText("Saved · v2", { exact: true }).waitFor();
+    assert.equal(await unload(), true, "New chapter title remains unsaved after saving the current chapter");
+    await page.setViewportSize({ width: 1280, height: 980 });
+    await page.getByLabel("New chapter", { exact: true }).fill("");
     assert.equal(await unload(), false);
     assert.equal(await page.locator("[data-ai-dirty]").getAttribute("data-ai-dirty"), "false");
     assert.equal(await page.evaluate(() => window.requests.length), 1);

@@ -60,6 +60,24 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   const loadSequence = useRef(0);
   const loadTransition = useRef<number | null>(null);
   const editorOwner = useRef<string | null>(null);
+  const chapterSetups = useRef(new Map<string, { title: string; brief: string }>());
+  const setups = Array.from(chapterSetups.current.entries());
+  const hasAnyChapterSetup = setups.some(([, value]) => Boolean(value.title.trim() || value.brief.trim()));
+  const hasChapterSetup = setups.some(([key, value]) =>
+    JSON.parse(key)[0] === editorOwner.current && Boolean(value.title.trim() || value.brief.trim()));
+  const updateChapterSetup = (title: string, brief: string) => {
+    const owner = editorOwner.current;
+    if (!owner || book?.id !== bookId) return;
+    const key = JSON.stringify([owner, bookId]);
+    if ((title.trim() || brief.trim()) && !chapterSetups.current.has(key) &&
+        (chapterSetups.current.size >= 128 || Array.from(chapterSetups.current.keys()).filter(savedKey => JSON.parse(savedKey)[0] === owner).length >= 32)) {
+      setError("Too many unsaved chapter setups are open. Return to a previous book and create or clear its chapter before starting another.");
+      return;
+    }
+    if (title.trim() || brief.trim()) chapterSetups.current.set(key, { title, brief });
+    else chapterSetups.current.delete(key);
+    setNewTitle(title); setNewChapterBrief(brief);
+  };
   const pendingSave = useRef<{ operationId: string; nodes: BookNode[]; expectedVersion: number } | null>(null);
   const saveFlight = useRef<number | null>(null);
   const [saveAccount, setSaveAccount] = useState<string | null>(null);
@@ -122,6 +140,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     ++loadSequence.current;
     loadTransition.current = null;
     editorOwner.current = null;
+    setNewTitle(""); setNewChapterBrief("");
     setAccountVerifying(false); setRestoreHidden(null);
     setBook(null); setChapters([]); setDocument(null); setDraft([]); setEditorSeed(null); setVersions([]); setRole("viewer");
     setDirty(false); setEditorValidation(null); setSaving(false); setLoading(true); setError(null); setNotice(null);
@@ -161,6 +180,8 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       await editorAccount(userId);
       if (cancelled) return;
       editorOwner.current = userId;
+      const setup = chapterSetups.current.get(JSON.stringify([userId, bookId]));
+      setNewTitle(setup?.title ?? ""); setNewChapterBrief(setup?.brief ?? "");
       setBook(identity.book); setRole(identity.role); setChapters(result.chapters);
       setInitialDraftInstruction(instruction); setDraftPlanTargetChapterId(planTarget); setDraftPlanMessage(planMessage);
       if (initialChapterId && !selected) { setError("The requested chapter is not available in this book. Choose an available chapter to continue."); setLoading(false); return; }
@@ -170,19 +191,19 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   }, [api, bookId, initialChapterId, initialAiJobId, initialDraftPlanItemId, bookLoadAttempt, loadChapter]);
 
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (hasUnsavedChanges || titleBlocked || manualSave || pendingRestore || pendingOrder || pendingCreation.current) { event.preventDefault(); event.returnValue = ""; } };
+    const warn = (event: BeforeUnloadEvent) => { if (hasUnsavedChanges || hasAnyChapterSetup || titleBlocked || manualSave || pendingRestore || pendingOrder || pendingCreation.current) { event.preventDefault(); event.returnValue = ""; } };
     const guardNavigation = (event: globalThis.MouseEvent) => {
-      if ((!hasUnsavedChanges && !titleBlocked && !manualSave && !pendingRestore && !pendingOrder && !pendingCreation.current) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      if ((!hasUnsavedChanges && !hasAnyChapterSetup && !titleBlocked && !manualSave && !pendingRestore && !pendingOrder && !pendingCreation.current) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
       if (!(anchor instanceof HTMLAnchorElement) || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
       const destination = new URL(anchor.href, window.location.href);
       if (destination.origin === window.location.origin && destination.pathname === window.location.pathname && destination.search === window.location.search) return;
-      if (!window.confirm(manualSave ? "Leave with an unconfirmed save? Only its recovery ID is stored in this tab, not your draft text. Download your draft first if needed." : pendingCreation.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : "Leave the editor and discard unsaved changes?")) { event.preventDefault(); event.stopPropagation(); }
+      if (!window.confirm(manualSave ? "Leave with an unconfirmed save? Only its recovery ID is stored in this tab, not your draft text. Download your draft first if needed." : pendingCreation.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : hasChapterSetup && !hasUnsavedChanges && !titleBlocked && !pendingRestore ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?")) { event.preventDefault(); event.stopPropagation(); }
     };
     window.addEventListener("beforeunload", warn);
     window.document.addEventListener("click", guardNavigation, true);
     return () => { window.removeEventListener("beforeunload", warn); window.document.removeEventListener("click", guardNavigation, true); };
-  }, [hasUnsavedChanges, titleBlocked, manualSave, pendingRestore, pendingOrder]);
+  }, [hasUnsavedChanges, hasAnyChapterSetup, hasChapterSetup, titleBlocked, manualSave, pendingRestore, pendingOrder]);
 
   const save = useCallback(async (retry = false) => {
     if (!document || loadTransition.current !== null || titleBlocked || saveFlight.current !== null || saving || loading || aiDecisionBusy || conflict || !dirty || pendingRestore || editorValidation || !EDIT_ROLES.has(role)
@@ -279,7 +300,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
 
   const createChapter = async () => {
     const owner = editorOwner.current;
-    if (!owner || !newTitle.trim() || pendingOrder || structureFlight.current || loadTransition.current !== null || titleBlocked || saving || loading || aiDecisionBusy || manualSave || (document && !saveRecoveryReady) || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role) || (hasUnsavedChanges && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
+    if (!owner || book?.id !== bookId || !newTitle.trim() || pendingOrder || structureFlight.current || loadTransition.current !== null || titleBlocked || saving || loading || aiDecisionBusy || manualSave || (document && !saveRecoveryReady) || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role) || (hasUnsavedChanges && !window.confirm("Discard the unsaved chapter draft before adding a chapter?"))) return;
     creatingChapter.current = true;
     let sequence = loadSequence.current;
     setSaving(true); setError(null);
@@ -307,14 +328,14 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       pendingCreation.current = null;
       createdChapterId = result.chapter.id;
       setChapters(current.chapters);
-      setNewTitle(""); setActiveAiJobId(undefined);
+      updateChapterSetup("", newChapterBrief); setActiveAiJobId(undefined);
       sequence = loadSequence.current + 1;
       await loadChapter(result.chapter.id, true);
       if (sequence !== loadSequence.current) return;
-      if (!brief) { setNewChapterBrief(""); setNotice(`Created ${chapterTitle}.`); return; }
+      if (!brief) { updateChapterSetup("", ""); setNotice(`Created ${chapterTitle}.`); return; }
       setInitialDraftInstruction(brief);
       setDraftPlanTargetChapterId(result.chapter.id);
-      setNewChapterBrief("");
+      updateChapterSetup("", "");
       setNotice("Chapter created. Review the draft brief and request a price in the AI assistant. Nothing was generated or charged.");
     }
     catch (reason) {
@@ -554,11 +575,11 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
         <BookTree chapters={chapters} activeId={document?.chapterId ?? null} onSelect={selectChapter} onReorder={(ids) => void reorder(ids)} disabled={saving || loading || aiDecisionBusy || !!manualSave || !!pendingOrder || titleState.pending || titleState.busy} readOnly={!editable} />
         {EDIT_ROLES.has(role) && !pendingRestore && <form className="mt-5 space-y-2 border-t border-white/10 p-2 pt-4" onSubmit={(event) => { event.preventDefault(); void createChapter(); }}>
           <fieldset disabled={titleBlocked || saving || loading || aiDecisionBusy || !!manualSave || !!pendingOrder || (!!document && !saveRecoveryReady)} className="min-w-0 space-y-2 disabled:opacity-50">
-          <label className="block text-xs text-white/50" htmlFor="new-chapter-title">New chapter</label><input id="new-chapter-title" value={newTitle} onChange={(e) => setNewTitle(e.target.value)} disabled={!!pendingCreation.current} aria-describedby={pendingCreation.current ? "chapter-creation-recovery" : undefined} maxLength={500} required placeholder="Chapter title" className="w-full rounded-lg border border-white/15 bg-black p-2 text-sm" />
-          <label className="block text-xs text-white/50" htmlFor="new-chapter-brief">Optional AI drafting brief</label><textarea id="new-chapter-brief" value={newChapterBrief} onChange={(e) => setNewChapterBrief(e.target.value)} disabled={!!pendingCreation.current} aria-describedby={pendingCreation.current ? "chapter-creation-recovery" : undefined} maxLength={4000} rows={3} placeholder="What happens in this chapter?" className="w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm" />
+          <label className="block text-xs text-white/50" htmlFor="new-chapter-title">New chapter</label><input id="new-chapter-title" value={book?.id === bookId ? newTitle : ""} onChange={(e) => updateChapterSetup(e.target.value, newChapterBrief)} disabled={!!pendingCreation.current} aria-describedby={pendingCreation.current ? "chapter-creation-recovery" : undefined} maxLength={500} required placeholder="Chapter title" className="w-full rounded-lg border border-white/15 bg-black p-2 text-sm" />
+          <label className="block text-xs text-white/50" htmlFor="new-chapter-brief">Optional AI drafting brief</label><textarea id="new-chapter-brief" value={book?.id === bookId ? newChapterBrief : ""} onChange={(e) => updateChapterSetup(newTitle, e.target.value)} disabled={!!pendingCreation.current} aria-describedby={pendingCreation.current ? "chapter-creation-recovery" : undefined} maxLength={4000} rows={3} placeholder="What happens in this chapter?" className="w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm" />
           <p className="text-[11px] leading-4 text-white/40">A brief creates an empty chapter and opens separate AI price review. Nothing is generated or charged until you accept a quote.</p>
           {pendingCreation.current && <p id="chapter-creation-recovery" role="status" className="break-words text-xs leading-5 text-white/70">Creation of “{pendingCreation.current.title}” is not confirmed. The original title and brief stay locked. Check the chapter list before retrying: if the created chapter was deleted, the same request can create it again.</p>}
-          <button disabled={saving || !newTitle.trim()} className="min-h-11 w-full rounded-lg border border-white/20 px-3 py-2 text-xs focus-visible:ring-2 focus-visible:ring-white disabled:opacity-40">{pendingCreation.current ? "Retry chapter creation" : newChapterBrief.trim() ? "Add & review AI brief" : "Add chapter"}</button>
+          <button disabled={saving || book?.id !== bookId || !newTitle.trim()} className="min-h-11 w-full rounded-lg border border-white/20 px-3 py-2 text-xs focus-visible:ring-2 focus-visible:ring-white disabled:opacity-40">{pendingCreation.current ? "Retry chapter creation" : newChapterBrief.trim() ? "Add & review AI brief" : "Add chapter"}</button>
           </fieldset>
         </form>}
         </div>
