@@ -23,6 +23,13 @@ function fakeSupabase(store: Store, opts: { failReads?: boolean } = {}) {
   const client = {
     rpc: async (name: string, args: Row) => {
       if (store.rpc) return store.rpc(name, args);
+      if (name === "submit_delete_data_rights_request") {
+        const rows = (store.tables.data_rights_requests ??= []);
+        if (args.p_confirmation !== "DELETE MY ACCOUNT") return { data: null, error: { code: "22023" } };
+        if (rows.some(row => row.user_id === "user-1" && row.request_type === "delete" && ["submitted", "processing"].includes(String(row.status)))) return { data: null, error: { code: "23505" } };
+        const row = { id: crypto.randomUUID(), user_id: "user-1", request_type: "delete", status: "submitted", reason: args.p_reason, requested_at: new Date().toISOString() };
+        rows.push(row); return { data: row, error: null };
+      }
       if (name === "cancel_data_rights_request") {
         const row = (store.tables.data_rights_requests ?? []).find((value) => value.id === args.p_request_id && value.user_id === "user-1");
         if (!row) return { data: null, error: { code: "P0002" } };
@@ -643,6 +650,32 @@ test("data-rights intake requires explicit deletion confirmation and cancellatio
   await app.close();
 });
 
+test("delete intake routes only through confirmation RPC, with safe database error mapping", async () => {
+  for (const [code, status] of [["PGRST202", 503], ["42883", 503], ["22023", 422], ["23505", 409], ["XX000", 500]] as const) {
+    const calls: {name: string; args: Row}[] = [];
+    const store: Store = { tables: {}, rpc: (name, args) => { calls.push({name, args}); return {data:null, error:{code}}; } };
+    const app = await appWith(store);
+    const response = await app.inject({ method:"POST", url:"/v1/account/data-requests", headers:as("good"), payload:{type:"delete", confirmation:"DELETE MY ACCOUNT", reason:"  Moving  "} });
+    assert.equal(response.statusCode, status, code);
+    assert.deepEqual(calls, [{name:"submit_delete_data_rights_request", args:{p_confirmation:"DELETE MY ACCOUNT",p_reason:"Moving"}}]);
+    assert.equal((store.tables.data_rights_requests ?? []).length, 0, "must not fall back to a direct insert");
+    await app.close();
+  }
+});
+test("delete intake rejects an RPC result for a different authenticated actor", async () => {
+  const store: Store = {tables:{},rpc:()=>({data:{id:crypto.randomUUID(),user_id:"other-user",request_type:"delete",status:"submitted"},error:null})};
+  const app = await appWith(store);
+  const response = await app.inject({method:"POST",url:"/v1/account/data-requests",headers:as("good"),payload:{type:"delete",confirmation:"DELETE MY ACCOUNT"}});
+  assert.equal(response.statusCode,500); assert.equal(response.body.includes("other-user"),false);
+  await app.close();
+});
+test("existing API export intake still uses direct owner insert", async () => {
+  const store: Store = {tables:{},rpc:()=>{throw Error("unexpected RPC")}};
+  const app = await appWith(store);
+  const response = await app.inject({method:"POST",url:"/v1/account/data-requests",headers:as("good"),payload:{type:"export",reason:"  copy  "}});
+  assert.equal(response.statusCode,201,response.body);assert.equal(response.json().request.user_id,"user-1");assert.equal(response.json().request.reason,"copy");assert.equal(response.json().viewerId,"user-1");
+  await app.close();
+});
 test("audit list filters by action", async () => {
   const store: Store = {
     tables: {

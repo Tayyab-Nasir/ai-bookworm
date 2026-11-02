@@ -91,24 +91,28 @@ export function accountRoutes(app: FastifyInstance) {
   app.post("/account/data-requests", async (req, reply) => {
     const input = parse(requestInput, req.body);
     const sb = app.supabaseFactory(req.userToken);
-    const { data, error } = await sb
-      .from("data_rights_requests")
-      .insert({
-        user_id: req.userId,
-        request_type: input.type,
-        status: "submitted",
-        reason: input.reason || null,
-      })
-      .select("*")
-      .single();
+    // Delete intake is mediated by an authenticated database RPC that checks
+    // confirmation itself. No fallback to the old direct INSERT is safe.
+    const { data, error } = input.type === "delete"
+      ? await sb.rpc("submit_delete_data_rights_request", {
+          p_confirmation: input.confirmation,
+          p_reason: input.reason || null,
+        })
+      : await sb.from("data_rights_requests").insert({
+          user_id: req.userId,
+          request_type: "export",
+          status: "submitted",
+          reason: input.reason || null,
+        }).select("*").single();
     if (error?.code === "23505")
-      throw new AppError(
-        409,
-        `An active ${input.type} request already exists.`,
-      );
-    if (error || !data)
-      throw new AppError(500, "Could not submit the data request.");
-    return reply.status(201).send({ viewerId: req.userId, request: data });
+      throw new AppError(409, `An active ${input.type} request already exists.`);
+    if (error?.code === "42883" || error?.code === "PGRST202")
+      throw new AppError(503, "Data-request migration is not installed.");
+    if (error?.code === "22023") throw new AppError(422, "Check the submitted fields.");
+    const request = Array.isArray(data) ? data[0] : data;
+    if (error || !request || request.user_id !== req.userId || request.request_type !== input.type || request.status !== "submitted")
+      throw new AppError(500, "Could not confirm the data request. Check your requests before trying again.");
+    return reply.status(201).send({ viewerId: req.userId, request });
   });
 
   app.delete("/account/data-requests/:requestId", async (req) => {
