@@ -316,12 +316,18 @@ test("an account change during an already dispatched save keeps its recovery rec
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await page.getByRole("alert").filter({ hasText: "original account could not be verified" }).waitFor();
     await page.evaluate(() => window.finishDispatchedSave());
-    await page.waitForTimeout(100);
+    // Keep the foreign account active until both the post-save identity check
+    // and its failure recovery finish. A fixed delay races on slower Chromium.
+    await page.waitForFunction(() => [...document.querySelectorAll('main[hidden] [role="status"]')]
+      .some(element => element.textContent === "Save outcome unconfirmed"));
     assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
     actor = "fixture-author";
     await page.getByRole("button", { name: "Recheck original account", exact: true }).click();
-    const check = page.getByRole("button", { name: "Recheck original account", exact: true });
-    if (await check.isVisible()) await check.click();
+    // The passive focus check and the save's separate recovery check each
+    // protect the draft. Wait for the latter instead of clicking the same
+    // still-visible passive button twice.
+    await page.getByRole("alert").filter({ hasText: "This manuscript is hidden;" }).waitFor();
+    await page.getByRole("button", { name: "Recheck original account", exact: true }).click();
     await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
     assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /Draft with unconfirmed save/);
     assert.equal(await page.getByRole("region", { name: "Manual save recovery" }).count(), 1);
