@@ -30,7 +30,10 @@ def parse_pdf(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
     except Exception as e:
         raise ParseError(f"not a readable PDF: {e}") from e
 
-    warnings: list[str] = []
+    warnings: list[str] = [
+        "PDF import extracts text only; images, graphics, annotations and original layout are not imported. "
+        "Compare every page with the original and add missing artwork separately."
+    ]
     total_chars = sum(len(p) for p in pages)
     sparse_pages = [i + 1 for i, page in enumerate(pages)
                     if sum(not char.isspace() for char in page) < _MIN_CHARS_PER_PAGE]
