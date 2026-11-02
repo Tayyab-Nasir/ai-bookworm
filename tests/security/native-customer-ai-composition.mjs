@@ -1,7 +1,8 @@
 // Synthetic provider only. Called by the guarded disposable native database harness.
 import assert from 'node:assert/strict';
 import {randomBytes, randomUUID} from 'node:crypto';
-import {spawnSync} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
+import {startGateway} from './customer-db-http-fixture.mjs';
 import {join, delimiter} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {credentialVault} from '../../services/api/src/lib/ai-connection-vault.ts';
@@ -11,15 +12,39 @@ import {customerAiComposition} from '../../services/api/src/lib/customer-ai-comp
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
 const json=value=>quote(JSON.stringify(value))+'::jsonb';
-function python(file,value) {
+// The interpreter launcher may itself have a Python child. Own the whole
+// process tree for both fixture creation and dispatch, including timeouts.
+export async function runOwnedSyntheticProcess(command,args,{env,cwd,input,timeoutMs=120000,maxOutput=8*1024*1024}) {
+  return await new Promise((resolve,reject)=>{
+    const child=spawn(command,args,{cwd,env,stdio:['pipe','pipe','pipe'],windowsHide:true,detached:process.platform!=='win32'});
+    let output='',stderr='',failure;
+    const terminate=reason=>{
+      if(failure) return;failure=Error(reason);
+      if(!child.pid || child.exitCode!==null || child.signalCode!==null) return;
+      if(process.platform==='win32') {
+        spawnSync('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{stdio:'ignore',timeout:5000,windowsHide:true});
+        child.kill();
+      } else {
+        try {process.kill(-child.pid,'SIGKILL')} catch {child.kill('SIGKILL')}
+      }
+    };
+    const timeout=setTimeout(()=>terminate('Synthetic Python bridge timed out'),timeoutMs);
+    child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
+    child.stdout.on('data',chunk=>{output+=chunk;if(output.length>maxOutput)terminate('Synthetic bridge output exceeded limit')});
+    child.stderr.on('data',chunk=>{if(stderr.length<4096)stderr+=chunk});child.stdin.on('error',()=>{});
+    child.once('error',error=>{failure??=error});
+    child.once('close',code=>{clearTimeout(timeout);if(failure)reject(failure);else if(code!==0)reject(Error('Synthetic bridge failed: '+stderr.slice(0,1200)));else resolve(output)});
+    child.stdin.end(input);
+  });
+}
+async function pythonAsync(file,value) {
   const env=Object.fromEntries(['PATH','SystemRoot','WINDIR','TEMP','TMP','USERPROFILE','BOOKWORM_PYTHON'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
   Object.assign(env,{PYTHONPATH:[join(root,'services/ai'),join(root,'services/ai/tests')].join(delimiter),PYTHONIOENCODING:'utf-8',PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'});
-  const result=spawnSync(process.execPath,[join(root,'scripts/run-python.mjs'),file],{cwd:root,env,input:JSON.stringify(value),encoding:'utf8',timeout:120000,maxBuffer:8*1024*1024,windowsHide:true});
-  if(result.error || result.status!==0) throw Error('Synthetic Python fixture failed: '+(result.error?.message??result.stderr?.slice(0,1200)));
-  return JSON.parse(result.stdout);
+  const result=await runOwnedSyntheticProcess(process.execPath,[join(root,'scripts/run-python.mjs'),file],{cwd:root,env,input:JSON.stringify(value)});
+  return JSON.parse(result);
 }
 export async function customerAiNativeComposition({sql}) {
-  const [scope,request]=python(join(root,'services/ai/tests/customer_native_fixture.py'),{});
+  const [scope,request]=await pythonAsync(join(root,'services/ai/tests/customer_native_fixture.py'),{});
   const {ownerId:u,workspaceId:ws,bookId:b,connectionId:connection,jobId:job}=scope;
   const chapter=request.input.chapterIds[0], version=request.input.chapters[chapter].documentVersionId;
   const org=randomUUID(),plan=randomUUID(),subscription=randomUUID(),policy=randomUUID(),operation=randomUUID();
@@ -66,18 +91,19 @@ export async function customerAiNativeComposition({sql}) {
     catch { console.log(`Synthetic RPC ${name} failed`); return Response.json({message:'synthetic database RPC failed'}, {status:400}); }
   };
   const signer=customerDispatchSigner('synthetic',Buffer.from(Array.from({length:32},(_,i)=>i)),()=>1900000000);
+  let gateway,runtime;
+  try {
+  gateway=await startGateway(sql,job,'synthetic-private-database-token');
   const serviceFetch=async input=>{
     assert.equal(new URL(input.url).origin,'https://private.invalid');
     posts++;const body=Buffer.from(await input.arrayBuffer());
-    assert.equal(await sql(`begin; set local role service_role; set local request.jwt.claims='{"role":"service_role"}'; select public.customer_ai_dispatch_authorized(${json(JSON.parse(Buffer.from(JSON.parse(body.toString()).payload,'base64url').toString()).scope)}); commit;`),'t');
-    const result=python(join(root,'services/ai/tests/customer_cross_runtime_bridge.py'),{action:'dispatch',body:body.toString('base64')});
-    assert.equal(result.status,201);assert.equal(result.providerCalls,1);assert.equal(result.receiptCount,1);
-    const receipt=result.result;receiptFingerprint=receipt.customerDispatchSha256;
-    await sql(`insert into public.ai_review_service_receipts(job_id,request_sha256,result_json) values(${quote(job)},${quote(receiptFingerprint)},${json(receipt)});`);
+    const result=await pythonAsync(join(root,'services/ai/tests/customer_native_db_bridge.py'),{databaseUrl:gateway.url,body:body.toString('base64')});
+    assert.equal(result.status,201);assert.equal(result.providerCalls,1);
+    receiptFingerprint=result.result.customerDispatchSha256;
+    assert.deepEqual(gateway.calls,['POST /rest/v1/rpc/customer_ai_dispatch_authorized','POST /rest/v1/ai_review_service_receipts','PATCH /rest/v1/ai_review_service_receipts','POST /rest/v1/rpc/customer_ai_dispatch_authorized','POST /rest/v1/ai_review_service_receipts','GET /rest/v1/ai_review_service_receipts']);
     throw Error('Synthetic response lost after receipt persisted');
   };
-  const runtime=customerAiComposition({databaseUrl:'https://database.invalid',serviceRoleKey:'synthetic-private-database-token',serviceUrl:'https://private.invalid',serviceToken:'synthetic-private-service-token',mode:'test',vault,signer,databaseFetch,serviceFetch});
-  try {
+  runtime=customerAiComposition({databaseUrl:'https://database.invalid',serviceRoleKey:'synthetic-private-database-token',serviceUrl:'https://private.invalid',serviceToken:'synthetic-private-service-token',mode:'test',vault,signer,databaseFetch,serviceFetch});
     await assert.rejects(runtime.tick(), /unresolved operation/);
     console.log(JSON.stringify({events,posts}));
     assert.equal(posts,1);assert.ok(receiptFingerprint);
@@ -85,6 +111,6 @@ export async function customerAiNativeComposition({sql}) {
     assert.deepEqual(state,{status:'succeeded',receipts:1,runs:1,suggestions:1,fees:0});
     await sql(`begin; set local role service_role; set local request.jwt.claims='{"role":"service_role"}'; select public.complete_customer_ai_job(${quote(job)},${quote(u)},${quote(receiptFingerprint)}); commit;`);
     assert.equal(await sql(`select count(*) from public.ai_runs where ai_job_id=${quote(job)};`),'1');assert.equal(posts,1);
-    console.log('PASS native PostgreSQL + TS customer composition + synthetic Python ASGI: one provider call, lost response, persisted receipt, idempotent completion, no platform credits.');
-  } finally {await runtime.close();signer.dispose();}
+    console.log('PASS native PostgreSQL + TS customer composition + real Python DB HTTP adapter + synthetic Python ASGI: one provider call, lost response, persisted receipt, idempotent completion, no platform credits.');
+  } finally {try {await runtime?.close()} finally {signer.dispose();if(gateway)await gateway.close();}}
 }
