@@ -54,3 +54,33 @@ test("timeouts, rejected verifiers and invalid config fail closed without exposi
   assert.equal(abortSignal?.aborted, true);
   assert.throws(() => customerAiReadiness({ ...f.config, maxAgeMs: 60000 }), /configuration is invalid/);
 });
+
+test("synchronous verifier, operator and proof parsing stalls cannot outlive the readiness deadline", async () => {
+  const stall = () => { const until = performance.now() + 40; while (performance.now() < until) {} };
+  {
+    const f = fixture(); let seen: AbortSignal | undefined, databaseCalls = 0, workerCalls = 0;
+    f.config.verifyIdentity = async signal => { seen = signal; stall(); return f.identity; };
+    f.config.verifyDatabase = async () => { databaseCalls++; return f.database; };
+    f.config.verifyWorker = async () => { workerCalls++; return f.worker; };
+    assert.equal(await customerAiReadiness({ ...f.config, timeoutMs: 5 }).check(), false);
+    assert.equal(seen?.aborted, true);
+    assert.equal(databaseCalls, 0); assert.equal(workerCalls, 0);
+  }
+  {
+    const f = fixture(); let calls = 0;
+    f.config.operatorEnabled = () => { stall(); return true; };
+    f.config.verifyIdentity = async () => { calls++; return f.identity; };
+    assert.equal(await customerAiReadiness({ ...f.config, timeoutMs: 5 }).check(), false);
+    assert.equal(calls, 0);
+  }
+  {
+    const f = fixture(); let calls = 0;
+    f.config.operatorEnabled = () => { if (++calls === 2) stall(); return true; };
+    assert.equal(await customerAiReadiness({ ...f.config, timeoutMs: 5 }).check(), false);
+  }
+  {
+    const f = fixture();
+    Object.defineProperty(f.identity, "identityVerified", { enumerable: true, get() { stall(); return true; } });
+    assert.equal(await customerAiReadiness({ ...f.config, timeoutMs: 5 }).check(), false);
+  }
+});

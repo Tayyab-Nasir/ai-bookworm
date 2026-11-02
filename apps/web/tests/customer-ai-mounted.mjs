@@ -111,7 +111,18 @@ test('checking an unchanged preparation preserves its review but requires fresh 
  const p=await fixture();try{
   await prepare(p);await expect(p.getByText('Ready for review',{exact:true})).toBeVisible();
   const consent=p.getByLabel(/I reviewed this source and direction/);await consent.check();
+  await p.evaluate(()=>{const original=window.fetch;let hold=true;window.fetch=async(url,init)=>{if(url==='/api/auth/session'&&hold){hold=false;await new Promise(resolve=>window.gates.statusSession=resolve);}return original(url,init);};});
   await p.getByRole('button',{name:'Check saved status'}).click();
+  await expect.poll(()=>p.evaluate(()=>Boolean(window.gates.statusSession))).toBe(true);
+  // The original consent is withdrawn before the asynchronous account check
+  // and before any status request can start.
+  await expect(consent).not.toBeChecked();await expect(p.getByRole('button',{name:'Confirm & queue request'})).toBeDisabled();
+  assert.equal(await count(p,'status'),0);assert.equal(await count(p,'confirm'),0);
+  await p.evaluate(()=>window.gates.statusSession());
+  await expect.poll(()=>count(p,'status')).toBe(1);
+  // Waiting for the button ensures the response and the post-read account
+  // verification completed, not just that the HTTP request was dispatched.
+  await expect(p.getByRole('button',{name:'Check saved status'})).toBeEnabled();
   await expect(p.getByText(direction,{exact:true})).toBeVisible();await expect(consent).not.toBeChecked();
   await expect(p.getByRole('button',{name:'Confirm & queue request'})).toBeDisabled();
   assert.equal(await count(p,'prepare'),1);assert.equal(await count(p,'status'),1);assert.equal(await count(p,'confirm'),0);assert.equal(await p.evaluate(()=>window.jobs),0);

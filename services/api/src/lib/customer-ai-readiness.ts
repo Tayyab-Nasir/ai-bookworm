@@ -3,6 +3,7 @@
  * verifiers must independently authenticate their evidence; a static flag or
  * private-service identity proof alone never establishes readiness. */
 import { z } from "zod";
+import { performance } from "node:perf_hooks";
 
 const binding = z.string().min(1).max(128).regex(/^[A-Za-z0-9_.:-]+$/u);
 const time = z.number().int().nonnegative().safe();
@@ -40,22 +41,38 @@ export function customerAiReadiness(config: {
   const result: CustomerAiReadiness = {
     async check() {
       const aborter = new AbortController(); let timer: ReturnType<typeof setTimeout> | undefined;
+      const started = performance.now();
+      const expired = () => {
+        const current = performance.now();
+        if (aborter.signal.aborted || !Number.isFinite(started) || !Number.isFinite(current) || current < started || current - started >= timeoutMs) {
+          aborter.abort();
+          return true;
+        }
+        return false;
+      };
       try {
-        if (operatorEnabled() !== true) return false;
-        const interrupted = new Promise<never>((_, reject) => { timer = setTimeout(() => { aborter.abort(); reject(new Error()); }, timeoutMs); });
+        if (operatorEnabled() !== true || expired()) return false;
+        const remaining = timeoutMs - (performance.now() - started);
+        if (!Number.isFinite(remaining) || remaining <= 0) { aborter.abort(); return false; }
+        const interrupted = new Promise<never>((_, reject) => { timer = setTimeout(() => { aborter.abort(); reject(new Error()); }, remaining); });
+        const invoke = (verify: Verifier) => Promise.resolve().then(() => {
+          if (expired()) throw new Error();
+          return verify(aborter.signal);
+        });
         const proofs = await Promise.race([Promise.all([
-          verifyIdentity(aborter.signal), verifyDatabase(aborter.signal), verifyWorker(aborter.signal),
+          invoke(verifyIdentity), invoke(verifyDatabase), invoke(verifyWorker),
         ]), interrupted]);
-        if (aborter.signal.aborted || operatorEnabled() !== true) return false;
+        if (expired() || operatorEnabled() !== true || expired()) return false;
         const identity = identitySchema.parse(proofs[0]), database = databaseSchema.parse(proofs[1]), worker = workerSchema.parse(proofs[2]);
         const current = now(); if (!Number.isSafeInteger(current) || current < 0) return false;
         const fresh = (at: number) => at <= current && at >= current - maxAgeMs;
-        return fresh(identity.observedAt) && fresh(database.observedAt) && fresh(worker.observedAt)
+        const ready = fresh(identity.observedAt) && fresh(database.observedAt) && fresh(worker.observedAt)
           && worker.expiresAt > current && worker.expiresAt <= worker.observedAt + maxAgeMs
           && identity.deploymentId === scope.deploymentId && identity.serviceId === scope.serviceId && identity.keyId === scope.keyId
           && database.deploymentId === scope.deploymentId && database.projectRef === scope.projectRef && database.schemaRevision === scope.schemaRevision
           && worker.deploymentId === scope.deploymentId && worker.projectRef === scope.projectRef
           && worker.serviceId === scope.serviceId && worker.keyId === scope.keyId;
+        return !expired() && ready;
       } catch { return false; }
       finally { if (timer) clearTimeout(timer); aborter.abort(); }
     },
