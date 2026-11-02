@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chapterDraftBackup, chapterDraftExportWarning, chapterDraftReopenWarning, parseChapterDraftBackup, MAX_CHAPTER_DRAFT_BACKUP_BYTES } from "../lib/chapter-draft";
+import { chapterDraftBackup, chapterDraftExportWarning, chapterDraftReopenWarning, inspectChapterDraftBackup, parseChapterDraftBackup, MAX_CHAPTER_DRAFT_BACKUP_BYTES } from "../lib/chapter-draft";
 import type { BookNode } from "@bookworm/book-model";
 
 const nodes: BookNode[] = [
@@ -40,6 +40,22 @@ test("reopening validates identity, base revision and manuscript blocks", () => 
   assert.throws(() => parse({ ...backup, plainText: "altered" }), /text does not match/);
   assert.throws(() => parse({ ...backup, userId: "" }, { ...input, userId: "" }), /could not be verified/);
   assert.throws(() => parseChapterDraftBackup("{", input), /valid JSON/);
+});
+
+test("legacy backups require explicit provenance acknowledgement and matching chapter and revision", () => {
+  const { userId: _userId, ...backup } = chapterDraftBackup(input);
+  const legacy = { ...backup, formatVersion: 1 };
+  const inspect = (value: unknown, scope = input) => inspectChapterDraftBackup(JSON.stringify(value), scope);
+  assert.deepEqual(inspect(legacy), { nodes, legacy: true });
+  assert.throws(() => parseChapterDraftBackup(JSON.stringify(legacy), input), /explicit confirmation/);
+  assert.throws(() => inspect({ ...legacy, bookId: "another-book" }), /different account, book, or chapter/);
+  assert.throws(() => inspect({ ...legacy, chapterId: "another-chapter" }), /different account, book, or chapter/);
+  assert.throws(() => inspect({ ...legacy, baseVersion: 3 }), /saved chapter has changed/);
+  assert.throws(() => inspect({ ...legacy, canonicalState: "last-valid-draft" }), /invalid editor state/);
+  assert.throws(() => inspect({ ...legacy, nodes: [...nodes, nodes[0]] }), /invalid manuscript blocks/);
+  assert.throws(() => inspect(legacy, { ...input, userId: "" }), /account and chapter could not be verified/);
+  assert.throws(() => inspect({ ...legacy, formatVersion: 3 }), /format cannot be opened/);
+  assert.equal(inspect(chapterDraftBackup(input)).legacy, false);
 });
 
 test("oversize and invalid editor backups explicitly say they cannot be reopened", () => {
