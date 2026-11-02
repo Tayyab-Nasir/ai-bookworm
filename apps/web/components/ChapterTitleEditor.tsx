@@ -8,6 +8,7 @@ import { clearTitleChange, parseTitleChange, persistTitleChange, titleChangeKey,
 
 export type ChapterTitleEditorState = { dirty: boolean; busy: boolean; pending: boolean };
 type Props = { bookId: string; chapterId: string; userId: string; initialTitle: string; canEdit: boolean; disabled: boolean;
+  captureAccountEpoch?: () => number; accountEpochCurrent?: (epoch: number) => boolean;
   onTitle: (title: string) => void; onState: (state: ChapterTitleEditorState) => void };
 
 export default function ChapterTitleEditor(props: Props) {
@@ -50,10 +51,11 @@ export default function ChapterTitleEditor(props: Props) {
     return () => { epoch.current++; callbacks.current.onState({ dirty: false, busy: false, pending: false }); };
   }, [api, bookId, chapterId, userId, attempt]);
 
-  const apply = async (raw: unknown, p: TitleChangePointer, sequence: number) => {
+  const apply = async (raw: unknown, p: TitleChangePointer, sequence: number, accountCurrent: () => boolean) => {
     const result = await validateTitleResult(raw, p);
     await editorAccount(userId);
     if (sequence !== epoch.current) return;
+    if (!accountCurrent()) throw Error("Account verification interrupted title confirmation. Check the original request status.");
     setCurrent(result.current); callbacks.current.onTitle(result.current.title);
     if (result.status === "not_found") { setMissing(true); setNotice("No outcome is recorded yet. This does not cancel an in-flight rename."); return; }
     clearTitleChange(window.sessionStorage, p);
@@ -74,17 +76,21 @@ export default function ChapterTitleEditor(props: Props) {
     if (flight.current || disabled || !ready || (!canEdit && mode !== "read") || (mode !== "save" && !pending)) return;
     if (mode === "save" && (pending || !current || !validChapterTitle(draft.trim()) || draft.trim() === current.title)) return;
     if (mode === "retry" && retainedTitle.current === null) return;
-    const sequence = epoch.current;
+    const sequence = epoch.current, accountEpoch = callbacks.current.captureAccountEpoch?.();
+    const accountCurrent = () => accountEpoch === undefined || callbacks.current.accountEpochCurrent?.(accountEpoch) === true;
+    if (!accountCurrent()) return;
     flight.current = true; setBusy(true); setError(null); setNotice(null);
     callbacks.current.onState({ dirty, busy: true, pending: pending !== null });
     try {
       await editorAccount(userId);
       if (sequence !== epoch.current) return;
+      if (!accountCurrent()) throw Error("Account verification interrupted the title request before it was sent.");
       let pointer = pending;
       if (mode === "save") {
         const value = draft.trim();
         pointer = { schema: 1, bookId, chapterId, userId, operationId: crypto.randomUUID(), expectedRevision: current!.revision, titleDigest: await titleDigest(value) };
         if (sequence !== epoch.current) return;
+        if (!accountCurrent()) throw Error("Account verification interrupted the title request before it was sent.");
         persistTitleChange(window.sessionStorage, pointer);
         retainedTitle.current = value; setPending(pointer); setMissing(false);
       }
@@ -92,10 +98,12 @@ export default function ChapterTitleEditor(props: Props) {
       if (mode === "save" || mode === "retry") {
         if (retainedTitle.current === null || await titleDigest(retainedTitle.current) !== pointer.titleDigest) throw Error("The original title text is not available. Check the saved status instead.");
         if (sequence !== epoch.current) return;
-        await apply(await api.changeChapterTitle(chapterId, pointer.operationId, { title: retainedTitle.current, expectedRevision: pointer.expectedRevision }, userId), pointer, sequence);
+        if (!accountCurrent()) throw Error("Account verification interrupted the title request. Check the original request status.");
+        await apply(await api.changeChapterTitle(chapterId, pointer.operationId, { title: retainedTitle.current, expectedRevision: pointer.expectedRevision }, userId), pointer, sequence, accountCurrent);
       } else {
         const method = mode === "read" ? api.getChapterTitleChange : api.closeChapterTitleChange;
-        await apply(await method(chapterId, pointer.operationId, pointer.expectedRevision, pointer.titleDigest, userId), pointer, sequence);
+        if (!accountCurrent()) throw Error("Account verification interrupted the title request before it was sent.");
+        await apply(await method(chapterId, pointer.operationId, pointer.expectedRevision, pointer.titleDigest, userId), pointer, sequence, accountCurrent);
       }
     } catch (reason) { if (sequence === epoch.current) setError(reason instanceof Error ? reason.message : "The rename outcome is unconfirmed. Check its saved status."); }
     finally { if (sequence === epoch.current) { flight.current = false; setBusy(false); } }

@@ -201,6 +201,262 @@ test("new chapter title and AI brief are protected when leaving the editor", asy
   } finally { await page.close(); }
 });
 
+test("focus hides a previous account's unsaved manuscript and restores it only for that account", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.getByRole("textbox", { name: "Manuscript editor" }).fill("A private unsaved manuscript.");
+    await page.getByLabel("New chapter", { exact: true }).fill("A private chapter setup");
+    actor = "other-author";
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByRole("alert").filter({ hasText: "original account could not be verified" }).waitFor();
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).isVisible(), false);
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+    actor = "fixture-author";
+    await page.getByRole("button", { name: "Recheck original account", exact: true }).click();
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /A private unsaved manuscript/);
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).inputValue(), "A private chapter setup");
+    assert.equal(await page.getByText("Unsaved changes", { exact: true }).count(), 1);
+  } finally { await page.close(); }
+});
+
+test("an older successful focus check cannot reveal a manuscript after a newer account mismatch", async () => {
+  const page = await fixture(1280, true); let release; let calls = 0;
+  let entered; const started = new Promise(resolve => { entered = resolve; });
+  try {
+    await page.route("**/api/auth/session", async route => {
+      if (++calls === 1) { entered(); await new Promise(resolve => { release = resolve; }); return route.fulfill({ json: { user: { id: "fixture-author" } } }); }
+      return route.fulfill({ json: { user: { id: "other-author" } } });
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await started;
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByRole("alert").filter({ hasText: "original account could not be verified" }).waitFor();
+    release();
+    await page.waitForTimeout(100);
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    assert.equal(await page.getByRole("alert").filter({ hasText: "original account could not be verified" }).count(), 1);
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+  } finally { if (release) release(); await page.close(); }
+});
+
+test("focus verification before dispatch interrupts a pending chapter save without losing the draft", async () => {
+  const page = await fixture(1280, true); let release; let calls = 0;
+  let entered; const started = new Promise(resolve => { entered = resolve; });
+  try {
+    await page.getByRole("textbox", { name: "Manuscript editor" }).fill("Draft awaiting account verification.");
+    await page.route("**/api/auth/session", async route => {
+      if (++calls === 1) { entered(); await new Promise(resolve => { release = resolve; }); }
+      return route.fulfill({ json: { user: { id: "fixture-author" } } });
+    });
+    await page.getByRole("button", { name: "Save chapter", exact: true }).click();
+    await started;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    release();
+    await page.getByText("Account verification interrupted the save before it was sent. Your draft remains here.").waitFor();
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /Draft awaiting account verification/);
+  } finally { if (release) release(); await page.close(); }
+});
+
+test("backgrounding immediately hides the editor until the original account is verified on return", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.getByRole("textbox", { name: "Manuscript editor" }).fill("Background draft.");
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
+    await page.getByRole("status").filter({ hasText: "Checking the original account" }).waitFor();
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    actor = "other-author";
+    await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
+    await page.getByRole("alert").filter({ hasText: "original account could not be verified" }).waitFor();
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    actor = "fixture-author";
+    await page.getByRole("button", { name: "Recheck original account", exact: true }).click();
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /Background draft/);
+  } finally { await page.close(); }
+});
+
+test("a delayed editor transaction while account checking remains in the draft and save", async () => {
+  const page = await fixture(1280, true); let actor = "other-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByRole("alert").filter({ hasText: "original account could not be verified" }).waitFor();
+    await page.evaluate(() => document.querySelector(".ProseMirror").editor.commands.insertContent(" delayed local edit"));
+    actor = "fixture-author";
+    await page.getByRole("button", { name: "Recheck original account", exact: true }).click();
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /delayed local edit/);
+    await page.getByRole("button", { name: "Save chapter", exact: true }).click();
+    await page.getByText("Saved · v2", { exact: true }).waitFor();
+    assert.match(JSON.stringify(await page.evaluate(() => window.requests[0].nodes)), /delayed local edit/);
+  } finally { await page.close(); }
+});
+
+test("an account change during an already dispatched save keeps its recovery record and draft", async () => {
+  const page = await fixture(1280, true); let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => { window.bookwormApi.saveChapterDocument = async (chapterId, body) => {
+      window.requests.push(body); await new Promise(resolve => { window.finishDispatchedSave = resolve; });
+      return { version: 2, document: { chapterId, version: 2, nodes: body.nodes } };
+    }; });
+    await page.getByRole("textbox", { name: "Manuscript editor" }).fill("Draft with unconfirmed save.");
+    await page.getByRole("button", { name: "Save chapter", exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishDispatchedSave === "function");
+    actor = "other-author";
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByRole("alert").filter({ hasText: "original account could not be verified" }).waitFor();
+    await page.evaluate(() => window.finishDispatchedSave());
+    await page.waitForTimeout(100);
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
+    actor = "fixture-author";
+    await page.getByRole("button", { name: "Recheck original account", exact: true }).click();
+    const check = page.getByRole("button", { name: "Recheck original account", exact: true });
+    if (await check.isVisible()) await check.click();
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /Draft with unconfirmed save/);
+    assert.equal(await page.getByRole("region", { name: "Manual save recovery" }).count(), 1);
+    assert.equal(await page.evaluate(() => window.requests.length), 1);
+  } finally { await page.close(); }
+});
+
+test("focus verification interrupts title changes awaiting identity without sending them", async () => {
+  const page = await fixture(1280, true); let release; let calls = 0;
+  let entered; const started = new Promise(resolve => { entered = resolve; });
+  try {
+    await page.evaluate(() => { window.titleWrites = 0; window.bookwormApi.changeChapterTitle = async () => { window.titleWrites++; throw new Error("Unexpected title write"); }; });
+    await page.getByRole("button", { name: "Edit chapter title", exact: true }).click();
+    await page.getByLabel("New chapter title", { exact: true }).fill("A preserved title");
+    await page.route("**/api/auth/session", async route => {
+      if (++calls === 1) { entered(); await new Promise(resolve => { release = resolve; }); }
+      return route.fulfill({ json: { user: { id: "fixture-author" } } });
+    });
+    await page.getByRole("button", { name: "Save title", exact: true }).click();
+    await started;
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    release();
+    await page.getByText("Account verification interrupted the title request before it was sent.").waitFor();
+    assert.equal(await page.evaluate(() => window.titleWrites), 0);
+    assert.equal(await page.getByLabel("New chapter title", { exact: true }).inputValue(), "A preserved title");
+  } finally { if (release) release(); await page.close(); }
+});
+
+test("a same-turn focus lock blocks an AI count before React hides the editor", async () => {
+  const page = await fixture(1280, true, true);
+  try {
+    await page.evaluate(() => { window.aiCountWrites = 0; window.bookwormApi.createAiReviewQuote = async () => { window.aiCountWrites++; throw Error("Unexpected AI count"); }; });
+    await page.getByRole("checkbox", { name: /I agree to send the selected saved chapter/ }).check();
+    const button = page.getByRole("button", { name: "Prepare usage quote", exact: true });
+    await button.waitFor();
+    assert.equal(await button.isEnabled(), true);
+    await page.evaluate(() => {
+      const button = [...document.querySelectorAll("button")].find(item => item.textContent.trim() === "Prepare usage quote");
+      window.dispatchEvent(new Event("focus")); button.click();
+    });
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.equal(await page.evaluate(() => window.aiCountWrites), 0);
+  } finally { await page.close(); }
+});
+
+test("a same-turn focus lock blocks a chapter title write before React hides the editor", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => { window.titleWrites = 0; window.bookwormApi.changeChapterTitle = async () => { window.titleWrites++; throw Error("Unexpected title write"); }; });
+    await page.getByRole("button", { name: "Edit chapter title", exact: true }).click();
+    await page.getByLabel("New chapter title", { exact: true }).fill("Title awaiting confirmation");
+    await page.evaluate(() => {
+      const button = [...document.querySelectorAll("button")].find(item => item.textContent.trim() === "Save title");
+      window.dispatchEvent(new Event("focus")); button.click();
+    });
+    await page.getByRole("textbox", { name: "Manuscript editor" }).waitFor();
+    assert.equal(await page.evaluate(() => window.titleWrites), 0);
+    assert.equal(await page.getByLabel("New chapter title", { exact: true }).inputValue(), "Title awaiting confirmation");
+  } finally { await page.close(); }
+});
+
+test("interrupted chapter switching surfaces a retry instead of an empty-book prompt", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      const read = window.bookwormApi.getChapterDocument;
+      window.bookwormApi.getChapterDocument = async chapterId => {
+        if (chapterId === "second") await new Promise(resolve => { window.finishSecondChapter = resolve; });
+        return read(chapterId);
+      };
+    });
+    await page.getByRole("button", { name: /02 Second chapter/ }).click();
+    await page.waitForFunction(() => typeof window.finishSecondChapter === "function");
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.evaluate(() => window.finishSecondChapter());
+    await page.getByText("Account verification interrupted manuscript loading. Retry after verifying the original account.").waitFor();
+    assert.equal(await page.getByText("Add your first chapter to start writing.").count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Retry loading chapter" }).count(), 1);
+  } finally { await page.close(); }
+});
+
+test("a focus check after chapter creation dispatch retains the original recovery key", async () => {
+  const page = await fixture(1280, true); let releaseAccount; let accountCalls = 0;
+  let entered; const started = new Promise(resolve => { entered = resolve; });
+  try {
+    await page.evaluate(() => {
+      window.creationKeys = [];
+      window.bookwormApi.createChapter = async (bookId, body) => {
+        window.creationKeys.push(body.idempotencyKey);
+        if (window.creationKeys.length === 1) await new Promise(resolve => { window.finishCreation = resolve; });
+        return { chapter: { id: "new-chapter", book_id: bookId, title: body.title } };
+      };
+      window.bookwormApi.listChapters = async () => ({ chapters: [
+        { id: "chapter", book_id: "book", title: "First chapter" },
+        { id: "second", book_id: "book", title: "Second chapter" },
+        { id: "new-chapter", book_id: "book", title: "Pending chapter" },
+      ] });
+    });
+    await page.getByLabel("New chapter", { exact: true }).fill("Pending chapter");
+    await page.getByRole("button", { name: "Add chapter", exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishCreation === "function");
+    await page.route("**/api/auth/session", async route => {
+      if (++accountCalls === 1) { entered(); await new Promise(resolve => { releaseAccount = resolve; }); }
+      return route.fulfill({ json: { user: { id: "fixture-author" } } });
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await started;
+    await page.evaluate(() => window.finishCreation());
+    await page.waitForFunction(() => window.creationKeys.length === 1);
+    await page.waitForTimeout(100);
+    releaseAccount();
+    await page.getByRole("button", { name: "Retry chapter creation", exact: true }).waitFor();
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).inputValue(), "Pending chapter");
+    await page.getByRole("button", { name: "Retry chapter creation", exact: true }).click();
+    await page.waitForFunction(() => window.creationKeys.length === 2);
+    const keys = await page.evaluate(() => window.creationKeys);
+    assert.equal(keys[0], keys[1]);
+  } finally { if (releaseAccount) releaseAccount(); await page.close(); }
+});
+
+test("AI panel does not fetch until a changed book's account is verified", async () => {
+  const page = await fixture(1280, true, true); let release;
+  let entered; const started = new Promise(resolve => { entered = resolve; });
+  try {
+    await page.evaluate(() => { window.aiReads = 0;
+      window.bookwormApi.listAiJobs = async () => { window.aiReads++; return { jobs: [] }; };
+      window.bookwormApi.listAiReviewModels = async () => { window.aiReads++; return { models: [] }; };
+    });
+    await page.route("**/api/auth/session", async route => { entered(); await new Promise(resolve => { release = resolve; }); return route.fulfill({ json: { user: { id: "fixture-author" } } }); });
+    await page.evaluate(() => window.renderBookEditor({ bookId: "other-book" }));
+    await started;
+    await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(() => window.aiReads), 0);
+  } finally { if (release) release(); await page.close(); }
+});
+
 test("chapter setup stays scoped to its book and verified account across a mounted book change", async () => {
   const page = await fixture(1280, true);
   let actor = "fixture-author";

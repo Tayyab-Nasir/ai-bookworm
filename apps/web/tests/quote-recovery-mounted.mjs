@@ -19,7 +19,7 @@ const bundle = await build({
     import BibleSource from "./apps/web/components/BibleSourcePassage.tsx";
     const root = createRoot(document.getElementById("root"));
     window.apiError = (status, message) => new ApiClientError(status, "fixture_error", message, "fixture-request");
-    window.renderPanel = props => root.render(React.createElement(Panel, {...props, onApplied: async () => {
+    window.renderPanel = props => root.render(React.createElement(Panel, {...props, canDispatch: () => window.panelCanDispatch !== false, onApplied: async () => {
       window.appliedCallbacks.push(props.chapterId); if (window.onApplied) await window.onApplied(); }}));
     const imageScope = { actor: "00000000-0000-4000-8000-000000000001", current: () => true,
       begin: () => () => true, checked: async work => work() };
@@ -36,7 +36,7 @@ const bundle = await build({
     builder.onResolve({ filter: /^@bookworm\/api-client$/ }, args => args.importer.replaceAll("\\", "/").endsWith("/components/ImageQuoteStudio.tsx") ? { path: "image-client", namespace: "fixture" } : undefined);
     builder.onLoad({ filter: /^image-client$/, namespace: "fixture" }, () => ({ contents: 'export const createClient = ({ expectedActor }) => { if (expectedActor !== "00000000-0000-4000-8000-000000000001") throw new Error("Unexpected image actor"); return window.api; };' }));
     builder.onResolve({ filter: /^\.\/api$/ }, args => args.importer.replaceAll("\\", "/").includes(resolve("apps/web/components").replaceAll("\\", "/")) ? { path: "api", namespace: "fixture" } : undefined);
-    builder.onLoad({ filter: /^api$/, namespace: "fixture" }, () => ({ contents: "export const apiClient = () => window.api;" }));
+    builder.onLoad({ filter: /^api$/, namespace: "fixture" }, () => ({ contents: "export const apiClient = actor => { window.boundActors?.push(actor); return window.api; };" }));
     builder.onResolve({ filter: /\.module\.css$/ }, () => ({ path: "styles", namespace: "fixture" }));
     builder.onLoad({ filter: /^styles$/, namespace: "fixture" }, () => ({ contents: "export default {};" }));
     builder.onResolve({ filter: /^next\/link$/ }, () => ({ path: "link", namespace: "fixture" }));
@@ -44,6 +44,20 @@ const bundle = await build({
   } }],
 });
 const script = bundle.outputFiles[0].text;
+const realActorBundle = await build({
+  stdin: { contents: `import React from "react"; import { createRoot } from "react-dom/client";
+    import Panel from "./apps/web/components/AiAssistantPanel.tsx";
+    const root = createRoot(document.getElementById("real-panel-root"));
+    window.renderRealActorPanel = props => root.render(React.createElement(Panel, { ...props, canDispatch: () => true, onApplied: async () => {} }));`,
+    resolveDir: process.cwd(), loader: "tsx" },
+  bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
+  plugins: [{ name: "real-actor-panel-link", setup(builder) {
+    builder.onResolve({ filter: /^next\/link$/ }, () => ({ path: "link", namespace: "fixture" }));
+    builder.onLoad({ filter: /^link$/, namespace: "fixture" }, () => ({ contents: 'import React from "react"; export default function Link(props) { return React.createElement("a", props); }', resolveDir: process.cwd() }));
+    builder.onResolve({ filter: /\.module\.css$/ }, () => ({ path: "styles", namespace: "fixture" }));
+    builder.onLoad({ filter: /^styles$/, namespace: "fixture" }, () => ({ contents: "export default {};" }));
+  } }],
+});
 const stylePath = resolve("apps/web/styles/globals.css");
 const styles = await postcss([tailwind({ base: resolve("apps/web"), optimize: false })]).process(await readFile(stylePath, "utf8"), { from: stylePath });
 const instrument = (await readFile(resolve("apps/web/app/fonts/instrument-serif-italic.ttf"))).toString("base64");
@@ -64,6 +78,7 @@ async function fixture({ width = 1280, styled = false } = {}) {
     body {font-family:var(--font-inter);color:#fff}` });
   await page.evaluate(() => {
     window.appliedCallbacks = [];
+    window.boundActors = [];
     window.calls = [];
     window.gates = {};
     window.defer = name => new Promise((resolve, reject) => { window.gates[name] = { resolve, reject }; });
@@ -85,8 +100,60 @@ async function fixture({ width = 1280, styled = false } = {}) {
   await page.addScriptTag({ content: script });
   return page;
 }
-const props = (bookId = "a-book", chapterId = "a-chapter", initialJobId) => ({ bookId, chapterId, initialJobId,
+const props = (bookId = "a-book", chapterId = "a-chapter", initialJobId) => ({ actorId: "00000000-0000-4000-8000-000000000001", bookId, chapterId, initialJobId,
   savedChapter: { chapterId, version: 1, nodes: [{ id: "n1", type: "paragraph", text: "The old moon rose." }] }, editable: true, dirty: false });
+
+test("AI review binds its API to the verified editor actor and rejects a changed session", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(input => {
+      const base = window.fetch;
+      window.fetch = (path, init) => path === "/api/auth/session"
+        ? Promise.resolve(Response.json({ user: { id: "different-account" } })) : base(path, init);
+      window.renderPanel(input);
+    }, props());
+    await expect(page.getByText("Your account changed. Verify the original account before recovering AI review.")).toBeVisible();
+    assert.ok((await page.evaluate(() => window.boundActors)).every(actor => actor === "00000000-0000-4000-8000-000000000001"));
+  } finally { await page.close(); }
+});
+
+test("real AI client sends the original actor header when the current session changes", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => {
+      const root = document.createElement("div"); root.id = "real-panel-root"; document.body.append(root);
+      window.actorHeaders = [];
+      window.fetch = async (path, init) => {
+        if (path === "/api/auth/session") return Response.json({ user: { id: "different-account" } });
+        if (String(path).startsWith("/api/backend/")) {
+          window.actorHeaders.push(new Headers(init?.headers).get("x-bookworm-actor"));
+          return Response.json({ error: { code: "actor_mismatch", message: "Original account required", requestId: "fixture" } }, { status: 409 });
+        }
+        throw new Error("Unexpected fixture request");
+      };
+    });
+    await page.addScriptTag({ content: realActorBundle.outputFiles[0].text });
+    await page.evaluate(input => window.renderRealActorPanel(input), props());
+    await page.waitForFunction(() => window.actorHeaders.length >= 2);
+    assert.deepEqual(await page.evaluate(() => window.actorHeaders), ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000001"]);
+    await expect(page.getByText("Your account changed. Verify the original account before recovering AI review.")).toBeVisible();
+  } finally { await page.close(); }
+});
+
+test("a synchronous account lock blocks an AI token count before any dispatch", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(input => {
+      window.api.createAiReviewQuote = async () => { window.calls.push({ operation: "review-create" }); throw new Error("Unexpected paid request"); };
+      window.renderPanel(input);
+    }, props());
+    await page.getByRole("checkbox", { name: /I agree to send the selected saved chapter/ }).check();
+    await expect(page.getByRole("button", { name: "Prepare usage quote" })).toBeEnabled();
+    await page.evaluate(() => { window.panelCanDispatch = false; });
+    await page.getByRole("button", { name: "Prepare usage quote" }).click();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "review-create").length), 0);
+  } finally { await page.close(); }
+});
 
 test("Book Bible source reader fences changed citation and account before showing saved text", async () => {
   const page = await fixture();
