@@ -44,6 +44,7 @@ async function fixture() {
   await page.goto("http://127.0.0.1/books/11111111-1111-4111-8111-111111111111/memory");
   await page.evaluate(() => {
     window.prompts = []; window.confirmAnswer = false; window.navigations = 0; window.writes = [];
+    window.actor = "33333333-3333-4333-8333-333333333333";
     window.confirm = message => { window.prompts.push(message); return window.confirmAnswer; };
     window.bookwormApi = { adminAccess: async () => ({ admin: false }), claimReferral: async () => ({ claimed: true }) };
     window.savedMemory = bookId => ({
@@ -52,7 +53,7 @@ async function fixture() {
       items: [], chapters: [], imageAssets: [], canEdit: true,
     });
     window.fetch = async (path, init) => {
-      if (path === "/api/auth/session") return Response.json({ user: { id: "33333333-3333-4333-8333-333333333333", email: "author@example.test" } });
+      if (path === "/api/auth/session") return Response.json({ user: { id: window.actor, email: "author@example.test" } });
       const method = init?.method ?? "GET";
       const url = new URL(path, window.location.origin);
       const bookId = url.pathname.split("/")[5];
@@ -60,7 +61,7 @@ async function fixture() {
       if (method === "GET" && url.pathname.endsWith("/models")) return Response.json({ models: [], catalogVersion: "fixture" });
       if (method === "GET" && url.pathname.endsWith("/drafts")) return Response.json({ drafts: [], pending: [] });
       const body = JSON.parse(init.body);
-      window.writes.push({ path: url.pathname, method, body });
+      window.writes.push({ path: url.pathname, method, body, actor: init?.headers?.["X-Bookworm-Actor"] });
       if (method === "POST" && url.pathname.endsWith("/bible")) return Response.json({ receipt: {
         requestId: body.requestId, bookId, action: "create", itemId: "44444444-4444-4444-8444-444444444444",
         intentHash: "a".repeat(64), resultHash: "b".repeat(64), resultUpdatedAt: "2026-10-13T00:01:00.000Z", committedAt: "2026-10-13T00:01:00.000Z",
@@ -173,5 +174,223 @@ test("modified, new-tab, download and same-destination links retain the draft wi
     assert.equal(await page.evaluate(() => window.prompts.length), 0);
     await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Keep this metadata draft");
     assert.equal(page.url(), "http://127.0.0.1/books/11111111-1111-4111-8111-111111111111/memory");
+  } finally { await page.close(); }
+});
+
+
+test("account change prevents metadata write and retains the unsaved draft", async () => {
+  const page = await fixture();
+  try {
+    await page.getByRole("textbox", { name: "Book description", exact: true }).fill("Original account private draft");
+    await page.evaluate(() => { window.actor = "55555555-5555-4555-8555-555555555555"; });
+    await page.getByRole("button", { name: "Save metadata", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "Your account changed" })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.writes.length), 0);
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveCount(0);
+    await page.evaluate(() => { window.actor = "33333333-3333-4333-8333-333333333333"; });
+    await page.getByRole("button", { name: "Verify original account" }).click();
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Original account private draft");
+  } finally { await page.close(); }
+});
+
+test("legacy paid checkpoints are quarantined when ownership cannot be verified", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => window.clearMemory());
+    await expect(page.getByRole("button", { name: "Reload saved data", exact: true })).toHaveCount(0);
+    await page.evaluate(() => {
+      const book = "11111111-1111-4111-8111-111111111111";
+      const intent = { idempotencyKey: "legacy-key-12345", body: { modelId: "writer", idempotencyKey: "legacy-key-12345", allowProviderTokenCounting: true, chapterIds: ["chapter"], maxTokens: 12000, audience: "Original owner audience" } };
+      sessionStorage.setItem(`bookworm:metadata-quote:v1:${book}`, JSON.stringify(intent));
+      sessionStorage.setItem(`bookworm:bible-quote:v1:${book}`, JSON.stringify(intent));
+      window.actor = "55555555-5555-4555-8555-555555555555";
+      window.recoveryCalls = [];
+      const next = window.fetch;
+      window.fetch = async (path, init) => {
+        if (String(path).endsWith("/quotes/recover")) {
+          window.recoveryCalls.push({ path, actor: init?.headers?.["X-Bookworm-Actor"] });
+          return Response.json({ error: { message: "No saved quote found" } }, { status: 404 });
+        }
+        if (String(path).endsWith("/quotes")) throw new Error("unexpected paid quote");
+        return next(path, init);
+      };
+      window.renderMemory();
+    });
+    await expect(page.getByText(/Quote requests are paused until browser recovery is available/)).toBeVisible();
+    await expect(page.getByText(/The saved quote pointer is retained/)).toBeVisible();
+    const result = await page.evaluate(() => ({ calls: window.recoveryCalls, keys: Object.keys(sessionStorage), writes: window.writes.length }));
+    assert.equal(result.calls.length, 2);
+    assert.ok(result.calls.every(call => call.actor === "55555555-5555-4555-8555-555555555555"));
+    assert.ok(result.keys.some(key => key.startsWith("bookworm:metadata-quote:v1:")));
+    assert.ok(result.keys.some(key => key.startsWith("bookworm:bible-quote:v1:")));
+    assert.equal(result.writes, 0);
+    assert.equal(await page.getByText("Original owner audience").count(), 0);
+  } finally { await page.close(); }
+});
+
+test("legacy quote keys migrate only after owner-scoped read-only recovery", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => window.clearMemory());
+    await expect(page.getByRole("button", { name: "Reload saved data", exact: true })).toHaveCount(0);
+    await page.evaluate(() => {
+      const book = "11111111-1111-4111-8111-111111111111";
+      const intent = { idempotencyKey: "legacy-key-12345", body: { modelId: "writer", idempotencyKey: "legacy-key-12345", allowProviderTokenCounting: true, chapterIds: ["chapter"], maxTokens: 12000 } };
+      sessionStorage.setItem(`bookworm:metadata-quote:v1:${book}`, JSON.stringify(intent));
+      sessionStorage.setItem(`bookworm:bible-quote:v1:${book}`, JSON.stringify(intent));
+      window.recoveryCalls = [];
+      const next = window.fetch;
+      window.fetch = async (path, init) => {
+        const p = String(path);
+        if (p.endsWith("/metadata/quotes/recover")) { window.recoveryCalls.push(p); return Response.json({ request: { id: "metadata-request", status: "counting" }, quote: null }); }
+        if (p.endsWith("/bible/quotes/recover")) { window.recoveryCalls.push(p); return Response.json({ quote: { requestId: "bible-request", status: "counting" }, job: null }); }
+        if (p.endsWith("/bible/quotes/bible-request")) { window.recoveryCalls.push(p); return Response.json({ quote: { requestId: "bible-request", status: "counting" }, job: null }); }
+        if (p.endsWith("/quotes")) throw new Error("unexpected paid quote");
+        return next(path, init);
+      };
+      window.renderMemory();
+    });
+    await expect(page.getByRole("button", { name: "Reload saved data", exact: true })).toBeEnabled();
+    await page.waitForFunction(() => window.recoveryCalls.length === 3);
+    const result = await page.evaluate(() => ({ keys: Object.keys(sessionStorage), writes: window.writes.length, calls: window.recoveryCalls }));
+    assert.ok(result.keys.some(key => key.startsWith("bookworm:metadata-quote:v2:33333333-3333-4333-8333-333333333333:")));
+    assert.ok(result.keys.some(key => key.startsWith("bookworm:bible-quote:v2:33333333-3333-4333-8333-333333333333:")));
+    assert.equal(result.keys.some(key => key.includes("-quote:v1:")), false);
+    assert.equal(result.writes, 0);
+  } finally { await page.close(); }
+});
+
+
+test("late metadata reply is not adopted after the account changes", async () => {
+  const page = await fixture();
+  try {
+    await page.getByRole("textbox", { name: "Book description", exact: true }).fill("Draft held for the original author");
+    await page.evaluate(() => { window.holdMetadataSave = true; });
+    await page.getByRole("button", { name: "Save metadata", exact: true }).click();
+    await page.waitForFunction(() => typeof window.releaseMetadataSave === "function");
+    assert.equal(await page.evaluate(() => window.writes[0].actor), "33333333-3333-4333-8333-333333333333");
+    await page.evaluate(() => { window.actor = "55555555-5555-4555-8555-555555555555"; window.releaseMetadataSave(); });
+    await expect(page.getByRole("alert").filter({ hasText: "Your account changed" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveCount(0);
+    await page.evaluate(() => { window.actor = "33333333-3333-4333-8333-333333333333"; });
+    await page.getByRole("button", { name: "Verify original account" }).click();
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Draft held for the original author");
+    assert.equal(await page.getByText("Publishing metadata saved.").count(), 0);
+  } finally { await page.close(); }
+});
+
+
+test("account-scoped checkpoints are not read or changed by a second account", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => window.clearMemory());
+    await expect(page.getByRole("button", { name: "Reload saved data", exact: true })).toHaveCount(0);
+    const original = await page.evaluate(() => {
+      const book="11111111-1111-4111-8111-111111111111", owner="33333333-3333-4333-8333-333333333333";
+      const key=`bookworm:metadata-quote:v2:${owner}:${book}`;
+      const pointer=JSON.stringify({idempotencyKey:"private-key-12345",body:{idempotencyKey:"private-key-12345",modelId:"writer",chapterIds:["chapter"],allowProviderTokenCounting:true,audience:"Original account audience"}});
+      sessionStorage.setItem(key,pointer);window.actor="55555555-5555-4555-8555-555555555555";window.renderMemory();return {key,pointer};
+    });
+    await expect(page.getByRole("button", { name: "Reload saved data", exact: true })).toBeEnabled();
+    assert.equal(await page.evaluate(key => sessionStorage.getItem(key), original.key), original.pointer);
+    assert.equal(await page.getByText("Original account audience").count(), 0);
+    assert.equal(await page.evaluate(() => window.writes.length), 0);
+  } finally { await page.close(); }
+});
+
+
+test("late response from an earlier book does not hide or overwrite the new book", async () => {
+  const page = await fixture();
+  try {
+    await page.getByRole("textbox", { name: "Book description", exact: true }).fill("Older book draft");
+    await page.evaluate(() => { window.holdMetadataSave = true; });
+    await page.getByRole("button", { name: "Save metadata", exact: true }).click();
+    await page.waitForFunction(() => typeof window.releaseMetadataSave === "function");
+    await page.evaluate(() => window.renderMemory("22222222-2222-4222-8222-222222222222"));
+    await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Saved 22222222-2222-4222-8222-222222222222");
+    await page.evaluate(() => window.releaseMetadataSave());
+    await expect(page.getByRole("textbox", { name: "Title", exact: true })).toHaveValue("Saved 22222222-2222-4222-8222-222222222222");
+    assert.equal(await page.getByText("Your account changed or could not be verified.").count(), 0);
+  } finally { await page.close(); }
+});
+
+test("book search checks the original account before reading private sources", async () => {
+  const page = await fixture();
+  try {
+    await page.getByRole("searchbox", { name: "Words or phrase" }).fill("private name");
+    await page.evaluate(() => { window.actor = "55555555-5555-4555-8555-555555555555"; });
+    await page.getByRole("button", { name: "Search saved sources" }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "Your account changed" })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.writes.length), 0);
+    await expect(page.getByRole("searchbox", { name: "Words or phrase" })).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
+
+test("original account cannot reveal hidden draft after book access is revoked", async () => {
+  const page = await fixture();
+  try {
+    await page.getByRole("textbox", { name: "Book description", exact: true }).fill("Draft remains in this tab");
+    await page.evaluate(() => { window.actor = "55555555-5555-4555-8555-555555555555"; });
+    await page.getByRole("button", { name: "Save metadata", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "Your account changed" })).toBeVisible();
+    await page.evaluate(() => {
+      window.actor = "33333333-3333-4333-8333-333333333333";
+      const next=window.fetch; window.denyMemory=true;
+      window.fetch=async(path,init) => window.denyMemory && String(path).endsWith("/memory")
+        ? Response.json({error:{message:"Access revoked"}},{status:403}) : next(path,init);
+    });
+    await page.getByRole("button", { name: "Verify original account" }).click();
+    await expect(page.getByText("Access revoked")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveCount(0);
+    await page.evaluate(() => { window.denyMemory=false; });
+    await page.getByRole("button", { name: "Verify original account" }).click();
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Draft remains in this tab");
+  } finally { await page.close(); }
+});
+
+
+test("returning to a tab after account switch hides private book data and preserves its draft", async () => {
+  const page = await fixture();
+  try {
+    await page.getByRole("textbox", { name: "Book description", exact: true }).fill("Private unsaved material");
+    await page.evaluate(() => { window.actor="55555555-5555-4555-8555-555555555555"; window.dispatchEvent(new Event("focus")); });
+    await expect(page.getByRole("alert").filter({ hasText: "Your account changed" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveCount(0);
+    await page.evaluate(() => { window.actor="33333333-3333-4333-8333-333333333333"; });
+    await page.getByRole("button", { name: "Verify original account" }).click();
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Private unsaved material");
+  } finally { await page.close(); }
+});
+
+
+test("recovered accepted Bible quote never offers another acceptance", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => window.clearMemory());
+    await expect(page.getByRole("button", { name: "Reload saved data", exact: true })).toHaveCount(0);
+    await page.evaluate(() => {
+      const book="11111111-1111-4111-8111-111111111111", owner="33333333-3333-4333-8333-333333333333", key="accepted-key-12345";
+      sessionStorage.setItem(`bookworm:bible-quote:v2:${owner}:${book}`,JSON.stringify({idempotencyKey:key,requestId:"bible-request",body:{modelId:"writer",idempotencyKey:key,allowProviderTokenCounting:true,chapterIds:["chapter"],maxTokens:12000}}));
+      const next=window.fetch;
+      window.fetch=async(path,init)=>String(path).endsWith("/bible/quotes/bible-request")
+        ? Response.json({quote:{requestId:"bible-request",status:"ready",model:"writer",countedInputTokens:10,maxOutputTokens:100,reservedCredits:5,expiresAt:"2099-01-01T00:00:00.000Z"},job:{id:"existing-job",status:"queued"}})
+        : next(path,init);
+      window.renderMemory();
+    });
+    await expect(page.getByText(/Accepted extraction.*existing-job/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Accept quote and start extraction" })).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
+
+test("failed metadata save retains draft and warns that the outcome may be unconfirmed", async () => {
+  const page = await fixture();
+  try {
+    await page.getByRole("textbox", { name: "Book description", exact: true }).fill("Unsaved draft after lost reply");
+    await page.evaluate(() => { const next=window.fetch; window.fetch=async(path,init) => String(path).endsWith("/metadata") && init?.method === "PUT" ? Promise.reject(new Error("Connection lost")) : next(path,init); });
+    await page.getByRole("button", { name: "Save metadata", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "Save outcome may be unconfirmed" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Unsaved draft after lost reply");
   } finally { await page.close(); }
 });

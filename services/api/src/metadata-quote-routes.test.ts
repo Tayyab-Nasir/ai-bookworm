@@ -127,6 +127,10 @@ test("metadata quote recovery is key-first, read-only and independent of current
   store.document_versions=[];delete process.env.METADATA_PRICING_CATALOG_JSON;
   const recovered=await app.inject({method:"POST",url:`/v1/books/${BOOK}/metadata/quotes/recover`,headers:auth,payload:{idempotencyKey:payload.idempotencyKey}});
   assert.equal(recovered.statusCode,200,recovered.body);assert.equal(recovered.json().request.id,saved.request.id);
+  const verified=await app.inject({method:"POST",url:`/v1/books/${BOOK}/metadata/quotes/recover`,headers:auth,payload:{idempotencyKey:payload.idempotencyKey,expected:payload}});
+  assert.equal(verified.statusCode,200,verified.body);
+  const altered=await app.inject({method:"POST",url:`/v1/books/${BOOK}/metadata/quotes/recover`,headers:auth,payload:{idempotencyKey:payload.idempotencyKey,expected:{...payload,tone:"different"}}});
+  assert.equal(altered.statusCode,409,altered.body);
   assert.deepEqual(recovered.json().quote,saved.quote);assert.equal(recovered.headers["cache-control"],"private, no-store");
   assert.ok(!recovered.body.includes(SOURCE));assert.ok(!recovered.body.includes("approvalReference"));
   const replay=await app.inject({method:"POST",url:`/v1/books/${BOOK}/metadata/quotes`,headers:auth,payload});

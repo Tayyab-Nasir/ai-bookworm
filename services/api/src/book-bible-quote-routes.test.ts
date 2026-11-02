@@ -348,3 +348,33 @@ test("rejected legacy acceptance does not claim a concurrent acceptance did not 
   assert.equal(status.statusCode, 200, status.body);
   assert.equal(status.json().job.id, row.generation_job_id);
 });
+
+
+test("recover by key is scoped and never starts counting or acceptance", async (t) => {
+  withEnv(t);
+  const { factory, state, rpcCalls } = setup(); let providerCalls = 0;
+  const app = await makeApp(factory, async () => { providerCalls++; return Response.json({ inputTokens: 420, inputSha256: "a".repeat(64),
+    model: "gpt-6-astra-2026-09-01", maxOutputTokens: 1200, agentType: "bookbible" }); }); t.after(() => app.close());
+  const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes`, headers: auth, payload: payload() });
+  assert.equal(created.statusCode, 201, created.body);
+  const requestId = created.json().quote.requestId, before = rpcCalls.length;
+  const lookup = () => app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes/recover`, headers: auth, payload: { idempotencyKey: payload().idempotencyKey } });
+  const recovered = await lookup();
+  assert.equal(recovered.statusCode, 200, recovered.body); assert.equal(recovered.json().quote.requestId, requestId);
+  assert.equal(recovered.headers["cache-control"], "private, no-store"); assert.equal(rpcCalls.length, before); assert.equal(providerCalls, 1);
+  const row = state.book_bible_token_quote_requests[0]!; row.user_id = "66666666-6666-4666-8666-666666666666";
+  const foreign = await lookup(); assert.equal(foreign.statusCode, 404, foreign.body);
+  assert.equal(rpcCalls.length, before); assert.equal(providerCalls, 1); assert.deepEqual(state.credit_reservations, []);
+});
+
+
+test("legacy Bible recovery validates the original body without charging or recounting", async (t) => {
+  withEnv(t); const { factory, state, rpcCalls } = setup(); let calls = 0;
+  const app = await makeApp(factory, async () => { calls++; return Response.json({ inputTokens: 420, inputSha256: "a".repeat(64), model: "gpt-6-astra-2026-09-01", maxOutputTokens: 1200, agentType: "bookbible" }); }); t.after(() => app.close());
+  const original = payload(); const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes`, headers: auth, payload: original });
+  assert.equal(created.statusCode, 201, created.body); const before = rpcCalls.length;
+  const recover = (expected: Row) => app.inject({ method: "POST", url: `/v1/books/${BOOK}/bible/quotes/recover`, headers: auth, payload: { idempotencyKey: original.idempotencyKey, expected } });
+  assert.equal((await recover(original)).statusCode, 200);
+  const mismatch = await recover({ ...original, maxTokens: 6000 }); assert.equal(mismatch.statusCode, 409, mismatch.body);
+  assert.equal(rpcCalls.length, before); assert.equal(calls, 1); assert.deepEqual(state.credit_reservations, []);
+});

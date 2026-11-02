@@ -189,6 +189,50 @@ export function bookBibleQuoteRoutes(app: FastifyInstance, options: { fetcher?: 
     }
   });
 
+  // Read-only recovery by the original browser key. This never creates a quote.
+  app.post("/books/:bookId/bible/quotes/recover", async (req, reply) => {
+    const bookId = parse(id, (req.params as { bookId: string }).bookId, "Valid book ID required.");
+    const body = parse(z.object({ idempotencyKey: z.string().trim().min(8).max(200), expected: bodySchema.optional() }).strict(), req.body, "The original Book Bible request key is required.");
+    const { book, user } = await scopedBook(app, req, bookId);
+    const service = app.supabaseFactory();
+    const found = await service.from("book_bible_token_quote_requests").select("*")
+      .eq("user_id", req.userId).eq("book_id", bookId).eq("workspace_id", book.workspace_id)
+      .eq("idempotency_key", body.idempotencyKey).maybeSingle();
+    if (found.error) throw new AppError(503, "Could not recover Book Bible quote status. Keep the original request key.");
+    if (!found.data) throw new AppError(404, "No saved Book Bible quote was found for this request key.");
+    const saved = parse(requestRow, found.data, "Book Bible quote is unavailable.");
+    if (saved.user_id !== req.userId || saved.book_id !== bookId || saved.workspace_id !== book.workspace_id
+      || saved.idempotency_key !== body.idempotencyKey) throw new AppError(503, "Book Bible quote identity could not be verified.");
+    if (body.expected && !saved.accepted_job_id) {
+      const expected = body.expected;
+      if (expected.idempotencyKey !== body.idempotencyKey) throw new AppError(409, "The Book Bible checkpoint does not match its request key.");
+      const plan = await loadBibleReadingPlan(user, bookId, expected.chapterIds, expected.maxTokens);
+      const reading = z.object({ reading: z.object({ fingerprint: z.string(), pageIndex: z.number().int().nonnegative() }) }).passthrough().safeParse(saved.source_versions_json);
+      const stored = z.object({ model: z.string(), contextPolicy: z.object({ maxTokens: z.number() }).passthrough(),
+        input: z.object({ chapters: z.unknown() }).passthrough() }).passthrough().safeParse(saved.generation_request_json);
+      const entries = z.object({ entries: z.array(z.object({ id: z.string(), price: z.object({ model: z.string() }).passthrough() }).passthrough()) }).passthrough().safeParse(saved.catalog_json);
+      const entry = entries.success ? entries.data.entries.find(item => item.id === expected.modelId) : null;
+      const pageIndex = expected.reading?.pageIndex ?? 0;
+      const page = plan.pages[pageIndex];
+      if (!reading.success || !stored.success || !entry || entry.price.model !== stored.data.model
+        || stored.data.contextPolicy.maxTokens !== expected.maxTokens || !page
+        || (!expected.reading && plan.pages.length !== 1) || (expected.reading && expected.reading.fingerprint !== plan.fingerprint)
+        || reading.data.reading.fingerprint !== plan.fingerprint || reading.data.reading.pageIndex !== pageIndex
+        || !isDeepStrictEqual(stored.data.input.chapters, page.chapters)) {
+        throw new AppError(409, "The saved Book Bible quote differs from this checkpoint or its manuscript changed. Keep the original request for review.");
+      }
+    }
+    let job: { id: string; status: string; errorCode?: string } | null = null;
+    if (saved.accepted_job_id) {
+      const current = await service.from("ai_jobs").select("id,status,error_code").eq("id", saved.accepted_job_id)
+        .eq("book_id", bookId).eq("created_by", req.userId).eq("billing_mode", "quoted").maybeSingle();
+      if (current.error || !current.data) throw new AppError(503, "Could not recover accepted Book Bible job status.");
+      job = { id: current.data.id, status: current.data.status, ...(current.data.error_code ? { errorCode: current.data.error_code } : {}) };
+    }
+    reply.header("cache-control", "private, no-store");
+    return { quote: quoteView(saved, { id: saved.id, userId: req.userId, bookId, workspaceId: book.workspace_id }), job };
+  });
+
   app.get("/books/:bookId/bible/quotes/:requestId", async (req, reply) => {
     const params = parse(z.object({ bookId: id, requestId: id }), req.params, "Valid Book Bible quote IDs required.");
     const { book } = await scopedBook(app, req, params.bookId);

@@ -13,7 +13,7 @@ test("paid counting requires durable same-key browser recovery before submission
   const writes: { key: string; value: string }[] = [];
   persistPaidQuoteIntent({ setItem: (key, value) => { writes.push({ key, value }); }, removeItem: () => {} }, "recovery-key", intent);
   assert.deepEqual(writes, [{ key: "recovery-key", value: JSON.stringify(intent) }]);
-  assert.throws(() => persistPaidQuoteIntent({ setItem: () => { throw new Error("blocked"); }, removeItem: () => {} }, "recovery-key", intent), /No paid quote request was sent/);
+  assert.throws(() => persistPaidQuoteIntent({ setItem: () => { throw new Error("blocked"); }, removeItem: () => {} }, "recovery-key", intent), /A request may already exist/);
 });
 
 test("metadata approval rejects expired, unconfirmed or noninteger credit quotes", () => {

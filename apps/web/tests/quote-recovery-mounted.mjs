@@ -317,7 +317,7 @@ for (const status of [401, 403, 503]) test(`Book Bible reload ${status} clears p
     const pointers = await page.evaluate(() => {
       const key = "original-paid-memory-key";
       const body = { modelId: "approved", idempotencyKey: key, allowProviderTokenCounting: true, chapterIds: ["a-chapter"], maxTokens: 12000 };
-      const pointers = ["bookworm:metadata-quote:v1:11111111-1111-4111-8111-111111111111", "bookworm:bible-quote:v1:11111111-1111-4111-8111-111111111111"].map(keyName => [keyName, JSON.stringify({ idempotencyKey: key, body })]);
+      const pointers = ["bookworm:metadata-quote:v2:00000000-0000-4000-8000-000000000001:11111111-1111-4111-8111-111111111111", "bookworm:bible-quote:v2:00000000-0000-4000-8000-000000000001:11111111-1111-4111-8111-111111111111"].map(keyName => [keyName, JSON.stringify({ idempotencyKey: key, body })]);
       for (const [keyName, value] of pointers) sessionStorage.setItem(keyName, value);
       window.memoryFetch = path => path.endsWith("/memory") ? window.defer("memory-reload") : undefined;
       return pointers;
@@ -753,7 +753,7 @@ test("metadata storage failure prevents even the first counting POST", async () 
     await page.getByRole("checkbox", { name: /I agree to send the selected saved chapters/ }).check();
     await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("Storage blocked"); }; });
     await page.getByRole("button", { name: "Request token quote" }).click();
-    await page.getByText(/Browser session recovery is unavailable. No paid quote request was sent/).waitFor();
+    await page.getByText(/Browser session recovery is unavailable. A request may already exist/).waitFor();
     assert.equal(await page.evaluate(() => window.calls.filter(call => call.method === "POST").length), 0);
   } finally { await page.close(); }
 });
@@ -825,7 +825,7 @@ test("verified metadata pre-dispatch cancellation releases the UI lock and never
     await memoryFixture(page);
     await page.evaluate(() => {
       const key = "original-metadata-key";
-      sessionStorage.setItem("bookworm:metadata-quote:v1:11111111-1111-4111-8111-111111111111", JSON.stringify({ idempotencyKey: key,
+      sessionStorage.setItem("bookworm:metadata-quote:v2:00000000-0000-4000-8000-000000000001:11111111-1111-4111-8111-111111111111", JSON.stringify({ idempotencyKey: key,
         body: { modelId: "approved", idempotencyKey: key, allowProviderTokenCounting: true, chapterIds: ["a-chapter"], maxTokens: 12000 } }));
       window.memoryFetch = async path => path.endsWith("/metadata/quotes/recover") ? Response.json({ ...window.metadataStatus,
         job: { id: "cancelled-job", status: "failed", errorCode: "metadata_permission_revoked_before_dispatch" } }) : undefined;
@@ -834,7 +834,7 @@ test("verified metadata pre-dispatch cancellation releases the UI lock and never
     await expect(page.getByRole("button", { name: "Reload saved data" })).toBeEnabled();
     await page.getByRole("button", { name: "Resume same quote request" }).click();
     await page.getByText(/Editing permission was revoked before generation.*released the reserved credits/).waitFor();
-    assert.equal(await page.evaluate(() => sessionStorage.getItem("bookworm:metadata-quote:v1:11111111-1111-4111-8111-111111111111")), null);
+    assert.equal(await page.evaluate(() => sessionStorage.getItem("bookworm:metadata-quote:v2:00000000-0000-4000-8000-000000000001:11111111-1111-4111-8111-111111111111")), null);
     await expect(page.getByText(/This accepted request needs review/)).toHaveCount(0);
     assert.equal(await page.evaluate(() => window.calls.filter(call => call.method === "POST").length), 1);
   } finally { await page.close(); }
@@ -1115,7 +1115,7 @@ test("accepted metadata recovery exposes a draft without changing or saving the 
     await memoryFixture(page);
     await page.evaluate(() => {
       const key = "original-metadata-key";
-      sessionStorage.setItem("bookworm:metadata-quote:v1:11111111-1111-4111-8111-111111111111", JSON.stringify({ idempotencyKey: key,
+      sessionStorage.setItem("bookworm:metadata-quote:v2:00000000-0000-4000-8000-000000000001:11111111-1111-4111-8111-111111111111", JSON.stringify({ idempotencyKey: key,
         body: { modelId: "approved", idempotencyKey: key, allowProviderTokenCounting: true, chapterIds: ["a-chapter"], maxTokens: 12000 } }));
       window.candidateDescription = "A recovered author-reviewed description with sufficient saved evidence.";
       window.memoryFetch = async path => path.endsWith("/metadata/quotes/recover") ? Response.json({ ...window.metadataStatus,

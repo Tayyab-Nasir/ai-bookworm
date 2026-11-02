@@ -77,17 +77,16 @@ function spawnFixture(plan, mode, onChild = () => {}) {
 
 for (const mode of ['idle', 'busy']) test(`owner stop interrupts ${mode} waits but finishes a claimed import exactly once`, async () => {
   const plan = createImportWorkerPlan(config()), controller = new AbortController(), events = [];
-  let child, calls = 0, raw = '';
-  const started = performance.now();
+  let child, calls = 0, raw = '', stoppedAt;
   await wait(runImportWorker(plan, { signal: controller.signal, healthy: async () => true,
     shutdownGraceMs: 2000, log: event => events.push(event),
     spawnWorker: () => spawnFixture(plan, mode, value => {
       child = value; child.stdout.on('data', chunk => { raw += chunk; });
-      child.on('message', message => { if (message.phase === 'claimed') { calls = message.calls; setTimeout(() => controller.abort(), 30); } });
+      child.on('message', message => { if (message.phase === 'claimed') { calls = message.calls; setTimeout(() => { stoppedAt = performance.now(); controller.abort(); }, 30); } });
     }),
   }));
   assert.equal(calls, 1); assert.match(raw, /"fixture":"finished","calls":1/);
-  assert.equal(child.exitCode, 0); assert(performance.now() - started < 1900, 'An idle shutdown must not sleep through the polling delay');
+  assert.equal(child.exitCode, 0); assert(stoppedAt !== undefined && performance.now() - stoppedAt < 1900, 'An idle shutdown must not sleep through the polling delay');
   assert.equal(events.filter(event => event.event === 'document_worker_started').length, 1);
   assert(!events.some(event => event.event === 'document_worker_forced_stop'));
   assert.equal(events.filter(event => event.status === 'succeeded').length, mode === 'busy' ? 1 : 0);

@@ -46,14 +46,14 @@ type BibleQuoteIntent = { idempotencyKey: string; requestId?: string; body: { mo
 type BibleQuoteStatus = { request?: { id: string; status: "counting" | "ready" | "failed" }; quote: BibleQuote | null; job?: { id: string; status: string; errorCode?: string } | null };
 export const metadataGenerationBlocked = (pending: PendingMetadata[] | null) => pending === null || pending.length > 0;
 export const bibleGenerationBlocked = metadataGenerationBlocked;
-export const metadataQuoteIntentKey = (bookId: string) => `bookworm:metadata-quote:v1:${bookId}`;
-export const bibleQuoteIntentKey = (bookId: string) => `bookworm:bible-quote:v1:${bookId}`;
+export const metadataQuoteIntentKey = (bookId: string, userId?: string) => userId ? `bookworm:metadata-quote:v2:${userId}:${bookId}` : `bookworm:metadata-quote:v1:${bookId}`;
+export const bibleQuoteIntentKey = (bookId: string, userId?: string) => userId ? `bookworm:bible-quote:v2:${userId}:${bookId}` : `bookworm:bible-quote:v1:${bookId}`;
 export function persistPaidQuoteIntent(storage: Pick<Storage, "setItem" | "removeItem">, key: string, intent: object | null): void {
   try {
     if (intent) storage.setItem(key, JSON.stringify(intent));
     else storage.removeItem(key);
   } catch {
-    if (intent) throw new Error("Browser session recovery is unavailable. No paid quote request was sent; enable session storage before continuing.");
+    if (intent) throw new Error("Browser session recovery is unavailable. A request may already exist; restore session storage and check its status before retrying.");
   }
 }
 export function canAcceptMetadataQuote(quote: MetadataQuote | null, consent: boolean, now = Date.now()): boolean {
@@ -293,6 +293,9 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const [manualCloseConfirmation, setManualCloseConfirmation] = useState(false);
   const [manualClosureUncertain, setManualClosureUncertain] = useState(false);
   const manualIdentity = useRef<{ bookId: string; userId: string } | null>(null);
+  const hiddenAccount = useRef(false);
+  const [accountHidden, setAccountHidden] = useState(false);
+  const [accountRecoveryError, setAccountRecoveryError] = useState<string | null>(null);
   const manualEpoch = useRef(0);
   const manualOperation = useRef<object | null>(null);
   const manualPointerRef = useRef<ManualBiblePointer | null>(null);
@@ -310,8 +313,54 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     return session.user.id as string;
   }
 
+  // Bind every book-memory request to the account which loaded the page.
+  // The BFF checks the header against its authenticated session at dispatch.
+  const boundRequest = async <T,>(path: string, method = "GET", body?: unknown, expectedActorId?: string): Promise<T> => {
+    const identity = manualIdentity.current;
+    const scope = bookScope.current;
+    const owner = expectedActorId ?? identity?.userId;
+    const current = () => manualIdentity.current === identity && bookScope.current === scope;
+    if (!owner || identity?.userId !== owner || identity.bookId !== bookId || scope.bookId !== bookId || hiddenAccount.current) throw new Error("Verify the original account before continuing.");
+    const verify = async () => {
+      const actor = await authenticatedManualUser().catch(() => null);
+      if (!current()) throw new Error("This request belongs to an earlier book view.");
+      if (actor !== owner || hiddenAccount.current) {
+        hiddenAccount.current = true; setAccountHidden(true); setAccountRecoveryError(null);
+        throw new Error("Your account changed. Return to the original account and check the saved outcome before retrying.");
+      }
+    };
+    await verify();
+    let result: T;
+    try { result = await request<T>(path, method, body, owner); }
+    catch (error) { await verify(); throw error; }
+    await verify();
+    return result;
+  };
+
+  async function restoreOriginalAccount() {
+    const identity = manualIdentity.current, scope = bookScope.current;
+    const current = () => manualIdentity.current === identity && bookScope.current === scope;
+    try {
+      if (!identity || identity.bookId !== bookId || await authenticatedManualUser() !== identity.userId || !current()) {
+        throw new Error("Sign in to the original account, then verify again.");
+      }
+      // Recheck book membership and current editing permission before revealing
+      // the retained draft. This read cannot change saved content or credits.
+      const fresh = await request<Memory>(`${endpoint}/memory`, "GET", undefined, identity.userId);
+      if (!current()) return;
+      if (await authenticatedManualUser() !== identity.userId || !current()
+        || fresh?.book?.id !== bookId || typeof fresh.canEdit !== "boolean") {
+        throw new Error("The original account's access could not be verified.");
+      }
+      setMemory(previous => previous ? { ...previous, canEdit: fresh.canEdit } : previous);
+      hiddenAccount.current = false; setAccountHidden(false); setAccountRecoveryError(null);
+    } catch (reason) { if (current()) setAccountRecoveryError(messageOf(reason)); }
+  }
+
   function saveBibleQuoteIntent(intent: BibleQuoteIntent | null) {
-    persistPaidQuoteIntent(window.sessionStorage, bibleQuoteIntentKey(bookId), intent);
+    const owner = manualIdentity.current?.userId;
+    if (!owner) throw new Error("Verify the original account before changing this quote.");
+    persistPaidQuoteIntent(window.sessionStorage, bibleQuoteIntentKey(bookId, owner), intent);
     setBibleQuoteIntent(intent);
   }
 
@@ -347,6 +396,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const load = useCallback(async () => {
     const scope = { bookId };
     bookScope.current = scope;
+    hiddenAccount.current = false; setAccountHidden(false); setAccountRecoveryError(null);
     quoteInFlight.current = false; setGeneratingMetadata(false); setGeneratingBible(false); setSaving(null);
     manualEpoch.current++; manualOperation.current = null; manualIdentity.current = null; manualPointerRef.current = null; manualBody.current = null;
     setManualUserId(null); setManualPointer(null); setManualReady(false); setManualBusy(false); setManualError(null); setManualStage("uncertain");
@@ -377,7 +427,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         const pending = parseManualBiblePointer(window.sessionStorage.getItem(manualBibleRecoveryKey(userId, bookId)), userId, bookId);
         manualPointerRef.current = pending; setManualPointer(pending); setManualReady(true);
       } catch (reason) { setManualError(messageOf(reason)); }
-      const result = await request<Memory>(`${endpoint}/memory`);
+      const result = await boundRequest<Memory>(`${endpoint}/memory`);
       if (bookScope.current !== scope) return;
       const currentUserId = await authenticatedManualUser();
       if (bookScope.current !== scope) return;
@@ -398,7 +448,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       setFormRevision((value) => value + 1);
       if (result.canEdit) {
         try {
-          const catalog = await request<{ models: MetadataModel[] }>(`${endpoint}/metadata/models`);
+          const catalog = await boundRequest<{ models: MetadataModel[] }>(`${endpoint}/metadata/models`);
           if (bookScope.current !== scope) return;
           setMetadataModels(catalog.models);
           setMetadataModelId(catalog.models[0]?.id ?? "");
@@ -408,12 +458,24 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           setMetadataGenerationError(messageOf(reason));
         }
         try {
-          const stored = window.sessionStorage.getItem(metadataQuoteIntentKey(bookId));
+          const scopedKey = metadataQuoteIntentKey(bookId, userId), legacyKey = metadataQuoteIntentKey(bookId);
+          const scoped = window.sessionStorage.getItem(scopedKey), legacy = window.sessionStorage.getItem(legacyKey);
+          if (scoped && legacy) throw new Error("Two metadata recovery checkpoints need review. Both are retained; contact support before requesting a quote.");
+          const stored = scoped ?? legacy;
           if (stored) {
             const intent = JSON.parse(stored) as MetadataQuoteIntent;
             if (intent?.idempotencyKey && intent.body?.idempotencyKey === intent.idempotencyKey
               && intent.body.allowProviderTokenCounting === true && typeof intent.body.modelId === "string"
               && Array.isArray(intent.body.chapterIds) && intent.body.chapterIds.length > 0) {
+              if (legacy) {
+                const recovered = await boundRequest<MetadataQuoteStatus>(`${endpoint}/metadata/quotes/recover`, "POST", { idempotencyKey: intent.idempotencyKey, expected: intent.body });
+                if (bookScope.current !== scope) return;
+                if (!recovered?.request?.id || (intent.requestId && intent.requestId !== recovered.request.id)) throw new Error("The original metadata checkpoint could not be verified.");
+                const owned = { ...intent, requestId: recovered.request.id };
+                persistPaidQuoteIntent(window.sessionStorage, scopedKey, owned);
+                window.sessionStorage.removeItem(legacyKey);
+                Object.assign(intent, owned);
+              }
               setMetadataQuoteIntent(intent);
               setMetadataModelId(intent.body.modelId); setMetadataChapterIds(intent.body.chapterIds);
               setMetadataTone(intent.body.tone ?? "compelling"); setMetadataAudience(intent.body.audience ?? "");
@@ -423,19 +485,19 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           setMetadataRecoveryBlocked(false);
         } catch (reason) { setMetadataGenerationError(`${messageOf(reason)} Quote requests are paused until browser recovery is available.`); }
         try {
-          const history = await request<MetadataHistoryResponse>(`${endpoint}/metadata/drafts`);
+          const history = await boundRequest<MetadataHistoryResponse>(`${endpoint}/metadata/drafts`);
           if (bookScope.current !== scope) return;
           setMetadataHistory(history.drafts.map((draft) => ({ ...draft, candidate: parseGeneratedMetadataCandidate(draft.candidate) })));
           setPendingMetadata(history.pending);
         } catch (reason) { if (bookScope.current !== scope) return; setMetadataGenerationError(messageOf(reason)); }
         try {
-          const history = await request<BibleHistoryResponse>(`${endpoint}/bible/drafts`);
+          const history = await boundRequest<BibleHistoryResponse>(`${endpoint}/bible/drafts`);
           if (bookScope.current !== scope) return;
           setBibleHistory(history.drafts.map((item) => ({ ...item, candidates: parseBookBibleCandidates(item.candidates) })));
           setPendingBible(history.pending);
         } catch (reason) { if (bookScope.current !== scope) return; setBibleGenerationError(messageOf(reason)); }
         try {
-          const catalog = await request<{ catalogVersion: string; models: BibleModel[] }>(`${endpoint}/bible/models`);
+          const catalog = await boundRequest<{ catalogVersion: string; models: BibleModel[] }>(`${endpoint}/bible/models`);
           if (bookScope.current !== scope) return;
           setBibleModels(catalog.models);
           setBibleModelId(catalog.models[0]?.id ?? "");
@@ -445,7 +507,10 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           setBibleGenerationError(messageOf(reason));
         }
         try {
-          const stored = window.sessionStorage.getItem(bibleQuoteIntentKey(bookId));
+          const scopedKey = bibleQuoteIntentKey(bookId, userId), legacyKey = bibleQuoteIntentKey(bookId);
+          const scoped = window.sessionStorage.getItem(scopedKey), legacy = window.sessionStorage.getItem(legacyKey);
+          if (scoped && legacy) throw new Error("Two Book Bible recovery checkpoints need review. Both are retained; contact support before requesting a quote.");
+          const stored = scoped ?? legacy;
           if (stored) {
             const intent = JSON.parse(stored) as BibleQuoteIntent;
             const valid = typeof intent?.idempotencyKey === "string" && intent.idempotencyKey.length >= 12
@@ -454,10 +519,20 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               && intent.body.chapterIds.length > 0 && Number.isInteger(intent.body.maxTokens)
               && (!intent.requestId || typeof intent.requestId === "string");
             if (valid) {
+              if (legacy) {
+                const recovered = await boundRequest<BibleQuoteStatus>(`${endpoint}/bible/quotes/recover`, "POST", { idempotencyKey: intent.idempotencyKey, expected: intent.body });
+                if (bookScope.current !== scope) return;
+                const requestId = recovered.request?.id ?? recovered.quote?.requestId;
+                if (!requestId || (intent.requestId && intent.requestId !== requestId)) throw new Error("The original Book Bible checkpoint could not be verified.");
+                const owned = { ...intent, requestId };
+                persistPaidQuoteIntent(window.sessionStorage, scopedKey, owned);
+                window.sessionStorage.removeItem(legacyKey);
+                Object.assign(intent, owned);
+              }
               setBibleQuoteIntent(intent); setBibleModelId(intent.body.modelId);
               setBibleChapterIds(intent.body.chapterIds); setBibleCountConsent(true); setBibleQuoteStage("counting");
               if (intent.requestId) {
-                const status = await request<BibleQuoteStatus>(`${endpoint}/bible/quotes/${encodeURIComponent(intent.requestId)}`);
+                const status = await boundRequest<BibleQuoteStatus>(`${endpoint}/bible/quotes/${encodeURIComponent(intent.requestId)}`);
                 if (bookScope.current !== scope) return;
                 applyBibleQuoteStatus(status, intent);
               }
@@ -474,6 +549,22 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     void load();
     return () => { if (bookScope.current.bookId === bookId) bookScope.current = { bookId }; };
   }, [bookId, load]);
+  useEffect(() => {
+    // Check when returning from another tab; this is not continuous revocation monitoring.
+    const check = async () => {
+      if (document.visibilityState !== "visible" || hiddenAccount.current) return;
+      const identity = manualIdentity.current, scope = bookScope.current;
+      if (!identity || identity.bookId !== bookId || scope.bookId !== bookId) return;
+      const actor = await authenticatedManualUser().catch(() => null);
+      if (manualIdentity.current !== identity || bookScope.current !== scope || hiddenAccount.current) return;
+      if (actor !== identity.userId) { hiddenAccount.current = true; setAccountHidden(true); setAccountRecoveryError(null); }
+    };
+    const onFocus = () => { void check(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => { window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };
+  }, [bookId]);
+
   useEffect(() => {
     if (!dirty) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
@@ -531,19 +622,17 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   function manualContext() {
     const identity = manualIdentity.current;
     const scope = bookScope.current; const epoch = manualEpoch.current; const owner = {};
-    if (!identity || identity.bookId !== bookId || identity.userId !== manualUserId || scope.bookId !== bookId || manualOperation.current) return null;
+    if (!identity || identity.bookId !== bookId || identity.userId !== manualUserId || scope.bookId !== bookId || manualOperation.current || hiddenAccount.current) return null;
     manualOperation.current = owner;
-    const current = () => manualOperation.current === owner && manualIdentity.current === identity && manualEpoch.current === epoch && bookScope.current === scope;
+    const current = () => manualOperation.current === owner && manualIdentity.current === identity && manualEpoch.current === epoch && bookScope.current === scope && !hiddenAccount.current;
     return { identity, owner, current };
   }
 
   async function verifyManualIdentity(context: NonNullable<ReturnType<typeof manualContext>>) {
-    const userId = await authenticatedManualUser();
+    const userId = await authenticatedManualUser().catch(() => null);
     if (!context.current()) return false;
     if (userId !== context.identity.userId) {
-      manualEpoch.current++; manualOperation.current = null; manualIdentity.current = null; manualPointerRef.current = null; manualBody.current = null;
-      bookScope.current = { bookId }; setManualUserId(null); setManualPointer(null); setManualReady(false); setManualBusy(false);
-      setMemory(null); setDraft(null); setEntryDirty(false); setError("Your account changed. Reload saved data to verify this account. The original request pointer remains with its owner.");
+      hiddenAccount.current = true; setAccountHidden(true); setAccountRecoveryError(null);
       return false;
     }
     return true;
@@ -601,7 +690,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       if (!context.current()) return;
       manualPointerRef.current = pointer; manualBody.current = { requestId: pointer.requestId, serialized }; setManualPointer(pointer); setManualStage("uncertain");
       if (!await verifyManualIdentity(context)) return;
-      const result = await request<unknown>(`${endpoint}/bible${targetId ? `/${encodeURIComponent(targetId)}` : ""}`, action === "create" ? "POST" : action === "update" ? "PUT" : "DELETE", JSON.parse(serialized), pointer.userId);
+      const result = await boundRequest<unknown>(`${endpoint}/bible${targetId ? `/${encodeURIComponent(targetId)}` : ""}`, action === "create" ? "POST" : action === "update" ? "PUT" : "DELETE", JSON.parse(serialized), pointer.userId);
       if (!context.current() || !await verifyManualIdentity(context)) return;
       if (!(result as { receipt?: unknown } | null)?.receipt) throw new Error("The write result did not contain a saved receipt. Recover this original request before continuing.");
       confirmManualResult(result, pointer);
@@ -613,7 +702,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           setManualError(`${messageOf(reason)}${manualPointerRef.current ? " The outcome is unconfirmed. Keep this saved request; recover it or explicitly retry its original details." : ""}`);
         }
       }
-    } finally { if (context.current()) { manualOperation.current = null; setManualBusy(false); } }
+    } finally { if (manualOperation.current === context.owner) { manualOperation.current = null; setManualBusy(false); } }
   }
 
   async function recoverManual() {
@@ -623,7 +712,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setManualBusy(true); setManualError(null); setNotice(null);
     try {
       if (!await verifyManualIdentity(context)) return;
-      const result = await request<unknown>(`${endpoint}/bible/requests/${encodeURIComponent(pointer.requestId)}`, "GET", undefined, pointer.userId);
+      const result = await boundRequest<unknown>(`${endpoint}/bible/requests/${encodeURIComponent(pointer.requestId)}`, "GET", undefined, pointer.userId);
       if (!context.current() || !await verifyManualIdentity(context)) return;
       confirmManualResult(result, pointer);
     } catch (reason) {
@@ -635,7 +724,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         }
       }
     }
-    finally { if (context.current()) { manualOperation.current = null; setManualBusy(false); } }
+    finally { if (manualOperation.current === context.owner) { manualOperation.current = null; setManualBusy(false); } }
   }
 
   async function retryManual() {
@@ -654,7 +743,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       persistManualBiblePointer(window.sessionStorage, pointer);
       if (!context.current()) return;
       setManualClosureUncertain(true); setManualCloseConfirmation(false);
-      const result = await request<unknown>(`${endpoint}/bible/requests/${encodeURIComponent(pointer.requestId)}/close`, "POST", {}, pointer.userId);
+      const result = await boundRequest<unknown>(`${endpoint}/bible/requests/${encodeURIComponent(pointer.requestId)}/close`, "POST", {}, pointer.userId);
       if (!context.current() || !await verifyManualIdentity(context)) return;
       const confirmed = validateManualBibleResult(result, pointer);
       if (!confirmed.receipt && !confirmed.closed) throw new Error("The closure was not confirmed. Keep its original pointer and recover this same request.");
@@ -667,7 +756,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           setManualError(`${messageOf(reason)} The closure outcome is unconfirmed. The pointer is retained; recover its saved status before another original-body retry.`);
         }
       }
-    } finally { if (context.current()) { manualOperation.current = null; setManualBusy(false); } }
+    } finally { if (manualOperation.current === context.owner) { manualOperation.current = null; setManualBusy(false); } }
   }
 
   function reenterManual() {
@@ -696,7 +785,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       manualBody.current = { requestId: pointer.requestId, serialized: JSON.stringify({ ...body, requestId: pointer.requestId }) };
       setManualStage("missing"); setNotice("The original details match the saved request. Choose Retry same saved request to send that same action and key.");
     } catch (reason) { if (context.current()) setManualError(messageOf(reason)); }
-    finally { if (context.current()) { manualOperation.current = null; setManualBusy(false); } }
+    finally { if (manualOperation.current === context.owner) { manualOperation.current = null; setManualBusy(false); } }
   }
 
   async function saveEntry(event: FormEvent<HTMLFormElement>) {
@@ -714,36 +803,40 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
 
   async function saveIdentity(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!memory?.canEdit || busy) return;
+    const scope = bookScope.current;
     const data = new FormData(event.currentTarget);
     setSaving("identity"); setError(null); setNotice(null);
     try {
-      const { book } = await request<{ book: Book }>(endpoint, "PATCH", {
+      const { book } = await boundRequest<{ book: Book }>(endpoint, "PATCH", {
         expectedUpdatedAt: memory.book.updated_at,
         title: data.get("title"), subtitle: data.get("subtitle") || null,
         authorName: data.get("authorName"), language: data.get("language"), genre: data.get("genre") || null,
       });
+      if (bookScope.current !== scope) return;
       setMemory((current) => current ? { ...current, book } : current);
       setIdentityDirty(false); setNotice("Book details saved.");
-    } catch (reason) { setError(messageOf(reason)); }
-    finally { setSaving(null); }
+    } catch (reason) { if (bookScope.current === scope) setError(`${messageOf(reason)} Save outcome may be unconfirmed. Keep your draft and check saved data before retrying; reloading can discard this draft.`); }
+    finally { if (bookScope.current === scope) setSaving(null); }
   }
 
   async function saveMetadata(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (!memory?.canEdit || busy) return;
+    const scope = bookScope.current;
     const data = new FormData(event.currentTarget);
     const lines = (name: string) => String(data.get(name) ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
     setSaving("metadata"); setError(null); setNotice(null);
     try {
-      const { metadata } = await request<{ metadata: BookMetadata }>(`${endpoint}/metadata`, "PUT", {
+      const { metadata } = await boundRequest<{ metadata: BookMetadata }>(`${endpoint}/metadata`, "PUT", {
         expectedUpdatedAt: memory.metadata?.updated_at ?? null, description: metadataFields.description,
         keywords: lines("keywords"), categories: lines("categories"), isbn13: data.get("isbn13") || null,
         edition: data.get("edition") || null, publicationDate: data.get("publicationDate") || null,
       });
+      if (bookScope.current !== scope) return;
       setMemory((current) => current ? { ...current, metadata } : current);
       setMetadataFields({ description: metadata.description ?? "", keywords: metadata.keywords.join("\n"), categories: metadata.categories.join("\n") });
       setMetadataDirty(false); setNotice("Publishing metadata saved.");
-    } catch (reason) { setError(messageOf(reason)); }
-    finally { setSaving(null); }
+    } catch (reason) { if (bookScope.current === scope) setError(`${messageOf(reason)} Save outcome may be unconfirmed. Keep your draft and check saved data before retrying; reloading can discard this draft.`); }
+    finally { if (bookScope.current === scope) setSaving(null); }
   }
 
   async function loadMetadataHistory() {
@@ -752,7 +845,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setSaving("metadata-history"); setMetadataGenerationError(null);
     setPendingMetadata(null);
     try {
-      const result = await request<MetadataHistoryResponse>(`${endpoint}/metadata/drafts`);
+      const result = await boundRequest<MetadataHistoryResponse>(`${endpoint}/metadata/drafts`);
       if (bookScope.current !== scope) return;
       setMetadataHistory(result.drafts.map((draft) => ({ ...draft, candidate: parseGeneratedMetadataCandidate(draft.candidate) })));
       setPendingMetadata(result.pending);
@@ -761,7 +854,9 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   }
 
   function saveMetadataQuoteIntent(intent: MetadataQuoteIntent | null) {
-    persistPaidQuoteIntent(window.sessionStorage, metadataQuoteIntentKey(bookId), intent);
+    const owner = manualIdentity.current?.userId;
+    if (!owner) throw new Error("Verify the original account before changing this quote.");
+    persistPaidQuoteIntent(window.sessionStorage, metadataQuoteIntentKey(bookId, owner), intent);
     setMetadataQuoteIntent(intent);
   }
 
@@ -834,7 +929,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setGeneratingMetadata(true);
     try {
       if (createOriginal) saveMetadataQuoteIntent(intent);
-      const response = await requestMetadataQuoteResult(request, endpoint, intent, createOriginal);
+      const response = await requestMetadataQuoteResult(boundRequest, endpoint, intent, createOriginal);
       if (bookScope.current === scope) applyMetadataQuoteStatus(response, intent);
     } catch (reason) {
       if (bookScope.current === scope) {
@@ -851,7 +946,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setGeneratingMetadata(true); setMetadataGenerationError(null);
     try {
       saveMetadataQuoteIntent(metadataQuoteIntent);
-      const accepted = await request<{ jobId: string; status: "queued" | "running" | "succeeded" | "failed" }>(
+      const accepted = await boundRequest<{ jobId: string; status: "queued" | "running" | "succeeded" | "failed" }>(
         `${endpoint}/metadata/quotes/${encodeURIComponent(metadataQuoteIntent.requestId)}/accept`, "POST", { expectedCredits: metadataQuote.reservedCredits });
       const intent = metadataQuoteIntent;
       if (bookScope.current !== scope) return;
@@ -861,7 +956,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       if (accepted.status === "queued" || accepted.status === "running") {
         setPendingMetadata((current) => [...(current ?? []), { id: accepted.jobId, createdAt: new Date().toISOString(), status: accepted.status as "queued" | "running" }]);
       }
-      const status = await request<MetadataQuoteStatus>(`${endpoint}/metadata/quote-requests/${encodeURIComponent(intent.requestId!)}`);
+      const status = await boundRequest<MetadataQuoteStatus>(`${endpoint}/metadata/quote-requests/${encodeURIComponent(intent.requestId!)}`);
       if (bookScope.current === scope) applyMetadataQuoteStatus(status, intent);
     } catch (reason) {
       if (bookScope.current === scope) setMetadataGenerationError(`${messageOf(reason)} Check this same quote’s status before trying again. Acceptance remains locked until recovery confirms the outcome.`);
@@ -873,7 +968,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     const scope = bookScope.current;
     setSaving("metadata-status"); setMetadataGenerationError(null);
     try {
-      const result = await request<{ job: { id: string; status: string; billingMode?: string; errorCode?: string }; candidate: unknown | null }>(
+      const result = await boundRequest<{ job: { id: string; status: string; billingMode?: string; errorCode?: string }; candidate: unknown | null }>(
         `${endpoint}/metadata/jobs/${encodeURIComponent(jobId)}/status`);
       if (bookScope.current !== scope) return;
       const cancellation = metadataCancellationMessage(result.job);
@@ -915,7 +1010,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     const scope = bookScope.current;
     setSaving("bible-history"); setBibleGenerationError(null); setPendingBible(null);
     try {
-      const history = await request<BibleHistoryResponse>(`${endpoint}/bible/drafts`);
+      const history = await boundRequest<BibleHistoryResponse>(`${endpoint}/bible/drafts`);
       if (bookScope.current !== scope) return;
       setBibleHistory(history.drafts.map((item) => ({ ...item, candidates: parseBookBibleCandidates(item.candidates) })));
       setPendingBible(history.pending);
@@ -928,7 +1023,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     const scope = bookScope.current;
     setSaving("bible-recovery"); setBibleGenerationError(null);
     try {
-      const result = await request<{ candidates: unknown }>(`${endpoint}/bible/jobs/${encodeURIComponent(jobId)}/recover`, "POST", {});
+      const result = await boundRequest<{ candidates: unknown }>(`${endpoint}/bible/jobs/${encodeURIComponent(jobId)}/recover`, "POST", {});
       if (bookScope.current !== scope) return;
       setBibleCandidates(parseBookBibleCandidates(result.candidates));
       setPendingBible((current) => current?.filter((job) => job.id !== jobId) ?? null);
@@ -963,7 +1058,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     quoteInFlight.current = true;
     setGeneratingBible(true);
     try {
-      const status = await requestBibleQuoteResult(request, endpoint, intent);
+      const status = await requestBibleQuoteResult(boundRequest, endpoint, intent);
       if (bookScope.current === scope) applyBibleQuoteStatus(status, intent);
     } catch (reason) {
       if (bookScope.current === scope) setBibleGenerationError(`${messageOf(reason)} No new quote key will be created; resume to retry the same request safely.`);
@@ -973,16 +1068,16 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   async function acceptBibleQuote() {
     const quote = bibleQuote;
     const intent = bibleQuoteIntent;
-    if (!memory?.canEdit || memory.book.id !== bookId || busy || dirty || quoteInFlight.current || bibleRecoveryBlocked || bibleAcceptanceUncertain || !intent?.requestId || !quote || !canAcceptBibleQuote(quote, bibleAcceptConsent)) return;
+    if (!memory?.canEdit || memory.book.id !== bookId || busy || dirty || quoteInFlight.current || bibleRecoveryBlocked || bibleAcceptanceUncertain || bibleQuoteJob || !intent?.requestId || !quote || !canAcceptBibleQuote(quote, bibleAcceptConsent)) return;
     if (!("reservedCredits" in quote)) return;
     const scope = bookScope.current;
     quoteInFlight.current = true; setBibleAcceptanceUncertain(true); setBibleAcceptConsent(false);
     setGeneratingBible(true); setBibleGenerationError(null);
     try {
       saveBibleQuoteIntent(intent);
-      await acceptBibleQuoteRequest(request, endpoint, intent.requestId, quote.reservedCredits);
+      await acceptBibleQuoteRequest(boundRequest, endpoint, intent.requestId, quote.reservedCredits);
       if (bookScope.current !== scope) return;
-      const status = await request<BibleQuoteStatus>(`${endpoint}/bible/quotes/${encodeURIComponent(intent.requestId)}`);
+      const status = await boundRequest<BibleQuoteStatus>(`${endpoint}/bible/quotes/${encodeURIComponent(intent.requestId)}`);
       if (bookScope.current !== scope) return;
       applyBibleQuoteStatus(status, intent);
       setNotice("Funded Book Bible extraction was accepted. Status checks do not generate again; review and save extracted facts separately.");
@@ -996,7 +1091,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     const scope = bookScope.current;
     setSaving("bible-reading"); setBibleGenerationError(null);
     try {
-      const plan = await request<BibleReadingPlan>(`${endpoint}/bible/reading-plan`, "POST", { chapterIds: bibleChapterIds });
+      const plan = await boundRequest<BibleReadingPlan>(`${endpoint}/bible/reading-plan`, "POST", { chapterIds: bibleChapterIds });
       if (bookScope.current !== scope) return;
       if (!Array.isArray(plan.pages) || !plan.pages.length || !/^[a-f0-9]{64}$/.test(plan.fingerprint)) throw new Error("The reading plan is unavailable.");
       setBibleReadingPlan(plan);
@@ -1023,6 +1118,12 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const selected = memory?.items.find((item) => item.id === draft?.id);
 
   return <main className="mx-auto max-w-7xl px-4 pb-16 pt-8 sm:px-6 lg:px-8">
+    {accountHidden && <section role="alert" className="rounded-xl border border-amber-200/30 p-4 text-amber-100">
+      <p>Your account changed or could not be verified. Book details and unsaved work are hidden on this page. Return to the original account to continue; saved request pointers are retained.</p>
+      {accountRecoveryError && <p className="mt-2">{accountRecoveryError}</p>}
+      <button type="button" onClick={() => void restoreOriginalAccount()} className={secondaryClass}>Verify original account</button>
+    </section>}
+    <div hidden={accountHidden}>
     <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 pb-7">
       <div>
         <Link href={`/books/${encodeURIComponent(bookId)}`} className="text-sm text-[#aaa] underline underline-offset-4 hover:text-white">← Back to manuscript</Link>
@@ -1061,7 +1162,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     {!loading && !memory && <div className={`${panelClass} mt-6`}><h2 className="text-lg font-medium">Book memory is unavailable</h2><p className="mt-2 text-sm text-[#aaa]">Check your session and workspace access, then reload. No sample book data is substituted.</p></div>}
 
     {memory && <>
-      <BookSearchPanel key={bookId} bookId={bookId} onOpenBibleEntry={openBibleEntry} />
+      <BookSearchPanel key={bookId} bookId={bookId} onOpenBibleEntry={openBibleEntry} readRequest={boundRequest} />
       {!memory.canEdit && <p className="mt-5 rounded-xl border border-white/15 p-4 text-sm text-[#ccc]">You have read-only access. An editor can update this book’s memory and metadata.</p>}
       <section className="mt-9" aria-labelledby="bible-title">
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -1123,7 +1224,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
                 <div><dt className="text-[#999]">Maximum charge</dt><dd className="mt-1 text-sm font-semibold text-white">{bibleQuote.reservedCredits.toLocaleString()} credits</dd></div>
                 <div><dt className="text-[#999]">Quote expires</dt><dd className="mt-1 text-sm text-white">{new Date(bibleQuote.expiresAt).toLocaleString()}</dd></div>
               </dl>
-              {bibleQuote.status === "ready" && <>
+              {bibleQuote.status === "ready" && !bibleQuoteJob && <>
                 {bibleAcceptanceUncertain && <p role="status" className="mt-3 text-xs text-amber-100">Acceptance is unconfirmed. Resume this quote to read its status before approving again.</p>}
                 <label className="mt-4 flex gap-3 rounded-xl border border-white/10 p-3 text-xs leading-5 text-[#ccc]"><input type="checkbox" checked={bibleAcceptConsent} onChange={(event) => setBibleAcceptConsent(event.target.checked)} disabled={busy || dirty || !memory.canEdit || bibleRecoveryBlocked || bibleAcceptanceUncertain} className="mt-1 size-4 shrink-0 accent-emerald-200" /><span>I approve this quote and authorize one candidate extraction, reserving up to {bibleQuote.reservedCredits.toLocaleString()} credits. Results remain drafts until I review and save each entry.</span></label>
                 <button type="button" disabled={busy || dirty || !memory.canEdit || bibleRecoveryBlocked || bibleAcceptanceUncertain || !canAcceptBibleQuote(bibleQuote, bibleAcceptConsent)} onClick={() => void acceptBibleQuote()} className={`${primaryClass} mt-3`}>Accept quote and start extraction</button>
@@ -1151,7 +1252,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           </div>
           {generatingBible && <p role="status" className="mt-4 text-sm text-sky-100">Preparing or checking this quote/job; no second generation is started by a status check…</p>}
           {bibleGenerationError && <p role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-100">{bibleGenerationError} Your saved Book Bible was not changed.</p>}
-          {bibleCandidates && <div className="mt-5 space-y-3" aria-label="Review AI Book Bible candidates"><div className="flex flex-wrap items-center justify-between gap-3"><h4 className="font-medium">Review generated candidates</h4><button type="button" disabled={busy} onClick={() => setBibleCandidates(null)} className="text-xs text-[#aaa] underline underline-offset-4 hover:text-white">Close preview</button></div>{!bibleCandidates.length && <p className="rounded-xl border border-white/10 p-4 text-sm text-[#aaa]">The selected manuscript supported no candidates. No entry was added to your Book Bible.</p>}{bibleCandidates.map((item, index) => <article key={`${item.type}-${item.name}-${index}`} className="rounded-xl border border-white/15 bg-black/30 p-4"><div className="flex flex-wrap items-center gap-2"><span className="text-[10px] uppercase tracking-widest text-[#aaa]">{item.type}</span><span className="text-xs text-[#999]">{Math.round(item.confidence * 100)}% model confidence · verify against the text</span></div><h5 className="mt-2 break-words text-lg font-medium">{item.name}</h5><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#ccc]">{item.description || "No description supplied."}</p>{Object.keys(item.attributes).length > 0 && <dl className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(item.attributes).map(([key, value]) => <div key={key} className="rounded-lg border border-white/10 p-2 text-xs"><dt className="text-[#999]">{key}</dt><dd className="mt-1 break-words text-[#ddd]">{typeof value === "string" ? value : JSON.stringify(value)}</dd></div>)}</dl>}<div className="mt-4 border-t border-white/10 pt-3"><p className="text-[11px] uppercase tracking-widest text-[#999]">Saved manuscript citations</p><ul className="mt-2 space-y-2">{item.sourceRefs.map((ref) => <li key={`${bookId}-${ref.chapterId}-${ref.documentVersionId}-${ref.nodeId}-${ref.textHash}`} className="break-all text-xs leading-5 text-[#aaa]"><BibleSourcePassage bookId={bookId} citation={ref} title={memory.chapters.find((chapter) => chapter.id === ref.chapterId)?.title ?? "Referenced chapter"} /></li>)}</ul></div><button type="button" disabled={busy} onClick={() => useBibleCandidate(item)} className={`${primaryClass} mt-4`}>Open as unsaved entry</button></article>)}</div>}
+          {bibleCandidates && <div className="mt-5 space-y-3" aria-label="Review AI Book Bible candidates"><div className="flex flex-wrap items-center justify-between gap-3"><h4 className="font-medium">Review generated candidates</h4><button type="button" disabled={busy} onClick={() => setBibleCandidates(null)} className="text-xs text-[#aaa] underline underline-offset-4 hover:text-white">Close preview</button></div>{!bibleCandidates.length && <p className="rounded-xl border border-white/10 p-4 text-sm text-[#aaa]">The selected manuscript supported no candidates. No entry was added to your Book Bible.</p>}{bibleCandidates.map((item, index) => <article key={`${item.type}-${item.name}-${index}`} className="rounded-xl border border-white/15 bg-black/30 p-4"><div className="flex flex-wrap items-center gap-2"><span className="text-[10px] uppercase tracking-widest text-[#aaa]">{item.type}</span><span className="text-xs text-[#999]">{Math.round(item.confidence * 100)}% model confidence · verify against the text</span></div><h5 className="mt-2 break-words text-lg font-medium">{item.name}</h5><p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#ccc]">{item.description || "No description supplied."}</p>{Object.keys(item.attributes).length > 0 && <dl className="mt-3 grid gap-2 sm:grid-cols-2">{Object.entries(item.attributes).map(([key, value]) => <div key={key} className="rounded-lg border border-white/10 p-2 text-xs"><dt className="text-[#999]">{key}</dt><dd className="mt-1 break-words text-[#ddd]">{typeof value === "string" ? value : JSON.stringify(value)}</dd></div>)}</dl>}<div className="mt-4 border-t border-white/10 pt-3"><p className="text-[11px] uppercase tracking-widest text-[#999]">Saved manuscript citations</p><ul className="mt-2 space-y-2">{item.sourceRefs.map((ref) => <li key={`${bookId}-${ref.chapterId}-${ref.documentVersionId}-${ref.nodeId}-${ref.textHash}`} className="break-all text-xs leading-5 text-[#aaa]"><BibleSourcePassage bookId={bookId} citation={ref} readRequest={boundRequest} title={memory.chapters.find((chapter) => chapter.id === ref.chapterId)?.title ?? "Referenced chapter"} /></li>)}</ul></div><button type="button" disabled={busy} onClick={() => useBibleCandidate(item)} className={`${primaryClass} mt-4`}>Open as unsaved entry</button></article>)}</div>}
         </div>}
         <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_180px]">
           <label className="text-xs text-[#aaa]">Search memory<input value={query} onChange={(event) => setQuery(event.target.value)} className={inputClass} placeholder="Name or description" type="search" /></label>
@@ -1203,7 +1304,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               <h4 className="text-[11px] uppercase tracking-widest text-[#999]">Saved manuscript evidence</h4>
               <p className="mt-2 text-xs leading-5 text-[#aaa]">Read the exact passage behind an entry, including earlier versions. Reading evidence does not edit your book, generate content, or use credits.</p>
               <ul className="mt-3 space-y-3">{draft.sourceRefs.map((ref, index) => <li key={JSON.stringify([bookId, ref.chapterId, ref.documentVersionId, ref.nodeId, ref.textHash, index])}>
-                {isPinnedSourceRef(ref) ? <BibleSourcePassage bookId={bookId} citation={ref} title={memory.chapters.find((chapter) => chapter.id === ref.chapterId)?.title ?? "Referenced chapter"} />
+                {isPinnedSourceRef(ref) ? <BibleSourcePassage bookId={bookId} citation={ref} readRequest={boundRequest} title={memory.chapters.find((chapter) => chapter.id === ref.chapterId)?.title ?? "Referenced chapter"} />
                   : <div className="rounded-lg border border-white/10 p-3 text-xs leading-5 text-[#aaa]"><p className="font-medium text-[#ddd]">{memory.chapters.find((chapter) => chapter.id === ref.chapterId)?.title ?? "Referenced chapter"}</p><p className="mt-1">Chapter reference only. No exact passage has been pinned.</p></div>}
               </li>)}</ul>
             </section>}
@@ -1281,7 +1382,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               <div className="mt-4 border-t border-white/10 pt-4"><h5 className="text-[11px] uppercase tracking-widest text-[#888]">Manuscript evidence</h5>{metadataCandidate.sourceRefs.length ? <ul className="mt-2 space-y-2">{metadataCandidate.sourceRefs.map((ref, index) => {
                 const chapter = memory.chapters.find((item) => item.id === ref.chapterId);
                 return <li key={JSON.stringify([bookId, ref.chapterId, ref.documentVersionId, ref.nodeId, ref.textHash, index])} className="min-w-0 text-xs leading-5 text-[#aaa]">
-                  {isPinnedSourceRef(ref) ? <BibleSourcePassage bookId={bookId} citation={ref} title={chapter?.title ?? "Referenced chapter"} />
+                  {isPinnedSourceRef(ref) ? <BibleSourcePassage bookId={bookId} citation={ref} readRequest={boundRequest} title={chapter?.title ?? "Referenced chapter"} />
                     : <div className="rounded-lg border border-white/10 p-3"><p className="font-medium text-[#ddd]">{chapter?.title ?? "Referenced chapter"}</p><p className="mt-1">Chapter reference only. No exact passage has been pinned.</p></div>}
                   {ref.note && <p className="mt-1 break-words px-3">{ref.note}</p>}
                 </li>;
@@ -1299,5 +1400,6 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         </form>
       </section>
     </>}
+    </div>
   </main>;
 }

@@ -289,7 +289,7 @@ export function metadataQuoteRoutes(app: FastifyInstance, options: { fetcher?: t
   });
 
   app.post("/books/:bookId/metadata/quotes/recover", async (req, reply) => {
-    const body = parse(z.object({ idempotencyKey: z.string().trim().min(8).max(200) }).strict(), req.body, "The original metadata request key is required.");
+    const body = parse(z.object({ idempotencyKey: z.string().trim().min(8).max(200), expected: quoteRequestBody.optional() }).strict(), req.body, "The original metadata request key is required.");
     const { bookId, book } = await scopedBook(app, req);
     const service = app.supabaseFactory();
     const found = await service.from("metadata_token_quote_requests").select("*").eq("user_id", req.userId)
@@ -299,6 +299,19 @@ export function metadataQuoteRoutes(app: FastifyInstance, options: { fetcher?: t
     if (!id.safeParse(found.data.id).success || found.data.user_id !== req.userId || found.data.book_id !== bookId
       || found.data.workspace_id !== book.workspace_id || found.data.idempotency_key !== body.idempotencyKey) {
       throw new AppError(503, "Metadata quote identity could not be verified.");
+    }
+    if (body.expected) {
+      const expected = body.expected;
+      const existing = found.data as QuoteRow;
+      const saved = z.object({ model: z.string(), contextPolicy: z.object({ maxTokens: z.number() }).passthrough(),
+        input: z.object({ chapterIds: z.array(id), userInstruction: z.string() }).passthrough() }).passthrough().safeParse(existing.generation_request_json);
+      const entries = z.object({ entries: z.array(z.object({ id: z.string(), price: z.object({ model: z.string() }).passthrough() }).passthrough()) }).passthrough().safeParse(existing.catalog_json);
+      const entry = entries.success ? entries.data.entries.find(item => item.id === expected.modelId) : null;
+      if (expected.idempotencyKey !== body.idempotencyKey || !saved.success || !entry || entry.price.model !== saved.data.model
+        || saved.data.contextPolicy.maxTokens !== expected.maxTokens || saved.data.input.userInstruction !== metadataInstruction(expected)
+        || (expected.chapterIds && !isDeepStrictEqual([...expected.chapterIds].sort(), [...saved.data.input.chapterIds].sort()))) {
+        throw new AppError(409, "The saved metadata quote differs from this checkpoint. Keep the original request for review.");
+      }
     }
     reply.header("cache-control", "private, no-store");
     return savedQuoteStatus(service, found.data as QuoteRow);

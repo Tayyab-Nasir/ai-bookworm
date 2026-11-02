@@ -5,12 +5,13 @@ import type { SearchPassageCitation, SearchSourcePassage as Passage } from "@boo
 import { parseSearchPassage } from "../lib/book-search";
 import { apiClient } from "./api";
 
-export default function SearchSourcePassage(props: { bookId: string; citation: SearchPassageCitation }) {
+type ScopedRequest = <T>(path: string, method?: string, body?: unknown) => Promise<T>;
+export default function SearchSourcePassage(props: { bookId: string; citation: SearchPassageCitation; readRequest?: ScopedRequest }) {
   const c = props.citation;
   return <SourceReader key={`${props.bookId}:${c.chapterId}:${c.documentVersionId}:${c.nodeId}:${c.chunkIndex}:${c.textHash}`} {...props} />;
 }
 
-function SourceReader({ bookId, citation }: { bookId: string; citation: SearchPassageCitation }) {
+function SourceReader({ bookId, citation, readRequest }: { bookId: string; citation: SearchPassageCitation; readRequest?: ScopedRequest }) {
   const regionId = useId();
   const [passage, setPassage] = useState<Passage | null>(null), [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
@@ -21,7 +22,10 @@ function SourceReader({ bookId, citation }: { bookId: string; citation: SearchPa
     if (passage && offset === undefined) { setOpen(value => !value); return; }
     const current = ++generation.current; inFlight.current = true; setBusy(true); setError(null);
     try {
-      const response = await apiClient().readSearchPassage(bookId, { ...citation, ...(offset === undefined ? {} : { offset }) });
+      const body = { ...citation, ...(offset === undefined ? {} : { offset }) };
+      const response = readRequest
+        ? await readRequest<Passage>(`/books/${encodeURIComponent(bookId)}/search/evidence`, "POST", body)
+        : await apiClient().readSearchPassage(bookId, body);
       if (current !== generation.current) return;
       const verified = parseSearchPassage(response, bookId, citation, offset);
       if (passage && (passage.versionNumber !== verified.versionNumber || passage.totalLength !== verified.totalLength)) {

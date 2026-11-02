@@ -6,7 +6,7 @@ type Citation = { chapterId: string; documentVersionId: string; nodeId: string; 
 type Passage = { chapterTitle: string; versionNumber: number; isCurrentVersion: boolean; text: string; truncated: boolean;
   startOffset: number; endOffset: number; totalLength: number; nextOffset: number | null };
 
-export default function BibleSourcePassage({ bookId, citation, title }: { bookId: string; citation: Citation; title: string }) {
+export default function BibleSourcePassage({ bookId, citation, title, readRequest }: { bookId: string; citation: Citation; title: string; readRequest: <T>(path: string, method?: string, body?: unknown) => Promise<T> }) {
   const [passage, setPassage] = useState<Passage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -19,12 +19,7 @@ export default function BibleSourcePassage({ bookId, citation, title }: { bookId
     const requestedOffset = offset ?? 0;
     setLoading(true); setError(null);
     try {
-      const response = await fetch(`/api/backend/v1/books/${encodeURIComponent(bookId)}/bible/evidence`, {
-        method: "POST", credentials: "same-origin", cache: "no-store",
-        headers: { "content-type": "application/json" }, body: JSON.stringify({ ...citation, offset: requestedOffset }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data?.error?.message || "The saved passage could not be loaded.");
+      const data = await readRequest<Passage>(`/books/${encodeURIComponent(bookId)}/bible/evidence`, "POST", { ...citation, offset: requestedOffset });
       if (typeof data.text !== "string" || typeof data.isCurrentVersion !== "boolean") throw new Error("The saved passage is unavailable.");
       if (data.startOffset !== requestedOffset || !Number.isInteger(data.endOffset) || !Number.isInteger(data.totalLength)
         || data.endOffset < data.startOffset || data.endOffset > data.totalLength
