@@ -48,7 +48,7 @@ def publishing_metadata(book: dict, edition: dict | None = None) -> dict:
 def _assert_saved_epub_metadata(blob: bytes, metadata: dict) -> None:
     """Check the exact saved artifact, including proofs made before this policy."""
     unreadable = "Saved EPUB publication metadata cannot be verified. Render again before packaging."
-    mismatch = "Saved EPUB publication date or language does not match this edition. Render again before packaging."
+    mismatch = "Saved EPUB publication metadata does not match this edition. Render again before packaging."
     max_opf_bytes = 1_000_000  # Same inspection bound used by Google Play OPF checks.
     try:
         with zipfile.ZipFile(BytesIO(blob)) as archive:
@@ -79,12 +79,30 @@ def _assert_saved_epub_metadata(blob: bytes, metadata: dict) -> None:
         raise ValueError(unreadable)
     dates = entries[0].findall(dc_namespace + "date")
     languages = entries[0].findall(dc_namespace + "language")
-    if any(len(element) or (element.tail or "").strip() for element in dates + languages):
+    titles = entries[0].findall(dc_namespace + "title")
+    creators = entries[0].findall(dc_namespace + "creator")
+    descriptions = entries[0].findall(dc_namespace + "description")
+    subjects = entries[0].findall(dc_namespace + "subject")
+    identifiers = entries[0].findall(dc_namespace + "identifier")
+    if any(len(element) or (element.tail or "").strip()
+           for element in dates + languages + titles + creators + descriptions + subjects + identifiers):
         raise ValueError(unreadable)
+    # XML parsers normalize CR and CRLF in text content when reading the OPF.
+    normalize = lambda value: value.replace("\r\n", "\n").replace("\r", "\n")
+    description = metadata.get("description") or None
+    isbn = metadata.get("isbn13") or None
+    isbn_identifiers = [element for element in identifiers if element.get("id") != "pub-id"]
     expected_date = metadata.get("publicationDate")
     if (len(dates) != (1 if expected_date is not None else 0)
             or (dates and dates[0].text != expected_date)
-            or len(languages) != 1 or languages[0].text != (metadata.get("language") or "en")):
+            or len(languages) != 1 or (languages[0].text or "") != normalize(metadata.get("language") or "en")
+            or len(titles) != 1 or (titles[0].text or "") != normalize(metadata.get("title") or "")
+            or len(creators) != 1 or (creators[0].text or "") != normalize(metadata.get("author") or "")
+            or len(descriptions) != (1 if description else 0)
+            or (description and (descriptions[0].text or "") != normalize(description))
+            or [(element.text or "") for element in subjects] != [normalize(value) for value in sorted(metadata.get("keywords") or [])]
+            or len(isbn_identifiers) != (1 if isbn else 0)
+            or (isbn and (isbn_identifiers[0].text or "") != normalize(isbn))):
         raise ValueError(mismatch)
 
 

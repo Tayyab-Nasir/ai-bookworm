@@ -219,7 +219,7 @@ def test_apple_validates_packaged_bytes_and_records_manual_handoff(monkeypatch):
     ctx = {**_ctx(), "channel": "apple"}
     ctx["book"] = copy.deepcopy(VALID)
     ctx["book"]["metadata"]["description"] = "A" * 60
-    saved_epub = ctx["artifact"]
+    saved_epub, _ = render_epub(ctx["book"], parse_edition(EBOOK))
     # The stale proof context must never determine which bytes are validated.
     ctx["artifact"] = b"not the saved EPUB"
     seen = []
@@ -380,6 +380,7 @@ def test_package_metadata_is_exact_allowlisted_unicode_and_checksum_bound():
                             privateToken="DO-NOT-EXPORT", internalNotes={"secret": "DO-NOT-EXPORT"})
     book["bookBible"] = {"entities": [{"description": "DO-NOT-EXPORT"}]}
     ctx["book"] = book
+    ctx["artifact"], _ = render_epub(book, parse_edition(EBOOK))
     adapter = get_adapter("kdp")
     artifacts = {"book.epub": ctx["artifact"]}
     first = adapter.build_package(ctx, artifacts)[0]
@@ -729,6 +730,34 @@ def test_effective_publication_metadata_rejects_old_saved_epub_before_packaging(
                       artifactsBase64={"book.epub": base64.b64encode(old_artifact).decode()}))
     assert caught.value.status_code == 422
     assert "Render again" in caught.value.detail
+
+
+@pytest.mark.parametrize("flow", ["reflowable", "fixed"])
+@pytest.mark.parametrize("field,value", [
+    ("title", "A different title"), ("author", "A different author"),
+    ("description", "A different description"), ("keywords", ["other", "keywords"]),
+    ("isbn13", "9780306406157"),
+])
+def test_package_rejects_saved_epub_with_stale_listing_metadata(flow, field, value):
+    from fastapi import HTTPException
+    book = copy.deepcopy(VALID)
+    config = {"kind": "ebook", "flow": flow}
+    old_artifact, _ = render_epub(book, parse_edition(config))
+    book["metadata"][field] = value
+    with pytest.raises(HTTPException) as caught:
+        build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=book,
+                      artifactsBase64={"book.epub": base64.b64encode(old_artifact).decode()}))
+    assert caught.value.status_code == 422
+    assert "Render again" in caught.value.detail
+
+
+def test_matching_epub_metadata_accepts_xml_normalized_line_endings():
+    from adapters import _assert_saved_epub_metadata, publishing_metadata
+    book = copy.deepcopy(VALID)
+    book["metadata"].update(title="Title\r\nSecond line", author="Name\rSurname",
+                            description="First\r\nSecond", keywords=["one\r\ntwo"])
+    artifact, _ = render_epub(book, parse_edition(EBOOK))
+    _assert_saved_epub_metadata(artifact, publishing_metadata(book)["metadata"])
 
 
 @pytest.mark.parametrize("malformation", ["oversize", "doctype", "non-utf8", "broken-xml",
