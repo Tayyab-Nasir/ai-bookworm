@@ -31,6 +31,7 @@ INJECTION_GUARDRAIL = (
 
 # strip ASCII control chars except \n\t, and the delimiter markers themselves
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_PROVENANCE_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
 
 
 def sanitize(text: str) -> str:
@@ -40,6 +41,16 @@ def sanitize(text: str) -> str:
 
 def wrap_manuscript(text: str) -> str:
     return f"{DELIM_BEGIN}\n{sanitize(text)}\n{DELIM_END}"
+
+
+def _provenance_part(value: object) -> str:
+    """Keep untrusted identifiers from adding prompt lines or delimiters."""
+    if value is not None and not isinstance(value, (str, int)):
+        raise AgentValidationError("Selected manuscript contains an unsupported source identifier.")
+    text = str(value)
+    if len(text) > 200 or _PROVENANCE_CONTROL_RE.search(text) or DELIM_BEGIN in text or DELIM_END in text:
+        raise AgentValidationError("Selected manuscript contains an unsupported source identifier.")
+    return text
 
 
 class AgentValidationError(ValueError):
@@ -109,12 +120,12 @@ class BaseAgent:
             for node in chapter.get("nodes", []):
                 version_id = chapter.get("documentVersionId") or chapter.get("document_version_id")
                 text_hash = node.get("textHash") or node.get("text_hash")
-                provenance = f"CHAPTER {cid} VERSION {chapter.get('version', 0)}"
+                provenance = f"CHAPTER {_provenance_part(cid)} VERSION {_provenance_part(chapter.get('version', 0))}"
                 if version_id:
-                    provenance += f" DOCUMENT_VERSION {version_id}"
-                provenance += f" NODE {node.get('id')}"
+                    provenance += f" DOCUMENT_VERSION {_provenance_part(version_id)}"
+                provenance += f" NODE {_provenance_part(node.get('id'))}"
                 if text_hash:
-                    provenance += f" TEXT_HASH {text_hash}"
+                    provenance += f" TEXT_HASH {_provenance_part(text_hash)}"
                 parts.append(
                     provenance + ":\n"
                     f"{wrap_manuscript(node.get('text', ''))}"
