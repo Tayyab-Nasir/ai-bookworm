@@ -67,6 +67,7 @@ export default function AssetBrowser({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [removing, setRemoving] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [uncertainRefreshComplete, setUncertainRefreshComplete] = useState(false);
   const removalEpoch = useRef(0);
   const scopeEpoch = useRef(0);
   const removalFlight = useRef(false);
@@ -78,6 +79,7 @@ export default function AssetBrowser({
   useLayoutEffect(() => {
     refreshRequiredAfter.current = null;
     setRemoveError(null);
+    setUncertainRefreshComplete(false);
     return () => { scopeEpoch.current++; };
   }, [active, operationScope]);
 
@@ -85,8 +87,7 @@ export default function AssetBrowser({
 
   useLayoutEffect(() => {
     if (refreshRequiredAfter.current !== null && librarySnapshotRequest > refreshRequiredAfter.current) {
-      refreshRequiredAfter.current = null;
-      setRemoveError(null);
+      setUncertainRefreshComplete(true);
     }
   }, [librarySnapshotRequest]);
 
@@ -99,7 +100,7 @@ export default function AssetBrowser({
     ++removalEpoch.current;
     removalFlight.current = true; setRemoving(asset.id); setRemoveError(null);
     try { await onDelete(asset.id); }
-    catch { if (mounted.current && currentScope === scopeEpoch.current) { refreshRequiredAfter.current = getLibraryRequest(); setRemoveError("Removal could not be confirmed and may still complete. Refresh the library and check the file before trying again."); } }
+    catch { if (mounted.current && currentScope === scopeEpoch.current) { refreshRequiredAfter.current = getLibraryRequest(); setUncertainRefreshComplete(false); setRemoveError("Removal could not be confirmed and may still complete. Refresh the library and check the file before trying again."); } }
     finally { removalFlight.current = false; if (mounted.current) setRemoving(null); }
   };
 
@@ -239,7 +240,13 @@ export default function AssetBrowser({
           )}
         </div>
 
-        {removeError && <p role="alert" className="mb-4 rounded-lg border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-100">{removeError}</p>}
+        {removeError && <div role="alert" className="mb-4 rounded-lg border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-100">
+          <p>{removeError}</p>
+          {uncertainRefreshComplete && <><p className="mt-2">The refreshed list shows the current state only. The earlier request could still finish later.</p><button type="button" className="mt-2 min-h-11 underline" onClick={() => {
+            if (refreshRequiredAfter.current === null || librarySnapshotRequest <= refreshRequiredAfter.current) return;
+            refreshRequiredAfter.current = null; setRemoveError(null); setUncertainRefreshComplete(false);
+          }}>I understand, continue</button></>}
+        </div>}
 
         {visibleAssets.length === 0 ? (
           <div className="text-center py-12">

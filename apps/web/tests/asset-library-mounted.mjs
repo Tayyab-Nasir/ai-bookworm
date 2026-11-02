@@ -116,7 +116,7 @@ test("removing a library asset requires explicit confirmation", async () => {
   } finally { await page.close(); }
 });
 
-test("an unconfirmed removal reports a safe error and refresh clears it", async () => {
+test("an unconfirmed removal requires a fresh read and acknowledgement of uncertainty", async () => {
   const { page } = await fixture();
   try {
     await page.evaluate(() => { window.api.deleteAsset = async () => { throw new Error("synthetic private diagnostic"); }; });
@@ -125,9 +125,29 @@ test("an unconfirmed removal reports a safe error and refresh clears it", async 
     await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toBeVisible();
     await expect(page.getByText("synthetic private diagnostic")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "I understand, continue", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Refresh library", exact: true }).click();
+    await expect(page.getByText("The refreshed list shows the current state only. The earlier request could still finish later.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "I understand, continue", exact: true }).click();
     await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toBeEnabled();
+  } finally { await page.close(); }
+});
+
+test("a missing file after refresh does not claim the uncertain request finished", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.api.deleteAsset = async () => { throw new Error("reply lost"); };
+      window.api.listAssets = async () => ({ assets: [] });
+    });
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Remove My draft.pdf", exact: true }).click();
+    await page.getByRole("button", { name: "Refresh library", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toHaveCount(0);
+    await expect(page.getByText("The refreshed list shows the current state only. The earlier request could still finish later.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "I understand, continue", exact: true })).toBeVisible();
   } finally { await page.close(); }
 });
 
@@ -146,6 +166,7 @@ test("a refresh completed before removal failure cannot authorize another remova
     await expect(remove).toBeDisabled();
     assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "delete").length), 1);
     await page.getByRole("button", { name: "Refresh library", exact: true }).click();
+    await page.getByRole("button", { name: "I understand, continue", exact: true }).click();
     await expect(remove).toBeEnabled();
     await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
   } finally { await page.close(); }
@@ -165,12 +186,14 @@ test("a refresh started before removal failure cannot clear its warning when it 
     await expect.poll(() => page.evaluate(() => Boolean(window.gates.refresh))).toBe(true);
     await page.evaluate(() => window.gates.delete.reject(new Error("late failure")));
     await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "I understand, continue", exact: true })).toHaveCount(0);
     await page.evaluate(() => { window.gates.refresh.resolve(); window.api.listAssets = async workspace => ({ assets: [window.file(workspace)] }); });
     const remove = page.getByRole("button", { name: "Remove My draft.pdf", exact: true });
     await expect(remove).toBeDisabled();
     await expect(page.getByRole("button", { name: "Refresh library", exact: true })).toBeEnabled();
     await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toBeVisible();
     await page.getByRole("button", { name: "Refresh library", exact: true }).click();
+    await page.getByRole("button", { name: "I understand, continue", exact: true }).click();
     await expect(remove).toBeEnabled();
     await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
   } finally { await page.close(); }
@@ -191,6 +214,7 @@ test("a failed library refresh cannot unlock removal after an uncertain response
     await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toHaveCount(0);
     await page.evaluate(() => { window.api.listAssets = async workspace => ({ assets: [window.file(workspace)] }); });
     await page.getByRole("button", { name: "Refresh library", exact: true }).click();
+    await page.getByRole("button", { name: "I understand, continue", exact: true }).click();
     await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toBeEnabled();
   } finally { await page.close(); }
 });
