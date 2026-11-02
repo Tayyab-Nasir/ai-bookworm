@@ -66,6 +66,20 @@ test('custom ports and an absolute Python executable remain loopback-only', () =
   assert.equal(plan[3].env.CLAMD_PORT, '13310');
 });
 
+test('an explicitly configured EPUBCheck JAR reaches only rendering and publishing', () => {
+  const jar = join(root, 'reviewed-epubcheck', 'epubcheck.jar');
+  const plan = createProcessingPlan({ ...config(), EPUBCHECK_JAR: jar }, { EPUBCHECK_JAR: 'untrusted-system-value' });
+  assert.equal(plan.find(service => service.role === 'rendering').env.EPUBCHECK_JAR, jar);
+  assert.equal(plan.find(service => service.role === 'publishing').env.EPUBCHECK_JAR, jar);
+  assert.equal(plan.find(service => service.role === 'document').env.EPUBCHECK_JAR, undefined);
+  assert.equal(plan.find(service => service.role === 'scanning').env.EPUBCHECK_JAR, undefined);
+  assert.ok(createProcessingPlan(config(), { EPUBCHECK_JAR: jar }).every(service => !('EPUBCHECK_JAR' in service.env)));
+  assert.ok(createProcessingPlan({ ...config(), EPUBCHECK_JAR: '' }, {}).every(service => !('EPUBCHECK_JAR' in service.env)));
+  for (const bad of ['relative.jar', join(root, 'not-a-jar.zip'), ` ${jar}`, `${jar}\n`, `${jar}\0`, null, 42]) {
+    assert.throws(() => createProcessingPlan({ ...config(), EPUBCHECK_JAR: bad }, {}), /absolute JAR path/);
+  }
+});
+
 test('a token cannot be missing, shared, whitespace-bearing, truncated or unbounded', () => {
   for (const value of [undefined, '', 'short', 'x'.repeat(31), 'x'.repeat(513),
     ` ${token(0)}`, `${token(0)}\n`, `${token(0)}\r\n`, `${token(0)}\0`, `${token(0)} secret`]) {

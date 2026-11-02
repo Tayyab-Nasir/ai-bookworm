@@ -46,6 +46,13 @@ stderr is not echoed because it can contain document content; generic lifecycle
 errors stay visible. For detailed diagnosis, use an explicitly scoped private
 service session without sharing its logs.
 
+For Apple Books and Google Play EPUB checks, install the reviewed EPUBCheck
+5.4.0 distribution and Java, then set `EPUBCHECK_JAR` in the private processing
+configuration to the absolute path of its `epubcheck.jar`. The launcher passes
+that path only to rendering and publishing and checks that it is a file. If it
+is unset, invalid, or cannot run, those retailer checks remain unavailable and
+packaging fails closed. A launcher restart is required for configuration changes.
+
 Configure the API with the same private service URLs/tokens in its server-side
 environment. The document worker needs its corresponding server configuration
 too. Starting the HTTP fleet does not consume jobs. Inspect pending work and

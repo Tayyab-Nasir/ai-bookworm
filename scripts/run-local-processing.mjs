@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import { access, readFile, stat } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { isAbsolute, join, resolve } from 'node:path';
+import { extname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -25,6 +25,11 @@ export function createProcessingPlan(config, systemEnv = process.env, projectRoo
   Object.assign(base, { TZ: 'UTC', PYTHONUNBUFFERED: '1', PYTHONDONTWRITEBYTECODE: '1' });
   const python = config.BOOKWORM_PYTHON || join(projectRoot, process.platform === 'win32' ? '.venv/Scripts/python.exe' : '.venv/bin/python');
   if (!isAbsolute(python)) throw new Error('BOOKWORM_PYTHON must be an absolute executable path.');
+  const epubcheck = config.EPUBCHECK_JAR;
+  if (epubcheck !== undefined && epubcheck !== '' && (typeof epubcheck !== 'string' || epubcheck !== epubcheck.trim()
+    || /[\x00-\x1f\x7f]/.test(epubcheck) || !isAbsolute(epubcheck) || extname(epubcheck).toLowerCase() !== '.jar')) {
+    throw new Error('EPUBCHECK_JAR must be an absolute JAR path.');
+  }
   const ports = new Set();
   const tokens = new Set();
   const clamdPort = Object.hasOwn(config, 'CLAMD_PORT') ? config.CLAMD_PORT : '3310';
@@ -49,6 +54,7 @@ export function createProcessingPlan(config, systemEnv = process.env, projectRoo
     const url = new URL(config[`${prefix}_SERVICE_URL`] ?? `http://127.0.0.1:${defaultPort}`);
     const env = { ...base, [`${prefix}_SERVICE_TOKEN`]: config[`${prefix}_SERVICE_TOKEN`] };
     if (role === 'scanning') Object.assign(env, { CLAMD_HOST: '127.0.0.1', CLAMD_PORT: clamdPort });
+    if ((role === 'rendering' || role === 'publishing') && epubcheck) env.EPUBCHECK_JAR = epubcheck;
     return { role, url: url.origin, port: Number(url.port), command: python, env,
       cwd: join(projectRoot, 'services', role),
       healthPath: role === 'scanning' ? '/ready' : '/health',
@@ -60,6 +66,8 @@ export function createProcessingPlan(config, systemEnv = process.env, projectRoo
 async function prerequisites(plan) {
   await access(plan[0].command);
   for (const service of plan) await access(join(service.cwd, service.role === 'scanning' ? 'scanning_service/main.py' : 'main.py'));
+  const epubcheck = plan.find(service => service.role === 'rendering')?.env.EPUBCHECK_JAR;
+  if (epubcheck && !(await stat(epubcheck)).isFile()) throw new Error('EPUBCheck JAR is not a file.');
 }
 
 async function portAvailable(port) {
