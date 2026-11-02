@@ -91,6 +91,10 @@ port. It creates/removes only its generated disposable database, runs serial
 SQL suites and verifies actual `pg_stat_activity` lock waits. The GitHub
 `Native database acceptance` workflow runs it against PostgreSQL 16. Never
 point this runner at the hosted project or a customer database.
+Run it with `node --import tsx tests/security/run-native-postgres.mjs` after
+installing `services/ai/requirements.txt`. The customer-key composition test
+uses a synthetic provider and a simulated RPC transport; it does not prove the
+hosted service or real provider connection.
 
 `tests/e2e/illustration-review-browser.mjs` uses an isolated real Next app and
 synthetic Auth/API routes. It verifies independent request/decision recovery,

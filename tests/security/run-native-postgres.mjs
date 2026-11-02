@@ -9,6 +9,7 @@ import { artworkCompletionRaces } from './native-artwork-completion.mjs';
 import { paidQuoteLifecycleRaces } from './native-paid-quote-lifecycle.mjs';
 import { moderationResolutionRaces } from './native-moderation-resolution.mjs';
 import { manualBookBibleRecoveryRaces } from './native-manual-book-bible-recovery.mjs';
+import { customerAiNativeComposition } from './native-customer-ai-composition.mjs';
 import { customerAiCompletionRaces } from './native-customer-ai-completion.mjs';
 import { customerAiPreparationRaces } from './native-customer-ai-preparations.mjs';
 import { customerAiReconciliationRaces } from './native-customer-ai-reconciliation.mjs';
@@ -144,7 +145,7 @@ async function deductionRace(replay) {
   const result = await contender.done;
   if (replay) {
     assert.equal(result.code, 0, result.stderr);
-    const first = JSON.parse(held.stdout.split('\n').find((line) => line.startsWith('{')));
+    const first = JSON.parse(held.stdout.split(/\r?\n/).find((line) => line.startsWith('{')));
     assert.deepEqual(JSON.parse(result.stdout.trim()), first);
   } else {
     assert.notEqual(result.code, 0);
@@ -196,7 +197,7 @@ async function fundedQuoteRace() {
   assert.equal((await firstDispatch.done).code, 0, firstDispatch.stderr);
   const secondResult = await secondDispatch.done;
   assert.equal(secondResult.code, 0, secondResult.stderr); assert.equal(secondResult.stdout.trim(), 'f');
-  assert.equal(firstDispatch.stdout.split('\n')[0], 't');
+  assert.equal(firstDispatch.stdout.split(/\r?\n/)[0], 't');
   console.log('PASS native one-time funded dispatch');
 }
 async function proposalAcceptanceRace(mode) {
@@ -479,7 +480,7 @@ async function storyBlueprintMaterializationRace() {
     assert.equal(held.ended, false, held.stderr);
     return held.stdout.includes('BOOKWORM_READY');
   }, 'Blueprint materialization holder not ready');
-  const firstId = held.stdout.split('\n').find((line) => /^[0-9a-f-]{36}$/.test(line));
+  const firstId = held.stdout.split(/\r?\n/).find((line) => /^[0-9a-f-]{36}$/.test(line));
   assert.ok(firstId, `Blueprint holder returned no chapter: ${held.stdout}`);
   const name = `blueprint_${randomUUID().replaceAll('-', '')}`;
   const contender = session(database, name);
@@ -524,7 +525,7 @@ async function audioExportRaces() {
     assert.equal(contender.ended, false, contender.stderr);
     return await sql(`select count(*) from pg_stat_activity where application_name='${name}' and wait_event_type='Lock';`) === '1';
   }, 'Audio replay did not wait for request lock');
-  const queuedId = held.stdout.trim().split('\n')[0];
+  const queuedId = held.stdout.trim().split(/\r?\n/)[0];
   held.child.stdin.end('commit;\n'); assert.equal((await held.done).code, 0, held.stderr);
   const replay = await contender.done; assert.equal(replay.code, 0, replay.stderr);
   assert.equal(replay.stdout.trim(), queuedId);
@@ -537,7 +538,7 @@ async function audioExportRaces() {
   const firstWorker = session();
   firstWorker.child.stdin.write(`begin; ${claimAudio} select 'BOOKWORM_READY';\n`);
   await until(() => { assert.equal(firstWorker.ended, false, firstWorker.stderr); return firstWorker.stdout.includes('BOOKWORM_READY'); }, 'Audio worker not ready');
-  const first = JSON.parse(firstWorker.stdout.trim().split('\n')[0]);
+  const first = JSON.parse(firstWorker.stdout.trim().split(/\r?\n/)[0]);
   const second = JSON.parse(await sql(claimAudio));
   assert.notEqual(first.id, second.id);
   assert.deepEqual(new Set([first.id, second.id]), new Set([queuedId, secondId]));
@@ -620,6 +621,7 @@ try {
   await paidQuoteLifecycleRaces({ sql, session, until, database });
   await moderationResolutionRaces({ sql, session, until, database });
   await manualBookBibleRecoveryRaces({ sql, session, until, database });
+  await customerAiNativeComposition({ sql });
   await customerAiCompletionRaces({ sql, session, until, database });
   await customerAiPreparationRaces({ sql, session, until, database });
   await customerAiReconciliationRaces({ sql, session, until, database });

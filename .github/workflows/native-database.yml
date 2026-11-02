@@ -2,16 +2,16 @@ name: Native database acceptance
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['supabase/migrations/**', 'tests/security/**', '.github/workflows/native-database.yml']
+    paths: ['supabase/migrations/**', 'tests/security/**', 'services/ai/**', 'services/api/src/lib/**', '.github/workflows/native-database.yml']
   push:
     branches: [main, master, 'codex/**']
-    paths: ['supabase/migrations/**', 'tests/security/**', '.github/workflows/native-database.yml']
+    paths: ['supabase/migrations/**', 'tests/security/**', 'services/ai/**', 'services/api/src/lib/**', '.github/workflows/native-database.yml']
 permissions:
   contents: read
 jobs:
   postgres:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -30,9 +30,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r services/ai/requirements.txt
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
-      - run: node tests/security/run-native-postgres.mjs
+      - run: node --import tsx tests/security/run-native-postgres.mjs
         env:
           BOOKWORM_NATIVE_TEST: '1'
           BOOKWORM_NATIVE_TEST_PASSWORD: disposable-ci-only

@@ -624,7 +624,7 @@ export async function paidQuoteLifecycleRaces({ sql, session, until, database })
     }, 'Expected paid quote PostgreSQL lock wait');
     holder.child.stdin.end(rollback ? 'rollback;\n' : 'commit;\n');
     assert.equal((await holder.done).code, 0, holder.stderr);
-    return { result: await contender.done, holder: holder.stdout.split('\n')[0], label };
+    return { result: await contender.done, holder: holder.stdout.split(/\r?\n/)[0], label };
   }
   // Run actual queue claims before the acceptance-only primitive fixtures leave
   // queued holds. Each real completion fixture finishes before the next claim.

@@ -264,7 +264,7 @@ export async function narrationLifecycleRaces({ sql, session, until, database })
     }, "Expected narration PostgreSQL lock wait");
     holder.child.stdin.end(rollback ? "rollback;\n" : "commit;\n");
     assert.equal((await holder.done).code, 0, holder.stderr);
-    return { holder: holder.stdout.split("\n")[0], result: await contender.done };
+    return { holder: holder.stdout.split(/\r?\n/)[0], result: await contender.done };
   }
   for (const mode of ["replay", "competing", "rollback"]) {
     const f = await narrationRaceFixture(sql), other = mode === "replay" ? 0 : 1;
