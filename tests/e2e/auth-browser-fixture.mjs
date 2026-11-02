@@ -10,6 +10,7 @@ const tokens = new Set();
 const workspaces = [];
 const setupBooks = [];
 const setupUploads = new Map();
+const safeFilename = name => (name.split(/[\\/]/).pop() ?? 'file').replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '_').slice(0, 128) || 'file';
 const setupCounts = { books: 0, assets: 0, allocationRequests: 0, uploads: 0, confirmations: 0, imports: 0, reportReads: 0, jobReads: 0, jobRetries: 0 };
 const setupReceipts = new Map();
 const setupJobs = new Map();
@@ -89,13 +90,16 @@ function session() {
 const server = createServer(async (req, res) => {
   function json(status, body) { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); }
   const url = new URL(req.url, 'http://127.0.0.1:4399');
-  if (url.pathname.startsWith('/fixture-upload/')) {
+  if (url.pathname.startsWith('/storage/v1/object/upload/sign/book-assets/')) {
     const uploadOrigin = req.headers.origin;
     if (uploadOrigin === 'http://127.0.0.1:4398' || uploadOrigin === 'http://localhost:4398') res.setHeader('access-control-allow-origin', uploadOrigin);
     res.setHeader('access-control-allow-methods', 'PUT, OPTIONS');
     res.setHeader('access-control-allow-headers', 'content-type');
     if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-    const entry = setupUploads.get(url.pathname.split('/').pop());
+    let path;
+    try { path = decodeURIComponent(url.pathname.slice('/storage/v1/object/upload/sign/book-assets/'.length)); }
+    catch { return json(400, {}); }
+    const entry = [...setupUploads.values()].find(item => item.path === path);
     if (!entry || url.searchParams.get('token') !== entry.token || req.method !== 'PUT') return json(403, {});
     let length = 0;
     for await (const chunk of req) { length += chunk.length; if (length > 16384) return json(413, {}); }
@@ -313,7 +317,7 @@ const server = createServer(async (req, res) => {
     const reserved = quotes.reduce((total, quote) => total + quote.reservedCredits, 0);
     const workspaceCredits = quotes.filter(quote => bookIds.has(quote.bookId)).reduce((total, quote) => total + quote.reservedCredits, 0);
     return json(200, {
-      workspace: { id: workspace.id, name: workspace.name, organizationId: workspace.organization_id, role: 'owner' }, books,
+      viewerId: user.id, workspace: { id: workspace.id, name: workspace.name, organizationId: workspace.organization_id, role: 'owner' }, books,
       summary: { activeBooks: books.filter(book => book.status !== 'archived').length,
         inProductionBooks: books.filter(book => ['draft', 'in_review'].includes(book.status)).length,
         publishedBooks: books.filter(book => book.status === 'published').length, assets: assets.length,
@@ -420,6 +424,7 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/v1/assets/upload-url' && req.method === 'POST') {
     setupCounts.allocationRequests++;
     const id = body.requestId ?? randomUUID(); const token = randomUUID();
+    const path = `workspaces/${body.workspaceId}/assets/${id}/v1/${safeFilename(body.filename)}`;
     const existing = setupUploads.get(id);
     if (existing && (existing.filename !== body.filename || existing.mimeType !== body.mimeType
       || existing.sizeBytes !== body.sizeBytes || existing.workspaceId !== body.workspaceId || existing.type !== body.type || existing.clean)) {
@@ -427,7 +432,7 @@ const server = createServer(async (req, res) => {
     }
     if (existing) existing.token = token;
     else {
-      setupUploads.set(id, { token, filename: body.filename, mimeType: body.mimeType, workspaceId: body.workspaceId,
+      setupUploads.set(id, { token, path, filename: body.filename, mimeType: body.mimeType, workspaceId: body.workspaceId,
         type: body.type, sizeBytes: body.sizeBytes, uploaded: false, clean: false, checksum: null });
       setupCounts.assets++;
     }
@@ -435,7 +440,7 @@ const server = createServer(async (req, res) => {
       lostUploadAllocationReply = true;
       return json(503, { error: { message: 'Fixture lost allocation reply after acceptance' } });
     }
-    return json(200, { assetId: id, uploadUrl: `http://127.0.0.1:4399/fixture-upload/${id}?token=${token}`, path: 'fixture-only' });
+    return json(200, { assetId: id, uploadUrl: `http://127.0.0.1:4399/storage/v1/object/upload/sign/book-assets/${path}?token=${token}`, path });
   }
   const setupAssetId = url.pathname.split('/')[3];
   const setupAsset = setupUploads.get(setupAssetId);

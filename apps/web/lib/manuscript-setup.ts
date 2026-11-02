@@ -1,4 +1,6 @@
 import { ApiClientError, type CreateBookRequest, type createClient } from "@bookworm/api-client";
+import { readArtifactSession } from "./browser-session";
+import { privateUploadUrl } from "./private-upload";
 
 export type SetupStage = "creating" | "uploading" | "scanning" | "importing" | "drafting";
 export type SetupMode = "blank" | "import" | "ai";
@@ -8,7 +10,7 @@ export type SetupCheckpoint = {
   bookCreated?: boolean;
   setupMode?: SetupMode;
   source?: { assetId: string; checksumSha256: string; sizeBytes: number; uploaded?: boolean };
-  starter?: { chapterId: string; jobId?: string; quoteKey?: string; quoteRequestId?: string; modelId?: string; allowProviderTokenCounting?: true };
+  starter?: { chapterId: string; jobId?: string; quoteKey?: string; quoteRequestId?: string; modelId?: string; allowProviderTokenCounting?: true; acceptAttempted?: true };
 };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const setupKey = (userId: string, workspaceId: string) => `bookworm:setup:${userId}:${workspaceId}`;
@@ -20,7 +22,8 @@ export function readSetupCheckpoint(raw: string | null, userId: string, workspac
     const value = JSON.parse(raw);
     if (!value || value.version !== 1 || value.userId !== userId || value.workspaceId !== workspaceId
       || !uuid.test(value.bookId) || typeof value.savedAt !== "number" || !Number.isFinite(value.savedAt)
-      || now - value.savedAt > 86400_000 || value.savedAt > now || typeof value.completed !== "boolean" || typeof value.importing !== "boolean") return null;
+      || ((value.starter?.acceptAttempted !== true || value.completed === true) && (now - value.savedAt > 86400_000 || value.savedAt > now))
+      || typeof value.completed !== "boolean" || typeof value.importing !== "boolean") return null;
     const setupMode = value.setupMode;
     if (setupMode !== undefined && setupMode !== "blank" && setupMode !== "import" && setupMode !== "ai") return null;
     if (setupMode && (setupMode === "import") !== value.importing) return null;
@@ -36,7 +39,8 @@ export function readSetupCheckpoint(raw: string | null, userId: string, workspac
       || (starter.quoteRequestId !== undefined && !uuid.test(starter.quoteRequestId))
       || (starter.quoteKey !== undefined && (typeof starter.quoteKey !== "string" || starter.quoteKey.length < 8 || starter.quoteKey.length > 200))
       || (starter.modelId !== undefined && (typeof starter.modelId !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(starter.modelId)))
-      || (starter.allowProviderTokenCounting !== undefined && starter.allowProviderTokenCounting !== true))) return null;
+      || (starter.allowProviderTokenCounting !== undefined && starter.allowProviderTokenCounting !== true)
+      || (starter.acceptAttempted !== undefined && (starter.acceptAttempted !== true || !starter.quoteRequestId)))) return null;
     return { version: 1, userId, workspaceId, bookId: value.bookId, savedAt: value.savedAt, completed: value.completed, importing: value.importing,
       ...(setupMode ? { setupMode } : {}),
       ...(value.bookCreated !== undefined ? { bookCreated: value.bookCreated } : {}),
@@ -44,7 +48,8 @@ export function readSetupCheckpoint(raw: string | null, userId: string, workspac
         ...(source.uploaded !== undefined ? { uploaded: source.uploaded } : {}) } } : {}),
       ...(starter ? { starter: { chapterId: starter.chapterId, ...(starter.jobId ? { jobId: starter.jobId } : {}),
         ...(starter.quoteKey ? { quoteKey: starter.quoteKey } : {}), ...(starter.quoteRequestId ? { quoteRequestId: starter.quoteRequestId } : {}),
-        ...(starter.modelId ? { modelId: starter.modelId } : {}), ...(starter.allowProviderTokenCounting ? { allowProviderTokenCounting: true as const } : {}) } } : {}) };
+        ...(starter.modelId ? { modelId: starter.modelId } : {}), ...(starter.allowProviderTokenCounting ? { allowProviderTokenCounting: true as const } : {}),
+        ...(starter.acceptAttempted ? { acceptAttempted: true as const } : {}) } } : {}) };
   } catch { return null; }
 }
 
@@ -66,6 +71,7 @@ export async function runManuscriptSetup(input: {
   setupMode?: SetupMode; finishWhenBookCreated?: boolean;
   newBookId?: () => string; newAssetId?: () => string;
   upload?: typeof fetch;
+  storageOrigin?: (userId: string) => Promise<string>;
   queueImport?: ReturnType<typeof createClient>["queueManuscriptImport"];
 }) {
   const bound = async <T>(action: () => Promise<T>): Promise<T> => {
@@ -143,11 +149,12 @@ export async function runManuscriptSetup(input: {
         checkpoint.source = { assetId, checksumSha256, sizeBytes: file.size, uploaded: false };
         save(); // Persist the asset identity before allocation or signed Storage upload.
       }
-      const { uploadUrl, assetId } = await bound(() => input.api.createAssetUploadUrl({ workspaceId: input.details.workspaceId,
+      const ticket = await bound(() => input.api.createAssetUploadUrl({ workspaceId: input.details.workspaceId,
         requestId: checkpoint!.source!.assetId, filename: file.name, mimeType: file.type || "application/octet-stream",
         sizeBytes: file.size, type: "manuscript" }, input.userId));
-      if (assetId !== checkpoint.source.assetId) throw new Error("Upload allocation returned a different asset ID. Review Assets before continuing.");
-      const response = await bound(() => (input.upload ?? fetch)(uploadUrl, { method: "PUT", body: bytes }));
+      const storageOrigin = await bound(() => input.storageOrigin ? input.storageOrigin(input.userId) : readArtifactSession(input.userId).then(session => session.storageOrigin));
+      const uploadUrl = privateUploadUrl(ticket, { workspaceId: input.details.workspaceId, assetId: checkpoint.source.assetId, filename: file.name, storageOrigin });
+      const response = await bound(() => (input.upload ?? fetch)(uploadUrl, { method: "PUT", body: bytes, redirect: "error", credentials: "omit", referrerPolicy: "no-referrer" }));
       if (!response.ok) throw new Error(`Source upload failed (${response.status}). Retry with the same book and source.`);
       checkpoint.source.uploaded = true;
       save(); // Keep the original pointer even if screening's response is lost.

@@ -9,6 +9,7 @@ import AssetBrowser from "../../components/AssetBrowser";
 import ImageQuoteStudio from "../../components/ImageQuoteStudio";
 import { createClient } from "@bookworm/api-client";
 import { readArtifactSession, readBrowserSession } from "../../lib/browser-session";
+import { privateUploadUrl } from "../../lib/private-upload";
 import type { ImageGenerationJob } from "@bookworm/api-client";
 import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../../lib/workspace-selection";
 
@@ -31,6 +32,7 @@ const downloadMimeTypes = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/epub+zip",
   "image/png", "image/jpeg", "image/webp", "image/gif", "audio/mpeg", "application/zip",
 ]);
+const previewMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
 function verifiedDownloadVersion(asset: Asset, rows: VersionRow[]) {
   const matching = rows.filter(row => row.asset_id === asset.id && row.storage_path === asset.storage_path && row.checksum === asset.checksum);
@@ -123,7 +125,8 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   const canEdit = dataReady && !accessError && assetAccess?.workspaceId === workspaceId && assetAccess.canEdit;
   const [books, setBooks] = useState<Book[]>([]);
   const [open, setOpen] = useState<Asset | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<{ url: string; expiresAt: number } | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [versions, setVersions] = useState<VersionRow[]>([]);
   const [usage, setUsage] = useState<{ id: string; entity_type: string; entity_id: string; usage_role: string | null }[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -156,7 +159,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     activeAsset.current = null; preparingDownload.current = false;
     editReady.current = false;
     setWorkspaceId(id); setLibraryWorkspaceId(""); setLibraryLoading(Boolean(id));
-    setBooks([]); setFolders([]); setAssets([]); setOpen(null); setPreviewUrl(null); setVersions([]); setUsage([]);
+    setBooks([]); setFolders([]); setAssets([]); setOpen(null); setPreviewUrl(null); setPreviewError(null); setVersions([]); setUsage([]);
     setAssetAccess(null); setAccessError(false); setImageJobs([]); setHistoryError(null); setHistoryLoading(false);
     setError(null); setUploadNotice(null); setUploadStage(null); setFinalizingImage(null);
     setDetailLoading(false); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
@@ -185,7 +188,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   function closeAsset() {
     if (scopeVersion.current !== permissionScope || detailRequest.current !== renderedDetailRequest) return;
     detailRequest.current++; downloadRequest.current++; activeAsset.current = null; preparingDownload.current = false;
-    setOpen(null); setPreviewUrl(null); setVersions([]); setUsage([]);
+    setOpen(null); setPreviewUrl(null); setPreviewError(null); setVersions([]); setUsage([]);
     setDetailLoading(false); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
   }
 
@@ -272,7 +275,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   useLayoutEffect(() => {
     let live = true; const valid = scope.begin(); setVerified(false); setVerificationError(false);
     scopeVersion.current++; libraryRequest.current++; detailRequest.current++; downloadRequest.current++; editReady.current = false;
-    setAssetAccess(null); setLibraryWorkspaceId(""); setLibraryLoading(Boolean(activeWorkspace.current)); setOpen(null); setPreviewUrl(null); setDownload(null); activeAsset.current = null; preparingDownload.current = false;
+    setAssetAccess(null); setLibraryWorkspaceId(""); setLibraryLoading(Boolean(activeWorkspace.current)); setOpen(null); setPreviewUrl(null); setPreviewError(null); setDownload(null); activeAsset.current = null; preparingDownload.current = false;
     if (!active) return () => { live = false; };
     const id = activeWorkspace.current;
     if (!id) { setVerified(true); return () => { live = false; }; }
@@ -289,6 +292,12 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     const timer = window.setTimeout(() => setDownload(current => current === download ? null : current), Math.max(0, download.expiresAt - Date.now()));
     return () => window.clearTimeout(timer);
   }, [download]);
+
+  useEffect(() => {
+    if (!previewUrl) return;
+    const timer = window.setTimeout(() => setPreviewUrl(current => current === previewUrl ? null : current), Math.max(0, previewUrl.expiresAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [previewUrl]);
 
   useEffect(() => {
     if (!open) return;
@@ -325,18 +334,33 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     const current = () => valid() && version === scopeVersion.current && request === detailRequest.current && activeWorkspace.current === workspaceId;
     activeAsset.current = a.id; downloadRequest.current++; preparingDownload.current = false;
     setOpen(a);
-    setPreviewUrl(null); setVersions([]); setUsage([]);
+    setPreviewUrl(null); setPreviewError(null); setVersions([]); setUsage([]);
     setDetailLoading(true); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
     try {
-      const [v, u, preview] = await Promise.all([
+      const [v, u] = await Promise.all([
         api.listAssetVersions(a.id),
         api.getAssetUsage(a.id),
-        a.mime_type.startsWith("image/") && a.checksum !== "pending" ? api.getAssetDownloadUrl(a.id) : Promise.resolve(null),
       ]);
       if (!current()) return;
       setVersions(v.versions);
       setUsage(u.links);
-      setPreviewUrl(preview?.url ?? null);
+      if (previewMimeTypes.has(a.mime_type) && a.checksum !== "pending") {
+        try {
+          const selected = verifiedDownloadVersion(a, v.versions);
+          const startedAt = Date.now();
+          const preview = await api.getAssetDownloadUrl(a.id, selected.version_number);
+          if (!current()) return;
+          const { storageOrigin } = await readArtifactSession(scope.actor);
+          if (!current()) return;
+          const url = new URL(verifiedDownloadLink(preview, a, storageOrigin).url);
+          url.searchParams.delete("download");
+          const expiresAt = startedAt + preview.expiresIn * 1000;
+          if (expiresAt <= Date.now()) throw new Error("Preview expired.");
+          setPreviewUrl({ url: url.href, expiresAt });
+        } catch {
+          if (current()) setPreviewError("The private preview could not be verified.");
+        }
+      }
     } catch (e) {
       if (current()) setDetailError(e instanceof Error ? e.message : "Could not open asset");
     } finally { if (current()) setDetailLoading(false); }
@@ -394,22 +418,27 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
       setUploadNotice(null);
       setError(null);
       try {
-        const { uploadUrl, assetId } = await api.createAssetUploadUrl({
+        const assetId = crypto.randomUUID();
+        const ticket = await scope.checked(() => api.createAssetUploadUrl({
           workspaceId,
+          requestId: assetId,
           filename: file.name,
           mimeType: file.type || "application/octet-stream",
           sizeBytes: file.size,
           folderId,
-        });
+        }, scope.actor));
         const buf = await file.arrayBuffer();
         if (!current()) return;
-        const uploaded = await scope.checked(() => { if (!current()) throw scopeChanged(); return fetch(uploadUrl, { method: "PUT", body: buf }); });
+        const { storageOrigin } = await readArtifactSession(scope.actor);
+        if (!current()) return;
+        const uploadUrl = privateUploadUrl(ticket, { workspaceId, assetId, filename: file.name, storageOrigin });
+        const uploaded = await scope.checked(() => { if (!current()) throw scopeChanged(); return fetch(uploadUrl, { method: "PUT", body: buf, redirect: "error", credentials: "omit", referrerPolicy: "no-referrer" }); });
         if (!uploaded.ok) throw new Error("Upload failed before verification.");
         const digest = await crypto.subtle.digest("SHA-256", buf);
         const checksumSha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
         if (!current()) return;
         setUploadStage("scanning");
-        await api.confirmAssetUpload(assetId, { checksumSha256, sizeBytes: file.size });
+        await scope.checked(() => { if (!current()) throw scopeChanged(); return api.confirmAssetUpload(assetId, { checksumSha256, sizeBytes: file.size }, scope.actor); });
         if (current()) await load();
         if (current()) setUploadNotice(`${file.name} passed integrity checks and malware screening.`);
       } catch (e) {
@@ -548,7 +577,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
               <div>
                 {previewUrl && open.mime_type.startsWith("image/") && (
-                  <img src={previewUrl} alt={open.name} className="mb-4 max-h-96 w-full rounded-xl border border-white/10 bg-white/5 object-contain" />
+                  <img src={previewUrl.url} alt={open.name} referrerPolicy="no-referrer" onError={() => { if (scopeVersion.current === permissionScope && detailRequest.current === renderedDetailRequest && activeAsset.current === open.id) { setPreviewUrl(null); setPreviewError("The private preview could not be loaded."); } }} className="mb-4 max-h-96 w-full rounded-xl border border-white/10 bg-white/5 object-contain" />
                 )}
                 <p className="text-sm text-[#9a9a9a]">
                   <span className="font-medium">Type:</span> {open.mime_type}
@@ -559,7 +588,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
                 <p className="text-sm text-[#9a9a9a]">
                   <span className="font-medium">Checksum:</span> {open.checksum.slice(0, 12)}…
                 </p>
-                {open.mime_type.startsWith("image/") && !previewUrl && <p className="mt-2 text-sm text-[#9a9a9a]">Preview unavailable.</p>}
+                {open.mime_type.startsWith("image/") && !previewUrl && <div className="mt-2 text-sm text-[#9a9a9a]"><p role="status">{previewError ?? "Preview unavailable."}</p>{!detailLoading && open.checksum !== "pending" && <button type="button" onClick={() => void openAsset(open)} className="mt-2 min-h-11 underline">Retry preview</button>}</div>}
               </div>
 
               <div className="space-y-4">

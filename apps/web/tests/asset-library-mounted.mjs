@@ -47,6 +47,7 @@ async function fixture(width = 1280, admin = false) {
   await page.context().route("**/*", route => {
     if (route.request().url().includes("/storage/v1/object/sign/")) {
       signedRequests.push(route.request().url());
+      if (route.request().url().includes("draft.png")) return route.fulfill({ status: 200, headers: { "content-type": "image/png" }, body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=", "base64") });
       return route.fulfill({ status: 200, headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="My draft.pdf"' }, body: "%PDF-1.4\nSynthetic browser download fixture.\n%%EOF" });
     }
     return route.fulfill({ contentType: "text/html", body: '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><div id="root"></div></body></html>' });
@@ -98,6 +99,113 @@ async function openFile(page, name = /^My draft\.pdf/) {
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByRole("status").filter({ hasText: "Loading file details" })).toHaveCount(0);
 }
+
+test("asset upload sends private bytes only to its verified Storage destination", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => {
+      const originalFetch = window.fetch;
+      window.fetch = async (url, options) => {
+        if (typeof url === "string" && url.startsWith("https://storage.example/storage/v1/object/upload/sign/")) {
+          window.calls.push({ operation: "put", redirect: options.redirect, credentials: options.credentials, referrerPolicy: options.referrerPolicy });
+          return new Response(null, { status: 200 });
+        }
+        return originalFetch(url, options);
+      };
+      window.api.createAssetUploadUrl = async body => {
+        window.calls.push({ operation: "allocate", requestId: body.requestId });
+        const path = `workspaces/${body.workspaceId}/assets/${body.requestId}/v1/${body.filename}`;
+        return { assetId: body.requestId, path, uploadUrl: `https://storage.example/storage/v1/object/upload/sign/book-assets/${path}?token=test` };
+      };
+      window.api.confirmAssetUpload = async id => { window.calls.push({ operation: "confirm", id }); return {}; };
+    });
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Upload asset", exact: true }).click();
+    await (await chooser).setFiles({ name: "test.txt", mimeType: "text/plain", buffer: Buffer.from("private manuscript") });
+    await expect(page.getByText("test.txt passed integrity checks and malware screening.")).toBeVisible();
+    const calls = await page.evaluate(() => window.calls.filter(item => ["allocate", "put", "confirm"].includes(item.operation)));
+    assert.deepEqual(calls.map(item => item.operation), ["allocate", "put", "confirm"]);
+    assert.deepEqual(calls[1], { operation: "put", redirect: "error", credentials: "omit", referrerPolicy: "no-referrer" });
+    assert.equal(calls[0].requestId, calls[2].id);
+  } finally { await page.close(); }
+});
+
+test("asset upload refuses a foreign Storage origin before sending private bytes", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.api.createAssetUploadUrl = async body => {
+        const path = `workspaces/${body.workspaceId}/assets/${body.requestId}/v1/${body.filename}`;
+        return { assetId: body.requestId, path, uploadUrl: `https://attacker.example/storage/v1/object/upload/sign/book-assets/${path}?token=test` };
+      };
+      window.api.confirmAssetUpload = async () => { window.calls.push({ operation: "confirm" }); };
+    });
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Upload asset", exact: true }).click();
+    await (await chooser).setFiles({ name: "test.txt", mimeType: "text/plain", buffer: Buffer.from("private manuscript") });
+    await expect(page.getByRole("alert").filter({ hasText: "upload destination could not be verified" })).toBeVisible();
+    assert.deepEqual(await page.evaluate(() => window.calls.filter(item => item.operation === "confirm")), []);
+  } finally { await page.close(); }
+});
+
+async function useImage(page) {
+  await page.evaluate(() => {
+    window.file = workspace => ({ id: "33333333-3333-4333-8333-333333333333", workspace_id: workspace, folder_id: null, name: "My artwork.png", storage_path: `workspaces/${workspace}/assets/33333333-3333-4333-8333-333333333333/v2/draft.png`, mime_type: "image/png", size_bytes: 68, checksum: "a".repeat(64), type: "illustration", status: "draft", current_version_number: 2 });
+    window.versionHistory = workspace => ({ versions: [{ id: "version-2", asset_id: window.file(workspace).id, storage_path: window.file(workspace).storage_path, version_number: 2, checksum: "a".repeat(64), mime_type: "image/png", size_bytes: 68, scan_status: window.scanStatus, detected_mime_type: "image/png", created_at: "2026-10-13T00:00:00Z" }] });
+  });
+  await page.getByRole("button", { name: "Refresh library", exact: true }).click();
+  await expect(page.getByRole("button", { name: /^My artwork\.png/ })).toBeVisible();
+}
+
+test("image preview uses the verified current version and no attachment option", async () => {
+  const { page, signedRequests } = await fixture();
+  try {
+    await useImage(page); await openFile(page, /^My artwork\.png/);
+    const image = page.getByRole("img", { name: "My artwork.png" }); await expect(image).toBeVisible();
+    assert.equal(await image.getAttribute("referrerpolicy"), "no-referrer");
+    await expect.poll(() => signedRequests.length).toBe(1);
+    assert.equal(new URL(signedRequests[0]).searchParams.has("download"), false);
+    assert.deepEqual(await page.evaluate(() => window.calls.filter(call => call.operation === "download")), [{ operation: "download", asset: ASSET, version: 2 }]);
+  } finally { await page.close(); }
+});
+
+test("image preview rejects a foreign origin and leaves file details available", async () => {
+  const { page, signedRequests } = await fixture();
+  try {
+    await useImage(page);
+    await page.evaluate(() => { window.downloadOverride = () => ({ ...window.signed(window.selected), url: window.signed(window.selected).url.replace("storage.example", "attacker.example") }); });
+    await openFile(page, /^My artwork\.png/);
+    await expect(page.getByText("The private preview could not be verified.", { exact: false })).toBeVisible();
+    await expect(page.getByRole("img", { name: "My artwork.png" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Prepare download", exact: true })).toBeVisible();
+    assert.equal(signedRequests.length, 0);
+  } finally { await page.close(); }
+});
+
+test("quarantined image is never signed or rendered as a preview", async () => {
+  const { page, signedRequests } = await fixture();
+  try {
+    await useImage(page); await page.evaluate(() => { window.scanStatus = "infected"; });
+    await openFile(page, /^My artwork\.png/);
+    await expect(page.getByText("The private preview could not be verified.", { exact: false })).toBeVisible();
+    assert.deepEqual(await page.evaluate(() => window.calls.filter(call => call.operation === "download")), []);
+    assert.equal(signedRequests.length, 0);
+  } finally { await page.close(); }
+});
+
+test("a late preview response cannot cross an account change", async () => {
+  const { page, signedRequests } = await fixture();
+  try {
+    await useImage(page);
+    await page.evaluate(() => { const original = window.fetch; window.switchedChecks = 0; window.fetch = async path => { if (path === "/api/auth/session" && window.actor !== "11111111-1111-4111-8111-111111111111") window.switchedChecks++; return original(path); }; window.downloadOverride = async () => { await window.defer("image-preview"); return window.signed(window.selected); }; });
+    await page.getByRole("button", { name: /^My artwork\.png/ }).click();
+    await page.waitForFunction(() => !!window.gates["image-preview"]);
+    await page.evaluate(id => { window.actor = id; window.gates["image-preview"].resolve(); }, B);
+    await page.waitForFunction(() => window.switchedChecks > 0);
+    await expect(page.getByRole("img", { name: "My artwork.png" })).toHaveCount(0);
+    assert.equal(signedRequests.length, 0);
+  } finally { await page.close(); }
+});
 
 test("real Refresh library refetches current visible files, history and permissions", async () => {
   const { page } = await fixture();

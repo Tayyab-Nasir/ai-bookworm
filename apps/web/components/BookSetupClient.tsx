@@ -129,23 +129,27 @@ export default function BookSetupClient() {
         const status = await api.getAiReviewQuote(checkpoint.bookId, starter.quoteRequestId!, userId);
         await editorAccount(userId);
         if (cancelled) return;
+        // A status read can finish after acceptance starts. Never rebuild the
+        // checkpoint from the effect's older snapshot or erase its attempt.
+        const latest = current.current;
+        if (!latest || !latest.starter || latest.completed || latest.bookId !== checkpoint.bookId || latest.starter.quoteRequestId !== starter.quoteRequestId) return;
         if (status.quote.requestId !== starter.quoteRequestId || !quoteIdPattern.test(status.quote.requestId)) throw new Error("The saved quote identity could not be verified.");
         if (status.job) {
           if (!quoteIdPattern.test(status.job.id)) throw new Error("The saved generation identity could not be verified.");
-          const saved = { ...checkpoint, completed: true, starter: { ...starter, jobId: status.job.id }, savedAt: Date.now() };
+          const saved = { ...latest, completed: true, starter: { ...latest.starter, jobId: status.job.id }, savedAt: Date.now() };
           saveCheckpoint(saved); setAiQuote(null); setQuoteCounting(false);
           setNotice("Your first draft is queued. Open Chapter 1 to review it; nothing is applied automatically.");
         } else if (status.quote.status === "ready") { if (!validFirstDraftQuote(status.quote)) throw new Error("The saved quote could not be verified."); setAiQuote(status.quote); setQuoteCounting(false); }
-        else if (status.quote.status === "failed") {
-          const retryable = { ...checkpoint, starter: { chapterId: starter.chapterId, modelId: starter.modelId, allowProviderTokenCounting: starter.allowProviderTokenCounting }, savedAt: Date.now() };
+        else if (status.quote.status === "failed" && !latest.starter.acceptAttempted) {
+          const retryable = { ...latest, starter: { chapterId: latest.starter.chapterId, modelId: latest.starter.modelId, allowProviderTokenCounting: latest.starter.allowProviderTokenCounting }, savedAt: Date.now() };
           saveCheckpoint(retryable); setQuotedBrief(null); setAiQuote(null); setQuoteCounting(false); setError("Token counting failed. No generation job or credit hold was created. Re-enter your brief to request a fresh quote.");
         }
-        else setQuoteCounting(true);
+        else if (!latest.starter.acceptAttempted) setQuoteCounting(true);
       } catch { if (!cancelled) { try { await editorAccount(userId); } catch { setAccountHidden(true); } } }
     };
     void refresh(); const timer = window.setInterval(() => { void refresh(); }, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [api, checkpoint?.bookId, checkpoint?.completed, checkpoint?.starter?.quoteRequestId, userId, ready]);
+  }, [api, checkpoint?.bookId, checkpoint?.completed, checkpoint?.starter?.quoteRequestId, checkpoint?.starter?.acceptAttempted, userId, ready]);
 
   useEffect(() => {
     if (!ready || saving || checkpoint?.completed || !checkpoint?.source || checkpoint.source.uploaded === false) return;
@@ -194,6 +198,7 @@ export default function BookSetupClient() {
 
   const openEditor = async (bookId: string, bookTitle: string, chapterId?: string, jobId?: string) => {
     if (busy.current) return;
+    if (current.current?.starter?.acceptAttempted && !current.current.completed && !window.confirm("The first-draft acceptance is not confirmed and may still complete. Keep its recovery record and check its status before requesting another draft. Open the editor anyway?")) return;
     busy.current = true; setSaving(true);
     try { await continueToEditor(bookId, bookTitle, chapterId, jobId); }
     finally { busy.current = false; setSaving(false); }
@@ -211,7 +216,7 @@ export default function BookSetupClient() {
   };
 
   const startAnother = async () => {
-    if (busy.current) return;
+    if (busy.current || (current.current?.starter?.acceptAttempted && !current.current.completed)) return;
     // Reserve synchronously so no setup action can start while identity is checked.
     busy.current = true; setSaving(true);
     try {
@@ -310,18 +315,30 @@ export default function BookSetupClient() {
 
   const acceptFirstDraftQuote = async () => {
     const saved = current.current; const quote = aiQuote;
-    if (!saved?.starter || !quote || !validFirstDraftQuote(quote) || Date.parse(quote.expiresAt) <= Date.now() || saved.starter.quoteRequestId !== quote.requestId || quotedBrief?.requestId !== quote.requestId || quotedBrief.text !== storyBrief.trim() || busy.current) return;
+    if (!saved?.starter || saved.starter.acceptAttempted || !quote || !validFirstDraftQuote(quote) || Date.parse(quote.expiresAt) <= Date.now() || saved.starter.quoteRequestId !== quote.requestId || quotedBrief?.requestId !== quote.requestId || quotedBrief.text !== storyBrief.trim() || busy.current) return;
     busy.current = true; setSaving(true); setError(null);
+    let dispatched = false;
     try {
       const session = await fetch("/api/auth/session", { cache: "no-store" });
       if (!session.ok || (await session.json()).user?.id !== userId) throw new Error("Your session changed. Reload before accepting this quote.");
+      if (current.current !== saved) throw new Error("The quote changed. Check its saved status before accepting.");
+      const attempted = { ...saved, starter: { ...saved.starter, acceptAttempted: true as const }, savedAt: Date.now() };
+      try {
+        const key = setupKey(userId, workspaceId), raw = JSON.stringify(attempted);
+        window.sessionStorage.setItem(key, raw);
+        if (window.sessionStorage.getItem(key) !== raw) throw new Error();
+      } catch { throw new Error("Browser recovery storage is unavailable. No acceptance was sent; enable session storage before trying again."); }
+      saveCheckpoint(attempted);
+      dispatched = true;
       const accepted = await api.acceptAiReviewQuote(saved.bookId, quote.requestId, quote.reservedCredits, userId);
       await editorAccount(userId);
       if (!quoteIdPattern.test(accepted.jobId)) throw new Error("The accepted generation identity could not be verified.");
+      if (current.current?.completed && current.current.starter?.jobId !== accepted.jobId) throw new Error("The accepted generation does not match the recovered job. Check its saved status.");
       const next = { ...saved, completed: true, starter: { ...saved.starter, jobId: accepted.jobId }, savedAt: Date.now() };
       saveCheckpoint(next); setAiQuote(null); setNotice("Draft accepted and queued. Nothing is applied until you review it in Chapter 1.");
       await continueToEditor(saved.bookId, title, saved.starter.chapterId, accepted.jobId);
     } catch (reason) {
+      if (!dispatched) { setError(reason instanceof Error ? reason.message : "Acceptance was not sent. Try again."); return; }
       // Recover only through quote status; never issue a second acceptance with a new quote.
       const requestId = quote.requestId;
       try {
@@ -329,11 +346,20 @@ export default function BookSetupClient() {
         const status = await api.getAiReviewQuote(saved.bookId, requestId, userId);
         await editorAccount(userId);
         if (status.quote.requestId !== requestId || (status.job && !quoteIdPattern.test(status.job.id))) throw new Error("The saved acceptance identity could not be verified.");
+        if (current.current?.completed && current.current.starter?.jobId) {
+          if (status.job && status.job.id !== current.current.starter.jobId) throw new Error("The saved generation identity changed. Check its status.");
+          setNotice("Your first draft is queued. Open Chapter 1 to review it; nothing is applied automatically."); return;
+        }
         if (status.job) {
           const next = { ...saved, completed: true, starter: { ...saved.starter, quoteRequestId: requestId, jobId: status.job.id }, savedAt: Date.now() };
           saveCheckpoint(next); setAiQuote(null); setNotice("Recovered the accepted first draft without another charge.");
           await continueToEditor(saved.bookId, title, saved.starter.chapterId, status.job.id);
-        } else { setError(reason instanceof Error ? `${reason.message} The quote remains available; check its status before retrying.` : "Acceptance could not be confirmed. Check quote status before retrying."); }
+        } else if (reason instanceof ApiClientError && [400, 401, 402, 403, 409, 422].includes(reason.status)) {
+          // A definite first refusal plus recovered no-job status releases this attempt.
+          const { acceptAttempted: _attempted, ...starter } = current.current?.starter ?? saved.starter;
+          saveCheckpoint({ ...saved, starter, savedAt: Date.now() });
+          setError(`${reason.message} No accepted job was found. Resolve the issue before trying again.`);
+        } else { setError("Acceptance is not confirmed and may still complete. Keep this recovery record and check its saved status; do not request another draft yet."); }
       } catch { try { await editorAccount(userId); } catch { setAccountHidden(true); } setError("Acceptance could not be confirmed. Check the saved quote status before retrying; do not create a new quote yet."); }
     } finally { setSaving(false); busy.current = false; }
   };
@@ -430,7 +456,9 @@ export default function BookSetupClient() {
               {quoteCounting && <p role="status" className="mt-4 text-sm text-[#d0d0d0]">Counting usage. No generation job or credit hold has been created.</p>}
               {aiQuote && <div className="mt-4 rounded-xl border border-emerald-200/20 bg-emerald-200/[0.06] p-4" role="status"><p className="text-sm font-medium text-white">Exact quote · {aiQuote.reservedCredits} credits</p><p className="mt-1 text-xs leading-5 text-[#bdbdbd]">{aiQuote.countedInputTokens.toLocaleString()} counted input tokens · up to {aiQuote.maxOutputTokens.toLocaleString()} output tokens · expires {new Date(aiQuote.expiresAt).toLocaleString()}</p></div>}
               {!aiQuote && <button type="button" disabled={!ready || saving || !aiModelId || !storyBrief.trim() || !(countingConsent || checkpoint.starter.allowProviderTokenCounting === true) || quoteCounting} onClick={() => void prepareFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{quoteCounting ? "Counting tokens…" : checkpoint.starter.quoteRequestId ? "Retry same quote request" : "Prepare exact credit quote"}</button>}
-              {aiQuote && <button type="button" disabled={saving || Date.parse(aiQuote.expiresAt) <= Date.now() || quotedBrief?.requestId !== aiQuote.requestId || quotedBrief.text !== storyBrief.trim()} onClick={() => void acceptFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{saving ? "Accepting…" : `Accept · ${aiQuote.reservedCredits} credits and generate`}</button>}
+              {aiQuote && <button type="button" disabled={saving || !!checkpoint.starter.acceptAttempted || Date.parse(aiQuote.expiresAt) <= Date.now() || quotedBrief?.requestId !== aiQuote.requestId || quotedBrief.text !== storyBrief.trim()} onClick={() => void acceptFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{saving ? "Accepting…" : `Accept · ${aiQuote.reservedCredits} credits and generate`}</button>}
+              {checkpoint.starter.acceptAttempted && <p role="status" className="mt-3 text-xs leading-5 text-amber-100">Acceptance may still complete. This page checks the original request; keep its recovery record and do not request another draft until its outcome is confirmed.</p>}
+              {aiQuote && Date.parse(aiQuote.expiresAt) <= Date.now() && !checkpoint.starter.acceptAttempted && <p role="status" className="mt-3 text-xs leading-5 text-amber-100">This quote has expired. Continue to the editor to review a new quote.</p>}
               {aiQuote && (quotedBrief?.requestId !== aiQuote.requestId || quotedBrief.text !== storyBrief.trim()) && <p role="status" className="mt-3 text-xs leading-5 text-amber-100">The original story brief is unavailable in this tab, so this quote cannot be accepted here. Continue to the editor to enter your brief and review a new quote. No generation was started by opening this quote.</p>}
               <p className="mt-3 text-[11px] leading-5 text-[#858585]">Quote and acceptance use the same saved request identity for safe recovery. Your brief is never stored in browser session recovery.</p>
               {checkpoint.starter.quoteKey && !checkpoint.starter.quoteRequestId && <p role="status" className="mt-2 text-xs leading-5 text-amber-100">If the quote response was lost, retry with the same model and exact original brief. A different brief cannot replace the original request.</p>}
@@ -458,9 +486,9 @@ export default function BookSetupClient() {
                   Continue to editor
                 </button>
               )}
-              {checkpoint && checkpoint.bookCreated !== false && !saving && <button type="button" onClick={startAnother} className="text-sm text-[#bdbdbd] underline underline-offset-4">Start another book</button>}
+              {checkpoint && checkpoint.bookCreated !== false && !saving && <button type="button" disabled={!!checkpoint.starter?.acceptAttempted && !checkpoint.completed} onClick={startAnother} className="text-sm text-[#bdbdbd] underline underline-offset-4 disabled:opacity-40">Start another book</button>}
             </div>
-            {checkpoint?.bookCreated !== false && checkpoint && !saving && <p className="mt-3 text-xs leading-5 text-[#969696]">Starting another book leaves this book and its original in your library and Assets. Recovery is saved in this browser tab for 24 hours.</p>}
+            {checkpoint?.bookCreated !== false && checkpoint && !saving && <p className="mt-3 text-xs leading-5 text-[#969696]">Starting another book leaves this book and its original in your library and Assets. {checkpoint.starter?.acceptAttempted && !checkpoint.completed ? "The unconfirmed acceptance recovery record stays in this browser tab until its outcome is known." : "Recovery is saved in this browser tab for 24 hours."}</p>}
           </form>
 
           {checkpoint?.completed && mode === "import" && <section aria-labelledby="import-results" className="mt-6 rounded-[26px] border border-white/20 bg-white/[0.04] p-5 sm:p-7">

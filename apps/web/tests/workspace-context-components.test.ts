@@ -7,6 +7,7 @@ import { test } from "node:test";
 import ts from "typescript";
 import * as readerHelpers from "../lib/epub-reader";
 import { privateDownloadUrl } from "../lib/private-download";
+import { privateUploadUrl } from "../lib/private-upload";
 import { renderLinksDeadline } from "../lib/pdf-proof";
 import * as publishingRequests from "../lib/publishing-request";
 import { jobLink } from "../lib/job-link";
@@ -104,6 +105,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
     if (name.endsWith("/epub-reader")) return readerHelpers;
     if (name.endsWith("/private-download")) return { privateDownloadUrl };
+    if (name.endsWith("/private-upload")) return { privateUploadUrl };
     if (name.endsWith("/browser-session")) return browserSession;
     if (name.endsWith("/manual-chapter-save")) return manualChapterSave;
     if (name.endsWith("/approved-artwork")) return artwork;

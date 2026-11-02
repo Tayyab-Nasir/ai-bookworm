@@ -22,7 +22,7 @@ function fixture() {
   let linkedBook = bookId;
   const api = {
     createBook: async () => { calls.push("create"); return { id: bookId }; },
-    createAssetUploadUrl: async (body: { requestId?: string }) => { calls.push("allocate"); assert.equal(body.requestId, assetId); return { assetId, uploadUrl: "https://storage.invalid/private?token=never-save", path: "private" }; },
+    createAssetUploadUrl: async (body: { requestId?: string }) => { calls.push("allocate"); assert.equal(body.requestId, assetId); const path = `workspaces/${workspaceId}/assets/${assetId}/v1/manuscript.txt`; return { assetId, uploadUrl: `https://storage.invalid/storage/v1/object/upload/sign/book-assets/${path}?token=never-save`, path }; },
     confirmAssetUpload: async () => { calls.push("confirm"); if (confirmError) throw confirmError; if (!stored) throw conflict(); return {}; },
     listAssetVersions: async () => { calls.push("versions"); return { versions: [{ version_number: 1,
       checksum: stored ? saved!.source!.checksumSha256 : "pending", scan_status: stored ? clean ? "clean" : "infected" : "pending" },
@@ -33,10 +33,47 @@ function fixture() {
   const run = (changes: Partial<Parameters<typeof runManuscriptSetup>[0]> = {}) => runManuscriptSetup({ api, userId, verifyActor: async () => {},
     details: { workspaceId, title: "Harbor", authorName: "Author" }, importing: true, file,
     checkpoint: saved, save: (value) => { saved = structuredClone(value); }, stage: () => {}, newBookId: () => bookId, newAssetId: () => assetId,
+    storageOrigin: async () => "https://storage.invalid",
     upload: async () => { calls.push("upload"); stored = true; return new Response(null, { status: 200 }); }, ...changes });
   return { run, api, calls, saved: () => saved, stored: (value: boolean) => { stored = value; }, scanError: (error: Error | null) => { confirmError = error; },
     parserError: (error: Error | null) => { importError = error; }, clean: (value: boolean) => { clean = value; }, replaced: () => { replaced = true; }, linkedBook: (value: string) => { linkedBook = value; } };
 }
+
+test("private manuscript upload rejects foreign destinations before sending bytes", async () => {
+  for (const change of [
+    (ticket: { assetId: string; path: string; uploadUrl: string }) => ({ ...ticket, uploadUrl: ticket.uploadUrl.replace("storage.invalid", "attacker.invalid") }),
+    (ticket: { assetId: string; path: string; uploadUrl: string }) => ({ ...ticket, path: ticket.path.replace(assetId, workspaceId) }),
+    (ticket: { assetId: string; path: string; uploadUrl: string }) => ({ ...ticket, uploadUrl: `${ticket.uploadUrl}&token=second` }),
+  ]) {
+    const f = fixture();
+    const api = { ...f.api, createAssetUploadUrl: async (...args: Parameters<typeof f.api.createAssetUploadUrl>) => change(await f.api.createAssetUploadUrl(...args)) };
+    await assert.rejects(f.run({ api }), /upload destination could not be verified/);
+    assert.ok(!f.calls.includes("upload"));
+    assert.equal(f.saved()?.source?.uploaded, false);
+  }
+});
+
+test("private manuscript upload rejects redirects and omits browser credentials", async () => {
+  const f = fixture(); let options: RequestInit | undefined;
+  await f.run({ upload: async (_url, init) => { options = init; f.stored(true); return new Response(null, { status: 200 }); } });
+  assert.equal(options?.redirect, "error");
+  assert.equal(options?.credentials, "omit");
+  assert.equal(options?.referrerPolicy, "no-referrer");
+});
+
+test("uncertain AI acceptance recovery survives age and clock changes", () => {
+  const now = Date.now();
+  const saved: SetupCheckpoint = { version: 1, userId, workspaceId, bookId, savedAt: now - 2 * 86400_000,
+    completed: false, importing: false, setupMode: "ai", bookCreated: true,
+    starter: { chapterId: assetId, quoteRequestId: userId, acceptAttempted: true } };
+  const read = (value: unknown) => readSetupCheckpoint(JSON.stringify(value), userId, workspaceId, now);
+  assert.equal(read(saved)?.starter?.acceptAttempted, true);
+  assert.equal(read({ ...saved, savedAt: now + 60_000 })?.starter?.acceptAttempted, true);
+  assert.equal(read({ ...saved, completed: true }), null);
+  assert.equal(read({ ...saved, starter: { chapterId: assetId, quoteRequestId: userId } }), null);
+  assert.equal(read({ ...saved, savedAt: now, starter: { chapterId: assetId, acceptAttempted: true } }), null);
+  assert.equal(read({ ...saved, savedAt: now, starter: { chapterId: assetId, quoteRequestId: userId, acceptAttempted: false } }), null);
+});
 
 test("parser retry reuses book and original, survives serialized recovery, and returns report", async () => {
   const f = fixture(); f.parserError(unavailable());
