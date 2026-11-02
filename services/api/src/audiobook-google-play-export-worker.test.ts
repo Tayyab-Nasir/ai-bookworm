@@ -15,7 +15,7 @@ function png() {
 }
 
 test("leased export preserves uploaded archives across uncertain completion and fences cleanup", async (t) => {
-  for (const completion of ["success", "lost-reply", "late-commit", "rejected", "cover-invalid", "cover-receipt-mismatch", "cover-quarantined", "fence-wrong-id", "fence-running", "fence-active-lease", "fence-missing-lease", "fence-duplicate", "completion-wrong-id", "completion-wrong-path", "completion-wrong-sha", "completion-duplicate"] as const) await t.test(completion, async () => {
+  for (const completion of ["success", "lost-reply", "late-commit", "rejected", "cover-invalid", "cover-receipt-mismatch", "cover-quarantined", "fence-wrong-id", "fence-running", "fence-active-lease", "fence-missing-lease", "fence-output-path", "fence-missing-path", "fence-duplicate", "completion-wrong-id", "completion-wrong-path", "completion-wrong-sha", "completion-duplicate"] as const) await t.test(completion, async () => {
   const id = (n: string) => `e7000000-0000-4000-8000-${n.padStart(12, "0")}`;
   const jobId = id("1"); const workspace = id("2"); const book = id("3"); const edition = id("4");
   const chapter = id("5"); const version = id("6"); const project = id("7"); const report = id("8");
@@ -90,11 +90,13 @@ test("leased export preserves uploaded archives across uncertain completion and 
       }
       if (name === "fail_audiobook_google_play_export") {
         if (completion === "late-commit") return {data:null,error:{code:"40001"}};
-                const result = { id:jobId, status:args.p_retryable ? "queued" : "failed", lease_token:null, lease_expires_at:null };
+                const result = { id:jobId, status:args.p_retryable ? "queued" : "failed", lease_token:null, lease_expires_at:null, output_storage_path:null };
         if (completion === "fence-wrong-id") result.id = id("99");
         if (completion === "fence-running") result.status = "running";
         if (completion === "fence-active-lease") result.lease_token = lease as never;
         if (completion === "fence-missing-lease") delete (result as { lease_token?: unknown }).lease_token;
+        if (completion === "fence-output-path") result.output_storage_path = "referenced" as never;
+        if (completion === "fence-missing-path") delete (result as { output_storage_path?: unknown }).output_storage_path;
         return {data:completion === "fence-duplicate" ? [result, result] : result,error:null};
       }
       return { data:null,error:{code:"unknown_rpc"} };

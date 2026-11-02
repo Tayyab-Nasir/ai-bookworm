@@ -356,7 +356,7 @@ export async function runOneGooglePlayAudioExport(sb: SupabaseClient, options: {
     const failedJob = row(failed.data);
     if (failed.error || (Array.isArray(failed.data) && failed.data.length !== 1) || !failedJob
       || failedJob.id !== job.id || !["queued", "failed", "cancelled"].includes(String(failedJob.status))
-      || failedJob.lease_token !== null || failedJob.lease_expires_at !== null) {
+      || failedJob.lease_token !== null || failedJob.lease_expires_at !== null || failedJob.output_storage_path !== null) {
       throw new AudioExportFailure("export_failure_persistence_failed", true);
     }
     // Fence the lease in the database BEFORE removing an uploaded object. A

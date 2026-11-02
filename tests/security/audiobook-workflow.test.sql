@@ -297,6 +297,7 @@ begin
     assert v_result->>'id' = v_job.id::text and v_result->>'status' = 'failed', 'failure fence must return the original terminal job';
     assert v_result ? 'lease_token' and v_result->'lease_token' = 'null'::jsonb, 'failure fence must return a cleared lease token';
     assert v_result ? 'lease_expires_at' and v_result->'lease_expires_at' = 'null'::jsonb, 'failure fence must return a cleared lease expiry';
+    assert v_result ? 'output_storage_path' and v_result->'output_storage_path' = 'null'::jsonb, 'failure fence must return no output path';
   end;
 end $$;
 reset role;
