@@ -517,12 +517,16 @@ def test_epub_without_nav_reports_finding_and_never_raises():
 def test_epub_nav_toc_token_can_cross_stream_chunk_boundary():
     blob, _ = render_epub(VALID, parse_edition(EBOOK))
     output = io.BytesIO()
+    prefix = b'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><!--'
+    middle = b'--><nav '
+    nav = prefix + b" " * (64 * 1024 - 5 - len(prefix) - len(middle)) + middle + b'epub:type="toc"><ol><li><a href="ch.xhtml">Chapter</a></li></ol></nav></body></html>'
     with zipfile.ZipFile(io.BytesIO(blob)) as source, zipfile.ZipFile(output, "w") as target:
         for item in source.infolist():
-            data = (b" " * (64 * 1024 - 5) + b'epub:type="toc"') if item.filename == "OEBPS/nav.xhtml" else source.read(item)
+            data = nav if item.filename == "OEBPS/nav.xhtml" else source.read(item)
             target.writestr(item, data)
     codes = {finding.code for finding in run_preflight(_ctx(VALID, EBOOK, output.getvalue()), load_ruleset())}
     assert "NO_TOC" not in codes
+    assert "NAV_XML" not in codes
     assert "BAD_ZIP" not in codes
 
 
@@ -562,7 +566,7 @@ def test_valid_book_passes_core():
     findings = run_preflight(_ctx(VALID, EBOOK, blob), load_ruleset())
     errors = [f for f in findings if f.severity == "error"]
     assert errors == []
-    assert all(f.rule_version == "core-1.0.12" for f in findings) or not findings
+    assert all(f.rule_version == "core-1.0.13" for f in findings) or not findings
 
 
 def test_broken_book_findings_with_location_and_rule_version():
@@ -576,7 +580,7 @@ def test_broken_book_findings_with_location_and_rule_version():
     assert "IMAGE_REF_MISSING" in errors
     assert "NO_ALT_TEXT" in errors
     for f in findings:
-        assert f.rule_version == "core-1.0.12"
+        assert f.rule_version == "core-1.0.13"
         assert f.rule_id
     assert errors["NO_TITLE"].location == "book.metadata.title"
     assert "chapter" in errors["IMAGE_REF_MISSING"].location
@@ -608,7 +612,7 @@ def test_rtl_preflight_blocks_only_unsupported_print_and_cover_text_paths():
 
 def test_kdp_ruleset_layers_channel_rules():
     ruleset = load_ruleset("kdp")
-    assert ruleset.version == "core-1.0.12+kdp-1.4.0"
+    assert ruleset.version == "core-1.0.13+kdp-1.4.0"
     assert any(r.id.startswith("KDP-") for r in ruleset.rules)
     with pytest.raises(KeyError):
         load_ruleset("nook-2009")

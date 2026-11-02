@@ -7,13 +7,14 @@ import struct
 
 from editions import language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
+from nav_validation import inspect_navigation
 from print_fonts import BASE_FONTS, EMBEDDED_FONTS, print_font_issues
 from rtl_text import cover_rtl_issues
 from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.12"
+VERSION = "core-1.0.13"
 
 
 def _find(code, msg, loc=""):
@@ -83,15 +84,16 @@ def check_nav(ctx):
         return []
     if "OEBPS/nav.xhtml" not in set(zf.namelist()):
         return _find("NO_NAV", "EPUB3 nav document missing", "OEBPS/nav.xhtml")
-    token = b'epub:type="toc"'
-    tail = b""
+    item = zf.getinfo("OEBPS/nav.xhtml")
     with zf.open("OEBPS/nav.xhtml") as stream:
-        while chunk := stream.read(64 * 1024):
-            sample = tail + chunk
-            if token in sample:
-                return []
-            tail = sample[-(len(token) - 1):]
-    return _find("NO_TOC", "nav document lacks epub:type=toc", "OEBPS/nav.xhtml")
+        issue = inspect_navigation(stream, item.file_size)
+    if issue == "NAV_LIMIT":
+        return _find(issue, "Navigation document exceeds the supported size or complexity; reduce its contents and render again", "OEBPS/nav.xhtml")
+    if issue == "NAV_XML":
+        return _find(issue, "Navigation document is not safe, well-formed XHTML; render again", "OEBPS/nav.xhtml")
+    if issue == "NO_TOC":
+        return _find(issue, "Navigation document must contain one table of contents with a nonempty ordered list", "OEBPS/nav.xhtml")
+    return []
 
 
 def check_chapter_titles(ctx):
