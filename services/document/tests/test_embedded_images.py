@@ -17,6 +17,7 @@ from parsers import ParseError
 from parsers.docx_parser import parse_docx
 from parsers.epub_parser import parse_epub
 from parsers.embedded_images import EmbeddedImages
+from docx_table_asset_fixture import parsed_fixture
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=")
 
@@ -86,7 +87,7 @@ def test_authenticated_epub_endpoint_accepts_collector_and_returns_private_paylo
     assert "contentBase64" not in json.dumps(payload["bookModel"])
 
 
-def test_authenticated_docx_import_retains_nested_text_and_reports_table_images(monkeypatch):
+def test_authenticated_docx_import_retains_nested_text_and_table_images(monkeypatch):
     doc = Document()
     outer = doc.add_table(rows=1, cols=1).cell(0, 0)
     outer.paragraphs[0].text = "Before"
@@ -107,8 +108,18 @@ def test_authenticated_docx_import_retains_nested_text_and_reports_table_images(
     text = payload["bookModel"]["chapters"][0]["nodes"][0]["rows"][0][0]
     assert text.index("Before") < text.index("Nested") < text.index("After")
     assert any("nested tables were flattened" in warning for warning in payload["report"]["warnings"])
-    assert any("images inside tables are not imported" in warning for warning in payload["report"]["warnings"])
-    assert payload["embeddedAssets"] == []
+    assert any("table images were moved after the table" in warning for warning in payload["report"]["warnings"])
+    picture = payload["bookModel"]["chapters"][0]["nodes"][1]
+    assert picture["type"] == "image"
+    assert payload["embeddedAssets"][0]["id"] == picture["assetId"]
+    assert base64.b64decode(payload["embeddedAssets"][0]["contentBase64"]) == PNG
+
+
+def test_static_table_image_pipeline_fixture_matches_real_parser_output():
+    fixture = json.loads((SERVICE / "tests/fixtures/docx-table-image-parsed.json").read_text(encoding="utf-8"))
+    assert fixture == parsed_fixture()
+    nodes = fixture["bookModel"]["chapters"][0]["nodes"]
+    assert len({item["id"] for item in nodes}) == len(nodes)
 
 
 def test_image_collector_limits_and_unsupported_types(monkeypatch):

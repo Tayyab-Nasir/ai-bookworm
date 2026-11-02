@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { embeddedImagesSchema, importManuscriptImages, readDocumentResponse } from "./lib/manuscript-images.js";
 
@@ -53,6 +54,25 @@ test("embedded import scans before upload, verifies bytes, remaps references and
   assert.equal(args.p_images[0].bytes, undefined);
   assert.ok(!JSON.stringify(args).includes(image.contentBase64));
   assert.equal(saved.assetIds[0], args.p_images[0].id);
+});
+
+test("real DOCX table image fixture passes scanner and persists the remapped chapter reference", async () => {
+  // Verified against the real Python parser in test_static_table_image_pipeline_fixture_matches_real_parser_output.
+  // Scanner, storage and database here are synthetic; this is not hosted persistence.
+  const parsed = JSON.parse(readFileSync(new URL("../../document/tests/fixtures/docx-table-image-parsed.json", import.meta.url), "utf8"));
+  const f = fixture();
+  const saved = await importManuscriptImages({ ...f.input, chapters: parsed.bookModel.chapters,
+    images: parsed.embeddedAssets, warnings: parsed.report.warnings });
+  assert.deepEqual(f.calls, ["scan", "upload", "commit"]);
+  const args = f.committed()!;
+  const [table, illustration] = args.p_chapters[0].nodes;
+  assert.equal(table.type, "table"); assert.equal(table.rows[0][0], "BeforeAfter");
+  assert.equal(illustration.type, "image"); assert.equal(illustration.altText, "Synthetic diagram");
+  assert.equal(illustration.assetId, args.p_images[0].id);
+  assert.notEqual(illustration.assetId, parsed.embeddedAssets[0].id);
+  assert.deepEqual([...f.stored.values()][0], png);
+  assert.equal(saved.assetIds[0], illustration.assetId);
+  assert.ok(args.p_report.warnings.some((warning: string) => warning.includes("moved after the table")));
 });
 
 for (const options of [{ verdict: "infected" as const }, { scannerDown: true }]) {

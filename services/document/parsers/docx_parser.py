@@ -15,6 +15,8 @@ from .table_grid import span_attributes
 from .docx_numbering import WordNumbering
 from .docx_flow import heading_level, page_break_before, run_content
 
+MAX_TABLE_IMAGE_OCCURRENCES = 10_000
+
 
 def _is_marked_header(row) -> bool:
     """Only an explicit Word repeating-header flag supplies table semantics."""
@@ -52,7 +54,7 @@ def _paragraph_runs(para, warnings) -> list[dict]:
     return result
 
 
-def _cell_text(cell, warnings, depth=0) -> str:
+def _cell_text(cell, warnings, drawings, depth=0) -> str:
     """Keep cell content in document order, flattening nested tables as text."""
     parts = []
     for paragraph in cell.iter_inner_content():
@@ -71,7 +73,7 @@ def _cell_text(cell, warnings, depth=0) -> str:
                         values.append("")
                     else:
                         seen_cells.add(nested._tc)
-                        values.append(_cell_text(nested, warnings, depth + 1))
+                        values.append(_cell_text(nested, warnings, drawings, depth + 1))
                 rows.append("\t".join(values))
             parts.append("\n".join(rows))
             continue
@@ -86,9 +88,9 @@ def _cell_text(cell, warnings, depth=0) -> str:
                         if warning not in warnings:
                             warnings.append(warning)
                     elif item.get("type") == "drawing":
-                        warning = "DOCX images inside tables are not imported; upload them separately and review their placement."
-                        if warning not in warnings:
-                            warnings.append(warning)
+                        if len(drawings) >= MAX_TABLE_IMAGE_OCCURRENCES:
+                            raise ParseError("DOCX table contains too many image occurrences; split the table before importing")
+                        drawings.append(item["element"])
         parts.append("".join(pieces))
     return "\n".join(parts)
 
@@ -131,6 +133,31 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
     assets: list[dict] = []
     transferred = EmbeddedImages(embedded_assets)
 
+    def drawing_nodes(drawing):
+        """Transfer supported images through the regular bounded asset path."""
+        result = []
+        doc_pr = drawing.find(".//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr")
+        alt = (doc_pr.get("descr") or doc_pr.get("title") or "")[:1000] if doc_pr is not None else ""
+        blips = drawing.findall(".//{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
+        for blip in blips:
+            rel_id = blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
+            image = images.get(rel_id)
+            asset_id = image.get("assetId") if image else None
+            if image and not asset_id:
+                asset_id = transferred.add(image["bytes"], image["contentType"])
+                image["assetId"] = asset_id
+            if asset_id:
+                if not any(a["id"] == asset_id for a in assets):
+                    assets.append({"id": asset_id, "role": "illustration", "caption": image["filename"]})
+                result.append(node("image", assetId=asset_id, altText=alt))
+            else:
+                warnings.append("An unsupported or external embedded image remains in the original DOCX; upload a PNG, JPEG, GIF or WebP replacement.")
+                result.append(node("caption", alt or "[Embedded illustration — retained in original DOCX]"))
+        if not blips:
+            warnings.append("An unsupported or external embedded image remains in the original DOCX; upload a PNG, JPEG, GIF or WebP replacement.")
+            result.append(node("caption", alt or "[Embedded illustration — retained in original DOCX]"))
+        return result
+
     for para in doc.iter_inner_content():
         if isinstance(para, Table):
             if current is None:
@@ -139,6 +166,7 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
             rows = []
             header_rows = 0
             seen_cells = set()
+            table_drawings = []
             positions = {}
             for row in para.rows:
                 if header_rows == len(rows) and _is_marked_header(row):
@@ -152,7 +180,7 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
                         cells.append("")
                     else:
                         seen_cells.add(cell._tc)
-                        cells.append(_cell_text(cell, warnings))
+                        cells.append(_cell_text(cell, warnings, table_drawings))
                 rows.append(cells)
             spans = []
             for locations in positions.values():
@@ -169,6 +197,25 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
             attributes = span_attributes(rows, header_rows, spans)
             current["nodes"].append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows,
                                          **({"attributes": attributes} if attributes else {})))
+            if table_drawings:
+                # One drawing can contain multiple blips, each of which emits
+                # an image or caption. Count emitted occurrences, not just
+                # drawing containers, before processing any table artwork.
+                occurrences = 0
+                for drawing in table_drawings:
+                    found = False
+                    for _ in drawing.iter("{http://schemas.openxmlformats.org/drawingml/2006/main}blip"):
+                        found = True
+                        occurrences += 1
+                        if occurrences > MAX_TABLE_IMAGE_OCCURRENCES:
+                            raise ParseError("DOCX table contains too many image occurrences; split the table before importing")
+                    if not found:
+                        occurrences += 1
+                        if occurrences > MAX_TABLE_IMAGE_OCCURRENCES:
+                            raise ParseError("DOCX table contains too many image occurrences; split the table before importing")
+                warnings.append("DOCX table images were moved after the table; review their original placement.")
+                for drawing in table_drawings:
+                    current["nodes"].extend(drawing_nodes(drawing))
             warnings.append("DOCX table text, row order, any explicitly marked header rows and rectangular merged cells were preserved; complex merged-cell layout, cell formatting and nested tables require review against the original.")
             continue
         style = para.style.name if para.style else ""
@@ -224,23 +271,7 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
                 pending.append(part)
                 continue
             flush_text()
-            drawing = part["element"]
-            doc_pr = drawing.find(".//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr")
-            alt = (doc_pr.get("descr") or doc_pr.get("title") or "")[:1000] if doc_pr is not None else ""
-            for blip in drawing.findall(".//{http://schemas.openxmlformats.org/drawingml/2006/main}blip"):
-                rel_id = blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
-                image = images.get(rel_id)
-                asset_id = image.get("assetId") if image else None
-                if image and not asset_id:
-                    asset_id = transferred.add(image["bytes"], image["contentType"])
-                    image["assetId"] = asset_id
-                if asset_id:
-                    if not any(a["id"] == asset_id for a in assets):
-                        assets.append({"id": asset_id, "role": "illustration", "caption": image["filename"]})
-                    current["nodes"].append(node("image", assetId=asset_id, altText=alt))
-                else:
-                    warnings.append("An unsupported or external embedded image remains in the original DOCX; upload a PNG, JPEG, GIF or WebP replacement.")
-                    current["nodes"].append(node("caption", alt or "[Embedded illustration — retained in original DOCX]"))
+            current["nodes"].extend(drawing_nodes(part["element"]))
         flush_text()
 
 

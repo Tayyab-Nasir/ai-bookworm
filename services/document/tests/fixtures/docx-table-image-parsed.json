@@ -1,0 +1,67 @@
+{
+  "bookModel": {
+    "schemaVersion": "1.0",
+    "bookId": "00000005-0000-4000-8000-000000000000",
+    "metadata": {
+      "title": "Synthetic",
+      "author": "Unknown",
+      "language": "en"
+    },
+    "styleGuide": {},
+    "bookBible": {
+      "entities": []
+    },
+    "chapters": [
+      {
+        "id": "00000001-0000-4000-8000-000000000000",
+        "order": 0,
+        "title": "Synthetic",
+        "nodes": [
+          {
+            "id": "n-000000020000",
+            "type": "table",
+            "text": "BeforeAfter",
+            "rows": [
+              [
+                "BeforeAfter"
+              ]
+            ]
+          },
+          {
+            "id": "n-000000040000",
+            "type": "image",
+            "assetId": "00000003-0000-4000-8000-000000000000",
+            "altText": "Synthetic diagram"
+          }
+        ]
+      }
+    ],
+    "assets": [
+      {
+        "id": "00000003-0000-4000-8000-000000000000",
+        "role": "illustration",
+        "caption": "image-1.png"
+      }
+    ]
+  },
+  "report": {
+    "warnings": [
+      "DOCX table images were moved after the table; review their original placement.",
+      "DOCX table text, row order, any explicitly marked header rows and rectangular merged cells were preserved; complex merged-cell layout, cell formatting and nested tables require review against the original."
+    ],
+    "chapterCount": 1,
+    "nodeCount": 2,
+    "imageCount": 1,
+    "confidence": "high"
+  },
+  "embeddedAssets": [
+    {
+      "id": "00000003-0000-4000-8000-000000000000",
+      "filename": "imported-1.png",
+      "mimeType": "image/png",
+      "sizeBytes": 68,
+      "checksumSha256": "6b1048f8a6d40bac0b2954c18fefa40c4ea7a96120fc2e54b7317c0e43c2bbec",
+      "contentBase64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="
+    }
+  ]
+}
