@@ -27,6 +27,7 @@
     "test:db": "node tests/security/run-local-postgres.mjs",
     "test:db:upgrade": "node tests/security/run-populated-upgrade.mjs",
     "test:db:crypto": "node tests/security/pgcrypto-digest-compatibility.mjs",
+    "test:customer-catalog": "node --import tsx --test tests/security/customer-ai-catalog-collector.test.mjs tests/security/customer-ai-catalog-migrations.test.mjs tests/security/customer-ai-catalog-full.test.mjs tests/security/customer-ai-catalog-artifact.test.mjs",
     "test:services": "node scripts/run-python.mjs -m pytest services/ai services/document services/rendering services/publishing services/scanning -q",
     "test:e2e": "node scripts/run-python.mjs -m pytest tests/e2e -q",
     "test:security": "node scripts/run-python.mjs -m pytest tests/security -q",
@@ -45,7 +46,7 @@
     "worker:image-quotes": "npm run worker:image-quotes -w @bookworm/api --",
     "worker:narration-quotes": "npm run worker:narration-quotes -w @bookworm/api --",
     "storage:orphan-report": "npm run storage:orphan-report -w @bookworm/api --",
-    "verify": "npm run typecheck && npm run test:local-processing-launcher && npm run test:local-import-worker && npm run test:worker-launcher && npm run test:native-author-guard && npm run test:migrations:inventory && npm run test:unit && npm run test:web && npm run test:db && npm run test:db:crypto && npm run test:db:upgrade && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
+    "verify": "npm run typecheck && npm run test:local-processing-launcher && npm run test:local-import-worker && npm run test:worker-launcher && npm run test:native-author-guard && npm run test:migrations:inventory && npm run test:unit && npm run test:web && npm run test:db && npm run test:db:crypto && npm run test:customer-catalog && npm run test:db:upgrade && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
   },
   "engines": {
     "node": ">=22"
