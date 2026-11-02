@@ -529,6 +529,29 @@ test("Billing offers retry after usage fails without presenting unverified balan
   assert.equal(attempts, 2); assert.match(JSON.stringify(h.render()), /Current billing summary/);
 });
 
+test("Billing displays exact configured currency and cents and blocks malformed prices", async () => {
+  let checkoutCalls = 0;
+  const plans = [
+    { id: "usd", name: "one", price_cents: 1999, currency: "usd", billing_period: "monthly", entitlements_json: {} },
+    { id: "eur", name: "two", price_cents: 150, currency: "EUR", billing_period: "monthly", entitlements_json: {} },
+    { id: "bad", name: "three", price_cents: 1499, currency: "invalid", billing_period: "monthly", entitlements_json: {} },
+    { id: "jpy", name: "four", price_cents: 100, currency: "JPY", billing_period: "monthly", entitlements_json: {} },
+    { id: "kwd", name: "five", price_cents: 100, currency: "KWD", billing_period: "monthly", entitlements_json: {} },
+  ];
+  const h = harness("apps/web/components/BillingCenter.tsx", {
+    listWorkspaces: async () => ({ workspaces: available }), listPlans: async () => ({ plans }),
+    getUsage: async () => overview(B).usage, createBillingCheckout: async () => { checkoutCalls++; },
+  }, { query: `?ws=${B}` });
+  h.render(); h.effects.find(fn => fn.toString().includes("currentLoad.current"))!(); await settle();
+  const rendered = h.render(); const snapshot = JSON.stringify(rendered);
+  assert.match(snapshot, /USD 19\.99/); assert.match(snapshot, /EUR 1\.50/);
+  assert.match(snapshot, /Price unavailable/); assert.doesNotMatch(snapshot, /\$20|\$2/);
+  const unavailable = nodes(rendered).filter(node => node.type === "button" && node.props.children === "Price unavailable");
+  assert.equal(unavailable.length, 3);
+  for (const button of unavailable) { assert.equal(button.props.disabled, true); button.props.onClick(); }
+  await settle(); assert.equal(checkoutCalls, 0);
+});
+
 test("Billing distinguishes no workspace from a failed workspace lookup", async () => {
   const empty = harness("apps/web/components/BillingCenter.tsx", { listWorkspaces: async () => ({ workspaces: [] }), listPlans: async () => ({ plans: [] }) });
   empty.render(); await empty.callbacks.find(fn => fn.toString().includes("api.listWorkspaces"))!();
@@ -542,7 +565,7 @@ test("Billing distinguishes no workspace from a failed workspace lookup", async 
 for (const action of ["checkout", "portal"] as const) {
   test(`Billing ${action} keeps the validated workspace and organization through blocked-storage return navigation`, async () => {
     let payload: any;
-    const plan = { id: "fixture-paid-plan", name: "professional", price_cents: 100, billing_period: "monthly", entitlements_json: {} };
+    const plan = { id: "fixture-paid-plan", name: "professional", price_cents: 100, currency: "USD", billing_period: "monthly", entitlements_json: {} };
     const summary = overview(B).usage;
     const h = harness("apps/web/components/BillingCenter.tsx", {
       listWorkspaces: async () => ({ workspaces: available }), listPlans: async () => ({ plans: [plan] }),
@@ -574,7 +597,7 @@ for (const action of ["checkout", "portal"] as const) {
 }
 
 async function deferredBilling(action: "checkout" | "portal", workspace = A) {
-  const plan = { id: "fixture-paid-plan", name: "professional", price_cents: 100, billing_period: "monthly", entitlements_json: {} };
+  const plan = { id: "fixture-paid-plan", name: "professional", price_cents: 100, currency: "USD", billing_period: "monthly", entitlements_json: {} };
   const requests: { payload: any; result: ReturnType<typeof deferred<any>> }[] = [];
   const create = (payload: any) => { const result = deferred<any>(); requests.push({ payload, result }); return result.promise; };
   const h = harness("apps/web/components/BillingCenter.tsx", {

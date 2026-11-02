@@ -10,6 +10,16 @@ import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../l
 
 const cardClass = "rounded-2xl border border-white/10 bg-white/[0.035] p-5";
 
+function planPrice(cents: unknown, currency: unknown): string | null {
+  if (typeof cents !== "number" || !Number.isInteger(cents) || cents < 0 || cents > 2_147_483_647
+      || typeof currency !== "string" || currency.length !== 3 || !/^[A-Za-z]{3}$/.test(currency)) return null;
+  try {
+    // The current schema stores hundredths; do not guess for zero- or three-decimal currencies.
+    if (new Intl.NumberFormat("en", { style: "currency", currency }).resolvedOptions().maximumFractionDigits !== 2) return null;
+  } catch { return null; }
+  return `${currency.toUpperCase()} ${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
+}
+
 function channelName(channel: string) {
   return ({ export: "Universal export", kdp: "Amazon KDP", apple_books: "Apple Books", barnes_noble: "Barnes & Noble Press", lulu: "Lulu", google_play: "Google Play Books" } as Record<string, string>)[channel] ?? channel;
 }
@@ -75,7 +85,7 @@ export default function BillingCenter() {
 
   const checkout = async (plan: Plan) => {
     const loadRequest = currentLoad.current;
-    if (!workspace || !summary || loading || busy || currentAction.current || loadRequest?.workspaceId !== workspace.id || plan.price_cents <= 0) return;
+    if (!workspace || !summary || loading || busy || currentAction.current || loadRequest?.workspaceId !== workspace.id || !planPrice(plan.price_cents, plan.currency) || plan.price_cents <= 0) return;
     const request = {}; currentAction.current = request;
     const current = () => currentLoad.current === loadRequest && currentAction.current === request;
     setBusy(plan.id); setError(null); setNotice(null);
@@ -128,7 +138,7 @@ export default function BillingCenter() {
 
       <section className="mt-10" aria-labelledby="available-plans"><div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#8f8f8f]">Upgrade options</p><h2 id="available-plans" className="mt-2 text-2xl font-medium tracking-[-0.04em]">Available plans</h2></div>
         {sortedPlans.length === 0 && <p role="status" className="mt-5 rounded-2xl border border-white/10 bg-white/[0.035] p-5 text-sm leading-6 text-white/60">No plans are available to purchase right now. AI generation requires paid access; no generation charge is made by viewing this page.</p>}
-        <div className="mt-5 grid gap-4 lg:grid-cols-3">{sortedPlans.map((plan) => { const ent = plan.entitlements_json; const active = plan.name.toLowerCase() === currentPlan; const channels = Array.isArray(ent.publishing_channels) ? ent.publishing_channels.filter((item): item is string => typeof item === "string") : []; return <article key={plan.id} className={`${cardClass} flex min-h-80 flex-col ${active ? "border-white/35 bg-white/[0.07]" : ""}`}><div className="flex items-center justify-between gap-3"><h3 className="text-xl font-medium capitalize">{plan.name}</h3>{active && <span className="rounded-full bg-white px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-black">Current</span>}</div><p className="mt-5 text-4xl font-medium tracking-[-0.06em]">${(plan.price_cents / 100).toFixed(0)}<span className="text-sm font-normal tracking-normal text-white/45">/{plan.billing_period}</span></p><ul className="mt-6 space-y-2 text-sm text-white/60"><li>{Number(ent.books ?? 0)} books</li><li>{Number(ent.ai_credits_monthly ?? 0).toLocaleString()} AI credits/month</li><li>{Number(ent.image_credits_monthly ?? 0).toLocaleString()} image credits/month</li><li>{Number(ent.audio_credits_monthly ?? 0).toLocaleString()} audio credits/month</li><li>{Number(ent.translation_credits_monthly ?? 0).toLocaleString()} translation credits/month</li><li>{Number(ent.storage_gb ?? 0)} GB storage</li><li>{channels.map(channelName).join(", ") || "Universal export"}</li></ul><button type="button" onClick={() => void checkout(plan)} disabled={active || plan.price_cents <= 0 || Boolean(busy)} className="glass-solid mt-auto rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{active ? "Current plan" : plan.price_cents <= 0 ? "Account tier" : busy === plan.id ? "Starting checkout…" : `Choose ${plan.name}`}</button></article>; })}</div>
+        <div className="mt-5 grid gap-4 lg:grid-cols-3">{sortedPlans.map((plan) => { const ent = plan.entitlements_json; const active = plan.name.toLowerCase() === currentPlan; const formattedPrice = planPrice(plan.price_cents, plan.currency); const channels = Array.isArray(ent.publishing_channels) ? ent.publishing_channels.filter((item): item is string => typeof item === "string") : []; return <article key={plan.id} className={`${cardClass} flex min-h-80 flex-col ${active ? "border-white/35 bg-white/[0.07]" : ""}`}><div className="flex items-center justify-between gap-3"><h3 className="text-xl font-medium capitalize">{plan.name}</h3>{active && <span className="rounded-full bg-white px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-black">Current</span>}</div><p className="mt-5 text-4xl font-medium tracking-[-0.06em]">{formattedPrice ?? "Price unavailable"}<span className="text-sm font-normal tracking-normal text-white/45">/{plan.billing_period}</span></p><ul className="mt-6 space-y-2 text-sm text-white/60"><li>{Number(ent.books ?? 0)} books</li><li>{Number(ent.ai_credits_monthly ?? 0).toLocaleString()} AI credits/month</li><li>{Number(ent.image_credits_monthly ?? 0).toLocaleString()} image credits/month</li><li>{Number(ent.audio_credits_monthly ?? 0).toLocaleString()} audio credits/month</li><li>{Number(ent.translation_credits_monthly ?? 0).toLocaleString()} translation credits/month</li><li>{Number(ent.storage_gb ?? 0)} GB storage</li><li>{channels.map(channelName).join(", ") || "Universal export"}</li></ul><button type="button" onClick={() => void checkout(plan)} disabled={active || !formattedPrice || plan.price_cents <= 0 || Boolean(busy)} className="glass-solid mt-auto rounded-full px-5 py-2.5 text-sm font-semibold text-black disabled:opacity-40">{active ? "Current plan" : !formattedPrice ? "Price unavailable" : plan.price_cents <= 0 ? "Account tier" : busy === plan.id ? "Starting checkout…" : `Choose ${plan.name}`}</button></article>; })}</div>
       </section>
     </>}
   </main></>;

@@ -26,6 +26,12 @@ Do not activate a paid plan until all of the following are complete:
 The seeded Pro and Team values are planning placeholders and remain inactive.
 They are not approved commercial offers.
 
+The current `price_cents` display interprets the stored amount as hundredths of
+the plan's stated currency. The web UI blocks checkout when the price or
+currency is malformed, or when the currency normally uses a different number
+of fractional digits. Currency-specific settlement and price matching still
+require provider verification before any plan is published.
+
 ## Credit accounting direction
 
 ### Metadata quote and generation status
