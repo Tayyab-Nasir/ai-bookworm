@@ -83,6 +83,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name === "next/link") return { default: "Link" };
     if (name === "next/navigation") return { useSearchParams: () => new URLSearchParams(window.location.search), useRouter: () => ({ push() {} }), usePathname: () => new URL(window.location.href).pathname };
     if (name.endsWith("/workspace-selection")) return helperExports;
+    if (name.endsWith("/book-route-id")) return pure("apps/web/lib/book-route-id.ts");
     if (name.endsWith("/job-link")) return { jobLink };
     if (name.endsWith("/api")) return { apiClient: () => api };
     if (name.endsWith("/AuthorShell")) return { AuthorHeader: "Header", AuthorPage: "Page" };
