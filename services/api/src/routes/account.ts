@@ -52,7 +52,7 @@ export function accountRoutes(app: FastifyInstance) {
       .order("created_at", { ascending: false })
       .limit(50);
     if (error) throw new AppError(500, "Could not load support requests.");
-    return { tickets: data ?? [] };
+    return { viewerId: req.userId, tickets: data ?? [] };
   });
 
   app.post("/support/tickets", async (req, reply) => {
@@ -73,7 +73,7 @@ export function accountRoutes(app: FastifyInstance) {
       .single();
     if (error || !data)
       throw new AppError(500, "Could not create the support request.");
-    return reply.status(201).send({ ticket: data });
+    return reply.status(201).send({ viewerId: req.userId, ticket: data });
   });
 
   app.get("/account/data-requests", async (req) => {
@@ -85,7 +85,7 @@ export function accountRoutes(app: FastifyInstance) {
       .order("requested_at", { ascending: false })
       .limit(50);
     if (error) throw new AppError(500, "Could not load data requests.");
-    return { requests: data ?? [] };
+    return { viewerId: req.userId, requests: data ?? [] };
   });
 
   app.post("/account/data-requests", async (req, reply) => {
@@ -108,7 +108,7 @@ export function accountRoutes(app: FastifyInstance) {
       );
     if (error || !data)
       throw new AppError(500, "Could not submit the data request.");
-    return reply.status(201).send({ request: data });
+    return reply.status(201).send({ viewerId: req.userId, request: data });
   });
 
   app.delete("/account/data-requests/:requestId", async (req) => {
@@ -127,6 +127,6 @@ export function accountRoutes(app: FastifyInstance) {
     if (error?.code === "42883" || error?.code === "PGRST202")
       throw new AppError(503, "Data-request migration is not installed.");
     if (error) throw new AppError(500, "Could not cancel the data request.");
-    return { request: Array.isArray(data) ? data[0] : data };
+    return { viewerId: req.userId, request: Array.isArray(data) ? data[0] : data };
   });
 }

@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AuthorHeader, AuthorPage } from "../../../components/AuthorShell";
 import { apiClient } from "../../../components/api";
+import { readBrowserSession } from "../../../lib/browser-session";
 
 type DataRequest = {
   id: string;
@@ -52,11 +53,86 @@ function statusBadge(status: string) {
 }
 
 export default function DataRightsPage() {
+  const [session, setSession] = useState<{ actor: string } | null>(null);
+  const [active, setActive] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [sessionError, setSessionError] = useState("");
+  const [pending, setPending] = useState<string[]>([]);
+  const [running, setRunning] = useState<string[]>([]);
+  const pendingRef = useRef(new Set<string>());
+  const runningRef = useRef(new Set<string>());
+  const epoch = useRef<object>({});
+  const actorRef = useRef<string | null>(null);
+  const activeRef = useRef(false);
+  const mounted = useRef(false);
+  const markPending = useCallback((actor: string) => {
+    const key = `bookworm:data-rights-pending:${actor}`;
+    sessionStorage.setItem(key, "1");
+    if (sessionStorage.getItem(key) !== "1") throw new Error("Request status could not be saved.");
+    pendingRef.current.add(actor); setPending([...pendingRef.current]);
+    runningRef.current.add(actor); setRunning([...runningRef.current]);
+  }, []);
+  const endFlight = useCallback((actor: string) => {
+    runningRef.current.delete(actor);
+    if (mounted.current) setRunning([...runningRef.current]);
+  }, []);
+  const clearPending = useCallback((actor: string) => {
+    const key = `bookworm:data-rights-pending:${actor}`;
+    sessionStorage.removeItem(key);
+    if (sessionStorage.getItem(key) !== null) throw new Error("Request status could not be cleared.");
+    pendingRef.current.delete(actor); setPending([...pendingRef.current]);
+  }, []);
+  const check = useCallback(async () => {
+    if (!mounted.current) return;
+    const token = {}; epoch.current = token; activeRef.current = false;
+    setActive(false); setChecking(true); setSessionError("");
+    try {
+      const identity = await readBrowserSession();
+      if (mounted.current && epoch.current === token) {
+        // Marker contains no request details and survives a same-tab reload.
+        // Fail closed if this tab cannot keep the uncertainty fence.
+        if (sessionStorage.getItem(`bookworm:data-rights-pending:${identity.id}`) !== null) {
+          pendingRef.current.add(identity.id); setPending([...pendingRef.current]);
+        }
+        actorRef.current = identity.id; activeRef.current = true;
+        setSession(previous => previous?.actor === identity.id ? previous : { actor: identity.id }); setActive(true);
+      }
+    } catch {
+      if (mounted.current && epoch.current === token) setSessionError("Your session could not be verified. Sign in again or retry.");
+    } finally { if (mounted.current && epoch.current === token) setChecking(false); }
+  }, []);
+  useEffect(() => {
+    mounted.current = true; void check();
+    const focus = () => { void check(); };
+    const visibility = () => {
+      if (document.visibilityState === "visible") void check();
+      else { epoch.current = {}; activeRef.current = false; setActive(false); setChecking(true); setSessionError(""); }
+    };
+    window.addEventListener("focus", focus); document.addEventListener("visibilitychange", visibility);
+    return () => { mounted.current = false; epoch.current = {}; activeRef.current = false; window.removeEventListener("focus", focus); document.removeEventListener("visibilitychange", visibility); };
+  }, [check]);
+  return <>
+    {session && <DataRightsScreen key={session.actor} actor={session.actor} active={active} pending={pending.includes(session.actor)} running={running.includes(session.actor)}
+      markPending={markPending} clearPending={clearPending} endFlight={endFlight} current={() => mounted.current && activeRef.current && actorRef.current === session.actor} recheck={check} />}
+    {!active && <AuthorPage><AuthorHeader /><main className="mx-auto max-w-3xl px-4 py-8">
+      <h1 className="text-4xl font-medium">Data rights & support</h1>
+      {checking ? <p role="status" className="mt-6 text-white/60">Checking your account…</p>
+        : <p role="alert" className="mt-6 text-red-100">{sessionError} <button className="underline" onClick={() => void check()}>Try again</button> <Link className="underline" href="/login">Sign in</Link></p>}
+    </main></AuthorPage>}
+  </>;
+}
+
+function DataRightsScreen({ actor, active, pending, running, markPending, clearPending, endFlight, current, recheck }: {
+  actor: string; active: boolean; pending: boolean; running: boolean; markPending: (actor: string) => void;
+  clearPending: (actor: string) => void; endFlight: (actor: string) => void; current: () => boolean; recheck: () => Promise<void>;
+}) {
   const api = apiClient();
   const [tab, setTab] = useState<"requests" | "support">("requests");
   const [dataRequests, setDataRequests] = useState<DataRequest[]>([]);
   const [supportTickets, setSupportTickets] = useState<SupportTicket[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listAvailable, setListAvailable] = useState(false);
+  const [reviewed, setReviewed] = useState<Array<"requests" | "support">>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -65,77 +141,98 @@ export default function DataRightsPage() {
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [exportReason, setExportReason] = useState("");
   const [deleteReason, setDeleteReason] = useState("");
+  const [supportCategory, setSupportCategory] = useState("general");
+  const [supportSubject, setSupportSubject] = useState("");
+  const [supportBody, setSupportBody] = useState("");
 
-  async function loadData(target: "requests" | "support" = tab) {
-    setLoading(true);
-    setError(null);
+  const mounted = useRef(false);
+  const sequence = useRef(0);
+  const flight = useRef(false);
+  const valid = () => mounted.current && current();
+
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; sequence.current++; }; }, []);
+
+  async function verifyOwner() {
+    try { await readBrowserSession(actor); }
+    catch (error) { if (valid()) void recheck(); throw error; }
+  }
+
+  async function loadData(target: "requests" | "support"): Promise<boolean> {
+    if (!valid()) return false;
+    const request = ++sequence.current;
+    const accepted = () => valid() && sequence.current === request;
+    setLoading(true); setError(null); setListAvailable(false); setReviewed(previous => previous.filter(item => item !== target));
+    if (target === "requests") setDataRequests([]); else setSupportTickets([]);
     try {
-      if (target === "requests") {
-        const res = await api.listDataRequests();
-        setDataRequests(res.requests);
-      } else {
-        const res = await api.listSupportTickets();
-        setSupportTickets(res.tickets);
+      const result = target === "requests" ? await api.listDataRequests(actor) : await api.listSupportTickets(actor);
+      if (!accepted()) return false;
+      await verifyOwner();
+      if (!accepted()) return false;
+      if ("requests" in result) setDataRequests(result.requests);
+      else setSupportTickets(result.tickets);
+      setListAvailable(true);
+      setReviewed(previous => previous.includes(target) ? previous : [...previous, target]);
+      return true;
+    } catch {
+      if (accepted()) {
+        try { await verifyOwner(); } catch { return false; }
+        if (accepted()) setError("Your requests could not be loaded. Check your account and try again.");
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load data.");
-    } finally {
-      setLoading(false);
-    }
+      return false;
+    } finally { if (accepted()) setLoading(false); }
   }
 
   useEffect(() => {
-    loadData();
-  }, [tab]);
+    if (active) void loadData(tab);
+    return () => { sequence.current++; };
+  }, [tab, active]);
+
+  async function perform(label: string, action: () => Promise<unknown>, after: () => void, target: "requests" | "support", success: string) {
+    if (!valid() || flight.current || loading || pending) return;
+    flight.current = true; setBusy(label); setError(null); setNotice(null);
+    let dispatched = false;
+    try {
+      await verifyOwner();
+      if (!valid()) return;
+      markPending(actor); setReviewed([]); dispatched = true;
+      await action();
+      if (!valid()) return;
+      await verifyOwner();
+      if (!valid()) return;
+      clearPending(actor); after();
+      const refreshed = await loadData(target);
+      if (valid()) {
+        if (refreshed) setNotice(success);
+        else { setNotice(null); setError("The change was confirmed, but the list could not be refreshed. Reload to check the latest status."); }
+      }
+    } catch {
+      if (valid()) {
+        try { await verifyOwner(); } catch { return; }
+        if (valid()) setError(dispatched ? "The change could not be confirmed and may still complete. Check its status before trying again." : "The request could not be prepared safely. Nothing was submitted; retry after checking your browser storage.");
+      }
+    } finally {
+      if (dispatched) endFlight(actor);
+      flight.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  }
 
   async function submitRequest(type: "export" | "delete", reason: string, confirmation?: string) {
-    if (busy) return;
-    setBusy(type);
-    setError(null);
-    setNotice(null);
-    try {
-      await api.createDataRequest({ type, reason: reason.trim() || undefined, confirmation });
-      setNotice(`${type === "export" ? "Export" : "Deletion"} request submitted.`);
+    await perform(type, () => api.createDataRequest({ type, reason: reason.trim() || undefined, confirmation }, actor), () => {
       if (type === "export") { setExportReason(""); setShowExportModal(false); }
       else { setDeleteReason(""); setDeleteConfirmation(""); setShowDeleteModal(false); }
-      await loadData("requests");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not submit request.");
-    } finally {
-      setBusy(null);
-    }
+    }, "requests", `${type === "export" ? "Export" : "Deletion"} request submitted.`);
   }
 
   async function cancelRequest(requestId: string) {
-    if (busy) return;
-    setBusy(requestId);
-    setError(null);
-    try {
-      await api.cancelDataRequest(requestId);
-      setNotice("Request cancelled.");
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not cancel request.");
-    } finally {
-      setBusy(null);
-    }
+    await perform(requestId, () => api.cancelDataRequest(requestId, actor), () => {}, "requests", "Request cancelled.");
   }
 
   async function submitSupportTicket(values: { category: string; subject: string; body: string }) {
-    if (busy) return;
-    setBusy("support");
-    setError(null);
-    try {
-      await api.createSupportTicket(values);
-      setNotice("Support request submitted.");
-      setTab("support");
-      await loadData("support");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not submit ticket.");
-    } finally {
-      setBusy(null);
-    }
+    await perform("support", () => api.createSupportTicket(values, actor), () => { setSupportCategory("general"); setSupportSubject(""); setSupportBody(""); }, "support", "Support request submitted.");
   }
+
+  if (!active) return null;
 
   const inputStyle = "rounded-xl border border-white/15 bg-[#101010] px-3 py-2.5 text-sm text-white outline-none focus-visible:ring-2 focus-visible:ring-white";
   const buttonStyle = "rounded-full border border-white/15 px-4 py-2 text-sm text-white/80 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white disabled:opacity-40";
@@ -163,7 +260,7 @@ export default function DataRightsPage() {
           {(["requests", "support"] as const).map((item) => (
             <button
               key={item}
-              disabled={busy === item}
+              disabled={!!busy}
               onClick={() => setTab(item)}
               aria-current={tab === item ? "page" : undefined}
               className={`${tabStyles.base} ${tab === item ? tabStyles.active : tabStyles.inactive}`}
@@ -173,6 +270,15 @@ export default function DataRightsPage() {
           ))}
         </nav>
 
+        {pending && !busy && <div role="alert" className="mt-6 rounded-xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">
+          A previous request is unconfirmed and may still complete. Review both data requests and support tickets before trying again; absence from these lists cannot guarantee that a delayed request will not arrive later.
+          {running && <span> The earlier request is still in progress.</span>}
+          <div className="mt-2 flex flex-wrap gap-3">
+            <button type="button" className="underline" disabled={loading} onClick={() => tab === "requests" ? void loadData("requests") : setTab("requests")}>Review data requests{reviewed.includes("requests") ? " ✓" : ""}</button>
+            <button type="button" className="underline" disabled={loading} onClick={() => tab === "support" ? void loadData("support") : setTab("support")}>Review support tickets{reviewed.includes("support") ? " ✓" : ""}</button>
+          </div>
+          <button type="button" className="mt-2 underline" disabled={loading || running || flight.current || !listAvailable || reviewed.length !== 2} onClick={() => { try { clearPending(actor); } catch { setError("The request warning could not be cleared. Check your browser storage."); } }}>I understand the risk and want to continue</button>
+        </div>}
         {error && <p role="alert" className="mt-6 rounded-xl border border-red-400/20 bg-red-400/10 p-4 text-sm text-red-100">{error}</p>}
         {notice && <p role="status" className="mt-6 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{notice}</p>}
 
@@ -186,7 +292,7 @@ export default function DataRightsPage() {
               <div className="flex gap-3">
                 <button
                   type="button"
-                  disabled={busy === "export"}
+                  disabled={!!busy || loading || pending}
                   onClick={() => setShowExportModal(true)}
                   className={buttonStyle}
                 >
@@ -194,7 +300,7 @@ export default function DataRightsPage() {
                 </button>
                 <button
                   type="button"
-                  disabled={busy === "delete"}
+                  disabled={!!busy || loading || pending}
                   onClick={() => setShowDeleteModal(true)}
                   className={buttonStyle}
                 >
@@ -206,6 +312,8 @@ export default function DataRightsPage() {
             <section aria-label="Data requests" aria-busy={loading} className="mt-5 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.025]">
               {loading ? (
                 <p role="status" className="p-12 text-center text-sm text-white/45">Loading requests…</p>
+              ) : !listAvailable ? (
+                <div className="p-12 text-center"><p className="text-sm text-white/60">Requests are unavailable.</p><button type="button" className="mt-3 underline" onClick={() => void loadData("requests")}>Retry loading requests</button></div>
               ) : dataRequests.length === 0 ? (
                 <div className="p-12 text-center">
                   <p className="text-base text-white/80">No data requests yet</p>
@@ -228,7 +336,7 @@ export default function DataRightsPage() {
                           {req.status === "submitted" && (
                             <button
                               type="button"
-                              disabled={busy === req.id}
+                              disabled={!!busy || loading || pending}
                               onClick={() => cancelRequest(req.id)}
                               className={buttonStyle}
                             >
@@ -257,6 +365,8 @@ export default function DataRightsPage() {
             <section aria-label="Support tickets" aria-busy={loading} className="mt-5 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.025]">
               {loading ? (
                 <p role="status" className="p-12 text-center text-sm text-white/45">Loading tickets…</p>
+              ) : !listAvailable ? (
+                <div className="p-12 text-center"><p className="text-sm text-white/60">Tickets are unavailable.</p><button type="button" className="mt-3 underline" onClick={() => void loadData("support")}>Retry loading tickets</button></div>
               ) : supportTickets.length === 0 ? (
                 <div className="p-12 text-center">
                   <p className="text-base text-white/80">No support tickets yet</p>
@@ -282,17 +392,12 @@ export default function DataRightsPage() {
 
             <form onSubmit={(e) => {
               e.preventDefault();
-              const fd = new FormData(e.currentTarget);
-              submitSupportTicket({
-                category: fd.get("category") as string,
-                subject: fd.get("subject") as string,
-                body: fd.get("body") as string,
-              });
+              void submitSupportTicket({ category: supportCategory, subject: supportSubject, body: supportBody });
             }} className="mt-8 rounded-2xl border border-white/10 bg-white/[0.025] p-6 space-y-5">
               <h3 className="text-lg font-medium">Open a new ticket</h3>
               <div>
                 <label htmlFor="category" className={labelStyle}>Category</label>
-                <select id="category" name="category" required className={inputStyle}>
+                <select id="category" name="category" value={supportCategory} onChange={e => setSupportCategory(e.target.value)} required className={inputStyle}>
                   <option value="general">General</option>
                   <option value="technical">Technical</option>
                   <option value="billing">Billing</option>
@@ -303,13 +408,13 @@ export default function DataRightsPage() {
               </div>
               <div>
                 <label htmlFor="subject" className={labelStyle}>Subject</label>
-                <input id="subject" name="subject" type="text" required minLength={3} maxLength={160} placeholder="Brief summary of your issue" className={inputStyle} />
+                <input id="subject" name="subject" value={supportSubject} onChange={e => setSupportSubject(e.target.value)} type="text" required minLength={3} maxLength={160} placeholder="Brief summary of your issue" className={inputStyle} />
               </div>
               <div>
                 <label htmlFor="body" className={labelStyle}>Description</label>
-                <textarea id="body" name="body" required minLength={10} maxLength={5000} rows={6} placeholder="Describe your issue in detail…" className={`${inputStyle} h-auto min-h-[120px] resize-y`} />
+                <textarea id="body" name="body" value={supportBody} onChange={e => setSupportBody(e.target.value)} required minLength={10} maxLength={5000} rows={6} placeholder="Describe your issue in detail…" className={`${inputStyle} h-auto min-h-[120px] resize-y`} />
               </div>
-              <button type="submit" disabled={busy === "support"} className={primaryButton}>
+              <button type="submit" disabled={!!busy || loading || pending} className={primaryButton}>
                 <span className="relative z-10 tracking-[-0.01em]">{busy === "support" ? "Submitting…" : "Submit ticket"}</span>
               </button>
             </form>
@@ -328,7 +433,7 @@ export default function DataRightsPage() {
               </label>
               <div className="mt-6 flex gap-3">
                 <button onClick={() => setShowExportModal(false)} className={`flex-1 ${buttonStyle}`}>Cancel</button>
-                <button disabled={busy === "export"} onClick={() => submitRequest("export", exportReason)} className={modalPrimaryButton}>
+                <button disabled={!!busy || loading || pending} onClick={() => submitRequest("export", exportReason)} className={modalPrimaryButton}>
                   <span className="relative z-10 tracking-[-0.01em]">{busy === "export" ? "Submitting…" : "Request export"}</span>
                 </button>
               </div>
@@ -352,7 +457,7 @@ export default function DataRightsPage() {
               </label>
               <div className="mt-6 flex gap-3">
                 <button onClick={() => setShowDeleteModal(false)} className={`flex-1 ${buttonStyle}`}>Cancel</button>
-                <button disabled={busy === "delete" || deleteConfirmation !== "DELETE MY ACCOUNT"} onClick={() => submitRequest("delete", deleteReason, deleteConfirmation)} className={modalPrimaryButton}>
+                <button disabled={!!busy || loading || pending || deleteConfirmation !== "DELETE MY ACCOUNT"} onClick={() => submitRequest("delete", deleteReason, deleteConfirmation)} className={modalPrimaryButton}>
                   <span className="relative z-10 tracking-[-0.01em]">{busy === "delete" ? "Submitting…" : "Request deletion"}</span>
                 </button>
               </div>

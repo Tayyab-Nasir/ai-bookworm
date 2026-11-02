@@ -855,6 +855,27 @@ export type ManualChapterSaveResult = {
   receipt: { versionId: string; document: ChapterDocument } | null;
 };
 
+function accountResult<T extends { viewerId?: string }>(value: T, expectedActor?: string): T {
+  if (expectedActor) {
+    const result = value as T & { requests?: unknown; tickets?: unknown; request?: unknown; ticket?: unknown };
+    const records = "requests" in result ? result.requests : "tickets" in result ? result.tickets : "request" in result ? [result.request] : [result.ticket];
+    if (value.viewerId !== expectedActor || !Array.isArray(records) || records.some(record => !record || typeof record !== "object" || (record as { user_id?: unknown }).user_id !== expectedActor)) {
+      throw new ApiClientError(502, "invalid_response", "The service did not confirm the requested account.", "");
+    }
+  }
+  return value;
+}
+
+function accountReceipt<T>(value: T, expectedActor: string | undefined, key: "request" | "ticket", expected: Record<string, string | null>): T {
+  if (!expectedActor) return value;
+  const record = (value as Record<string, unknown>)[key];
+  if (!record || typeof record !== "object" || typeof (record as { id?: unknown }).id !== "string" || !(record as { id: string }).id ||
+      Object.entries(expected).some(([field, wanted]) => (record as Record<string, unknown>)[field] !== wanted)) {
+    throw new ApiClientError(502, "invalid_response", "The service did not confirm the requested change.", "");
+  }
+  return value;
+}
+
 export function createClient(opts: ClientOptions) {
   async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown, useIdempotencyKey = true, signal?: AbortSignal): Promise<T> {
     if (body !== undefined) {
@@ -1311,18 +1332,23 @@ export function createClient(opts: ClientOptions) {
       expired_running: number; succeeded: number; failed: number; dead_letters: number;
       oldest_queued_at: string | null; oldest_running_at: string | null;
     } }>("GET", "/v1/admin/jobs/document/health"),
-    listSupportTickets: () =>
-      call<{ tickets: { id: string; category: string; subject: string; status: string; priority: string; created_at: string }[] }>(
-        "GET", "/v1/support/tickets"),
-    createSupportTicket: (input: { category: string; subject: string; body: string }) =>
-      call<{ ticket: { id: string } }>("POST", "/v1/support/tickets", input),
-    listDataRequests: () =>
-      call<{ requests: { id: string; request_type: "export" | "delete"; status: string; reason: string | null; requested_at: string; due_at: string; completed_at: string | null }[] }>(
-        "GET", "/v1/account/data-requests"),
-    createDataRequest: (input: { type: "export" | "delete"; reason?: string; confirmation?: string }) =>
-      call<{ request: { id: string } }>("POST", "/v1/account/data-requests", input),
-    cancelDataRequest: (requestId: string) =>
-      call<{ request: unknown }>("DELETE", `/v1/account/data-requests/${requestId}`),
+    listSupportTickets: (expectedActor?: string) =>
+      call<{ viewerId?: string; tickets: { id: string; category: string; subject: string; status: string; priority: string; created_at: string }[] }>(
+        "GET", "/v1/support/tickets", undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {})
+        .then(value => accountResult(value, expectedActor)),
+    createSupportTicket: (input: { category: string; subject: string; body: string }, expectedActor?: string) =>
+      call<{ viewerId?: string; ticket: { id: string } }>("POST", "/v1/support/tickets", input, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {})
+        .then(value => accountReceipt(accountResult(value, expectedActor), expectedActor, "ticket", { category: input.category, subject: input.subject.trim(), body: input.body.trim(), status: "open" })),
+    listDataRequests: (expectedActor?: string) =>
+      call<{ viewerId?: string; requests: { id: string; request_type: "export" | "delete"; status: string; reason: string | null; requested_at: string; due_at: string; completed_at: string | null }[] }>(
+        "GET", "/v1/account/data-requests", undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {})
+        .then(value => accountResult(value, expectedActor)),
+    createDataRequest: (input: { type: "export" | "delete"; reason?: string; confirmation?: string }, expectedActor?: string) =>
+      call<{ viewerId?: string; request: { id: string } }>("POST", "/v1/account/data-requests", input, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {})
+        .then(value => accountReceipt(accountResult(value, expectedActor), expectedActor, "request", { request_type: input.type, reason: input.reason?.trim() || null, status: "submitted" })),
+    cancelDataRequest: (requestId: string, expectedActor?: string) =>
+      call<{ viewerId?: string; request: unknown }>("DELETE", `/v1/account/data-requests/${encodeURIComponent(requestId)}`, undefined, false, expectedActor ? { "x-bookworm-actor": expectedActor } : {})
+        .then(value => accountReceipt(accountResult(value, expectedActor), expectedActor, "request", { id: requestId, status: "cancelled" })),
   };
 }
 

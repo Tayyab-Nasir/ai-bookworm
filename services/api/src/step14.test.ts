@@ -612,11 +612,13 @@ test("authors create and list only their support tickets", async () => {
     category: "publishing", subject: "Package question", body: "Please explain the preflight warning.",
   } });
   assert.equal(ok.statusCode, 201, ok.body);
+  assert.equal(ok.json().viewerId, "user-1");
   assert.equal(ok.json().ticket.user_id, "user-1");
   assert.equal(ok.json().ticket.status, "open");
   assert.equal(ok.json().ticket.priority, "normal");
   const listed = await app.inject({ method: "GET", url: "/v1/support/tickets", headers: as("good") });
   assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().viewerId, "user-1");
   assert.deepEqual(listed.json().tickets.map((ticket: Row) => ticket.subject), ["Package question"]);
   await app.close();
 });
@@ -629,10 +631,12 @@ test("data-rights intake requires explicit deletion confirmation and cancellatio
   assert.equal(denied.statusCode, 422);
   const deletion = await app.inject({ method: "POST", url: "/v1/account/data-requests", headers: as("good"), payload: { type: "delete", confirmation: "DELETE MY ACCOUNT", reason: "Moving service" } });
   assert.equal(deletion.statusCode, 201, deletion.body);
+  assert.equal(deletion.json().viewerId, "user-1");
   assert.equal(deletion.json().request.user_id, "user-1");
   assert.equal(deletion.json().request.status, "submitted");
   const cancelled = await app.inject({ method: "DELETE", url: `/v1/account/data-requests/${requestId}`, headers: as("good") });
   assert.equal(cancelled.statusCode, 200, cancelled.body);
+  assert.equal(cancelled.json().viewerId, "user-1");
   assert.equal(cancelled.json().request.status, "cancelled");
   const repeat = await app.inject({ method: "DELETE", url: `/v1/account/data-requests/${requestId}`, headers: as("good") });
   assert.equal(repeat.statusCode, 409);
