@@ -30,7 +30,7 @@ function fixture() {
     importManuscript: async () => { calls.push("import"); if (importError) throw importError; return { report: { chapterCount: 1, imageCount: 0, warnings: ["Review headings"] } }; },
     getAssetUsage: async () => { calls.push("usage"); return { links: [{ entity_type: "book", entity_id: linkedBook, usage_role: "manuscript_source" }] }; },
   } as unknown as Parameters<typeof runManuscriptSetup>[0]["api"];
-  const run = (changes: Partial<Parameters<typeof runManuscriptSetup>[0]> = {}) => runManuscriptSetup({ api, userId,
+  const run = (changes: Partial<Parameters<typeof runManuscriptSetup>[0]> = {}) => runManuscriptSetup({ api, userId, verifyActor: async () => {},
     details: { workspaceId, title: "Harbor", authorName: "Author" }, importing: true, file,
     checkpoint: saved, save: (value) => { saved = structuredClone(value); }, stage: () => {}, newBookId: () => bookId, newAssetId: () => assetId,
     upload: async () => { calls.push("upload"); stored = true; return new Response(null, { status: 200 }); }, ...changes });
@@ -220,14 +220,14 @@ test("report recovery uses a read-only receipt for completed and interrupted imp
   const api = { getManuscriptImport: async (book: string, asset: string) => {
     calls.push([book, asset]); return { import: { chapters: [], sourceAssetId: asset, report } };
   } };
-  assert.deepEqual(await recoverManuscriptReport(api, checkpoint), report);
-  assert.deepEqual(await recoverManuscriptReport(api, { ...checkpoint, completed: false }), report);
+  assert.deepEqual(await recoverManuscriptReport(api, checkpoint, async () => {}), report);
+  assert.deepEqual(await recoverManuscriptReport(api, { ...checkpoint, completed: false }, async () => {}), report);
   assert.deepEqual(calls, [[bookId, assetId], [bookId, assetId]]);
-  assert.equal(await recoverManuscriptReport(api, { ...checkpoint, source: undefined }), null);
-  assert.equal(await recoverManuscriptReport(api, { ...checkpoint, importing: false }), null);
+  assert.equal(await recoverManuscriptReport(api, { ...checkpoint, source: undefined }, async () => {}), null);
+  assert.equal(await recoverManuscriptReport(api, { ...checkpoint, importing: false }, async () => {}), null);
   assert.equal(calls.length, 2);
-  assert.equal(await recoverManuscriptReport({ getManuscriptImport: async () => ({ import: null }) }, checkpoint), null);
-  await assert.rejects(recoverManuscriptReport({ getManuscriptImport: async () => { throw unavailable(); } }, checkpoint), /unavailable/);
+  assert.equal(await recoverManuscriptReport({ getManuscriptImport: async () => ({ import: null }) }, checkpoint, async () => {}), null);
+  await assert.rejects(recoverManuscriptReport({ getManuscriptImport: async () => { throw unavailable(); } }, checkpoint, async () => {}), /unavailable/);
 });
 
 test("durable import queues after source confirmation and leaves completion to receipt polling", async () => {
@@ -242,4 +242,50 @@ test("durable import queues after source confirmation and leaves completion to r
   assert.equal(f.saved()?.completed, false);
   assert.ok(f.calls.includes("queue"));
   assert.ok(!f.calls.includes("import"));
+});
+
+
+test("account switch after book creation stops the upload and retains the original checkpoint", async () => {
+  const f = fixture(); let active = userId;
+  const api = { ...f.api, createBook: async (_body: unknown, actor?: string) => {
+    assert.equal(actor, userId); active = workspaceId; return { id: bookId };
+  }} as typeof f.api;
+  await assert.rejects(f.run({ api, verifyActor: async expected => { if (active !== expected) throw new Error("Original account changed"); } }), /account changed/);
+  assert.equal(f.saved()?.bookCreated, false);
+  assert.equal(f.saved()?.bookId, bookId);
+  assert.deepEqual(f.calls, []);
+});
+
+test("account switch during storage upload does not confirm or import and retains the pending source", async () => {
+  const f = fixture(); let active = userId;
+  await assert.rejects(f.run({ verifyActor: async expected => { if (active !== expected) throw new Error("Original account changed"); },
+    upload: async () => { active = workspaceId; return new Response(null, { status: 200 }); } }), /account changed/);
+  assert.equal(f.saved()?.bookCreated, true);
+  assert.equal(f.saved()?.source?.assetId, assetId);
+  assert.equal(f.saved()?.source?.uploaded, false);
+  assert.deepEqual(f.calls, ["create", "allocate"]);
+});
+
+test("every book and manuscript endpoint receives the expected actor", async () => {
+  const f = fixture(); const actors: string[] = [];
+  const wrap = (name: keyof typeof f.api, actorIndex: number) => async (...args: unknown[]) => {
+    actors.push(String(args[actorIndex]));
+    return await (f.api[name] as (...values: unknown[]) => Promise<unknown>)(...args);
+  };
+  const api = { ...f.api, createBook: wrap("createBook", 1), createAssetUploadUrl: wrap("createAssetUploadUrl", 1),
+    confirmAssetUpload: wrap("confirmAssetUpload", 2), importManuscript: wrap("importManuscript", 2) } as typeof f.api;
+  await f.run({ api });
+  assert.deepEqual(actors, [userId, userId, userId, userId]);
+});
+
+test("account switch after upload allocation prevents writing manuscript bytes to storage", async () => {
+  const f = fixture(); let active = userId;
+  const api = { ...f.api, createAssetUploadUrl: async (_body: unknown, actor?: string) => {
+    assert.equal(actor, userId); active = workspaceId;
+    return { assetId, uploadUrl: "https://storage.invalid/private?token=never-save", path: "private" };
+  }} as typeof f.api;
+  await assert.rejects(f.run({ api, verifyActor: async expected => { if (active !== expected) throw new Error("Original account changed"); } }), /account changed/);
+  assert.equal(f.saved()?.source?.assetId, assetId);
+  assert.equal(f.saved()?.source?.uploaded, false);
+  assert.deepEqual(f.calls, ["create"]);
 });

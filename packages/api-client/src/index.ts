@@ -917,7 +917,7 @@ export function createClient(opts: ClientOptions) {
       call<Workspace>("POST", "/v1/workspaces", body, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
     listBooks: (workspaceId: string) =>
       call<{ books: Book[] }>("GET", `/v1/books?workspaceId=${encodeURIComponent(workspaceId)}`),
-    createBook: (body: CreateBookRequest) => call<Book>("POST", "/v1/books", body),
+    createBook: (body: CreateBookRequest, expectedActor?: string) => call<Book>("POST", "/v1/books", body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     getBook: (bookId: string, expectedActor?: string, signal?: AbortSignal) => call<{ book: Book; role: string }>("GET", `/v1/books/${bookId}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}, signal),
     getBookOverview: (bookId: string) => call<unknown>("GET", `/v1/books/${encodeURIComponent(bookId)}/overview`)
       .then(value => parseBookOverview(value, bookId)),
@@ -959,16 +959,16 @@ export function createClient(opts: ClientOptions) {
       call<{ chapter: Chapter }>("POST", `/v1/books/${bookId}/chapters`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     reorderChapters: (bookId: string, body: { orderedIds: string[]; expectedIds: string[] }, expectedActor?: string) =>
       call<{ chapters: Chapter[] }>("PUT", `/v1/books/${bookId}/chapters/order`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
-    importManuscript: (bookId: string, assetId: string) =>
-      call<ManuscriptImportResult>("POST", `/v1/books/${bookId}/import`, { assetId }),
-    getManuscriptImport: (bookId: string, assetId: string) =>
-      call<{ import: ManuscriptImportResult | null }>("GET", `/v1/books/${bookId}/imports/${assetId}`),
-    queueManuscriptImport: (bookId: string, assetId: string) =>
-      call<{ job: ManuscriptImportJob }>("POST", `/v1/books/${bookId}/import-jobs`, { assetId }),
-    listManuscriptImports: (bookId: string) =>
-      call<{ jobs: ManuscriptImportJob[] }>("GET", `/v1/books/${bookId}/import-jobs`),
-    retryManuscriptImport: (bookId: string, jobId: string) =>
-      call<{ job: ManuscriptImportJob }>("POST", `/v1/books/${bookId}/import-jobs/${jobId}/retry`, {}),
+    importManuscript: (bookId: string, assetId: string, expectedActor?: string) =>
+      call<ManuscriptImportResult>("POST", `/v1/books/${bookId}/import`, { assetId }, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getManuscriptImport: (bookId: string, assetId: string, expectedActor?: string) =>
+      call<{ import: ManuscriptImportResult | null }>("GET", `/v1/books/${bookId}/imports/${assetId}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    queueManuscriptImport: (bookId: string, assetId: string, expectedActor?: string) =>
+      call<{ job: ManuscriptImportJob }>("POST", `/v1/books/${bookId}/import-jobs`, { assetId }, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    listManuscriptImports: (bookId: string, expectedActor?: string) =>
+      call<{ jobs: ManuscriptImportJob[] }>("GET", `/v1/books/${bookId}/import-jobs`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    retryManuscriptImport: (bookId: string, jobId: string, expectedActor?: string) =>
+      call<{ job: ManuscriptImportJob }>("POST", `/v1/books/${bookId}/import-jobs/${jobId}/retry`, {}, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     getChapterTitle: (chapterId: string, expectedActorId: string) =>
       call<ChapterTitleState & { bookId: string; chapterId: string; role: string }>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/title`, undefined, false, { "x-bookworm-actor": expectedActorId }),
     changeChapterTitle: (chapterId: string, operationId: string, body: { title: string; expectedRevision: number }, expectedActorId: string) =>
@@ -996,10 +996,10 @@ export function createClient(opts: ClientOptions) {
       call<{ version: number; versionId: string; document: ChapterDocument }>("POST", `/v1/chapters/${chapterId}/versions/${versionId}/restore`, body, false, { "x-bookworm-actor": expectedActorId }),
     applyOperation: (chapterId: string, op: DocumentOperation) =>
       call<{ version: number }>("POST", `/v1/chapters/${chapterId}/operations`, op),
-    createAssetUploadUrl: (body: { workspaceId: string; requestId?: string; filename: string; mimeType: string; sizeBytes: number; folderId?: string | null; type?: string }) =>
-      call<{ uploadUrl: string; assetId: string; path: string }>("POST", "/v1/assets/upload-url", body),
-    confirmAssetUpload: (assetId: string, body: { checksumSha256: string; sizeBytes: number }) =>
-      call<{ assetId: string; status: string; scanStatus: "clean"; detectedMimeType: string; confirmed: true }>("POST", `/v1/assets/${assetId}/confirm`, body),
+    createAssetUploadUrl: (body: { workspaceId: string; requestId?: string; filename: string; mimeType: string; sizeBytes: number; folderId?: string | null; type?: string }, expectedActor?: string) =>
+      call<{ uploadUrl: string; assetId: string; path: string }>("POST", "/v1/assets/upload-url", body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    confirmAssetUpload: (assetId: string, body: { checksumSha256: string; sizeBytes: number }, expectedActor?: string) =>
+      call<{ assetId: string; status: string; scanStatus: "clean"; detectedMimeType: string; confirmed: true }>("POST", `/v1/assets/${assetId}/confirm`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     // Step 9: folders / assets / collaboration / team
     listFolders: (workspaceId: string) =>
       call<{ folders: Folder[] }>("GET", `/v1/workspaces/${workspaceId}/folders`),
@@ -1040,11 +1040,11 @@ export function createClient(opts: ClientOptions) {
       call<{ assetId: string; version: number; uploadUrl: string; path: string }>("POST", `/v1/assets/${assetId}/versions`, body),
     confirmAssetVersion: (assetId: string, version: number, body: { checksumSha256: string; sizeBytes: number }) =>
       call<{ assetId: string; version: number; scanStatus: "clean"; detectedMimeType: string; confirmed: true }>("POST", `/v1/assets/${assetId}/versions/${version}/confirm`, body),
-    listAssetVersions: (assetId: string) =>
+    listAssetVersions: (assetId: string, expectedActor?: string) =>
       call<{ versions: { id: string; version_number: number; checksum: string; scan_status: "pending" | "clean" | "infected" | "error" | "trusted_generated"; detected_mime_type?: string | null; created_by: string; created_at: string }[] }>(
-        "GET", `/v1/assets/${assetId}/versions`),
-    getAssetUsage: (assetId: string) =>
-      call<{ links: { id: string; entity_type: string; entity_id: string; usage_role: string | null }[] }>("GET", `/v1/assets/${assetId}/usage`),
+        "GET", `/v1/assets/${assetId}/versions`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getAssetUsage: (assetId: string, expectedActor?: string) =>
+      call<{ links: { id: string; entity_type: string; entity_id: string; usage_role: string | null }[] }>("GET", `/v1/assets/${assetId}/usage`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     listComments: (workspaceId: string, entityType: string, entityId: string) =>
       call<{ comments: ApiComment[] }>("GET", `/v1/comments?workspaceId=${workspaceId}&entityType=${entityType}&entityId=${entityId}`),
     createComment: (body: { workspaceId: string; entityType: string; entityId: string; body: string }) =>
@@ -1082,13 +1082,13 @@ export function createClient(opts: ClientOptions) {
     updateMemberRole: (workspaceId: string, userId: string, role: WorkspaceMember["role"]) =>
       call<WorkspaceMember>("PATCH", `/v1/workspaces/${workspaceId}/members/${userId}`, { role }),
     createAiJob: (body: CreateAiJobRequest) => call<AiJobWithSuggestions>("POST", "/v1/ai/jobs", body),
-    listAiReviewModels: (bookId: string) => call<{ catalogVersion: string; models: AiReviewModelChoice[] }>("GET", `/v1/books/${encodeURIComponent(bookId)}/ai-review/models`),
-    createAiReviewQuote: (bookId: string, body: CreateAiReviewQuoteRequest) =>
-      call<{ request: { id: string; status: "counting" } | null; quote: AiReviewUsageQuote | null }>("POST", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes`, body),
-    acceptAiReviewQuote: (bookId: string, requestId: string, expectedCredits: number) =>
-      call<{ jobId: string; status: "queued" | "running" | "succeeded" | "failed" }>("POST", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes/${encodeURIComponent(requestId)}/accept`, { expectedCredits }),
-    getAiReviewQuote: (bookId: string, requestId: string) =>
-      call<{ quote: AiReviewUsageQuote | { requestId: string; status: "counting" | "failed"; errorCode?: string }; job?: { id: string; status: string } }>("GET", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes/${encodeURIComponent(requestId)}`),
+    listAiReviewModels: (bookId: string, expectedActor?: string) => call<{ catalogVersion: string; models: AiReviewModelChoice[] }>("GET", `/v1/books/${encodeURIComponent(bookId)}/ai-review/models`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    createAiReviewQuote: (bookId: string, body: CreateAiReviewQuoteRequest, expectedActor?: string) =>
+      call<{ request: { id: string; status: "counting" } | null; quote: AiReviewUsageQuote | null }>("POST", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    acceptAiReviewQuote: (bookId: string, requestId: string, expectedCredits: number, expectedActor?: string) =>
+      call<{ jobId: string; status: "queued" | "running" | "succeeded" | "failed" }>("POST", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes/${encodeURIComponent(requestId)}/accept`, { expectedCredits }, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getAiReviewQuote: (bookId: string, requestId: string, expectedActor?: string) =>
+      call<{ quote: AiReviewUsageQuote | { requestId: string; status: "counting" | "failed"; errorCode?: string }; job?: { id: string; status: string } }>("GET", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quotes/${encodeURIComponent(requestId)}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     recoverAiReviewQuote: (bookId: string, requestKey: string) =>
       call<{ quote: AiReviewUsageQuote | { requestId: string; status: "counting" | "failed"; errorCode?: string }; job?: { id: string; status: string } }>("GET", `/v1/books/${encodeURIComponent(bookId)}/ai-review/quote-requests/${encodeURIComponent(requestKey)}`),
     listMetadataModels: (bookId: string) => call<{ catalogVersion: string; models: AiReviewModelChoice[] }>("GET", `/v1/books/${encodeURIComponent(bookId)}/metadata/models`),

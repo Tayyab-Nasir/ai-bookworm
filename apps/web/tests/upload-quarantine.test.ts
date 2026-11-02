@@ -9,8 +9,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 test("book setup scans uploads before importing chapters", async () => {
   const source = await readFile(resolve(here, "..", "components", "BookSetupClient.tsx"), "utf8");
   const workflow = await readFile(resolve(here, "..", "lib", "manuscript-setup.ts"), "utf8");
-  assert.match(workflow, /await input\.api\.confirmAssetUpload\(source.assetId/);
-  assert.match(workflow, /await input\.api\.importManuscript\(checkpoint.bookId, source.assetId\)/);
+  assert.match(workflow, /input\.api\.confirmAssetUpload\(source.assetId/);
+  assert.match(workflow, /input\.api\.importManuscript\(checkpoint!?\.bookId, source.assetId, input.userId\)/);
   assert.match(source, /await runManuscriptSetup/);
   assert.match(source, /Checking source\.\.\./);
   assert.match(source, /Importing chapters\.\.\./);

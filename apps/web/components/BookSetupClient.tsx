@@ -51,7 +51,8 @@ export default function BookSetupClient() {
       if (!session.ok) throw new Error("Sign in again before creating a book.");
       const { user } = await session.json();
       if (typeof user?.id !== "string") throw new Error("Session verification failed. Sign in again.");
-      const available = await api.listWorkspaces();
+      const available = await api.listWorkspaces(user.id);
+      await editorAccount(user.id);
       if (cancelled) return;
       const selected = resolveWorkspace(available.workspaces, new URLSearchParams(window.location.search).get("ws"));
       if (!selected) throw new Error("Choose a workspace from your library before creating a book.");
@@ -62,16 +63,19 @@ export default function BookSetupClient() {
       catch { if (!cancelled) setNotice("Browser recovery storage is unavailable. Keep this tab open until import finishes."); }
       if (saved) {
         let book = null;
-        try { ({ book } = await api.getBook(saved.bookId)); }
+        try { ({ book } = await api.getBook(saved.bookId, user.id)); }
         catch (reason) { if (!(saved.bookCreated === false && reason instanceof ApiClientError && reason.status === 404)) throw reason; }
-        if (book && book.workspace_id !== workspace) throw new Error("The saved setup belongs to a different workspace.");
+        await editorAccount(user.id);
+        if (cancelled) return;
+        if (book && (book.id !== saved.bookId || book.workspace_id !== workspace)) throw new Error("The saved setup belongs to a different workspace.");
         if (book && saved.bookCreated === false) {
           saved = { ...saved, bookCreated: true, savedAt: Date.now() };
           try { window.sessionStorage.setItem(setupKey(user.id, workspace), JSON.stringify(saved)); } catch { /* The server book remains available. */ }
         }
         let savedReport = null;
         let reportError = false;
-        if (book) { try { savedReport = await recoverManuscriptReport(api, saved); } catch { reportError = true; } }
+        if (book) { try { savedReport = await recoverManuscriptReport(api, saved, editorAccount); } catch { reportError = true; } }
+        await editorAccount(user.id);
         if (cancelled) return;
         if (savedReport) {
           saved = { ...saved, completed: true }; setReport(savedReport);
@@ -96,19 +100,24 @@ export default function BookSetupClient() {
   useEffect(() => {
     if (!ready || mode !== "ai" || !checkpoint?.bookCreated || checkpoint.completed) return;
     let cancelled = false;
-    void api.listAiReviewModels(checkpoint.bookId).then(({ models }) => {
+    void (async () => {
+      await editorAccount(userId);
+      const { models } = await api.listAiReviewModels(checkpoint.bookId, userId);
+      await editorAccount(userId);
       if (!cancelled) { setAiModels(models); setAiModelId((checkpoint.starter?.modelId && models.some((item) => item.id === checkpoint.starter?.modelId) ? checkpoint.starter.modelId : models[0]?.id) ?? ""); }
-    }).catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Could not load available AI models."); });
+    })().catch(async (reason) => { if (!cancelled) { try { await editorAccount(userId); } catch { setAccountHidden(true); } setError(reason instanceof Error ? reason.message : "Could not load available AI models."); } });
     return () => { cancelled = true; };
-  }, [api, checkpoint?.bookId, checkpoint?.bookCreated, checkpoint?.completed, checkpoint?.starter?.modelId, mode, ready]);
+  }, [api, checkpoint?.bookId, checkpoint?.bookCreated, checkpoint?.completed, checkpoint?.starter?.modelId, mode, ready, userId]);
 
   useEffect(() => {
     const starter = checkpoint?.starter;
-    if (!starter?.quoteRequestId || !checkpoint?.bookId || checkpoint.completed) return;
+    if (!ready || !userId || !starter?.quoteRequestId || !checkpoint?.bookId || checkpoint.completed) return;
     let cancelled = false;
     const refresh = async () => {
       try {
-        const status = await api.getAiReviewQuote(checkpoint.bookId, starter.quoteRequestId!);
+        await editorAccount(userId);
+        const status = await api.getAiReviewQuote(checkpoint.bookId, starter.quoteRequestId!, userId);
+        await editorAccount(userId);
         if (cancelled) return;
         if (status.job) {
           const saved = { ...checkpoint, completed: true, starter: { ...starter, jobId: status.job.id }, savedAt: Date.now() };
@@ -120,11 +129,11 @@ export default function BookSetupClient() {
           saveCheckpoint(retryable); setQuoteCounting(false); setError("Token counting failed. No generation job or credit hold was created. Re-enter your brief to request a fresh quote.");
         }
         else setQuoteCounting(true);
-      } catch { /* Read-only polling cannot create another quote or job. */ }
+      } catch { if (!cancelled) { try { await editorAccount(userId); } catch { setAccountHidden(true); } } }
     };
     void refresh(); const timer = window.setInterval(() => { void refresh(); }, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
-  }, [api, checkpoint?.bookId, checkpoint?.completed, checkpoint?.starter?.quoteRequestId]);
+  }, [api, checkpoint?.bookId, checkpoint?.completed, checkpoint?.starter?.quoteRequestId, userId, ready]);
 
   useEffect(() => {
     if (!ready || saving || checkpoint?.completed || !checkpoint?.source || checkpoint.source.uploaded === false) return;
@@ -134,12 +143,15 @@ export default function BookSetupClient() {
     const sourceId = checkpoint.source.assetId;
     const poll = async () => {
       try {
-        const { jobs } = await api.listManuscriptImports(bookId);
+        await editorAccount(userId);
+        const { jobs } = await api.listManuscriptImports(bookId, userId);
+        await editorAccount(userId);
         if (cancelled) return;
         const job = jobs.find((item) => item.source_asset_id === sourceId) ?? null;
         setImportJob(job); setJobError(null);
         if (job?.status === "succeeded") {
-          const result = await api.getManuscriptImport(bookId, sourceId);
+          const result = await api.getManuscriptImport(bookId, sourceId, userId);
+          await editorAccount(userId);
           if (cancelled) return;
           if (!result.import) throw new Error("The finished import report is not available yet. Checking again.");
           const saved = current.current;
@@ -152,7 +164,7 @@ export default function BookSetupClient() {
         }
         if (job?.status === "failed") { setNotice(null); return; } // Author must deliberately request another retry batch.
       } catch (reason) {
-        if (!cancelled) setJobError(reason instanceof Error ? reason.message : "Could not check import status. Checking again.");
+        if (!cancelled) { try { await editorAccount(userId); } catch { setAccountHidden(true); } setJobError(reason instanceof Error ? reason.message : "Could not check import status. Checking again."); }
       }
       if (!cancelled) timer = setTimeout(poll, 5000);
     };
@@ -160,11 +172,19 @@ export default function BookSetupClient() {
     return () => { cancelled = true; clearTimeout(timer); };
   }, [api, ready, saving, checkpoint?.bookId, checkpoint?.source?.assetId, checkpoint?.completed, importJob?.status, userId, workspaceId]);
 
-  const continueToEditor = (bookId: string, bookTitle: string, chapterId?: string, jobId?: string) => {
+  const continueToEditor = async (bookId: string, bookTitle: string, chapterId?: string, jobId?: string) => {
+    try { await editorAccount(userId); } catch { setAccountHidden(true); return; }
     const query = new URLSearchParams({ title: bookTitle });
     if (chapterId) query.set("chapter", chapterId);
     if (jobId) query.set("aiJob", jobId);
     router.push(`/books/${bookId}?${query.toString()}`);
+  };
+
+  const openEditor = async (bookId: string, bookTitle: string, chapterId?: string, jobId?: string) => {
+    if (busy.current) return;
+    busy.current = true; setSaving(true);
+    try { await continueToEditor(bookId, bookTitle, chapterId, jobId); }
+    finally { busy.current = false; setSaving(false); }
   };
 
   const saveCheckpoint = (saved: SetupCheckpoint) => {
@@ -178,12 +198,18 @@ export default function BookSetupClient() {
     }
   };
 
-  const startAnother = () => {
+  const startAnother = async () => {
     if (busy.current) return;
-    try { window.sessionStorage.removeItem(setupKey(userId, workspaceId)); } catch { /* Server content is unchanged. */ }
-    current.current = null; setCheckpoint(null); setReport(null); setError(null); setNotice(null);
-    setImportJob(null); setJobError(null);
-    setTitle(""); setAuthorName(""); setGenre(""); setStoryBrief(""); setSourceFile(null);
+    // Reserve synchronously so no setup action can start while identity is checked.
+    busy.current = true; setSaving(true);
+    try {
+      await editorAccount(userId);
+      try { window.sessionStorage.removeItem(setupKey(userId, workspaceId)); } catch { /* Server content is unchanged. */ }
+      current.current = null; setCheckpoint(null); setReport(null); setError(null); setNotice(null);
+      setImportJob(null); setJobError(null);
+      setTitle(""); setAuthorName(""); setGenre(""); setStoryBrief(""); setSourceFile(null);
+    } catch { setAccountHidden(true); }
+    finally { busy.current = false; setSaving(false); }
   };
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -197,16 +223,17 @@ export default function BookSetupClient() {
     try {
       await editorAccount(userId);
       if (importJob?.status === "failed" && checkpoint) {
-        const { job } = await api.retryManuscriptImport(checkpoint.bookId, importJob.id);
+        const { job } = await api.retryManuscriptImport(checkpoint.bookId, importJob.id, userId);
+        await editorAccount(userId);
         setImportJob(job); setNotice("Import queued for another attempt. Your original and existing book are preserved.");
         return;
       }
-      const result = await runManuscriptSetup({ api, userId,
+      const result = await runManuscriptSetup({ api, userId, verifyActor: editorAccount,
         details: { workspaceId, title: title.trim(), authorName: authorName.trim() || "Untitled author", language, genre: genre.trim() || undefined },
         importing: mode === "import", file: sourceFile, checkpoint: current.current, save: saveCheckpoint, stage: setSaveStage,
         setupMode: mode, finishWhenBookCreated: mode !== "ai",
         queueImport: api.queueManuscriptImport });
-      if (mode === "blank") continueToEditor(result.bookId, title);
+      if (mode === "blank") await continueToEditor(result.bookId, title);
       else if (mode === "ai") {
         let saved = current.current;
         if (!saved) throw new Error("Book recovery state was not saved. Check your library before retrying.");
@@ -250,7 +277,8 @@ export default function BookSetupClient() {
       const pending = { ...saved, starter, savedAt: Date.now() };
       saveCheckpoint(pending); // Persist stable quote identity and consent before sending the selected brief for counting.
       const result = await api.createAiReviewQuote(saved.bookId, { modelId: aiModelId, agentType: "writer", chapterIds: [starter.chapterId], userInstruction: storyBrief.trim(),
-        idempotencyKey: starter.quoteKey!, contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: true, semanticTopK: 5, maxTokens: 16_000 }, allowProviderTokenCounting: true });
+        idempotencyKey: starter.quoteKey!, contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: true, semanticTopK: 5, maxTokens: 16_000 }, allowProviderTokenCounting: true }, userId);
+      await editorAccount(userId);
       if (result.quote) {
         const next = { ...pending, starter: { ...starter, quoteRequestId: result.quote.requestId }, savedAt: Date.now() };
         saveCheckpoint(next); setAiQuote(result.quote); setQuoteCounting(false);
@@ -259,7 +287,7 @@ export default function BookSetupClient() {
         const next = { ...pending, starter: { ...starter, quoteRequestId: result.request.id }, savedAt: Date.now() };
         saveCheckpoint(next); setQuoteCounting(true); setNotice("Counting the selected saved chapter and brief. This does not reserve credits or start generation.");
       } else throw new Error("The quote service returned no quote status. Check the saved request before retrying.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not prepare a usage quote."); }
+    } catch (reason) { try { await editorAccount(userId); } catch { setAccountHidden(true); } setError(reason instanceof Error ? reason.message : "Could not prepare a usage quote."); }
     finally { setSaving(false); busy.current = false; }
   };
 
@@ -270,21 +298,24 @@ export default function BookSetupClient() {
     try {
       const session = await fetch("/api/auth/session", { cache: "no-store" });
       if (!session.ok || (await session.json()).user?.id !== userId) throw new Error("Your session changed. Reload before accepting this quote.");
-      const accepted = await api.acceptAiReviewQuote(saved.bookId, quote.requestId, quote.reservedCredits);
+      const accepted = await api.acceptAiReviewQuote(saved.bookId, quote.requestId, quote.reservedCredits, userId);
+      await editorAccount(userId);
       const next = { ...saved, completed: true, starter: { ...saved.starter, jobId: accepted.jobId }, savedAt: Date.now() };
       saveCheckpoint(next); setAiQuote(null); setNotice("Draft accepted and queued. Nothing is applied until you review it in Chapter 1.");
-      continueToEditor(saved.bookId, title, saved.starter.chapterId, accepted.jobId);
+      await continueToEditor(saved.bookId, title, saved.starter.chapterId, accepted.jobId);
     } catch (reason) {
       // Recover only through quote status; never issue a second acceptance with a new quote.
       const requestId = quote.requestId;
       try {
-        const status = await api.getAiReviewQuote(saved.bookId, requestId);
+        await editorAccount(userId);
+        const status = await api.getAiReviewQuote(saved.bookId, requestId, userId);
+        await editorAccount(userId);
         if (status.job) {
           const next = { ...saved, completed: true, starter: { ...saved.starter, quoteRequestId: requestId, jobId: status.job.id }, savedAt: Date.now() };
           saveCheckpoint(next); setAiQuote(null); setNotice("Recovered the accepted first draft without another charge.");
-          continueToEditor(saved.bookId, title, saved.starter.chapterId, status.job.id);
+          await continueToEditor(saved.bookId, title, saved.starter.chapterId, status.job.id);
         } else { setError(reason instanceof Error ? `${reason.message} The quote remains available; check its status before retrying.` : "Acceptance could not be confirmed. Check quote status before retrying."); }
-      } catch { setError("Acceptance could not be confirmed. Check the saved quote status before retrying; do not create a new quote yet."); }
+      } catch { try { await editorAccount(userId); } catch { setAccountHidden(true); } setError("Acceptance could not be confirmed. Check the saved quote status before retrying; do not create a new quote yet."); }
     } finally { setSaving(false); busy.current = false; }
   };
 
@@ -402,7 +433,7 @@ export default function BookSetupClient() {
                 <span className="relative z-10">{saveStage ? stageLabels[saveStage] : checkpoint?.bookCreated === false ? "Retry book creation" : checkpoint ? mode === "ai" ? "Prepare Chapter 1" : mode === "import" ? "Retry import" : "Continue setup" : mode === "import" ? "Create and import" : mode === "ai" ? "Create book & Chapter 1" : "Create book"}</span>
               </button>}
               {checkpoint && checkpoint.bookCreated !== false && (
-                <button type="button" disabled={saving} onClick={() => continueToEditor(checkpoint.bookId, title, checkpoint.starter?.chapterId, checkpoint.starter?.jobId)} className="glass-ghost inline-flex h-12 items-center rounded-full px-5 text-sm font-medium text-white disabled:opacity-60">
+                <button type="button" disabled={saving} onClick={() => void openEditor(checkpoint.bookId, title, checkpoint.starter?.chapterId, checkpoint.starter?.jobId)} className="glass-ghost inline-flex h-12 items-center rounded-full px-5 text-sm font-medium text-white disabled:opacity-60">
                   Continue to editor
                 </button>
               )}
