@@ -16,6 +16,7 @@ const bundle = await build({
     import Panel from "./apps/web/components/AiAssistantPanel.tsx";
     import Image from "./apps/web/components/ImageQuoteStudio.tsx";
     import Memory from "./apps/web/components/BookMemoryClient.tsx";
+    import BibleSource from "./apps/web/components/BibleSourcePassage.tsx";
     const root = createRoot(document.getElementById("root"));
     window.apiError = (status, message) => new ApiClientError(status, "fixture_error", message, "fixture-request");
     window.renderPanel = props => root.render(React.createElement(Panel, {...props, onApplied: async () => {
@@ -26,6 +27,7 @@ const bundle = await build({
     window.renderImage = props => root.render(React.createElement(Image, {...props, scope: imageScope, active: true,
       isWorkspaceCurrent, onCompleted: async () => {}}));
     window.renderMemory = props => root.render(React.createElement(Memory, props));
+    window.renderBibleSource = props => root.render(React.createElement(BibleSource, { ...props, readRequest: window.bibleRead }));
     window.clearComponent = () => root.render(null);
     window.renderMemoryStrict = props => root.render(React.createElement(React.StrictMode, null,
       React.createElement(Memory, { key: props.bookId, ...props })));`, resolveDir: process.cwd(), loader: "tsx" },
@@ -85,6 +87,62 @@ async function fixture({ width = 1280, styled = false } = {}) {
 }
 const props = (bookId = "a-book", chapterId = "a-chapter", initialJobId) => ({ bookId, chapterId, initialJobId,
   savedChapter: { chapterId, version: 1, nodes: [{ id: "n1", type: "paragraph", text: "The old moon rose." }] }, editable: true, dirty: false });
+
+test("Book Bible source reader fences changed citation and account before showing saved text", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.bibleCalls = [];
+      window.bibleRead = async (_path, _method, body) => { window.bibleCalls.push(body); return window.defer("source-" + body.nodeId); };
+      window.citation = { chapterId: "chapter", documentVersionId: "version", nodeId: "a", textHash: "hash" };
+      window.renderBibleSource({ actorId: "account-a", bookId: "book", title: "Source", citation: window.citation });
+    });
+    const read = page.getByRole("button", { name: "Read source passage" });
+    await expect(read).toBeVisible();
+    await page.evaluate(() => { const button = [...document.querySelectorAll("button")].find(el => el.textContent.includes("Read source passage")); button.click(); button.click(); });
+    await page.waitForFunction(() => !!window.gates["source-a"]);
+    assert.equal(await page.evaluate(() => window.bibleCalls.length), 1, "synchronous repeated clicks issue only one request");
+    await page.evaluate(() => window.renderBibleSource({ actorId: "account-a", bookId: "book", title: "Source", citation: { ...window.citation, nodeId: "b" } }));
+    await expect(read).toHaveText("Read source passage");
+    await page.evaluate(() => window.gates["source-a"].resolve({ chapterTitle: "A", versionNumber: 1, isCurrentVersion: true, text: "Private A", truncated: false, startOffset: 0, endOffset: 9, totalLength: 9, nextOffset: null }));
+    await expect(page.getByText("Private A", { exact: true })).toHaveCount(0);
+    await read.click(); await page.waitForFunction(() => !!window.gates["source-b"]);
+    await page.evaluate(() => window.gates["source-b"].resolve({ chapterTitle: "B", versionNumber: 1, isCurrentVersion: true, text: "Private B", truncated: false, startOffset: 0, endOffset: 9, totalLength: 9, nextOffset: null }));
+    await expect(page.getByText("Private B", { exact: true })).toBeVisible();
+    await page.evaluate(() => window.renderBibleSource({ actorId: "account-b", bookId: "book", title: "Source", citation: { ...window.citation, nodeId: "b" } }));
+    await expect(read).toHaveText("Read source passage");
+    await expect(page.getByText("Private B", { exact: true })).toHaveCount(0);
+    await page.evaluate(() => window.renderBibleSource({ actorId: "", bookId: "book", title: "Source", citation: window.citation }));
+    await expect(read).toHaveCount(0);
+    await page.evaluate(() => window.renderBibleSource({ actorId: "account-b", bookId: "book", title: "Source", citation: { ...window.citation, nodeId: "b" } }));
+    await read.click(); await page.waitForFunction(() => window.bibleCalls.length === 3);
+    await page.evaluate(() => window.clearComponent());
+    await expect(read).toHaveCount(0);
+    await page.evaluate(() => window.gates["source-b"].resolve({ chapterTitle: "B", versionNumber: 1, isCurrentVersion: true, text: "Late B", truncated: false, startOffset: 0, endOffset: 6, totalLength: 6, nextOffset: null }));
+    await page.evaluate(() => window.renderBibleSource({ actorId: "account-b", bookId: "book", title: "Source", citation: { ...window.citation, nodeId: "b" } }));
+    await expect(read).toHaveText("Read source passage");
+    await expect(page.getByText("Late B", { exact: true })).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
+test("Book Bible source reader rejects changed pagination identity without replacing the prior page", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.bibleRead = async (_path, _method, body) => body.offset === 0
+        ? { chapterTitle: "Source", versionNumber: 1, isCurrentVersion: true, text: "First", truncated: true, startOffset: 0, endOffset: 5, totalLength: 9, nextOffset: 5 }
+        : { chapterTitle: "Source", versionNumber: 2, isCurrentVersion: true, text: "Last", truncated: false, startOffset: 5, endOffset: 9, totalLength: 9, nextOffset: null };
+      window.renderBibleSource({ actorId: "account", bookId: "book", title: "Source", citation: { chapterId: "chapter", documentVersionId: "version", nodeId: "node", textHash: "hash" } });
+    });
+    await page.getByRole("button", { name: "Read source passage" }).click();
+    await expect(page.getByText("First", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Next passage section" }).click();
+    await expect(page.getByRole("alert")).toContainText("position could not be verified");
+    await expect(page.getByText("First", { exact: true })).toBeVisible();
+    await expect(page.getByText("Last", { exact: true })).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
 const imageProps = (workspaceId = "a-workspace", canEdit = true) => ({ workspaceId, canEdit, books: [], assets: [] });
 const quoteId = "11111111-1111-4111-8111-111111111111";
 async function imageFixture(page, saved = true) {

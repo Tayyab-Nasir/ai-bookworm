@@ -1,29 +1,46 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Citation = { chapterId: string; documentVersionId: string; nodeId: string; textHash: string };
 type Passage = { chapterTitle: string; versionNumber: number; isCurrentVersion: boolean; text: string; truncated: boolean;
   startOffset: number; endOffset: number; totalLength: number; nextOffset: number | null };
 
-export default function BibleSourcePassage({ bookId, citation, title, readRequest }: { bookId: string; citation: Citation; title: string; readRequest: <T>(path: string, method?: string, body?: unknown) => Promise<T> }) {
+type Props = { actorId: string; bookId: string; citation: Citation; title: string; readRequest: <T>(path: string, method?: string, body?: unknown) => Promise<T> };
+
+export default function BibleSourcePassage(props: Props) {
+  const { actorId, bookId, citation } = props;
+  if (!actorId) return null;
+  return <SourceReader key={JSON.stringify([actorId, bookId, citation.chapterId, citation.documentVersionId, citation.nodeId, citation.textHash])} {...props} />;
+}
+
+function SourceReader({ bookId, citation, title, readRequest }: Props) {
   const [passage, setPassage] = useState<Passage | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [previousOffsets, setPreviousOffsets] = useState<number[]>([]);
+  const inFlight = useRef(false), generation = useRef(0);
+  useEffect(() => () => { ++generation.current; }, []);
 
   async function read(offset?: number) {
-    if (loading) return;
+    if (inFlight.current) return;
     if (passage && offset === undefined) { setOpen((value) => !value); return; }
     const requestedOffset = offset ?? 0;
-    setLoading(true); setError(null);
+    const current = ++generation.current;
+    inFlight.current = true; setLoading(true); setError(null);
     try {
       const data = await readRequest<Passage>(`/books/${encodeURIComponent(bookId)}/bible/evidence`, "POST", { ...citation, offset: requestedOffset });
-      if (typeof data.text !== "string" || typeof data.isCurrentVersion !== "boolean") throw new Error("The saved passage is unavailable.");
-      if (data.startOffset !== requestedOffset || !Number.isInteger(data.endOffset) || !Number.isInteger(data.totalLength)
+      if (current !== generation.current) return;
+      if (!data || typeof data.text !== "string" || typeof data.isCurrentVersion !== "boolean") throw new Error("The saved passage is unavailable.");
+      if (typeof data.chapterTitle !== "string" || data.chapterTitle.length > 1000
+        || !Number.isSafeInteger(data.versionNumber) || data.versionNumber < 1 || typeof data.truncated !== "boolean"
+        || data.startOffset !== requestedOffset || !Number.isSafeInteger(data.endOffset) || !Number.isSafeInteger(data.totalLength)
+        || data.totalLength < 0 || data.endOffset > data.startOffset + 24000
         || data.endOffset < data.startOffset || data.endOffset > data.totalLength
         || data.text.length !== data.endOffset - data.startOffset
+        || data.truncated !== (data.endOffset < data.totalLength)
+        || (passage && (passage.versionNumber !== data.versionNumber || passage.totalLength !== data.totalLength))
         || (data.nextOffset === null) !== (data.endOffset === data.totalLength)
         || (data.nextOffset !== null && (data.nextOffset !== data.endOffset || data.nextOffset <= data.startOffset))) {
         throw new Error("The saved passage position could not be verified.");
@@ -31,8 +48,8 @@ export default function BibleSourcePassage({ bookId, citation, title, readReques
       if (passage && requestedOffset > passage.startOffset) setPreviousOffsets((current) => [...current, passage.startOffset]);
       else if (passage && requestedOffset < passage.startOffset) setPreviousOffsets((current) => current.slice(0, -1));
       setPassage(data); setOpen(true);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "The saved passage could not be loaded."); }
-    finally { setLoading(false); }
+    } catch (reason) { if (current === generation.current) setError(reason instanceof Error ? reason.message : "The saved passage could not be loaded."); }
+    finally { if (current === generation.current) { inFlight.current = false; setLoading(false); } }
   }
 
   return <div aria-busy={loading} className="min-w-0 rounded-lg border border-white/10 p-3 text-xs leading-5 text-[#aaa] [overflow-wrap:anywhere]">
