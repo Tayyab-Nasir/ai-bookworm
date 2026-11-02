@@ -458,6 +458,10 @@ export interface AudiobookSegmentResult {
   download: { url: string; expiresIn: number } | null;
 }
 
+/** Safe playback projection; no bearer Storage URL is returned. */
+export type PrivateAudiobookSegmentResult = Omit<AudiobookSegmentResult, "download"> & { audioAvailable: boolean };
+export type PrivateAudiobookProjectResult = Omit<AudiobookProjectResult, "segments"> & { segments: PrivateAudiobookSegmentResult[] };
+
 export interface AudiobookProjectResult {
   id: string;
   editionId: string;
@@ -1035,12 +1039,12 @@ export function createClient(opts: ClientOptions) {
       call<{ created: number; folders: Folder[] }>("POST", `/v1/workspaces/${workspaceId}/folders/template`),
     updateFolder: (folderId: string, body: { name?: string; parentFolderId?: string | null }) =>
       call<Folder>("PATCH", `/v1/folders/${folderId}`, body),
-    listAssets: (workspaceId: string, filter?: { folderId?: string; type?: string; status?: string }) => {
+    listAssets: (workspaceId: string, filter?: { folderId?: string; type?: string; status?: string }, expectedActor?: string) => {
       const qs = new URLSearchParams({ workspaceId });
       if (filter?.folderId) qs.set("folderId", filter.folderId);
       if (filter?.type) qs.set("type", filter.type);
       if (filter?.status) qs.set("status", filter.status);
-      return call<{ assets: Asset[] }>("GET", `/v1/assets?${qs}`);
+      return call<{ assets: Asset[] }>("GET", `/v1/assets?${qs}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {});
     },
     getAssetAccess: (workspaceId: string) => call<{ canEdit: boolean }>("GET", `/v1/assets/access?${new URLSearchParams({ workspaceId })}`),
     listImageGenerationJobs: (workspaceId: string) => call<{ jobs: ImageGenerationJob[] }>("GET", `/v1/assets/generation-jobs?${new URLSearchParams({ workspaceId })}`),
@@ -1153,38 +1157,40 @@ export function createClient(opts: ClientOptions) {
       call<EpubReaderResult>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders/${encodeURIComponent(jobId)}/reader?spine=${encodeURIComponent(spineIndex)}&sha256=${encodeURIComponent(sha256)}`),
     readEpubResource: (editionId: string, jobId: string, resourceIndex: number, sha256: string) =>
       call<EpubResourceResult>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders/${encodeURIComponent(jobId)}/reader/resources/${encodeURIComponent(resourceIndex)}?sha256=${encodeURIComponent(sha256)}`),
-    listAudiobookProjects: (editionId: string) =>
-      call<{ projects: AudiobookProjectResult[] }>("GET", `/v1/editions/${editionId}/audiobook-jobs`),
-    listAudiobookQcReports: (projectId: string) =>
-      call<{ reports: AudiobookQcReport[] }>("GET", `/v1/audiobook-jobs/${projectId}/qc-reports`),
-    createAudiobookQcSignoff: (projectId: string, reportId: string) =>
-      call<{ reportId: string; signedAt: string; listenedToExactAudio: true }>("POST", `/v1/audiobook-jobs/${projectId}/qc-signoffs`, { reportId, listenedToExactAudio: true }),
-    getAudiobookProject: (projectId: string) =>
-      call<AudiobookProjectResult>("GET", `/v1/audiobook-jobs/${projectId}`),
-    listNarrationModels: (workspaceId: string) =>
-      call<NarrationModelOptions>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-models`),
+    listAudiobookProjects: (editionId: string, expectedActor?: string) =>
+      call<{ projects: AudiobookProjectResult[] }>("GET", `/v1/editions/${editionId}/audiobook-jobs`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    listPrivateAudiobookProjects: (editionId: string, expectedActor: string) =>
+      call<{ projects: PrivateAudiobookProjectResult[] }>("GET", `/v1/editions/${encodeURIComponent(editionId)}/audiobook-jobs?delivery=proxy`, undefined, true, { "x-bookworm-actor": expectedActor }),
+    listAudiobookQcReports: (projectId: string, expectedActor?: string) =>
+      call<{ reports: AudiobookQcReport[] }>("GET", `/v1/audiobook-jobs/${projectId}/qc-reports`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    createAudiobookQcSignoff: (projectId: string, reportId: string, expectedActor?: string) =>
+      call<{ reportId: string; signedAt: string; listenedToExactAudio: true }>("POST", `/v1/audiobook-jobs/${projectId}/qc-signoffs`, { reportId, listenedToExactAudio: true }, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getAudiobookProject: (projectId: string, expectedActor?: string) =>
+      call<AudiobookProjectResult>("GET", `/v1/audiobook-jobs/${projectId}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    listNarrationModels: (workspaceId: string, expectedActor?: string) =>
+      call<NarrationModelOptions>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-models`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     createNarrationQuote: (workspaceId: string, body: CreateNarrationQuoteRequest) =>
       call<NarrationQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-quotes`, body),
     recoverNarrationQuote: (workspaceId: string, idempotencyKey: string) =>
       call<NarrationQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-quotes/recover`, { idempotencyKey }),
     getNarrationQuote: (workspaceId: string, quoteId: string) =>
       call<NarrationQuote>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-quotes/${encodeURIComponent(quoteId)}`),
-    createNarrationChapterQuote: (workspaceId: string, body: CreateNarrationChapterQuoteRequest) =>
-      call<NarrationChapterQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes`, body),
-    recoverNarrationChapterQuote: (workspaceId: string, idempotencyKey: string) =>
-      call<NarrationChapterQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/recover`, { idempotencyKey }),
-    getNarrationChapterQuote: (workspaceId: string, quoteId: string) =>
-      call<NarrationChapterQuote>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/${encodeURIComponent(quoteId)}`),
-    acceptNarrationChapterQuote: (workspaceId: string, quoteId: string, body: AcceptNarrationChapterQuoteRequest) =>
-      call<NarrationChapterAccepted>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/${encodeURIComponent(quoteId)}/accept`, body),
-    getNarrationChapterAcceptance: (workspaceId: string, quoteId: string) =>
-      call<NarrationChapterAcceptance>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/${encodeURIComponent(quoteId)}/project`),
-    listAudiobookGooglePlayExports: (editionId: string) =>
-      call<{ jobs: AudiobookGooglePlayExportJob[] }>("GET", `/v1/editions/${editionId}/audiobook-google-play-exports`),
-    createAudiobookGooglePlayExport: (editionId: string, body: { identifier: string; coverAssetId: string; idempotencyKey: string }) =>
-      call<{ job: AudiobookGooglePlayExportJob }>("POST", `/v1/editions/${editionId}/audiobook-google-play-export`, body),
-    cancelAudiobookGooglePlayExport: (jobId: string) =>
-      call<{ job: AudiobookGooglePlayExportJob }>("POST", `/v1/audiobook-google-play-exports/${jobId}/cancel`, {}),
+    createNarrationChapterQuote: (workspaceId: string, body: CreateNarrationChapterQuoteRequest, expectedActor?: string) =>
+      call<NarrationChapterQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    recoverNarrationChapterQuote: (workspaceId: string, idempotencyKey: string, expectedActor?: string) =>
+      call<NarrationChapterQuote>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/recover`, { idempotencyKey }, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getNarrationChapterQuote: (workspaceId: string, quoteId: string, expectedActor?: string) =>
+      call<NarrationChapterQuote>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/${encodeURIComponent(quoteId)}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    acceptNarrationChapterQuote: (workspaceId: string, quoteId: string, body: AcceptNarrationChapterQuoteRequest, expectedActor?: string) =>
+      call<NarrationChapterAccepted>("POST", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/${encodeURIComponent(quoteId)}/accept`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getNarrationChapterAcceptance: (workspaceId: string, quoteId: string, expectedActor?: string) =>
+      call<NarrationChapterAcceptance>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/narration-chapter-quotes/${encodeURIComponent(quoteId)}/project`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    listAudiobookGooglePlayExports: (editionId: string, expectedActor?: string) =>
+      call<{ jobs: AudiobookGooglePlayExportJob[] }>("GET", `/v1/editions/${editionId}/audiobook-google-play-exports`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    createAudiobookGooglePlayExport: (editionId: string, body: { identifier: string; coverAssetId: string; idempotencyKey: string }, expectedActor?: string) =>
+      call<{ job: AudiobookGooglePlayExportJob }>("POST", `/v1/editions/${editionId}/audiobook-google-play-export`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    cancelAudiobookGooglePlayExport: (jobId: string, expectedActor?: string) =>
+      call<{ job: AudiobookGooglePlayExportJob }>("POST", `/v1/audiobook-google-play-exports/${jobId}/cancel`, {}, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     listTranslationProjects: (bookId: string, expectedActor?: string) =>
       call<{ projects: TranslationProjectResult[] }>("GET", `/v1/books/${bookId}/translations`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     getTranslationProject: (projectId: string, includeText = false, expectedActor?: string) =>

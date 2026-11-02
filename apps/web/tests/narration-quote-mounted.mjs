@@ -7,15 +7,29 @@ import { build } from "esbuild";
 import { chromium, expect } from "@playwright/test";
 
 const bundle = await build({
-  stdin: { contents: `import React from "react"; import { createRoot } from "react-dom/client";
+  stdin: { contents: `import React from "react"; import { createRoot } from "react-dom/client"; import { flushSync } from "react-dom";
     import Studio from "./apps/web/components/NarrationQuoteStudio.tsx";
     import Publishing from "./apps/web/components/PublishingStudio.tsx";
     import { ApiClientError } from "@bookworm/api-client";
     window.ApiClientError = ApiClientError;
     const root = createRoot(document.getElementById("root"));
-    window.renderStudio = props => root.render(React.createElement(React.Fragment, null,
-      React.createElement("output", { "aria-label": "Committed narration permission" }, props.canEdit ? "Can edit" : "Read only"),
-      React.createElement(Studio, props)));
+    let lastActor = null, epoch = 0, scope = null;
+    window.invalidateNarrationScope = () => { ++epoch; };
+    window.renderStudio = props => {
+      if (lastActor !== window.account) {
+        const actor = window.account; lastActor = actor; ++epoch;
+        const current = () => window.account === actor;
+        const begin = () => { const started = epoch; return () => current() && epoch === started; };
+        scope = { actor, current, begin, checked: async work => {
+          const valid = begin(); if (!valid()) throw new Error("Account changed");
+          const result = await work(); if (!valid()) throw new Error("Account changed"); return result;
+        } };
+      }
+      root.render(React.createElement(React.Fragment, null,
+        React.createElement("output", { "aria-label": "Committed narration permission" }, props.canEdit ? "Can edit" : "Read only"),
+        React.createElement(Studio, { ...props, scope, key: scope.actor })));
+    };
+    window.renderStudioSync = props => flushSync(() => window.renderStudio(props));
     window.renderPublishing = bookId => root.render(React.createElement(Publishing, { bookId }));
     window.unmountStudio = () => root.render(null);`, resolveDir: process.cwd(), loader: "tsx" },
   bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", outdir: "memory",
@@ -97,14 +111,17 @@ async function fixture({ publishing = false } = {}) {
         listEditionRenders: async () => ({ renders: [] }),
         listChapters: async () => ({ chapters: window.chapters }),
         listAssets: async () => ({ assets: [] }),
-        listAudiobookProjects: async editionId => {
+        listPrivateAudiobookProjects: async editionId => {
           window.parentCalls.push({ operation: "history", editionId });
           return window.historyOverride ? window.historyOverride(editionId) : ({ projects: editionId === EDITION ? window.projects : [] });
         },
         listAudiobookGooglePlayExports: async () => ({ jobs: [] }),
       });
-      window.createOverride = async (_workspace, body) => ({ ...window.offer, source: { ...window.offer.source, chapterId: body.chapterId,
-        documentVersionId: window.chapters.find(chapter => chapter.id === body.chapterId).current_document_version_id } });
+      window.createOverride = async (_workspace, body) => {
+        window.offer = { ...window.offer, source: { ...window.offer.source, chapterId: body.chapterId,
+          documentVersionId: window.chapters.find(chapter => chapter.id === body.chapterId).current_document_version_id } };
+        return window.offer;
+      };
     }
   }, { USER, WORKSPACE, BOOK, EDITION, CHAPTER, DOCUMENT, QUOTE, child1: uuid(8), child2: uuid(9), publishing });
   await page.addScriptTag({ content: script });
@@ -139,6 +156,7 @@ async function publishingAction(operation) {
       createdAt: "2026-10-05T00:00:00Z", completedAt: null, downloadUrl: null, synthesizedVoiceDisclosureRequired: true };
     window.savedEdition = { ...window.editions[0], language: "es", edition_metadata_json: { ...window.editions[0].edition_metadata_json, schema_version: "1.0.0" } };
     Object.assign(window.api, {
+      listPublishingJobs: async () => ({ jobs: window.packageCreated ? [window.packageJob] : [] }),
       updateEdition: async () => window.savedEdition,
       createEdition: async () => window.savedEdition,
       renderEdition: async () => window.renderResult,
@@ -173,7 +191,7 @@ async function publishingAction(operation) {
       "package history": { jobs: [window.packageJob] }, "audio export": { job: window.exportJob },
       "cancel export": { job: { ...window.exportJob, status: "cancelled" } },
       "export history": { jobs: [{ ...window.exportJob, status: "succeeded", downloadUrl: "https://storage.example/old-view-private-archive", downloadExpiresIn: 300 }] } }[operation];
-    window.actionCalls = [];
+    window.actionCalls = []; window.actionOperation = operation;
     window.api[method] = async (...args) => {
       if (operation === "package history" && args[0] !== oldBook) return { jobs: [] };
       if (operation === "export history" && args[0] !== oldEdition) return { jobs: [] };
@@ -197,9 +215,10 @@ async function clickPublishingAction(page, operation) {
     .locator("..").getByRole("button", { name: "Refresh", exact: true }).click();
 }
 
-const resolvePublishingAction = (page, fault = false) => page.evaluate(fault => fault
-  ? window.gates.parentAction.reject(new Error("Old private publishing error"))
-  : window.gates.parentAction.resolve(window.actionResult), fault);
+const resolvePublishingAction = (page, fault = false) => page.evaluate(fault => {
+  if (fault) window.gates.parentAction.reject(new Error("Old private publishing error"));
+  else { if (window.actionOperation === "package") window.packageCreated = true; window.gates.parentAction.resolve(window.actionResult); }
+}, fault);
 
 for (const operation of ["save", "render", "preflight", "package", "package history", "audio export", "cancel export", "export history"]) {
   test(`pending publishing ${operation} success/failure stays in its original book view`, async () => {
@@ -208,7 +227,7 @@ for (const operation of ["save", "render", "preflight", "package", "package hist
       try {
         const historyCalls = await page.evaluate(() => window.parentCalls.length);
         await page.evaluate(({ oldBook, newBook }) => {
-          window.bookOverride = () => window.defer("newBook");
+          window.bookOverride = () => (window.pendingBook ??= window.defer("newBook"));
           window.api.listEditions = async bookId => ({ editions: bookId === oldBook ? window.editions : [] });
           window.renderPublishing(newBook);
         }, { oldBook: BOOK, newBook: uuid(13) });
@@ -217,7 +236,8 @@ for (const operation of ["save", "render", "preflight", "package", "package hist
           { book: uuid(13), workspace: WORKSPACE });
         if (loaded) { await finishLoad(); await expect(page.getByRole("textbox", { name: "Language", exact: true })).toHaveValue("fr"); }
         await resolvePublishingAction(page, fault); await settle(page);
-        assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), !loaded, `${operation} released another view's loading lock`);
+        if (loaded) assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
+        else await expect(page.locator("fieldset")).toHaveCount(0);
         await expect(page.getByRole("alert")).toHaveCount(0);
         await expect(page.getByText(/^(Edition settings saved\.|Private render completed\.|kdp package is ready|Export queued\.|Export cancelled\.)/)).toHaveCount(0);
         await expect(page.locator('a[href*="old-view-private"]')).toHaveCount(0);
@@ -242,7 +262,12 @@ test("current publishing actions still return their result and release their own
       else if (operation === "preflight") await expect(page.getByText("Old private preflight finding")).toBeVisible();
       else if (operation === "audio export") await expect(page.getByText(/^Export queued\./)).toBeVisible();
       else if (operation === "cancel export") await expect(page.getByText("Export cancelled.", { exact: true })).toBeVisible();
-      else await expect(page.locator('a[href*="old-view-private"]')).toHaveCount(operation === "package" ? 2 : 1);
+      else if (operation === "render") await expect(page.getByRole("button", {name:"Download private file"})).toBeVisible();
+      else if (operation === "package") {
+        await expect(page.getByRole("button", {name:"Download private file"})).toBeVisible();
+        await expect(page.getByRole("button", {name:"Download private ZIP"})).toBeVisible();
+      } else await expect(page.getByRole("button", {name:"Download private ZIP"})).toBeVisible();
+      await expect(page.locator('a[href*="old-view-private"]')).toHaveCount(0);
       await expect(page.getByRole("alert")).toHaveCount(0);
       assert.equal(await page.evaluate(() => window.actionCalls.length), 1);
     } finally { await page.close(); }
@@ -254,7 +279,8 @@ test("current publishing failures stay visible, release only their own lock and 
     const page = await publishingAction(operation);
     try {
       await resolvePublishingAction(page, true);
-      await expect(page.getByRole("alert")).toContainText("Old private publishing error");
+      if (operation === "package history") await expect(page.getByText("Package history is unavailable. Refresh before relying on this list.")).toBeVisible();
+      else await expect(page.getByRole("alert")).toContainText("Old private publishing error");
       assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
       await clickPublishingAction(page, operation);
       await expect.poll(() => page.evaluate(() => window.actionCalls.length)).toBe(2);
@@ -301,10 +327,10 @@ test("save's follow-on audio history is fenced after its edition reply was accep
       await resolvePublishingAction(page);
       await expect.poll(() => page.evaluate(() => Boolean(window.gates.saveHistory))).toBe(true);
       await page.evaluate(({ book, edition }) => {
-        window.bookOverride = () => window.defer("newBook");
+        window.bookOverride = () => (window.pendingBook ??= window.defer("newBook"));
         window.api.listEditions = async () => ({ editions: [{ ...window.editions[0], id: edition, book_id: book, language: "fr" }] });
         window.api.listChapters = async () => ({ chapters: [] });
-        window.api.listAudiobookProjects = async () => ({ projects: [] });
+        window.api.listPrivateAudiobookProjects = async () => ({ projects: [] });
         window.renderPublishing(book);
       }, { book: uuid(13), edition: uuid(44) });
       await expect.poll(() => page.evaluate(() => Boolean(window.gates.newBook))).toBe(true);
@@ -314,7 +340,8 @@ test("save's follow-on audio history is fenced after its edition reply was accep
       await page.evaluate(fault => fault ? window.gates.saveHistory.reject(new Error("Old private save history error"))
         : window.gates.saveHistory.resolve({ projects: [window.project] }), fault);
       await settle(page);
-      assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), !loaded);
+      if (loaded) assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
+      else await expect(page.locator("fieldset")).toHaveCount(0);
       await expect(page.getByRole("alert")).toHaveCount(0);
       await expect(page.getByText(/5 legacy audio units/)).toHaveCount(0);
       if (!loaded) await finishLoad();
@@ -352,7 +379,7 @@ test("read-only publishing members can view history but cannot cancel an export"
     await page.evaluate(({ book, workspace, edition, job }) => {
       window.bookOverride = async () => ({ book: { id: book, workspace_id: workspace, language: "en" }, role: "viewer" });
       window.api.listAudiobookGooglePlayExports = async () => ({ jobs: [{ id: job, editionId: edition, status: "queued", progressChapters: 0,
-        progressTotal: 2, createdAt: "2026-10-05T00:00:00Z", synthesizedVoiceDisclosureRequired: true }] });
+        progressTotal: 2, createdAt: "2026-10-05T00:00:00Z", synthesizedVoiceDisclosureRequired: true, downloadUrl: null, downloadExpiresIn: null }] });
       window.api.cancelAudiobookGooglePlayExport = async () => { throw new Error("Read-only member issued cancellation"); };
       window.renderPublishing(book);
     }, { book: BOOK, workspace: WORKSPACE, edition: EDITION, job: uuid(32) });
@@ -372,11 +399,11 @@ test("pending book identity clears the previous book's private form and error", 
     await page.evaluate(() => { window.historyOverride = async () => { throw new Error("Old private history failure"); }; });
     await page.getByRole("button", { name: "Refresh progress", exact: true }).click();
     await expect(page.getByRole("alert")).toContainText("Old private history failure");
-    await page.evaluate(book => { window.bookOverride = () => window.defer("newBook"); window.renderPublishing(book); }, uuid(13));
+    await page.evaluate(book => { window.bookOverride = () => (window.pendingBook ??= window.defer("newBook")); window.renderPublishing(book); }, uuid(13));
     await expect.poll(() => page.evaluate(() => Boolean(window.gates.newBook))).toBe(true);
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Voice direction", exact: true })).toHaveCount(0);
-    assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), true);
+    await expect(page.locator("fieldset")).toHaveCount(0);
     assert.equal(await page.evaluate(() => {
       const event = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented;
     }), false, "New book retained the old book's unsaved-change warning");
@@ -387,10 +414,10 @@ test("failed book identity stays locked and can retry reads without any generati
   const page = await fixture({ publishing: true });
   try {
     await page.evaluate(book => { window.bookOverride = async () => { throw new Error("Publishing settings temporarily unavailable"); }; window.renderPublishing(book); }, BOOK);
-    await expect(page.getByRole("alert")).toContainText("Publishing settings temporarily unavailable");
-    assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), true);
+    await expect(page.getByRole("alert")).toContainText("Book access or your account could not be verified");
+    await expect(page.locator("fieldset")).toHaveCount(0);
     await page.evaluate(() => { window.bookOverride = null; });
-    await page.getByRole("button", { name: "Retry loading this book", exact: true }).click();
+    await page.getByRole("button", { name: "Try again", exact: true }).click();
     await expect(page.getByRole("combobox", { name: "Saved chapter" })).toBeEnabled();
     await expect(page.getByRole("alert")).toHaveCount(0);
     assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), false);
@@ -446,12 +473,14 @@ test("mounted chapter review stores only opaque recovery identity before saving,
     await page.getByText("2 ordered parts · full saved chapter").click();
     await expect(page.getByText("Source range 1800–3000")).toBeVisible();
     const calls = await page.evaluate(() => window.calls);
-    assert.equal(calls.length, 2); assert.equal(calls[0].operation, "save"); assert.equal(calls[1].operation, "status");
+    assert.deepEqual(calls.map(call => call.operation), ["save", "recover", "status"]);
     assert.equal(calls[0].body.instructions, "PRIVATE-VOICE-DIRECTION");
     assert.equal(calls[0].body.consentToQuoteStorage, true);
-    assert.deepEqual(JSON.parse(calls[0].stored[0]), { idempotencyKey: calls[0].body.idempotencyKey });
+    const checkpoint = JSON.parse(calls[0].stored[0]);
+    assert.equal(checkpoint.idempotencyKey, calls[0].body.idempotencyKey);
+    assert.match(checkpoint.deliveryFingerprint, /^[a-f0-9]{64}$/);
     const saved = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), key()));
-    assert.deepEqual(Object.keys(saved).sort(), ["idempotencyKey", "quoteId"]);
+    assert.deepEqual(Object.keys(saved).sort(), ["deliveryFingerprint", "idempotencyKey", "quoteId"]);
     assert.equal(saved.quoteId, QUOTE);
     await expect(page.getByText("Paid narration not enabled", { exact: true })).toBeVisible();
     await expect(page.getByText("Not charged or reserved.", { exact: false })).toBeVisible();
@@ -513,7 +542,7 @@ test("late reply from another book cannot overwrite this book's offer or recover
   const page = await fixture();
   try {
     await page.evaluate(key => { sessionStorage.setItem(key, JSON.stringify({ idempotencyKey: "old-book-key" }));
-      window.recoverOverride = async () => window.defer("old"); }, key());
+      window.recoverOverride = async (_workspace, requestKey) => requestKey === "old-book-key" ? window.defer("old") : window.offer; }, key());
     await render(page); await expect.poll(() => page.evaluate(() => Boolean(window.gates.old))).toBe(true);
     await page.evaluate(({ BOOK, EDITION, QUOTE }) => { window.offer.source.bookId = BOOK; window.offer.source.editionId = EDITION; window.offer.quoteId = QUOTE; },
       { BOOK: uuid(13), EDITION: uuid(14), QUOTE: uuid(17) });
@@ -562,6 +591,8 @@ test("rapid clicks save once and an in-flight permission downgrade cannot reopen
     await expect.poll(() => page.evaluate(() => window.calls.filter(call => call.operation === "save").length)).toBe(1);
     await render(page, props({ canEdit: false }));
     await page.evaluate(() => window.gates.save.resolve(window.offer));
+    await expect(page.getByRole("button", { name: "Recover original offer" })).toBeEnabled();
+    await page.getByRole("button", { name: "Recover original offer" }).click();
     await expect(page.getByText("3,224", { exact: false })).toBeVisible();
     await page.getByRole("button", { name: "Prepare another offer" }).click();
     await expect(page.getByRole("checkbox")).toBeDisabled();
@@ -602,7 +633,7 @@ test("Publishing Studio keeps chapter selection/history/export and uses only ful
     await chapter.selectOption(uuid(10));
     await prepare(page); await expect(page.getByText("3,224", { exact: false })).toBeVisible();
     const calls = await page.evaluate(() => window.calls);
-    assert.equal(calls.length, 2); assert.equal(calls[0].body.chapterId, uuid(10));
+    assert.deepEqual(calls.map(call => call.operation), ["save", "recover", "status"]); assert.equal(calls[0].body.chapterId, uuid(10));
     await expect(page.getByText("The morning ferry · gpt-realtime-2.1-mini", { exact: false })).toBeVisible();
     await page.getByRole("button", { name: "Refresh progress" }).click();
     assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "save").length, 1);
@@ -681,7 +712,9 @@ test("paid chapter requires two separate consents, persists its attempt first an
     assert.equal(writes.length, 1);
     assert.deepEqual(writes[0].body, { expectedCredits: "3224", consentToAiVoice: true, consentToGenerate: true });
     assert.equal(writes[0].id, QUOTE);
-    assert.deepEqual(JSON.parse(writes[0].stored[0]), { idempotencyKey: JSON.parse(writes[0].stored[0]).idempotencyKey, quoteId: QUOTE, purchaseAttempted: true });
+    const pending = JSON.parse(writes[0].stored[0]);
+    assert.equal(pending.quoteId, QUOTE); assert.equal(pending.purchaseAttempted, true);
+    assert.match(pending.deliveryFingerprint, /^[a-f0-9]{64}$/); assert(pending.idempotencyKey);
     assert(!writes[0].stored[0].includes("PRIVATE"));
     assert.deepEqual(await page.evaluate(() => window.notified), [uuid(20)]);
   } finally { await page.close(); }
@@ -736,7 +769,7 @@ test("unknown or malformed status blocks purchases and replacement offers until 
   } finally { await page.close(); }
 });
 
-test("purchase storage failure sends nothing; a definite rejection requires another explicit recovery and consent", async () => {
+test("purchase storage failure sends nothing and a refusal retains uncertainty", async () => {
   const page = await fixture();
   try {
     await page.evaluate(() => { window.offer.purchaseAvailable = true; });
@@ -747,12 +780,15 @@ test("purchase storage failure sends nothing; a definite rejection requires anot
     assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "accept").length, 0);
     await page.evaluate(() => { Storage.prototype.setItem = window.originalSetItem;
       window.acceptOverride = async () => { throw new window.ApiClientError(409, "conflict", "Credits changed", "synthetic"); }; });
+    await page.getByRole("button", { name: "Refresh saved offer" }).click();
     await confirmPurchase(page); await page.getByRole("button", { name: "Accept & generate chapter" }).click();
-    await expect(page.getByRole("alert")).toContainText("Credits changed");
+    await expect(page.getByRole("alert")).toContainText("unconfirmed");
     await expect(page.getByRole("button", { name: "Accept & generate chapter" })).toBeDisabled();
     await page.getByRole("button", { name: "Refresh saved offer" }).click();
     await expect(page.getByRole("checkbox", { name: /Authorize up to/ })).not.toBeChecked();
-    await confirmPurchase(page); await expect(page.getByRole("button", { name: "Accept & generate chapter" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Accept & generate chapter" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Prepare another offer" })).toBeDisabled();
+    assert.equal(JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), key())).purchaseAttempted, true);
     assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "accept").length, 1);
   } finally { await page.close(); }
 });
@@ -785,8 +821,8 @@ test("late acceptance cannot run stale callbacks after a permission downgrade", 
     await expect.poll(() => page.evaluate(() => Boolean(window.gates.purchase))).toBe(true);
     await render(page, props({ canEdit: false }));
     await expect(page.getByRole("status", { name: "Committed narration permission" })).toHaveText("Read only");
-    await page.evaluate(({ quoteId, project }) => window.gates.purchase.resolve({ quoteId, accepted: true,
-      project: { id: project, billingMode: "quoted", status: "queued", reservedCredits: "3224" } }), { quoteId: QUOTE, project: uuid(20) });
+    await page.evaluate(({ quoteId, project }) => { window.acceptance = { quoteId, accepted: true,
+      project: { id: project, billingMode: "quoted", status: "queued", reservedCredits: "3224" } }; window.gates.purchase.resolve(window.acceptance); }, { quoteId: QUOTE, project: uuid(20) });
     await expect(page.getByText("Accepted narration · queued", { exact: true })).toBeVisible();
     assert.deepEqual(await page.evaluate(() => window.notified), []);
     assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "accept").length, 1);
@@ -877,7 +913,7 @@ test("late manual history success or failure cannot replace a new book or releas
       await expect(page.getByRole("combobox", { name: "Saved chapter" })).toBeEnabled();
       await page.evaluate(({ oldBook, newBook }) => {
         window.historyOverride = () => window.defer("manualHistory");
-        window.bookOverride = bookId => bookId === newBook ? window.defer("newBook") : Promise.reject(new Error("Unexpected book"));
+        window.bookOverride = bookId => bookId === newBook ? (window.pendingBook ??= window.defer("newBook")) : Promise.reject(new Error("Unexpected book"));
         window.api.listEditions = async bookId => ({ editions: bookId === oldBook ? window.editions : [] });
       }, { oldBook: BOOK, newBook: uuid(13) });
       await page.getByRole("button", { name: "Refresh progress" }).click();
@@ -887,7 +923,7 @@ test("late manual history success or failure cannot replace a new book or releas
       await page.evaluate(fault => fault ? window.gates.manualHistory.reject(new Error("Old private history error"))
         : window.gates.manualHistory.resolve({ projects: [window.project] }), fault);
       await settle(page);
-      assert.equal(await page.locator("fieldset").first().evaluate(element => element.disabled), true);
+      await expect(page.locator("fieldset")).toHaveCount(0);
       await expect(page.getByRole("alert")).toHaveCount(0);
       const history = page.getByRole("heading", { name: "Narration history" }).locator("..");
       await expect(history.getByText("The city after rain", { exact: true })).toHaveCount(0);
@@ -914,5 +950,223 @@ test("paid consent panel fits narrow screens with full-size labels and visible k
       assert.equal(await consent.evaluate(element => getComputedStyle(element).outlineWidth), "2px");
       await page.screenshot({ path: `.git/bookworm-tracking/narration-paid-${width}-20261005.png`, fullPage: true });
     }
+  } finally { await page.close(); }
+});
+
+test("accepted narration followed by a failed status read retains its purchase checkpoint", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => { window.offer.purchaseAvailable = true; });
+    await render(page); await prepare(page); await confirmPurchase(page);
+    await page.evaluate(() => { window.statusOverride = async () => { throw new window.ApiClientError(403, "forbidden", "Status refused", "synthetic"); }; });
+    await page.getByRole("button", { name: "Accept & generate chapter" }).click();
+    await expect(page.getByRole("alert")).toContainText("unconfirmed");
+    const saved = JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), key()));
+    assert.equal(saved.purchaseAttempted, true);
+    assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "accept").length, 1);
+    await expect(page.getByRole("button", { name: "Accept & generate chapter" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Prepare another offer" })).toBeDisabled();
+  } finally { await page.close(); }
+});
+
+test("newer same-tab purchase marker cannot be overwritten by stale narration consent or discard", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => { window.offer.purchaseAvailable = true; });
+    await render(page); await prepare(page); await confirmPurchase(page);
+    const newer = await page.evaluate(key => {
+      const raw = JSON.parse(sessionStorage.getItem(key)); raw.purchaseAttempted = true;
+      const next = JSON.stringify(raw); sessionStorage.setItem(key, next); return next;
+    }, key());
+    await page.getByRole("button", { name: "Accept & generate chapter" }).click();
+    await expect(page.getByRole("alert")).toContainText("checkpoint changed");
+    assert.equal(await page.evaluate(key => sessionStorage.getItem(key), key()), newer);
+    assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "accept").length, 0);
+    await page.getByRole("button", { name: "Prepare another offer" }).click();
+    assert.equal(await page.evaluate(key => sessionStorage.getItem(key), key()), newer);
+  } finally { await page.close(); }
+});
+
+test("newer same-tab request blocks a stale narration creation", async () => {
+  const page = await fixture();
+  try {
+    await render(page);
+    await page.getByRole("checkbox", { name: /Save my private voice direction/ }).check();
+    const newer = JSON.stringify({ idempotencyKey: "other-narration-request" });
+    await page.evaluate(({key, newer}) => sessionStorage.setItem(key, newer), {key:key(), newer});
+    await page.getByRole("button", { name: "Review full chapter price" }).click();
+    await expect(page.getByRole("alert")).toContainText("checkpoint changed");
+    assert.equal(await page.evaluate(key => sessionStorage.getItem(key), key()), newer);
+    assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "save").length, 0);
+  } finally { await page.close(); }
+});
+
+test("stale narration recovery cannot overwrite a newer acceptance marker", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(key => {
+      sessionStorage.setItem(key, JSON.stringify({ quoteId: "a6700000-0000-4000-8000-000000000007", idempotencyKey: "original-narration-request" }));
+      window.api.getNarrationChapterQuote = () => window.defer("recovery");
+    }, key());
+    await render(page);
+    await expect.poll(() => page.evaluate(() => Boolean(window.gates.recovery))).toBe(true);
+    const newer = await page.evaluate(key => {
+      const value = JSON.parse(sessionStorage.getItem(key)); value.purchaseAttempted = true;
+      const raw = JSON.stringify(value); sessionStorage.setItem(key, raw); return raw;
+    }, key());
+    await page.evaluate(() => window.gates.recovery.resolve(window.offer));
+    await expect(page.getByRole("alert")).toContainText("checkpoint changed");
+    assert.equal(await page.evaluate(key => sessionStorage.getItem(key), key()), newer);
+    assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "accept").length, 0);
+  } finally { await page.close(); }
+});
+
+test("publishing account switches hide private audio and retain separate unsaved voice direction", async () => {
+  const page = await fixture({ publishing: true });
+  const other = uuid(99);
+  try {
+    await page.evaluate(({book, user}) => {
+      window.projects = [{ ...window.project, status: "succeeded", segments: [{ index: 0, status: "succeeded", audioAvailable: true }] }];
+      window.historyOverride = async () => ({ projects: window.account === user ? window.projects : [] });
+      window.renderPublishing(book);
+    }, {book: BOOK, user: USER});
+    await expect(page.locator(`audio[src="/api/private-audio/${USER}/segments/${uuid(20)}/0"]`)).toBeVisible();
+    assert.equal(await page.locator('[src*="private-a.mp3"], [href*="private-a.mp3"]').count(), 0);
+    const direction = page.getByRole("textbox", { name: "Voice direction", exact: true });
+    await direction.fill("Account A's unsaved private direction");
+    await page.evaluate(other => { window.account = other; window.dispatchEvent(new Event("focus")); }, other);
+    await expect(direction).toHaveValue("PRIVATE-VOICE-DIRECTION");
+    await expect(page.getByText("Account A's unsaved private direction")).toHaveCount(0);
+    await expect(page.locator(`audio[src="/api/private-audio/${USER}/segments/${uuid(20)}/0"]`)).toHaveCount(0);
+    await direction.fill("Account B's separate unsaved direction");
+    await page.evaluate(user => { window.account = user; window.dispatchEvent(new Event("focus")); }, USER);
+    await expect(direction).toHaveValue("Account A's unsaved private direction");
+    await expect(page.locator(`audio[src="/api/private-audio/${USER}/segments/${uuid(20)}/0"]`)).toBeVisible();
+  } finally { await page.close(); }
+});
+
+test("empty narration checkpoint is quarantined before any new preparation", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(key => sessionStorage.setItem(key, ""), key());
+    await render(page);
+    await expect(page.getByRole("alert")).toContainText("checkpoint is invalid");
+    await expect(page.getByRole("button", { name: "Discard unconfirmed offer" })).toBeDisabled();
+    assert.equal(await page.evaluate(key => sessionStorage.getItem(key), key()), "");
+    assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "save").length, 0);
+  } finally { await page.close(); }
+});
+
+test("retained stale narration handler cannot prepare after an A B A account switch", async () => {
+  const page = await fixture();
+  try {
+    await render(page);
+    await page.getByRole("checkbox", { name: /Save my private voice direction/ }).check();
+    await page.getByRole("button", { name: "Review full chapter price" }).evaluate(button => {
+      const key = Object.keys(button).find(value => value.startsWith("__reactProps$"));
+      window.staleNarrationClick = button[key].onClick;
+    });
+    await page.evaluate(({other, value}) => { window.account = other; window.renderStudio(value); }, {other: uuid(99), value: props()});
+    await expect(page.getByRole("checkbox", { name: /Save my private voice direction/ })).not.toBeChecked();
+    await page.evaluate(({user, value}) => { window.account = user; window.renderStudio(value); }, {user: USER, value: props()});
+    await expect(page.getByRole("checkbox", { name: /Save my private voice direction/ })).not.toBeChecked();
+    await page.evaluate(() => window.staleNarrationClick()); await settle(page);
+    assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "save").length, 0);
+    assert.equal(await page.evaluate(key => sessionStorage.getItem(key), key()), null);
+  } finally { await page.close(); }
+});
+
+test("refused acceptance cannot abandon quote while an earlier device may still commit", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => { window.offer.purchaseAvailable = true;
+      window.acceptOverride = async () => { throw new window.ApiClientError(409, "conflict", "Concurrent request", "synthetic"); }; });
+    await render(page); await prepare(page); await confirmPurchase(page);
+    await page.getByRole("button", { name: "Accept & generate chapter" }).click();
+    await expect(page.getByRole("alert")).toContainText("unconfirmed");
+    await page.getByRole("button", { name: "Refresh saved offer" }).click();
+    await expect(page.getByRole("button", { name: "Prepare another offer" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Accept & generate chapter" })).toBeDisabled();
+    await page.evaluate(({quote, project}) => { window.acceptance = {quoteId:quote, accepted:true,
+      project:{id:project, billingMode:"quoted", status:"queued", reservedCredits:"3224"}}; }, {quote:QUOTE,project:uuid(20)});
+    await page.getByRole("button", { name: "Refresh saved offer" }).click();
+    await expect(page.getByText("Accepted narration · queued", {exact:true})).toBeVisible();
+    assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "accept").length, 1);
+  } finally { await page.close(); }
+});
+
+test("legacy signed audio projections fail closed and never reach playback DOM", async () => {
+  const page = await fixture({ publishing: true });
+  try {
+    await page.evaluate(book => { window.projects = [{ ...window.project, status:"succeeded", segments:[{
+      index:0, status:"succeeded", audioAvailable:true, download:{url:"https://storage.example/private-legacy-token",expiresIn:300}
+    }] }]; window.renderPublishing(book); }, BOOK);
+    await expect(page.getByRole("alert")).toContainText("Audiobook history is unavailable");
+    assert.equal(await page.locator('audio, a[href*="private-legacy-token"]').count(), 0);
+  } finally { await page.close(); }
+});
+
+test("stale publishing render handler cannot revive after same-account revalidation", async () => {
+  const page = await fixture({ publishing:true });
+  try {
+    await page.evaluate(book => { window.editions = window.editions.map(edition => ({...edition,type:"ebook",edition_metadata_json:{kind:"ebook",flow:"reflowable"}}));
+      window.renderCalls=0;window.api.renderEdition=async()=>{window.renderCalls++;throw new Error("unexpected render")};window.renderPublishing(book); }, BOOK);
+    const button=page.getByRole("button",{name:"Render EPUB",exact:true});await expect(button).toBeEnabled();
+    await button.evaluate(el=>{const key=Object.keys(el).find(name=>name.startsWith("__reactProps$"));window.oldRender=el[key].onClick;});
+    await page.evaluate(()=>window.dispatchEvent(new Event("focus")));
+    await expect(button).toBeEnabled();
+    await page.evaluate(()=>window.oldRender());await settle(page);
+    assert.equal(await page.evaluate(()=>window.renderCalls),0);
+  } finally { await page.close(); }
+});
+
+test("silent account switch cannot dispatch an old publishing render", async () => {
+  const page = await fixture({ publishing:true });
+  try {
+    await page.evaluate(book => { window.editions = window.editions.map(edition => ({...edition,type:"ebook",edition_metadata_json:{kind:"ebook",flow:"reflowable"}}));
+      window.renderCalls=0;window.api.renderEdition=async()=>{window.renderCalls++;throw new Error("unexpected render")};window.renderPublishing(book); }, BOOK);
+    const button=page.getByRole("button",{name:"Render EPUB",exact:true});await expect(button).toBeEnabled();
+    await page.evaluate(other=>{window.account=other},uuid(99));
+    await button.click();await settle(page);
+    assert.equal(await page.evaluate(()=>window.renderCalls),0);
+  } finally { await page.close(); }
+});
+
+test("retained narration consent cannot dispatch after same-account scope changes without a render", async () => {
+  const page = await fixture();
+  try {
+    await render(page); await page.getByRole("checkbox", {name:/Save my private voice direction/}).check();
+    await page.getByRole("button", {name:"Review full chapter price"}).evaluate(button => {
+      const key=Object.keys(button).find(name=>name.startsWith("__reactProps$"));window.staleNarrationClick=button[key].onClick;
+    });
+    await page.evaluate(()=>{window.invalidateNarrationScope();window.staleNarrationClick();});await settle(page);
+    assert.equal((await page.evaluate(()=>window.calls)).filter(call=>call.operation==="save").length,0);
+    assert.equal(await page.evaluate(key=>sessionStorage.getItem(key),key()),null);
+  } finally { await page.close(); }
+});
+
+
+test("paid consent and verification are invalid immediately after voice direction changes", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => { window.offer.purchaseAvailable = true; });
+    await render(page); await prepare(page); await confirmPurchase(page);
+    await expect(page.getByRole("button", {name: "Accept & generate chapter"})).toBeEnabled();
+    const observed = await page.evaluate(value => {
+      window.renderStudioSync(value);
+      const button = [...document.querySelectorAll("button")].find(node => node.textContent.includes("Accept & generate chapter"));
+      const key = Object.keys(button).find(name => name.startsWith("__reactProps$"));
+      const disabled = button.disabled;
+      button[key].onClick();
+      return { disabled, consent: [...document.querySelectorAll('input[type="checkbox"]')].map(node => node.checked) };
+    }, props({instructions: "Changed voice direction"}));
+    assert.equal(observed.disabled, true);
+    assert.deepEqual(observed.consent, [false, false]);
+    await settle(page);
+    assert.equal((await page.evaluate(() => window.calls)).filter(call => call.operation === "accept").length, 0);
+    assert.equal(JSON.parse(await page.evaluate(key => sessionStorage.getItem(key), key())).purchaseAttempted, undefined);
+    await render(page, props());
+    await expect(page.getByRole("checkbox", {name:/AI-generated voice/})).not.toBeChecked();
+    await expect(page.getByRole("button", {name:"Accept & generate chapter"})).toBeDisabled();
   } finally { await page.close(); }
 });

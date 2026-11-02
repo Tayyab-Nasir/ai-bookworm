@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AudiobookQcReport } from "@bookworm/api-client";
 import { apiClient } from "./api";
 
@@ -42,7 +42,18 @@ function formatQc(quality: AudioQc) {
   </>;
 }
 
-export default function ChapterAudioDownload({ projectId, ready }: { projectId: string; ready: boolean }) {
+type AudioScope = { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> };
+export default function ChapterAudioDownload(props: { scope: AudioScope; projectId: string; ready: boolean }) {
+  const latestProject = useRef(props.projectId); latestProject.current = props.projectId;
+  return <ScopedAudioDownload key={props.projectId} {...props} isProjectCurrent={() => latestProject.current === props.projectId} />;
+}
+function ScopedAudioDownload({ scope, projectId, ready, isProjectCurrent }: { scope: AudioScope; projectId: string; ready: boolean; isProjectCurrent: () => boolean }) {
+  const mounted = useRef(false), committedRender = useRef<object | null>(null);
+  const renderedAt = {}, renderedScope = scope.begin();
+  const handlerCurrent = () => mounted.current && renderedAt === committedRender.current && isProjectCurrent() && renderedScope();
+  useLayoutEffect(() => { committedRender.current = renderedAt; });
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; committedRender.current = null; }; }, []);
+  const begin = () => { const current = scope.begin(); return () => mounted.current && isProjectCurrent() && current(); };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [quality, setQuality] = useState<AudioQc | null>(null);
@@ -55,58 +66,61 @@ export default function ChapterAudioDownload({ projectId, ready }: { projectId: 
   const [reports, setReports] = useState<AudiobookQcReport[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const signoffState = useRef({ listened, downloadedReportId }); signoffState.current = { listened, downloadedReportId };
 
   const refreshHistory = useCallback(async () => {
-    setHistoryBusy(true);
+    if (!mounted.current || !isProjectCurrent() || !scope.current()) return;
+    const current = begin(); setHistoryBusy(true);
     try {
-      const result = await apiClient().listAudiobookQcReports(projectId);
-      setReports(result.reports);
-      setHistoryError(null);
-    } catch {
-      setHistoryError("Saved QC history is not available yet. You can still download and review the current chapter.");
-    } finally { setHistoryBusy(false); }
-  }, [projectId]);
-
-  useEffect(() => {
-    if (ready) void refreshHistory();
-  }, [ready, refreshHistory]);
+      const result = await scope.checked(() => {
+        if (!current()) throw new Error("Audio request superseded.");
+        return apiClient().listAudiobookQcReports(projectId, scope.actor);
+      });
+      if (mounted.current && current()) { setReports(result.reports); setHistoryError(null); }
+    } catch { if (mounted.current && current()) setHistoryError("Saved QC history is not available yet. You can still download and review the current chapter."); }
+    finally { if (mounted.current) setHistoryBusy(false); }
+  }, [projectId, scope]);
+  useEffect(() => { if (ready) void refreshHistory(); }, [ready, refreshHistory]);
 
   async function download() {
-    if (busy || !ready) return;
-    setBusy(true); setError(null); setQuality(null); setQualityUnavailable(false);
+    if (!handlerCurrent() || busy || !ready || !scope.current()) return;
+    const current = begin(); setBusy(true); setError(null); setQuality(null); setQualityUnavailable(false);
     setDownloadedReportId(null); setListened(false); setSignoffSaved(false); setSignoffError(null);
     try {
-      const response = await fetch(`/api/backend/v1/audiobook-jobs/${projectId}/audio-download`, { credentials: "include", cache: "no-store" });
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error?.message ?? "Chapter assembly is unavailable. Your saved parts are unchanged.");
-      }
-      if (!response.headers.get("content-type")?.startsWith("audio/mpeg")) throw new Error("The assembly service did not return audio.");
-      const report = parseAudioQc(response.headers.get("x-bookworm-audio-qc"));
-      const reportId = response.headers.get("x-bookworm-audio-qc-report-id");
-      const historyUnavailable = response.headers.get("x-bookworm-audio-qc-history") === "unavailable";
-      setQuality(report); setQualityUnavailable(!report);
-      setDownloadedReportId(reportId);
-      if (historyUnavailable) setHistoryError("This report is shown for this download, but durable history is unavailable until the database migration is installed.");
-      const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement("a");
-      link.href = url; link.download = `chapter-${projectId}.mp3`;
-      document.body.append(link); link.click(); link.remove();
+      const result = await scope.checked(async () => {
+        if (!current()) throw new Error("Audio request superseded.");
+        const response = await fetch(`/api/backend/v1/audiobook-jobs/${projectId}/audio-download`, { credentials: "include", cache: "no-store", headers: { "x-bookworm-actor": scope.actor } });
+        if (!response.ok) {
+          const body = await response.json().catch(() => null);
+          throw new Error(typeof body?.error?.message === "string" ? body.error.message : "Chapter assembly is unavailable. Your saved parts are unchanged.");
+        }
+        if (!response.headers.get("content-type")?.startsWith("audio/mpeg")) throw new Error("The assembly service did not return audio.");
+        return { report: parseAudioQc(response.headers.get("x-bookworm-audio-qc")), reportId: response.headers.get("x-bookworm-audio-qc-report-id"), historyUnavailable: response.headers.get("x-bookworm-audio-qc-history") === "unavailable", blob: await response.blob() };
+      });
+      if (!mounted.current || !current()) return;
+      setQuality(result.report); setQualityUnavailable(!result.report); setDownloadedReportId(result.reportId);
+      if (result.historyUnavailable) setHistoryError("This report is shown for this download, but durable history is unavailable until the database migration is installed.");
+      const url = URL.createObjectURL(result.blob); const link = document.createElement("a");
+      link.href = url; link.download = `chapter-${projectId}.mp3`; document.body.append(link); link.click(); link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      if (reportId && !historyUnavailable) await refreshHistory();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not assemble this chapter."); }
-    finally { setBusy(false); }
+      if (result.reportId && !result.historyUnavailable) await refreshHistory();
+    } catch (reason) { if (mounted.current && current()) setError(reason instanceof Error ? reason.message : "Could not assemble this chapter."); }
+    finally { if (mounted.current) setBusy(false); }
   }
 
   async function signOff() {
-    if (!downloadedReportId || !listened || signoffBusy) return;
-    setSignoffBusy(true); setSignoffError(null);
+    if (!handlerCurrent() || !downloadedReportId || !listened || signoffBusy || !scope.current()) return;
+    const current = begin(), reportId = downloadedReportId; setSignoffBusy(true); setSignoffError(null);
     try {
-      await apiClient().createAudiobookQcSignoff(projectId, downloadedReportId);
-      setSignoffSaved(true); setListened(false);
-      await refreshHistory();
-    } catch (reason) { setSignoffError(reason instanceof Error ? reason.message : "Could not save the listening sign-off."); }
-    finally { setSignoffBusy(false); }
+      const result = await scope.checked(() => {
+        if (!current() || !signoffState.current.listened || signoffState.current.downloadedReportId !== reportId) throw new Error("Listening confirmation changed.");
+        return apiClient().createAudiobookQcSignoff(projectId, reportId, scope.actor);
+      });
+      if (!mounted.current || !current()) return;
+      if (result.reportId !== reportId || result.listenedToExactAudio !== true) throw new Error("Listening sign-off did not match.");
+      setSignoffSaved(true); setListened(false); await refreshHistory();
+    } catch { if (mounted.current && current()) setSignoffError("Could not confirm the listening sign-off. Refresh before retrying."); }
+    finally { if (mounted.current) setSignoffBusy(false); }
   }
 
   const downloadedReport = reports.find((report) => report.id === downloadedReportId);
@@ -127,7 +141,7 @@ export default function ChapterAudioDownload({ projectId, ready }: { projectId: 
       {downloadedReportId && !downloadedReport?.isCurrentSource && reports.some((report) => report.id === downloadedReportId) && <p role="status" className="mt-4 text-xs text-amber-100">This report belongs to an older manuscript version. Reassemble the current narration before signing it off.</p>}
     </section>}
     {(historyBusy || reports.length > 0) && <section aria-label="Saved audiobook quality history" className="mt-4 rounded-xl border border-white/10 p-4">
-      <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">Saved QC history</h3><button type="button" onClick={() => void refreshHistory()} disabled={historyBusy} className="text-xs text-white/60 underline disabled:opacity-40">{historyBusy ? "Refreshing…" : "Refresh"}</button></div>
+      <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">Saved QC history</h3><button type="button" onClick={() => { if (handlerCurrent()) void refreshHistory(); }} disabled={historyBusy} className="text-xs text-white/60 underline disabled:opacity-40">{historyBusy ? "Refreshing…" : "Refresh"}</button></div>
       {reports.length > 0 ? <ul className="mt-3 space-y-2">{reports.map((report) => <li key={report.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-white/[0.03] px-3 py-2 text-xs">
         <span className="text-white/65">{new Date(report.createdAt).toLocaleString()} · {typeof report.qualityReport.rmsDbfs === "number" ? `${report.qualityReport.rmsDbfs.toFixed(1)} dB RMS` : "measured QC"} · {report.isCurrentSource ? "current manuscript version" : "older manuscript version"}</span>
         <span className="text-white/45">{report.signoffs.length} sign-off{report.signoffs.length === 1 ? "" : "s"}{report.signedByMe ? " · signed by you" : ""}</span>

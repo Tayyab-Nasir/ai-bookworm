@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { readBrowserSession } from "../lib/browser-session";
+import { readArtifactSession, readBrowserSession } from "../lib/browser-session";
 
 const original = globalThis.fetch;
 const A = "11111111-1111-4111-8111-111111111111";
@@ -38,4 +38,17 @@ test("transport and unreadable JSON failures are safe", async () => {
   await assert.rejects(readBrowserSession(), /session could not be verified/);
   globalThis.fetch = async () => new Response("sensitive-non-json-body");
   await assert.rejects(readBrowserSession(), /session could not be verified/);
+});
+
+test("artifact verification requires the original account and a canonical server-supplied Storage origin", async () => {
+  globalThis.fetch = async () => Response.json({ user: { id: A }, storageOrigin: "https://bookworm.supabase.co" });
+  assert.deepEqual(await readArtifactSession(A), { storageOrigin: "https://bookworm.supabase.co" });
+  assert.deepEqual(await readBrowserSession(A), { id: A, email: null });
+  for (const storageOrigin of [undefined, null, "", "http://foreign.example", "https://user:secret@example.test",
+    "https://example.test/path", "https://example.test/", "https://example.test?x=1", "https://example.test#x"]) {
+    globalThis.fetch = async () => Response.json({ user: { id: A }, storageOrigin });
+    await assert.rejects(readArtifactSession(A), /Storage origin could not be verified/);
+  }
+  globalThis.fetch = async () => Response.json({ user: { id: B }, storageOrigin: "https://bookworm.supabase.co" });
+  await assert.rejects(readArtifactSession(A), /account changed/);
 });

@@ -3,14 +3,16 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ApiClientError, type EpubReaderResource, type EpubReaderResult, type SavedEpubRender, type SavedEpubSource } from "@bookworm/api-client";
 import { apiClient } from "./api";
+import PrivateArtifactDownload from "./PrivateArtifactDownload";
+import { readBrowserSession } from "../lib/browser-session";
 import { buildReaderDocument, createReaderFence, readerImageOccurrences, readerSourceKey, retainReaderImage, validateReaderDownload, validateReaderHistory, validateReaderSection, verifyReaderResource, type ReaderPreferences, type RetainedReaderImage } from "../lib/epub-reader";
 
 const control = "min-h-11 rounded-lg border border-[var(--bookworm-proof-edge)] bg-[var(--bookworm-proof-paper)] px-3 py-2 text-sm text-[var(--bookworm-proof-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--bookworm-proof-action)] disabled:opacity-45";
-const authorizationFailure = (reason: unknown) => reason instanceof ApiClientError && [401, 403].includes(reason.status);
+const authorizationFailure = (reason: unknown) => reason instanceof ApiClientError && [401, 403, 409].includes(reason.status);
 const retryMessage = (reason: unknown) => reason instanceof ApiClientError && reason.status === 503 ? "The saved reader is busy. Retry this saved export in a moment; no credits are used." : "This saved export could not be read or verified. Retry, or download the exact EPUB for inspection.";
 
-export default function SavedEpubReader({ bookId, editionId, dirty = false, refreshKey = "" }: { bookId: string; editionId: string; dirty?: boolean; refreshKey?: string }) {
-  const api = apiClient(); const id = useId(); const owner = `${bookId}:${editionId}`;
+export default function SavedEpubReader({ actor, workspaceId, bookId, editionId, dirty = false, refreshKey = "" }: { actor: string | null; workspaceId: string; bookId: string; editionId: string; dirty?: boolean; refreshKey?: string }) {
+  const api = apiClient(actor ?? undefined); const id = useId(); const owner = `${actor ?? ""}:${workspaceId}:${bookId}:${editionId}`;
   const ownerRef = useRef(owner); ownerRef.current = owner;
   const [visibleOwner, setVisibleOwner] = useState(owner);
   const [renders, setRenders] = useState<SavedEpubRender[]>([]);
@@ -36,6 +38,7 @@ export default function SavedEpubReader({ bookId, editionId, dirty = false, refr
   const historyFence = useRef(createReaderFence()); const contentFence = useRef(createReaderFence());
   const sectionValid = useRef<() => boolean>(() => false);
   const downloadGeneration = useRef(0);
+  const visibleDownloadGeneration = downloadGeneration.current;
   const queue = useRef<Promise<unknown>>(Promise.resolve());
 
   // The private reader API admits one byte read at a time. Queue GETs rather
@@ -88,6 +91,7 @@ export default function SavedEpubReader({ bookId, editionId, dirty = false, refr
     finally { if (valid()) setSectionBusy(false); }
   }, [api, editionId, failAuthorization, loadImage, owner, readerGet]);
   const refreshHistory = useCallback(async () => {
+    if (!actor) return;
     const ticket = historyFence.current.reset(owner); const valid = () => ownerRef.current === owner && ticket();
     clearContent(); setVisibleOwner(owner); setRenders([]); setError(null); setHistoryBusy(true);
     try {
@@ -96,7 +100,7 @@ export default function SavedEpubReader({ bookId, editionId, dirty = false, refr
       if (verified[0]) void readSection(verified[0].source, 0);
     } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else setError(retryMessage(reason)); } }
     finally { if (valid()) setHistoryBusy(false); }
-  }, [api, bookId, clearContent, editionId, failAuthorization, owner, readSection]);
+  }, [actor, api, bookId, clearContent, editionId, failAuthorization, owner, readSection]);
   useEffect(() => {
     void refreshHistory();
     return () => { historyFence.current.clear(); contentFence.current.clear(); sectionValid.current = () => false; downloadGeneration.current++; imagesRef.current.clear(); };
@@ -140,12 +144,14 @@ export default function SavedEpubReader({ bookId, editionId, dirty = false, refr
     if (descriptor && !images.has(descriptor.index)) void loadImage(activeSection, descriptor, sectionValid.current);
   }
   async function renewDownload() {
-    if (!source || !current || downloadBusy) return;
+    if (!actor || !source || !current || downloadBusy) return;
     const selected = source; const validSection = sectionValid.current; const generation = ++downloadGeneration.current;
     const valid = () => ownerRef.current === owner && validSection() && generation === downloadGeneration.current;
     setDownload(null); setDownloadBusy(true); setError(null);
     try {
+      try { await readBrowserSession(actor); } catch { if (valid()) failAuthorization(); return; } if (!valid()) return;
       const result = await api.getAssetDownloadUrl(selected.assetId, 1); if (!valid()) return;
+      try { await readBrowserSession(actor); } catch { if (valid()) failAuthorization(); return; } if (!valid()) return;
       setDownload({ url: validateReaderDownload(result), expiresAt: Date.now() + result.expiresIn * 1000 });
     } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else setError("The private download link is unavailable. Renew it to download this exact saved version."); } }
     finally { if (valid()) setDownloadBusy(false); }
@@ -196,7 +202,7 @@ export default function SavedEpubReader({ bookId, editionId, dirty = false, refr
       <div ref={stage} role={fixed ? "region" : undefined} aria-label={fixed ? "Saved fixed-page scroll area" : undefined} tabIndex={fixed ? 0 : undefined} className={`min-w-0 overflow-auto bg-[var(--bookworm-proof-edge)]/20 p-3 sm:p-6 ${fixed ? "max-h-[760px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--bookworm-proof-ink)]" : ""}`}>
         {frame.html && <div className="mx-auto overflow-hidden border border-[var(--bookworm-proof-edge)] shadow-sm" style={fixed ? { width: pageWidth, height: pageHeight } : undefined}><iframe key={`${readerSourceKey(activeSection.source)}:${activeSection.document.index}`} title={`Saved EPUB proof: ${activeSection.document.title || `section ${activeSection.document.index + 1}`}`} srcDoc={frame.html} sandbox="" referrerPolicy="no-referrer" className={fixed ? "block h-full w-full border-0" : "block h-[640px] w-full border-0"} /></div>}
       </div>
-      <footer className="border-t border-[var(--bookworm-proof-edge)] p-5 sm:p-6"><div className="flex flex-wrap items-center justify-between gap-4"><p className="max-w-xl text-xs leading-5 text-[var(--bookworm-proof-muted)]">Safe reading view of the saved export. Original fonts, unsupported styles and active links are not replayed. This is not retailer approval or a pixel-faithful reflowable preview.{activeSection.warnings.length > 0 ? ` ${activeSection.warnings.map((warning) => ({ "active-content-removed": "Active content removed", "unsupported-styles-ignored": "Unsupported styles ignored", "links-disabled": "Links disabled", "unsupported-markup-removed": "Unsupported markup removed" })[warning]).join(". ")}.` : ""}</p><div className="flex flex-wrap gap-3"><button type="button" disabled={downloadBusy} onClick={() => void renewDownload()} className={control}>{downloadBusy ? "Renewing private link…" : "Renew exact EPUB download"}</button>{download && <a href={download.url} download rel="noopener noreferrer" referrerPolicy="no-referrer" className={control} onClick={(event) => { if (Date.now() >= download.expiresAt) { event.preventDefault(); setDownload(null); } }}>Download saved EPUB v1</a>}</div></div></footer>
+      <footer className="border-t border-[var(--bookworm-proof-edge)] p-5 sm:p-6"><div className="flex flex-wrap items-center justify-between gap-4"><p className="max-w-xl text-xs leading-5 text-[var(--bookworm-proof-muted)]">Safe reading view of the saved export. Original fonts, unsupported styles and active links are not replayed. This is not retailer approval or a pixel-faithful reflowable preview.{activeSection.warnings.length > 0 ? ` ${activeSection.warnings.map((warning) => ({ "active-content-removed": "Active content removed", "unsupported-styles-ignored": "Unsupported styles ignored", "links-disabled": "Links disabled", "unsupported-markup-removed": "Unsupported markup removed" })[warning]).join(". ")}.` : ""}</p><div className="flex flex-wrap gap-3"><button type="button" disabled={downloadBusy} onClick={() => void renewDownload()} className={control}>{downloadBusy ? "Renewing private link…" : "Renew exact EPUB download"}</button>{download && <PrivateArtifactDownload actor={actor} url={download.url} filename="book.epub" expectedPath={/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(workspaceId) ? `workspaces/${workspaceId}/assets/${activeSection.source.assetId}/v1/book.epub` : ""} isCurrent={() => ownerRef.current === owner && sectionValid.current() && downloadGeneration.current === visibleDownloadGeneration} isExpired={() => Date.now() >= download.expiresAt} onInvalid={(message, kind) => { if (kind === "session") failAuthorization(); else { setDownload(null); setError(message); } }} className={control}>Download saved EPUB v1</PrivateArtifactDownload>}</div></div></footer>
     </>}
   </section>;
 }

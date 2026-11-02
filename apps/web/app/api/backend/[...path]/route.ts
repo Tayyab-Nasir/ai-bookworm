@@ -58,8 +58,8 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     if (!["http:", "https:"].includes(base.protocol) || base.username || base.password || base.search || base.hash) throw new AuthConfigurationError("Invalid API_URL configuration.");
     const web = new URL(appOrigin(request));
     const loopback = (url: URL) => ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-    if (aiConnection && base.protocol !== "https:" && !loopback(base)) {
-      throw new AuthConfigurationError("AI key connections require HTTPS to the workspace service, except on local loopback.");
+    if (base.protocol !== "https:" && !loopback(base)) {
+      throw new AuthConfigurationError("Workspace requests require HTTPS to the workspace service, except on local loopback.");
     }
     const port = (url: URL) => url.port || (url.protocol === "https:" ? "443" : "80");
     if (base.origin === web.origin || (loopback(base) && loopback(web) && port(base) === port(web))) {

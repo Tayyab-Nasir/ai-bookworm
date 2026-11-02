@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { PdfProofPage, RenderedEditionResult } from "@bookworm/api-client";
+import { ApiClientError, type PdfProofPage, type RenderedEditionResult } from "@bookworm/api-client";
 import { apiClient } from "./api";
 import { validatePrintDownload, validatePrintHistory } from "../lib/saved-print";
 import { verifyPdfProofPage } from "../lib/pdf-proof";
 
-export default function SavedPdfProof({ bookId, workspaceId, editionId, rendered, disabled = false }: {
-  bookId: string; workspaceId: string; editionId: string; rendered: RenderedEditionResult; disabled?: boolean;
+export default function SavedPdfProof({ actor, bookId, workspaceId, editionId, rendered, disabled = false, onAuthorizationFailure }: {
+  actor: string | null; bookId: string; workspaceId: string; editionId: string; rendered: RenderedEditionResult; disabled?: boolean; onAuthorizationFailure: (jobId: string) => void;
 }) {
-  const api = apiClient();
+  const api = apiClient(actor ?? undefined);
+  const authorizationFailure = useRef(onAuthorizationFailure); authorizationFailure.current = onAuthorizationFailure;
   const pdfs = rendered.artifacts.filter(artifact => artifact.asset.mime_type === "application/pdf");
   const [assetId, setAssetId] = useState(pdfs[0]?.asset.id ?? "");
   const [pageNumber, setPageNumber] = useState(1), [jump, setJump] = useState("1");
@@ -17,13 +18,13 @@ export default function SavedPdfProof({ bookId, workspaceId, editionId, rendered
   const [retry, setRetry] = useState(0), [busy, setBusy] = useState(true);
   const [page, setPage] = useState<{ response: PdfProofPage; url: string; key: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const requestKey = JSON.stringify([bookId, workspaceId, editionId, rendered.jobId, assetId, pageNumber, width, retry]);
-  const current = useRef(requestKey); current.current = disabled ? "disabled" : requestKey;
+  const requestKey = JSON.stringify([actor, bookId, workspaceId, editionId, rendered.jobId, assetId, pageNumber, width, retry]);
+  const current = useRef(requestKey); current.current = disabled || !actor ? "disabled" : requestKey;
   useEffect(() => {
     const controller = new AbortController(); let live = true;
     const valid = () => live && current.current === requestKey && !controller.signal.aborted;
-    setPage(null); setError(null); setBusy(!disabled);
-    if (disabled) return () => { live = false; controller.abort(); };
+    setPage(null); setError(null); setBusy(!disabled && Boolean(actor));
+    if (disabled || !actor) return () => { live = false; controller.abort(); };
     const timer = window.setTimeout(() => { controller.abort(); if (live && current.current === requestKey) {
       setBusy(false); setError("The saved page took too long to open. Retry is read-only; no new render will be created.");
     } }, 35_000);
@@ -40,12 +41,15 @@ export default function SavedPdfProof({ bookId, workspaceId, editionId, rendered
         if (!valid()) return;
         const url = verifyPdfProofPage(response, proof, artifact, pageNumber, width);
         if (valid()) setPage({ response, url, key: requestKey });
-      } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not open this saved PDF page."); }
+      } catch (reason) { if (valid()) {
+        if (reason instanceof ApiClientError && [401, 403, 409].includes(reason.status)) { setPage(null); authorizationFailure.current(rendered.jobId); }
+        setError(reason instanceof Error ? reason.message : "Could not open this saved PDF page.");
+      } }
       finally { window.clearTimeout(timer); if (valid()) setBusy(false); }
     })();
     return () => { live = false; window.clearTimeout(timer); controller.abort(); };
-  }, [api, requestKey, disabled, bookId, workspaceId, editionId, rendered, assetId, pageNumber, width]);
-  const visible = !disabled && page?.key === requestKey ? page : null;
+  }, [api, actor, requestKey, disabled, bookId, workspaceId, editionId, rendered, assetId, pageNumber, width]);
+  const visible = !disabled && Boolean(actor) && page?.key === requestKey ? page : null;
   const turn = (number: number) => { setPageNumber(number); setJump(String(number)); };
   const button = "min-h-11 rounded-full border border-white/20 px-4 text-xs focus-visible:ring-2 focus-visible:ring-white disabled:opacity-40";
   return <section aria-label="Saved PDF page proof" className="mt-5 min-w-0 rounded-xl border border-white/15 bg-black/30 p-4 sm:p-5">

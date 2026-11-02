@@ -51,16 +51,17 @@ export function assertNarrationChapterAcceptance(value: unknown, quote: Pick<Nar
   return value as NarrationChapterAcceptance;
 }
 
-export type NarrationQuotePointer = ImageQuotePointer & { purchaseAttempted?: true };
+export type NarrationQuotePointer = ImageQuotePointer & { purchaseAttempted?: true; deliveryFingerprint?: string };
 /** Opaque recovery identity only; preserve ambiguous purchase attempts across reloads. */
 export function readNarrationQuotePointer(raw: string | null): NarrationQuotePointer | null {
   if (!raw) return null;
   try {
     const value = JSON.parse(raw);
-    if (!record(value) || Object.keys(value).some(key => !["quoteId", "idempotencyKey", "purchaseAttempted"].includes(key))
-      || (value.purchaseAttempted !== undefined && (value.purchaseAttempted !== true || !value.quoteId))) return null;
+    if (!record(value) || Object.keys(value).some(key => !["quoteId", "idempotencyKey", "purchaseAttempted", "deliveryFingerprint"].includes(key))
+      || (value.purchaseAttempted !== undefined && (value.purchaseAttempted !== true || !value.quoteId))
+      || (value.deliveryFingerprint !== undefined && (typeof value.deliveryFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(value.deliveryFingerprint)))) return null;
     const identity = readImageQuotePointer(raw);
-    return identity ? { ...identity, ...(value.purchaseAttempted === true ? { purchaseAttempted: true as const } : {}) } : null;
+    return identity ? { ...identity, ...(value.purchaseAttempted === true ? { purchaseAttempted: true as const } : {}), ...(value.deliveryFingerprint ? { deliveryFingerprint: value.deliveryFingerprint } : {}) } : null;
   } catch { return null; }
 }
 

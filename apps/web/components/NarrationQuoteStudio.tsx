@@ -1,24 +1,47 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { ApiClientError, type AudiobookVoice, type NarrationChapterAcceptance, type NarrationChapterQuote, type NarrationQuoteModel, type NarrationVoice } from "@bookworm/api-client";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type AudiobookVoice, type NarrationChapterAcceptance, type NarrationChapterQuote, type NarrationQuoteModel, type NarrationVoice } from "@bookworm/api-client";
 import type { Chapter } from "@bookworm/types";
 import { apiClient } from "./api";
 import { assertNarrationChapterQuote, assertNarrationChapterAcceptance, readNarrationQuotePointer as readOfferPointer,
   type NarrationQuotePointer as OfferPointer, narrationQuoteStorageKey } from "../lib/narration-quote-ui-state";
 import styles from "./NarrationQuoteStudio.module.css";
 
-export default function NarrationQuoteStudio({ workspaceId, bookId, editionId, chapterId, chapters, voice, speed, instructions, canEdit, disabled, onChapterChange, onAccepted }: {
-  workspaceId: string; bookId: string; editionId: string; chapterId: string; chapters: Chapter[];
+async function deliveryFingerprint(value: unknown) {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)));
+  return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+// Keep uncertain same-tab actions intact even when another render changes storage.
+function replaceCheckpoint(key: string, expected: string | null, replacement: string | null) {
+  if (sessionStorage.getItem(key) !== expected) throw new Error("The narration checkpoint changed. Recover the original request before proceeding.");
+  if (replacement === null) sessionStorage.removeItem(key); else sessionStorage.setItem(key, replacement);
+  if (sessionStorage.getItem(key) !== replacement) throw new Error("The narration checkpoint could not be verified. No new action was sent.");
+}
+function samePointer(a: OfferPointer | null, b: OfferPointer | null) {
+  return Boolean(a && b && a.quoteId === b.quoteId && a.idempotencyKey === b.idempotencyKey
+    && a.purchaseAttempted === b.purchaseAttempted && a.deliveryFingerprint === b.deliveryFingerprint);
+}
+type NarrationScope = { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> };
+export default function NarrationQuoteStudio({ scope: actorScope, workspaceId, bookId, editionId, chapterId, chapters, voice, speed, instructions, canEdit, disabled, onChapterChange, onAccepted }: {
+  scope: NarrationScope; workspaceId: string; bookId: string; editionId: string; chapterId: string; chapters: Chapter[];
   voice: AudiobookVoice; speed: number; instructions: string; canEdit: boolean; disabled: boolean;
   onChapterChange?: (chapterId: string) => void;
   onAccepted?: (projectId: string) => void;
 }) {
   const api = apiClient();
-  const scope = `${workspaceId}:${bookId}:${editionId}`;
+  const scope = `${actorScope.actor}:${workspaceId}:${bookId}:${editionId}`;
   const currentScope = useRef(scope); currentScope.current = scope;
-  const epoch = useRef(0), inFlight = useRef(false);
-  const intent = JSON.stringify([scope, chapterId, voice, speed, instructions, canEdit, disabled]);
+  const epoch = useRef(0), inFlight = useRef(false), mounted = useRef(false), committedRender = useRef<object | null>(null);
+  const renderedAt = {}, renderedScope = actorScope.begin();
+  useLayoutEffect(() => { committedRender.current = renderedAt; });
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; ++epoch.current; committedRender.current = null; }; }, []);
+  const handlerCurrent = () => mounted.current && renderedAt === committedRender.current && renderedScope();
+  const semanticIntent = JSON.stringify([scope, chapterId, chapters.find(chapter => chapter.id === chapterId)?.current_document_version_id, voice, speed, instructions, canEdit, disabled]);
+  // Fence consent and asynchronous work on each transition, including A -> B -> A.
+  const intentRevision = useRef({ value: semanticIntent, revision: 0 });
+  if (intentRevision.current.value !== semanticIntent) intentRevision.current = { value: semanticIntent, revision: intentRevision.current.revision + 1 };
+  const intent = JSON.stringify([semanticIntent, intentRevision.current.revision]);
   const currentIntent = useRef(intent); currentIntent.current = intent;
   const acceptedCallback = useRef(onAccepted); acceptedCallback.current = onAccepted;
   const lastReportedProject = useRef<string | null>(null);
@@ -29,27 +52,44 @@ export default function NarrationQuoteStudio({ workspaceId, bookId, editionId, c
   const [offer, setOffer] = useState<NarrationChapterQuote | null>(null);
   const [phase, setPhase] = useState<"boot" | "idle" | "save" | "recover" | "accept">("boot");
   const [acceptance, setAcceptance] = useState<NarrationChapterAcceptance | null>(null);
-  const [voiceConsent, setVoiceConsent] = useState(false), [generateConsent, setGenerateConsent] = useState(false);
-  const [consent, setConsent] = useState(false);
+  const verificationKey = JSON.stringify([intent, pointer?.idempotencyKey, pointer?.quoteId, pointer?.deliveryFingerprint, offer?.quoteId, offer?.modelId]);
+  const [voiceConsentKey, setVoiceConsentKey] = useState<string | null>(null), [generateConsentKey, setGenerateConsentKey] = useState<string | null>(null);
+  const [consentKey, setConsentKey] = useState<string | null>(null), [verifiedKey, setVerifiedKey] = useState<string | null>(null);
+  const voiceConsent = voiceConsentKey === verificationKey, generateConsent = generateConsentKey === verificationKey;
+  const consent = consentKey === intent, deliveryVerified = verifiedKey === verificationKey;
+  const setVoiceConsent = (value: boolean) => setVoiceConsentKey(value ? verificationKey : null);
+  const setGenerateConsent = (value: boolean) => setGenerateConsentKey(value ? verificationKey : null);
+  const setConsent = (value: boolean) => setConsentKey(value ? intent : null);
   const [message, setMessage] = useState("");
   const [catalogMessage, setCatalogMessage] = useState("");
-  const [blocked, setBlocked] = useState(true);
+  const [blocked, setBlocked] = useState(true), [checkpointInvalid, setCheckpointInvalid] = useState(false);
 
-  useEffect(() => { setConsent(false); setVoiceConsent(false); setGenerateConsent(false); }, [intent]);
+  useEffect(() => {
+    let live = true;
+    if (!offer || !pointer?.deliveryFingerprint) return () => { live = false; };
+    const valid = actorScope.begin();
+    const chapter = chapters.find(item => item.id === chapterId);
+    if (!chapter?.current_document_version_id) return () => { live = false; };
+    void deliveryFingerprint([actorScope.actor, workspaceId, bookId, editionId, chapterId, chapter.current_document_version_id,
+      offer.modelId, voice, speed, instructions]).then(value => { if (live && valid()) setVerifiedKey(value === pointer.deliveryFingerprint ? verificationKey : null); }).catch(() => { if (live && valid()) setVerifiedKey(null); });
+    return () => { live = false; };
+  }, [offer, pointer, chapters, chapterId, actorScope, workspaceId, bookId, editionId, voice, speed, instructions, verificationKey]);
   const reportAccepted = (result: NarrationChapterAcceptance, originalIntent: string) => {
     if (result.accepted && currentIntent.current === originalIntent && lastReportedProject.current !== result.project.id) {
       lastReportedProject.current = result.project.id;
       acceptedCallback.current?.(result.project.id);
     }
   };
-  const rememberAndCheck = async (saved: OfferPointer, quote: NarrationChapterQuote, key: string, valid: () => boolean, originalIntent: string) => {
+  const rememberAndCheck = async (saved: OfferPointer, quote: NarrationChapterQuote, key: string, expected: string, valid: () => boolean, originalIntent: string) => {
     if (!valid()) return;
     const remembered = { ...saved, quoteId: quote.quoteId };
-    sessionStorage.setItem(key, JSON.stringify(remembered));
+    const encoded = JSON.stringify(remembered);
+    replaceCheckpoint(key, expected, encoded);
     setPointer(remembered); setOffer(quote); setAcceptance(null); setBlocked(true);
     setVoiceConsent(false); setGenerateConsent(false);
-    const result = assertNarrationChapterAcceptance(await api.getNarrationChapterAcceptance(workspaceId, quote.quoteId), quote);
+    const result = assertNarrationChapterAcceptance(await actorScope.checked(() => api.getNarrationChapterAcceptance(workspaceId, quote.quoteId, actorScope.actor)), quote);
     if (!valid()) return;
+    if (sessionStorage.getItem(key) !== encoded) throw new Error("The narration checkpoint changed. Recover the original request before proceeding.");
     setAcceptance(result); setBlocked(false); reportAccepted(result, originalIntent);
     if (remembered.purchaseAttempted && !result.accepted) {
       setMessage("The earlier purchase is still unconfirmed. Keep this original quote and recover its status; do not purchase or prepare another offer.");
@@ -57,121 +97,153 @@ export default function NarrationQuoteStudio({ workspaceId, bookId, editionId, c
   };
 
   const read = async (saved: OfferPointer) => {
-    const result = saved.quoteId ? await api.getNarrationChapterQuote(workspaceId, saved.quoteId)
-      : saved.idempotencyKey ? await api.recoverNarrationChapterQuote(workspaceId, saved.idempotencyKey) : null;
+    const result = saved.quoteId ? await actorScope.checked(() => api.getNarrationChapterQuote(workspaceId, saved.quoteId!, actorScope.actor))
+      : saved.idempotencyKey ? await actorScope.checked(() => api.recoverNarrationChapterQuote(workspaceId, saved.idempotencyKey!, actorScope.actor)) : null;
     const quote = assertNarrationChapterQuote(result, { bookId, editionId });
     if (saved.quoteId && quote.quoteId !== saved.quoteId) throw new Error("Saved offer identity changed. Keep the original recovery checkpoint.");
     return quote;
   };
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let active = true;
     const version = ++epoch.current;
-    const valid = () => active && version === epoch.current && currentScope.current === scope;
+    const actionCurrent = actorScope.begin();
+    const valid = () => active && actionCurrent() && version === epoch.current && currentScope.current === scope;
     inFlight.current = false;
     lastReportedProject.current = null;
     setStorageKey(""); setModels([]); setModelId(""); setPointer(null); setOffer(null); setMessage(""); setCatalogMessage("");
-    setConsent(false); setVoiceConsent(false); setGenerateConsent(false); setAcceptance(null); setPhase("boot"); setBlocked(true);
+    setConsent(false); setVoiceConsent(false); setGenerateConsent(false); setAcceptance(null); setPhase("boot"); setBlocked(true); setCheckpointInvalid(false);
     if (!editionId) { setPhase("idle"); return () => { active = false; ++epoch.current; }; }
-    void api.listNarrationModels(workspaceId).then(result => {
+    void actorScope.checked(() => api.listNarrationModels(workspaceId, actorScope.actor)).then(result => {
       if (valid()) { setModels(result.models); setModelId(result.models[0]?.id ?? ""); }
     }).catch(() => { if (valid()) setCatalogMessage("Approved narration prices are unavailable. You can still recover an existing offer; no paid generation is enabled."); });
     void (async () => {
       try {
-        const session = await fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
-        if (!session.ok) throw new Error("Sign in to recover your private chapter offers.");
-        const account = await session.json();
-        const key = narrationQuoteStorageKey(account.user?.id ?? "", workspaceId, bookId, editionId);
+        await actorScope.checked(async () => undefined);
+        const key = narrationQuoteStorageKey(actorScope.actor, workspaceId, bookId, editionId);
         if (!valid()) return;
         setStorageKey(key);
         const raw = sessionStorage.getItem(key), saved = readOfferPointer(raw);
-        if (raw && !saved) throw new Error("Saved recovery checkpoint is invalid. No request was sent. Discard it explicitly to start again.");
+        if (raw !== null && !saved) { setCheckpointInvalid(true); throw new Error("Saved recovery checkpoint is invalid. Keep it and contact support before preparing another offer."); }
         if (saved) {
           setPointer(saved); setPhase("recover"); inFlight.current = true;
           const quote = await read(saved);
           if (!valid()) return;
-          await rememberAndCheck(saved, quote, key, valid, intent);
+          await rememberAndCheck(saved, quote, key, raw!, valid, intent);
         }
         if (valid()) setBlocked(false);
       } catch (reason) { if (valid()) setMessage(reason instanceof Error ? reason.message : "Recovery is unavailable. Keep the original request key."); }
       finally { if (valid()) { inFlight.current = false; setPhase("idle"); } }
     })();
     return () => { active = false; ++epoch.current; };
-  }, [scope]);
+  }, [scope, actorScope]);
 
   const recover = async () => {
-    if (phase !== "idle" || inFlight.current || !storageKey) return;
+    if (!handlerCurrent() || phase !== "idle" || inFlight.current || !storageKey) return;
     const version = epoch.current;
-    const valid = () => version === epoch.current && currentScope.current === scope;
+    const actionCurrent = actorScope.begin();
+    const valid = () => actionCurrent() && version === epoch.current && currentScope.current === scope;
     inFlight.current = true; setPhase("recover"); setMessage("");
     setAcceptance(null); setBlocked(true); setVoiceConsent(false); setGenerateConsent(false);
     try {
-      const saved = pointer ?? readOfferPointer(sessionStorage.getItem(storageKey));
-      if (!saved) throw new Error("Original offer checkpoint is unavailable. No new request was sent.");
+      const raw = sessionStorage.getItem(storageKey), saved = readOfferPointer(raw);
+      if (!raw || !saved || (pointer && !samePointer(pointer, saved))) throw new Error("Original offer checkpoint changed or is unavailable. No new request was sent.");
       const quote = await read(saved);
-      await rememberAndCheck(saved, quote, storageKey, valid, intent);
-    } catch (reason) { if (version === epoch.current) setMessage(reason instanceof Error ? reason.message : "Recovery failed. Keep the original request key."); }
-    finally { if (version === epoch.current) { inFlight.current = false; setPhase("idle"); } }
+      await rememberAndCheck(saved, quote, storageKey, raw, valid, intent);
+    } catch (reason) { if (valid()) setMessage(reason instanceof Error ? reason.message : "Recovery failed. Keep the original request key."); }
+    finally { if (valid()) { inFlight.current = false; setPhase("idle"); } }
   };
 
   const create = async () => {
-    if (!canEdit || disabled || !consent || !settingsValid || !chapterId || !modelId || pointer || offer || blocked || phase !== "idle" || inFlight.current) return;
+    if (!handlerCurrent() || !canEdit || disabled || !consent || !settingsValid || !chapterId || !modelId || pointer || offer || blocked || phase !== "idle" || inFlight.current) return;
     const version = epoch.current;
-    const valid = () => version === epoch.current && currentScope.current === scope;
+    const actionCurrent = actorScope.begin();
+    const scopeValid = () => actionCurrent() && version === epoch.current && currentScope.current === scope;
+    const valid = () => scopeValid() && currentIntent.current === intent;
     inFlight.current = true; setPhase("save"); setMessage("");
     try {
       if (!storageKey) throw new Error("Browser recovery storage is unavailable. No offer was sent.");
-      const saved = { idempotencyKey: crypto.randomUUID() };
-      sessionStorage.setItem(storageKey, JSON.stringify(saved));
-      setPointer(saved);
-      const result = await api.createNarrationChapterQuote(workspaceId, { editionId, chapterId, modelId, idempotencyKey: saved.idempotencyKey,
-        voice: voice as NarrationVoice, speed, instructions: instructions || null, consentToQuoteStorage: true });
-      if (version !== epoch.current || currentScope.current !== scope) return;
+      const sourceVersion = chapters.find(chapter => chapter.id === chapterId)?.current_document_version_id;
+      if (!sourceVersion) throw new Error("Save the chapter before preparing a narration offer.");
+      const fingerprint = await deliveryFingerprint([actorScope.actor, workspaceId, bookId, editionId, chapterId, sourceVersion, modelId, voice, speed, instructions]);
+      if (!valid()) return;
+      const saved: OfferPointer = { idempotencyKey: crypto.randomUUID(), deliveryFingerprint: fingerprint };
+      const result = await actorScope.checked(() => {
+        if (!valid()) throw new Error("Narration settings changed. Review them before preparing an offer.");
+        const encoded = JSON.stringify(saved); replaceCheckpoint(storageKey, null, encoded);
+        setPointer(saved); setConsent(false);
+        return api.createNarrationChapterQuote(workspaceId, { editionId, chapterId, modelId, idempotencyKey: saved.idempotencyKey!,
+          voice: voice as NarrationVoice, speed, instructions: instructions || null, consentToQuoteStorage: true }, actorScope.actor);
+      });
+      if (!valid()) return;
       const quote = assertNarrationChapterQuote(result, { bookId, editionId });
       if (quote.source.chapterId !== chapterId || quote.modelId !== modelId || quote.voice !== voice || quote.speed !== speed) {
         throw new Error("Saved delivery identity is unconfirmed. Recover the original request before starting another offer.");
       }
+      const recovered = await read(saved);
+      if (!valid()) return;
+      if (recovered.quoteId !== quote.quoteId || recovered.source.bookId !== quote.source.bookId || recovered.source.editionId !== quote.source.editionId
+        || recovered.source.chapterId !== quote.source.chapterId || recovered.source.documentVersionId !== quote.source.documentVersionId
+        || recovered.modelId !== quote.modelId || recovered.model !== quote.model || recovered.voice !== quote.voice || recovered.speed !== quote.speed
+        || recovered.reservedCredits !== quote.reservedCredits || recovered.segmentCount !== quote.segmentCount
+        || JSON.stringify(recovered.segments) !== JSON.stringify(quote.segments)) {
+        throw new Error("Original offer identity is unconfirmed. Recover the same request key.");
+      }
       setConsent(false);
-      await rememberAndCheck(saved, quote, storageKey, valid, intent);
-    } catch (reason) { if (version === epoch.current) setMessage(reason instanceof Error ? reason.message : "Offer save is unconfirmed. Recover the original key; no generation or charge was started."); }
-    finally { if (version === epoch.current) { inFlight.current = false; setPhase("idle"); } }
+      await rememberAndCheck(saved, recovered, storageKey, JSON.stringify(saved), valid, intent);
+    } catch (reason) { if (scopeValid()) {
+      let empty = false;
+      try { empty = sessionStorage.getItem(storageKey) === null; } catch { /* Unknown storage remains locked. */ }
+      setBlocked(!empty); setMessage(reason instanceof Error ? reason.message : "Offer save is unconfirmed. Recover the original key; no generation or charge was started.");
+    } }
+    finally { if (scopeValid()) { inFlight.current = false; setPhase("idle"); } }
   };
 
   const purchase = async () => {
-    if (!canPurchase || inFlight.current || !offer || !pointer || !storageKey || Date.parse(offer.expiresAt) <= Date.now()) return;
+    if (!handlerCurrent() || !canPurchase || inFlight.current || !offer || !pointer || !storageKey || Date.parse(offer.expiresAt) <= Date.now()) return;
     const version = epoch.current;
-    const valid = () => version === epoch.current && currentScope.current === scope;
+    const actionCurrent = actorScope.begin();
+    const scopeValid = () => actionCurrent() && version === epoch.current && currentScope.current === scope;
+    const valid = () => scopeValid() && currentIntent.current === intent;
     inFlight.current = true; setPhase("accept"); setMessage(""); setVoiceConsent(false); setGenerateConsent(false);
     let attempted = false;
+    let pendingRaw = "";
     try {
       const pending: OfferPointer = { ...pointer, quoteId: offer.quoteId, purchaseAttempted: true };
       // Persist before the request. A reload after any ambiguous reply must not repurchase.
-      sessionStorage.setItem(storageKey, JSON.stringify(pending));
-      attempted = true; setPointer(pending); setAcceptance(null); setBlocked(true);
-      const result = assertNarrationChapterAcceptance(await api.acceptNarrationChapterQuote(workspaceId, offer.quoteId,
-        { expectedCredits: offer.reservedCredits, consentToAiVoice: true, consentToGenerate: true }), offer);
+      const result = assertNarrationChapterAcceptance(await actorScope.checked(() => {
+        if (!valid()) throw new Error("Narration settings changed. Review them before purchase.");
+        const raw = sessionStorage.getItem(storageKey), stored = readOfferPointer(raw);
+        if (!raw || !samePointer(pointer, stored) || stored?.purchaseAttempted) throw new Error("The original narration checkpoint changed. Recover it before purchase.");
+        pendingRaw = JSON.stringify(pending); replaceCheckpoint(storageKey, raw, pendingRaw);
+        attempted = true; setPointer(pending); setAcceptance(null); setBlocked(true);
+        return api.acceptNarrationChapterQuote(workspaceId, offer.quoteId,
+          { expectedCredits: offer.reservedCredits, consentToAiVoice: true, consentToGenerate: true }, actorScope.actor);
+      }), offer);
       if (!result.accepted) throw new Error("Chapter acceptance is unconfirmed.");
-      if (!valid()) return;
-      setAcceptance(result); setBlocked(false); reportAccepted(result, intent);
+      if (!scopeValid()) return;
+      const observed = assertNarrationChapterAcceptance(await actorScope.checked(() => api.getNarrationChapterAcceptance(workspaceId, offer.quoteId, actorScope.actor)), offer);
+      if (!scopeValid()) return;
+      if (!observed.accepted || observed.project.id !== result.project.id || sessionStorage.getItem(storageKey) !== pendingRaw) throw new Error("Chapter acceptance is unconfirmed.");
+      setAcceptance(observed); setBlocked(false); reportAccepted(observed, intent);
     } catch (reason) {
-      if (!valid()) return;
-      // These server errors occur before funding or after an atomic RPC rollback.
-      // They permit a fresh read/consent, never an automatic POST retry.
-      if (attempted && reason instanceof ApiClientError && [403, 404, 409, 422].includes(reason.status)) {
-        const rejected: OfferPointer = { ...(pointer.idempotencyKey ? { idempotencyKey: pointer.idempotencyKey } : {}), quoteId: offer.quoteId };
-        try { sessionStorage.setItem(storageKey, JSON.stringify(rejected)); setPointer(rejected); }
-        catch { setMessage("Purchase was rejected, but recovery storage is unavailable. Keep the original quote and recover its status."); return; }
-        setMessage(`${reason.message} Recover the original status before confirming again.`);
-      } else setMessage(attempted ? "Purchase reply is unconfirmed. Recover this original quote before any new purchase. Do not assume nothing was charged."
+      if (!scopeValid()) return;
+      setBlocked(true);
+      // A refusal can coexist with an earlier in-flight acceptance on another tab.
+      // Only an authoritative terminal closure can permit abandoning the quote.
+      setMessage(attempted ? "Purchase reply is unconfirmed. Recover this original quote before any new purchase. Do not assume nothing was charged."
         : reason instanceof Error ? reason.message : "Recovery storage is unavailable. No purchase was sent.");
-    } finally { if (valid()) { inFlight.current = false; setPhase("idle"); } }
+    } finally { if (scopeValid()) { inFlight.current = false; setPhase("idle"); } }
   };
 
   const discard = () => {
-    if (phase !== "idle" || inFlight.current || !storageKey || (offer && !acceptance)
+    if (!handlerCurrent() || phase !== "idle" || inFlight.current || !storageKey || checkpointInvalid || (pointer && !offer) || (offer && !acceptance)
       || (pointer?.purchaseAttempted && !acceptance?.accepted)) return;
-    try { sessionStorage.removeItem(storageKey); }
-    catch { setMessage("Browser recovery storage is unavailable. No new request was sent."); setBlocked(true); return; }
+    try {
+      const raw = sessionStorage.getItem(storageKey), stored = readOfferPointer(raw);
+      if (!raw || !samePointer(pointer, stored) || (stored?.purchaseAttempted && !acceptance?.accepted)) throw new Error("Checkpoint changed.");
+      replaceCheckpoint(storageKey, raw, null);
+    } catch { setMessage("The narration checkpoint changed or storage is unavailable. Recover the original request."); setBlocked(true); return; }
     setPointer(null); setOffer(null); setAcceptance(null); setConsent(false); setVoiceConsent(false); setGenerateConsent(false); setMessage(""); setBlocked(false);
   };
   const settingsValid = ["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"].includes(voice)
@@ -179,12 +251,12 @@ export default function NarrationQuoteStudio({ workspaceId, bookId, editionId, c
     && instructions === instructions.trim() && !/[\uD800-\uDFFF]/u.test(instructions) && instructions.length <= 2_000 && new TextEncoder().encode(instructions).byteLength < 1_800;
   const locked = !canEdit || disabled || Boolean(pointer) || blocked || phase !== "idle";
   const expired = Boolean(offer && (offer.expired || Date.parse(offer.expiresAt) <= Date.now()));
-  const originalDeliveryMatches = Boolean(offer && offer.source.chapterId === chapterId && offer.voice === voice && offer.speed === speed
+  const originalDeliveryMatches = Boolean(deliveryVerified && offer && offer.source.chapterId === chapterId && offer.voice === voice && offer.speed === speed
     && chapters.find(chapter => chapter.id === chapterId)?.current_document_version_id === offer.source.documentVersionId);
   const purchaseLocked = !canEdit || disabled || !settingsValid || !originalDeliveryMatches || expired || blocked || phase !== "idle"
     || !offer?.purchaseAvailable || !acceptance || acceptance.accepted || Boolean(pointer?.purchaseAttempted);
   const canPurchase = !purchaseLocked && voiceConsent && generateConsent;
-  const cannotDiscard = phase !== "idle" || !storageKey || Boolean(offer && !acceptance) || Boolean(pointer?.purchaseAttempted && !acceptance?.accepted);
+  const cannotDiscard = phase !== "idle" || !storageKey || !pointer || checkpointInvalid || Boolean(pointer && !offer) || Boolean(offer && !acceptance) || Boolean(pointer?.purchaseAttempted && !acceptance?.accepted);
   const title = chapters.find(chapter => chapter.id === (offer?.source.chapterId ?? chapterId))?.title ?? "Saved chapter";
 
   return <section className={styles.root} aria-labelledby="narration-offer-title" aria-busy={phase !== "idle"}>
@@ -220,6 +292,7 @@ export default function NarrationQuoteStudio({ workspaceId, bookId, editionId, c
         <details className={styles.parts}><summary>{offer.segmentCount} ordered {offer.segmentCount === 1 ? "part" : "parts"} · full saved chapter</summary>
           <ol>{offer.segments.map(part => <li key={part.quoteId}><span>Part {part.segmentIndex + 1}<small>Source range {part.textStart}–{part.textEnd}</small></span>
             <span>{Number(part.reservedCredits).toLocaleString()} credits</span></li>)}</ol></details>
+        {pointer && !pointer.deliveryFingerprint && !acceptance?.accepted && <p className={styles.message}>This earlier offer has no saved delivery fingerprint. You can review or recover it, but cannot initiate a purchase from it. Contact support if its outcome is uncertain.</p>}
         <p className={styles.description}>Original source version and delivery settings stay pinned after recovery. Changing the edition does not change this offer.</p>
         <p className={styles.expiry}>{expired ? "Offer expired · read-only recovery remains available." : `Offer expires ${new Date(offer.expiresAt).toLocaleString()}.`}</p>
         {acceptance?.accepted && <div className={styles.accepted} role="status"><strong>Accepted narration · {acceptance.project.status}</strong>

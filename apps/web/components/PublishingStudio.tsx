@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AudiobookGooglePlayExportJob, AudiobookProjectResult, AudiobookVoice, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel } from "@bookworm/api-client";
+import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState } from "react";
+import type { AudiobookGooglePlayExportJob, PrivateAudiobookProjectResult, AudiobookVoice, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel } from "@bookworm/api-client";
 import type { Asset, Book, Chapter, Edition } from "@bookworm/types";
 import { apiClient } from "./api";
 import ChapterAudioDownload from "./ChapterAudioDownload";
@@ -10,9 +10,9 @@ import NarrationQuoteStudio from "./NarrationQuoteStudio";
 import SavedEpubReader from "./SavedEpubReader";
 import SavedPrintLibrary from "./SavedPrintLibrary";
 import SavedPdfProof from "./SavedPdfProof";
+import PrivateArtifactDownload from "./PrivateArtifactDownload";
 import { renderLinksDeadline } from "../lib/pdf-proof";
 import RetailerPackageRequest from "./RetailerPackageRequest";
-import { privateDownloadUrl } from "../lib/private-download";
 import { readBrowserSession } from "../lib/browser-session";
 import { packageDownloadDeadline, signedDownloadDeadline, downloadClock, downloadExpired, nextDownloadClockWait, type DownloadClock } from "../lib/publishing-request";
 
@@ -26,20 +26,108 @@ type TimedAudioExport = AudiobookGooglePlayExportJob & { downloadExpiresAt: Down
 const timeAudio = (job: AudiobookGooglePlayExportJob, startedAt: DownloadClock): TimedAudioExport => ({ ...job, downloadExpiresAt: job.downloadUrl && job.downloadExpiresIn ? signedDownloadDeadline({ url: job.downloadUrl, expiresIn: job.downloadExpiresIn }, startedAt) : null });
 const timePackage = (job: PublishingPackageJob, startedAt: DownloadClock): TimedPackageJob => ({ ...job, downloadExpiresAt: packageDownloadDeadline(job, startedAt) });
 const CHANNEL_FORMATS: Record<RetailerChannel, Kind[]> = { kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"] };
+const artifactUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+function renderedStoragePath(workspace: string | undefined, artifact: RenderedEditionResult["artifacts"][number]) {
+  if (!workspace || !artifactUuid.test(workspace) || !artifactUuid.test(artifact.asset.id) || artifact.asset.workspace_id !== workspace) return "";
+  const file = artifact.role === "rendered_print" && artifact.asset.mime_type === "application/pdf" ? "book.pdf"
+    : artifact.role === "rendered_ebook" && artifact.asset.mime_type === "application/epub+zip" ? "book.epub"
+    : artifact.role === "rendered_cover" && artifact.asset.mime_type === "application/pdf" ? "cover.pdf"
+    : artifact.role === "rendered_cover" && artifact.asset.mime_type === "image/png" ? "cover.png" : "";
+  const expected = `workspaces/${workspace}/assets/${artifact.asset.id}/v1/${file}`;
+  return file && artifact.asset.storage_path === expected ? expected : "";
+}
+function packageStoragePath(workspace: string | undefined, job: PublishingPackageJob) {
+  if (!workspace || !artifactUuid.test(workspace) || !job.package || !artifactUuid.test(job.package.asset.id)
+    || job.package.asset.workspace_id !== workspace || !Object.prototype.hasOwnProperty.call(CHANNEL_FORMATS, job.channel)) return "";
+  const expected = `workspaces/${workspace}/assets/${job.package.asset.id}/v1/${job.channel}-export.zip`;
+  return job.package.asset.storage_path === expected ? expected : "";
+}
+function archiveFilename(url: string) {
+  try { return new URL(url).searchParams.get("download") || "googleplay-audiobook.zip"; }
+  catch { return "googleplay-audiobook.zip"; }
+}
+function audioArchivePath(workspace: string | undefined, jobId: string): string | RegExp {
+  if (!workspace || !artifactUuid.test(workspace) || !artifactUuid.test(jobId)) return "";
+  return new RegExp(`^workspaces/${workspace}/audiobook-exports/${jobId}/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\.zip$`, "i");
+}
 
 const fieldClass = "mt-2 block w-full rounded-xl border border-white/10 bg-black/60 px-3 py-2.5 text-white outline-none focus:border-white/35";
 const cardClass = "rounded-2xl border border-white/10 bg-white/[0.035] p-5";
 
+type EditionRisk = { current: Map<string, { actor: string }> };
+type PublishingScope = { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> };
+function superseded() { const e = new Error("Account check superseded."); e.name = "PublishingScopeChanged"; return e; }
 export default function PublishingStudio({ bookId }: { bookId: string }) {
-  const api = apiClient();
+  const latestBook = useRef(bookId); latestBook.current = bookId;
+  const editionRisks = useRef(new Map<string, { actor: string }>());
+  const isBookCurrent = useCallback(() => latestBook.current === bookId, [bookId]);
+  return <ScopedPublishingStudio key={bookId} bookId={bookId} isBookCurrent={isBookCurrent} editionRisks={editionRisks} />;
+}
+function ScopedPublishingStudio({ bookId, isBookCurrent, editionRisks }: { bookId: string; isBookCurrent: () => boolean; editionRisks: EditionRisk }) {
+  type Entry = { actor: string; scope: PublishingScope; access: {book:Book;role:string} };
+  const [entries, setEntries] = useState<Entry[]>([]), [identity,setIdentity] = useState<Entry|null>(null);
+  const [active,setActive]=useState(false), [checking,setChecking]=useState(true), [error,setError]=useState("");
+  const epoch=useRef<object>({}), identityRef=useRef<Entry|null>(null), activeRef=useRef(false), mounted=useRef(false);
+  const scopes = useRef(new Map<string, PublishingScope>()), checkRef=useRef<() => Promise<void>>(async () => {});
+  const check=useCallback(async()=>{
+    if(!mounted.current)return;
+    const token={}; epoch.current=token;activeRef.current=false;setActive(false);setChecking(true);setError("");
+    try {
+      const user=await readBrowserSession();if(!mounted.current||epoch.current!==token)return;
+      const record=await apiClient().getBook(bookId,user.id);if(!mounted.current||epoch.current!==token)return;
+      if(!record.book||record.book.id!==bookId)throw new Error("Book access could not be confirmed.");
+      await readBrowserSession(user.id);if(!mounted.current||epoch.current!==token)return;
+      let scoped = scopes.current.get(user.id);
+      if (!scoped) {
+        const actor = user.id;
+        const current=()=>mounted.current&&isBookCurrent()&&activeRef.current&&identityRef.current?.actor===actor;
+        const begin=()=>{const generation=epoch.current;return()=>current()&&epoch.current===generation;};
+        const checked=async<T,>(work:()=>Promise<T>):Promise<T>=>{const valid=begin();try{
+          await readBrowserSession(actor);if(!valid())throw superseded();const result=await work();if(!valid())throw superseded();
+          await readBrowserSession(actor);if(!valid())throw superseded();return result;
+        }catch(reason){if(!valid())throw superseded();try{await readBrowserSession(actor);}catch{if(valid())void checkRef.current();}if(!valid())throw superseded();throw reason;}};
+        scoped={actor,current,begin,checked}; scopes.current.set(actor,scoped);
+      }
+      const next:Entry={actor:user.id,scope:scoped,access:record};identityRef.current=next;
+      setEntries(current=>[...current.filter(entry=>entry.actor!==user.id),next]);setIdentity(next);activeRef.current=true;setActive(true);
+    } catch {if(mounted.current&&epoch.current===token)setError("Book access or your account could not be verified. Sign in again or retry.");}
+    finally {if(mounted.current&&epoch.current===token)setChecking(false);}
+  },[bookId,isBookCurrent]);
+  checkRef.current=check;
+  useLayoutEffect(()=>{
+    mounted.current=true;void check();const focus=()=>{void check();};
+    const visibility=()=>{if(document.visibilityState==="visible")void check();else{epoch.current={};activeRef.current=false;setActive(false);setChecking(true);setError("");}};
+    window.addEventListener("focus",focus);document.addEventListener("visibilitychange",visibility);
+    return()=>{mounted.current=false;epoch.current={};activeRef.current=false;window.removeEventListener("focus",focus);document.removeEventListener("visibilitychange",visibility);};
+  },[check]);
+  return <>
+    {entries.map(entry => <PublishingWorkspace key={entry.actor} bookId={bookId} scope={entry.scope}
+      active={active && identity?.actor===entry.actor} verifiedAccess={entry.access} editionRisks={editionRisks} />)}
+    {!active&&<section className="mx-auto max-w-7xl px-4 py-8 text-white"><h1 className="text-2xl">Publishing studio</h1>{checking?<p role="status">Checking your account…</p>:<p role="alert">{error} <button className="underline" onClick={()=>void check()}>Try again</button> <Link className="underline" href="/login">Sign in</Link></p>}</section>}
+  </>;
+}
+function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRisks }: { bookId:string;scope:PublishingScope;active:boolean;verifiedAccess:{book:Book;role:string};editionRisks:EditionRisk }) {
+  const api = useMemo(() => {
+    const scoped = apiClient(scope.actor);
+    return new Proxy(scoped, { get(target, key, receiver) {
+      const member = Reflect.get(target, key, receiver);
+      return typeof member === "function" ? (...args: unknown[]) => scope.checked(() => member(...args)) : member;
+    } });
+  }, [scope]);
+  const committedRender = useRef<object | null>(null), mountedView = useRef(false);
+  const renderedAt = {}, renderedScope = scope.begin();
+  useLayoutEffect(() => { committedRender.current = renderedAt; });
+  useLayoutEffect(() => { mountedView.current = true; return () => { mountedView.current = false; committedRender.current = null; }; }, []);
+  const handlerCurrent = () => mountedView.current && committedRender.current === renderedAt && active && renderedScope();
   const [book, setBook] = useState<Book | null>(null);
   const [role, setRole] = useState("viewer");
   const [editions, setEditions] = useState<Edition[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [narrationChapterId, setNarrationChapterId] = useState("");
-  const [audiobookProjects, setAudiobookProjects] = useState<AudiobookProjectResult[]>([]);
+  const [audiobookProjects, setAudiobookProjects] = useState<PrivateAudiobookProjectResult[]>([]);
   const [googlePlayExports, setGooglePlayExports] = useState<TimedAudioExport[]>([]);
+  const audioExportsRef = useRef(googlePlayExports); audioExportsRef.current = googlePlayExports;
   const exportRequestKey = useRef<string | null>(null);
   const [googlePlayIdentifier, setGooglePlayIdentifier] = useState("");
   const [googlePlayCoverId, setGooglePlayCoverId] = useState("");
@@ -49,9 +137,11 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [busy, setBusy] = useState<"load" | "save" | "render" | "preflight" | "package" | "history" | "audiobook" | null>("load");
   const [channel, setChannel] = useState<Channel>("export");
   const [rendered, setRendered] = useState<(RenderedEditionResult & { expiresAt?: number }) | null>(null);
+  const renderedRef = useRef(rendered); renderedRef.current = rendered;
   const [readerRefreshKey, setReaderRefreshKey] = useState("");
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [publishingJobs, setPublishingJobs] = useState<TimedPackageJob[]>([]);
+  const publishingJobsRef = useRef(publishingJobs); publishingJobsRef.current = publishingJobs;
   const [packageHistory, setPackageHistory] = useState<{ editionId: string | null; status: "loading" | "ready" | "unavailable" }>({ editionId: null, status: "loading" });
   const packageHistoryEpoch = useRef(0);
   const [packageClock, setPackageClock] = useState(downloadClock());
@@ -64,7 +154,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   };
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const uncertainEditionCreates = useRef(new Map<string, { actor: string }>());
+  const uncertainEditionCreates = editionRisks;
+  const editionRiskKey = `${scope.actor}:${bookId}`;
   const [, setEditionGuardVersion] = useState(0);
   const [acceptDuplicateRisk, setAcceptDuplicateRisk] = useState(false);
   const [verifyingEditionRisk, setVerifyingEditionRisk] = useState(false);
@@ -81,17 +172,20 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const invalidatePrint = useCallback((jobId: string) => { setRendered(current => current?.jobId === jobId ? null : current); setPreflight(null); }, []);
 
   const activeEdition = editions.find((edition) => edition.id === activeId) ?? null;
-  const currentIdentity = book?.id === bookId;
+  const currentIdentity = active && scope.current() && book?.id === bookId;
   const linkEpoch = viewEpoch.current;
+  const linkOwner = loadedEditionOwner.current;
+  const linkScope = scope.begin();
   const editable = currentIdentity && EDIT_ROLES.has(role);
   // Navigation invalidates replies, not durable work already accepted by the server.
   const captureView = () => {
-    const version = viewEpoch.current;
-    return () => currentIdentity && currentBook.current === bookId && viewEpoch.current === version;
+    const version = viewEpoch.current, ownerCurrent = scope.begin();
+    const initiated = handlerCurrent();
+    return () => initiated && currentIdentity && ownerCurrent() && currentBook.current === bookId && viewEpoch.current === version;
   };
   const audioScope = (editionId: string) => {
-    const epoch = viewEpoch.current;
-    return () => currentBook.current === bookId && currentEdition.current === editionId && viewEpoch.current === epoch;
+    const epoch = viewEpoch.current, ownerCurrent = scope.begin();
+    return () => ownerCurrent() && currentBook.current === bookId && currentEdition.current === editionId && viewEpoch.current === epoch;
   };
   const readPackageHistory = useCallback(async (editionId: string, owner: string) => {
     const ticket = ++packageHistoryEpoch.current, view = viewEpoch.current, startedAt = downloadClock();
@@ -116,16 +210,24 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const scoped = audioScope(editionId), ticket = ++audioHistoryEpoch.current, startedAt = downloadClock();
     const valid = () => scoped() && alive() && audioHistoryEpoch.current === ticket && !audioMutation.current;
     try {
-      const result = await api.listAudiobookGooglePlayExports(editionId);
+      const result = await scope.checked(() => api.listAudiobookGooglePlayExports(editionId, scope.actor));
+      if (!Array.isArray(result.jobs) || result.jobs.some(job => !job || job.editionId !== editionId)) throw new Error("Audiobook export history did not match the edition.");
       if (valid()) { setGooglePlayExports(result.jobs.map(job => timeAudio(job, startedAt))); observePackageClock(); }
-    } catch (reason) { if (valid() && reportError) setError(reason instanceof Error ? reason.message : "Could not refresh export history."); }
+    } catch (reason) { if (valid()) { setGooglePlayExports([]); if (reportError) setError(reason instanceof Error ? reason.message : "Could not refresh export history."); } }
     finally { if (manual && audioManualRead.current === manual) audioManualRead.current = null; }
   };
   const readAudioProjects = async (editionId: string, reportError: boolean) => {
     const scoped = audioScope(editionId), ticket = ++audioProjectEpoch.current;
     const valid = () => scoped() && audioProjectEpoch.current === ticket;
-    try { const result = await api.listAudiobookProjects(editionId); if (valid()) setAudiobookProjects(result.projects); }
-    catch (reason) { if (valid() && reportError) setError(reason instanceof Error ? reason.message : "Could not load audiobook history."); }
+    try {
+      const result = await scope.checked(() => api.listPrivateAudiobookProjects(editionId, scope.actor));
+      if (!Array.isArray(result.projects) || result.projects.some(project => !project || project.editionId !== editionId
+        || !Array.isArray(project.segments) || project.segments.some(segment => !segment || typeof segment.audioAvailable !== "boolean"
+          || Object.prototype.hasOwnProperty.call(segment, "download") || !Number.isInteger(segment.index) || segment.index < 0 || segment.index >= 250))) {
+        throw new Error("Audiobook history is unavailable. Update the workspace service before opening audio.");
+      }
+      if (valid()) setAudiobookProjects(result.projects);
+    } catch (reason) { if (valid()) { setAudiobookProjects([]); if (reportError) setError(reason instanceof Error ? reason.message : "Could not load audiobook history."); } }
   };
   const beginAudioMutation = () => {
     if (audioMutation.current) return null;
@@ -142,9 +244,9 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, renderBlocked } = resolveEditionRenderSafety(form, book, activeEdition?.edition_metadata_json);
 
   const load = useCallback(async () => {
-    const version = ++viewEpoch.current;
+    const version = ++viewEpoch.current, ownerCurrent = scope.begin();
     audioHistoryEpoch.current++; audioProjectEpoch.current++; packageHistoryEpoch.current++; audioMutation.current = null; audioManualRead.current = null;
-    const valid = () => viewEpoch.current === version && currentBook.current === bookId;
+    const valid = () => ownerCurrent() && viewEpoch.current === version && currentBook.current === bookId;
     editionRiskFlight.current = null; editionSaveFlight.current = null; loadedEditionOwner.current = null; setEditionSessionHidden(false); setVerifyingEditionSession(false); setVerifyingEditionRisk(false); setAcceptDuplicateRisk(false);
     setBusy("load");
     setBook(null); setRole("viewer"); setEditions([]); setAssets([]); setChapters([]); setPublishingJobs([]);
@@ -153,14 +255,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     setRendered(null); setPreflight(null); setNotice(null); exportRequestKey.current = null;
     setGooglePlayIdentifier(""); setGooglePlayCoverId("");
     try {
-      const owner = (await readBrowserSession()).id; if (!valid()) return;
+      const owner = scope.actor; await readBrowserSession(owner); if (!valid()) return;
       const [identity, editionResult, chapterResult] = await Promise.all([api.getBook(bookId, owner), api.listEditions(bookId, owner), api.listChapters(bookId, owner)]);
       if (!valid()) return;
       if (!identity?.book || identity.book.id !== bookId || !Array.isArray(editionResult?.editions)
         || editionResult.editions.some(edition => !edition || edition.book_id !== bookId)) {
         throw new Error("The saved edition list did not match this book. Reload before editing.");
       }
-      const assetResult = await api.listAssets(identity.book.workspace_id);
+      const assetResult = await api.listAssets(identity.book.workspace_id, undefined, owner);
       await readBrowserSession(owner);
       if (!valid()) return;
       loadedEditionOwner.current = owner;
@@ -178,8 +280,29 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       setDirty(false);
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not load publishing settings."); }
     finally { if (valid()) setBusy(null); }
-  }, [api, bookId]);
+  }, [api, bookId, scope]);
 
+  useLayoutEffect(() => {
+    const invalidate = () => { ++viewEpoch.current; audioHistoryEpoch.current++; audioProjectEpoch.current++; setAudiobookProjects([]); setGooglePlayExports([]); setPublishingJobs([]); setRendered(null); setPreflight(null); setNotice(null); };
+    window.addEventListener("focus", invalidate); document.addEventListener("visibilitychange", invalidate);
+    return () => { window.removeEventListener("focus", invalidate); document.removeEventListener("visibilitychange", invalidate); };
+  }, []);
+  useLayoutEffect(() => {
+    if (!active) {
+      // An old in-flight operation may still complete; its actor/book checkpoint
+      // remains in editionRisks, but its obsolete UI lock cannot block this view.
+      editionSaveFlight.current = null; editionRiskFlight.current = null;
+      setBusy(null); setVerifyingEditionRisk(false); setVerifyingEditionSession(false); setAcceptDuplicateRisk(false);
+    }
+  }, [active]);
+  useLayoutEffect(() => { if (active && loadedEditionOwner.current === scope.actor) { setBook(verifiedAccess.book); setRole(verifiedAccess.role); } }, [active, verifiedAccess, scope]);
+  const firstActive = useRef(true);
+  useEffect(() => {
+    if (!active) return;
+    if (firstActive.current) { firstActive.current = false; return; }
+    if (!loadedEditionOwner.current) { void load(); return; }
+    if (loadedEditionOwner.current === scope.actor && activeId && form.kind === "audiobook") void Promise.all([readAudioProjects(activeId, true), readAudioHistory(activeId, true)]);
+  }, [active, verifiedAccess]);
   useEffect(() => { void load(); return () => { ++viewEpoch.current; }; }, [load]);
   useEffect(() => {
     const owner = loadedEditionOwner.current;
@@ -221,12 +344,12 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   }, [bookId, activeId, api, form.kind, hasActiveGooglePlayExport]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
-    if (!editable || busy) return;
+    if (!handlerCurrent() || !editable || busy) return;
     setForm((current) => ({ ...current, [key]: value })); setDirty(true); setRendered(null); setPreflight(null); setNotice(null);
   };
 
   const selectEdition = (edition: Edition) => {
-    if (busy) return;
+    if (!handlerCurrent() || busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
     const version = ++viewEpoch.current;
     audioManualRead.current = null;
@@ -241,7 +364,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   };
 
   const newEdition = (kind: Kind) => {
-    if (!editable || busy) return;
+    if (!handlerCurrent() || !editable || busy) return;
     if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
     ++viewEpoch.current; audioManualRead.current = null; currentEdition.current = null;
     exportRequestKey.current = null;
@@ -264,7 +387,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
   const acknowledgeEditionRisk = async () => {
     if (!acceptDuplicateRisk || verifyingEditionRisk || busy || editionRiskFlight.current) return;
-    const pending = uncertainEditionCreates.current.get(bookId), valid = captureView();
+    const pending = uncertainEditionCreates.current.get(editionRiskKey), valid = captureView();
     if (!pending || !valid()) return;
     if (loadedEditionOwner.current !== pending.actor) {
       setError("This warning belongs to a different account. Leaving or reloading this page removes the warning, but the earlier request could still finish.");
@@ -273,8 +396,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const flight = {}; editionRiskFlight.current = flight; setVerifyingEditionRisk(true);
     try {
       await verifyEditionOwner(pending.actor, valid);
-      if (!valid() || loadedEditionOwner.current !== pending.actor || editionRiskFlight.current !== flight || uncertainEditionCreates.current.get(bookId) !== pending) return;
-      uncertainEditionCreates.current.delete(bookId); setEditionGuardVersion(v => v + 1); setAcceptDuplicateRisk(false);
+      if (!valid() || loadedEditionOwner.current !== pending.actor || editionRiskFlight.current !== flight || uncertainEditionCreates.current.get(editionRiskKey) !== pending) return;
+      uncertainEditionCreates.current.delete(editionRiskKey); setEditionGuardVersion(v => v + 1); setAcceptDuplicateRisk(false);
       setError(null); setNotice("Another new edition can be saved. The earlier request may still finish.");
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Your account could not be verified."); }
     finally { if (editionRiskFlight.current === flight) { editionRiskFlight.current = null; if (valid()) setVerifyingEditionRisk(false); } }
@@ -291,7 +414,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   };
 
   const save = async () => {
-    if (!editable || busy || editionSaveFlight.current || (!activeId && uncertainEditionCreates.current.has(bookId))) return;
+    if (!handlerCurrent() || !editable || busy || editionSaveFlight.current || (!activeId && uncertainEditionCreates.current.has(editionRiskKey))) return;
     if (activeId && !activeEdition) { setError("This edition is no longer in the saved list. Reload before saving."); return; }
     const valid = captureView(); if (!valid()) return;
     const flight = {}; editionSaveFlight.current = flight;
@@ -313,12 +436,12 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
         const config = toConfig(form);
         // The endpoint has no durable request identity. Once dispatched, a failure
         // cannot distinguish a rejected request from a lost success response.
-        creating = true; submitted = true; uncertainEditionCreates.current.set(bookId, { actor: owner }); setEditionGuardVersion(v => v + 1); setAcceptDuplicateRisk(false);
+        creating = true; submitted = true; uncertainEditionCreates.current.set(editionRiskKey, { actor: owner }); setEditionGuardVersion(v => v + 1); setAcceptDuplicateRisk(false);
         saved = await api.createEdition(bookId, { config, language: form.language }, owner);
         await verifyEditionOwner(owner, valid);
         if (!matchesEditionReply(saved, config, form.language)) throw new Error("The edition creation reply could not be verified.");
         if (!valid()) return;
-        uncertainEditionCreates.current.delete(bookId); setEditionGuardVersion(v => v + 1); creating = false;
+        uncertainEditionCreates.current.delete(editionRiskKey); setEditionGuardVersion(v => v + 1); creating = false;
       }
       if (!valid()) return;
       currentEdition.current = saved.id;
@@ -377,12 +500,13 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     setBusy("audiobook"); setError(null); setNotice(null);
     try {
       const startedAt = downloadClock();
-      const { job } = await api.createAudiobookGooglePlayExport(activeId, {
+      const { job } = await scope.checked(() => api.createAudiobookGooglePlayExport(editionId, {
         identifier: googlePlayIdentifier.trim(), coverAssetId: googlePlayCoverId,
         idempotencyKey: exportRequestKey.current ?? (exportRequestKey.current = crypto.randomUUID()),
-      });
+      }, scope.actor));
       if (!valid()) return;
       exportRequestKey.current = null;
+      if (job.editionId !== editionId) throw new Error("The audiobook export did not match this edition.");
       setGooglePlayExports((current) => [timeAudio(job, startedAt), ...current.filter((item) => item.id !== job.id)]); observePackageClock();
       setNotice("Export queued. You can leave this page; progress and the private download will remain in export history.");
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not create the Google Play audio archive."); }
@@ -396,8 +520,9 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     setBusy("audiobook"); setError(null);
     try {
       const startedAt = downloadClock();
-      const { job } = await api.cancelAudiobookGooglePlayExport(jobId);
+      const { job } = await scope.checked(() => api.cancelAudiobookGooglePlayExport(jobId, scope.actor));
       if (!valid()) return;
+      if (job.editionId !== editionId) throw new Error("The audiobook export did not match this edition.");
       setGooglePlayExports((current) => current.map((item) => item.id === job.id ? timeAudio(job, startedAt) : item)); observePackageClock();
       setNotice(job.status === "cancelled" ? "Export cancelled." : job.status === "running" ? "Cancellation requested. The worker will stop at its next safe checkpoint." : job.status === "succeeded" ? "Export finished before cancellation. Refresh history to renew its private download." : job.status === "failed" ? "Export failed before cancellation. Review its saved failure." : "The cancellation outcome remains unconfirmed. Refresh history to check.");
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not cancel the export."); }
@@ -412,6 +537,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   };
 
   const leave = (event: React.MouseEvent<HTMLAnchorElement>) => { if (dirty && !window.confirm("Leave and discard unsaved edition settings?")) event.preventDefault(); };
+  if (!active) return null;
   if (editionSessionHidden) return <section role="alert" className="rounded-xl border border-amber-300/30 bg-amber-300/5 p-4 text-sm text-amber-100">
     <p>We could not verify the account that loaded these edition settings. They are hidden; unsaved changes remain in this page.</p>
     {error && <p className="mt-2">{error}</p>}
@@ -450,9 +576,9 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       <div className="min-w-0 space-y-6">
         <section className={cardClass} aria-labelledby="edition-settings">
           <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 id="edition-settings" className="text-xl font-semibold">Edition settings</h2><p className="mt-1 text-sm text-white/45">Changes are saved before rendering or validation.</p></div>
-            <button type="button" onClick={() => void save()} disabled={!editable || Boolean(busy) || (!dirty && Boolean(activeId)) || (!activeId && uncertainEditionCreates.current.has(bookId))} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "save" ? "Saving…" : "Save edition"}</button>
+            <button type="button" onClick={() => void save()} disabled={!editable || Boolean(busy) || (!dirty && Boolean(activeId)) || (!activeId && uncertainEditionCreates.current.has(editionRiskKey))} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "save" ? "Saving…" : "Save edition"}</button>
           </div>
-          {uncertainEditionCreates.current.has(bookId) && <div role="alert" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/5 p-4 text-sm text-amber-100">
+          {uncertainEditionCreates.current.has(editionRiskKey) && <div role="alert" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/5 p-4 text-sm text-amber-100">
             <p>A previous new-edition save may have completed, but its reply was not confirmed. Creating another could produce a duplicate. The previous request could still finish after you check.</p>
             <p className="mt-2">This warning lasts only while this page remains open. Reloading or closing it removes the warning; your unsaved edition settings are not saved.</p>
             <label className="mt-3 flex items-start gap-2"><input type="checkbox" checked={acceptDuplicateRisk} onChange={event => setAcceptDuplicateRisk(event.target.checked)} />I understand that another create can duplicate the earlier request.</label>
@@ -545,14 +671,14 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           </div>}
         </section>}
 
-        {form.kind === "audiobook" && book && <NarrationQuoteStudio workspaceId={book.workspace_id} bookId={bookId} editionId={activeId ?? ""}
+        {form.kind === "audiobook" && book && <NarrationQuoteStudio key={`${scope.actor}:${bookId}:${activeId ?? ""}`} scope={scope} workspaceId={book.workspace_id} bookId={bookId} editionId={activeId ?? ""}
           chapterId={narrationChapterId} chapters={chapters} voice={form.voice} speed={form.narrationSpeed} instructions={form.narrationInstructions}
           onChapterChange={setNarrationChapterId}
           onAccepted={() => void refreshAudiobooks()}
           canEdit={["owner", "admin", "editor", "writer"].includes(role)} disabled={!activeId || dirty || Boolean(busy)} />}
         {form.kind === "audiobook" && <section className={cardClass} aria-labelledby="audiobook-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="audiobook-title" className="text-xl font-semibold">Saved audio & delivery</h2><p className="mt-1 max-w-2xl text-sm text-white/45">Existing private narration, listening review and export history remain available. Prepare new narration through the chapter price review above; unquoted creation is retired.</p></div><button type="button" onClick={() => void refreshAudiobooks()} disabled={!activeId || Boolean(busy)} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "audiobook" ? "Working…" : "Refresh progress"}</button></div>
-          <div className="mt-7 border-t border-white/10 pt-5"><h3 className="font-medium">Narration history</h3>{audiobookProjects.length ? <ul className="mt-4 space-y-4">{audiobookProjects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/30 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium">{chapters.find((chapter) => chapter.id === project.chapterId)?.title ?? "Saved chapter"}</p><p className="mt-1 text-xs text-white/40">{project.segmentCount} segments · {project.billingMode === "quoted" ? `Maximum budget: ${project.creditUnits.toLocaleString()} token credits` : `${project.creditUnits.toLocaleString()} legacy audio units`} · {project.voice}</p></div><span className={`rounded-full px-3 py-1 text-xs ${project.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : project.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{project.status}</span></div><ChapterAudioDownload projectId={project.id} ready={project.status === "succeeded"} /><div className="mt-4 grid gap-3 md:grid-cols-2">{project.segments.map((segment) => <div key={segment.index} className="rounded-lg border border-white/10 p-3"><p className="text-xs text-white/45">Part {segment.index + 1} · {segment.status}</p>{segment.download ? <><audio controls preload="none" src={segment.download.url} className="mt-2 w-full" /><a href={privateDownloadUrl(segment.download.url, `narration-${project.id}-part-${segment.index + 1}.mp3`)} download className="mt-2 inline-block text-xs underline">Download private MP3</a></> : <p className="mt-2 text-xs text-white/35">Audio will appear after the worker completes this segment.</p>}</div>)}</div></li>)}</ul> : <p className="mt-3 text-sm text-white/45">No narration has been queued for this edition.</p>}
+          <div className="mt-7 border-t border-white/10 pt-5"><h3 className="font-medium">Narration history</h3>{audiobookProjects.length ? <ul className="mt-4 space-y-4">{audiobookProjects.map((project) => <li key={project.id} className="rounded-xl border border-white/10 bg-black/30 p-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium">{chapters.find((chapter) => chapter.id === project.chapterId)?.title ?? "Saved chapter"}</p><p className="mt-1 text-xs text-white/40">{project.segmentCount} segments · {project.billingMode === "quoted" ? `Maximum budget: ${project.creditUnits.toLocaleString()} token credits` : `${project.creditUnits.toLocaleString()} legacy audio units`} · {project.voice}</p></div><span className={`rounded-full px-3 py-1 text-xs ${project.status === "succeeded" ? "bg-emerald-400/15 text-emerald-100" : project.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{project.status}</span></div><ChapterAudioDownload scope={scope} projectId={project.id} ready={project.status === "succeeded"} /><div className="mt-4 grid gap-3 md:grid-cols-2">{project.segments.map((segment) => <div key={segment.index} className="rounded-lg border border-white/10 p-3"><p className="text-xs text-white/45">Part {segment.index + 1} · {segment.status}</p>{segment.audioAvailable ? <><audio controls preload="none" src={`/api/private-audio/${encodeURIComponent(scope.actor)}/segments/${encodeURIComponent(project.id)}/${segment.index}`} className="mt-2 w-full" /><a href={`/api/private-audio/${encodeURIComponent(scope.actor)}/segments/${encodeURIComponent(project.id)}/${segment.index}?download=1`} download className="mt-2 inline-block text-xs underline">Download private MP3</a></> : <p className="mt-2 text-xs text-white/35">Audio will appear after the worker completes this segment.</p>}</div>)}</div></li>)}</ul> : <p className="mt-3 text-sm text-white/45">No narration has been queued for this edition.</p>}
             <div className="mt-6 rounded-xl border border-white/10 bg-black/20 p-4"><h3 className="font-medium">Google Play export · private download</h3><p className="mt-1 text-sm text-white/45">Queue a durable, ordered ZIP for manual Partner Center upload. You can leave this page while it builds. Every current chapter must have narration, a saved QC report, and an approver’s exact-audio listening sign-off.</p>
               <div className="mt-4 grid gap-3 md:grid-cols-2"><label className="text-sm text-white/65">ISBN-13 or publisher book ID<input value={googlePlayIdentifier} onChange={(event) => { setGooglePlayIdentifier(event.target.value); exportRequestKey.current = null; }} maxLength={64} autoComplete="off" className={fieldClass} placeholder="978… or your Google book ID" /></label>
                 <label className="text-sm text-white/65">Audiobook cover<select value={googlePlayCoverId} onChange={(event) => { setGooglePlayCoverId(event.target.value); exportRequestKey.current = null; }} className={fieldClass}><option value="">Choose JPEG or PNG artwork</option>{coverAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label></div>
@@ -568,7 +694,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
                     {running && <div className="mt-3"><div className="flex justify-between text-xs text-white/45"><span>{job.status === "queued" ? "Waiting for an export worker" : "Assembling and verifying private files"}</span><span>{job.progressChapters}/{job.progressTotal} chapters</span></div><div role="progressbar" aria-label="Audiobook export progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-emerald-200 transition-[width]" style={{ width: `${progress}%` }} /></div></div>}
                     {job.status === "failed" && <p className="mt-3 text-xs text-red-100">Export failed ({job.errorCode ?? "unknown_error"}). Correct the source or cover and queue a new attempt.</p>}
                     {job.status === "cancelled" && <p className="mt-3 text-xs text-white/45">This export was cancelled before completion.</p>}
-                    <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">{job.downloadUrl && job.synthesizedVoiceDisclosureRequired && currentIdentity && currentBook.current === bookId && ( !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <a href={privateDownloadUrl(job.downloadUrl, new URL(job.downloadUrl).searchParams.get("download") || "googleplay-audiobook.zip")} download className="font-medium underline" onClick={event => { const now = observePackageClock(); if (!currentIdentity || currentBook.current !== bookId || viewEpoch.current !== linkEpoch || clockFault.current || downloadExpired(job.downloadExpiresAt, now)) event.preventDefault(); }}>Download private ZIP</a> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified. Refresh export history to renew it."}</span>)}
+                    <div className="mt-3 flex flex-wrap items-center gap-4 text-sm">{job.downloadUrl && job.synthesizedVoiceDisclosureRequired && currentIdentity && currentBook.current === bookId && ( !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <PrivateArtifactDownload actor={linkOwner} url={job.downloadUrl} filename={archiveFilename(job.downloadUrl)} expectedPath={audioArchivePath(book?.workspace_id, job.id)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && audioExportsRef.current.includes(job)} isExpired={() => { const now = observePackageClock(); return clockFault.current || downloadExpired(job.downloadExpiresAt, now); }} onInvalid={(message, kind) => { if (kind === "expired") return; setGooglePlayExports([]); setError(message); }} className="font-medium underline disabled:opacity-40">Download private ZIP</PrivateArtifactDownload> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified. Refresh export history to renew it."}</span>)}
                       {job.totalDurationSeconds && <span className="text-xs text-white/45">{Math.floor(job.totalDurationSeconds / 60)} min · disclose “Synthesized voice” on upload</span>}
                       {running && <button type="button" onClick={() => void cancelGooglePlayExport(job.id)} disabled={!editable || Boolean(busy)} className="text-xs text-white/55 underline disabled:opacity-40">Cancel export</button>}</div>
                   </li>;
@@ -582,16 +708,16 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             <button type="button" onClick={() => void render()} disabled={!editable || !activeId || dirty || Boolean(busy) || renderBlocked} aria-describedby={renderBlocked ? "rtl-render-guidance" : undefined} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "render" ? "Rendering…" : `Render ${form.kind === "ebook" ? "EPUB" : "PDF"}`}</button></div>
           {dirty && <p className="mt-3 text-xs text-amber-200">Save these settings before rendering or validating.</p>}
           {renderBlocked && <p id="rtl-render-guidance" className="mt-3 text-sm text-amber-100">Rendering is disabled until the RTL typography requirement above is resolved. Preflight is still available.</p>}
-          {rendered && <div className="mt-5 grid gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <img src={artifact.download.url} alt="Rendered book cover" className="mt-3 max-h-80 w-full rounded-lg object-contain" /> : null}<a href={privateDownloadUrl(artifact.download.url, artifact.asset.name)} download onClick={event => { if (!currentIdentity || currentBook.current !== bookId || rendered.expiresAt !== undefined && Date.now() >= rendered.expiresAt) { event.preventDefault(); setRendered(null); setPreflight(null); setError("Private print links expired or this book changed. Open the saved print again to renew them."); } }} className="mt-3 inline-block text-sm underline">Download private file</a></div>)}</div>}
-          {form.kind === "print" && rendered && currentIdentity && book && activeId && <SavedPdfProof key={`${bookId}:${activeId}:${rendered.jobId}`} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} rendered={rendered} disabled={dirty || Boolean(busy)} />}
-          {form.kind === "print" && currentIdentity && book && activeId && <SavedPrintLibrary key={`${bookId}:${activeId}`} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} refreshKey={readerRefreshKey} dirty={dirty} disabled={dirty || Boolean(busy)} onSelect={adoptPrint} onInvalidate={invalidatePrint} />}
+          {rendered && <div className="mt-5 grid gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <img src={artifact.download.url} alt="Rendered book cover" className="mt-3 max-h-80 w-full rounded-lg object-contain" /> : null}<PrivateArtifactDownload actor={linkOwner} url={artifact.download.url} filename={artifact.asset.name} expectedPath={renderedStoragePath(book?.workspace_id, artifact)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && renderedRef.current === rendered} isExpired={() => rendered.expiresAt !== undefined && Date.now() >= rendered.expiresAt} onInvalid={message => { setRendered(null); setPreflight(null); setError(message); }} className="mt-3 inline-block text-sm underline disabled:opacity-40">Download private file</PrivateArtifactDownload></div>)}</div>}
+          {form.kind === "print" && rendered && currentIdentity && book && activeId && <SavedPdfProof key={`${linkOwner}:${bookId}:${activeId}:${rendered.jobId}`} actor={linkOwner} onAuthorizationFailure={invalidatePrint} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} rendered={rendered} disabled={dirty || Boolean(busy)} />}
+          {form.kind === "print" && currentIdentity && book && activeId && <SavedPrintLibrary key={`${linkOwner}:${bookId}:${activeId}`} actor={linkOwner} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} refreshKey={readerRefreshKey} dirty={dirty} disabled={dirty || Boolean(busy)} onSelect={adoptPrint} onInvalidate={invalidatePrint} />}
           <div className="mt-6 flex flex-wrap items-end gap-3 border-t border-white/10 pt-5"><label className="min-w-52 flex-1 text-sm text-white/65">Preflight target<select value={channel} onChange={(event) => { setChannel(event.target.value as Channel); setPreflight(null); }} className={fieldClass}><option value="export">Universal export</option><option value="kdp">Amazon KDP</option><option value="apple">Apple Books</option><option value="barnesnoble">Barnes & Noble Press</option><option value="lulu">Lulu</option><option value="googleplay">Google Play Books</option></select></label><button type="button" onClick={() => void validate()} disabled={!editable || !activeId || dirty || Boolean(busy) || !channelCompatible} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "preflight" ? "Checking…" : "Run preflight"}</button></div>
           {!channelCompatible && <p className="mt-3 text-sm text-amber-200">{channel === "lulu" ? "Lulu packages require a print PDF edition." : channel === "googleplay" ? "Google Play Books packages require an EPUB edition with an embedded front cover." : channel === "apple" ? "Apple Books packages require an EPUB edition." : "Choose an edition supported by this retailer."}</p>}
           {channel === "googleplay" && channelCompatible && <p className="mt-3 text-xs leading-5 text-white/45">Single-title Partner Center handoff only. Run EpubCheck and inspect Google’s processed preview, pricing, territories, and Review tab before publishing. This does not submit the book.</p>}
           {preflight && <div className="mt-5"><div className="flex flex-wrap gap-3 text-sm"><span className={`rounded-full px-3 py-1 ${preflight.errors ? "bg-red-400/15 text-red-100" : "bg-emerald-400/15 text-emerald-100"}`}>{preflight.errors} errors</span><span className="rounded-full bg-amber-300/10 px-3 py-1 text-amber-100">{preflight.warnings} warnings</span><span className="px-2 py-1 text-white/40">Rules {preflight.ruleVersion}</span></div>{preflight.findings.length ? <ul className="mt-4 space-y-2">{preflight.findings.map((finding, index) => <li key={`${finding.rule_id}:${finding.location}:${index}`} className="rounded-xl border border-white/10 p-3 text-sm"><span className="font-medium uppercase text-white/60">{finding.severity}</span> · {finding.message}<span className="mt-1 block text-xs text-white/35">{finding.rule_id}{finding.location ? ` · ${finding.location}` : ""}</span></li>)}</ul> : <p className="mt-4 text-sm text-emerald-200">No preflight findings for this target.</p>}</div>}
         </section>}
 
-        {currentIdentity && activeId && form.kind === "ebook" && <SavedEpubReader key={`${bookId}:${activeId}`} bookId={bookId} editionId={activeId} dirty={dirty} refreshKey={readerRefreshKey} />}
+        {currentIdentity && activeId && form.kind === "ebook" && <SavedEpubReader key={`${linkOwner}:${bookId}:${activeId}`} actor={linkOwner} workspaceId={book?.workspace_id ?? ""} bookId={bookId} editionId={activeId} dirty={dirty} refreshKey={readerRefreshKey} />}
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="package-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="package-title" className="text-xl font-semibold">Retailer export packages</h2><p className="mt-1 max-w-2xl text-sm text-white/45">Create a private ZIP from the exact saved render after a zero-error retailer preflight. The package is downloaded and submitted manually; this does not publish or track retailer review status.</p></div>
@@ -616,7 +742,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
           {packageHistory.editionId === activeId && packageHistory.status === "unavailable" && <p role="status" className="mt-4 text-sm text-amber-100">Package history is unavailable. Refresh before relying on this list.</p>}
           {packageHistory.editionId === activeId && packageHistory.status === "ready" && activePublishingJobs.length ? <ul className="mt-4 space-y-3">{activePublishingJobs.map((job) => <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium capitalize">{job.channel === "barnesnoble" ? "Barnes & Noble" : job.channel === "googleplay" ? "Google Play Books" : job.channel} package</p><p className="mt-1 text-xs text-white/40">{new Date(job.createdAt).toLocaleString()} · {job.ruleVersion ?? "rules pending"}</p></div><span className={`rounded-full px-3 py-1 text-xs ${job.status === "succeeded" && job.package ? "bg-emerald-400/15 text-emerald-100" : job.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{job.status === "succeeded" ? (job.package ? "ready" : "unavailable") : job.status}</span></div>
-            {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <a href={privateDownloadUrl(job.package.download.url, `${job.channel}-export.zip`)} download className="underline" onClick={event => { const now = observePackageClock(); if (!currentIdentity || currentBook.current !== bookId || viewEpoch.current !== linkEpoch || clockFault.current || downloadExpired(job.downloadExpiresAt, now)) event.preventDefault(); }}>Download private ZIP</a> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified. Refresh package history to renew it."}</span>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
+            {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <PrivateArtifactDownload actor={linkOwner} url={job.package.download.url} filename={`${job.channel}-export.zip`} expectedPath={packageStoragePath(book?.workspace_id, job)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && publishingJobsRef.current.includes(job)} isExpired={() => { const now = observePackageClock(); return clockFault.current || downloadExpired(job.downloadExpiresAt, now); }} onInvalid={(message, kind) => { if (kind === "expired") return; setPackageHistory({ editionId: activeId, status: "unavailable" }); setError(message); }} className="underline disabled:opacity-40">Download private ZIP</PrivateArtifactDownload> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified. Refresh package history to renew it."}</span>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
           </li>)}</ul> : packageHistory.editionId === activeId && packageHistory.status === "ready" ? <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p> : null}
         </section>}
       </div>

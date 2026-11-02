@@ -50,18 +50,20 @@ try {
   assert.equal(await packageButton.isEnabled(), false);
   await page.getByLabel('Preflight target').selectOption('kdp');
   await page.getByRole('button', { name: 'Render EPUB', exact: true }).click();
-  await page.getByRole('link', { name: 'Download private file', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Download private file', exact: true }).waitFor();
   assert.equal(await packageButton.isEnabled(), false, 'packaging allowed before preflight');
   await page.getByRole('button', { name: 'Run preflight', exact: true }).click();
   await page.getByText('0 errors', { exact: true }).waitFor();
   await packageButton.click();
-  const download = page.getByRole('link', { name: 'Download private ZIP', exact: true });
+  const download = page.getByRole('button', { name: 'Download private ZIP', exact: true });
   await download.waitFor();
-  const before = await download.getAttribute('href');
   const transfer = page.waitForEvent('download'); await download.click();
-  assert.equal(await (await transfer).failure(), null, 'fixture download failed');
+  const firstDownload = await transfer; assert.equal(await firstDownload.failure(), null, 'fixture download failed');
+  const before = firstDownload.url();
   await page.reload(); await download.waitFor();
-  assert.notEqual(await download.getAttribute('href'), before, 'history did not refresh download URL');
+  const renewedTransfer = page.waitForEvent('download'); await download.click();
+  const renewedDownload = await renewedTransfer; assert.equal(await renewedDownload.failure(), null);
+  assert.notEqual(renewedDownload.url(), before, 'history did not refresh download URL');
   await page.getByRole('button', { name: 'New print', exact: true }).click();
   await page.getByLabel('Include chapter contents', { exact: false }).check();
   await page.getByLabel('Publisher or imprint', { exact: true }).fill('Print Imprint');
@@ -106,7 +108,7 @@ try {
   assert.equal(await page.getByLabel('HTTPS destination').inputValue(), 'https://author.example/print');
   await page.getByLabel('Preflight target').selectOption('lulu');
   await page.getByRole('button', { name: 'Render PDF', exact: true }).click();
-  await page.getByRole('link', { name: 'Download private file', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Download private file', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Run preflight', exact: true }).click();
   await page.getByText('0 errors', { exact: true }).waitFor();
   assert.equal(await packageButton.isEnabled(), true, 'saved large-print proof was not ready for packaging');
@@ -127,7 +129,7 @@ try {
   assert.equal(await page.getByLabel('Interior bleed edges').inputValue(), 'all');
   await page.getByLabel('Preflight target').selectOption('lulu');
   await page.getByRole('button', { name: 'Render PDF', exact: true }).click();
-  await page.getByRole('link', { name: 'Download private file', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Download private file', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Run preflight', exact: true }).click();
   await page.getByText('0 errors', { exact: true }).waitFor();
   await page.getByLabel('Preflight target').selectOption('apple');
@@ -186,17 +188,19 @@ try {
   await advance('running');
   await page.getByText('Assembling and verifying private files', { exact: true }).waitFor();
   await advance('succeeded');
-  const archiveLink = page.getByRole('link', { name: 'Download private ZIP', exact: true });
+  const archiveLink = page.getByRole('button', { name: 'Download private ZIP', exact: true });
   await archiveLink.waitFor();
-  const archiveUrl = await archiveLink.getAttribute('href');
   const googlePlayTransfer = page.waitForEvent('download');
   await archiveLink.click();
-  assert.equal(await (await googlePlayTransfer).failure(), null);
+  const firstArchive = await googlePlayTransfer; assert.equal(await firstArchive.failure(), null);
+  const archiveUrl = firstArchive.url();
   await page.getByText(/disclose “Synthesized voice” on upload/).waitFor();
   await page.reload();
   await page.getByRole('button', { name: /^audiobook /i }).click();
   await archiveLink.waitFor();
-  assert.notEqual(await archiveLink.getAttribute('href'), archiveUrl, 'export history did not refresh private download URL');
+  const refreshedArchiveTransfer = page.waitForEvent('download'); await archiveLink.click();
+  const refreshedArchive = await refreshedArchiveTransfer; assert.equal(await refreshedArchive.failure(), null);
+  assert.notEqual(refreshedArchive.url(), archiveUrl, 'export history did not refresh private download URL');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'audiobook mobile overflow');
   // Seed saved string overrides only in the authenticated local fixture. Native
   // shaping and PNG/EPUB bytes are covered by Python tests, not these UI files.

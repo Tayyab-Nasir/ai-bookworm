@@ -57,7 +57,11 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
       if (!same(effectStates[index]?.dependencies, dependencies)) effects.push(() => {
         effectStates[index]?.cleanup?.(); const cleanup = fn(); effectStates[index] = { dependencies: dependencies ?? [], cleanup }; return cleanup;
       });
-    }, useLayoutEffect(fn: () => any) { effects.push(fn); }, useMemo: memo, useId: () => "fixture-reader", Suspense: "Suspense",
+    }, useMemo: memo, useId: () => "fixture-reader", Suspense: "Suspense",
+    useLayoutEffect(fn: () => any) {
+      if (path.endsWith("/PublishingStudio.tsx") && options.inner === "PublishingWorkspace") { fn(); return; }
+      effects.push(fn);
+    },
   };
   const helperExports = {};
   const compile = (source: string) => ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -94,7 +98,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/referrals")) return { claimPendingReferral: async () => {} };
     if (name.endsWith("/AssetBrowser")) return { default: "AssetBrowser" };
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
-    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "SavedPdfProof", "RetailerPackageRequest"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
+    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "SavedPdfProof", "RetailerPackageRequest", "PrivateArtifactDownload"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
     if (name.endsWith("/pdf-proof")) return { renderLinksDeadline };
     if (name.endsWith("/publishing-request")) return { ...publishingRequests, downloadClock: api.fixtureDownloadClock ?? publishingRequests.downloadClock };
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
@@ -882,14 +886,16 @@ test("Publishing history marks unavailable completed packages honestly and recov
     listChapters: async () => ({ chapters: [] }), listAssets: async () => ({ assets: [] }),
     createPublishingJob: async () => { generated++; }, renderEdition: async () => { generated++; },
   };
-  const h = harness("apps/web/components/PublishingStudio.tsx", api, { props: { bookId: B } });
+  const h = harness("apps/web/components/PublishingStudio.tsx", api, { inner: "PublishingWorkspace", props: { bookId: B, active: true,
+    scope: { actor: A, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() },
+    editionRisks: { current: new Map() }, verifiedAccess: { book: { id: B, workspace_id: A, language: "en", title: "Fixture book" }, role: "owner" } } });
   h.render(); await h.callbacks.find(fn => fn.toString().includes("api.getBook"))!();
   h.render(); const historyEffect = h.effects.find(fn => fn.toString().includes("readPackageHistory")); assert(historyEffect); historyEffect(); await settle();
   const assertAvailability = (available: boolean) => {
     const tree = h.render(); const row = nodes(tree).find(node => node.type === "li" && node.key === "saved-package"); assert(row);
     const badge = nodes(row).find(node => node.type === "span" && node.props.children === (available ? "ready" : "unavailable")); assert(badge);
     assert.equal(badge.props.className.includes("emerald"), available);
-    assert.equal(nodes(row).some(node => node.type === "a" && node.props.children === "Download private ZIP"), available);
+    assert.equal(nodes(row).some(node => node.type === "PrivateArtifactDownload" && node.props.children === "Download private ZIP"), available);
     assert.equal(generated, 0);
   };
   assertAvailability(false);
@@ -911,19 +917,21 @@ test("Publishing history withdraws a link expiring between render and effect", a
     listPublishingJobs: async () => ({ jobs: [{ id: "saved-package", editionId: A, channel: "kdp", status: "succeeded", createdAt: "2026-10-17T00:00:00Z", package: { asset: { id: B, size_bytes: 1024, checksum: "a".repeat(64) }, download: { url: "https://storage.example/saved.zip", expiresIn: 1 } } }] }),
     listChapters: async () => ({ chapters: [] }), listAssets: async () => ({ assets: [] }),
   };
-  const h = harness("apps/web/components/PublishingStudio.tsx", api, { props: { bookId: B } });
+  const h = harness("apps/web/components/PublishingStudio.tsx", api, { inner: "PublishingWorkspace", props: { bookId: B, active: true,
+    scope: { actor: A, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() },
+    editionRisks: { current: new Map() }, verifiedAccess: { book: { id: B, workspace_id: A, language: "en", title: "Fixture book" }, role: "owner" } } });
   h.render(); await h.callbacks.find(fn => fn.toString().includes("api.getBook"))!();
   h.render(); const historyEffect = h.effects.find(fn => fn.toString().includes("readPackageHistory")); assert(historyEffect); historyEffect(); await settle();
   const before = h.render();
-  assert(nodes(before).some(node => node.type === "a" && node.props.children === "Download private ZIP"));
-  const expiryEffect = h.effects.find(fn => fn.toString().includes("visibilitychange")); assert(expiryEffect);
+  assert(nodes(before).some(node => node.type === "PrivateArtifactDownload" && node.props.children === "Download private ZIP"));
+  const expiryEffect = h.effects.find(fn => fn.toString().includes("nextDownloadClockWait")); assert(expiryEffect);
   clock = { wall: 2001, monotonic: 2001 };
   expiryEffect();
   assert.equal(timers.length, 1);
   assert.equal(timers[0].delay, 0, "expired links visible at render require immediate withdrawal");
   timers[0].callback();
   const after = h.render();
-  assert.equal(nodes(after).some(node => node.type === "a" && node.props.children === "Download private ZIP"), false);
+  assert.equal(nodes(after).some(node => node.type === "PrivateArtifactDownload" && node.props.children === "Download private ZIP"), false);
   assert(nodes(after).some(node => node.type === "span" && typeof node.props.children === "string" && node.props.children.includes("Private link expired")));
 });
 
@@ -942,13 +950,15 @@ test("Publishing render refreshes the real saved reader once; unsaved edits pres
       return { source, formatVersion: "epub-reader-1.0.0", layout: "reflowable", spine: [{ index: 0, title: "Saved chapter", layout: "reflowable" }], document: { index, title: "Saved chapter", layout: "reflowable", direction: "ltr", html: `<div><p>${jobId === latest.jobId ? "Latest" : "Older"} saved snapshot.</p></div>`, resources: [] }, warnings: [] };
     },
   };
-  const parent = harness("apps/web/components/PublishingStudio.tsx", api, { props: { bookId: B } });
+  const parent = harness("apps/web/components/PublishingStudio.tsx", api, { inner: "PublishingWorkspace", props: { bookId: B, active: true,
+    scope: { actor: A, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() },
+    editionRisks: { current: new Map() }, verifiedAccess: { book: { id: B, workspace_id: A, language: "en", title: "Fixture book" }, role: "owner" } } });
   parent.render(); await parent.callbacks.find(fn => fn.toString().includes("api.getBook"))!();
   let parentTree = parent.render(); const initial = props(parentTree, "SavedEpubReader"); assert(initial);
   const child = harness("apps/web/components/SavedEpubReader.tsx", api, { props: initial, trackDependencies: true });
   const syncReader = async () => { child.setProps(props(parent.render(), "SavedEpubReader")); child.render(); for (const effect of [...child.effects]) effect(); await settle(); return child.render(); };
   await syncReader(); assert.equal(historyReads, 1);
-  const renderButton = nodes(parentTree).find(node => node.type === "button" && node.props.children === "Render EPUB"); assert(renderButton); renderButton.props.onClick();
+  const renderButton = nodes(parent.render()).find(node => node.type === "button" && node.props.children === "Render EPUB"); assert(renderButton); renderButton.props.onClick();
   await syncReader(); assert.equal(historyReads, 1, "starting a render is not a completed saved export");
   pendingRender.resolve({ jobId: latest.jobId, status: "succeeded", artifacts: [{ asset: { ...asset(latest.assetId, B), name: "Saved.epub", mime_type: "application/epub+zip" }, role: "rendered_ebook", download: { url: `https://storage.example.test/storage/v1/object/sign/book-assets/workspaces/${B}/assets/${latest.assetId}/v1/book.epub?token=synthetic`, expiresIn: 300 } }] }); await settle();
   await syncReader(); parentTree = parent.render(); const completed = props(parentTree, "SavedEpubReader");

@@ -68,9 +68,11 @@ try {
   page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.dismiss());
   page.on('request', (request) => { if (request.url().includes('reader-hostile.example')) hostileRequests.push(request.url()); });
   let mode = 'busy-section'; let heldResource; let releaseResource; let downloadTicket = 0; let readOnly = false;
-  await page.route(`${fixtureOrigin}/fixture-reader-artifact?*`, async (route) => {
-    const url = new URL(route.request().url()); const artifact = artifacts.find((entry) => entry.source.jobId === url.searchParams.get('jobId'));
-    assert.ok(artifact); await route.fulfill({ status: 200, contentType: 'application/epub+zip', headers: { 'content-disposition': 'attachment; filename="saved-proof.epub"', 'cache-control': 'no-store' }, body: Buffer.from(artifact.base64, 'base64') });
+  await page.route(`${fixtureOrigin}/storage/v1/object/sign/book-assets/**`, async (route) => {
+    const url = new URL(route.request().url()); const artifact = artifacts.find((entry) => url.pathname.endsWith(`/assets/${entry.source.assetId}/v1/book.epub`));
+    assert.ok(artifact); assert.ok(url.searchParams.get('token'));
+    assert.equal(url.searchParams.get('download'), 'book.epub');
+    await route.fulfill({ status: 200, contentType: 'application/epub+zip', headers: { 'content-disposition': 'attachment; filename="book.epub"', 'cache-control': 'no-store' }, body: Buffer.from(artifact.base64, 'base64') });
   });
   await page.route(`${appOrigin}/api/backend/v1/**`, async (route) => {
     const request = route.request(); const url = new URL(request.url()); const path = url.pathname.replace('/api/backend', '');
@@ -85,9 +87,9 @@ try {
       const artifact = artifacts[0]; explicitRenders.push({ path, idempotencyKey: body.idempotencyKey });
       return json(201, { jobId: artifact.source.jobId, status: 'succeeded', artifacts: [{ role: 'rendered_ebook', asset: {
         id: artifact.source.assetId, workspace_id: '33333333-3333-4333-8333-333333333333', folder_id: null, type: 'rendered_ebook', name: 'saved-proof.epub',
-        storage_path: 'fixture/saved-proof.epub', mime_type: 'application/epub+zip', size_bytes: artifact.source.sizeBytes, checksum: artifact.source.sha256,
+        storage_path: `workspaces/33333333-3333-4333-8333-333333333333/assets/${artifact.source.assetId}/v1/book.epub`, mime_type: 'application/epub+zip', size_bytes: artifact.source.sizeBytes, checksum: artifact.source.sha256,
         status: 'approved', current_version_number: 1, created_by: '11111111-1111-4111-8111-111111111111', created_at: artifact.createdAt, updated_at: artifact.createdAt,
-      }, download: { url: `${fixtureOrigin}/fixture-reader-artifact?jobId=${artifact.source.jobId}&ticket=render`, expiresIn: 300 } }] });
+      }, download: { url: `${fixtureOrigin}/storage/v1/object/sign/book-assets/workspaces/33333333-3333-4333-8333-333333333333/assets/${artifact.source.assetId}/v1/book.epub?token=render`, expiresIn: 300 } }] });
     }
     if (request.method() !== 'GET') { mutations.push({ method: request.method(), path }); return route.continue(); }
     if (readOnly && path === `/v1/books/${artifacts[0].source.bookId}`) {
@@ -121,7 +123,7 @@ try {
     if (asset && artifacts.some((entry) => entry.source.assetId === asset[1])) {
       assert.equal(url.searchParams.get('versionNumber'), '1', 'download did not request exact version1');
       const artifact = artifacts.find((entry) => entry.source.assetId === asset[1]);
-      return json(200, { url: `${fixtureOrigin}/fixture-reader-artifact?jobId=${artifact.source.jobId}&ticket=${++downloadTicket}`, expiresIn: 300 });
+      return json(200, { url: `${fixtureOrigin}/storage/v1/object/sign/book-assets/workspaces/33333333-3333-4333-8333-333333333333/assets/${artifact.source.assetId}/v1/book.epub?token=fixture-${++downloadTicket}`, expiresIn: 300 });
     }
     return route.continue();
   });
@@ -203,10 +205,10 @@ try {
   assert.equal(await page.evaluate(() => window.__readerExecuted), undefined); assert.deepEqual(hostileRequests, []);
   await desk.getByRole('button', { name: 'Retry saved section', exact: true }).click(); await content.getByText('Older export two — exact saved text.', { exact: true }).waitFor();
   await desk.getByRole('button', { name: 'Renew exact EPUB download', exact: true }).click();
-  const privateLink = desk.getByRole('link', { name: 'Download saved EPUB v1', exact: true }); await privateLink.waitFor(); const firstUrl = await privateLink.getAttribute('href');
+  const privateLink = desk.getByRole('button', { name: 'Download saved EPUB v1', exact: true }); await privateLink.waitFor(); const firstTicket = downloadTicket;
   const downloadEvent = page.waitForEvent('download'); await privateLink.click(); const download = await downloadEvent;
   assert.equal(await download.failure(), null); assert.equal(createHash('sha256').update(await readFile(await download.path())).digest('hex'), artifacts[1].source.sha256);
-  await desk.getByRole('button', { name: 'Renew exact EPUB download', exact: true }).click(); await privateLink.waitFor(); assert.notEqual(await privateLink.getAttribute('href'), firstUrl);
+  await desk.getByRole('button', { name: 'Renew exact EPUB download', exact: true }).click(); await privateLink.waitFor(); assert.equal(downloadTicket, firstTicket + 1);
   mode = 'forbidden'; await desk.getByRole('button', { name: 'Next saved section', exact: true }).click();
   await desk.getByRole('alert').filter({ hasText: 'Your session or access changed.' }).waitFor();
   assert.equal(await desk.locator('iframe').count(), 0); assert.equal(await desk.getByLabel('Saved EPUB export').count(), 0); assert.equal(await privateLink.count(), 0);
@@ -258,7 +260,7 @@ try {
   await page.getByRole('status').filter({ hasText: 'Private render completed.' }).waitFor();
   await expect.poll(() => historyRequests.length).toBe(historyBeforeRender + 1);
   await waitReader(first.source.jobId, 0); assert.equal(explicitRenders.length, 1);
-  await expect(page.getByRole('link', { name: 'Download private file', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Download private file', exact: true })).toHaveCount(1);
   await desk.getByLabel('Saved EPUB export').selectOption(artifacts[1].source.jobId); await waitReader(artifacts[1].source.jobId, 0);
   await desk.getByLabel('Saved EPUB section').selectOption(String(opening)); await waitReader(artifacts[1].source.jobId, opening);
   await content.getByText('Older export two — exact saved text.', { exact: true }).waitFor();
@@ -267,7 +269,7 @@ try {
   await desk.getByText(/Unsaved edition settings are not included/).waitFor();
   await expect(page.getByRole('button', { name: 'Render EPUB', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Create retailer package', exact: true })).toBeDisabled();
-  await expect(page.getByRole('link', { name: 'Download private file', exact: true })).toHaveCount(0, { timeout: 30000 });
+  await expect(page.getByRole('button', { name: 'Download private file', exact: true })).toHaveCount(0, { timeout: 30000 });
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await waitReader(artifacts[1].source.jobId, opening);
   await content.getByText('Older export two — exact saved text.', { exact: true }).waitFor();

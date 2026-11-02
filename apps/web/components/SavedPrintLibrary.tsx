@@ -5,11 +5,11 @@ import { ApiClientError, type RenderedEditionResult, type SavedPrintRender } fro
 import { apiClient } from "./api";
 import { validatePrintDownload, validatePrintHistory } from "../lib/saved-print";
 
-export default function SavedPrintLibrary({ bookId, workspaceId, editionId, refreshKey = "", disabled = false, dirty = false, onSelect, onInvalidate }: {
-  bookId: string; workspaceId: string; editionId: string; refreshKey?: string; disabled?: boolean; dirty?: boolean;
+export default function SavedPrintLibrary({ actor, bookId, workspaceId, editionId, refreshKey = "", disabled = false, dirty = false, onSelect, onInvalidate }: {
+  actor: string | null; bookId: string; workspaceId: string; editionId: string; refreshKey?: string; disabled?: boolean; dirty?: boolean;
   onSelect: (result: RenderedEditionResult, expiresAt: number) => void; onInvalidate: (jobId: string) => void;
 }) {
-  const api = apiClient(); const owner = `${bookId}:${workspaceId}:${editionId}`;
+  const api = apiClient(actor ?? undefined); const owner = `${actor ?? ""}:${bookId}:${workspaceId}:${editionId}`;
   const currentOwner = useRef(owner); currentOwner.current = owner;
   const currentDisabled = useRef(disabled); currentDisabled.current = disabled;
   const epoch = useRef(0); const busyRef = useRef(false);
@@ -24,7 +24,7 @@ export default function SavedPrintLibrary({ bookId, workspaceId, editionId, refr
     selection.current = null; setOpened(null);
   }, [onInvalidate]);
   const refresh = useCallback(async () => {
-    if (busyRef.current || currentDisabled.current) return;
+    if (!actor || busyRef.current || currentDisabled.current) return;
     const ticket = ++epoch.current; const valid = () => currentOwner.current === owner && epoch.current === ticket;
     needsHistory.current = false;
     busyRef.current = true; setBusy(true); setError(null); invalidate(); setRenders([]); setVisibleOwner(owner);
@@ -33,7 +33,7 @@ export default function SavedPrintLibrary({ bookId, workspaceId, editionId, refr
       if (valid()) setRenders(validatePrintHistory(response, bookId, editionId));
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh print history."); }
     finally { if (valid()) { busyRef.current = false; setBusy(false); } }
-  }, [api, bookId, editionId, invalidate, owner]);
+  }, [api, actor, bookId, editionId, invalidate, owner]);
   useEffect(() => {
     epoch.current++; busyRef.current = false; needsHistory.current = true; setBusy(false); invalidate(); setRenders([]); setVisibleOwner(owner);
     if (!disabled) void refresh();
@@ -50,7 +50,7 @@ export default function SavedPrintLibrary({ bookId, workspaceId, editionId, refr
     return () => window.clearTimeout(timer);
   }, [opened, invalidate]);
   const open = async (proof: SavedPrintRender) => {
-    if (busyRef.current || currentDisabled.current || currentOwner.current !== owner) return;
+    if (!actor || busyRef.current || currentDisabled.current || currentOwner.current !== owner) return;
     const ticket = ++epoch.current; const valid = () => currentOwner.current === owner && epoch.current === ticket && !currentDisabled.current;
     busyRef.current = true; setBusy(true); setError(null); invalidate();
     const startedAt = Date.now();
@@ -65,7 +65,7 @@ export default function SavedPrintLibrary({ bookId, workspaceId, editionId, refr
       onSelect(confirmed, expiresAt);
     } catch (reason) {
       if (!valid()) return;
-      if (reason instanceof ApiClientError && [401, 403].includes(reason.status)) setRenders([]);
+      if (reason instanceof ApiClientError && [401, 403, 409].includes(reason.status)) setRenders([]);
       setError(reason instanceof Error ? reason.message : "Could not verify this saved print proof. No new render was created.");
     } finally { if (currentOwner.current === owner && epoch.current === ticket) { busyRef.current = false; setBusy(false); } }
   };

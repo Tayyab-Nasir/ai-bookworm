@@ -5,6 +5,7 @@ import { requireWorkspaceApprover, requireWorkspaceMember } from "../lib/authori
 import type { SupabaseClient } from "../lib/supabase.js";
 import { assembleChapterAudio, loadChapterAudio } from "../lib/audio-download.js";
 import { googlePlayIdentifierSchemaSafe } from "../lib/google-play-audio-export.js";
+import { privateAudioRoutes } from "../lib/private-audio-stream.js";
 
 const BUCKET = "book-assets";
 // Only these columns are available to an authenticated workspace member.
@@ -67,8 +68,7 @@ function publicExportJob(job: Record<string, unknown>, downloadUrl: string | nul
     synthesizedVoiceDisclosureRequired: true,
   };
 }
-
-async function hydrateProject(sb: SupabaseClient, project: Record<string, unknown>) {
+async function hydrateProject(sb: SupabaseClient, project: Record<string, unknown>, proxyDelivery = false) {
   // Missing mode is compatible with history from the pre-quote schema, not corrupt modes.
   const billingMode = project.billing_mode === undefined ? "operational" : project.billing_mode;
   if (billingMode !== "quoted" && billingMode !== "operational") throw new AppError(503, "Could not verify narration billing mode.");
@@ -87,12 +87,17 @@ async function hydrateProject(sb: SupabaseClient, project: Record<string, unknow
   const output = [];
   for (const segment of segments ?? []) {
     const asset = segment.asset_id ? assetMap.get(segment.asset_id) ?? null : null;
+    const job = jobMap.get(segment.ai_job_id);
+    if (proxyDelivery) {
+      output.push({ index: segment.segment_index, status: job?.status ?? "unknown", failureCode: job?.error_code ?? null,
+        asset, audioAvailable: Boolean(asset && segment.completed_at) });
+      continue;
+    }
     let download: { url: string; expiresIn: number } | null = null;
     if (asset) {
       const signed = await sb.storage.from(BUCKET).createSignedUrl(asset.storage_path, 300);
       if (!signed.error && signed.data?.signedUrl) download = { url: signed.data.signedUrl, expiresIn: 300 };
     }
-    const job = jobMap.get(segment.ai_job_id);
     output.push({ index: segment.segment_index, status: job?.status ?? "unknown", failureCode: job?.error_code ?? null, asset, download });
   }
   return {
@@ -114,6 +119,7 @@ async function hydrateProject(sb: SupabaseClient, project: Record<string, unknow
 }
 
 export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
+  privateAudioRoutes(app);
   // Bounded per API process; the renderer also serializes native assembly.
   const assembling = new Set<string>();
   app.post("/editions/:editionId/audiobook-google-play-export", async (req, reply) => {
@@ -302,7 +308,9 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
       .eq("edition_id", editionId).order("created_at", { ascending: false }).limit(100);
     if (error) throw new AppError(500, "Could not load audiobook history.");
     reply.header("cache-control", "private, no-store");
-    return { projects: await Promise.all((data ?? []).map((project) => hydrateProject(sb, project))) };
+    const delivery = (req.query as {delivery?: unknown}).delivery;
+    if (delivery !== undefined && delivery !== "proxy") throw new AppError(400, "Unsupported audio delivery.");
+    return { projects: await Promise.all((data ?? []).map((project) => hydrateProject(sb, project, delivery === "proxy"))) };
   });
 
   app.get("/audiobook-jobs/:projectId", async (req, reply) => {
@@ -314,7 +322,9 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
     if (error) throw new AppError(500, "Could not load audiobook job.");
     if (!data) throw new AppError(404, "Audiobook job not found.");
     reply.header("cache-control", "private, no-store");
-    return hydrateProject(sb, data);
+    const delivery = (req.query as {delivery?: unknown}).delivery;
+    if (delivery !== undefined && delivery !== "proxy") throw new AppError(400, "Unsupported audio delivery.");
+    return hydrateProject(sb, data, delivery === "proxy");
   });
 
   app.post("/editions/:editionId/audiobook-jobs", async (_req, reply) => {

@@ -32,9 +32,11 @@ const audioExportKeys = new Map();
 let lostExportReply = false;
 let chapterDownloadAttempts = 0;
 const fixtureFiles = new Map();
-function fixtureDownload(name) {
-  const token = randomUUID(); fixtureFiles.set(token, name);
-  return { url: `http://127.0.0.1:4399/fixture-artifact?token=${token}`, expiresIn: 300 };
+function fixtureDownload(name, storagePath) {
+  const token = randomUUID();
+  const pathname = storagePath ? `/storage/v1/object/sign/book-assets/${storagePath}` : '/fixture-artifact';
+  fixtureFiles.set(token, { name, pathname });
+  return { url: `http://127.0.0.1:4399${pathname}?token=${token}`, expiresIn: 300 };
 }
 let lostChapterReply = false;
 let lostBookReply = false;
@@ -119,9 +121,10 @@ const server = createServer(async (req, res) => {
     }
     return json(200, { jobs: [...audioExports.values()], keys: [...audioExportKeys.keys()] });
   }
-  if (url.pathname === '/fixture-artifact' && fixtureFiles.has(url.searchParams.get('token'))) {
-    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="fixture-artifact.txt"', 'cache-control': 'no-store' });
-    return res.end(`UI acceptance fixture only: ${fixtureFiles.get(url.searchParams.get('token'))}`);
+  if (fixtureFiles.get(url.searchParams.get('token'))?.pathname === url.pathname) {
+    const name = url.searchParams.get('download') || 'fixture-artifact.txt';
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${name.replace(/["\\\r\n]/g, '_')}"`, 'cache-control': 'no-store' });
+    return res.end(`UI acceptance fixture only: ${fixtureFiles.get(url.searchParams.get('token')).name}`);
   }
   if (url.pathname === '/fixture-setup-counts') return json(200, setupCounts);
   if (url.pathname === '/fixture-image' && previewTokens.has(url.searchParams.get('token'))) {
@@ -146,11 +149,11 @@ const server = createServer(async (req, res) => {
   if (process.env.FIXTURE_PUBLISHING === 'true') {
     if (url.pathname === `/v1/books/${memoryBookId}/editions`) {
       if (req.method === 'GET') return json(200, { editions: [...publishingEditions.values()] });
-      const edition = { id: randomUUID(), book_id: memoryBookId, type: body.config.kind, language: body.language, status: 'draft', edition_metadata_json: body.config, updated_at: new Date().toISOString() };
+      const edition = { id: randomUUID(), book_id: memoryBookId, type: body.config.kind, language: body.language, status: 'draft', edition_metadata_json: body.config.kind === 'ebook' ? { ...body.config, metadata_overrides: body.config.metadata_overrides ?? {} } : body.config, updated_at: new Date().toISOString() };
       publishingEditions.set(edition.id, edition); return json(201, edition);
     }
     const edition = publishingEditions.get(url.pathname.split('/')[3]);
-    const exportSummary = (job) => ({ ...job, downloadUrl: job.status === 'succeeded' ? fixtureDownload('Google Play synthesized-voice ZIP').url : null, downloadExpiresIn: job.status === 'succeeded' ? 300 : null });
+    const exportSummary = (job) => ({ ...job, downloadUrl: job.status === 'succeeded' ? fixtureDownload('Google Play synthesized-voice ZIP', `workspaces/${memoryBook.workspace_id}/audiobook-exports/${job.id}/${randomUUID()}.zip`).url : null, downloadExpiresIn: job.status === 'succeeded' ? 300 : null });
     if (edition && req.method === 'GET' && url.pathname.endsWith('/audiobook-google-play-exports')) {
       return json(200, { jobs: [...audioExports.values()].filter((job) => job.editionId === edition.id).map(exportSummary) });
     }
@@ -214,11 +217,13 @@ const server = createServer(async (req, res) => {
     }
     if (edition && req.method === 'PATCH') {
       if (body.expectedUpdatedAt !== edition.updated_at) return json(409, { error: { message: 'Edition changed' } });
-      Object.assign(edition, { edition_metadata_json: body.config, language: body.language, updated_at: new Date().toISOString() });
+      Object.assign(edition, { edition_metadata_json: body.config.kind === 'ebook' ? { ...body.config, metadata_overrides: body.config.metadata_overrides ?? {} } : body.config, language: body.language, updated_at: new Date().toISOString() });
       return json(200, edition);
     }
     if (edition && url.pathname.endsWith('/render')) {
-      const render = { jobId: randomUUID(), status: 'succeeded', artifacts: [{ role: 'rendered_ebook', asset: { id: randomUUID(), name: 'Harbor.epub', mime_type: 'application/epub+zip', size_bytes: 1200 }, download: fixtureDownload('render') }] };
+      const assetId = randomUUID(), print = edition.type === 'print', filename = print ? 'book.pdf' : 'book.epub';
+      const path = `workspaces/${memoryBook.workspace_id}/assets/${assetId}/v1/${filename}`;
+      const render = { jobId: randomUUID(), status: 'succeeded', artifacts: [{ role: print ? 'rendered_print' : 'rendered_ebook', asset: { id: assetId, workspace_id: memoryBook.workspace_id, storage_path: path, name: print ? 'Harbor.pdf' : 'Harbor.epub', mime_type: print ? 'application/pdf' : 'application/epub+zip', size_bytes: 1200 }, download: fixtureDownload('render', path) }] };
       publishingRenders.set(render.jobId, { editionId: edition.id }); return json(201, render);
     }
     if (url.pathname === '/v1/publishing/validate') {
@@ -227,12 +232,13 @@ const server = createServer(async (req, res) => {
       publishingChecks.set(check.jobId, { editionId: body.editionId, channel: body.channel }); return json(201, check);
     }
     if (url.pathname === '/v1/publishing/jobs') {
-      if (req.method === 'GET') return json(200, { jobs: publishingPackages.map((job) => ({ ...job, package: { ...job.package, download: fixtureDownload('package') } })) });
+      if (req.method === 'GET') return json(200, { jobs: publishingPackages.map((job) => ({ ...job, package: { ...job.package, download: fixtureDownload('package', job.package.asset.storage_path) } })) });
       const render = publishingRenders.get(body.renderJobId); const check = publishingChecks.get(body.preflightJobId);
       if (!render || render.editionId !== body.editionId || !check || check.editionId !== body.editionId || check.channel !== body.channel) return json(422, { error: { message: 'Mismatched render/preflight sources' } });
+      const assetId = randomUUID(), path = `workspaces/${memoryBook.workspace_id}/assets/${assetId}/v1/${body.channel}-export.zip`;
       const job = { id: randomUUID(), requestId: body.idempotencyKey, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
         bookId: body.bookId, editionId: body.editionId, channel: body.channel, status: 'succeeded', submissionMode: 'manual', createdAt: new Date().toISOString(), ruleVersion: 'fixture-1',
-        package: { asset: { id: randomUUID(), size_bytes: 1600, checksum: 'f'.repeat(64) }, download: fixtureDownload('package') } };
+        package: { asset: { id: assetId, workspace_id: memoryBook.workspace_id, storage_path: path, size_bytes: 1600, checksum: 'f'.repeat(64) }, download: fixtureDownload('package', path) } };
       publishingPackages.push(job); return json(201, job);
     }
   }

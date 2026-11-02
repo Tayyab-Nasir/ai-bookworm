@@ -91,3 +91,20 @@ test("chapter purchase confirms the exact maximum and two consents; a lost reply
     assert.deepEqual(JSON.parse(String(calls[2]!.init!.body)), body, "an explicit same-offer replay keeps the original confirmation");
   } finally { globalThis.fetch = original; }
 });
+
+test("private audiobook history opts in and binds the requested actor", async () => {
+  const original = globalThis.fetch;
+  const calls: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = async (url, init) => { calls.push({ url: String(url), init }); return Response.json({ projects: [] }); };
+  try {
+    const client = createClient({ baseUrl: "/api/backend" });
+    await client.listPrivateAudiobookProjects("edition/one", "actor-one");
+    await client.listAudiobookProjects("edition-two");
+    assert.deepEqual(calls.map(call => call.url), [
+      "/api/backend/v1/editions/edition%2Fone/audiobook-jobs?delivery=proxy",
+      "/api/backend/v1/editions/edition-two/audiobook-jobs",
+    ]);
+    assert.equal(new Headers(calls[0]!.init!.headers).get("x-bookworm-actor"), "actor-one");
+    assert.equal(new Headers(calls[1]!.init!.headers).has("x-bookworm-actor"), false);
+  } finally { globalThis.fetch = original; }
+});

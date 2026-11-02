@@ -98,7 +98,7 @@ export async function runNativePublishingBrowser({ page, bookId, passage, screen
       await expect.poll(() => desk.frameLocator('iframe').locator('img').evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
       await expect(desk.locator('iframe')).toHaveAttribute('sandbox', '');
       await desk.getByRole('button', { name: 'Renew exact EPUB download', exact: true }).click();
-      await download(page, desk.getByRole('link', { name: 'Download saved EPUB v1', exact: true }), artifact.asset.checksum);
+      await download(page, desk.getByRole('button', { name: 'Download saved EPUB v1', exact: true }), artifact.asset.checksum);
       await screenshot('publishing-epub-desktop');
       await page.setViewportSize({ width: 390, height: 844 });
       await screenshot('publishing-epub-mobile');
@@ -109,31 +109,37 @@ export async function runNativePublishingBrowser({ page, bookId, passage, screen
       await page.getByRole('button', { name: /^print /i }).click();
       await page.getByRole('button', { name: 'Open saved print', exact: true }).click();
       await expect(page.getByText('Saved print proof opened. Run fresh preflight before creating a package.', { exact: true })).toBeVisible();
-      const link = page.getByRole('link', { name: 'Download private file', exact: true });
-      const attachmentUrl = new URL(await link.getAttribute('href'));
+      const link = page.getByRole('button', { name: 'Download private file', exact: true });
       const desk = page.getByRole('region', { name: 'Saved PDF page proof', exact: true });
       const image = desk.getByRole('img');
       await expect(image).toBeVisible();
       await expect.poll(() => image.evaluate(node => node.complete && node.naturalWidth >= 720)).toBe(true);
       assert.match(await image.getAttribute('src'), /^data:image\/png;base64,/);
       assert.equal(await page.getByTitle('Rendered print edition preview', { exact: true }).count(), 0);
-      assert.equal(attachmentUrl.searchParams.get('download'), artifact.asset.name);
-      const original = new URL(attachmentUrl); original.searchParams.delete('download');
-      const originalResponse = await localFetch(origins)(original.href);
-      assert.equal(originalResponse.status, 200);
-      assert.equal(createHash('sha256').update(Buffer.from(await originalResponse.arrayBuffer())).digest('hex'), artifact.asset.checksum);
       await desk.getByRole('button', { name: 'Next page', exact: true }).click();
       await expect(desk.getByRole('img')).toHaveAttribute('alt', /^Saved interior, page 2 of /);
       await expect.poll(() => desk.getByRole('img').evaluate(node => node.complete && node.naturalWidth >= 720)).toBe(true);
       await desk.getByRole('button', { name: 'Previous page', exact: true }).click();
       await expect(desk.getByRole('img')).toHaveAttribute('alt', /^Saved interior, page 1 of /);
+      // The signed URL is kept out of the DOM. Observe the actual Storage request
+      // triggered by the explicit click and retain both inline and attachment checks.
+      const request = page.waitForEvent('request', { predicate: value => {
+        const url = new URL(value.url());
+        return url.pathname.includes(artifact.asset.id) && url.searchParams.get('download') === artifact.asset.name;
+      } });
+      const location = page.url();
+      await download(page, link, artifact.asset.checksum);
+      const attachmentUrl = new URL((await request).url());
+      assert.equal(attachmentUrl.searchParams.get('download'), artifact.asset.name);
+      const original = new URL(attachmentUrl); original.searchParams.delete('download');
+      const originalResponse = await localFetch(origins)(original.href);
+      assert.equal(originalResponse.status, 200);
+      assert.equal(createHash('sha256').update(Buffer.from(await originalResponse.arrayBuffer())).digest('hex'), artifact.asset.checksum);
       // The headless shell downloads inline PDFs too; require Storage's real attachment header.
       const attachment = await localFetch(origins)(attachmentUrl.href);
       assert.equal(attachment.status, 200);
       assert.match(attachment.headers.get('content-disposition') ?? '', /^attachment(?:;|$)/i);
       assert.equal(createHash('sha256').update(Buffer.from(await attachment.arrayBuffer())).digest('hex'), artifact.asset.checksum);
-      const location = page.url();
-      await download(page, link, artifact.asset.checksum);
       assert.equal(page.url(), location);
       await expect(page.getByRole('button', { name: 'Renew private links', exact: true })).toBeEnabled();
       await screenshot('publishing-print-desktop');
@@ -248,7 +254,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         onStage(`retailer browser ${channel} ${edition.kind} exact private ZIP download`);
         const row = history.getByRole('listitem').first();
         await expect(row.getByText('ready', { exact: true })).toBeVisible();
-        const bytes = await download(page, row.getByRole('link', { name: 'Download private ZIP', exact: true }), job.package.asset.checksum);
+        const bytes = await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), job.package.asset.checksum);
         assert.equal(page.url(), publishUrl, 'ZIP download replaced the author interface');
         const archive = inspectNativePackage(bytes);
         assert.equal(archive.manifest.channel, channel); assert.equal(archive.preflight.errors, 0);
@@ -274,12 +280,12 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     const index = jobs.filter(job => job.editionId === saved.edition.id).findIndex(job => job.id === saved.job.id);
     assert.ok(index >= 0);
     const row = history.getByRole('listitem').nth(index);
-    await download(page, row.getByRole('link', { name: 'Download private ZIP', exact: true }), saved.job.package.asset.checksum);
+    await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), saved.job.package.asset.checksum);
     onStage('retailer browser deleted package history');
     await api('DELETE', `/assets/${saved.job.package.asset.id}`);
     await history.getByRole('button', { name: 'Refresh', exact: true }).click();
     await expect(row.getByText('unavailable', { exact: true })).toBeVisible();
-    await expect(row.getByRole('link', { name: 'Download private ZIP', exact: true })).toHaveCount(0);
+    await expect(row.getByRole('button', { name: 'Download private ZIP', exact: true })).toHaveCount(0);
     await expect(row.getByText(/This job is saved in history, but its file is currently unavailable/)).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
     await screenshot('retailer-unavailable-mobile');
@@ -287,7 +293,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     await api('POST', `/assets/${saved.job.package.asset.id}/restore`);
     await history.getByRole('button', { name: 'Refresh', exact: true }).click();
     await expect(row.getByText('ready', { exact: true })).toBeVisible();
-    await download(page, row.getByRole('link', { name: 'Download private ZIP', exact: true }), saved.job.package.asset.checksum);
+    await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), saved.job.package.asset.checksum);
     await screenshot('retailer-restored-mobile');
     await page.setViewportSize({ width: 1280, height: 900 });
     await screenshot('retailer-history-desktop');
