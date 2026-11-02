@@ -47,7 +47,9 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   const hasUnsavedChanges = dirty || editorValidation !== null || titleState.dirty;
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [aiDecisionBusy, setAiDecisionBusy] = useState(false);
+  const [aiDecisionBusy, setAiDecisionBusyValue] = useState(false);
+  const aiDecisionFlight = useRef(false);
+  const setAiDecisionBusy = useCallback((value: boolean) => { aiDecisionFlight.current = value; setAiDecisionBusyValue(value); }, []);
   const [bookLoadAttempt, setBookLoadAttempt] = useState(0);
   const [requestedChapterId, setRequestedChapterId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -281,8 +283,8 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     const hasLiveSetup = () => Array.from(chapterSetups.current.values()).some(value => Boolean(value.title.trim() || value.brief.trim()));
     const hasLiveDraft = () => liveDraft.current || latestValidation.current !== null;
     const hasLiveTitle = () => titleStateRef.current.dirty || titleStateRef.current.busy || titleStateRef.current.pending;
-    const flights = () => [structureFlight.current, restoring.current, creatingChapter.current, saveFlight.current];
-    const hasLiveFlight = () => structureFlight.current || restoring.current || creatingChapter.current || saveFlight.current !== null;
+    const flights = () => [structureFlight.current, restoring.current, creatingChapter.current, saveFlight.current, aiDecisionFlight.current];
+    const hasLiveFlight = () => structureFlight.current || restoring.current || creatingChapter.current || saveFlight.current !== null || aiDecisionFlight.current;
     const warn = (event: BeforeUnloadEvent) => { if (hasLiveDraft() || hasLiveSetup() || hasLiveTitle() || hasLiveFlight() || manualSave || pendingRestore || pendingOrder || pendingCreation.current) { event.preventDefault(); event.returnValue = ""; } };
     const guardNavigation = (event: globalThis.MouseEvent) => {
       if ((!hasLiveDraft() && !hasLiveSetup() && !hasLiveTitle() && !hasLiveFlight() && !manualSave && !pendingRestore && !pendingOrder && !pendingCreation.current) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
@@ -294,15 +296,29 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       const titleAtConfirmation = titleRevision.current;
       const flightsAtConfirmation = JSON.stringify(flights());
       const setupsBefore = JSON.stringify(Array.from(chapterSetups.current.entries()));
-      const confirmed = window.confirm(manualSave || saveFlight.current !== null ? "Leave with an unconfirmed save? Only its recovery ID is stored in this tab, not your draft text. Download your draft first if needed." : pendingCreation.current || creatingChapter.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder || structureFlight.current ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : pendingRestore || restoring.current ? "Leave with an unconfirmed restore? Keep this page open to recover the original request." : hasChapterSetup && !hasLiveDraft() && !hasLiveTitle() ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?");
+      const confirmed = window.confirm(manualSave || saveFlight.current !== null ? "Leave with an unconfirmed save? Only its recovery ID is stored in this tab, not your draft text. Download your draft first if needed." : pendingCreation.current || creatingChapter.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder || structureFlight.current ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : pendingRestore || restoring.current ? "Leave with an unconfirmed restore? Keep this page open to recover the original request." : aiDecisionFlight.current ? "Leave while an AI decision is being processed? Keep this page open to check its outcome." : hasChapterSetup && !hasLiveDraft() && !hasLiveTitle() ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?");
       if (!confirmed || revision !== draftRevision.current || titleAtConfirmation !== titleRevision.current || flightsAtConfirmation !== JSON.stringify(flights()) || setupsBefore !== JSON.stringify(Array.from(chapterSetups.current.entries()))) {
         event.preventDefault(); event.stopPropagation();
         if (confirmed) setError("Your draft changed while confirming navigation. Review it before leaving.");
       }
     };
+    const navigateApi = (window as unknown as { navigation?: { addEventListener: (type: string, handler: EventListener) => void; removeEventListener: (type: string, handler: EventListener) => void } }).navigation;
+    const guardHistory: EventListener = event => {
+      const navigation = event as Event & { navigationType?: string; canIntercept?: boolean; destination?: { url: string } };
+      if (navigation.navigationType !== "traverse" || !event.cancelable || !navigation.destination ||
+          (!hasLiveDraft() && !hasLiveSetup() && !hasLiveTitle() && !hasLiveFlight() && !manualSave && !pendingRestore && !pendingOrder && !pendingCreation.current)) return;
+      const target = new URL(navigation.destination.url, window.location.href);
+      if (target.origin !== window.location.origin) return; // Full document navigation uses beforeunload.
+      if (target.origin === window.location.origin && target.pathname === window.location.pathname && target.search === window.location.search) return;
+      const revision = draftRevision.current, titleAtConfirmation = titleRevision.current;
+      const flightsAtConfirmation = JSON.stringify(flights()), setupsBefore = JSON.stringify(Array.from(chapterSetups.current.entries()));
+      const confirmed = window.confirm("Leave the editor? Unsaved work or an unconfirmed request may be lost.");
+      if (!confirmed || revision !== draftRevision.current || titleAtConfirmation !== titleRevision.current || flightsAtConfirmation !== JSON.stringify(flights()) || setupsBefore !== JSON.stringify(Array.from(chapterSetups.current.entries()))) event.preventDefault();
+    };
+    navigateApi?.addEventListener("navigate", guardHistory);
     window.addEventListener("beforeunload", warn);
     window.document.addEventListener("click", guardNavigation, true);
-    return () => { window.removeEventListener("beforeunload", warn); window.document.removeEventListener("click", guardNavigation, true); };
+    return () => { navigateApi?.removeEventListener("navigate", guardHistory); window.removeEventListener("beforeunload", warn); window.document.removeEventListener("click", guardNavigation, true); };
   }, [hasUnsavedChanges, hasAnyChapterSetup, hasChapterSetup, titleBlocked, manualSave, pendingRestore, pendingOrder]);
 
   const save = useCallback(async (retry = false) => {
@@ -701,6 +717,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     {error && <div role="alert" className="mb-4 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}
       {!loading && (!document || (requestedChapterId && requestedChapterId !== document.chapterId)) && <button type="button" className="mt-3 block min-h-11 rounded-lg border border-red-200/30 px-3 py-2 underline focus-visible:ring-2 focus-visible:ring-white" onClick={() => requestedChapterId ? document ? selectChapter(requestedChapterId) : void loadChapter(requestedChapterId) : setBookLoadAttempt(attempt => attempt + 1)}>{requestedChapterId ? "Retry loading chapter" : "Retry loading book"}</button>}
     </div>}
+    {(hasUnsavedChanges || hasAnyChapterSetup || titleBlocked || manualSave || pendingRestore || pendingOrder || pendingCreation.current || aiDecisionBusy) && <p className="mb-4 text-sm text-amber-100">Browser Back or Forward may leave without a warning. Save your work and resolve pending requests before leaving.</p>}
     {draftPlanMessage && <p role="status" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-3 text-sm leading-6 text-amber-100">{draftPlanMessage}</p>}
     {notice && <p role="status" className="mb-4 text-sm text-emerald-200">{notice}</p>}
     {manualSave && <section aria-label="Manual save recovery" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-4 text-sm leading-6 text-amber-100">

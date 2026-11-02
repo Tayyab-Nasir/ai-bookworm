@@ -2568,3 +2568,34 @@ test('independent navigation warning at reorder dispatch', async () => {
     assert.deepEqual(evidence, { confirmations: 1, unload: true });
   } finally { await page.close(); }
 });
+test('independent same-turn actual AI decision guards unload link and cancelable history', async () => {
+  const page = await fixture(1280, true, true);
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await readyEditorSuggestion(page);
+    const result = await page.evaluate(() => {
+      const prompts = [];
+      window.confirm = message => { prompts.push(message); return false; };
+      [...document.querySelectorAll('button')].find(button => button.textContent === 'Apply').click();
+      const unload = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(unload);
+      const anchor = document.querySelector('a[href$="/publish"]');
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+      anchor.dispatchEvent(click);
+      const nav = new Event('navigate', { cancelable: true });
+      Object.defineProperties(nav, { navigationType: { value: 'traverse' }, canIntercept: { value: false }, destination: { value: { url: location.origin + '/different-path' } } });
+      window.navigation.dispatchEvent(nav);
+      return { unload: unload.defaultPrevented, link: click.defaultPrevented, history: nav.defaultPrevented, prompts };
+    });
+    assert.equal(result.unload, true);
+    assert.equal(result.link, true);
+    assert.equal(result.history, true);
+    assert.equal(result.prompts.length, 2);
+    await page.waitForFunction(() => typeof window.finishTimingApply === 'function');
+    await page.waitForTimeout(800);
+    assert.deepEqual(errors, []);
+    const later = await page.evaluate(() => { const e = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; });
+    assert.equal(later, true);
+  } finally { await page.close(); }
+});
