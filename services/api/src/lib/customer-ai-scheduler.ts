@@ -13,6 +13,28 @@ const row = z.object({ job_id: id, created_at: timestamp, ready: z.boolean() }).
 type Cursor = { createdAt: string; jobId: string };
 type Worker = { run(jobId: string, signal?: AbortSignal): Promise<CustomerAiOutcome> };
 const reconciliation = z.enum(["settled", "released", "requires_review", "unchanged"]);
+
+// PostgreSQL sorts timestamptz at microsecond precision, then UUID by bytes.
+// Do not compare its strings lexically: equivalent instants can have different
+// offsets, and Date alone loses the last three fractional digits.
+function timeKey(value: string): bigint {
+  const day = value.slice(0, 10), midnight = Date.parse(`${day}T00:00:00Z`);
+  if (value.startsWith("0000-") || Number(value.slice(11, 13)) > 23 || Number(value.slice(14, 16)) > 59
+    || Number(value.slice(17, 19)) > 59 || !Number.isFinite(midnight)
+    || new Date(midnight).toISOString().slice(0, 10) !== day) throw new Error();
+  const suffix = value.match(/([+-]\d{2})(?::?(\d{2}))?$/u);
+  const normalized = suffix ? value.slice(0, -suffix[0].length) + suffix[1] + ":" + (suffix[2] ?? "00") : value;
+  const milliseconds = Date.parse(normalized);
+  if (!Number.isFinite(milliseconds)) throw new Error();
+  const fractional = (value.match(/\.(\d{1,6})/u)?.[1] ?? "").padEnd(6, "0");
+  return BigInt(milliseconds) * 1_000n + BigInt(fractional.slice(3));
+}
+
+function isLater(previous: Cursor, current: Cursor): boolean {
+  const left = timeKey(previous.createdAt), right = timeKey(current.createdAt);
+  return right > left || (right === left && current.jobId > previous.jobId);
+}
+
 class SchedulerReviewRequired extends Error {
   constructor() { super("Customer AI scheduler requires outcome review."); }
 }
@@ -127,8 +149,16 @@ export function customerAiScheduler(sb: SupabaseClient, worker: Worker, options:
         if (signal?.aborted || intakeSignal?.aborted) return { scanned: 0, attempted: 0, uncertain: 0, suppressed: 0, cycleComplete: false };
         if (response.error) throw new Error();
         const rows = z.array(row).max(pageSize).parse(response.data);
-        if (new Set(rows.map(item => item.job_id)).size !== rows.length
-          || rows.some(item => item.job_id === cursor?.jobId && item.created_at === cursor.createdAt)) throw new Error();
+        if (new Set(rows.map(item => item.job_id)).size !== rows.length) throw new Error();
+        // Validate the entire page before running any worker. Otherwise an
+        // invalid later row could advance the cursor after paid work started.
+        let previous = cursor;
+        for (const item of rows) {
+          const current = { createdAt: item.created_at, jobId: item.job_id };
+          timeKey(current.createdAt);
+          if (previous && (previous.jobId === current.jobId || !isLater(previous, current))) throw new Error();
+          previous = current;
+        }
         let scanned = 0, attempted = 0, uncertainCount = 0, suppressed = 0;
         for (const item of rows) {
           if (signal?.aborted || intakeSignal?.aborted) return { scanned, attempted, uncertain: uncertainCount, suppressed, cycleComplete: false };

@@ -43,6 +43,45 @@ test("advances exact microsecond cursor across non-ready rows and wraps at scan 
   assert.equal(db.calls[2]?.p_after_created_at, null);
 });
 
+test("rejects malformed discovery pages before dispatching any job", async () => {
+  const sameTime = "2026-10-28T12:00:00.123456Z";
+  const cases = [
+    [row(1), row(0)],
+    [{ ...row(0), created_at: sameTime }, { ...row(1), job_id: ids[0], created_at: "2026-10-28T12:00:01Z" }],
+    [{ ...row(1), created_at: sameTime }, { ...row(0), created_at: "2026-10-28T13:00:00.123456+01:00" }],
+    [row(0), { ...row(1), created_at: "2026-02-30T12:00:00Z" }],
+    [row(0), { ...row(1), created_at: "2026-10-28T24:00:00Z" }],
+    [row(0), { ...row(1), created_at: "2026-10-28T12:00:60Z" }],
+    [row(0), { ...row(1), created_at: "2026-10-28T12:00:00+25:00" }],
+  ];
+  for (const page of cases) {
+    const attempted: string[] = [];
+    const scheduler = customerAiScheduler(database([page]).sb, { run: async jobId => { attempted.push(jobId); return success(jobId); } });
+    await assert.rejects(scheduler.tick(), /scheduler is unavailable/u);
+    assert.deepEqual(attempted, [], "no worker may run from a partially invalid page");
+  }
+});
+
+test("compares offsets and microseconds, and preserves the cursor after a rejected page", async () => {
+  const first = { ...row(0), created_at: "2026-10-28T12:00:00.123455Z" };
+  const second = { ...row(1), created_at: "2026-10-28T13:00:00.123456+01:00" };
+  const third = { ...row(2), created_at: "2026-10-28T12:00:00.123457Z" };
+  const duplicateCursor = { ...second, created_at: "2026-10-28T12:00:00.123457Z" };
+  const db = database([[first, second], [first, third], [duplicateCursor], [third]]); const attempted: string[] = [];
+  const scheduler = customerAiScheduler(db.sb, { run: async jobId => { attempted.push(jobId); return success(jobId); } }, { pageSize: 2 });
+  await scheduler.tick();
+  await assert.rejects(scheduler.tick(), /scheduler is unavailable/u);
+  assert.deepEqual(attempted, [ids[0], ids[1]], "invalid later page must not dispatch");
+  await assert.rejects(scheduler.tick(), /scheduler is unavailable/u);
+  assert.deepEqual(attempted, [ids[0], ids[1]], "a changed timestamp cannot repeat the cursor job");
+  await scheduler.tick();
+  assert.deepEqual(attempted, ids);
+  for (const call of db.calls.slice(1)) {
+    assert.equal(call.p_after_created_at, second.created_at);
+    assert.equal(call.p_after_job_id, ids[1]);
+  }
+});
+
 test("ambiguous and thrown worker outcomes are not retried in later scans", async () => {
   const db = database([[row(0), row(1)], [row(0), row(1)]]); const attempted: string[] = [];
   const scheduler = customerAiScheduler(db.sb, { run: async id => {
