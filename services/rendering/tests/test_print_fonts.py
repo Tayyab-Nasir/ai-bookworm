@@ -107,3 +107,19 @@ def test_bundled_and_supported_base_fonts_are_not_flagged_as_missing():
         findings = run_preflight({"book": BOOK, "edition": {"kind": "print", "typography": {
             "body_font": font, "heading_font": font}}}, load_ruleset())
         assert not [f for f in findings if f.code in {"FONT_NOT_EMBEDDED", "PRINT_GLYPH_UNSUPPORTED"}]
+
+
+def test_nonbreaking_hyphen_is_blocked_even_when_embedded_code_font_has_the_glyph():
+    book = copy.deepcopy(BOOK)
+    book["chapters"][0]["nodes"] = [{"id": "nonbreaking", "type": "paragraph", "text": "well\u2011known", "attributes": {"richText": [
+        {"type": "text", "text": "well\u2011known", "marks": [{"type": "code"}]}
+    ]}}]
+    issues = print_font_issues(book, CONFIG)
+    assert any(issue.get("code") == "PRINT_NONBREAKING_HYPHEN_UNSUPPORTED" and "node:nonbreaking" in issue["location"] for issue in issues)
+    assert not any("BookwormDejaVuSansMono cannot print U+2011" in issue["message"] for issue in issues)
+    with pytest.raises(ValueError, match="nonbreaking hyphen"):
+        render_pdf(book, PrintEdition.model_validate(CONFIG))
+    assert not print_font_issues(book, {"kind": "ebook", "flow": "reflowable"})
+    assert any(issue.get("code") == "PRINT_NONBREAKING_HYPHEN_UNSUPPORTED" for issue in print_font_issues(book, {"kind": "ebook", "flow": "fixed"}))
+    findings = run_preflight({"book": book, "edition": CONFIG}, load_ruleset())
+    assert any(f.code == "PRINT_NONBREAKING_HYPHEN_UNSUPPORTED" and f.severity == "error" for f in findings)

@@ -13,7 +13,7 @@ from editions import EbookEdition, resolve_text_direction
 from manuscript import block_tree, image_width, inline_markup, table_header_rows, table_rows, table_spans
 from publication_metadata import effective_publication_metadata
 
-RENDERER_VERSION = "epub-1.13.0"
+RENDERER_VERSION = "epub-1.14.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"
@@ -203,12 +203,13 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
         meta.append(f"<dc:identifier>{escape(str(md['isbn13']))}</dc:identifier>")
     if cover_asset_id:
         meta.append('<meta name="cover" content="cover-image"/>')
+    progression = f' page-progression-direction="{resolve_text_direction(lang, edition.text_direction)}"' if edition.flow == "reflowable" else ""
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id" prefix="bookworm: urn:bookworm:metadata:">\n'
         f'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">{"".join(meta)}</metadata>\n'
         f"<manifest>{''.join(manifest_items)}</manifest>\n"
-        f"<spine>{spine}</spine>\n</package>"
+        f"<spine{progression}>{spine}</spine>\n</package>"
     )
 
 

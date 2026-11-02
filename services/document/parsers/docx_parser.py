@@ -52,6 +52,24 @@ def _paragraph_runs(para, warnings) -> list[dict]:
     return result
 
 
+def _cell_text(cell, warnings) -> str:
+    """Read direct cell paragraphs using the same Word character semantics as body text."""
+    paragraphs = []
+    for paragraph in cell.paragraphs:
+        pieces = []
+        for content in paragraph.iter_inner_content():
+            for run in [content] if isinstance(content, Run) else content.runs:
+                for item in run_content(run, warnings):
+                    if isinstance(item, str):
+                        pieces.append(item)
+                    elif item.get("type") == "pageBreak":
+                        warning = "DOCX page breaks inside table cells require review against the original."
+                        if warning not in warnings:
+                            warnings.append(warning)
+        paragraphs.append("".join(pieces))
+    return "\n".join(paragraphs)
+
+
 def _extract_images(doc) -> tuple[dict[str, dict], list[str]]:
     """Map docx rel id -> generated asset entry; extract image bytes for later upload."""
     warnings: list[str] = []
@@ -111,7 +129,7 @@ def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
                         cells.append("")
                     else:
                         seen_cells.add(cell._tc)
-                        cells.append(cell.text)
+                        cells.append(_cell_text(cell, warnings))
                 rows.append(cells)
             spans = []
             for locations in positions.values():

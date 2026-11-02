@@ -57,10 +57,19 @@ def run_content(run, warnings):
     Never follow links, field instructions, relationships or cached pagination.
     """
     buffer = []
-    text_tags = {qn("w:" + tag) for tag in ("t", "tab", "ptab", "cr", "noBreakHyphen")}
+    text_tags = {qn("w:" + tag) for tag in ("t", "tab", "ptab", "cr")}
     for item in run._r:
         if item.tag in text_tags:
             buffer.append(str(item))
+        elif item.tag == qn("w:noBreakHyphen"):
+            # Preserve Word's nonbreaking semantics; python-docx renders this as '-'.
+            buffer.append("\u2011")
+            warning = "DOCX nonbreaking hyphens were preserved. Print cannot guarantee their layout; use EPUB or review and replace them before print."
+            if warning not in warnings:
+                warnings.append(warning)
+        elif item.tag == qn("w:softHyphen"):
+            # Optional hyphens are invisible unless a reader breaks the word here.
+            buffer.append("\u00ad")
         elif item.tag == qn("w:br"):
             kind = item.get(qn("w:type"), "textWrapping")
             if kind != "page":

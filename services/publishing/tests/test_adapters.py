@@ -50,7 +50,7 @@ def test_all_channels_registered():
 
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
-    assert result["ruleVersion"] == "core-1.0.9+kdp-1.4.0"
+    assert result["ruleVersion"] == "core-1.0.10+kdp-1.4.0"
     ids = {f["rule_id"] for f in result["findings"]}
     assert not result["findings"] or all(
         rid.startswith(("CORE-", "KDP-")) for rid in ids)
@@ -87,7 +87,7 @@ def test_google_play_requires_embedded_front_cover_and_builds_single_title_hando
            "cover_bytes": cover.getvalue()}
     result = adapter.validate(ctx)
     assert result["errors"] == 0, result["findings"]
-    assert result["ruleVersion"] == "core-1.0.9+google-play-1.2.0"
+    assert result["ruleVersion"] == "core-1.0.10+google-play-1.2.0"
     exported = adapter.build_package(ctx, {"book.epub": epub})[0]
     assert exported.path == "googleplay-export.zip"
     with zipfile.ZipFile(BytesIO(exported.data)) as archive:
@@ -302,7 +302,7 @@ def test_apple_package_endpoint_checks_exact_saved_epub_once(monkeypatch, status
     if status == "valid":
         result = build_package(request)
         assert result["errors"] == 0
-        assert result["ruleVersion"] == "core-1.0.9+apple-1.2.0"
+        assert result["ruleVersion"] == "core-1.0.10+apple-1.2.0"
         with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
             assert archive.read("book.epub") == epub
     else:
@@ -460,7 +460,7 @@ def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
                              artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
     first = build_package(request)
     second = build_package(request)
-    assert first["ruleVersion"] == "core-1.0.9+kdp-1.4.0"
+    assert first["ruleVersion"] == "core-1.0.10+kdp-1.4.0"
     assert first["packages"][0]["sha256"] == second["packages"][0]["sha256"]
     package = base64.b64decode(first["packages"][0]["dataBase64"])
     with zipfile.ZipFile(BytesIO(package)) as archive:

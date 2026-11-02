@@ -104,7 +104,7 @@ def test_imported_page_flow_survives_editor_save_epub_reimport_and_pdf(monkeypat
     (tmp_path / "book.pdf").write_bytes(artifacts["print"])
     (tmp_path / "book.epub").write_bytes(artifacts["ebook"])
     receipt = {"status": "passed", "synthetic": True, "contents": contents,
-        "pdfRenderer": "pdf-1.18.0", "pages": len(pages), "pageBreaks": 4,
+        "pdfRenderer": "pdf-1.19.0", "pages": len(pages), "pageBreaks": 4,
         "pdfSha256": hashlib.sha256(artifacts["print"]).hexdigest(),
         "epubSha256": hashlib.sha256(artifacts["ebook"]).hexdigest(),
         "sourceSha256": source_hash, "epubcheck": checked.status,

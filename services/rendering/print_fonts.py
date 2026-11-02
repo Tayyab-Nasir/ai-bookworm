@@ -89,7 +89,10 @@ def print_font_issues(book: dict, edition: dict) -> list[dict[str, str]]:
     def check(text, font, location):
         if requires_bidi_layout(text):
             issues.append({"code": "RTL_TEXT_UNSUPPORTED", "location": location, "message": "Text requires bidirectional shaping, which is not available for print or fixed-layout EPUB."})
-        missing = _missing(text or "", font)
+        if "\u2011" in (text or ""):
+            issues.append({"code": "PRINT_NONBREAKING_HYPHEN_UNSUPPORTED", "location": location,
+                "message": "Print cannot guarantee nonbreaking hyphen U+2011 layout. Use reflowable EPUB or review and replace it before print."})
+        missing = [code for code in _missing(text or "", font) if code != "U+2011"]
         if missing:
             codes = ", ".join(missing[:8]) + (" …" if len(missing) > 8 else "")
             issues.append({"location": location, "message":
