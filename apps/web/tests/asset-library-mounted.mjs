@@ -124,6 +124,7 @@ test("an unconfirmed removal reports a safe error and refresh clears it", async 
     await page.getByRole("button", { name: "Remove My draft.pdf", exact: true }).click();
     await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toBeVisible();
     await expect(page.getByText("synthetic private diagnostic")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toBeDisabled();
     await page.getByRole("button", { name: "Refresh library", exact: true }).click();
     await expect(page.getByRole("alert").filter({ hasText: "Removal could not be confirmed" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Remove My draft.pdf", exact: true })).toBeEnabled();

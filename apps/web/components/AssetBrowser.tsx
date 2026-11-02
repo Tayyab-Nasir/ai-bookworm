@@ -65,24 +65,26 @@ export default function AssetBrowser({
   const [removeError, setRemoveError] = useState<string | null>(null);
   const removalEpoch = useRef(0);
   const removalFlight = useRef(false);
+  const refreshRequired = useRef(false);
   const mounted = useRef(false);
 
   useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   useLayoutEffect(() => {
+    refreshRequired.current = false;
     setRemoveError(null);
     return () => { removalEpoch.current++; };
   }, [assets, permissions.manage, active, operationScope]);
 
   const remove = async (asset: Asset) => {
-    if (!active || !permissions.manage || !onDelete || removalFlight.current) return;
+    if (!active || !permissions.manage || !onDelete || removalFlight.current || refreshRequired.current) return;
     const beforeConfirm = removalEpoch.current;
     if (!window.confirm(`Remove “${asset.name.replace(/[\u0000-\u001f\u007f]/g, " ")}” from this library? The file will no longer appear here.`)) return;
     if (beforeConfirm !== removalEpoch.current || !mounted.current || removalFlight.current) return;
     const current = ++removalEpoch.current;
     removalFlight.current = true; setRemoving(asset.id); setRemoveError(null);
     try { await onDelete(asset.id); }
-    catch { if (current === removalEpoch.current) setRemoveError("Removal could not be confirmed. Refresh the library to check before retrying."); }
+    catch { if (current === removalEpoch.current) { refreshRequired.current = true; setRemoveError("Removal could not be confirmed and may still complete. Refresh the library and check the file before trying again."); } }
     finally { removalFlight.current = false; if (mounted.current) setRemoving(null); }
   };
 
@@ -276,7 +278,7 @@ export default function AssetBrowser({
                     <button
                       type="button"
                       onClick={() => void remove(a)}
-                      disabled={Boolean(removing)}
+                      disabled={Boolean(removing || removeError)}
                       aria-label={`Remove ${a.name}`}
                       title="Remove from library"
                       style={{
