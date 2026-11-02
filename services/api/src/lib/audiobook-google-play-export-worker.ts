@@ -308,6 +308,7 @@ export async function runOneGooglePlayAudioExport(sb: SupabaseClient, options: {
   let archive: Awaited<ReturnType<typeof createArchive>>["archive"] | undefined;
   const objectPath = `workspaces/${job.workspace_id}/audiobook-exports/${job.id}/${leaseToken}.zip`;
   let uploadCompleted = false;
+  let archiveSha256: string | undefined;
   try {
     const built = await createArchive(sb, job, abort.signal, options.fetcher ?? fetch, async (completed) => {
       const update = await sb.rpc("progress_audiobook_google_play_export", { p_job_id: job.id, p_lease_token: leaseToken, p_progress: completed });
@@ -315,6 +316,7 @@ export async function runOneGooglePlayAudioExport(sb: SupabaseClient, options: {
     });
     archive = built.archive;
     const sha256 = await sha256File(archive.path, abort.signal);
+    archiveSha256 = sha256;
     abort.signal.throwIfAborted();
     await uploadTusArchive(archive.path, objectPath, { projectUrl: storage.SUPABASE_URL, serviceKey: storage.SUPABASE_SERVICE_ROLE_KEY, signal: abort.signal, fetcher: options.fetcher });
     uploadCompleted = true;
@@ -323,10 +325,13 @@ export async function runOneGooglePlayAudioExport(sb: SupabaseClient, options: {
       p_job_id: job.id, p_lease_token: leaseToken, p_storage_path: objectPath,
       p_size_bytes: built.sizeBytes, p_sha256: sha256, p_duration_seconds: built.durationSeconds,
     });
-    if (completed.error || row(completed.data)?.status !== "succeeded") {
-      const readback = await sb.from("audiobook_google_play_export_jobs").select("status,output_storage_path,output_sha256")
+    const completion = row(completed.data);
+    if (completed.error || (Array.isArray(completed.data) && completed.data.length !== 1)
+      || completion?.id !== job.id || completion.status !== "succeeded"
+      || completion.output_storage_path !== objectPath || completion.output_sha256 !== sha256) {
+      const readback = await sb.from("audiobook_google_play_export_jobs").select("id,status,output_storage_path,output_sha256")
         .eq("id", job.id).maybeSingle();
-      if (!readback.error && readback.data?.status === "succeeded" && readback.data.output_storage_path === objectPath && readback.data.output_sha256 === sha256) {
+      if (!readback.error && readback.data?.id === job.id && readback.data.status === "succeeded" && readback.data.output_storage_path === objectPath && readback.data.output_sha256 === sha256) {
         return { status: "succeeded", jobId };
       }
       if (readback.error || !readback.data) return { status: "completion_unknown", jobId };
@@ -335,10 +340,11 @@ export async function runOneGooglePlayAudioExport(sb: SupabaseClient, options: {
     return { status: "succeeded", jobId };
   } catch (error) {
     if (uploadCompleted) {
-      const readback = await sb.from("audiobook_google_play_export_jobs").select("status,output_storage_path")
+      const readback = await sb.from("audiobook_google_play_export_jobs").select("id,status,output_storage_path,output_sha256")
         .eq("id", job.id).maybeSingle();
       if (readback.error || !readback.data) return { status: "completion_unknown", jobId };
-      if (readback.data.status === "succeeded" && readback.data.output_storage_path === objectPath) return { status: "succeeded", jobId };
+      if (readback.data.id === job.id && readback.data.status === "succeeded" && readback.data.output_storage_path === objectPath
+        && archiveSha256 && readback.data.output_sha256 === archiveSha256) return { status: "succeeded", jobId };
     }
     const failure = error instanceof AudioExportFailure ? error : abort.signal.aborted
       ? abort.signal.reason as AudioExportFailure : new AudioExportFailure("export_worker_failed", true);
@@ -347,7 +353,12 @@ export async function runOneGooglePlayAudioExport(sb: SupabaseClient, options: {
       p_error_code: failure.code, p_retryable: failure.retryable,
     });
     if (failed.error?.code === "40001") return { status: "lease_lost", jobId };
-    if (failed.error || !row(failed.data)) throw new AudioExportFailure("export_failure_persistence_failed", true);
+    const failedJob = row(failed.data);
+    if (failed.error || (Array.isArray(failed.data) && failed.data.length !== 1) || !failedJob
+      || failedJob.id !== job.id || !["queued", "failed", "cancelled"].includes(String(failedJob.status))
+      || failedJob.lease_token !== null || failedJob.lease_expires_at !== null) {
+      throw new AudioExportFailure("export_failure_persistence_failed", true);
+    }
     // Fence the lease in the database BEFORE removing an uploaded object. A
     // timed-out completion request may still commit after a stale readback.
     // Successful failure persistence makes that late completion impossible.
@@ -355,7 +366,7 @@ export async function runOneGooglePlayAudioExport(sb: SupabaseClient, options: {
       try { await sb.storage.from(BUCKET).remove([objectPath]); }
       catch { /* The orphan report accounts for uploads left by failed cleanup. */ }
     }
-    const status = row(failed.data)!.status;
+    const status = failedJob.status;
     return { status: status === "cancelled" ? "cancelled" : status === "queued" ? "queued" : "failed", jobId };
   } finally {
     clearInterval(heartbeat);

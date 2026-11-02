@@ -220,7 +220,7 @@ begin
   v_path:=format('workspaces/%s/audiobook-exports/%s/%s.zip',v_claim.workspace_id,v_claim.id,v_claim.lease_token);
   select * into v_done from public.complete_audiobook_google_play_export(
     v_claim.id,v_claim.lease_token,v_path,1024,repeat('d',64),300);
-  assert v_done.status='succeeded' and v_done.output_storage_path=v_path and v_done.total_duration_seconds=300;
+  assert v_done.id=v_claim.id and v_done.status='succeeded' and v_done.output_storage_path=v_path and v_done.output_sha256=repeat('d',64) and v_done.total_duration_seconds=300;
   assert (select count(*)=1 from public.audiobook_google_play_export_jobs where id=v_claim.id);
 end $$;
 reset role;
@@ -290,7 +290,14 @@ begin
     raise exception 'expired worker changed progress';
   exception when serialization_failure then null;
   end;
-  perform public.fail_audiobook_google_play_export(v_job.id,v_job.lease_token,'fixture_done',false);
+  declare
+    v_result jsonb;
+  begin
+    v_result := to_jsonb(public.fail_audiobook_google_play_export(v_job.id,v_job.lease_token,'fixture_done',false));
+    assert v_result->>'id' = v_job.id::text and v_result->>'status' = 'failed', 'failure fence must return the original terminal job';
+    assert v_result ? 'lease_token' and v_result->'lease_token' = 'null'::jsonb, 'failure fence must return a cleared lease token';
+    assert v_result ? 'lease_expires_at' and v_result->'lease_expires_at' = 'null'::jsonb, 'failure fence must return a cleared lease expiry';
+  end;
 end $$;
 reset role;
 update public.workspace_members set role='viewer'

@@ -15,7 +15,7 @@ function png() {
 }
 
 test("leased export preserves uploaded archives across uncertain completion and fences cleanup", async (t) => {
-  for (const completion of ["success", "lost-reply", "late-commit", "rejected", "cover-invalid", "cover-receipt-mismatch", "cover-quarantined"] as const) await t.test(completion, async () => {
+  for (const completion of ["success", "lost-reply", "late-commit", "rejected", "cover-invalid", "cover-receipt-mismatch", "cover-quarantined", "fence-wrong-id", "fence-running", "fence-active-lease", "fence-missing-lease", "fence-duplicate", "completion-wrong-id", "completion-wrong-path", "completion-wrong-sha", "completion-duplicate"] as const) await t.test(completion, async () => {
   const id = (n: string) => `e7000000-0000-4000-8000-${n.padStart(12, "0")}`;
   const jobId = id("1"); const workspace = id("2"); const book = id("3"); const edition = id("4");
   const chapter = id("5"); const version = id("6"); const project = id("7"); const report = id("8");
@@ -66,7 +66,7 @@ test("leased export preserves uploaded archives across uncertain completion and 
     storage: { from: () => ({
       download: async (path: string) => ({ data: new Blob([path.endsWith("cover.png") ? coverBytes : segment]), error: null }),
       remove: async () => {
-        assert.equal(completion, "rejected", "must retain an archive while a completion may commit");
+        assert.ok(completion === "rejected" || completion.startsWith("completion-"), "must retain an archive while a completion may commit");
         assert.equal(calls.at(-1), "fail_audiobook_google_play_export", "cleanup must follow the database fence");
         calls.push("storage_remove"); return { error:null };
       },
@@ -76,7 +76,13 @@ test("leased export preserves uploaded archives across uncertain completion and 
       if (name === "claim_audiobook_google_play_export") return { data:[{ ...claimed, lease_expires_at:"2099-01-01T00:00:00Z" }], error:null };
       if (name === "progress_audiobook_google_play_export") return { data:true,error:null };
       if (name === "complete_audiobook_google_play_export") {
-        if (completion === "success") return { data:{id:jobId,status:"succeeded"},error:null };
+                if (completion === "success" || completion.startsWith("completion-")) {
+          const result = { id:jobId, status:"succeeded", output_storage_path:args.p_storage_path, output_sha256:args.p_sha256 };
+          if (completion === "completion-wrong-id") result.id = id("99");
+          if (completion === "completion-wrong-path") result.output_storage_path = "wrong";
+          if (completion === "completion-wrong-sha") result.output_sha256 = "wrong";
+          return { data:completion === "completion-duplicate" ? [result,result] : result,error:null };
+        }
         if (completion === "lost-reply") Object.assign(tables.audiobook_google_play_export_jobs[0], {
           status:"succeeded",output_storage_path:args.p_storage_path,output_sha256:args.p_sha256,
         });
@@ -84,7 +90,12 @@ test("leased export preserves uploaded archives across uncertain completion and 
       }
       if (name === "fail_audiobook_google_play_export") {
         if (completion === "late-commit") return {data:null,error:{code:"40001"}};
-        return {data:{id:jobId,status:args.p_retryable ? "queued" : "failed"},error:null};
+                const result = { id:jobId, status:args.p_retryable ? "queued" : "failed", lease_token:null, lease_expires_at:null };
+        if (completion === "fence-wrong-id") result.id = id("99");
+        if (completion === "fence-running") result.status = "running";
+        if (completion === "fence-active-lease") result.lease_token = lease as never;
+        if (completion === "fence-missing-lease") delete (result as { lease_token?: unknown }).lease_token;
+        return {data:completion === "fence-duplicate" ? [result, result] : result,error:null};
       }
       return { data:null,error:{code:"unknown_rpc"} };
     },
@@ -109,11 +120,16 @@ test("leased export preserves uploaded archives across uncertain completion and 
     }
     throw new Error("unexpected worker fetch");
   };
+  if (completion.startsWith("fence-")) {
+    await assert.rejects(runOneGooglePlayAudioExport(sb,{ fetcher, storage:{projectUrl:"https://project-ref.supabase.co",serviceKey:"service-role-fixture"} }), /export_failure_persistence_failed/u);
+    assert.equal(calls.includes("storage_remove"), false);
+    return;
+  }
   const result = await runOneGooglePlayAudioExport(sb,{ fetcher, storage:{projectUrl:"https://project-ref.supabase.co",serviceKey:"service-role-fixture"} });
-  assert.deepEqual(result,{status:["cover-invalid","cover-quarantined"].includes(completion) ? "failed" : completion === "cover-receipt-mismatch" ? "queued" : completion === "late-commit" ? "lease_lost" : completion === "rejected" ? "queued" : "succeeded",jobId});
+  assert.deepEqual(result,{status:["cover-invalid","cover-quarantined"].includes(completion) ? "failed" : completion === "cover-receipt-mismatch" ? "queued" : completion === "late-commit" ? "lease_lost" : completion === "rejected" || completion.startsWith("completion-") ? "queued" : "succeeded",jobId});
   assert.deepEqual(calls,completion.startsWith("cover-") ? ["claim_audiobook_google_play_export","fail_audiobook_google_play_export"] : ["claim_audiobook_google_play_export","progress_audiobook_google_play_export","complete_audiobook_google_play_export",
-    ...(["late-commit","rejected"].includes(completion) ? ["fail_audiobook_google_play_export"] : []),
-    ...(completion === "rejected" ? ["storage_remove"] : [])]);
+    ...(["late-commit","rejected"].includes(completion) || completion.startsWith("completion-") ? ["fail_audiobook_google_play_export"] : []),
+    ...(completion === "rejected" || completion.startsWith("completion-") ? ["storage_remove"] : [])]);
   });
 });
 
