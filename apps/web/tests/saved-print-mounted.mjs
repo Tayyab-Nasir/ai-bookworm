@@ -277,12 +277,32 @@ test("actual Studio retains a lost closure across remount and cannot retry the o
   } finally { await page.close(); }
 });
 
+test("switching accounts during preflight invalidates the old proof without creating an export", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await page.evaluate(() => { window.holdPreflight = true; });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Boolean(window.releasePreflight))).toBe(true);
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: ids.otherAsset } } }));
+    await page.evaluate(() => window.releasePreflight());
+    await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled();
+    await assert.rejects(page.getByRole("button", { name: "Create retailer package", exact: true }).click({ timeout: 1500 }), /Timeout/);
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("actual Studio sends no export when storage cannot persist or the signed-in account changes", async () => {
   for (const failure of ["storage", "account"]) {
     const { page, errors } = await fixture({ parent: true });
     try {
       await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
       await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+      // The two failures below are meant to occur at export creation, after a
+      // successful preflight. Changing sessions while preflight is still in
+      // flight correctly invalidates its proof and is tested separately.
+      await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeEnabled();
       if (failure === "storage") await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("blocked"); }; });
       else await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: ids.otherAsset } } }));
       await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
