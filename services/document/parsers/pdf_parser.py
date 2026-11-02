@@ -2,13 +2,19 @@
 Sparse/garbled extraction -> confidence "low" + manual-QA warning. Spec section 13."""
 import io
 import re
+import unicodedata
 
 from pypdf import PdfReader
 
 from . import ParseError, check_size, make_book, make_report, new_chapter, node
 
 _MIN_CHARS_PER_PAGE = 20
-_GARBLED_RE = re.compile(r"[�]|[^\x09\x0a\x0d\x20-\x7e -￿]")
+
+
+def _looks_garbled(char: str) -> bool:
+    # Supplementary Unicode (including emoji and historic scripts) is valid
+    # text. Count replacement characters and unexpected controls instead.
+    return char == "\ufffd" or (char not in "\t\n\r" and unicodedata.category(char) in {"Cc", "Cs"})
 
 
 def parse_pdf(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
@@ -26,15 +32,20 @@ def parse_pdf(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
 
     warnings: list[str] = []
     total_chars = sum(len(p) for p in pages)
-    sparse = total_chars < _MIN_CHARS_PER_PAGE * n_pages
-    garbled_ratio = (len(_GARBLED_RE.findall("".join(pages))) / total_chars) if total_chars else 1.0
-    if sparse:
-        warnings.append(
-            "PDF text extraction sparse (likely scanned image pages) — manual QA required")
+    sparse_pages = [i + 1 for i, page in enumerate(pages)
+                    if sum(not char.isspace() for char in page) < _MIN_CHARS_PER_PAGE]
+    garbled_count = sum(_looks_garbled(char) for page in pages for char in page)
+    garbled_ratio = garbled_count / total_chars if total_chars else 1.0
+    if sparse_pages:
+        sample = ", ".join(str(number) for number in sparse_pages[:20])
+        remaining = len(sparse_pages) - 20
+        suffix = f", and {remaining} more" if remaining > 0 else ""
+        warnings.append(f"PDF pages with sparse or blank extracted text: {sample}{suffix}. "
+                        "Pages may be scanned or intentionally blank; manual QA required. OCR was not performed.")
     if garbled_ratio > 0.02:
         warnings.append(
             f"PDF text extraction garbled ({garbled_ratio:.0%} non-text chars) — manual QA required")
-    confidence = "low" if (sparse or garbled_ratio > 0.02) else "medium"
+    confidence = "low" if (sparse_pages or garbled_ratio > 0.02) else "medium"
     if confidence != "medium":
         warnings.append("import confidence is LOW: review the whole document before editing")
     else:
