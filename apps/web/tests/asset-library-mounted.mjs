@@ -57,7 +57,7 @@ async function fixture(width = 1280, admin = false) {
     :root {--font-inter:Arial,sans-serif;--font-instrument-serif:BookwormInstrument,serif}
     body {font-family:var(--font-inter);color:white}` });
   await page.evaluate(({ A, B, ASSET, admin }) => {
-    window.actor = A; window.calls = []; window.revision = 0; window.gates = {}; window.scanStatus = "clean";
+    window.actor = A; window.storageOrigin = "https://storage.example"; window.calls = []; window.revision = 0; window.gates = {}; window.scanStatus = "clean";
     window.defer = name => new Promise((resolve, reject) => { window.gates[name] = { resolve, reject }; });
     window.file = workspace => ({ id: ASSET, workspace_id: workspace, folder_id: null, name: workspace === A ? (window.revision ? "My revised draft.pdf" : "My draft.pdf") : "Other studio draft.pdf",
       storage_path: `workspaces/${workspace}/assets/${ASSET}/v2/draft.pdf`, mime_type: "application/pdf", size_bytes: 2400, checksum: "a".repeat(64), type: "source_document", status: "draft", current_version_number: 2 });
@@ -67,7 +67,7 @@ async function fixture(width = 1280, admin = false) {
     window.signed = workspace => ({ url: `https://storage.example/storage/v1/object/sign/book-assets/${window.file(workspace).storage_path}?token=fixture-token`, expiresIn: 300 });
     window.selected = A;
     window.fetch = async path => {
-      if (path === "/api/auth/session") return Response.json({ user: { id: window.actor, email: "author@example.test" } });
+      if (path === "/api/auth/session") return Response.json({ user: { id: window.actor, email: "author@example.test" }, storageOrigin: window.storageOrigin });
       if (path === "/api/auth/logout") return Response.json({ signedOut: true });
       throw new Error(`Unexpected fixture fetch ${path}`);
     };
@@ -140,6 +140,33 @@ test("silent account change blocks a prepared private download", async () => {
     assert.equal(await page.locator('a[href*="/storage/v1/object/sign/"]').count(), 0);
     await page.evaluate(id => { window.actor = id; }, B);
     await download.click();
+    await expect(download).toHaveCount(0);
+    assert.equal(signedRequests.length, 0);
+  } finally { await page.close(); }
+});
+
+test("asset download refuses a foreign Storage origin even when its path matches", async () => {
+  const { page, signedRequests } = await fixture();
+  try {
+    await openFile(page);
+    await page.evaluate(() => { window.downloadOverride = () => ({ ...window.signed(window.selected), url: window.signed(window.selected).url.replace("storage.example", "attacker.example") }); });
+    await page.getByRole("button", { name: "Prepare download", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "does not match this file" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Download original file/ })).toHaveCount(0);
+    assert.equal(signedRequests.length, 0);
+  } finally { await page.close(); }
+});
+
+test("asset download rechecks the trusted Storage origin at activation", async () => {
+  const { page, signedRequests } = await fixture();
+  try {
+    await openFile(page);
+    await page.getByRole("button", { name: "Prepare download", exact: true }).click();
+    const download = page.getByRole("button", { name: "Download original file · v2", exact: true });
+    await expect(download).toBeVisible();
+    await page.evaluate(() => { window.storageOrigin = "https://new-storage.example"; });
+    await download.click();
+    await expect(page.getByRole("alert").filter({ hasText: "download could not be verified" })).toBeVisible();
     await expect(download).toHaveCount(0);
     assert.equal(signedRequests.length, 0);
   } finally { await page.close(); }

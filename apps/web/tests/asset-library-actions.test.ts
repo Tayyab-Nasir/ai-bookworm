@@ -80,10 +80,10 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
   let signedOut = false;
   const fetch = async (url: string) => {
     if (url === "/api/auth/logout") signedOut = true;
-    return Response.json({ user: { id: workspace, email: "author@example.test" } }, { status: signedOut && url === "/api/auth/session" ? 401 : 200 });
+    return Response.json({ user: { id: workspace, email: "author@example.test" }, storageOrigin: "https://storage.example" }, { status: signedOut && url === "/api/auth/session" ? 401 : 200 });
   };
   const sessionModule: Record<string, unknown> = {};
-  vm.runInNewContext(compile(readFileSync("apps/web/lib/browser-session.ts", "utf8")), { exports: sessionModule, AbortSignal, fetch });
+  vm.runInNewContext(compile(readFileSync("apps/web/lib/browser-session.ts", "utf8")), { exports: sessionModule, AbortSignal, URL, fetch });
   const accountRequire = (name: string) => name.endsWith("/browser-session") ? sessionModule : require(name);
   const document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {}, createElement: (type: string) => ({ href: "", download: "", rel: "", click() { if (type === "input") inputClicks.push(type); else downloads.push({ href: this.href, download: this.download, rel: this.rel }); } }) };
   const scope = { actor: workspace, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() };
@@ -117,10 +117,10 @@ test("original file validation rejects foreign identities, changed bytes/types a
 
 test("private link verification pins the exact stored file, rejects unsafe links and binds the filename", () => {
   const { exports } = harness();
-  const link = exports.verifiedDownloadLink(signed(), file);
+  const link = exports.verifiedDownloadLink(signed(), file, "https://storage.example");
   assert.equal(new URL(link.url).searchParams.get("download"), file.name);
-  for (const value of [{ ...signed(), expiresIn: 0 }, { ...signed(), expiresIn: 301 }, { ...signed(), expiresIn: 1.5 }, { ...signed(), url: "javascript:alert(1)" }, signed("foreign/file.pdf"), { ...signed(), url: signed().url.replace("https:", "http:") }, { ...signed(), url: signed().url.replace("?token=fixture-token", "") }, { ...signed(), url: `${signed().url}&token=second` }, { ...signed(), url: `${signed().url}#fragment` }]) {
-    assert.throws(() => exports.verifiedDownloadLink(value, file));
+  for (const value of [{ ...signed(), expiresIn: 0 }, { ...signed(), expiresIn: 301 }, { ...signed(), expiresIn: 1.5 }, { ...signed(), url: "javascript:alert(1)" }, signed("foreign/file.pdf"), { ...signed(), url: signed().url.replace("https:", "http:") }, { ...signed(), url: signed().url.replace("storage.example", "attacker.example") }, { ...signed(), url: signed().url.replace("?token=fixture-token", "") }, { ...signed(), url: `${signed().url}&token=second` }, { ...signed(), url: `${signed().url}&unexpected=1` }, { ...signed(), url: `${signed().url}#fragment` }]) {
+    assert.throws(() => exports.verifiedDownloadLink(value, file, "https://storage.example"));
   }
 });
 

@@ -12,6 +12,13 @@ import { editorAccount } from "../lib/manual-chapter-save";
 
 type SetupMode = "blank" | "import" | "ai";
 const stageLabels: Record<SetupStage, string> = { creating: "Creating book...", uploading: "Uploading source...", scanning: "Checking source...", importing: "Importing chapters...", drafting: "Queuing first draft..." };
+const quoteIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function validFirstDraftQuote(quote: AiReviewUsageQuote): boolean {
+  return quote.status === "ready" && quoteIdPattern.test(quote.requestId) && quote.agentType === "writer"
+    && typeof quote.model === "string" && quote.model.length > 0
+    && [quote.reservedCredits, quote.countedInputTokens, quote.maxOutputTokens].every(value => Number.isSafeInteger(value) && value > 0)
+    && Number.isFinite(Date.parse(quote.expiresAt));
+}
 
 export default function BookSetupClient() {
   const router = useRouter();
@@ -41,6 +48,9 @@ export default function BookSetupClient() {
   const [aiModelId, setAiModelId] = useState("");
   const [countingConsent, setCountingConsent] = useState(false);
   const [aiQuote, setAiQuote] = useState<AiReviewUsageQuote | null>(null);
+  // The brief is deliberately not persisted. Only a successful quote request
+  // can bind the text visible in this tab to a recoverable quote.
+  const [quotedBrief, setQuotedBrief] = useState<{ requestId: string; text: string } | null>(null);
   const [quoteCounting, setQuoteCounting] = useState(false);
   const reportHeading = useRef<HTMLHeadingElement>(null);
 
@@ -119,14 +129,16 @@ export default function BookSetupClient() {
         const status = await api.getAiReviewQuote(checkpoint.bookId, starter.quoteRequestId!, userId);
         await editorAccount(userId);
         if (cancelled) return;
+        if (status.quote.requestId !== starter.quoteRequestId || !quoteIdPattern.test(status.quote.requestId)) throw new Error("The saved quote identity could not be verified.");
         if (status.job) {
+          if (!quoteIdPattern.test(status.job.id)) throw new Error("The saved generation identity could not be verified.");
           const saved = { ...checkpoint, completed: true, starter: { ...starter, jobId: status.job.id }, savedAt: Date.now() };
           saveCheckpoint(saved); setAiQuote(null); setQuoteCounting(false);
           setNotice("Your first draft is queued. Open Chapter 1 to review it; nothing is applied automatically.");
-        } else if (status.quote.status === "ready") { setAiQuote(status.quote); setQuoteCounting(false); }
+        } else if (status.quote.status === "ready") { if (!validFirstDraftQuote(status.quote)) throw new Error("The saved quote could not be verified."); setAiQuote(status.quote); setQuoteCounting(false); }
         else if (status.quote.status === "failed") {
           const retryable = { ...checkpoint, starter: { chapterId: starter.chapterId, modelId: starter.modelId, allowProviderTokenCounting: starter.allowProviderTokenCounting }, savedAt: Date.now() };
-          saveCheckpoint(retryable); setQuoteCounting(false); setError("Token counting failed. No generation job or credit hold was created. Re-enter your brief to request a fresh quote.");
+          saveCheckpoint(retryable); setQuotedBrief(null); setAiQuote(null); setQuoteCounting(false); setError("Token counting failed. No generation job or credit hold was created. Re-enter your brief to request a fresh quote.");
         }
         else setQuoteCounting(true);
       } catch { if (!cancelled) { try { await editorAccount(userId); } catch { setAccountHidden(true); } } }
@@ -205,7 +217,7 @@ export default function BookSetupClient() {
     try {
       await editorAccount(userId);
       try { window.sessionStorage.removeItem(setupKey(userId, workspaceId)); } catch { /* Server content is unchanged. */ }
-      current.current = null; setCheckpoint(null); setReport(null); setError(null); setNotice(null);
+      current.current = null; setCheckpoint(null); setReport(null); setError(null); setNotice(null); setQuotedBrief(null); setAiQuote(null); setQuoteCounting(false); setCountingConsent(false);
       setImportJob(null); setJobError(null);
       setTitle(""); setAuthorName(""); setGenre(""); setStoryBrief(""); setSourceFile(null);
     } catch { setAccountHidden(true); }
@@ -268,22 +280,27 @@ export default function BookSetupClient() {
 
   const prepareFirstDraftQuote = async () => {
     const saved = current.current;
-    if (!saved?.starter || !aiModelId || !storyBrief.trim() || !countingConsent || busy.current) return;
+    if (!saved?.starter || !aiModelId || !storyBrief.trim() || !(countingConsent || saved.starter.allowProviderTokenCounting) || busy.current) return;
+    const submittedBrief = storyBrief.trim();
     busy.current = true; setSaving(true); setError(null); setNotice(null); setAiQuote(null);
     try {
       const session = await fetch("/api/auth/session", { cache: "no-store" });
       if (!session.ok || (await session.json()).user?.id !== userId) throw new Error("Your session changed. Reload before continuing.");
-      const starter = { ...saved.starter, quoteKey: saved.starter.quoteKey ?? `story-starter:${saved.bookId}:${saved.starter.chapterId}`, modelId: aiModelId, allowProviderTokenCounting: true as const };
+      const starter = { ...saved.starter, quoteKey: saved.starter.quoteKey ?? `story-starter:${crypto.randomUUID()}`, modelId: aiModelId, allowProviderTokenCounting: true as const };
       const pending = { ...saved, starter, savedAt: Date.now() };
       saveCheckpoint(pending); // Persist stable quote identity and consent before sending the selected brief for counting.
-      const result = await api.createAiReviewQuote(saved.bookId, { modelId: aiModelId, agentType: "writer", chapterIds: [starter.chapterId], userInstruction: storyBrief.trim(),
+      const result = await api.createAiReviewQuote(saved.bookId, { modelId: aiModelId, agentType: "writer", chapterIds: [starter.chapterId], userInstruction: submittedBrief,
         idempotencyKey: starter.quoteKey!, contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: true, semanticTopK: 5, maxTokens: 16_000 }, allowProviderTokenCounting: true }, userId);
       await editorAccount(userId);
       if (result.quote) {
+        if (!validFirstDraftQuote(result.quote) || (starter.quoteRequestId && starter.quoteRequestId !== result.quote.requestId)) throw new Error("The quote could not be verified. Check the original request before retrying.");
+        setQuotedBrief({ requestId: result.quote.requestId, text: submittedBrief });
         const next = { ...pending, starter: { ...starter, quoteRequestId: result.quote.requestId }, savedAt: Date.now() };
         saveCheckpoint(next); setAiQuote(result.quote); setQuoteCounting(false);
       }
       else if (result.request) {
+        if (result.request.status !== "counting" || !quoteIdPattern.test(result.request.id) || (starter.quoteRequestId && starter.quoteRequestId !== result.request.id)) throw new Error("The quote request could not be verified. Check the original request before retrying.");
+        setQuotedBrief({ requestId: result.request.id, text: submittedBrief });
         const next = { ...pending, starter: { ...starter, quoteRequestId: result.request.id }, savedAt: Date.now() };
         saveCheckpoint(next); setQuoteCounting(true); setNotice("Counting the selected saved chapter and brief. This does not reserve credits or start generation.");
       } else throw new Error("The quote service returned no quote status. Check the saved request before retrying.");
@@ -293,13 +310,14 @@ export default function BookSetupClient() {
 
   const acceptFirstDraftQuote = async () => {
     const saved = current.current; const quote = aiQuote;
-    if (!saved?.starter || !quote || busy.current) return;
+    if (!saved?.starter || !quote || !validFirstDraftQuote(quote) || Date.parse(quote.expiresAt) <= Date.now() || saved.starter.quoteRequestId !== quote.requestId || quotedBrief?.requestId !== quote.requestId || quotedBrief.text !== storyBrief.trim() || busy.current) return;
     busy.current = true; setSaving(true); setError(null);
     try {
       const session = await fetch("/api/auth/session", { cache: "no-store" });
       if (!session.ok || (await session.json()).user?.id !== userId) throw new Error("Your session changed. Reload before accepting this quote.");
       const accepted = await api.acceptAiReviewQuote(saved.bookId, quote.requestId, quote.reservedCredits, userId);
       await editorAccount(userId);
+      if (!quoteIdPattern.test(accepted.jobId)) throw new Error("The accepted generation identity could not be verified.");
       const next = { ...saved, completed: true, starter: { ...saved.starter, jobId: accepted.jobId }, savedAt: Date.now() };
       saveCheckpoint(next); setAiQuote(null); setNotice("Draft accepted and queued. Nothing is applied until you review it in Chapter 1.");
       await continueToEditor(saved.bookId, title, saved.starter.chapterId, accepted.jobId);
@@ -310,6 +328,7 @@ export default function BookSetupClient() {
         await editorAccount(userId);
         const status = await api.getAiReviewQuote(saved.bookId, requestId, userId);
         await editorAccount(userId);
+        if (status.quote.requestId !== requestId || (status.job && !quoteIdPattern.test(status.job.id))) throw new Error("The saved acceptance identity could not be verified.");
         if (status.job) {
           const next = { ...saved, completed: true, starter: { ...saved.starter, quoteRequestId: requestId, jobId: status.job.id }, savedAt: Date.now() };
           saveCheckpoint(next); setAiQuote(null); setNotice("Recovered the accepted first draft without another charge.");
@@ -395,7 +414,7 @@ export default function BookSetupClient() {
             {mode === "ai" && !checkpoint?.completed && !checkpoint?.starter?.jobId && (
               <label className="mt-5 block">
                 <span className="mb-2 block text-[11px] font-medium uppercase tracking-[0.14em] text-[#8a8a8a]">Story brief</span>
-                <textarea value={storyBrief} onChange={(event) => setStoryBrief(event.target.value)} required maxLength={4000} rows={6} placeholder="A quiet historical mystery set on the coast. Write a tense opening scene from Mara's point of view…" className="w-full resize-y rounded-xl border border-white/[0.1] bg-black/20 px-4 py-3 text-[15px] leading-6 text-white outline-none transition focus:border-white/35" />
+                <textarea value={storyBrief} onChange={(event) => setStoryBrief(event.target.value)} disabled={saving || quoteCounting || !!aiQuote || !!checkpoint?.starter?.quoteRequestId} required maxLength={4000} rows={6} placeholder="A quiet historical mystery set on the coast. Write a tense opening scene from Mara's point of view…" className="w-full resize-y rounded-xl border border-white/[0.1] bg-black/20 px-4 py-3 text-[15px] leading-6 text-white outline-none transition focus:border-white/35 disabled:opacity-70" />
                 <span className="mt-2 block text-[13px] leading-5 text-[#909090]">Your brief stays in this page memory, not browser recovery storage. You will consent to token counting, review the exact credit quote, and accept it before generation begins.</span>
               </label>
             )}
@@ -411,8 +430,10 @@ export default function BookSetupClient() {
               {quoteCounting && <p role="status" className="mt-4 text-sm text-[#d0d0d0]">Counting usage. No generation job or credit hold has been created.</p>}
               {aiQuote && <div className="mt-4 rounded-xl border border-emerald-200/20 bg-emerald-200/[0.06] p-4" role="status"><p className="text-sm font-medium text-white">Exact quote · {aiQuote.reservedCredits} credits</p><p className="mt-1 text-xs leading-5 text-[#bdbdbd]">{aiQuote.countedInputTokens.toLocaleString()} counted input tokens · up to {aiQuote.maxOutputTokens.toLocaleString()} output tokens · expires {new Date(aiQuote.expiresAt).toLocaleString()}</p></div>}
               {!aiQuote && <button type="button" disabled={!ready || saving || !aiModelId || !storyBrief.trim() || !(countingConsent || checkpoint.starter.allowProviderTokenCounting === true) || quoteCounting} onClick={() => void prepareFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{quoteCounting ? "Counting tokens…" : checkpoint.starter.quoteRequestId ? "Retry same quote request" : "Prepare exact credit quote"}</button>}
-              {aiQuote && <button type="button" disabled={saving} onClick={() => void acceptFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{saving ? "Accepting…" : `Accept · ${aiQuote.reservedCredits} credits and generate`}</button>}
+              {aiQuote && <button type="button" disabled={saving || Date.parse(aiQuote.expiresAt) <= Date.now() || quotedBrief?.requestId !== aiQuote.requestId || quotedBrief.text !== storyBrief.trim()} onClick={() => void acceptFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{saving ? "Accepting…" : `Accept · ${aiQuote.reservedCredits} credits and generate`}</button>}
+              {aiQuote && (quotedBrief?.requestId !== aiQuote.requestId || quotedBrief.text !== storyBrief.trim()) && <p role="status" className="mt-3 text-xs leading-5 text-amber-100">The original story brief is unavailable in this tab, so this quote cannot be accepted here. Continue to the editor to enter your brief and review a new quote. No generation was started by opening this quote.</p>}
               <p className="mt-3 text-[11px] leading-5 text-[#858585]">Quote and acceptance use the same saved request identity for safe recovery. Your brief is never stored in browser session recovery.</p>
+              {checkpoint.starter.quoteKey && !checkpoint.starter.quoteRequestId && <p role="status" className="mt-2 text-xs leading-5 text-amber-100">If the quote response was lost, retry with the same model and exact original brief. A different brief cannot replace the original request.</p>}
             </section>}
 
             {checkpoint?.source?.uploaded !== false && checkpoint?.source && !checkpoint.completed && <p className="mt-5 text-sm leading-6 text-[#bdbdbd]">Your original upload is saved. Import uses this existing book and source. Background processing requires the document worker to be running.</p>}

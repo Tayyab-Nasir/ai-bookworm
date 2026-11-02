@@ -21,7 +21,7 @@ const instrumentSerif = localFont({
 export const metadata: Metadata = {
   title: "AI Bookworm — Book Publishing OS",
   description:
-    "Publish books with AI agents across writing, editing, illustration, cover design, and multi-platform distribution.",
+    "Bring writing, editing, illustration, cover design, and retailer book files together in one workspace.",
 };
 
 export const viewport: Viewport = {

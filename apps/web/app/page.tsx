@@ -145,8 +145,8 @@ function Header() {
 }
 
 const stats = [
-  ["1.", "End-to-end publishing workflow"],
-  ["2.", "Manuscript to live book in days"],
+  ["1.", "From manuscript to retailer package"],
+  ["2.", "Review each step before publishing"],
   ["3.", "Built for indie authors & publishers"],
 ] as const;
 
@@ -333,14 +333,14 @@ export default function LandingPage() {
             </div>
 
             <h1 className="max-w-[14ch] text-[clamp(3.25rem,14.5vw,5.75rem)] font-medium leading-[0.88] tracking-[-0.072em] sm:max-w-[13ch] sm:text-[clamp(5rem,11vw,7.5rem)] min-[901px]:max-w-[15ch] min-[901px]:text-[clamp(4.75rem,7.15vw,7.2rem)] min-[1280px]:text-[clamp(5.6rem,7.1vw,7.4rem)] min-[1600px]:text-[clamp(7rem,7.2vw,8.2rem)] min-[1920px]:text-[8.9rem]">
-              <span className="reveal reveal-line-one block">Publish books with</span>
+              <span className="reveal reveal-line-one block">Shape books with</span>
               <span className="reveal reveal-line-two block whitespace-nowrap">
-                <span className="font-instrument instrument-italic font-normal italic tracking-[-0.045em]">AI agents</span> in days.
+                <span className="font-instrument instrument-italic font-normal italic tracking-[-0.045em]">AI</span> by your side.
               </span>
             </h1>
 
             <p className="reveal reveal-lede mt-7 max-w-[730px] text-[16px] leading-[1.6] tracking-[-0.015em] text-[#9a9a9a] sm:mt-8 sm:text-lg min-[1280px]:max-w-[780px] min-[1600px]:mt-9 min-[1600px]:max-w-[850px] min-[1600px]:text-xl min-[1920px]:max-w-[920px] min-[1920px]:text-[22px]">
-              From manuscript to multi-platform publishing: writing, editing, illustrations, covers, and distribution in one operating system built for authors and publishers.
+              Bring writing, editing, illustrations, covers, and retailer files together in one workspace for authors and publishers.
             </p>
 
             <div className="reveal reveal-actions mt-8 flex flex-col gap-3 sm:flex-row sm:items-center min-[1600px]:mt-10">
@@ -465,7 +465,7 @@ export default function LandingPage() {
             <div>
               <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-[#777]">Start your studio</p>
               <h2 className="mt-5 max-w-[12ch] text-[clamp(2.8rem,5vw,5.8rem)] font-medium leading-[0.94] tracking-[-0.06em]">Bring the book. We will help organize the rest.</h2>
-              <p className="mt-7 max-w-xl text-base leading-7 text-[#999]">Create your workspace free. Usage-based AI and production options remain visible before you run them.</p>
+              <p className="mt-7 max-w-xl text-base leading-7 text-[#999]">Create your workspace and prepare your book. AI generation availability depends on your plan and provider configuration; review the cost before generating.</p>
             </div>
             <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
               <Link href="/signup" className="glass-solid metal-shine flex min-h-14 min-w-52 items-center justify-between rounded-full pl-6 pr-3 text-sm font-semibold text-black">

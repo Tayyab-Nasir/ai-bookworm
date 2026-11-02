@@ -8,7 +8,7 @@ import type { Asset, Book, Folder, Workspace } from "@bookworm/types";
 import AssetBrowser from "../../components/AssetBrowser";
 import ImageQuoteStudio from "../../components/ImageQuoteStudio";
 import { createClient } from "@bookworm/api-client";
-import { readBrowserSession } from "../../lib/browser-session";
+import { readArtifactSession, readBrowserSession } from "../../lib/browser-session";
 import type { ImageGenerationJob } from "@bookworm/api-client";
 import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../../lib/workspace-selection";
 
@@ -48,16 +48,18 @@ function verifiedDownloadVersion(asset: Asset, rows: VersionRow[]) {
   return version;
 }
 
-function verifiedDownloadLink(result: { url: string; expiresIn: number }, asset: Asset) {
+function verifiedDownloadLink(result: { url: string; expiresIn: number }, asset: Asset, storageOrigin: string) {
   if (typeof result?.url !== "string" || result.url.length > 8192 || result.url.trim() !== result.url || /[\r\n\t]/.test(result.url) || !Number.isSafeInteger(result.expiresIn) || result.expiresIn < 1 || result.expiresIn > 300) {
     throw new Error("The private download link could not be confirmed. Try preparing it again.");
   }
   let url: URL;
   try { url = new URL(result.url); }
   catch { throw new Error("The private download link could not be confirmed. Try preparing it again."); }
-  if (url.protocol !== "https:" || url.username || url.password || url.hash
+  if (url.origin !== storageOrigin || url.username || url.password || url.hash
     || decodeURIComponent(url.pathname) !== `/storage/v1/object/sign/book-assets/${asset.storage_path}`
-    || url.searchParams.getAll("token").length !== 1 || !url.searchParams.get("token")) {
+    || url.searchParams.getAll("token").length !== 1 || !url.searchParams.get("token")
+    || [...url.searchParams.keys()].some(key => key !== "token" && key !== "download")
+    || url.searchParams.getAll("download").length > 1) {
     throw new Error("The private download link does not match this file. Refresh the library and try again.");
   }
   // Supabase signed-object URLs support this query option without changing the token.
@@ -136,7 +138,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   const [detailError, setDetailError] = useState<string | null>(null);
   const [downloadBusy, setDownloadBusy] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
-  const [download, setDownload] = useState<{ assetId: string; version: number; request: number; url: string; filename: string; expiresAt: number } | null>(null);
+  const [download, setDownload] = useState<{ assetId: string; version: number; request: number; url: string; filename: string; storageOrigin: string; expiresAt: number } | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeDialogRef = useRef<HTMLButtonElement>(null);
   const activeWorkspace = useRef("");
@@ -359,10 +361,12 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
       const selected = verifiedDownloadVersion(saved, history.versions);
       const result = await api.getAssetDownloadUrl(asset.id, selected.version_number);
       if (!current()) return;
-      const link = verifiedDownloadLink(result, saved);
+      const { storageOrigin } = await readArtifactSession(scope.actor);
+      if (!current()) return;
+      const link = verifiedDownloadLink(result, saved, storageOrigin);
       const expiresAt = startedAt + result.expiresIn * 1000;
       if (expiresAt <= Date.now()) throw new Error("This download link expired before it was ready. Prepare a new link.");
-      setDownload({ assetId: asset.id, version: selected.version_number, request, ...link, expiresAt });
+      setDownload({ assetId: asset.id, version: selected.version_number, request, ...link, storageOrigin, expiresAt });
     } catch (reason) {
       if (current()) setDownloadError(reason instanceof Error ? reason.message : "The download could not be confirmed. Prepare a new link to retry.");
     } finally { if (current()) { preparingDownload.current = false; setDownloadBusy(false); } }
@@ -592,7 +596,9 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
                 if (Date.now() >= download.expiresAt) { setDownload(null); setDownloadError("This link is no longer current. Prepare a new download link."); return; }
                 void scope.checked(async () => {
                   if (!current() || Date.now() >= download.expiresAt) throw scopeChanged();
-                  const link = document.createElement("a"); link.href = download.url; link.download = download.filename; link.rel = "noopener noreferrer";
+                  const { storageOrigin } = await readArtifactSession(scope.actor);
+                  if (!current() || Date.now() >= download.expiresAt || storageOrigin !== download.storageOrigin || new URL(download.url).origin !== storageOrigin) throw scopeChanged();
+                  const link = document.createElement("a"); link.href = download.url; link.download = download.filename; link.rel = "noopener noreferrer"; link.referrerPolicy = "no-referrer";
                   link.click();
                 }).catch(() => { if (scope.current() && current()) { setDownload(null); setDownloadError("The download could not be verified. Prepare a new link to retry."); } });
               }} className="inline-flex min-h-11 items-center rounded-full bg-white px-4 text-sm font-medium text-black">Download original file · v{download.version}</button><p className="mt-2 text-xs text-white/50">This private link expires in a few minutes. Preparing it does not start a download.</p></div>}
