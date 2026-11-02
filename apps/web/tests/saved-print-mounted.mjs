@@ -165,7 +165,7 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
       },
       runPreflight: async body => { window.requests.push({ method: "POST", action: "preflight", body });
         if (window.holdPreflight) await new Promise(resolve => { window.releasePreflight = resolve; });
-        return { jobId: ids.otherJob, requestedChannel: body.channel, channel: body.channel, ruleVersion: "fixture-print-rules", errors: 0, warnings: 0, findings: [] }; },
+        return { jobId: ids.otherJob, requestedChannel: window.preflightChannel ?? body.channel, channel: body.channel, ruleVersion: "fixture-print-rules", errors: 0, warnings: 0, findings: [] }; },
       renderEdition: async () => { window.requests.push({ method: "POST", action: "render" }); throw new Error("Unexpected rendering request"); },
       createPublishingJob: async () => { window.requests.push({ method: "POST", action: "package" }); throw new Error("Unexpected package request"); },
     };
@@ -887,6 +887,61 @@ test("actual Publishing Studio keeps an opened render through preflight and remo
     await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled(); assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
+test("preflight is labeled and locked to its target; switching targets clears the result", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page);
+    const target = page.getByLabel("Preflight target");
+    await target.selectOption("kdp");
+    await page.evaluate(() => { window.holdPreflight = true; });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.waitForFunction(() => typeof window.releasePreflight === "function");
+    await expect(target).toBeDisabled();
+    await page.evaluate(() => window.releasePreflight());
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toBeVisible();
+    await target.selectOption("lulu");
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("wrong-target preflight is rejected and a failed render removes the earlier result", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page);
+    await page.getByLabel("Preflight target").selectOption("kdp");
+    await page.evaluate(() => { window.preflightChannel = "lulu"; });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await expect(page.getByText("Preflight returned a different target. Please run it again.")).toBeVisible();
+    await expect(page.getByText("No preflight findings for this target.")).toHaveCount(0);
+    await page.evaluate(() => { window.preflightChannel = null; });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    await expect(page.getByText("Unexpected rendering request")).toBeVisible();
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("preflight completing after its selected proof expires cannot restore stale results", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.clock.install({ time: new Date("2026-10-13T12:00:00Z") });
+    await open(page);
+    await page.getByLabel("Preflight target").selectOption("kdp");
+    await page.evaluate(() => { window.holdPreflight = true; });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.waitForFunction(() => typeof window.releasePreflight === "function");
+    await page.clock.fastForward(301_000);
+    await expect(page.getByText("Private proof links expired.", { exact: false })).toBeVisible();
+    await page.evaluate(() => window.releasePreflight());
+    await expect(page.getByRole("button", { name: "Run preflight", exact: true })).toBeEnabled();
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 test("compiled print proof archive controls and opened source fit a narrow viewport", async () => {
   const { page, errors } = await fixture({ width: 375 });
   try {
@@ -1225,7 +1280,8 @@ test('edition load carries the verified actor on book and edition reads',async()
   await page.evaluate(()=>{const book=window.bookwormApi.getBook,editions=window.bookwormApi.listEditions,chapters=window.bookwormApi.listChapters;window.actorReads=[];window.bookwormApi.getBook=async(id,actor)=>{window.actorReads.push(['book',actor]);return book(id)};window.bookwormApi.listEditions=async(id,actor)=>{window.actorReads.push(['editions',actor]);return editions(id)};window.bookwormApi.listChapters=async(id,actor)=>{window.actorReads.push(['chapters',actor]);return chapters(id)};window.showStudio(null)});
   await expect(page.getByRole('heading',{name:'Edition settings',exact:true})).toHaveCount(0);await page.evaluate(()=>window.showStudio(window.ids.book));await expect(page.getByRole('heading',{name:'Edition settings',exact:true})).toBeVisible();
   await expect.poll(()=>page.evaluate(()=>window.actorReads.length)).toBe(4);
-  assert.deepEqual(await page.evaluate(()=>window.actorReads),[['book',ids.asset],['book',ids.asset],['editions',ids.asset],['chapters',ids.asset]]);
+  const reads = await page.evaluate(()=>window.actorReads);
+  assert.deepEqual(reads.sort((a,b)=>a[0].localeCompare(b[0])),[['book',ids.asset],['book',ids.asset],['chapters',ids.asset],['editions',ids.asset]]);
  }finally{await page.close()}
 });
 

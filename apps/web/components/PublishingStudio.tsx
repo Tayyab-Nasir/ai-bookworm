@@ -27,6 +27,7 @@ type TimedAudioExport = AudiobookGooglePlayExportJob & { downloadExpiresAt: Down
 const timeAudio = (job: AudiobookGooglePlayExportJob, startedAt: DownloadClock): TimedAudioExport => ({ ...job, downloadExpiresAt: job.downloadUrl && job.downloadExpiresIn ? signedDownloadDeadline({ url: job.downloadUrl, expiresIn: job.downloadExpiresIn }, startedAt) : null });
 const timePackage = (job: PublishingPackageJob, startedAt: DownloadClock): TimedPackageJob => ({ ...job, downloadExpiresAt: packageDownloadDeadline(job, startedAt) });
 const CHANNEL_FORMATS: Record<RetailerChannel, Kind[]> = { kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"] };
+const CHANNEL_LABELS: Record<Channel, string> = { export: "Universal export", kdp: "Amazon KDP", apple: "Apple Books", barnesnoble: "Barnes & Noble Press", lulu: "Lulu", googleplay: "Google Play Books" };
 const CHANNEL_ENTITLEMENTS: Record<RetailerChannel, string> = { kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu", googleplay: "google_play" };
 const artifactUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function renderedStoragePath(workspace: string | undefined, artifact: RenderedEditionResult["artifacts"][number]) {
@@ -140,6 +141,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<"load" | "save" | "render" | "preflight" | "package" | "history" | "audiobook" | null>("load");
   const [channel, setChannel] = useState<Channel>("export");
+  const currentChannel = useRef(channel); currentChannel.current = channel;
   const [rendered, setRendered] = useState<(RenderedEditionResult & { expiresAt?: number }) | null>(null);
   const renderedRef = useRef(rendered); renderedRef.current = rendered;
   const [readerRefreshKey, setReaderRefreshKey] = useState("");
@@ -484,7 +486,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const render = async () => {
     if (!editable || !activeId || dirty || busy || renderBlocked) return;
     const valid = captureView(); if (!valid()) return;
-    setBusy("render"); setError(null); setNotice(null); setRendered(null);
+    setBusy("render"); setError(null); setNotice(null); setRendered(null); setPreflight(null);
     const startedAt = Date.now();
     try { const result = await api.renderEdition(activeId, { idempotencyKey: crypto.randomUUID() }); if (valid()) { setRendered({ ...result, expiresAt: renderLinksDeadline(result, startedAt) }); setReaderRefreshKey(result.jobId); setNotice("Private render completed."); } }
     catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Rendering failed."); }
@@ -494,9 +496,17 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const validate = async () => {
     if (!editable || !activeId || dirty || busy || !channelCompatible) return;
     const valid = captureView(); if (!valid()) return;
+    const edition = activeId, target = channel, proof = renderedRef.current;
+    const sameRequest = () => valid() && currentEdition.current === edition && currentChannel.current === target && renderedRef.current === proof;
     setBusy("preflight"); setError(null); setNotice(null); setPreflight(null);
-    try { const result = await api.runPreflight({ bookId, editionId: activeId, channel, idempotencyKey: crypto.randomUUID() }); if (valid()) setPreflight(result); }
-    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Preflight failed."); }
+    try {
+      const result = await api.runPreflight({ bookId, editionId: edition, channel: target, idempotencyKey: crypto.randomUUID() });
+      if (sameRequest()) {
+        if (result.requestedChannel !== target) throw new Error("Preflight returned a different target. Please run it again.");
+        setPreflight(result);
+      }
+    }
+    catch (reason) { if (sameRequest()) setError(reason instanceof Error ? reason.message : "Preflight failed."); }
     finally { if (valid()) setBusy(null); }
   };
 
@@ -735,10 +745,10 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
           {rendered && <div className="mt-5 grid gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <PrivateCoverPreview actor={linkOwner} url={artifact.download.url} expectedPath={renderedStoragePath(book?.workspace_id, artifact)} expiresAt={rendered.expiresAt} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && renderedRef.current === rendered} /> : null}<PrivateArtifactDownload actor={linkOwner} url={artifact.download.url} filename={artifact.asset.name} expectedPath={renderedStoragePath(book?.workspace_id, artifact)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && renderedRef.current === rendered} isExpired={() => rendered.expiresAt !== undefined && Date.now() >= rendered.expiresAt} onInvalid={message => { setRendered(null); setPreflight(null); setError(message); }} className="mt-3 inline-block text-sm underline disabled:opacity-40">Download private file</PrivateArtifactDownload></div>)}</div>}
           {form.kind === "print" && rendered && currentIdentity && book && activeId && <SavedPdfProof key={`${linkOwner}:${bookId}:${activeId}:${rendered.jobId}`} actor={linkOwner} onAuthorizationFailure={invalidatePrint} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} rendered={rendered} disabled={dirty || Boolean(busy)} />}
           {form.kind === "print" && currentIdentity && book && activeId && <SavedPrintLibrary key={`${linkOwner}:${bookId}:${activeId}`} actor={linkOwner} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} refreshKey={readerRefreshKey} dirty={dirty} disabled={dirty || Boolean(busy)} onSelect={adoptPrint} onInvalidate={invalidatePrint} />}
-          <div className="mt-6 flex flex-wrap items-end gap-3 border-t border-white/10 pt-5"><label className="min-w-52 flex-1 text-sm text-white/65">Preflight target<select value={channel} onChange={(event) => { setChannel(event.target.value as Channel); setPreflight(null); }} className={fieldClass}><option value="export">Universal export</option><option value="kdp">Amazon KDP</option><option value="apple">Apple Books</option><option value="barnesnoble">Barnes & Noble Press</option><option value="lulu">Lulu</option><option value="googleplay">Google Play Books</option></select></label><button type="button" onClick={() => void validate()} disabled={!editable || !activeId || dirty || Boolean(busy) || !channelCompatible} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "preflight" ? "Checking…" : "Run preflight"}</button></div>
+          <div className="mt-6 flex flex-wrap items-end gap-3 border-t border-white/10 pt-5"><label className="min-w-52 flex-1 text-sm text-white/65">Preflight target<select value={channel} disabled={Boolean(busy)} onChange={(event) => { if (!handlerCurrent() || busy) return; setChannel(event.target.value as Channel); setPreflight(null); }} className={fieldClass}><option value="export">Universal export</option><option value="kdp">Amazon KDP</option><option value="apple">Apple Books</option><option value="barnesnoble">Barnes & Noble Press</option><option value="lulu">Lulu</option><option value="googleplay">Google Play Books</option></select></label><button type="button" onClick={() => void validate()} disabled={!editable || !activeId || dirty || Boolean(busy) || !channelCompatible} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "preflight" ? "Checking…" : "Run preflight"}</button></div>
           {!channelCompatible && <p className="mt-3 text-sm text-amber-200">{channel === "lulu" ? "Lulu packages require a print PDF edition." : channel === "googleplay" ? "Google Play Books packages require an EPUB edition with an embedded front cover." : channel === "apple" ? "Apple Books packages require an EPUB edition." : "Choose an edition supported by this retailer."}</p>}
           {channel === "googleplay" && channelCompatible && <p className="mt-3 text-xs leading-5 text-white/45">Single-title Partner Center handoff only. Run EpubCheck and inspect Google’s processed preview, pricing, territories, and Review tab before publishing. This does not submit the book.</p>}
-          {preflight && <div className="mt-5"><div className="flex flex-wrap gap-3 text-sm"><span className={`rounded-full px-3 py-1 ${preflight.errors ? "bg-red-400/15 text-red-100" : "bg-emerald-400/15 text-emerald-100"}`}>{preflight.errors} errors</span><span className="rounded-full bg-amber-300/10 px-3 py-1 text-amber-100">{preflight.warnings} warnings</span><span className="px-2 py-1 text-white/40">Rules {preflight.ruleVersion}</span></div>{preflight.findings.length ? <ul className="mt-4 space-y-2">{preflight.findings.map((finding, index) => <li key={`${finding.rule_id}:${finding.location}:${index}`} className="rounded-xl border border-white/10 p-3 text-sm"><span className="font-medium uppercase text-white/60">{finding.severity}</span> · {finding.message}<span className="mt-1 block text-xs text-white/35">{finding.rule_id}{finding.location ? ` · ${finding.location}` : ""}</span></li>)}</ul> : <p className="mt-4 text-sm text-emerald-200">No preflight findings for this target.</p>}</div>}
+          {preflight && <div className="mt-5"><p className="mb-3 text-sm font-medium text-white/75">Preflight results · {CHANNEL_LABELS[preflight.requestedChannel]}</p><div className="flex flex-wrap gap-3 text-sm"><span className={`rounded-full px-3 py-1 ${preflight.errors ? "bg-red-400/15 text-red-100" : "bg-emerald-400/15 text-emerald-100"}`}>{preflight.errors} errors</span><span className="rounded-full bg-amber-300/10 px-3 py-1 text-amber-100">{preflight.warnings} warnings</span><span className="px-2 py-1 text-white/40">Rules {preflight.ruleVersion}</span></div>{preflight.findings.length ? <ul className="mt-4 space-y-2">{preflight.findings.map((finding, index) => <li key={`${finding.rule_id}:${finding.location}:${index}`} className="rounded-xl border border-white/10 p-3 text-sm"><span className="font-medium uppercase text-white/60">{finding.severity}</span> · {finding.message}<span className="mt-1 block text-xs text-white/35">{finding.rule_id}{finding.location ? ` · ${finding.location}` : ""}</span></li>)}</ul> : <p className="mt-4 text-sm text-emerald-200">No preflight findings for this target.</p>}</div>}
         </section>}
 
         {currentIdentity && activeId && form.kind === "ebook" && <SavedEpubReader key={`${linkOwner}:${bookId}:${activeId}`} actor={linkOwner} workspaceId={book?.workspace_id ?? ""} bookId={bookId} editionId={activeId} dirty={dirty} refreshKey={readerRefreshKey} />}
