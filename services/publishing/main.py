@@ -132,7 +132,7 @@ def build_package(req: PackageRequest) -> dict:
     # Running it here as well doubles the potentially long EPUBCheck process.
     validation = None if req.channel in {"apple", "googleplay"} else adapter.validate(ctx)
     if validation is not None and validation["errors"]:
-        raise HTTPException(422, "the saved artifacts no longer pass channel validation")
+        raise HTTPException(422, "The saved artifacts no longer pass channel validation. Review findings. Render again before packaging.")
     try:
         packages = adapter.build_package(ctx, artifacts)
     except ValueError as error:

@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import copy
+import struct
 import sys
 import zipfile
 from xml.etree import ElementTree as ET
@@ -469,13 +470,99 @@ def test_illustrations_are_embedded_in_epub_and_print_pdf():
 
 # ---- preflight ----------------------------------------------------------------
 
+def _corrupt_epub_member(blob, name):
+    data = bytearray(blob)
+    with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+        info = archive.getinfo(name)
+        assert info.compress_size > 0
+        start = info.header_offset + 30 + len(info.filename.encode("utf-8")) + len(info.extra)
+    data[start + info.compress_size // 2] ^= 1
+    return bytes(data)
+
+
+@pytest.mark.parametrize("name", ["mimetype", "OEBPS/nav.xhtml", "OEBPS/content.opf", "OEBPS/ch0000.xhtml"])
+def test_corrupt_epub_member_is_reported_without_crashing(name):
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    ctx = _ctx(VALID, EBOOK, _corrupt_epub_member(blob, name))
+    # Caller-provided internal cache entries must never skip verification.
+    ctx["_epub_readable"] = True
+    findings = run_preflight(ctx, load_ruleset())
+    assert any(f.code == "BAD_ZIP" and f.severity == "error" for f in findings)
+
+
+def test_preflight_http_returns_actionable_error_for_corrupt_render(publication_date_render_client, monkeypatch):
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    damaged = _corrupt_epub_member(blob, "OEBPS/ch0000.xhtml")
+    endpoint = next(route.endpoint for route in publication_date_render_client.app.routes if route.path == "/preflight")
+    monkeypatch.setitem(endpoint.__globals__, "render_epub", lambda *_args, **_kwargs: (damaged, "synthetic"))
+    response = publication_date_render_client.post("/preflight", headers={"x-service-token": "publication-date-fixture"},
+        json={"channel": "kdp", "editionConfig": EBOOK, "bookModel": VALID, "includeArtifact": True})
+    assert response.status_code == 200
+    assert response.json()["errors"] > 0
+    assert "BAD_ZIP" in {finding["code"] for finding in response.json()["findings"]}
+
+
+def test_epub_without_nav_reports_finding_and_never_raises():
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(blob)) as source, zipfile.ZipFile(output, "w") as target:
+        for item in source.infolist():
+            if item.filename != "OEBPS/nav.xhtml":
+                target.writestr(item, source.read(item))
+    codes = {finding.code for finding in run_preflight(_ctx(VALID, EBOOK, output.getvalue()), load_ruleset())}
+    assert "NO_NAV" in codes
+    assert "BAD_ZIP" not in codes
+
+
+def test_epub_nav_toc_token_can_cross_stream_chunk_boundary():
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(blob)) as source, zipfile.ZipFile(output, "w") as target:
+        for item in source.infolist():
+            data = (b" " * (64 * 1024 - 5) + b'epub:type="toc"') if item.filename == "OEBPS/nav.xhtml" else source.read(item)
+            target.writestr(item, data)
+    codes = {finding.code for finding in run_preflight(_ctx(VALID, EBOOK, output.getvalue()), load_ruleset())}
+    assert "NO_TOC" not in codes
+    assert "BAD_ZIP" not in codes
+
+
+def test_epub_rejects_duplicate_entries_and_extreme_expansion():
+    for duplicate in (True, False):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            archive.writestr("mimetype", b"application/epub+zip", compress_type=zipfile.ZIP_STORED)
+            if duplicate:
+                with pytest.warns(UserWarning, match="Duplicate name"):
+                    archive.writestr("mimetype", b"application/epub+zip")
+            else:
+                archive.writestr("OEBPS/large.xhtml", b"x" * (2 * 1024 * 1024), compress_type=zipfile.ZIP_DEFLATED)
+        codes = {finding.code for finding in run_preflight(_ctx(VALID, EBOOK, output.getvalue()), load_ruleset())}
+        assert "BAD_ZIP" in codes
+
+
+@pytest.mark.parametrize("entries,directory_size", [(10_001, 0), (1, 8 * 1024 * 1024 + 1), (65_535, 0), (1, 0xFFFFFFFF)])
+def test_epub_rejects_oversized_central_directory_before_zip_allocation(monkeypatch, entries, directory_size):
+    # A forged EOCD must fail before ZipFile attempts to allocate its index.
+    import preflight
+    raw = struct.pack("<4s4H2IH", b"PK\x05\x06", 0, 0, entries, entries, directory_size, 0, 0)
+    monkeypatch.setattr(preflight.zipfile, "ZipFile", lambda *_: pytest.fail("ZipFile must not be opened"))
+    assert preflight._open_epub({"artifact": raw}) is None
+
+
+def test_epub_rejects_zip64_locator_even_with_small_legacy_directory_fields(monkeypatch):
+    import preflight
+    locator = b"PK\x06\x07" + bytes(16)
+    raw = locator + struct.pack("<4s4H2IH", b"PK\x05\x06", 0, 0, 1, 1, 0, 0, 0)
+    monkeypatch.setattr(preflight.zipfile, "ZipFile", lambda *_: pytest.fail("ZipFile must not be opened"))
+    assert preflight._open_epub({"artifact": raw}) is None
+
 def test_valid_book_passes_core():
     ed = parse_edition(EBOOK)
     blob, _ = render_epub(VALID, ed)
     findings = run_preflight(_ctx(VALID, EBOOK, blob), load_ruleset())
     errors = [f for f in findings if f.severity == "error"]
     assert errors == []
-    assert all(f.rule_version == "core-1.0.10" for f in findings) or not findings
+    assert all(f.rule_version == "core-1.0.11" for f in findings) or not findings
 
 
 def test_broken_book_findings_with_location_and_rule_version():
@@ -489,7 +576,7 @@ def test_broken_book_findings_with_location_and_rule_version():
     assert "IMAGE_REF_MISSING" in errors
     assert "NO_ALT_TEXT" in errors
     for f in findings:
-        assert f.rule_version == "core-1.0.10"
+        assert f.rule_version == "core-1.0.11"
         assert f.rule_id
     assert errors["NO_TITLE"].location == "book.metadata.title"
     assert "chapter" in errors["IMAGE_REF_MISSING"].location
@@ -521,7 +608,7 @@ def test_rtl_preflight_blocks_only_unsupported_print_and_cover_text_paths():
 
 def test_kdp_ruleset_layers_channel_rules():
     ruleset = load_ruleset("kdp")
-    assert ruleset.version == "core-1.0.10+kdp-1.4.0"
+    assert ruleset.version == "core-1.0.11+kdp-1.4.0"
     assert any(r.id.startswith("KDP-") for r in ruleset.rules)
     with pytest.raises(KeyError):
         load_ruleset("nook-2009")

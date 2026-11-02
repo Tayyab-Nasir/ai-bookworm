@@ -54,6 +54,12 @@ def check_google_epub_cover(ctx):
 def _check_result(ctx) -> EpubCheckResult | None:
     if (ctx.get("edition") or {}).get("kind") != "ebook" or not ctx.get("artifact"):
         return None
+    # Core preflight already reports corrupt or oversized archives. Never pass
+    # those untrusted bytes to the external checker.
+    archive = _open_epub(ctx)
+    if archive is None:
+        return None
+    archive.close()
     if "_google_epubcheck_result" not in ctx:
         ctx["_google_epubcheck_result"] = run_epubcheck(ctx["artifact"])
     return ctx["_google_epubcheck_result"]

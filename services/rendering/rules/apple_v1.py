@@ -3,7 +3,7 @@ from io import BytesIO
 
 from PIL import Image, UnidentifiedImageError
 from epubcheck_runner import EpubCheckResult, run_epubcheck
-from preflight import Finding, Rule, _meta
+from preflight import Finding, Rule, _meta, _open_epub
 from rules._channel import make_ruleset, metadata_rules
 
 VERSION = "apple-1.2.0"
@@ -54,6 +54,10 @@ def check_apple_cover(ctx):
 def _check_result(ctx) -> EpubCheckResult | None:
     if (ctx.get("edition") or {}).get("kind") != "ebook" or not ctx.get("artifact"):
         return None
+    archive = _open_epub(ctx)
+    if archive is None:
+        return None
+    archive.close()
     if "_apple_epubcheck_result" not in ctx:
         ctx["_apple_epubcheck_result"] = run_epubcheck(ctx["artifact"])
     return ctx["_apple_epubcheck_result"]

@@ -50,7 +50,7 @@ def test_all_channels_registered():
 
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
-    assert result["ruleVersion"] == "core-1.0.10+kdp-1.4.0"
+    assert result["ruleVersion"] == "core-1.0.11+kdp-1.4.0"
     ids = {f["rule_id"] for f in result["findings"]}
     assert not result["findings"] or all(
         rid.startswith(("CORE-", "KDP-")) for rid in ids)
@@ -87,7 +87,7 @@ def test_google_play_requires_embedded_front_cover_and_builds_single_title_hando
            "cover_bytes": cover.getvalue()}
     result = adapter.validate(ctx)
     assert result["errors"] == 0, result["findings"]
-    assert result["ruleVersion"] == "core-1.0.10+google-play-1.2.0"
+    assert result["ruleVersion"] == "core-1.0.11+google-play-1.2.0"
     exported = adapter.build_package(ctx, {"book.epub": epub})[0]
     assert exported.path == "googleplay-export.zip"
     with zipfile.ZipFile(BytesIO(exported.data)) as archive:
@@ -302,7 +302,7 @@ def test_apple_package_endpoint_checks_exact_saved_epub_once(monkeypatch, status
     if status == "valid":
         result = build_package(request)
         assert result["errors"] == 0
-        assert result["ruleVersion"] == "core-1.0.10+apple-1.2.0"
+        assert result["ruleVersion"] == "core-1.0.11+apple-1.2.0"
         with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
             assert archive.read("book.epub") == epub
     else:
@@ -460,7 +460,7 @@ def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
                              artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
     first = build_package(request)
     second = build_package(request)
-    assert first["ruleVersion"] == "core-1.0.10+kdp-1.4.0"
+    assert first["ruleVersion"] == "core-1.0.11+kdp-1.4.0"
     assert first["packages"][0]["sha256"] == second["packages"][0]["sha256"]
     package = base64.b64decode(first["packages"][0]["dataBase64"])
     with zipfile.ZipFile(BytesIO(package)) as archive:
@@ -473,6 +473,48 @@ def publication_date_publishing_client(monkeypatch):
     monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", "publication-date-fixture")
     with TestClient(_PUBLISHING_MAIN.app, raise_server_exceptions=False) as client:
         yield client
+
+
+@pytest.mark.parametrize("channel", ["kdp", "apple", "googleplay"])
+@pytest.mark.parametrize("member", ["mimetype", "OEBPS/nav.xhtml", "OEBPS/content.opf", "OEBPS/ch0000.xhtml"])
+def test_corrupt_saved_epub_is_rejected_by_package_http(publication_date_publishing_client, monkeypatch, channel, member):
+    import rules.apple_v1 as apple_rules
+    import rules.google_play_v1 as google_rules
+    def no_checker(_):
+        raise AssertionError("corrupt EPUB must not reach EPUBCheck")
+    monkeypatch.setattr(apple_rules, "run_epubcheck", no_checker)
+    monkeypatch.setattr(google_rules, "run_epubcheck", no_checker)
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    damaged = bytearray(blob)
+    with zipfile.ZipFile(BytesIO(blob)) as archive:
+        item = archive.getinfo(member)
+        offset = item.header_offset + 30 + len(item.filename.encode("utf-8")) + len(item.extra)
+    damaged[offset + item.compress_size // 2] ^= 1
+    response = publication_date_publishing_client.post("/v1/publishing/package",
+        headers={"x-service-token": "publication-date-fixture"},
+        json={"channel": channel, "editionConfig": EBOOK, "bookModel": VALID,
+              "artifactsBase64": {"book.epub": base64.b64encode(damaged).decode()}})
+    assert response.status_code == 422, response.text
+    assert "packages" not in response.json()
+
+
+@pytest.mark.parametrize("channel", ["apple", "googleplay"])
+def test_preflight_does_not_trust_caller_supplied_epubcheck_cache(monkeypatch, channel):
+    import rules.apple_v1 as apple_rules
+    import rules.google_play_v1 as google_rules
+    from epubcheck_runner import EpubCheckResult
+    from preflight import run_preflight
+    from rules import load_ruleset
+    module, key = (apple_rules, "_apple_epubcheck_result") if channel == "apple" else (google_rules, "_google_epubcheck_result")
+    calls = []
+    def checker(blob):
+        calls.append(blob)
+        return EpubCheckResult("invalid", errors=1)
+    monkeypatch.setattr(module, "run_epubcheck", checker)
+    ctx = {**_ctx(), "channel": channel, key: EpubCheckResult("valid")}
+    findings = run_preflight(ctx, load_ruleset(channel))
+    assert len(calls) == 1
+    assert any(item.code.endswith("EPUBCHECK-ERROR") and item.severity == "error" for item in findings)
 
 
 @pytest.mark.parametrize("value", ["0000-01-01", "2026-02-30"])

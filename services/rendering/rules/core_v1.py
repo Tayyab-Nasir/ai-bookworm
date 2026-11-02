@@ -11,7 +11,7 @@ from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.10"
+VERSION = "core-1.0.11"
 
 
 def _find(code, msg, loc=""):
@@ -34,7 +34,7 @@ def check_zip_readable(ctx):
     if ctx.get("artifact") is None:
         return []
     if _open_epub(ctx) is None:
-        return _find("BAD_ZIP", "artifact is not a readable zip/epub", "artifact")
+        return _find("BAD_ZIP", "artifact is not a readable EPUB or exceeds safe archive limits", "artifact")
     return []
 
 
@@ -47,7 +47,7 @@ def check_mimetype_first(ctx):
     infos = zf.infolist()
     if not infos or infos[0].filename != "mimetype" or infos[0].compress_type != 0:
         return _find("MIMETYPE", "mimetype must be first zip entry, stored uncompressed", "mimetype")
-    if zf.read("mimetype") != b"application/epub+zip":
+    if infos[0].file_size != len(b"application/epub+zip") or zf.read(infos[0]) != b"application/epub+zip":
         return _find("MIMETYPE_CONTENT", "mimetype content must be application/epub+zip", "mimetype")
     return []
 
@@ -72,9 +72,15 @@ def check_nav(ctx):
         return []
     if "OEBPS/nav.xhtml" not in set(zf.namelist()):
         return _find("NO_NAV", "EPUB3 nav document missing", "OEBPS/nav.xhtml")
-    if b'epub:type="toc"' not in zf.read("OEBPS/nav.xhtml"):
-        return _find("NO_TOC", "nav document lacks epub:type=toc", "OEBPS/nav.xhtml")
-    return []
+    token = b'epub:type="toc"'
+    tail = b""
+    with zf.open("OEBPS/nav.xhtml") as stream:
+        while chunk := stream.read(64 * 1024):
+            sample = tail + chunk
+            if token in sample:
+                return []
+            tail = sample[-(len(token) - 1):]
+    return _find("NO_TOC", "nav document lacks epub:type=toc", "OEBPS/nav.xhtml")
 
 
 def check_chapter_titles(ctx):
