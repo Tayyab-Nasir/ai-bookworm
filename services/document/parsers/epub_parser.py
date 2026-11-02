@@ -20,6 +20,7 @@ _TAG_BLOCK = {"p": "paragraph", "blockquote": "quote",
               "h1": "heading", "h2": "heading", "h3": "heading",
               "h4": "heading", "h5": "heading", "h6": "heading",
               "li": "listItem"}
+MAX_TABLE_IMAGE_OCCURRENCES = 10_000
 
 
 def _read_opf_path(zf: zipfile.ZipFile) -> str:
@@ -51,7 +52,7 @@ def _spine_hrefs(zf: zipfile.ZipFile, opf_path: str) -> tuple[list[str], dict[st
     return hrefs, manifest
 
 
-def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None) -> list[dict]:
+def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None, warnings=None) -> list[dict]:
     """Walk once in reading order; never flatten a parent and its children twice."""
     nodes: list[dict] = []
     marks_by_tag = {"b": "bold", "strong": "bold", "i": "italic", "em": "italic",
@@ -130,10 +131,13 @@ def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None) -> list
                                          "listDepth": min(6, max(0, list_depth)), **numbering_attributes(parent_list, child)}, nesting + level + 1)
             elif tag == "table":
                 flush()
+                if len(child.find_all(["img", "image"], limit=MAX_TABLE_IMAGE_OCCURRENCES + 1)) > MAX_TABLE_IMAGE_OCCURRENCES:
+                    raise ParseError("EPUB table contains too many image occurrences; split the table before importing")
                 caption = child.find("caption", recursive=False)
                 if caption:
                     walk(caption, "caption", nesting=nesting + level + 1)
                 rows = []
+                table_images = []
                 header_rows = 0
                 spans = []
                 occupied_by_row = {}
@@ -159,8 +163,12 @@ def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None) -> list
                         if col + width > 100:
                             raise ParseError("EPUB table exceeds safe column limit")
                         # Reuse the same safe walker; no scripts, links or source HTML.
-                        cell_nodes = _xhtml_to_nodes(cell, _nesting=nesting + level + 1, image_node=image_node)
-                        cells[col] = "\n".join(n.get("text", "") for n in cell_nodes)
+                        cell_nodes = _xhtml_to_nodes(cell, _nesting=nesting + level + 1,
+                                                     image_node=image_node, warnings=warnings)
+                        def is_image(n):
+                            return n["type"] == "image" or (n["type"] == "caption" and n.get("attributes", {}).get("importedNodeType") == "image")
+                        table_images.extend(n for n in cell_nodes if is_image(n))
+                        cells[col] = "\n".join(n.get("text", "") for n in cell_nodes if not is_image(n))
                         for r in range(row_index, row_index + height):
                             for c in range(col, col + width):
                                 occupied_by_row.setdefault(r, set()).add(c)
@@ -183,6 +191,10 @@ def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None) -> list
                     attributes = span_attributes(rows, header_rows, spans)
                     nodes.append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows,
                                       **({"attributes": attributes} if attributes else {})))
+                if table_images:
+                    nodes.extend(table_images)
+                    if warnings is not None:
+                        warnings.append("EPUB table images were moved after the table; review their original placement.")
             elif tag in _TAG_BLOCK or tag in containers or tag == "figcaption":
                 # Paragraphs within a list item are its own text, not new bullets.
                 if tag == "p" and kind == "listItem":
@@ -273,7 +285,7 @@ def parse_epub(data: bytes, title: str = "Untitled", *, embedded_assets: list[di
                 return node("caption", alt or "[Embedded illustration — retained in original EPUB]",
                             attributes={"importedNodeType": "image"})
 
-            nodes = _xhtml_to_nodes(soup, image_node=image_node)
+            nodes = _xhtml_to_nodes(soup, image_node=image_node, warnings=warnings)
             if soup.find("table"):
                 warnings.append(f"Table text, row order, explicit header rows and rectangular merged cells in {href} were preserved; complex merged-cell layout and cell formatting require review against the original.")
             if not nodes:
