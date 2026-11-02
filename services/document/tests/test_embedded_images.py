@@ -86,6 +86,31 @@ def test_authenticated_epub_endpoint_accepts_collector_and_returns_private_paylo
     assert "contentBase64" not in json.dumps(payload["bookModel"])
 
 
+def test_authenticated_docx_import_retains_nested_text_and_reports_table_images(monkeypatch):
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1).cell(0, 0)
+    outer.paragraphs[0].text = "Before"
+    nested = outer.add_table(rows=1, cols=1).cell(0, 0)
+    nested.paragraphs[0].add_run("Nested")
+    nested.paragraphs[0].add_run().add_picture(io.BytesIO(PNG))
+    outer.paragraphs[-1].text = "After"
+    data = io.BytesIO()
+    doc.save(data)
+    spec = importlib.util.spec_from_file_location("document_nested_http", SERVICE / "main.py")
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    monkeypatch.setenv("DOCUMENT_SERVICE_TOKEN", "fixture-embedded-token")
+    with TestClient(module.app) as client:
+        response = client.post("/parse", headers={"x-service-token": "fixture-embedded-token"}, json={
+            "assetId": "source", "format": "docx", "contentBase64": base64.b64encode(data.getvalue()).decode()})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    text = payload["bookModel"]["chapters"][0]["nodes"][0]["rows"][0][0]
+    assert text.index("Before") < text.index("Nested") < text.index("After")
+    assert any("nested tables were flattened" in warning for warning in payload["report"]["warnings"])
+    assert any("images inside tables are not imported" in warning for warning in payload["report"]["warnings"])
+    assert payload["embeddedAssets"] == []
+
+
 def test_image_collector_limits_and_unsupported_types(monkeypatch):
     import parsers.embedded_images as images
     collector = EmbeddedImages()

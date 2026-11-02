@@ -52,10 +52,29 @@ def _paragraph_runs(para, warnings) -> list[dict]:
     return result
 
 
-def _cell_text(cell, warnings) -> str:
-    """Read direct cell paragraphs using the same Word character semantics as body text."""
-    paragraphs = []
-    for paragraph in cell.paragraphs:
+def _cell_text(cell, warnings, depth=0) -> str:
+    """Keep cell content in document order, flattening nested tables as text."""
+    parts = []
+    for paragraph in cell.iter_inner_content():
+        if isinstance(paragraph, Table):
+            if depth >= 16:
+                raise ParseError("DOCX nested tables exceed the supported depth; review the original manuscript")
+            warning = "DOCX nested tables were flattened to text; review their layout against the original."
+            if warning not in warnings:
+                warnings.append(warning)
+            seen_cells = set()
+            rows = []
+            for row in paragraph.rows:
+                values = []
+                for nested in row.cells:
+                    if nested._tc in seen_cells:
+                        values.append("")
+                    else:
+                        seen_cells.add(nested._tc)
+                        values.append(_cell_text(nested, warnings, depth + 1))
+                rows.append("\t".join(values))
+            parts.append("\n".join(rows))
+            continue
         pieces = []
         for content in paragraph.iter_inner_content():
             for run in [content] if isinstance(content, Run) else content.runs:
@@ -66,8 +85,12 @@ def _cell_text(cell, warnings) -> str:
                         warning = "DOCX page breaks inside table cells require review against the original."
                         if warning not in warnings:
                             warnings.append(warning)
-        paragraphs.append("".join(pieces))
-    return "\n".join(paragraphs)
+                    elif item.get("type") == "drawing":
+                        warning = "DOCX images inside tables are not imported; upload them separately and review their placement."
+                        if warning not in warnings:
+                            warnings.append(warning)
+        parts.append("".join(pieces))
+    return "\n".join(parts)
 
 
 def _extract_images(doc) -> tuple[dict[str, dict], list[str]]:
