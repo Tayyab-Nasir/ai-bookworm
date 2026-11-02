@@ -4,11 +4,14 @@ import io
 import re
 import unicodedata
 
-from pypdf import PdfReader
+from pypdf import PdfReader, apply_configuration
 
 from . import ParseError, check_size, make_book, make_report, new_chapter, node
 
 _MIN_CHARS_PER_PAGE = 20
+# Per-stream limits supplement, but do not replace, process resource controls.
+_PDF_DECODE_LIMIT = 16_000_000
+_PDF_DECODE_WORK_LIMIT = 64_000_000
 
 
 def _looks_garbled(char: str) -> bool:
@@ -20,11 +23,15 @@ def _looks_garbled(char: str) -> bool:
 def parse_pdf(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
     check_size(data)
     try:
-        reader = PdfReader(io.BytesIO(data))
-        n_pages = len(reader.pages)
-        if n_pages == 0:
-            raise ParseError("PDF has no pages")
-        pages = [(reader.pages[i].extract_text() or "") for i in range(n_pages)]
+        with apply_configuration(
+            zlib_maximum_output_length=_PDF_DECODE_LIMIT,
+            stream_decoding_work_maximum_length=_PDF_DECODE_WORK_LIMIT,
+        ):
+            reader = PdfReader(io.BytesIO(data))
+            n_pages = len(reader.pages)
+            if n_pages == 0:
+                raise ParseError("PDF has no pages")
+            pages = [(reader.pages[i].extract_text() or "") for i in range(n_pages)]
     except ParseError:
         raise
     except Exception as e:
