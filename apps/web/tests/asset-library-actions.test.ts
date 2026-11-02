@@ -27,6 +27,7 @@ function nodes(tree: any): any[] {
 function control(tree: any, label: string) {
   return nodes(tree).find(node => node.props?.children === label || node.props?.["aria-label"] === label);
 }
+function downloadControl(tree: any) { return nodes(tree).find(node => node.type === "button" && Array.isArray(node.props?.children) && node.props.children.join("") === "Download original file · v2"); }
 
 // Run the real component callbacks against isolated API fixtures. No server,
 // credential, native Storage request or file download is involved.
@@ -34,7 +35,7 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
   const states: any[] = []; const refs: any[] = []; const effects: (() => any)[] = []; const callbacks: any[] = [];
   let stateIndex = 0; let refIndex = 0; let now = 1000;
   const timers: (() => void)[] = [];
-  const assigned: string[] = [];
+  const assigned: string[] = []; const downloads: { href: string; download: string; rel: string }[] = []; const inputClicks: string[] = [];
   const values = new Map<string, string>();
   const window = {
     addEventListener() {}, removeEventListener() {},
@@ -57,7 +58,7 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
   const react = {
     useState(initial: any) { const index = stateIndex++; if (!(index in states)) states[index] = initial; return [states[index], (value: any) => { states[index] = typeof value === "function" ? value(states[index]) : value; }]; },
     useRef(initial: any) { const index = refIndex++; return refs[index] ?? (refs[index] = { current: initial }); },
-    useCallback(fn: any) { callbacks.push(fn); return fn; }, useEffect(fn: () => any) { effects.push(fn); }, Suspense: "Suspense",
+    useCallback(fn: any) { callbacks.push(fn); return fn; }, useMemo(fn: () => any) { return fn(); }, useEffect(fn: () => any) { effects.push(fn); }, useLayoutEffect(fn: () => any) { effects.push(fn); }, Suspense: "Suspense",
   };
   const require = (name: string): any => {
     if (name === "react") return react;
@@ -69,7 +70,7 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
     if (name.endsWith("/AssetBrowser")) return { default: "AssetBrowser" };
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
     if (name.endsWith("/workspace-selection")) return selection;
-    if (name === "@bookworm/api-client") return { ApiClientError };
+    if (name === "@bookworm/api-client") return { ApiClientError, createClient: () => api };
     throw new Error(`Unexpected test import: ${name}`);
   };
   class Clock extends Date { static now() { return now; } }
@@ -84,14 +85,16 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
   const sessionModule: Record<string, unknown> = {};
   vm.runInNewContext(compile(readFileSync("apps/web/lib/browser-session.ts", "utf8")), { exports: sessionModule, AbortSignal, fetch });
   const accountRequire = (name: string) => name.endsWith("/browser-session") ? sessionModule : require(name);
-  vm.runInNewContext(compile(source), { exports, require: accountRequire, window, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, AbortSignal, URL, URLSearchParams, Date: Clock, Headers, fetch });
-  const render = () => { stateIndex = 0; refIndex = 0; effects.length = 0; callbacks.length = 0; return account ? exports.AccountMenu() : exports.AssetsPageInner(); };
+  const document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {}, createElement: (type: string) => ({ href: "", download: "", rel: "", click() { if (type === "input") inputClicks.push(type); else downloads.push({ href: this.href, download: this.download, rel: this.rel }); } }) };
+  const scope = { actor: workspace, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() };
+  vm.runInNewContext(compile(source), { exports, require: accountRequire, window, document, AbortSignal, URL, URLSearchParams, Date: Clock, Headers, fetch });
+  const render = () => { stateIndex = 0; refIndex = 0; effects.length = 0; callbacks.length = 0; return account ? exports.AccountMenu() : exports.AssetsPageInner({ scope, active: true, revision: {}, retry: async () => {} }); };
   const initialize = async () => {
     render(); effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
     render(); await callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
     return render();
   };
-  return { render, initialize, callbacks, effects, api, timers, assigned, exports, advance(ms: number) { now += ms; } };
+  return { render, initialize, callbacks, effects, api, timers, assigned, downloads, inputClicks, exports, advance(ms: number) { now += ms; } };
 }
 
 test("current asset download accepts supported original file types and verified generated audio/packages", () => {
@@ -129,9 +132,12 @@ test("PDF preparation revalidates the current version and provides a separate do
   assert.equal(requests.length, 0, "opening a source document does not prepare or download it");
   await control(tree, "Prepare download").props.onClick(); await settle(); tree = h.render();
   assert.deepEqual(requests, [[assetId, 2]]);
-  const link = nodes(tree).find(node => node.type === "a" && node.props.download === file.name);
-  assert(link); assert.equal(new URL(link.props.href).searchParams.get("download"), file.name);
-  assert.equal(h.assigned.length, 0);
+  const download = downloadControl(tree); assert(download);
+  assert.equal(h.downloads.length, 0, "preparing must not download");
+  download.props.onClick(); await settle();
+  assert.equal(h.downloads.length, 1); assert.equal(h.downloads[0].download, file.name);
+  assert.equal(new URL(h.downloads[0].href).searchParams.get("download"), file.name);
+  assert.equal(h.downloads[0].rel, "noopener noreferrer"); assert.equal(h.assigned.length, 0);
 });
 
 test("download preparation is single-flight and late signed replies are discarded after workspace replacement", async () => {
@@ -142,7 +148,7 @@ test("download preparation is single-flight and late signed replies are discarde
   prepare(); prepare(); await settle(); assert.equal(calls, 1);
   nodes(h.render()).find(node => node.type === "select").props.onChange({ target: { value: otherWorkspace } });
   reply.resolve(signed()); await settle();
-  assert(!nodes(h.render()).some(node => node.type === "a" && node.props.download));
+  assert(!Boolean(downloadControl(h.render())));
   assert(!nodes(h.render()).some(node => node.props?.role === "dialog"));
 });
 
@@ -153,9 +159,9 @@ test("changed current file never requests a download link and ambiguous failures
   changed = true; control(tree, "Prepare download").props.onClick(); await settle();
   assert.equal(calls, 0); assert(nodes(h.render()).some(node => String(node.props?.children).includes("This file changed")));
   changed = false; control(h.render(), "Prepare download").props.onClick(); await settle(); assert.equal(calls, 1);
-  assert(!nodes(h.render()).some(node => node.type === "a" && node.props.download));
+  assert(!Boolean(downloadControl(h.render())));
   control(h.render(), "Prepare download").props.onClick(); await settle(); assert.equal(calls, 2);
-  assert(nodes(h.render()).some(node => node.type === "a" && node.props.download));
+  assert(Boolean(downloadControl(h.render())));
 });
 
 test("closed and reopened details reject retained preparation callbacks and expired links fence the click", async () => {
@@ -166,23 +172,22 @@ test("closed and reopened details reject retained preparation callbacks and expi
   await nodes(h.render()).find(node => node.type === "AssetBrowser").props.onOpen(file);
   stalePrepare(); await settle(); assert.equal(calls, 0);
   control(h.render(), "Prepare download").props.onClick(); await settle();
-  const link = nodes(h.render()).find(node => node.type === "a" && node.props.download); assert(link);
-  h.advance(300001); let prevented = false;
-  link.props.onClick({ preventDefault() { prevented = true; } });
-  assert.equal(prevented, true); assert(!nodes(h.render()).some(node => node.type === "a" && node.props.download));
+  const link = downloadControl(h.render()); assert(link);
+  h.advance(300001); link.props.onClick(); await settle();
+  assert.equal(h.downloads.length, 0); assert(!downloadControl(h.render()));
 });
 
 test("retained download clicks cannot navigate or clear a newer link after reopening the same file", async () => {
   const h = harness(); let tree = await h.initialize();
   await nodes(tree).find(node => node.type === "AssetBrowser").props.onOpen(file);
   control(h.render(), "Prepare download").props.onClick(); await settle();
-  const staleLink = nodes(h.render()).find(node => node.type === "a" && node.props.download); assert(staleLink);
+  const staleLink = downloadControl(h.render()); assert(staleLink);
   control(h.render(), "Close asset details").props.onClick();
   await nodes(h.render()).find(node => node.type === "AssetBrowser").props.onOpen(file);
   control(h.render(), "Prepare download").props.onClick(); await settle();
-  let prevented = false; staleLink.props.onClick({ preventDefault() { prevented = true; } });
-  assert.equal(prevented, true);
-  assert(nodes(h.render()).some(node => node.type === "a" && node.props.download), "stale click must not clear the current link");
+  staleLink.props.onClick(); await settle();
+  assert.equal(h.downloads.length, 0);
+  assert(Boolean(downloadControl(h.render())), "stale click must not clear the current link");
   assert(!nodes(h.render()).some(node => node.props?.role === "alert"));
 });
 
@@ -204,4 +209,37 @@ test("account settings remains an accessible mobile link and preserves sign-out 
   assert.equal(control(tree, "Sign out").props.disabled, false);
   await control(tree, "Sign out").props.onClick(); await settle();
   assert.deepEqual(h.assigned, ["/login"]);
+});
+
+test("retained asset actions cannot cross an A-to-B-to-A workspace replacement", async () => {
+  let deletes = 0; let details = 0;
+  const h = harness({
+    listAssets: async (id: string) => ({ assets: [{ ...file, workspace_id: id, storage_path: `workspaces/${id}/assets/${assetId}/v2/draft.pdf` }] }),
+    listAssetVersions: async () => { details++; return { versions: [version] }; },
+    deleteAsset: async () => { deletes++; },
+  });
+  let tree = await h.initialize(); h.effects.find(fn => fn.toString().includes("api.getAssetAccess"))!(); await settle(); tree = h.render();
+  const oldBrowser = nodes(tree).find(node => node.type === "AssetBrowser");
+  assert.equal(oldBrowser.props.permissions.edit, true);
+  const oldDelete = oldBrowser.props.onDelete; const oldOpen = oldBrowser.props.onOpen; const oldUpload = oldBrowser.props.onUpload;
+  nodes(tree).find(node => node.type === "select").props.onChange({ target: { value: otherWorkspace } });
+  tree = h.render(); nodes(tree).find(node => node.type === "select").props.onChange({ target: { value: workspace } });
+  h.render(); await h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
+  h.render(); h.effects.find(fn => fn.toString().includes("api.getAssetAccess"))!(); await settle(); tree = h.render();
+  const newBrowser = nodes(tree).find(node => node.type === "AssetBrowser"); assert.equal(newBrowser.props.permissions.edit, true);
+  await oldDelete(assetId); await oldOpen(file); oldUpload(null); await settle();
+  assert.equal(deletes, 0, "retained delete must not cross workspace incarnation");
+  assert.equal(details, 0, "retained open must not cross workspace incarnation");
+  assert.equal(h.inputClicks.length, 0, "retained upload must not open the file picker");
+  newBrowser.props.onUpload(null); assert.equal(h.inputClicks.length, 1, "current upload opens its picker");
+  await newBrowser.props.onDelete(assetId); assert.equal(deletes, 1, "current callback still works");
+});
+test("retained close control cannot close a newer file dialog", async () => {
+ const h = harness(); let tree = await h.initialize();
+ await nodes(tree).find(node => node.type === "AssetBrowser").props.onOpen(file); tree = h.render();
+ const oldClose = control(tree, "Close asset details").props.onClick;
+ oldClose(); await nodes(h.render()).find(node => node.type === "AssetBrowser").props.onOpen(file);
+ tree = h.render(); assert(nodes(tree).some(node => node.props?.role === "dialog"));
+ oldClose(); assert(nodes(h.render()).some(node => node.props?.role === "dialog"), "stale close must not dismiss current file");
+ control(h.render(), "Close asset details").props.onClick(); assert(!nodes(h.render()).some(node => node.props?.role === "dialog"));
 });

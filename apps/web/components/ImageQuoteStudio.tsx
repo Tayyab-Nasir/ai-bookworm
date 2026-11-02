@@ -1,19 +1,43 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Asset, Book } from "@bookworm/types";
 import type { ImageQuoteModel } from "@bookworm/api-client";
-import { apiClient } from "./api";
-import { canAcceptImageQuote, isImageQuoteFormLocked, readImageQuotePointer, recoverSavedImageQuote, type ImageQuotePointer, type SavedImageQuote } from "../lib/image-quote-ui-state";
+import { createClient } from "@bookworm/api-client";
+import { canAcceptImageQuote, isImageQuoteFormLocked, readImageQuotePointer, recoverSavedImageQuote, type SavedImageQuote } from "../lib/image-quote-ui-state";
 
 const card = "rounded-3xl border border-white/10 bg-white/[0.035] p-6 sm:p-8";
 const field = "mt-2 block w-full rounded-xl border border-white/10 bg-black/60 px-3 py-3 text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-300";
 const button = "inline-flex min-h-11 items-center justify-center rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-violet-100 focus-visible:ring-2 focus-visible:ring-violet-300 disabled:cursor-not-allowed disabled:opacity-45";
 
-export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, onCompleted }: {
-  workspaceId: string; books: Book[]; assets: Asset[]; canEdit: boolean; onCompleted: () => Promise<void>;
+function checkCheckpoint(storageKey: string, legacyKey: string, expected: string | null) {
+  if (sessionStorage.getItem(legacyKey) !== null || sessionStorage.getItem(storageKey) !== expected) {
+    throw new Error("The image recovery checkpoint changed. Recover the latest request before continuing.");
+  }
+}
+
+function replaceCheckpoint(storageKey: string, legacyKey: string, expected: string | null, next: string) {
+  checkCheckpoint(storageKey, legacyKey, expected);
+  sessionStorage.setItem(storageKey, next);
+  if (sessionStorage.getItem(storageKey) !== next) throw new Error("Image recovery storage could not be verified.");
+}
+
+export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, onCompleted, scope, active, isWorkspaceCurrent }: {
+  workspaceId: string; books: Book[]; assets: Asset[]; canEdit: boolean; onCompleted: () => Promise<void>; scope: { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> }; active: boolean; isWorkspaceCurrent: (id: string) => boolean;
 }) {
-  const api = apiClient();
+  const mounted = useRef(false);
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const api = useMemo(() => {
+    const raw = createClient({ baseUrl: "/api/backend", expectedActor: scope.actor });
+    return new Proxy(raw, { get(target, key, receiver) { const value = Reflect.get(target, key, receiver); return typeof value === "function" ? (...args: unknown[]) => {
+      const valid = scope.begin();
+      const mutation = key === "createImageQuote" || key === "acceptImageQuote";
+      const checkpointKey = `bookworm.image-quote.v2:${scope.actor}:${workspaceId}`;
+      const oldKey = `bookworm.image-quote.v1:${workspaceId}`;
+      const checkpoint = mutation ? sessionStorage.getItem(checkpointKey) : null;
+      return scope.checked(() => { if (!valid() || !mounted.current || !isWorkspaceCurrent(workspaceId)) throw new Error("The image workspace changed."); if (mutation) checkCheckpoint(checkpointKey, oldKey, checkpoint); return value(...args); }).then(result => { if (!valid() || !mounted.current || !isWorkspaceCurrent(workspaceId)) throw new Error("The image workspace changed."); return result; });
+    } : value; } });
+  }, [scope, workspaceId, isWorkspaceCurrent]);
   const [models, setModels] = useState<ImageQuoteModel[]>([]);
   const [purchaseAvailable, setPurchaseAvailable] = useState(false);
   const [modelId, setModelId] = useState("");
@@ -26,111 +50,133 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
   const [savedQuoteId, setSavedQuoteId] = useState("");
   const [storeConsent, setStoreConsent] = useState(false);
   const [generateConsent, setGenerateConsent] = useState(false);
+  // Revalidate paid approval after the session or workspace changes.
+  useLayoutEffect(() => { setGenerateConsent(false); }, [active, api, scope, workspaceId]);
   const [busy, setBusy] = useState(false);
   const [recoveryBlocked, setRecoveryBlocked] = useState(true);
   const [recoveredRequest, setRecoveredRequest] = useState(false);
   const [acceptanceUncertain, setAcceptanceUncertain] = useState(false);
   const [message, setMessage] = useState("");
-  const storageKey = `bookworm.image-quote.v1:${workspaceId}`;
+  const storageKey = `bookworm.image-quote.v2:${scope.actor}:${workspaceId}`;
+  const legacyKey = `bookworm.image-quote.v1:${workspaceId}`;
   const requestVersion = useRef(0);
   const requestInFlight = useRef(false);
   const activeWorkspace = useRef(workspaceId);
   activeWorkspace.current = workspaceId;
+  // A handler retained from an earlier session check must not act on a later
+  // incarnation of the same account and workspace.
+  const renderCurrent = scope.begin();
+  const entryCurrent = () => mounted.current && active && renderCurrent() && isWorkspaceCurrent(workspaceId);
 
   useEffect(() => {
-    let active = true;
+    let live = true;
     const version = ++requestVersion.current;
-    requestInFlight.current = false;
-    setModels([]); setModelId(""); setPurchaseAvailable(false); setQuote(null); setMessage(""); setIdempotencyKey(""); setSavedQuoteId("");
-    setBookId(""); setKind("illustration"); setPrompt(""); setReferences([]); setStoreConsent(false); setGenerateConsent(false);
-    setBusy(false); setRecoveryBlocked(true); setRecoveredRequest(false); setAcceptanceUncertain(false);
-    if (!workspaceId) return () => { active = false; };
-    void api.listImageQuoteModels(workspaceId).then(result => {
-      if (!active) return;
-      setModels(result.models); setPurchaseAvailable(result.purchaseAvailable);
-      setModelId(current => result.models.some(model => model.id === current) ? current : result.models[0]?.id ?? "");
-    }).catch(() => { if (active) setMessage("Image quote options are unavailable right now."); });
+    const valid = scope.begin();
+    const current = () => live && valid() && version === requestVersion.current && activeWorkspace.current === workspaceId;
+    requestInFlight.current = false; setBusy(false); setRecoveryBlocked(true); setQuote(null); setPurchaseAvailable(false);
+    if (!workspaceId || !active) return () => { live = false; ++requestVersion.current; };
+    void api.listImageQuoteModels(workspaceId).then(result => { if (!current()) return; setModels(result.models); setPurchaseAvailable(result.purchaseAvailable); setModelId(value => result.models.some(model => model.id === value) ? value : result.models[0]?.id ?? ""); }).catch(() => { if (current()) setMessage("Image quote options are unavailable right now."); });
     void (async () => {
       try {
         const raw = sessionStorage.getItem(storageKey);
+        const legacyRaw = sessionStorage.getItem(legacyKey);
+        if (legacyRaw !== null) throw new Error("An older image request needs manual reconciliation before a new request. Its original account and acceptance state cannot be established safely in this browser.");
         const pointer = readImageQuotePointer(raw);
-        if (raw && !pointer) throw new Error("The saved image recovery checkpoint is invalid. No new request was sent; discard it explicitly before preparing another quote.");
+        if (raw !== null && !pointer) throw new Error("The saved image recovery checkpoint is invalid. Contact support before preparing another quote.");
         if (pointer) {
-          setIdempotencyKey(pointer.idempotencyKey ?? ""); setSavedQuoteId(pointer.quoteId ?? ""); setRecoveredRequest(true); setBusy(true); requestInFlight.current = true;
-          const saved = await recoverSavedImageQuote(api, workspaceId, pointer);
-          if (!active || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
-          sessionStorage.setItem(storageKey, JSON.stringify({ ...pointer, quoteId: saved.quoteId }));
-          setSavedQuoteId(saved.quoteId); setQuote(saved);
+          setIdempotencyKey(pointer.idempotencyKey ?? ""); setSavedQuoteId(pointer.quoteId ?? ""); setRecoveredRequest(true); setBusy(true); requestInFlight.current = true; setAcceptanceUncertain(Boolean(pointer.acceptancePending));
+          const saved = await recoverSavedImageQuote(api, workspaceId, pointer); if (!current()) return;
+          const next = { ...pointer, quoteId: saved.quoteId, ...(saved.job ? { acceptancePending: false } : {}) };
+          replaceCheckpoint(storageKey, legacyKey, raw, JSON.stringify(next)); setSavedQuoteId(saved.quoteId); setQuote(saved); setAcceptanceUncertain(Boolean(next.acceptancePending));
         }
-        if (active) setRecoveryBlocked(false);
-      } catch (reason) {
-        if (active) setMessage(reason instanceof Error ? reason.message : "Saved quote status could not be recovered. Keep the original request and try recovery again.");
-      } finally { if (active && version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
+        if (current()) setRecoveryBlocked(false);
+      } catch (reason) { if (current()) setMessage(reason instanceof Error ? reason.message : "Saved quote status could not be recovered. Keep the original request and try recovery again."); }
+      finally { if (current()) { requestInFlight.current = false; setBusy(false); } }
     })();
-    return () => { active = false; ++requestVersion.current; };
-  }, [workspaceId]);
+    return () => { live = false; ++requestVersion.current; };
+  }, [workspaceId, active, api, scope, storageKey, legacyKey]);
 
   const refresh = async () => {
-    if (busy || requestInFlight.current) return;
+    if (!entryCurrent() || busy || requestInFlight.current) return;
     const version = requestVersion.current;
-    requestInFlight.current = true; setBusy(true); setMessage(""); setGenerateConsent(false);
+    const valid = scope.begin();
+    requestInFlight.current = true; setBusy(true); setRecoveryBlocked(true); setMessage(""); setGenerateConsent(false);
     try {
-      const pointer: ImageQuotePointer | null = savedQuoteId ? { quoteId: savedQuoteId, ...(idempotencyKey ? { idempotencyKey } : {}) }
-        : readImageQuotePointer(sessionStorage.getItem(storageKey));
+      if (sessionStorage.getItem(legacyKey) !== null) throw new Error("An older image request needs manual reconciliation before a new request. Its original account and acceptance state cannot be established safely in this browser.");
+      const raw = sessionStorage.getItem(storageKey);
+      const pointer = readImageQuotePointer(raw);
       if (!pointer) throw new Error("The original quote checkpoint is unavailable. No new request was sent.");
       const saved = await recoverSavedImageQuote(api, workspaceId, pointer);
-      if (version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
-      sessionStorage.setItem(storageKey, JSON.stringify({ ...pointer, quoteId: saved.quoteId }));
-      setSavedQuoteId(saved.quoteId); setQuote(saved); setRecoveryBlocked(false); setAcceptanceUncertain(false);
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      const next = { ...pointer, quoteId: saved.quoteId, ...(saved.job ? { acceptancePending: false } : {}) };
+      replaceCheckpoint(storageKey, legacyKey, raw, JSON.stringify(next));
+      setSavedQuoteId(saved.quoteId); setQuote(saved); setRecoveryBlocked(false); setAcceptanceUncertain(Boolean(next.acceptancePending));
       if (saved.job?.status === "succeeded") {
         try { await onCompleted(); }
-        catch { if (version === requestVersion.current) setMessage("Artwork is saved. The asset library could not refresh; open it or refresh status again."); }
+        catch { if (valid() && version === requestVersion.current) setMessage("Artwork is saved. The asset library could not refresh; open it or refresh status again."); }
       }
-    } catch (reason) { if (version === requestVersion.current) setMessage(reason instanceof Error ? reason.message : "Saved quote status could not be recovered. No new generation was started."); }
-    finally { if (version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
+    } catch (reason) { if (valid() && version === requestVersion.current) setMessage(reason instanceof Error ? reason.message : "Saved quote status could not be recovered. No new generation was started."); }
+    finally { if (valid() && version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
   };
   const createQuote = async () => {
-    if (!canEdit || !storeConsent || !modelId || prompt.trim().length < 10 || busy || requestInFlight.current || recoveryBlocked || idempotencyKey || quote) return;
+    if (!entryCurrent() || !canEdit || !storeConsent || !modelId || prompt.trim().length < 10 || busy || requestInFlight.current || recoveryBlocked || idempotencyKey || quote) return;
     const version = requestVersion.current;
+    const valid = scope.begin();
     requestInFlight.current = true;
     setBusy(true); setMessage("");
     try {
+      if (sessionStorage.getItem(storageKey) !== null || sessionStorage.getItem(legacyKey) !== null) throw new Error("An existing image request needs recovery before a new quote.");
       const key = crypto.randomUUID();
-      sessionStorage.setItem(storageKey, JSON.stringify({ idempotencyKey: key }));
+      const checkpoint = JSON.stringify({ idempotencyKey: key });
+      replaceCheckpoint(storageKey, legacyKey, null, checkpoint);
       setIdempotencyKey(key);
       const result = await api.createImageQuote(workspaceId, { modelId, idempotencyKey: key, ...(bookId ? { bookId } : {}), kind,
         prompt: prompt.trim(), referenceAssetIds: references, consentToQuoteStorage: true });
-      if (version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      const receivedCheckpoint = JSON.stringify({ quoteId: result.quoteId, idempotencyKey: key });
+      replaceCheckpoint(storageKey, legacyKey, checkpoint, receivedCheckpoint);
       setSavedQuoteId(result.quoteId);
-      sessionStorage.setItem(storageKey, JSON.stringify({ quoteId: result.quoteId, idempotencyKey: key }));
       const saved = await recoverSavedImageQuote(api, workspaceId, { quoteId: result.quoteId });
-      if (version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      checkCheckpoint(storageKey, legacyKey, receivedCheckpoint);
       setQuote(saved); setGenerateConsent(false);
-    } catch (reason) { if (version === requestVersion.current) setMessage(reason instanceof Error ? reason.message : "Quote creation is unconfirmed. Recover the original request before preparing another quote."); }
-    finally { if (version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
+    } catch (reason) { if (valid() && version === requestVersion.current) { setRecoveryBlocked(true); setMessage(reason instanceof Error ? reason.message : "Quote creation is unconfirmed. Recover the original request before preparing another quote."); } }
+    finally { if (valid() && version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
   };
   const accept = async () => {
-    if (!quote || requestInFlight.current || recoveryBlocked || !canAcceptImageQuote({ canEdit, busy, purchaseAvailable, generateConsent, acceptanceUncertain, quote: quote.quote, hasJob: Boolean(quote.job) })) return;
+    if (!entryCurrent() || !quote || requestInFlight.current || recoveryBlocked || !canAcceptImageQuote({ canEdit, busy, purchaseAvailable, generateConsent, acceptanceUncertain, quote: quote.quote, hasJob: Boolean(quote.job) })) return;
     const version = requestVersion.current;
+    const valid = scope.begin();
     requestInFlight.current = true; setBusy(true); setMessage(""); setGenerateConsent(false); setAcceptanceUncertain(true);
     try {
-      // Confirm recovery storage before any financial mutation.
-      sessionStorage.setItem(storageKey, JSON.stringify({ quoteId: quote.quoteId, ...(idempotencyKey ? { idempotencyKey } : {}) }));
+      // Confirm the original checkpoint and its persisted uncertainty before any financial mutation.
+      const raw = sessionStorage.getItem(storageKey);
+      const existing = readImageQuotePointer(raw);
+      if (!existing || existing.quoteId !== quote.quoteId || existing.acceptancePending || sessionStorage.getItem(legacyKey) !== null) throw new Error("The original image request needs recovery before acceptance.");
+      const checkpoint = JSON.stringify({ ...existing, acceptancePending: true });
+      replaceCheckpoint(storageKey, legacyKey, raw, checkpoint);
       await api.acceptImageQuote(workspaceId, quote.quoteId, quote.quote.reservedCredits);
       const saved = await recoverSavedImageQuote(api, workspaceId, { quoteId: quote.quoteId });
-      if (version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
-      setQuote(saved); setAcceptanceUncertain(false);
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      checkCheckpoint(storageKey, legacyKey, checkpoint);
+      if (saved.job) replaceCheckpoint(storageKey, legacyKey, checkpoint, JSON.stringify({ quoteId: quote.quoteId, ...(idempotencyKey ? { idempotencyKey } : {}) }));
+      setQuote(saved); setAcceptanceUncertain(!saved.job);
       if (saved.job?.status === "succeeded") {
         try { await onCompleted(); }
-        catch { if (version === requestVersion.current) setMessage("Artwork is saved. Open the asset library to view it."); }
+        catch { if (valid() && version === requestVersion.current) setMessage("Artwork is saved. Open the asset library to view it."); }
       }
-    } catch (reason) { if (version === requestVersion.current) setMessage(`${reason instanceof Error ? reason.message : "Acceptance is unconfirmed."} Refresh saved status before accepting again. No new purchase will be sent by recovery.`); }
-    finally { if (version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
+    } catch (reason) { if (valid() && version === requestVersion.current) { setRecoveryBlocked(true); setMessage(`${reason instanceof Error ? reason.message : "Acceptance is unconfirmed."} Refresh saved status before accepting again. No new purchase will be sent by recovery.`); } }
+    finally { if (valid() && version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
   };
   const startFresh = () => {
-    if (busy || requestInFlight.current || acceptanceUncertain || (!quote && savedQuoteId)) return;
-    try { sessionStorage.removeItem(storageKey); }
-    catch { setRecoveryBlocked(true); setMessage("Browser recovery storage is unavailable. No new image request was sent."); return; }
+    if (!entryCurrent() || busy || requestInFlight.current || acceptanceUncertain || !quote || !quote.job && quote.quote.status !== "expired") return;
+    try {
+      const pointer = readImageQuotePointer(sessionStorage.getItem(storageKey));
+      if (!pointer || pointer.quoteId !== quote.quoteId || pointer.acceptancePending || sessionStorage.getItem(legacyKey) !== null) throw new Error("The original image request needs recovery before starting another.");
+      sessionStorage.removeItem(storageKey);
+      if (sessionStorage.getItem(storageKey) !== null) throw new Error("The image recovery record could not be cleared.");
+    }
+    catch { setRecoveryBlocked(true); setMessage("The original image request needs recovery. No new image request was sent."); return; }
     setQuote(null); setIdempotencyKey(""); setSavedQuoteId(""); setPrompt(""); setReferences([]); setRecoveredRequest(false); setRecoveryBlocked(false);
     setStoreConsent(false); setGenerateConsent(false); setMessage("");
   };
@@ -158,18 +204,18 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
         <div className="mt-3 grid gap-2 sm:grid-cols-2">{imageAssets.map(asset => <label key={asset.id} className="flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm text-white/70"><input type="checkbox" checked={references.includes(asset.id)} disabled={!references.includes(asset.id) && references.length >= Math.min(3, option?.maxReferenceImages ?? 0)} onChange={event => setReferences(items => event.target.checked ? [...items, asset.id] : items.filter(item => item !== asset.id))} />{asset.name}</label>)}</div>
       </fieldset>
     </fieldset>}
-    {!quote && (idempotencyKey || savedQuoteId || recoveryBlocked) ? <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-white/10 pt-5"><button type="button" className={button} disabled={busy} onClick={() => void refresh()}>{busy ? "Recovering status…" : "Recover same quote request"}</button>{!savedQuoteId && <button type="button" className="text-sm text-white/55 underline" disabled={busy} onClick={startFresh}>Discard unconfirmed request</button>}<p className="text-sm text-white/55">Recovery only reads the original offer and generation status. It never saves a new quote or starts generation.</p></div>
+    {!quote && (idempotencyKey || savedQuoteId || recoveryBlocked) ? <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-white/10 pt-5"><button type="button" className={button} disabled={busy} onClick={() => void refresh()}>{busy ? "Recovering status…" : "Recover same quote request"}</button><p className="text-sm text-white/55">Recovery only reads the original offer and generation status. It never saves a new quote or starts generation.</p></div>
       : !quote && <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-white/10 pt-5"><label className="flex max-w-xl items-start gap-3 text-sm leading-5 text-white/60"><input type="checkbox" checked={storeConsent} disabled={!canEdit || busy} onChange={event => setStoreConsent(event.target.checked)} /><span>Save this private prompt and selected source references in the quote so I can recover the same offer later.</span></label><button type="button" className={button} disabled={!canEdit || busy || !storeConsent || !modelId || prompt.trim().length < 10} onClick={() => void createQuote()}>{busy ? "Preparing quote…" : "Prepare image quote"}</button></div>}
     {quote && <div className="mt-6 rounded-2xl border border-violet-200/20 bg-violet-200/[0.04] p-5" aria-live="polite">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs uppercase tracking-[0.14em] text-violet-100/60">Maximum credit hold</p><p className="mt-1 text-3xl tabular-nums text-white">{Number(quote.quote.reservedCredits).toLocaleString()} <span className="text-sm text-white/55">credits</span></p><p className="mt-2 text-xs text-white/50">{quote.quote.model} · {quote.quote.size} · {quote.quote.quality} · expires {new Date(quote.quote.expiresAt).toLocaleString()}</p></div><button className="min-h-10 rounded-full border border-white/15 px-4 text-sm text-white/75 hover:bg-white/5" disabled={busy} onClick={() => void refresh()} type="button">Refresh status</button></div>
       <p className="mt-3 text-sm leading-6 text-white/60">This is the maximum hold for the saved request. Final usage is reconciled from provider token measurements. Unsupported measurements remain under review. Your image stays a private draft until you use it in a book.</p>
       {activeJob && <p className="mt-3 text-sm text-white/75">Generation {activeJob.status}{activeJob.assetId ? ` · asset ${activeJob.assetId}` : ""}. Refreshing never starts another generation.</p>}
-      {acceptanceUncertain && <p className="mt-3 text-sm text-amber-100" role="status">Acceptance is unconfirmed. Refresh status to recover the same job or confirm no acceptance before deciding again.</p>}
+      {acceptanceUncertain && <p className="mt-3 text-sm text-amber-100" role="status">Acceptance is unconfirmed. Refresh status to recover the same job. A missing job cannot rule out a delayed acceptance; contact support before preparing another quote.</p>}
       {!activeJob && quote.quote.status === "ready" && <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t border-white/10 pt-4"><label className="flex max-w-xl items-start gap-3 text-sm leading-5 text-white/60"><input type="checkbox" checked={generateConsent} disabled={!canEdit || busy || recoveryBlocked || acceptanceUncertain || !purchaseAvailable} onChange={event => setGenerateConsent(event.target.checked)} /><span>I approve sending this saved prompt and selected references for paid image generation, up to {Number(quote.quote.reservedCredits).toLocaleString()} credits.</span></label><button className={button} type="button" disabled={!acceptAllowed} onClick={() => void accept()}>{purchaseAvailable ? `Accept quote · ${Number(quote.quote.reservedCredits).toLocaleString()} credits` : "Purchases not enabled"}</button></div>}
-      {quote.quote.status === "expired" && <p className="mt-4 text-sm text-amber-100">This offer expired. Prepare a new quote to continue.</p>}
-      {activeJob?.status === "succeeded" && <div className="mt-3 flex flex-wrap items-center gap-4"><p className="text-sm text-emerald-100">Artwork is saved in your private asset library and ready to select in Publishing Studio.</p><a className="text-sm underline" href={`/assets?ws=${encodeURIComponent(workspaceId)}`}>Open asset library</a><button type="button" className="text-sm underline" onClick={startFresh}>Create another image</button></div>}
-      {activeJob && ["failed", "cancelled"].includes(activeJob.status) && <div className="mt-3 flex flex-wrap items-center gap-4"><p className="text-sm text-amber-100">This request is finished. Review your credit activity before preparing a new image.</p><button type="button" className="text-sm underline" onClick={startFresh}>Prepare a new quote</button></div>}
-      {!activeJob && quote.quote.status === "expired" && <button type="button" className="mt-3 text-sm underline" onClick={startFresh}>Prepare a new quote</button>}
+      {quote.quote.status === "expired" && !acceptanceUncertain && <p className="mt-4 text-sm text-amber-100">This offer expired. Prepare a new quote to continue.</p>}
+      {activeJob?.status === "succeeded" && <div className="mt-3 flex flex-wrap items-center gap-4"><p className="text-sm text-emerald-100">Artwork is saved in your private asset library and ready to select in Publishing Studio.</p><a className="text-sm underline" href={`/assets?ws=${encodeURIComponent(workspaceId)}`}>Open asset library</a><button type="button" disabled={busy || recoveryBlocked || acceptanceUncertain} className="text-sm underline disabled:opacity-45" onClick={startFresh}>Create another image</button></div>}
+      {activeJob && ["failed", "cancelled"].includes(activeJob.status) && <div className="mt-3 flex flex-wrap items-center gap-4"><p className="text-sm text-amber-100">This request is finished. Review your credit activity before preparing a new image.</p><button type="button" disabled={busy || recoveryBlocked || acceptanceUncertain} className="text-sm underline disabled:opacity-45" onClick={startFresh}>Prepare a new quote</button></div>}
+      {!activeJob && !acceptanceUncertain && quote.quote.status === "expired" && <button type="button" disabled={busy || recoveryBlocked} className="mt-3 text-sm underline disabled:opacity-45" onClick={startFresh}>Prepare a new quote</button>}
     </div>}
   </section>;
 }

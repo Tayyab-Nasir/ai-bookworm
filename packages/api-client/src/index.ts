@@ -112,6 +112,7 @@ export type TaskPriority = "low" | "medium" | "high" | "urgent";
 export interface ClientOptions {
   baseUrl: string;
   token?: string;
+  expectedActor?: string;
   idempotencyKey?: () => string;
 }
 
@@ -878,6 +879,10 @@ function accountReceipt<T>(value: T, expectedActor: string | undefined, key: "re
 
 export function createClient(opts: ClientOptions) {
   async function request<T>(method: string, path: string, headers: Record<string, string>, body?: unknown, useIdempotencyKey = true, signal?: AbortSignal): Promise<T> {
+    if (opts.expectedActor) {
+      if (headers["x-bookworm-actor"] && headers["x-bookworm-actor"] !== opts.expectedActor) throw new Error("The requested account does not match the client account.");
+      headers["x-bookworm-actor"] = opts.expectedActor;
+    }
     if (body !== undefined) {
       headers["content-type"] = "application/json";
     }

@@ -1,13 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 import { AuthorHeader, AuthorPage } from "../../components/AuthorShell";
 import type { Asset, Book, Folder, Workspace } from "@bookworm/types";
 import AssetBrowser from "../../components/AssetBrowser";
 import ImageQuoteStudio from "../../components/ImageQuoteStudio";
-import { apiClient } from "../../components/api";
+import { createClient } from "@bookworm/api-client";
+import { readBrowserSession } from "../../lib/browser-session";
 import type { ImageGenerationJob } from "@bookworm/api-client";
 import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../../lib/workspace-selection";
 
@@ -65,9 +66,48 @@ function verifiedDownloadLink(result: { url: string; expiresIn: number }, asset:
   return { url: url.href, filename };
 }
 
-function AssetsPageInner() {
+type AssetScope = { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> };
+function scopeChanged() { const e = new Error("Account check superseded."); e.name = "AssetScopeChanged"; return e; }
+function ScopedAssetsPage() {
+  const [identity, setIdentity] = useState<{ actor: string } | null>(null);
+  const [revision, setRevision] = useState<object>({});
+  const [active, setActive] = useState(false), [checking, setChecking] = useState(true), [sessionError, setSessionError] = useState("");
+  const epoch = useRef<object>({}), identityRef = useRef<{ actor: string } | null>(null), activeRef = useRef(false), mounted = useRef(false);
+  const check = useCallback(async () => {
+    if (!mounted.current) return;
+    const token = {}; epoch.current = token; activeRef.current = false; setActive(false); setChecking(true); setSessionError("");
+    try { const account = await readBrowserSession();
+      if (mounted.current && epoch.current === token) { const next = identityRef.current?.actor === account.id ? identityRef.current : { actor: account.id }; identityRef.current = next; activeRef.current = true; setIdentity(next); setRevision(token); setActive(true); }
+    } catch { if (mounted.current && epoch.current === token) setSessionError("Your account could not be verified. Sign in again or retry."); }
+    finally { if (mounted.current && epoch.current === token) setChecking(false); }
+  }, []);
+  useLayoutEffect(() => { mounted.current = true; void check(); const focus = () => void check(); const visibility = () => { if (document.visibilityState === "visible") void check(); else { epoch.current = {}; activeRef.current = false; setActive(false); setChecking(true); } };
+    window.addEventListener("focus", focus); document.addEventListener("visibilitychange", visibility);
+    return () => { mounted.current = false; epoch.current = {}; activeRef.current = false; window.removeEventListener("focus", focus); document.removeEventListener("visibilitychange", visibility); };
+  }, [check]);
+  const scope = useMemo<AssetScope | null>(() => { if (!identity) return null;
+    const current = () => mounted.current && activeRef.current && identityRef.current === identity;
+    const begin = () => { const token = epoch.current; return () => current() && epoch.current === token; };
+    const checked = async <T,>(work: () => Promise<T>): Promise<T> => { const valid = begin(); try {
+      await readBrowserSession(identity.actor); if (!valid()) throw scopeChanged(); const result = await work(); if (!valid()) throw scopeChanged(); await readBrowserSession(identity.actor); if (!valid()) throw scopeChanged(); return result;
+    } catch (error) { if (!valid()) throw scopeChanged(); try { await readBrowserSession(identity.actor); } catch { if (valid()) void check(); } if (!valid()) throw scopeChanged(); throw error; } };
+    return { actor: identity.actor, current, begin, checked };
+  }, [identity, check]);
+  return <>{identity && scope && <AssetsPageInner key={identity.actor} scope={scope} active={active} revision={revision} retry={check} />}{!active && <main className="mx-auto max-w-6xl p-8 text-white"><h1 className="text-3xl">Assets</h1>{checking ? <p role="status">Checking your account…</p> : <p role="alert">{sessionError} <button className="underline" onClick={() => void check()}>Try again</button></p>}</main>}</>;
+}
+
+function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope; active: boolean; revision: object; retry: () => Promise<void> }) {
   const requestedWorkspaceId = useSearchParams().get("ws");
-  const api = apiClient();
+  const api = useMemo(() => {
+    const client = createClient({ baseUrl: "/api/backend", expectedActor: scope.actor });
+    return new Proxy(client, { get(target, key, receiver) { const value = Reflect.get(target, key, receiver); return typeof value === "function" ? (...args: unknown[]) => {
+      const version = scopeVersion.current, workspace = activeWorkspace.current;
+      const current = () => version === scopeVersion.current && workspace === activeWorkspace.current;
+      return scope.checked(() => { if (!current()) throw scopeChanged(); return value(...args); }).then(result => { if (!current()) throw scopeChanged(); return result; });
+    } : value; } });
+  }, [scope]);
+  const [verified, setVerified] = useState(false);
+  const [verificationError, setVerificationError] = useState(false);
   const [workspaceId, setWorkspaceId] = useState("");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -120,6 +160,8 @@ function AssetsPageInner() {
     setDetailLoading(false); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
   }, []);
 
+  const isWorkspaceCurrent = useCallback((id: string) => activeWorkspace.current === id, []);
+
   function changeWorkspace(id: string) {
     try {
       const selected = resolveWorkspace(workspaces, id)!;
@@ -139,6 +181,7 @@ function AssetsPageInner() {
   }
 
   function closeAsset() {
+    if (scopeVersion.current !== permissionScope || detailRequest.current !== renderedDetailRequest) return;
     detailRequest.current++; downloadRequest.current++; activeAsset.current = null; preparingDownload.current = false;
     setOpen(null); setPreviewUrl(null); setVersions([]); setUsage([]);
     setDetailLoading(false); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
@@ -182,7 +225,7 @@ function AssetsPageInner() {
     let live = true;
     // Selecting an already validated workspace updates its URL. Repeating the
     // bootstrap reset for that same selection can fence its own in-flight reads.
-    if (requestedWorkspaceId && activeWorkspace.current === requestedWorkspaceId) return;
+    if (!active || (activeWorkspace.current && (!requestedWorkspaceId || activeWorkspace.current === requestedWorkspaceId))) return;
     resetWorkspaceScope("");
     void api.listWorkspaces().then(({ workspaces: available }) => {
       if (!live) return;
@@ -194,13 +237,13 @@ function AssetsPageInner() {
       if (live) setError(e instanceof Error ? e.message : "Could not load workspaces");
     });
     return () => { live = false; };
-  }, [api, requestedWorkspaceId, resetWorkspaceScope]);
+  }, [api, requestedWorkspaceId, resetWorkspaceScope, active]);
 
   const load = useCallback(async () => {
     if (!workspaceId || activeWorkspace.current !== workspaceId) return;
-    const version = scopeVersion.current;
+    const version = scopeVersion.current; const valid = scope.begin();
     const request = ++libraryRequest.current;
-    const current = () => version === scopeVersion.current && request === libraryRequest.current && activeWorkspace.current === workspaceId;
+    const current = () => valid() && version === scopeVersion.current && request === libraryRequest.current && activeWorkspace.current === workspaceId;
     editReady.current = false;
     setLibraryLoading(true); setLibraryWorkspaceId("");
     try {
@@ -223,6 +266,21 @@ function AssetsPageInner() {
     void load();
     return () => { libraryRequest.current++; detailRequest.current++; };
   }, [load]);
+
+  useLayoutEffect(() => {
+    let live = true; const valid = scope.begin(); setVerified(false); setVerificationError(false);
+    scopeVersion.current++; libraryRequest.current++; detailRequest.current++; downloadRequest.current++; editReady.current = false;
+    setAssetAccess(null); setLibraryWorkspaceId(""); setLibraryLoading(Boolean(activeWorkspace.current)); setOpen(null); setPreviewUrl(null); setDownload(null); activeAsset.current = null; preparingDownload.current = false;
+    if (!active) return () => { live = false; };
+    const id = activeWorkspace.current;
+    if (!id) { setVerified(true); return () => { live = false; }; }
+    void Promise.all([api.listWorkspaces(), api.getAssetAccess(id), api.listFolders(id), api.listAssets(id), api.listBooks(id)]).then(([available, access, f, a, b]) => {
+      if (!live || !valid() || activeWorkspace.current !== id) return;
+      if (!available.workspaces.some(w => w.id === id) || f.folders.some(x => x.workspace_id !== id) || a.assets.some(x => x.workspace_id !== id) || b.books.some(x => x.workspace_id !== id)) throw new Error("Workspace access could not be verified.");
+      setWorkspaces(available.workspaces); setAssetAccess({ workspaceId: id, canEdit: access.canEdit }); setAccessError(false); setFolders(f.folders); setAssets(a.assets); setBooks(b.books); setLibraryWorkspaceId(id); setLibraryLoading(false); setHistoryRevision(x => x + 1); setVerified(true);
+    }).catch(() => { if (live && valid()) { setVerificationError(true); setLibraryLoading(false); } });
+    return () => { live = false; };
+  }, [active, revision, api, scope, workspaceId]);
 
   useEffect(() => {
     if (!download) return;
@@ -260,9 +318,9 @@ function AssetsPageInner() {
   }, [open]);
 
   const openAsset = async (a: Asset) => {
-    if (!dataReady || activeWorkspace.current !== workspaceId || a.workspace_id !== workspaceId || !assets.some(asset => asset.id === a.id)) return;
-    const version = scopeVersion.current; const request = ++detailRequest.current;
-    const current = () => version === scopeVersion.current && request === detailRequest.current && activeWorkspace.current === workspaceId;
+    if (!dataReady || scopeVersion.current !== permissionScope || activeWorkspace.current !== workspaceId || a.workspace_id !== workspaceId || !assets.some(asset => asset.id === a.id)) return;
+    const version = scopeVersion.current; const request = ++detailRequest.current; const valid = scope.begin();
+    const current = () => valid() && version === scopeVersion.current && request === detailRequest.current && activeWorkspace.current === workspaceId;
     activeAsset.current = a.id; downloadRequest.current++; preparingDownload.current = false;
     setOpen(a);
     setPreviewUrl(null); setVersions([]); setUsage([]);
@@ -285,8 +343,8 @@ function AssetsPageInner() {
   async function prepareDownload(asset: Asset) {
     if (!dataReady || scopeVersion.current !== permissionScope || detailRequest.current !== renderedDetailRequest
       || activeWorkspace.current !== workspaceId || activeAsset.current !== asset.id || preparingDownload.current) return;
-    const version = scopeVersion.current; const request = ++downloadRequest.current;
-    const current = () => version === scopeVersion.current && request === downloadRequest.current && activeWorkspace.current === workspaceId && activeAsset.current === asset.id;
+    const version = scopeVersion.current; const request = ++downloadRequest.current; const valid = scope.begin();
+    const current = () => valid() && version === scopeVersion.current && request === downloadRequest.current && activeWorkspace.current === workspaceId && activeAsset.current === asset.id;
     const startedAt = Date.now();
     preparingDownload.current = true;
     setDownloadBusy(true); setDownloadError(null); setDownload(null);
@@ -319,9 +377,9 @@ function AssetsPageInner() {
   }
 
   const upload = (folderId: string | null) => {
-    if (!workspaceId || !editReady.current || activeWorkspace.current !== workspaceId || uploadStage) return;
-    const version = scopeVersion.current;
-    const current = () => version === scopeVersion.current && activeWorkspace.current === workspaceId;
+    if (!workspaceId || !editReady.current || scopeVersion.current !== permissionScope || activeWorkspace.current !== workspaceId || uploadStage) return;
+    const version = scopeVersion.current; const valid = scope.begin();
+    const current = () => valid() && version === scopeVersion.current && activeWorkspace.current === workspaceId;
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".txt,.md,.markdown,.pdf,.docx,.epub,.png,.jpg,.jpeg,.webp,.gif";
@@ -340,11 +398,13 @@ function AssetsPageInner() {
           folderId,
         });
         const buf = await file.arrayBuffer();
-        const uploaded = await fetch(uploadUrl, { method: "PUT", body: buf });
+        if (!current()) return;
+        const uploaded = await scope.checked(() => { if (!current()) throw scopeChanged(); return fetch(uploadUrl, { method: "PUT", body: buf }); });
         if (!uploaded.ok) throw new Error("Upload failed before verification.");
         const digest = await crypto.subtle.digest("SHA-256", buf);
         const checksumSha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-        if (current()) setUploadStage("scanning");
+        if (!current()) return;
+        setUploadStage("scanning");
         await api.confirmAssetUpload(assetId, { checksumSha256, sizeBytes: file.size });
         if (current()) await load();
         if (current()) setUploadNotice(`${file.name} passed integrity checks and malware screening.`);
@@ -360,14 +420,14 @@ function AssetsPageInner() {
   };
 
   const mutateLibrary = async (action: () => Promise<unknown>) => {
-    if (!editReady.current || activeWorkspace.current !== workspaceId) return;
-    const version = scopeVersion.current;
+    if (!editReady.current || scopeVersion.current !== permissionScope || activeWorkspace.current !== workspaceId) return;
+    const version = scopeVersion.current; const valid = scope.begin();
     await action();
-    if (version === scopeVersion.current && activeWorkspace.current === workspaceId) await load();
+    if (valid() && version === scopeVersion.current && activeWorkspace.current === workspaceId) await load();
   };
 
   return (
-    <AuthorPage>
+    <><div hidden={!active || !verified}><AuthorPage>
       <AuthorHeader workspaceId={workspaceId || undefined} />
       <div className="mx-auto max-w-7xl px-4 pb-16 pt-10 sm:px-6 lg:px-8 [&>div:last-child]:flex-col [&>div:last-child>aside]:w-full [&>div:last-child>aside]:border-r-0 [&>div:last-child>aside]:border-b [&>div:last-child>aside]:border-white/10 [&>div:last-child>aside]:pb-4 [&>div:last-child>aside]:pr-0 [&>div:last-child>section]:min-w-0 sm:[&>div:last-child]:flex-row sm:[&>div:last-child>aside]:w-64 sm:[&>div:last-child>aside]:border-b-0 sm:[&>div:last-child>aside]:border-r sm:[&>div:last-child>aside]:pb-0 sm:[&>div:last-child>aside]:pr-4">
         <div className="mb-8 flex flex-col items-start justify-between gap-5 border-b border-white/[0.09] pb-8 sm:flex-row sm:items-end">
@@ -417,7 +477,7 @@ function AssetsPageInner() {
           <p role="status" className="mb-6 rounded-lg border border-white/10 bg-white/[0.04] px-6 py-4 text-sm text-[#c5c5c5]">Read-only access: you can view assets, but cannot upload, generate, or change them.</p>
         )}
 
-        {workspaceId && <ImageQuoteStudio key={`image-quote:${workspaceId}`} workspaceId={workspaceId} books={books} assets={assets} canEdit={Boolean(canEdit)} onCompleted={load} />}
+        {workspaceId && <ImageQuoteStudio key={`image-quote:${workspaceId}`} isWorkspaceCurrent={isWorkspaceCurrent} scope={scope} active={active && verified} workspaceId={workspaceId} books={books} assets={assets} canEdit={Boolean(canEdit)} onCompleted={load} />}
         {libraryLoading && <p role="status" className="mb-5 text-sm text-[#999]">Loading asset library…</p>}
         <section className="mb-8 rounded-2xl border border-white/10 p-5" aria-labelledby="image-history-title">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -431,7 +491,7 @@ function AssetsPageInner() {
             <div className="flex flex-wrap justify-between gap-2"><span>{job.kind === "front_cover" ? "Cover artwork" : "Illustration"}</span><span>{job.status === "succeeded" ? "Saved to asset library" : job.status === "failed" ? "Failed — review before starting again" : job.billingMode === "quoted" ? `${job.status} · token-priced request` : "Pending confirmation"}</span></div>
             <p className="mt-1 break-all text-xs text-[#888]">{job.createdAt} · Request {job.id}</p>
             {job.status === "running" && job.billingMode !== "quoted" && canEdit && <div className="mt-2"><button type="button" disabled={!!finalizingImage} className="text-sm underline disabled:opacity-50" onClick={async () => {
-              if (!editReady.current || activeWorkspace.current !== workspaceId) return;
+              if (!editReady.current || scopeVersion.current !== permissionScope || activeWorkspace.current !== workspaceId) return;
               setFinalizingImage(job.id); setHistoryError(null);
               const version = scopeVersion.current;
               try { await mutateLibrary(() => api.finalizeImageJob(job.id)); if (version === scopeVersion.current) setHistoryRevision(value => value + 1); }
@@ -525,15 +585,17 @@ function AssetsPageInner() {
               <button type="button" disabled={downloadBusy || !dataReady || open.checksum === "pending"} onClick={() => void prepareDownload(open)} className="mt-3 min-h-11 rounded-full border border-white/20 px-4 text-sm disabled:opacity-40">{downloadBusy ? "Preparing download…" : download ? "Prepare a new download link" : "Prepare download"}</button>
               {open.checksum === "pending" && <p role="status" className="mt-2 text-sm text-amber-100">This upload is awaiting verification. A download is available after the file passes checks.</p>}
               {downloadError && <p role="alert" className="mt-3 text-sm text-red-100">{downloadError}</p>}
-              {download && download.assetId === open.id && <div role="status" className="mt-3"><a href={download.url} download={download.filename} target="_blank" rel="noopener noreferrer" onClick={(event) => {
-                if (!dataReady || scopeVersion.current !== permissionScope || detailRequest.current !== renderedDetailRequest
-                  || downloadRequest.current !== download.request || activeWorkspace.current !== workspaceId || activeAsset.current !== open.id) {
-                  event.preventDefault(); return;
-                }
-                if (Date.now() >= download.expiresAt) {
-                  event.preventDefault(); setDownload(null); setDownloadError("This link is no longer current. Prepare a new download link.");
-                }
-              }} className="inline-flex min-h-11 items-center rounded-full bg-white px-4 text-sm font-medium text-black">Download original file · v{download.version}</a><p className="mt-2 text-xs text-white/50">This private link expires in a few minutes. Preparing it does not start a download.</p></div>}
+              {download && download.assetId === open.id && <div role="status" className="mt-3"><button type="button" onClick={() => {
+                const current = () => dataReady && scopeVersion.current === permissionScope && detailRequest.current === renderedDetailRequest
+                  && downloadRequest.current === download.request && activeWorkspace.current === workspaceId && activeAsset.current === open.id;
+                if (!current()) return;
+                if (Date.now() >= download.expiresAt) { setDownload(null); setDownloadError("This link is no longer current. Prepare a new download link."); return; }
+                void scope.checked(async () => {
+                  if (!current() || Date.now() >= download.expiresAt) throw scopeChanged();
+                  const link = document.createElement("a"); link.href = download.url; link.download = download.filename; link.rel = "noopener noreferrer";
+                  link.click();
+                }).catch(() => { if (scope.current() && current()) { setDownload(null); setDownloadError("The download could not be verified. Prepare a new link to retry."); } });
+              }} className="inline-flex min-h-11 items-center rounded-full bg-white px-4 text-sm font-medium text-black">Download original file · v{download.version}</button><p className="mt-2 text-xs text-white/50">This private link expires in a few minutes. Preparing it does not start a download.</p></div>}
             </section>
 
             <div className="mb-6">
@@ -565,14 +627,14 @@ function AssetsPageInner() {
           </div>
         </div>
       )}
-    </AuthorPage>
+    </AuthorPage></div>{active && !verified && <main className="mx-auto max-w-6xl p-8 text-white">{verificationError ? <p role="alert">Workspace access could not be verified. <button className="underline" onClick={() => void retry()}>Try again</button></p> : <p role="status">Checking workspace access…</p>}</main>}</>
   );
 }
 
 export default function AssetsPage() {
   return (
     <Suspense>
-      <AssetsPageInner />
+      <ScopedAssetsPage />
     </Suspense>
   );
 }

@@ -57,7 +57,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
       if (!same(effectStates[index]?.dependencies, dependencies)) effects.push(() => {
         effectStates[index]?.cleanup?.(); const cleanup = fn(); effectStates[index] = { dependencies: dependencies ?? [], cleanup }; return cleanup;
       });
-    }, useMemo: memo, useId: () => "fixture-reader", Suspense: "Suspense",
+    }, useLayoutEffect(fn: () => any) { effects.push(fn); }, useMemo: memo, useId: () => "fixture-reader", Suspense: "Suspense",
   };
   const helperExports = {};
   const compile = (source: string) => ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -106,13 +106,14 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/manuscript-setup")) return { readSetupCheckpoint: () => null, setupKey: () => "fixture" };
     if (name.endsWith("/sales-csv")) return csv;
     if (name.endsWith("/sales-analytics")) return {};
-    if (name === "@bookworm/api-client") return { ApiClientError: class extends Error {} };
+    if (name === "@bookworm/api-client") return { ApiClientError: class extends Error {}, createClient: () => api };
     throw new Error(`Unexpected audit import: ${name}`);
   };
   const source = readFileSync(resolve(path), "utf8") + (options.inner ? `\nexport { ${options.inner} as auditInner };` : "");
   let key = 0;
   vm.runInNewContext(compile(source), { exports, require, window, performance, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, URL, URLSearchParams, crypto: { randomUUID: () => `fixture-request-${++key}` }, navigator: { clipboard: { writeText: api.copyInvitation ?? (async () => {}) } }, fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user", displayName: "Fixture author" } }) }) }, { filename: path });
-  const render = () => { stateCursor = 0; refCursor = 0; memoCursor = 0; effectCursor = 0; effects.length = 0; callbacks.length = 0; return (options.inner ? exports.auditInner : exports.default)(options.props ?? {}); };
+  const fixtureScope = { actor: A, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() };
+  const render = () => { stateCursor = 0; refCursor = 0; memoCursor = 0; effectCursor = 0; effects.length = 0; callbacks.length = 0; return (options.inner ? exports.auditInner : exports.default)(options.props ?? (options.inner === "AssetsPageInner" ? { scope: fixtureScope, active: true, revision: {}, retry: async () => {} } : {})); };
   return { render, states, refs, effects, callbacks, values, window, assigned, setProps(value: object) { options.props = value; } };
 }
 
@@ -125,13 +126,13 @@ function props(tree: any, type: string) { return nodes(tree).find(node => node.t
 
 test("Assets is blank before membership validation and restores B on bare navigation", async () => {
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }) }, { inner: "AssetsPageInner", remembered: B });
-  h.render(); assert.equal(h.states[0], "");
+  h.render(); assert.equal(h.states[2], "");
   h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
-  assert.equal(h.states[0], B); assert.equal(h.values.get("bookworm:workspaceId"), B);
+  assert.equal(h.states[2], B); assert.equal(h.values.get("bookworm:workspaceId"), B);
   const tree = h.render();
   assert.equal(props(tree, "AssetBrowser").permissions.edit, false, "data and access must align before mutations");
   props(tree, "select").onChange({ target: { value: A } });
-  assert.equal(h.states[0], A); assert.equal(h.values.get("bookworm:workspaceId"), A);
+  assert.equal(h.states[2], A); assert.equal(h.values.get("bookworm:workspaceId"), A);
   assert.equal(new URL(h.window.location.href).searchParams.get("ws"), A, "refresh preserves the manual selection");
 });
 
@@ -162,7 +163,7 @@ test("Assets rejects a foreign explicit ID without scoped reads", async () => {
   let scoped = 0;
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }), getAssetAccess: async () => { scoped++; }, listImageGenerationJobs: async () => { scoped++; } }, { inner: "AssetsPageInner", query: "?ws=foreign", remembered: B });
   h.render(); for (const effect of h.effects) if (/api\.(listWorkspaces|getAssetAccess|listImageGenerationJobs)/.test(effect.toString())) effect();
-  await settle(); assert.equal(h.states[0], ""); assert.equal(scoped, 0);
+  await settle(); assert.equal(h.states[2], ""); assert.equal(scoped, 0);
   const tree = h.render(); assert(nodes(tree).some(node => node.props?.role === "alert"));
 });
 
@@ -807,7 +808,7 @@ test("Assets permission failure keeps files viewable and retries only on explici
   const retry = assetPermissionNode(tree, "Retry permission check"); assert.equal(retry?.type, "button");
   h.render(); assert.deepEqual(reads, [A], "failure does not automatically retry");
   retry.props.onClick();
-  assert.equal(h.states[4], null); assert.equal(h.states[5], false); assert.equal(h.states[6], 1);
+  assert.equal(h.states[6], null); assert.equal(h.states[7], false); assert.equal(h.states[8], 1);
   assert.deepEqual(reads, [A], "the button schedules the existing fenced permission effect, not a second direct request");
   tree = h.render(); assetEditingDisabled(tree);
   assert.equal(assetPermissionNode(tree, "Checking edit permissions…")?.props.role, "status");
@@ -833,8 +834,8 @@ for (const outcome of ["success", "error"] as const) test(`Assets permission ign
   const retry = assetPermissionNode(h.render(), "Retry permission check"); assert(retry);
   retry.props.onClick(); h.render(); h.effects.find(fn => fn.toString().includes("api.getAssetAccess"))!();
   props(h.render(), "select").onChange({ target: { value: B } });
-  const revision = h.states[6]; retry.props.onClick();
-  assert.equal(h.states[6], revision, "a retained A recovery action cannot schedule a B permission refresh");
+  const revision = h.states[8]; retry.props.onClick();
+  assert.equal(h.states[8], revision, "a retained A recovery action cannot schedule a B permission refresh");
   assert.deepEqual(reads, [A, A]);
   h.render(); h.effects.find(fn => fn.toString().includes("api.getAssetAccess"))!(); await settle();
   h.render(); await h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();

@@ -19,6 +19,8 @@ const bundle = await build({
     window.clearAssets = () => root.render(null);`, loader: "tsx", resolveDir: process.cwd() },
   bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
   plugins: [{ name: "asset-library-fixtures", setup(builder) {
+    builder.onResolve({ filter: /^@bookworm\/api-client$/ }, args => args.importer.replaceAll("\\", "/").endsWith("/app/assets/page.tsx") ? {path:"scoped-api",namespace:"fixture"} : undefined);
+    builder.onLoad({ filter: /^scoped-api$/, namespace: "fixture" }, () => ({ contents: 'export const createClient = opts => new Proxy(window.api,{get(target,key){const value=target[key];return typeof value === "function" ? (...args) => {if(opts.expectedActor!==window.actor) throw new Error("Account changed");return value(...args)} : value}});' }));
     builder.onResolve({ filter: /(?:^|\/)(api|ImageQuoteStudio)$/ }, args => args.importer.replaceAll("\\", "/").startsWith(resolve("apps/web").replaceAll("\\", "/"))
       ? { path: args.path.endsWith("ImageQuoteStudio") ? "studio" : "api", namespace: "fixture" } : undefined);
     builder.onLoad({ filter: /^api$/, namespace: "fixture" }, () => ({ contents: "export const apiClient = () => window.api;" }));
@@ -55,7 +57,7 @@ async function fixture(width = 1280, admin = false) {
     :root {--font-inter:Arial,sans-serif;--font-instrument-serif:BookwormInstrument,serif}
     body {font-family:var(--font-inter);color:white}` });
   await page.evaluate(({ A, B, ASSET, admin }) => {
-    window.calls = []; window.revision = 0; window.gates = {}; window.scanStatus = "clean";
+    window.actor = A; window.calls = []; window.revision = 0; window.gates = {}; window.scanStatus = "clean";
     window.defer = name => new Promise((resolve, reject) => { window.gates[name] = { resolve, reject }; });
     window.file = workspace => ({ id: ASSET, workspace_id: workspace, folder_id: null, name: workspace === A ? (window.revision ? "My revised draft.pdf" : "My draft.pdf") : "Other studio draft.pdf",
       storage_path: `workspaces/${workspace}/assets/${ASSET}/v2/draft.pdf`, mime_type: "application/pdf", size_bytes: 2400, checksum: "a".repeat(64), type: "source_document", status: "draft", current_version_number: 2 });
@@ -65,12 +67,12 @@ async function fixture(width = 1280, admin = false) {
     window.signed = workspace => ({ url: `https://storage.example/storage/v1/object/sign/book-assets/${window.file(workspace).storage_path}?token=fixture-token`, expiresIn: 300 });
     window.selected = A;
     window.fetch = async path => {
-      if (path === "/api/auth/session") return Response.json({ user: { email: "author@example.test" } });
+      if (path === "/api/auth/session") return Response.json({ user: { id: window.actor, email: "author@example.test" } });
       if (path === "/api/auth/logout") return Response.json({ signedOut: true });
       throw new Error(`Unexpected fixture fetch ${path}`);
     };
     window.api = {
-      adminAccess: async () => ({ admin }), claimReferral: async () => ({ claimed: true }),
+      adminAccess: async () => ({ admin, viewerId: window.actor }), claimReferral: async () => ({ claimed: true }),
       listWorkspaces: async () => ({ workspaces: [{ id: A, name: "Author studio" }, { id: B, name: "Other studio" }] }),
       getAssetAccess: async workspace => { window.calls.push({ operation: "access", workspace }); return { canEdit: true }; },
       listFolders: async workspace => { window.calls.push({ operation: "folders", workspace }); return { folders: [] }; },
@@ -113,18 +115,53 @@ test("real PDF details pin the original version and download only on the separat
   const { page, signedRequests } = await fixture();
   try {
     await openFile(page); await page.getByRole("button", { name: "Prepare download", exact: true }).click();
-    const link = page.getByRole("link", { name: "Download original file · v2", exact: true });
+    const link = page.getByRole("button", { name: "Download original file · v2", exact: true });
     await expect(link).toBeVisible();
     assert.equal(signedRequests.length, 0);
-    const href = new URL(await link.getAttribute("href"));
-    assert.equal(decodeURIComponent(href.pathname), `/storage/v1/object/sign/book-assets/workspaces/${A}/assets/${ASSET}/v2/draft.pdf`);
-    assert.equal(href.searchParams.get("download"), "My draft.pdf");
     assert.deepEqual(await page.evaluate(() => window.calls.filter(call => call.operation === "download")), [{ operation: "download", asset: ASSET, version: 2 }]);
     const downloadPromise = page.waitForEvent("download");
     await link.click(); const download = await downloadPromise;
     assert.equal(download.suggestedFilename(), "My draft.pdf");
     assert.equal(signedRequests.length, 1); await download.delete();
+    const href = new URL(signedRequests[0]);
+    assert.equal(decodeURIComponent(href.pathname), `/storage/v1/object/sign/book-assets/workspaces/${A}/assets/${ASSET}/v2/draft.pdf`);
+    assert.equal(href.searchParams.get("download"), "My draft.pdf");
     await page.screenshot({ path: resolve(artifacts, "desktop-file-details.png"), fullPage: true });
+  } finally { await page.close(); }
+});
+
+test("silent account change blocks a prepared private download", async () => {
+  const { page, signedRequests } = await fixture();
+  try {
+    await openFile(page);
+    await page.getByRole("button", { name: "Prepare download", exact: true }).click();
+    const download = page.getByRole("button", { name: "Download original file · v2", exact: true });
+    await expect(download).toBeVisible();
+    assert.equal(await page.locator('a[href*="/storage/v1/object/sign/"]').count(), 0);
+    await page.evaluate(id => { window.actor = id; }, B);
+    await download.click();
+    await expect(download).toHaveCount(0);
+    assert.equal(signedRequests.length, 0);
+  } finally { await page.close(); }
+});
+
+test("workspace ABA cannot dispatch a delayed folder mutation", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.api.seedFolderTemplate = async workspace => { window.calls.push({ operation: "seed", workspace }); return {}; };
+      const original = window.fetch; window.delaySession = true;
+      window.fetch = async path => { if (path === "/api/auth/session" && window.delaySession) { window.delaySession = false; await window.defer("seed-session"); } return original(path); };
+    });
+    await page.getByRole("button", { name: "Seed template" }).click();
+    await page.waitForFunction(() => !!window.gates["seed-session"]);
+    await page.getByRole("combobox", { name: "Workspace", exact: true }).selectOption(B);
+    await expect(page.getByRole("button", { name: /^Other studio draft\.pdf/ })).toBeVisible();
+    await page.getByRole("combobox", { name: "Workspace", exact: true }).selectOption(A);
+    await expect(page.getByRole("button", { name: /^My draft\.pdf/ })).toBeVisible();
+    await page.evaluate(() => window.gates["seed-session"].resolve());
+    await page.waitForTimeout(200);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "seed").length), 0);
   } finally { await page.close(); }
 });
 
@@ -138,7 +175,7 @@ test("mounted quarantine and a foreign signed path never expose a download link"
     await page.evaluate(() => { window.scanStatus = "clean"; window.downloadOverride = () => window.signed("foreign-workspace"); });
     await page.getByRole("button", { name: "Prepare download", exact: true }).click();
     await expect(page.getByRole("alert").filter({ hasText: "does not match this file" })).toBeVisible();
-    await expect(page.getByRole("link", { name: /^Download original file/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Download original file/ })).toHaveCount(0);
     assert.equal(signedRequests.length, 0);
   } finally { await page.close(); }
 });
@@ -157,10 +194,9 @@ test("mounted lost replies stay retryable and late replies cannot cross workspac
     await openFile(page);
     await page.evaluate(() => { window.downloadOverride = null; });
     await page.getByRole("button", { name: "Prepare download", exact: true }).click();
-    await expect(page.getByRole("link", { name: "Download original file · v2", exact: true })).toBeVisible();
-    const currentHref = await page.getByRole("link", { name: /^Download original file/ }).getAttribute("href");
+    await expect(page.getByRole("button", { name: "Download original file · v2", exact: true })).toBeVisible();
     await page.evaluate(() => window.gates["old-download"].resolve(window.signed("wrong-workspace")));
-    await expect(page.getByRole("link", { name: /^Download original file/ })).toHaveAttribute("href", currentHref);
+    await expect(page.getByRole("button", { name: /^Download original file/ })).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await page.getByRole("button", { name: "Close asset details", exact: true }).click();
     await openFile(page);
@@ -173,7 +209,7 @@ test("mounted lost replies stay retryable and late replies cannot cross workspac
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByRole("button", { name: /^Other studio draft\.pdf/ })).toBeVisible();
     await page.evaluate(workspace => window.gates["workspace-download"].resolve(window.signed(workspace)), A);
-    await expect(page.getByRole("link", { name: /^Download original file/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Download original file/ })).toHaveCount(0);
     await expect(page.getByRole("alert")).toHaveCount(0);
   } finally { await page.close(); }
 });
@@ -187,7 +223,7 @@ test("mobile author header exposes account settings and file details fit the vie
     await expect(page.getByRole("button", { name: "Sign out", exact: true })).toBeVisible();
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "mobile library must remain contained");
     await openFile(page); await page.getByRole("button", { name: "Prepare download", exact: true }).click();
-    await expect(page.getByRole("link", { name: "Download original file · v2", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Download original file · v2", exact: true })).toBeVisible();
     const dialog = await page.getByRole("dialog").boundingBox(); assert(dialog && dialog.x >= 0 && dialog.x + dialog.width <= 390);
     await page.screenshot({ path: resolve(artifacts, "mobile-file-details.png"), fullPage: true });
     await page.getByRole("button", { name: "Close asset details", exact: true }).click();

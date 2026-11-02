@@ -20,13 +20,19 @@ const bundle = await build({
     window.apiError = (status, message) => new ApiClientError(status, "fixture_error", message, "fixture-request");
     window.renderPanel = props => root.render(React.createElement(Panel, {...props, onApplied: async () => {
       window.appliedCallbacks.push(props.chapterId); if (window.onApplied) await window.onApplied(); }}));
-    window.renderImage = props => root.render(React.createElement(Image, {...props, onCompleted: async () => {}}));
+    const imageScope = { actor: "00000000-0000-4000-8000-000000000001", current: () => true,
+      begin: () => () => true, checked: async work => work() };
+    const isWorkspaceCurrent = () => true;
+    window.renderImage = props => root.render(React.createElement(Image, {...props, scope: imageScope, active: true,
+      isWorkspaceCurrent, onCompleted: async () => {}}));
     window.renderMemory = props => root.render(React.createElement(Memory, props));
     window.clearComponent = () => root.render(null);
     window.renderMemoryStrict = props => root.render(React.createElement(React.StrictMode, null,
       React.createElement(Memory, { key: props.bookId, ...props })));`, resolveDir: process.cwd(), loader: "tsx" },
   bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
   plugins: [{ name: "local-component-fixtures", setup(builder) {
+    builder.onResolve({ filter: /^@bookworm\/api-client$/ }, args => args.importer.replaceAll("\\", "/").endsWith("/components/ImageQuoteStudio.tsx") ? { path: "image-client", namespace: "fixture" } : undefined);
+    builder.onLoad({ filter: /^image-client$/, namespace: "fixture" }, () => ({ contents: 'export const createClient = ({ expectedActor }) => { if (expectedActor !== "00000000-0000-4000-8000-000000000001") throw new Error("Unexpected image actor"); return window.api; };' }));
     builder.onResolve({ filter: /^\.\/api$/ }, args => args.importer.replaceAll("\\", "/").includes(resolve("apps/web/components").replaceAll("\\", "/")) ? { path: "api", namespace: "fixture" } : undefined);
     builder.onLoad({ filter: /^api$/, namespace: "fixture" }, () => ({ contents: "export const apiClient = () => window.api;" }));
     builder.onResolve({ filter: /\.module\.css$/ }, () => ({ path: "styles", namespace: "fixture" }));
@@ -85,7 +91,7 @@ async function imageFixture(page, saved = true) {
   await page.evaluate(({ quoteId, saved }) => {
     window.imageQuote = { id: quoteId, status: "ready", model: "approved-image", size: "1024x1024", quality: "high", kind: "illustration",
       reservedCredits: "47", expiresAt: "2030-01-01T00:00:00.000Z", pricingBasis: "maximum_token_budget", purchaseAvailable: false };
-    if (saved) sessionStorage.setItem("bookworm.image-quote.v1:a-workspace", JSON.stringify({ quoteId, idempotencyKey: "original-image-key" }));
+    if (saved) sessionStorage.setItem("bookworm.image-quote.v2:00000000-0000-4000-8000-000000000001:a-workspace", JSON.stringify({ quoteId, idempotencyKey: "original-image-key" }));
     window.api.listImageQuoteModels = async () => ({ purchaseAvailable: true, models: [{ id: "approved", label: "Approved image", model: "approved-image", size: "1024x1024", quality: "high", maxReferenceImages: 3 }] });
     window.api.createImageQuote = async (_workspace, body) => { window.calls.push({ operation: "image-create", body }); throw new Error("Quote-save reply lost"); };
     window.api.recoverImageQuote = async (_workspace, key) => { window.calls.push({ operation: "image-recover", key }); return { quoteId }; };
@@ -709,7 +715,7 @@ test("image lost-save recovery uses only the persisted key and read-only offer/j
     await page.getByRole("checkbox", { name: /Save this private prompt/ }).check();
     await page.getByRole("button", { name: "Prepare image quote" }).click();
     await page.getByText("Quote-save reply lost", { exact: true }).waitFor();
-    const original = await page.evaluate(() => JSON.parse(sessionStorage.getItem("bookworm.image-quote.v1:a-workspace")));
+    const original = await page.evaluate(() => JSON.parse(sessionStorage.getItem("bookworm.image-quote.v2:00000000-0000-4000-8000-000000000001:a-workspace")));
     assert.deepEqual(Object.keys(original), ["idempotencyKey"]);
     await page.getByRole("button", { name: "Recover same quote request" }).click();
     await page.getByRole("button", { name: "Accept quote · 47 credits" }).waitFor();
@@ -720,7 +726,7 @@ test("image lost-save recovery uses only the persisted key and read-only offer/j
   } finally { await page.close(); }
 });
 
-test("uncertain image acceptance stays locked until a successful read and fresh consent", async () => {
+test("uncertain image acceptance stays locked until the original job is confirmed", async () => {
   const page = await fixture();
   try {
     await imageFixture(page);
@@ -736,11 +742,14 @@ test("uncertain image acceptance stays locked until a successful read and fresh 
     await expect(accept).toBeDisabled(); await expect(consent).toBeDisabled();
     await page.evaluate(quoteId => { window.api.getImageQuoteJob = async () => ({ quoteId, job: null }); }, quoteId);
     await page.getByRole("button", { name: "Refresh status", exact: true }).click();
-    await expect(consent).toBeEnabled(); await expect(consent).not.toBeChecked(); await expect(accept).toBeDisabled();
-    await consent.check(); await expect(accept).toBeEnabled();
+    await expect(consent).toBeDisabled(); await expect(consent).not.toBeChecked(); await expect(accept).toBeDisabled();
     assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "image-accept").length), 1);
     await page.evaluate(input => window.renderImage(input), imageProps("a-workspace", false));
     await expect(accept).toBeDisabled(); await expect(consent).toBeDisabled();
+    await page.evaluate(quoteId => { window.api.getImageQuoteJob = async () => ({ quoteId, job: { id: "original-job", status: "queued", assetId: null } }); }, quoteId);
+    await page.getByRole("button", { name: "Refresh status", exact: true }).click();
+    await page.getByText(/Generation queued/).waitFor();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "image-accept").length), 1);
   } finally { await page.close(); }
 });
 

@@ -80,7 +80,12 @@ try {
   await expect(generationConsent).not.toBeChecked();
   await expect(page.getByRole('button', { name: 'Purchases not enabled', exact: true })).toBeDisabled();
   assert.equal(acceptRequests.length, 0, 'disabled purchases triggered paid acceptance');
-  const storageKey = `bookworm.image-quote.v1:${workspace}`;
+  const actor = await page.evaluate(async () => {
+    const response = await fetch('/api/auth/session', { cache: 'no-store', credentials: 'same-origin' });
+    if (!response.ok) throw new Error('Fixture session unavailable');
+    return (await response.json()).user.id;
+  });
+  const storageKey = `bookworm.image-quote.v2:${actor}:${workspace}`;
   assert.equal((await page.evaluate(key => sessionStorage.getItem(key), storageKey)).includes('ancient forest'), false);
   assert.equal(page.url().includes('ancient forest'), false);
 
@@ -124,10 +129,10 @@ try {
   await expect(page.getByLabel(/Describe the scene, characters, mood and visual style/)).toBeDisabled();
   accessMode = 'error';
   await page.reload();
-  await page.getByText('Editing permissions are unavailable. Your files remain viewable; changes are disabled.', { exact: true }).waitFor();
-  await expect(page.getByRole('button', { name: 'Upload asset', exact: true })).toBeDisabled();
+  await page.getByText('Workspace access could not be verified.').waitFor();
+  await expect(page.getByRole('button', { name: 'Upload asset', exact: true })).toBeHidden();
   accessMode = 'editor';
-  await page.getByRole('button', { name: 'Retry permission check' }).click();
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(page.getByLabel(/Describe the scene, characters, mood and visual style/)).toBeEnabled();
   assert.equal(createRequests.length, 1, 'permission recovery created another quote');
   assert.equal(acceptRequests.length, 1, 'permission recovery accepted another quote');

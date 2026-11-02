@@ -12,7 +12,7 @@ export function isImageQuoteFormLocked(state: ImageQuoteFormLockState): boolean 
   return !state.canEdit || state.busy || state.hasRequestKey || state.hasSavedQuote;
 }
 
-export type ImageQuotePointer = { quoteId?: string; idempotencyKey?: string };
+export type ImageQuotePointer = { quoteId?: string; idempotencyKey?: string; acceptancePending?: boolean };
 export type SavedImageQuote = { quoteId: string; quote: ImageQuote; job: ImageQuoteJob | null };
 
 /** Recovery storage deliberately excludes prompts and private source context. */
@@ -23,8 +23,9 @@ export function readImageQuotePointer(raw: string | null): ImageQuotePointer | n
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     if (value.quoteId !== undefined && (typeof value.quoteId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.quoteId))) return null;
     if (value.idempotencyKey !== undefined && (typeof value.idempotencyKey !== "string" || value.idempotencyKey.length < 8 || value.idempotencyKey.length > 200)) return null;
+    if (value.acceptancePending !== undefined && typeof value.acceptancePending !== "boolean") return null;
     if (!value.quoteId && !value.idempotencyKey) return null;
-    return { ...(value.quoteId ? { quoteId: value.quoteId } : {}), ...(value.idempotencyKey ? { idempotencyKey: value.idempotencyKey } : {}) };
+    return { ...(value.quoteId ? { quoteId: value.quoteId } : {}), ...(value.idempotencyKey ? { idempotencyKey: value.idempotencyKey } : {}), ...(value.acceptancePending ? { acceptancePending: true } : {}) };
   } catch { return null; }
 }
 
