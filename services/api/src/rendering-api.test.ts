@@ -22,6 +22,7 @@ interface Store {
   signError?: boolean;
   downloadBarrier?: () => Promise<void>;
   rpcError?: { code: string; message?: string; details?: string };
+  completionHook?: (name: string, args: Row) => Promise<{ data: null; error: { code: string } | null }>;
 }
 
 function fakeSupabase(store: Store) {
@@ -112,6 +113,9 @@ function fakeSupabase(store: Store) {
       return builder;
     },
     rpc: async (name: string, args: Row) => {
+      if (store.completionHook && ["complete_render_job", "complete_publishing_package_job"].includes(name)) {
+        return store.completionHook(name, args);
+      }
       if (name === "complete_publishing_package_job") {
         if (store.rpcError) return { data: null, error: store.rpcError };
         const job = store.tables.publishing_jobs.find((row) => row.id === args.p_job_id);
@@ -262,6 +266,45 @@ async function createReadySources(app: Awaited<ReturnType<typeof buildApp>>, cha
   } });
   assert.equal(preflight.statusCode, 201, preflight.body);
   return { renderJobId: render.json().jobId as string, preflightJobId: preflight.json().jobId as string };
+}
+
+for (const action of ["render", "package"] as const) {
+  for (const transport of ["error", "throw"] as const) {
+    test(`${action} retains uploaded bytes while a ${transport} completion can still commit`, async () => {
+      const store = baseStore();
+      enableRetailerPackages(store);
+      const app = await buildApp(() => fakeSupabase(store), {
+        renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager([]),
+      });
+      try {
+        const sources = action === "package" ? await createReadySources(app) : {};
+        const before = store.objects.size;
+        let pending: { name: string; args: Row } | undefined;
+        store.completionHook = async (name, args) => {
+          pending = { name, args };
+          if (transport === "throw") throw new Error("synthetic lost reply");
+          return { data: null, error: { code: "08006" } };
+        };
+        const response = await app.inject({ method: "POST", headers: auth,
+          url: action === "render" ? `/v1/editions/${EDITION}/render` : "/v1/publishing/jobs",
+          payload: { idempotencyKey: crypto.randomUUID(), ...(action === "package" ? { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources } : {}) },
+        });
+        assert.equal(response.statusCode, 503, response.body);
+        assert.match(response.body, /completion is unconfirmed/iu);
+        assert.equal(store.objects.size, before + (action === "render" ? 2 : 1));
+        const job = store.tables.publishing_jobs.at(-1)!;
+        assert.equal(job.status, "running", "uncertain completion must not be failed");
+        assert.ok(pending);
+        store.completionHook = undefined;
+        // The delayed transaction commits only after the HTTP reply was lost.
+        const completion = await (fakeSupabase(store) as { rpc: (name: string, args: Row) => Promise<{ error: unknown }> }).rpc(pending.name, pending.args);
+        assert.equal(completion.error, null);
+        assert.equal(job.status, "succeeded");
+        const artifacts = action === "render" ? (pending.args.p_artifacts as Row[]) : [pending.args.p_artifact as Row];
+        for (const artifact of artifacts) assert.ok(store.objects.has(String(artifact.storagePath)), "committed artifact bytes were removed");
+      } finally { await app.close(); }
+    });
+  }
 }
 
 test("invalid publication-date overrides fail before edition creation or replacement", async (t) => {
@@ -440,20 +483,20 @@ test("renderer typography rejection remains actionable and never creates artifac
   await app.close();
 });
 
-test("database completion failure compensates uploaded objects and does not charge", async () => {
+test("database completion rejection retains the request and private uploads for reconciliation", async () => {
   const store = baseStore();
   store.rpcError = { code: "42883" };
   const originalObjects = store.objects.size;
   const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderer([]) });
   const response = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: "render-request-0004" } });
   assert.equal(response.statusCode, 503);
-  assert.equal(store.tables.publishing_jobs[0].status, "failed");
+  assert.equal(store.tables.publishing_jobs[0].status, "running");
   assert.equal(store.tables.usage_events.length, 0);
-  assert.equal(store.objects.size, originalObjects);
+  assert.equal(store.objects.size, originalObjects + 2);
   await app.close();
 });
 
-test("atomic completion refusals are actionable, private and leave no new artifact or charge", async () => {
+test("atomic completion refusals retain uncertain files and never publish artifacts or usage", async () => {
   for (const action of ["render", "validate", "export_package"] as const) {
     for (const code of ["40001", "22023", "42501"]) {
       const store = baseStore();
@@ -470,13 +513,14 @@ test("atomic completion refusals are actionable, private and leave no new artifa
           url: action === "render" ? `/v1/editions/${EDITION}/render` : action === "validate" ? "/v1/publishing/validate" : "/v1/publishing/jobs",
           payload: { idempotencyKey: crypto.randomUUID(), ...(action === "render" ? {} : { bookId: BOOK, editionId: EDITION, channel: "kdp" }), ...sources },
         });
-        assert.equal(response.statusCode, code === "42501" ? 403 : 422, `${action}/${code}: ${response.body}`);
-        assert.match(response.body, code === "42501" ? /permission|access/iu : /again/iu);
+        assert.equal(response.statusCode, action === "validate" ? (code === "42501" ? 403 : 422) : 503, `${action}/${code}: ${response.body}`);
+        assert.match(response.body, action === "validate" ? (code === "42501" ? /permission|access/iu : /again/iu) : /completion is unconfirmed/iu);
         assert.equal(response.body.includes("private SQL detail"), false);
         assert.equal(response.body.includes("bookworm_publishing_snapshot_changed"), false);
-        assert.deepEqual([store.objects.size, store.tables.assets.length, store.tables.usage_events.length, store.tables.publishing_validations.length], counts);
+        assert.equal(store.objects.size, counts[0] + (action === "render" ? 2 : action === "export_package" ? 1 : 0));
+        assert.deepEqual([store.tables.assets.length, store.tables.usage_events.length, store.tables.publishing_validations.length], counts.slice(1));
         const failed = store.tables.publishing_jobs.at(-1)!;
-        assert.equal(failed.status, "failed");
+        assert.equal(failed.status, action === "validate" ? "failed" : "running");
         const snapshot = (failed.request_json as Row).artworkSnapshot as Row;
         assert.equal(snapshot.schemaVersion, 1);
         assert.equal((snapshot.assets as Row[]).length, 2);
@@ -847,7 +891,7 @@ test("package creation requires a plan channel and fresh matching manuscript fin
   await app.close();
 });
 
-test("package persistence failure removes the uploaded ZIP and records no publishing usage", async () => {
+test("package persistence rejection retains the request and private ZIP for reconciliation", async () => {
   const store = baseStore();
   enableRetailerPackages(store);
   const app = await buildApp(() => fakeSupabase(store), {
@@ -860,9 +904,9 @@ test("package persistence failure removes the uploaded ZIP and records no publis
     bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: "package-request-0004",
   } });
   assert.equal(response.statusCode, 503, response.body);
-  assert.equal(store.objects.size, objectCount);
+  assert.equal(store.objects.size, objectCount + 1);
   assert.equal(store.tables.usage_events.filter((row) => row.meter === "publishing").length, 0);
-  assert.equal(store.tables.publishing_jobs.at(-1)?.status, "failed");
+  assert.equal(store.tables.publishing_jobs.at(-1)?.status, "running");
   await app.close();
 });
 

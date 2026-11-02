@@ -397,8 +397,8 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       });
       let completedJob = Array.isArray(completed) ? completed[0] : completed;
       if (completeError || !completedJob) {
-        const { data: recovered } = await service.from("publishing_jobs").select("*").eq("id", jobId).maybeSingle();
-        if (recovered?.status === "succeeded") completedJob = recovered;
+        const { data: recovered, error: recoveryError } = await service.from("publishing_jobs").select("*").eq("id", jobId).maybeSingle();
+        if (!recoveryError && recovered?.status === "succeeded") completedJob = recovered;
         else {
           await failPreflightJob(service, jobId);
           if (completeError?.code === "PGRST202" || completeError?.code === "42883") {
@@ -507,6 +507,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
     const uploadedPaths: string[] = [];
     let completionPersisted = false;
+    let completionAttempted = false;
     try {
       const baseUrl = (process.env.PUBLISHING_SERVICE_URL
         ?? `http://127.0.0.1:${process.env.PUBLISHING_SERVICE_PORT ?? "8003"}`).replace(/\/$/u, "");
@@ -550,36 +551,31 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
       await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
         model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
+      completionAttempted = true;
       const { data: completed, error: completeError } = await service.rpc("complete_publishing_package_job", {
         p_job_id: jobId, p_artifact: artifact, p_rule_version: packaged.data.ruleVersion,
         p_source_render_job_id: body.renderJobId, p_source_preflight_job_id: body.preflightJobId,
       });
       let completedJob = Array.isArray(completed) ? completed[0] : completed;
       if (completeError || !completedJob) {
-        const { data: recovered } = await service.from("publishing_jobs").select("*").eq("id", jobId).maybeSingle();
-        if (recovered?.status === "succeeded") completedJob = recovered;
+        const { data: recovered, error: recoveryError } = await service.from("publishing_jobs").select("*").eq("id", jobId).maybeSingle();
+        if (!recoveryError && recovered?.status === "succeeded") completedJob = recovered;
         else {
-          await service.storage.from(BUCKET).remove(uploadedPaths);
-          await failPackageJob(service, jobId, "package_persistence_failed");
-          if (completeError?.code === "PGRST202" || completeError?.code === "42883") {
-            throw new AppError(503, "The publishing package workflow migration is not installed.");
-          }
-          if (completeError?.code === "40001" || completeError?.code === "22023") {
-            throw new AppError(422, "Book artwork, edition settings or source proofs changed before completion. Render and run preflight again.");
-          }
-          if (completeError?.code === "42501") {
-            throw new AppError(403, "Your book editing permission changed before completion. Check your access. Nothing was charged.");
-          }
-          throw new AppError(500, "Could not persist the publishing package.");
+          throw new AppError(503, "Package completion is unconfirmed. Output files are retained; avoid starting another package until its status is resolved.");
         }
       }
       completionPersisted = true;
       reply.header("cache-control", "private, no-store");
       return reply.status(201).send(await hydratePackageJob(service, book.workspace_id, completedJob));
     } catch (error) {
-      if (!completionPersisted) {
+      if (!completionPersisted && !completionAttempted) {
+        // Retain private objects after dispatch until reconciliation can prove
+        // no concurrent or delayed completion references them.
         if (uploadedPaths.length) await service.storage.from(BUCKET).remove(uploadedPaths);
         await failPackageJob(service, jobId, "package_failed");
+      }
+      if (completionAttempted && !completionPersisted) {
+        throw new AppError(503, "Package completion is unconfirmed. Output files are retained; avoid starting another package until its status is resolved.");
       }
       if (error instanceof AppError) throw error;
       throw new AppError(503, "The publishing package could not be created.");

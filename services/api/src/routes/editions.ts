@@ -428,6 +428,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
 
     const uploadedPaths: string[] = [];
     let completionPersisted = false;
+    let completionAttempted = false;
     try {
       const baseUrl = (process.env.RENDERING_SERVICE_URL
         ?? `http://127.0.0.1:${process.env.RENDERING_SERVICE_PORT ?? "8002"}`).replace(/\/$/u, "");
@@ -509,6 +510,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       };
       await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
         model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
+      completionAttempted = true;
       const { data: completed, error: completeError } = await service.rpc("complete_render_job", {
         p_job_id: jobId,
         p_artifacts: artifacts,
@@ -517,21 +519,10 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       });
       let completedJob = Array.isArray(completed) ? completed[0] : completed;
       if (completeError || !completedJob) {
-        const { data: recovered } = await service.from("publishing_jobs").select("*").eq("id", jobId).maybeSingle();
-        if (recovered?.status === "succeeded") completedJob = recovered;
+        const { data: recovered, error: recoveryError } = await service.from("publishing_jobs").select("*").eq("id", jobId).maybeSingle();
+        if (!recoveryError && recovered?.status === "succeeded") completedJob = recovered;
         else {
-          await service.storage.from(BUCKET).remove(uploadedPaths);
-          await failRenderJob(service, jobId, "render_persistence_failed");
-          if (completeError?.code === "PGRST202" || completeError?.code === "42883") {
-            throw new AppError(503, "The render workflow migration is not installed. Nothing was charged.");
-          }
-          if (completeError?.code === "40001" || completeError?.code === "22023") {
-            throw new AppError(422, "Book artwork or edition settings changed before completion. Render again. Nothing was charged.");
-          }
-          if (completeError?.code === "42501") {
-            throw new AppError(403, "Your book editing permission changed before completion. Check your access. Nothing was charged.");
-          }
-          throw new AppError(500, "Could not persist the rendered edition. Nothing was charged.");
+          throw new AppError(503, "Render completion is unconfirmed. Output files are retained; avoid starting another render until its status is resolved.");
         }
       }
 
@@ -539,9 +530,14 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       reply.header("cache-control", "private, no-store");
       return reply.status(201).send(await hydrateRenderResult(service, completedJob));
     } catch (error) {
-      if (!completionPersisted) {
+      if (!completionPersisted && !completionAttempted) {
+        // Once completion has been dispatched, retain these private objects:
+        // a concurrent or delayed completion may still reference them.
         if (uploadedPaths.length) await service.storage.from(BUCKET).remove(uploadedPaths);
         await failRenderJob(service, jobId, "render_failed");
+      }
+      if (completionAttempted && !completionPersisted) {
+        throw new AppError(503, "Render completion is unconfirmed. Output files are retained; avoid starting another render until its status is resolved.");
       }
       if (error instanceof AppError) throw error;
       throw new AppError(503, "The renderer could not complete this edition. Nothing was saved or charged.");

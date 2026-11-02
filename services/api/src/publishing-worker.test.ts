@@ -122,7 +122,7 @@ test("worker poll is idle without a claim and persists invalid claims as termina
   assert.equal(failure.args.p_retryable, false);
 });
 
-for (const scenario of ["stale", "permission", "invalid", "lease", "unknown", "committed", "success", "retryable"] as const) {
+for (const scenario of ["stale", "permission", "invalid", "lease", "unknown", "committed", "success", "retryable", "late_commit"] as const) {
   test(`publishing completion ${scenario} preserves fencing, recovery and artifact cleanup`, async () => {
     const tables: Record<string, Row[]> = {
       books: [{ id: BOOK, workspace_id: WORKSPACE, title: "Worker Book", author_name: "Author", language: "en", created_by: USER }],
@@ -148,26 +148,34 @@ for (const scenario of ["stale", "permission", "invalid", "lease", "unknown", "c
         if (scenario === "unknown") tables.publishing_jobs = [];
         if (scenario === "committed" || scenario === "unknown") throw new Error("lost completion reply");
         if (scenario === "success") return { data: job, error: null };
-        return { data: null, error: { code: scenario === "permission" ? "42501" : scenario === "invalid" ? "22023" : scenario === "retryable" ? "08006" : "40001",
+        return { data: null, error: { code: scenario === "permission" ? "42501" : scenario === "invalid" ? "22023" : ["retryable", "late_commit"].includes(scenario) ? "08006" : "40001",
           details: scenario === "stale" ? "bookworm_publishing_snapshot_changed" : "", message: "private database diagnostic" } };
       }
-      if (name === "fail_leased_publishing_job") return { data: { id: JOB, status: args.p_retryable ? "queued" : "failed" }, error: null };
+      if (name === "fail_leased_publishing_job") {
+        assert.deepEqual(removed, [], "do not remove output before the failure transition fences completion");
+        if (scenario === "late_commit") {
+          job.status = "succeeded";
+          return { data: null, error: { code: "40001" } };
+        }
+        return { data: { id: JOB, status: args.p_retryable ? "queued" : "failed" }, error: null };
+      }
       throw new Error(`Unexpected RPC ${name}`);
     } }) as never;
     const bytes = Buffer.from("PK\u0003\u0004fixture-epub");
     const outcome = await runOnePublishingJob(sb, { fetcher: async () => Response.json({ format: "epub", artifactBase64: bytes.toString("base64"),
       sha256: createHash("sha256").update(bytes).digest("hex"), rendererVersion: "fixture-1" }) });
     const expected = scenario === "lease" ? "lease_lost" : scenario === "unknown" ? "completion_unknown"
-      : scenario === "committed" || scenario === "success" ? "succeeded" : scenario === "retryable" ? "queued" : "failed";
+      : ["committed", "success", "late_commit"].includes(scenario) ? "succeeded" : scenario === "retryable" ? "queued" : "failed";
     assert.deepEqual(outcome, { status: expected, jobId: JOB });
     assert.equal(uploads.length, 1);
-    assert.deepEqual(removed, ["unknown", "committed", "success"].includes(scenario) ? [] : [uploads[0].path]);
+    assert.deepEqual(removed, ["unknown", "committed", "success", "lease", "late_commit"].includes(scenario) ? [] : [uploads[0].path]);
     const failure = calls.find(call => call.name === "fail_leased_publishing_job");
     if (expected === "failed" || expected === "queued") {
       assert.equal(failure?.args.p_retryable, scenario === "retryable");
       assert.equal(failure?.args.p_error_code, scenario === "stale" ? "worker_inputs_changed" : scenario === "permission" ? "worker_permission_changed"
         : scenario === "invalid" ? "worker_invalid_input" : "worker_completion_failed");
-    } else assert.equal(failure, undefined, "lost leases and uncertain/committed completion must not be failed");
+    } else if (scenario === "late_commit") assert.ok(failure, "late completion must win against the failure fence");
+    else assert.equal(failure, undefined, "lost leases and uncertain/committed completion must not be failed");
   });
 }
 
@@ -283,7 +291,7 @@ test("publishing worker terminally rejects incompatible cover versions without r
       if (name === "fail_leased_publishing_job") {
         failures.push(args);
         terminal = args.p_retryable === false;
-        return { data: { status: terminal ? "failed" : "queued" }, error: null };
+        return { data: { id: JOB, status: terminal ? "failed" : "queued" }, error: null };
       }
       throw new Error(`Unexpected fixture RPC ${name}`);
     } }) as never;

@@ -258,11 +258,13 @@ export async function runOnePublishingJob(sb: SupabaseClient, options: {
         if (recovered.data.status === "succeeded" && recovered.data.lease_token === token) return { status: "succeeded", jobId };
       } catch { return { status: "completion_unknown", jobId }; }
     }
-    if (uploadedPaths.length) {
-      // Paths contain fresh random IDs per attempt; another lease never shares them.
-      try { await sb.storage.from(BUCKET).remove(uploadedPaths); } catch { /* Private orphan cleanup is operational maintenance. */ }
+    if (abort.signal.aborted || (error instanceof WorkerFailure && error.code === "worker_lease_lost")) {
+      // A delayed completion may still be in flight. Leave its bytes for reconciliation.
+      if (!completionAttempted && uploadedPaths.length) {
+        try { await sb.storage.from(BUCKET).remove(uploadedPaths); } catch { /* Private orphan cleanup is operational maintenance. */ }
+      }
+      return { status: "lease_lost", jobId };
     }
-    if (abort.signal.aborted || (error instanceof WorkerFailure && error.code === "worker_lease_lost")) return { status: "lease_lost", jobId };
     const failure = error instanceof WorkerFailure ? error
       : error instanceof AppError && error.code === "cover_metadata_policy_unsupported" ? new WorkerFailure("worker_cover_policy_unsupported", false)
       : error instanceof AppError ? new WorkerFailure(error.status < 500 ? "worker_input_rejected" : "worker_dependency_failed", error.status >= 500)
@@ -270,9 +272,28 @@ export async function runOnePublishingJob(sb: SupabaseClient, options: {
     const failed = await sb.rpc("fail_leased_publishing_job", {
       p_job_id: jobId, p_lease_token: token, p_error_code: failure.code, p_retryable: failure.retryable,
     });
-    if (failed.error?.code === "40001") return { status: "lease_lost", jobId };
-    if (failed.error || !row(failed.data)) throw new WorkerFailure("worker_failure_persistence_failed", true);
-    return { status: row(failed.data)!.status === "queued" ? "queued" : "failed", jobId };
+    if (failed.error?.code === "40001") {
+      // The completion may have won the row lock after our earlier read.
+      if (completionAttempted) {
+        try {
+          const recovered = await sb.from("publishing_jobs").select("status,lease_token,response_json").eq("id", jobId).maybeSingle();
+          if (!recovered.error && recovered.data?.status === "succeeded" && recovered.data.lease_token === token) {
+            return { status: "succeeded", jobId };
+          }
+        } catch { /* Lease loss still requires reconciliation. */ }
+      }
+      return { status: "lease_lost", jobId };
+    }
+    const failedJob = row(failed.data);
+    if (failed.error || !failedJob || failedJob.id !== jobId || !["queued", "failed"].includes(String(failedJob.status))) {
+      throw new WorkerFailure("worker_failure_persistence_failed", true);
+    }
+    // The failure transaction fences the lease before cleanup. A delayed
+    // completion can no longer commit after this successful transition.
+    if (uploadedPaths.length) {
+      try { await sb.storage.from(BUCKET).remove(uploadedPaths); } catch { /* Private orphan cleanup is operational maintenance. */ }
+    }
+    return { status: failedJob.status === "queued" ? "queued" : "failed", jobId };
   } finally {
     clearInterval(heartbeat);
     await renewal;
