@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import jsonschema
 
-from agents.base import AgentValidationError, BaseAgent
+from agents.base import AgentValidationError, BaseAgent, sanitize
 
 TOOL_NAME = "propose_book_bible_candidates"
 
@@ -76,24 +76,19 @@ class BookBibleAgent(BaseAgent):
 
     def build_user_message(self, request: dict) -> str:
         self._evidence_refs = set()
-        for chapter_id in request.get("chapterIds") or []:
-            chapter = self.executor.get_chapter(chapter_id)
-            version_id = chapter.get("documentVersionId") or chapter.get("document_version_id")
-            for node in chapter.get("nodes", []):
-                node_id = node.get("id")
-                text_hash = node.get("textHash") or node.get("text_hash")
-                if all(isinstance(value, str) and value for value in (chapter_id, version_id, node_id, text_hash)):
-                    self._evidence_refs.add((chapter_id, version_id, node_id, text_hash))
         message = super().build_user_message(request)
         # Related search and existing Bible entries may inform wording, but
         # generated facts must cite the selected, version-pinned manuscript.
-        self._evidence_refs = {
-            ref for ref in self._evidence_refs
-            if all(value in message for value in ref)
-        }
         if not self._evidence_refs:
             raise AgentValidationError("Book Bible extraction needs versioned, hashed manuscript nodes")
         return message
+
+    def on_context_source(self, kind: str, value: dict) -> None:
+        if kind != "chapter":
+            return
+        ref = (value.get("chapterId"), value.get("documentVersionId"), value.get("nodeId"), value.get("textHash"))
+        if all(isinstance(part, str) and part and sanitize(part) == part for part in ref):
+            self._evidence_refs.add(ref)
 
     def tool_schemas(self) -> list[dict]:
         return [*super().tool_schemas(), TOOL_SCHEMA]

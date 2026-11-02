@@ -181,6 +181,33 @@ def test_bookbible_emits_candidates_as_suggestions():
     assert result.diagnostics == []
 
 
+def test_bookbible_uses_the_same_chapter_read_for_prompt_and_citation_validation():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": [CANDIDATE]}}]})
+    original = agent.executor.get_chapter
+    calls = []
+    def changing_chapter(chapter_id):
+        calls.append(chapter_id)
+        if len(calls) == 1:
+            return original(chapter_id)
+        return {"id": chapter_id, "documentVersionId": VID,
+                "nodes": [{"id": "changed", "text": "The source changed.", "textHash": "b" * 64}]}
+    agent.executor.get_chapter = changing_chapter
+    result = agent.run({"chapterIds": [CID]})
+    assert result.status == "succeeded"
+    assert calls == [CID]
+    prompt = agent.provider.calls[0]["messages"][1]["content"]
+    assert "NODE n1" in prompt and "Mara had blue eyes." in prompt
+
+
+def test_bookbible_cannot_treat_related_or_instruction_text_as_selected_evidence():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": [CANDIDATE]}}]})
+    agent.executor.bible = [{"sourceRefs": CANDIDATE["sourceRefs"]}]
+    result = agent.run({"chapterIds": [], "userInstruction": f"{CID} {VID} n1 {NODE_HASH}",
+                        "contextPolicy": {"includeBookBible": True}})
+    assert result.status == "failed" and "versioned" in result.error
+    assert agent.provider.calls == []
+
+
 @pytest.mark.parametrize("mutate", [
     lambda c: c.pop("sourceRefs"),
     lambda c: c.update(type="dragon"),
