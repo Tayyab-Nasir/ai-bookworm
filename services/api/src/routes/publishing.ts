@@ -641,13 +641,17 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     const query = parsed.data;
     const user = app.supabaseFactory(req.userToken);
     const { book } = await loadBook(user, query.bookId, req.userId);
-    const { data, error } = await user.from("publishing_jobs").select("*")
+    // Filter before the limit: later validations or packages for another
+    // edition/channel must not hide this book's saved package history.
+    let listing = user.from("publishing_jobs").select("*")
       .eq("book_id", query.bookId).in("channel", retailerChannelSchema.options)
-      .order("created_at", { ascending: false }).limit(100);
+      .contains("request_json", { action: "export_package" });
+    if (query.editionId) listing = listing.eq("edition_id", query.editionId);
+    if (query.channel) listing = listing.eq("channel", query.channel);
+    const { data, error } = await listing.order("created_at", { ascending: false })
+      .order("id", { ascending: false }).limit(query.limit);
     if (error) throw new AppError(500, "Could not load publishing package history.");
-    const jobs = (data ?? []).filter((job) => requestJson(job).action === "export_package"
-      && (!query.editionId || job.edition_id === query.editionId)
-      && (!query.channel || job.channel === query.channel)).slice(0, query.limit);
+    const jobs = data ?? [];
     const service = app.supabaseFactory();
     reply.header("cache-control", "private, no-store");
     return { jobs: await Promise.all(jobs.map((job) => hydratePackageJob(service, book.workspace_id, job))) };

@@ -1118,3 +1118,63 @@ test('risk acknowledgment requires both the original account and the account tha
   account=ids.asset;await page.evaluate(()=>window.showStudio(window.ids.otherAsset));await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();await page.evaluate(()=>window.showStudio(window.ids.book));await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await page.getByLabel('I understand that another create can duplicate the earlier request.').check();await page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true}).click();await expect(page.getByText(/A previous new-edition save may have completed/)).toHaveCount(0);
  }finally{await page.close()}
 });
+
+test('package history uses the selected edition and ignores a late previous edition response', async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.packageReads = [];
+      window.bookwormApi.listPublishingJobs = async (bookId, filter, actor) => {
+        window.packageReads.push({ bookId, filter, actor });
+        if (filter?.editionId === window.ids.otherEdition) {
+          await new Promise(resolve => { window.releaseOldPackageHistory = resolve; });
+          return { jobs: [{ id: window.ids.otherJob, bookId, editionId: window.ids.otherEdition, channel: 'barnesnoble', status: 'failed', createdAt: '2026-10-13T12:00:00Z', package: null }] };
+        }
+        return { jobs: [{ id: window.ids.job, bookId, editionId: window.ids.edition, channel: 'kdp', status: 'failed', createdAt: '2026-10-13T12:00:00Z', package: null }] };
+      };
+    });
+    const editions = page.locator('aside').getByRole('button', { name: /print.*en.*draft/i });
+    await expect(editions).toHaveCount(2);
+    await editions.nth(1).click();
+    await page.waitForFunction(() => typeof window.releaseOldPackageHistory === 'function');
+    await editions.nth(0).click();
+    const history = page.getByRole('region', { name: 'Retailer export packages', exact: true });
+    await expect(history.getByText('kdp package', { exact: true })).toBeVisible();
+    await page.evaluate(() => window.releaseOldPackageHistory());
+    await expect(history.getByText('Barnes & Noble package', { exact: true })).toHaveCount(0);
+    const calls = await page.evaluate(() => window.packageReads);
+    assert.deepEqual(calls.slice(-2).map(call => call.filter.editionId), [ids.otherEdition, ids.edition]);
+    assert(calls.every(call => call.bookId === ids.book && call.actor === ids.asset));
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test('failed package history refresh withdraws previously signed links', async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.listPublishingJobs = async (bookId, filter) => ({ jobs: [{ id: window.ids.job, bookId, editionId: filter.editionId, channel: 'kdp', status: 'succeeded', createdAt: '2026-10-13T12:00:00Z', package: { asset: { id: window.ids.asset, size_bytes: 1024, checksum: 'a'.repeat(64) }, download: { url: window.results[window.ids.job].artifacts[0].download.url.replace('book.pdf', 'kdp-export.zip'), expiresIn: 300 } } }] });
+    });
+    const history = page.getByRole('region', { name: 'Retailer export packages', exact: true });
+    await history.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(history.getByRole('link', { name: 'Download private ZIP' })).toBeVisible();
+    await page.evaluate(() => { window.bookwormApi.listPublishingJobs = async () => { throw new Error('access unavailable'); }; });
+    await history.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(history.getByText('Package history is unavailable. Refresh before relying on this list.')).toBeVisible();
+    await expect(history.getByRole('link', { name: 'Download private ZIP' })).toHaveCount(0);
+    await expect(history.getByText('No retailer packages for this edition yet.')).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test('unsaved editions do not show an endless package history spinner', async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.getByRole('button', { name: 'New print', exact: true }).click();
+    const history = page.getByRole('region', { name: 'Retailer export packages', exact: true });
+    await expect(history.getByText('Save this edition to view its package history.')).toBeVisible();
+    await expect(history.getByText('Checking package history for this edition…')).toHaveCount(0);
+    await expect(history.getByRole('button', { name: 'Refresh', exact: true })).toBeDisabled();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});

@@ -1212,12 +1212,12 @@ export function createClient(opts: ClientOptions) {
       call<{ requestId: string; job: PublishingPackageJob | null }>("GET", `/v1/publishing/requests/${encodeURIComponent(requestId)}?${new URLSearchParams({ bookId })}`, undefined, false, { "x-bookworm-actor": expectedActorId }),
     closePublishingRequest: (body: PublishingPackageRequest, expectedActorId: string) =>
       call<{ requestId: string; job: PublishingPackageJob | null }>("POST", "/v1/publishing/requests/close", body, false, { "x-bookworm-actor": expectedActorId }),
-    listPublishingJobs: (bookId: string, filter?: { editionId?: string; channel?: RetailerChannel; limit?: number }) => {
+    listPublishingJobs: (bookId: string, filter?: { editionId?: string; channel?: RetailerChannel; limit?: number }, expectedActorId?: string) => {
       const qs = new URLSearchParams({ bookId });
       if (filter?.editionId) qs.set("editionId", filter.editionId);
       if (filter?.channel) qs.set("channel", filter.channel);
       if (filter?.limit) qs.set("limit", String(filter.limit));
-      return call<{ jobs: PublishingPackageJob[] }>("GET", `/v1/publishing/jobs?${qs}`);
+      return call<{ jobs: PublishingPackageJob[] }>("GET", `/v1/publishing/jobs?${qs}`, undefined, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {});
     },
     getPublishingJob: (jobId: string) => call<PublishingPackageJob>("GET", `/v1/publishing/jobs/${jobId}`),
     getUsage: (organizationId: string) =>

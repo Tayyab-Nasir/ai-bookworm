@@ -52,6 +52,8 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   const [readerRefreshKey, setReaderRefreshKey] = useState("");
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [publishingJobs, setPublishingJobs] = useState<TimedPackageJob[]>([]);
+  const [packageHistory, setPackageHistory] = useState<{ editionId: string | null; status: "loading" | "ready" | "unavailable" }>({ editionId: null, status: "loading" });
+  const packageHistoryEpoch = useRef(0);
   const [packageClock, setPackageClock] = useState(downloadClock());
   const [packageClockFault, setPackageClockFault] = useState(false);
   const observedClock = useRef(packageClock), clockFault = useRef(false);
@@ -91,6 +93,23 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     const epoch = viewEpoch.current;
     return () => currentBook.current === bookId && currentEdition.current === editionId && viewEpoch.current === epoch;
   };
+  const readPackageHistory = useCallback(async (editionId: string, owner: string) => {
+    const ticket = ++packageHistoryEpoch.current, view = viewEpoch.current, startedAt = downloadClock();
+    const valid = () => currentBook.current === bookId && currentEdition.current === editionId
+      && viewEpoch.current === view && loadedEditionOwner.current === owner && packageHistoryEpoch.current === ticket;
+    setPackageHistory({ editionId, status: "loading" });
+    try {
+      await readBrowserSession(owner);
+      const result = await api.listPublishingJobs(bookId, { editionId }, owner);
+      await readBrowserSession(owner);
+      if (!Array.isArray(result?.jobs) || result.jobs.some(job => !job || job.editionId !== editionId || (job.bookId !== undefined && job.bookId !== bookId))) {
+        throw new Error("The package history could not be verified for this edition.");
+      }
+      if (valid()) { setPublishingJobs(result.jobs.map(job => timePackage(job, startedAt))); setPackageHistory({ editionId, status: "ready" }); observePackageClock(); }
+    } catch {
+      if (valid()) setPackageHistory({ editionId, status: "unavailable" });
+    }
+  }, [api, bookId]);
   const readAudioHistory = async (editionId: string, reportError: boolean, alive: () => boolean = () => true) => {
     if (audioMutation.current || (!reportError && audioManualRead.current)) return;
     const manual = reportError ? {} : null; if (manual) audioManualRead.current = manual;
@@ -124,7 +143,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
   const load = useCallback(async () => {
     const version = ++viewEpoch.current;
-    audioHistoryEpoch.current++; audioProjectEpoch.current++; audioMutation.current = null; audioManualRead.current = null;
+    audioHistoryEpoch.current++; audioProjectEpoch.current++; packageHistoryEpoch.current++; audioMutation.current = null; audioManualRead.current = null;
     const valid = () => viewEpoch.current === version && currentBook.current === bookId;
     editionRiskFlight.current = null; editionSaveFlight.current = null; loadedEditionOwner.current = null; setEditionSessionHidden(false); setVerifyingEditionSession(false); setVerifyingEditionRisk(false); setAcceptDuplicateRisk(false);
     setBusy("load");
@@ -135,8 +154,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
     setGooglePlayIdentifier(""); setGooglePlayCoverId("");
     try {
       const owner = (await readBrowserSession()).id; if (!valid()) return;
-      const historyStartedAt = downloadClock();
-      const [identity, editionResult, packageHistory, chapterResult] = await Promise.all([api.getBook(bookId, owner), api.listEditions(bookId, owner), api.listPublishingJobs(bookId), api.listChapters(bookId, owner)]);
+      const [identity, editionResult, chapterResult] = await Promise.all([api.getBook(bookId, owner), api.listEditions(bookId, owner), api.listChapters(bookId, owner)]);
       if (!valid()) return;
       if (!identity?.book || identity.book.id !== bookId || !Array.isArray(editionResult?.editions)
         || editionResult.editions.some(edition => !edition || edition.book_id !== bookId)) {
@@ -146,7 +164,7 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
       await readBrowserSession(owner);
       if (!valid()) return;
       loadedEditionOwner.current = owner;
-      setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setPublishingJobs(packageHistory.jobs.map(job => timePackage(job, historyStartedAt))); observePackageClock(); setChapters(chapterResult.chapters);
+      setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setChapters(chapterResult.chapters);
       setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
       if (editionResult.editions[0]) {
         currentEdition.current = editionResult.editions[0].id;
@@ -163,6 +181,13 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
   }, [api, bookId]);
 
   useEffect(() => { void load(); return () => { ++viewEpoch.current; }; }, [load]);
+  useEffect(() => {
+    const owner = loadedEditionOwner.current;
+    if (!activeId || !owner) { packageHistoryEpoch.current++; setPackageHistory({ editionId: activeId, status: "loading" }); return; }
+    setPublishingJobs([]);
+    void readPackageHistory(activeId, owner);
+    return () => { packageHistoryEpoch.current++; };
+  }, [activeId, bookId, readPackageHistory]);
   useEffect(() => {
     if (!rendered?.expiresAt) return;
     const jobId = rendered.jobId;
@@ -330,11 +355,10 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
 
   const refreshHistory = async () => {
     if (busy) return;
-    const valid = captureView(); if (!valid()) return;
+    const valid = captureView(), edition = activeId, owner = loadedEditionOwner.current;
+    if (!valid() || !edition || !owner) return;
     setBusy("history"); setError(null);
-    const startedAt = downloadClock();
-    try { const result = await api.listPublishingJobs(bookId); if (valid()) { setPublishingJobs(result.jobs.map(job => timePackage(job, startedAt))); observePackageClock(); } }
-    catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not refresh package history."); }
+    try { await readPackageHistory(edition, owner); }
     finally { if (valid()) setBusy(null); }
   };
 
@@ -576,17 +600,24 @@ export default function PublishingStudio({ bookId }: { bookId: string }) {
             request={activeId && !dirty && channel !== "export" && channelCompatible && rendered && preflight && preflight.requestedChannel === channel && preflight.errors === 0
               ? { bookId, editionId: activeId, channel, renderJobId: rendered.jobId, preflightJobId: preflight.jobId } : null}
             onBusy={working => { setBusy(working ? "package" : null); if (working) setNotice(null); }}
-            onJob={(job, startedAt) => { setPublishingJobs(current => [timePackage(job, startedAt), ...current.filter(item => item.id !== job.id)]); observePackageClock(); }} />
+            onJob={(job, startedAt) => {
+              const edition = currentEdition.current, owner = loadedEditionOwner.current;
+              if (!edition || !owner || job.editionId !== edition || job.bookId !== bookId) return;
+              setPublishingJobs(current => [timePackage(job, startedAt), ...current.filter(item => item.id !== job.id)]);
+              observePackageClock(); void readPackageHistory(edition, owner);
+            }} />
           <p className="mt-3 text-xs leading-relaxed text-white/50">New packages include metadata.json with your saved listing text and README.txt with manual handoff steps. These are for your review, not an automatic retailer import. Older packages remain unchanged.</p>
           {channel === "export" && <p className="mt-4 text-sm text-white/55">Choose a retailer above to create its versioned package. Universal exports are the rendered EPUB/PDF files shown in the render section.</p>}
           {channel !== "export" && (!rendered || !preflight) && <p className="mt-4 text-sm text-white/55">Render this saved edition and run a {channel} preflight to enable packaging.</p>}
           {preflight?.errors ? <p className="mt-4 text-sm text-red-100">Resolve every preflight error, save, render, and validate again before packaging.</p> : null}
 
-          <div className="mt-7 flex items-center justify-between border-t border-white/10 pt-5"><h3 className="font-medium">Package history</h3><button type="button" onClick={() => void refreshHistory()} disabled={Boolean(busy)} className="text-sm text-white/55 underline disabled:opacity-40">{busy === "history" ? "Refreshing…" : "Refresh"}</button></div>
-          {activePublishingJobs.length ? <ul className="mt-4 space-y-3">{activePublishingJobs.map((job) => <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
+          <div className="mt-7 flex items-center justify-between border-t border-white/10 pt-5"><h3 className="font-medium">Package history</h3><button type="button" onClick={() => void refreshHistory()} disabled={Boolean(busy) || !activeId} className="text-sm text-white/55 underline disabled:opacity-40">{busy === "history" ? "Refreshing…" : "Refresh"}</button></div>
+          {!activeId ? <p className="mt-4 text-sm text-white/45">Save this edition to view its package history.</p> : packageHistory.editionId !== activeId || packageHistory.status === "loading" ? <p role="status" className="mt-4 text-sm text-white/45">Checking package history for this edition…</p> : null}
+          {packageHistory.editionId === activeId && packageHistory.status === "unavailable" && <p role="status" className="mt-4 text-sm text-amber-100">Package history is unavailable. Refresh before relying on this list.</p>}
+          {packageHistory.editionId === activeId && packageHistory.status === "ready" && activePublishingJobs.length ? <ul className="mt-4 space-y-3">{activePublishingJobs.map((job) => <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium capitalize">{job.channel === "barnesnoble" ? "Barnes & Noble" : job.channel === "googleplay" ? "Google Play Books" : job.channel} package</p><p className="mt-1 text-xs text-white/40">{new Date(job.createdAt).toLocaleString()} · {job.ruleVersion ?? "rules pending"}</p></div><span className={`rounded-full px-3 py-1 text-xs ${job.status === "succeeded" && job.package ? "bg-emerald-400/15 text-emerald-100" : job.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{job.status === "succeeded" ? (job.package ? "ready" : "unavailable") : job.status}</span></div>
             {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <a href={privateDownloadUrl(job.package.download.url, `${job.channel}-export.zip`)} download className="underline" onClick={event => { const now = observePackageClock(); if (!currentIdentity || currentBook.current !== bookId || viewEpoch.current !== linkEpoch || clockFault.current || downloadExpired(job.downloadExpiresAt, now)) event.preventDefault(); }}>Download private ZIP</a> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified. Refresh package history to renew it."}</span>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
-          </li>)}</ul> : <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p>}
+          </li>)}</ul> : packageHistory.editionId === activeId && packageHistory.status === "ready" ? <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p> : null}
         </section>}
       </div>
     </fieldset>

@@ -883,6 +883,7 @@ test("Publishing history marks unavailable completed packages honestly and recov
   };
   const h = harness("apps/web/components/PublishingStudio.tsx", api, { props: { bookId: B } });
   h.render(); await h.callbacks.find(fn => fn.toString().includes("api.getBook"))!();
+  h.render(); const historyEffect = h.effects.find(fn => fn.toString().includes("readPackageHistory")); assert(historyEffect); historyEffect(); await settle();
   const assertAvailability = (available: boolean) => {
     const tree = h.render(); const row = nodes(tree).find(node => node.type === "li" && node.key === "saved-package"); assert(row);
     const badge = nodes(row).find(node => node.type === "span" && node.props.children === (available ? "ready" : "unavailable")); assert(badge);
@@ -911,6 +912,7 @@ test("Publishing history withdraws a link expiring between render and effect", a
   };
   const h = harness("apps/web/components/PublishingStudio.tsx", api, { props: { bookId: B } });
   h.render(); await h.callbacks.find(fn => fn.toString().includes("api.getBook"))!();
+  h.render(); const historyEffect = h.effects.find(fn => fn.toString().includes("readPackageHistory")); assert(historyEffect); historyEffect(); await settle();
   const before = h.render();
   assert(nodes(before).some(node => node.type === "a" && node.props.children === "Download private ZIP"));
   const expiryEffect = h.effects.find(fn => fn.toString().includes("visibilitychange")); assert(expiryEffect);

@@ -53,6 +53,8 @@ function fakeSupabase(store: Store) {
     from: (table: string) => {
       const rows = (store.tables[table] ??= []);
       const filters: [string, unknown][] = [];
+      const containsFilters: [string, Record<string, unknown>][] = [];
+      const orders: {key:string; ascending:boolean}[] = [];
       let limit: number | null = null;
       let descending = false;
       let pendingInsert: Row | null = null;
@@ -60,7 +62,19 @@ function fakeSupabase(store: Store) {
       let insertError: { code: string } | null = null;
       const selected = () => {
         let result = rows.filter((row) => filters.every(([key, value]) => Array.isArray(value) ? value.includes(row[key]) : row[key] === value));
+        result = result.filter(row => containsFilters.every(([key, expected]) => {
+          const value = row[key];
+          return value !== null && typeof value === "object" && !Array.isArray(value)
+            && Object.entries(expected).every(([field, expectedValue]) => (value as Row)[field] === expectedValue);
+        }));
         if (descending) result = [...result].reverse();
+        if (orders.length > 1) result.sort((a,b) => {
+          for (const order of orders) {
+            const x = String(a[order.key] ?? ""), y = String(b[order.key] ?? "");
+            if (x !== y) return (x < y ? -1 : 1) * (order.ascending ? 1 : -1);
+          }
+          return 0;
+        });
         return limit == null ? result : result.slice(0, limit);
       };
       const mutate = () => {
@@ -85,9 +99,10 @@ function fakeSupabase(store: Store) {
       builder.select = () => builder;
       builder.eq = (key: string, value: unknown) => { filters.push([key, value]); return builder; };
       builder.in = (key: string, value: unknown[]) => { filters.push([key, value]); return builder; };
+      builder.contains = (key: string, value: Record<string, unknown>) => { containsFilters.push([key, value]); return builder; };
       builder.is = (key: string, value: unknown) => { filters.push([key, value]); return builder; };
       builder.gte = () => builder;
-      builder.order = (_key: string, options?: { ascending?: boolean }) => { descending ||= options?.ascending === false; return builder; };
+      builder.order = (key: string, options?: { ascending?: boolean }) => { descending ||= options?.ascending === false; orders.push({key, ascending: options?.ascending !== false}); return builder; };
       builder.limit = (value: number) => { limit = value; return builder; };
       builder.insert = (row: Row) => { pendingInsert = row; return builder; };
       builder.update = (row: Row) => { pendingUpdate = row; return builder; };
@@ -878,4 +893,46 @@ test("saved ebook cover policy blocks package dispatch and private bytes without
     assert.equal(historicalPackage.statusCode, 200, historicalPackage.body);
     assert.equal(historicalPackage.json().id, packageId, "existing package recovery must remain available");
   }
+});
+
+test("package history filters action, edition and channel before limiting and keeps tenant scope", async () => {
+  const store = baseStore();
+  const old = "d0000000-0000-4000-8000-000000000010";
+  const newer = "d0000000-0000-4000-8000-000000000011";
+  const otherEdition = "d0000000-0000-4000-8000-000000000012";
+  const otherBook = "d0000000-0000-4000-8000-000000000013";
+  const otherWorkspace = "d0000000-0000-4000-8000-000000000014";
+  const fixture = (id:string, editionId:string, channel:string, action:string, time:string, bookId=BOOK) => ({
+    id, book_id:bookId, edition_id:editionId, channel, status:"failed", idempotency_key:`key-${id}`,
+    request_json:{ action }, response_json:{ error:"test_failure" }, created_at:time,
+  });
+  const sameTime="2020-01-01T00:00:00Z";
+  store.tables.publishing_jobs.push(fixture(old,EDITION,"kdp","export_package",sameTime),fixture(newer,EDITION,"kdp","export_package",sameTime));
+  for (let i=0;i<105;i++) {
+    const time=`2021-01-01T00:00:${String(i%60).padStart(2,"0")}Z`;
+    store.tables.publishing_jobs.push(fixture(crypto.randomUUID(),EDITION,"kdp","validate",time));
+    store.tables.publishing_jobs.push(fixture(crypto.randomUUID(),otherEdition,"kdp","export_package",time));
+    store.tables.publishing_jobs.push(fixture(crypto.randomUUID(),EDITION,"lulu","export_package",time));
+    store.tables.publishing_jobs.push(fixture(crypto.randomUUID(),EDITION,"kdp","export_package",time,otherBook));
+  }
+  store.tables.books.push({id:otherBook,workspace_id:otherWorkspace,title:"Private other book",author_name:"Other",language:"en"});
+  const app=await buildApp(()=>fakeSupabase(store));
+  try {
+    const url=`/v1/publishing/jobs?bookId=${BOOK}&editionId=${EDITION}&channel=kdp&limit=2`;
+    const result=await app.inject({method:"GET",url,headers:auth});
+    assert.equal(result.statusCode,200,result.body);
+    assert.deepEqual(result.json().jobs.map((job:Row)=>job.id),[newer,old],"equal timestamps use stable id tiebreak");
+    assert.equal(result.json().jobs[0].requestId,`key-${newer}`);
+    assert.equal(result.json().jobs[0].failureCode,"test_failure");
+    assert.equal(result.headers["cache-control"],"private, no-store");
+    const one=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${BOOK}&editionId=${EDITION}&channel=kdp&limit=1`,headers:auth});
+    assert.equal(one.statusCode,200,one.body);assert.deepEqual(one.json().jobs.map((job:Row)=>job.id),[newer]);
+    const channelOnly=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${BOOK}&channel=kdp&limit=1`,headers:auth});
+    assert.equal(channelOnly.statusCode,200,channelOnly.body);assert.equal(channelOnly.json().jobs[0].editionId,otherEdition);
+    const unfiltered=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${BOOK}&limit=1`,headers:auth});
+    assert.equal(unfiltered.statusCode,200,unfiltered.body);assert.equal(unfiltered.json().jobs.length,1);assert.equal(unfiltered.json().jobs[0].bookId,BOOK);
+    const forbidden=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${otherBook}`,headers:auth});
+    assert.ok([403,404].includes(forbidden.statusCode),forbidden.body);
+    assert.equal(forbidden.body.includes("Private other book"),false);
+  } finally { await app.close(); }
 });
