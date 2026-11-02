@@ -18,7 +18,7 @@ const edition = "d0000000-0000-4000-8000-000000000001";
 const request = "e0000000-0000-4000-8000-000000000001";
 const jobId = "f0000000-0000-4000-8000-000000000001";
 type Row = Record<string, unknown>;
-async function setup(job: Row | null, role = "viewer") {
+async function setup(job: Row | null, role = "viewer", rpcResult?: { data: unknown; error: { code: string } | null } | "throw") {
   const tables: Record<string, Row[]> = {
     books: [{ id: book, workspace_id: workspace }],
     editions: [{ id: edition, book_id: book }],
@@ -26,8 +26,12 @@ async function setup(job: Row | null, role = "viewer") {
     publishing_jobs: job ? [job] : [],
   };
   let writes = 0;
-  const factory = () => ({
+  const calls: { name: string; args: unknown; token: unknown }[] = [];
+  const factory = (token?: string) => ({
     auth: { getUser: async () => ({ data: { user: { id: actor } }, error: null }) },
+    rpc: async (name: string, args: unknown) => { calls.push({ name, args, token }); if (rpcResult === "throw") throw new Error("secret upstream detail"); return rpcResult ?? { data: {
+      bookId: book, editionId: edition, requestId: request, job: { id: jobId, status: "cancelled" }, closedBeforeAcceptance: true,
+    }, error: null }; },
     from(table: string) {
       const filters: [string, unknown][] = [];
       const builder = {
@@ -41,7 +45,7 @@ async function setup(job: Row | null, role = "viewer") {
     },
   });
   const app = await buildApp(factory as never);
-  return { app, writes: () => writes };
+  return { app, writes: () => writes, calls };
 }
 const row = (): Row => ({ id: jobId, book_id: book, edition_id: edition, created_by: actor, channel: "render",
   status: "succeeded", idempotency_key: request, request_json: { action: "render", privateContent: "never expose" }, response_json: { secret: true } });
@@ -90,4 +94,52 @@ test("render POST rejects a changed actor before accessing the database", async 
     assert.equal(response.statusCode, 409);
     assert.equal(f.writes(), 0);
   } finally { await f.app.close(); }
+});
+
+test("closing uses only the authenticated actor's RPC and returns the verified scope", async () => {
+  const f = await setup(null, "editor");
+  try {
+    const response = await f.app.inject({ method: "POST", url: `/v1/editions/${edition}/render-requests/${request}/close`,
+      headers: { authorization: "Bearer good", "x-bookworm-actor": actor }, payload: { bookId: book } });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(response.json(), { bookId: book, editionId: edition, requestId: request,
+      job: { id: jobId, status: "cancelled" }, closedBeforeAcceptance: true });
+    assert.equal(response.headers["cache-control"], "private, no-store");
+    assert.deepEqual(f.calls, [{ name: "close_render_request", token: "good", args: { p_book_id: book, p_edition_id: edition, p_request_id: request } }]);
+  } finally { await f.app.close(); }
+});
+
+test("close denies mismatched actor, malformed results and reports unknown RPC outcomes without leaking details", async () => {
+  for (const result of [
+    { data: { bookId: book, editionId: edition, requestId: request, job: { id: jobId, status: "running" }, closedBeforeAcceptance: true }, error: null },
+    { data: { bookId: other, editionId: edition, requestId: request, job: { id: jobId, status: "cancelled" }, closedBeforeAcceptance: true }, error: null },
+    { data: null, error: { code: "network-failure" } }, "throw" as const,
+  ]) {
+    const f = await setup(null, "editor", result);
+    try {
+      const response = await f.app.inject({ method: "POST", url: `/v1/editions/${edition}/render-requests/${request}/close`,
+        headers: { authorization: "Bearer good", "x-bookworm-actor": actor }, payload: { bookId: book } });
+      assert.equal(response.statusCode, 503);
+      assert.doesNotMatch(response.body, /network-failure|secret upstream detail/);
+    } finally { await f.app.close(); }
+  }
+  const f = await setup(null, "editor");
+  try {
+    const response = await f.app.inject({ method: "POST", url: `/v1/editions/${edition}/render-requests/${request}/close`,
+      headers: { authorization: "Bearer good", "x-bookworm-actor": other }, payload: { bookId: book } });
+    assert.equal(response.statusCode, 409);
+    assert.equal(f.calls.length, 0);
+  } finally { await f.app.close(); }
+});
+
+test("close maps database authorization, rate and identity errors without exposing database details", async () => {
+  for (const [code, expected] of [["42501", 403], ["P0002", 404], ["22023", 422], ["23505", 409], ["54000", 429]] as const) {
+    const f = await setup(null, "editor", { data: null, error: { code } });
+    try {
+      const response = await f.app.inject({ method: "POST", url: `/v1/editions/${edition}/render-requests/${request}/close`,
+        headers: { authorization: "Bearer good" }, payload: { bookId: book } });
+      assert.equal(response.statusCode, expected);
+      assert.doesNotMatch(response.body, new RegExp(code));
+    } finally { await f.app.close(); }
+  }
 });

@@ -1149,6 +1149,10 @@ export function createClient(opts: ClientOptions) {
       call<{ bookId: string; editionId: string; requestId: string; job: { id: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" } | null }>(
         "GET", `/v1/editions/${encodeURIComponent(editionId)}/render-requests/${encodeURIComponent(requestId)}?bookId=${encodeURIComponent(bookId)}`,
         undefined, true, { "x-bookworm-actor": expectedActor }),
+    closeRenderRequest: (bookId: string, editionId: string, requestId: string, expectedActor: string) =>
+      call<{ bookId: string; editionId: string; requestId: string; job: { id: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" }; closedBeforeAcceptance: boolean }>(
+        "POST", `/v1/editions/${encodeURIComponent(editionId)}/render-requests/${encodeURIComponent(requestId)}/close`,
+        { bookId }, true, { "x-bookworm-actor": expectedActor }),
     listEditionRenders: (editionId: string) =>
       call<{ renders: SavedEpubRender[] }>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders`),
     listPrintRenders: (editionId: string, signal?: AbortSignal) =>

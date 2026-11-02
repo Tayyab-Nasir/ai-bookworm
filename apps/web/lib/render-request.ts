@@ -48,4 +48,11 @@ export function validateRenderStatus(value: unknown, pointer: RenderPointer): { 
   return { id: job.id, status: job.status };
 }
 
+export function validateRenderClosure(value: unknown, pointer: RenderPointer): { id: string; status: string; closedBeforeAcceptance: boolean } {
+  const job = validateRenderStatus(value, pointer);
+  const closed = (value as { closedBeforeAcceptance?: unknown }).closedBeforeAcceptance;
+  if (!job || typeof closed !== "boolean" || (closed && job.status !== "cancelled")) throw new Error("Render closure could not be verified.");
+  return { ...job, closedBeforeAcceptance: closed };
+}
+
 export type { RenderPointer };

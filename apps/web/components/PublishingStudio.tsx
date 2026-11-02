@@ -13,7 +13,7 @@ import SavedPdfProof from "./SavedPdfProof";
 import PrivateArtifactDownload from "./PrivateArtifactDownload";
 import PrivateCoverPreview from "./PrivateCoverPreview";
 import { renderLinksDeadline } from "../lib/pdf-proof";
-import { clearRenderPointer, persistRenderPointer, readRenderPointer, validateRenderStatus, type RenderPointer } from "../lib/render-request";
+import { clearRenderPointer, persistRenderPointer, readRenderPointer, validateRenderClosure, validateRenderStatus, type RenderPointer } from "../lib/render-request";
 import RetailerPackageRequest from "./RetailerPackageRequest";
 import { readBrowserSession } from "../lib/browser-session";
 import { packageDownloadDeadline, signedDownloadDeadline, downloadClock, downloadExpired, nextDownloadClockWait, type DownloadClock } from "../lib/publishing-request";
@@ -537,6 +537,31 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     finally { renderFlight.current = false; if (valid()) setBusy(null); }
   };
 
+  const closeRender = async () => {
+    if (!editable || !renderPointer || !renderRecoveryReady || busy || renderFlight.current || !activeId || activeId !== renderPointer.editionId) return;
+    const valid = captureView(); if (!valid()) return;
+    if (!window.confirm("Close this request only if rendering has not started? An accepted render will continue; this cannot cancel it.")) return;
+    if (!valid() || renderFlight.current) return;
+    const pointer = renderPointer; renderFlight.current = true; setBusy("render"); setError(null); setNotice(null);
+    try {
+      await readBrowserSession(pointer.actor); if (!valid()) return;
+      if (readRenderPointer(window.sessionStorage, pointer.actor, pointer.bookId, pointer.editionId)?.requestId !== pointer.requestId) {
+        throw new Error("The original render request changed. Check it again.");
+      }
+      const result = validateRenderClosure(await api.closeRenderRequest(pointer.bookId, pointer.editionId, pointer.requestId, pointer.actor), pointer);
+      if (!valid()) return;
+      await readBrowserSession(pointer.actor); if (!valid()) return;
+      if (result.status === "queued" || result.status === "running") {
+        setNotice("The original render was already accepted and may still finish. It was not cancelled; check its status again."); return;
+      }
+      clearRenderPointer(window.sessionStorage, pointer); setRenderPointer(null);
+      if (result.closedBeforeAcceptance) setNotice("The original request was closed before it started. You can render again.");
+      else if (result.status === "succeeded") { setReaderRefreshKey(result.id); setNotice("The original render completed. Open it in saved EPUB or print history below."); }
+      else setNotice(`The original render is ${result.status}. You can start a new render after reviewing the saved edition.`);
+    } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Render request closure is unconfirmed. Check it again."); }
+    finally { renderFlight.current = false; if (valid()) setBusy(null); }
+  };
+
   const validate = async () => {
     if (!editable || !activeId || dirty || busy || !channelCompatible) return;
     const valid = captureView(); if (!valid()) return;
@@ -784,7 +809,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="export-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="export-title" className="text-xl font-semibold">Render & preflight</h2><p className="mt-1 text-sm text-white/45">Files stay private and use five-minute download links. Retailer submission is manual in this release.</p></div>
             <button type="button" onClick={() => void render()} disabled={!editable || !activeId || dirty || Boolean(busy) || renderBlocked || !renderRecoveryReady || !!renderPointer} aria-describedby={renderBlocked ? "rtl-render-guidance" : undefined} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "render" ? "Checking…" : `Render ${form.kind === "ebook" ? "EPUB" : "PDF"}`}</button></div>
-          {renderPointer && <div className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-100"><p>A previous render outcome is unconfirmed. Check its status before starting another; a missing request may still arrive.</p><button type="button" disabled={Boolean(busy)} onClick={() => void checkRender()} className="mt-3 min-h-11 underline disabled:opacity-40">Check original render</button></div>}
+          {renderPointer && <div className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-100"><p>A previous render outcome is unconfirmed. Check its status before starting another; a missing request may still arrive.</p><div className="mt-3 flex flex-wrap gap-4"><button type="button" disabled={Boolean(busy)} onClick={() => void checkRender()} className="min-h-11 underline disabled:opacity-40">Check original render</button>{editable && <button type="button" disabled={Boolean(busy)} onClick={() => void closeRender()} className="min-h-11 underline disabled:opacity-40">Close if not started</button>}</div></div>}
           {dirty && <p className="mt-3 text-xs text-amber-200">Save these settings before rendering or validating.</p>}
           {renderBlocked && <p id="rtl-render-guidance" className="mt-3 text-sm text-amber-100">Rendering is disabled until the RTL typography requirement above is resolved. Preflight is still available.</p>}
           {rendered && <div className="mt-5 grid gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <PrivateCoverPreview actor={linkOwner} url={artifact.download.url} expectedPath={renderedStoragePath(book?.workspace_id, artifact)} expiresAt={rendered.expiresAt} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && renderedRef.current === rendered} /> : null}<PrivateArtifactDownload actor={linkOwner} url={artifact.download.url} filename={artifact.asset.name} expectedPath={renderedStoragePath(book?.workspace_id, artifact)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && renderedRef.current === rendered} isExpired={() => rendered.expiresAt !== undefined && Date.now() >= rendered.expiresAt} onInvalid={message => { setRendered(null); setPreflight(null); setError(message); }} className="mt-3 inline-block text-sm underline disabled:opacity-40">Download private file</PrivateArtifactDownload></div>)}</div>}

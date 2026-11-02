@@ -20,6 +20,7 @@ import { customerAiMaintenanceJournalRaces } from './native-customer-ai-maintena
 import { customerAiMaintenanceLookupRaces } from './native-customer-ai-maintenance-lookup.mjs';
 import { customerAiMaintenanceSlotRaces } from './native-customer-ai-maintenance-slots.mjs';
 import { chapterRestoreLedgerRaces } from './native-chapter-restore-ledger.mjs';
+import { renderCloseRaces } from './native-render-close.mjs';
 import { verifyAudiobookSegmentationFixtures } from './audiobook-segmentation-lifecycle.mjs';
 import { verifyNarrationQuoteFixtures, verifyNarrationChapterQuoteFixtures } from './narration-quote-lifecycle.mjs';
 import { verifyNarrationFundedFixtures } from './narration-funded-lifecycle.mjs';
@@ -633,6 +634,7 @@ try {
   await customerAiMaintenanceLookupRaces({ sql, session, until, database });
   await customerAiMaintenanceSlotRaces({ sql, session, until, database });
   await chapterRestoreLedgerRaces({ sql, session, until, database });
+  await renderCloseRaces({ sql, session, until, database });
 } finally {
   for (const child of children) child.kill();
   if (created) await sql(`drop database ${database} with (force);`, 'postgres');

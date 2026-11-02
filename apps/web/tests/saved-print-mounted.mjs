@@ -1573,3 +1573,102 @@ test("account switch between the session check and render dispatch rejects the o
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
+
+test("closing an unaccepted render fences its identity before enabling a new request", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCalls = []; window.closeCalls = [];
+      window.bookwormApi.renderEdition = async (editionId, body) => { window.renderCalls.push({editionId, ...body}); throw new Error("Lost reply"); };
+      window.bookwormApi.closeRenderRequest = async (bookId, editionId, requestId, actor) => {
+        window.closeCalls.push({bookId, editionId, requestId, actor});
+        return {bookId, editionId, requestId, job: {id: window.ids.job, status: "cancelled"}, closedBeforeAcceptance: true};
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    const render = (await page.evaluate(() => window.renderCalls))[0];
+    await page.evaluate(() => { window.confirm = () => true; });
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText("The original request was closed before it started.", {exact: false})).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeEnabled();
+    const calls = await page.evaluate(() => window.closeCalls);
+    assert.equal(calls.length, 1); assert.equal(calls[0].requestId, render.idempotencyKey);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("closing cannot cancel an accepted render or forget an uncertain close", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost reply"); };
+      window.closeMode = "running"; window.confirm = () => true;
+      window.bookwormApi.closeRenderRequest = async (bookId, editionId, requestId) => {
+        if (window.closeMode === "lost") throw new Error("Close reply lost");
+        return {bookId, editionId, requestId, job: {id: window.ids.job, status: "running"}, closedBeforeAcceptance: false};
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText("The original render was already accepted", {exact: false})).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    await page.evaluate(() => { window.closeMode = "lost"; });
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText("Close reply lost")).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("declined closure sends nothing; lost close reply keeps the original key for retry", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.closeCalls = []; window.acceptClose = false;
+      window.confirm = () => window.acceptClose;
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost render reply"); };
+      window.bookwormApi.closeRenderRequest = async (bookId, editionId, requestId) => {
+        window.closeCalls.push(requestId);
+        if (window.closeCalls.length === 1) throw new Error("Lost close reply");
+        return {bookId, editionId, requestId, job: {id: window.ids.job, status: "cancelled"}, closedBeforeAcceptance: true};
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    assert.equal(await page.evaluate(() => window.closeCalls.length), 0);
+    await page.evaluate(() => { window.acceptClose = true; });
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText("Lost close reply")).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeEnabled();
+    const calls = await page.evaluate(() => window.closeCalls);
+    assert.equal(calls.length, 2); assert.equal(calls[0], calls[1]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("late closure response cannot clear the original pointer after an account switch", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (url, options) => String(url) === "/api/auth/session"
+        ? Response.json({user: {id: window.fixtureActor}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`}) : originalFetch(url, options);
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost reply"); };
+      window.confirm = () => true;
+      window.bookwormApi.closeRenderRequest = (bookId, editionId, requestId) => new Promise(resolve => {
+        window.releaseRenderClose = () => resolve({bookId, editionId, requestId, job: {id: window.ids.job, status: "cancelled"}, closedBeforeAcceptance: true});
+      });
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await page.waitForFunction(() => typeof window.releaseRenderClose === "function");
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.dispatchEvent(new Event("focus")); window.releaseRenderClose(); });
+    await expect(page.getByText("The original request was closed before it started.", {exact: false})).toHaveCount(0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});

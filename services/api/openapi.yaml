@@ -406,6 +406,60 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/editions/{editionId}/render-requests/{requestId}/close:
+    post:
+      tags: [v1]
+      operationId: closeRenderRequest
+      summary: Fence a render request that has not been accepted
+      description: Requires the original authenticated actor and current editing membership. The database atomically reserves the exact request key if no render was accepted; this prevents a delayed original request from starting. If a render was already accepted, its current status is returned unchanged and it is not cancelled. A lost response leaves the outcome unconfirmed and may be checked or repeated with the same key. Closure is rate limited and starts no render, provider call, payment or publication.
+      parameters:
+        - { name: editionId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+        - name: X-Bookworm-Actor
+          in: header
+          required: false
+          description: Expected original account UUID; it does not grant access.
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [bookId]
+              properties:
+                bookId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The exact original request and its current status; closedBeforeAcceptance is true only for a durable pre-acceptance closure.
+          headers:
+            Cache-Control: { schema: { type: string, const: "private, no-store" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bookId, editionId, requestId, job, closedBeforeAcceptance]
+                properties:
+                  bookId: { type: string, format: uuid }
+                  editionId: { type: string, format: uuid }
+                  requestId: { type: string, format: uuid }
+                  closedBeforeAcceptance: { type: boolean }
+                  job:
+                    type: object
+                    additionalProperties: false
+                    required: [id, status]
+                    properties:
+                      id: { type: string, format: uuid }
+                      status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/editions/{editionId}/print-renders:
     get:
       operationId: listSavedPrintRenders

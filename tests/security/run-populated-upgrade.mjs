@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 131 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 132 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -20,7 +20,8 @@ const guardedCustomerJobs = '20261024040000_customer_ai_jobs.sql';
 const audioPrivacy = '20261029120000_audiobook_export_column_privacy.sql';
 const intakeGuard = '20261102160000_account_intake_guard.sql';
 const confirmationRpc = '20261102170000_data_rights_confirmation_rpc.sql';
-const targetEnd = '20261103100000_asset_client_delete_guard.sql';
+const assetGuard = '20261103100000_asset_client_delete_guard.sql';
+const targetEnd = '20261104110000_render_close_request.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -138,7 +139,8 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 131, 'This reviewed rehearsal pins the 45 -> 131 target; review before extending');
+  assert.equal(names.length, 132, 'This reviewed rehearsal pins the 45 -> 132 target; review before extending');
+  assert.equal(names[130], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
   assert.equal(names[127], audioPrivacy);
   assert.equal(names[128], intakeGuard);
@@ -220,6 +222,18 @@ try {
       const request=(await db.query('select to_jsonb(r) value from public.data_rights_requests r where id=$1',[requestId])).rows[0].value;
       intakeProbe={ticketId,requestId,ticket,request};
     }
+    let renderProbe = null;
+    if (migration.name === targetEnd) {
+      const tenant = fixture.tenants[0], edition = randomUUID(), running = randomUUID(), succeeded = randomUUID();
+      await db.query("insert into public.editions(id,book_id,type,language) values($1,$2,'ebook','en')", [edition, tenant.book]);
+      for (const [id, status] of [[running, 'running'], [succeeded, 'succeeded']]) {
+        await db.query("insert into public.publishing_jobs(id,book_id,edition_id,channel,status,idempotency_key,created_by,request_json,response_json) values($1,$2,$3,'render',$4,$5,$6,'{\"action\":\"render\"}','{\"synthetic\":true}')",
+          [id, tenant.book, edition, status, randomUUID(), tenant.user]);
+      }
+      const before = (await db.query('select to_jsonb(j) as value from public.publishing_jobs j where id=any($1::uuid[]) order by id', [[running, succeeded]])).rows.map(row => row.value);
+      assert.equal(before.length, 2, 'Synthetic running and succeeded render jobs exist before upgrade');
+      renderProbe = { edition, running, succeeded, before };
+    }
     await migrate(migration, 'upgrade');
     if (intakeProbe) {
       assert.deepEqual((await db.query('select to_jsonb(t) value from public.support_tickets t where id=$1',[intakeProbe.ticketId])).rows[0].value,intakeProbe.ticket,'legacy support row preserved');
@@ -231,9 +245,18 @@ try {
       await db.exec(await readFile(join(root,'tests/security/data-rights-confirmation-rpc.test.sql'),'utf8'));
       console.log('PASS populated confirmation RPC: authenticated identity, exact confirmation, bounds, duplicates and actor isolation');
     }
-    if (migration.name === targetEnd) {
+    if (migration.name === assetGuard) {
       await db.exec(await readFile(join(root,'tests/security/asset-client-delete-guard.test.sql'),'utf8'));
       console.log('PASS populated asset deletion guard: client denial and service cleanup');
+    }
+    if (renderProbe) {
+      const { edition, running, succeeded, before } = renderProbe;
+      const after = (await db.query('select to_jsonb(j) as value from public.publishing_jobs j where id=any($1::uuid[]) order by id', [[running, succeeded]])).rows.map(row => row.value);
+      assert.deepEqual(after, before, 'Render closure upgrade preserves existing running and succeeded jobs');
+      await db.exec(await readFile(join(root,'tests/security/render-close-request.test.sql'),'utf8'));
+      await db.query('delete from public.publishing_jobs where id=any($1::uuid[])', [[running, succeeded]]);
+      await db.query('delete from public.editions where id=$1', [edition]);
+      console.log('PASS populated render closure upgrade: existing jobs intact and authenticated closure assertions passed');
     }
     if (audioProbe) {
       step = 'populated audio export after privacy upgrade';
