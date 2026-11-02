@@ -121,6 +121,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   const [accessRevision, setAccessRevision] = useState(0);
   const [libraryWorkspaceId, setLibraryWorkspaceId] = useState("");
   const [libraryLoading, setLibraryLoading] = useState(false);
+  const [librarySnapshotRequest, setLibrarySnapshotRequest] = useState(0);
   const dataReady = Boolean(workspaceId && libraryWorkspaceId === workspaceId && !libraryLoading);
   const canEdit = dataReady && !accessError && assetAccess?.workspaceId === workspaceId && assetAccess.canEdit;
   const [books, setBooks] = useState<Book[]>([]);
@@ -261,6 +262,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
       setAssets(a.assets);
       setBooks(b.books);
       setLibraryWorkspaceId(workspaceId);
+      setLibrarySnapshotRequest(request);
       setError(null);
     } catch (e) {
       if (current()) setError(e instanceof Error ? e.message : "load failed");
@@ -274,7 +276,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
 
   useLayoutEffect(() => {
     let live = true; const valid = scope.begin(); setVerified(false); setVerificationError(false);
-    scopeVersion.current++; libraryRequest.current++; detailRequest.current++; downloadRequest.current++; editReady.current = false;
+    scopeVersion.current++; const request = ++libraryRequest.current; detailRequest.current++; downloadRequest.current++; editReady.current = false;
     setAssetAccess(null); setLibraryWorkspaceId(""); setLibraryLoading(Boolean(activeWorkspace.current)); setOpen(null); setPreviewUrl(null); setPreviewError(null); setDownload(null); activeAsset.current = null; preparingDownload.current = false;
     if (!active) return () => { live = false; };
     const id = activeWorkspace.current;
@@ -282,7 +284,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     void Promise.all([api.listWorkspaces(), api.getAssetAccess(id), api.listFolders(id), api.listAssets(id), api.listBooks(id)]).then(([available, access, f, a, b]) => {
       if (!live || !valid() || activeWorkspace.current !== id) return;
       if (!available.workspaces.some(w => w.id === id) || f.folders.some(x => x.workspace_id !== id) || a.assets.some(x => x.workspace_id !== id) || b.books.some(x => x.workspace_id !== id)) throw new Error("Workspace access could not be verified.");
-      setWorkspaces(available.workspaces); setAssetAccess({ workspaceId: id, canEdit: access.canEdit }); setAccessError(false); setFolders(f.folders); setAssets(a.assets); setBooks(b.books); setLibraryWorkspaceId(id); setLibraryLoading(false); setHistoryRevision(x => x + 1); setVerified(true);
+      setWorkspaces(available.workspaces); setAssetAccess({ workspaceId: id, canEdit: access.canEdit }); setAccessError(false); setFolders(f.folders); setAssets(a.assets); setBooks(b.books); setLibraryWorkspaceId(id); setLibrarySnapshotRequest(request); setLibraryLoading(false); setHistoryRevision(x => x + 1); setVerified(true);
     }).catch(() => { if (live && valid()) { setVerificationError(true); setLibraryLoading(false); } });
     return () => { live = false; };
   }, [active, revision, api, scope, workspaceId]);
@@ -539,6 +541,8 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
           assets={assets}
           active={active && verified}
           operationScope={revision}
+          librarySnapshotRequest={librarySnapshotRequest}
+          getLibraryRequest={() => libraryRequest.current}
           permissions={{ edit: canEdit, approve: canEdit, manage: canEdit }}
           onMove={async (assetId, folderId) => {
             await mutateLibrary(() => api.updateAsset(assetId, { folderId }));

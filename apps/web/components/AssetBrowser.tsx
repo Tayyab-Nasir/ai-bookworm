@@ -15,6 +15,8 @@ export interface AssetBrowserProps {
   permissions: AssetPermissions;
   active?: boolean;
   operationScope?: object;
+  librarySnapshotRequest: number;
+  getLibraryRequest: () => number;
   onMove: (assetId: string, folderId: string | null) => void;
   onOpen: (asset: Asset) => void;
   onUpload: (folderId: string | null) => void;
@@ -50,6 +52,8 @@ export default function AssetBrowser({
   permissions,
   active = true,
   operationScope,
+  librarySnapshotRequest,
+  getLibraryRequest,
   onMove,
   onOpen,
   onUpload,
@@ -64,27 +68,38 @@ export default function AssetBrowser({
   const [removing, setRemoving] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const removalEpoch = useRef(0);
+  const scopeEpoch = useRef(0);
   const removalFlight = useRef(false);
-  const refreshRequired = useRef(false);
+  const refreshRequiredAfter = useRef<number | null>(null);
   const mounted = useRef(false);
 
   useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   useLayoutEffect(() => {
-    refreshRequired.current = false;
+    refreshRequiredAfter.current = null;
     setRemoveError(null);
-    return () => { removalEpoch.current++; };
-  }, [assets, permissions.manage, active, operationScope]);
+    return () => { scopeEpoch.current++; };
+  }, [active, operationScope]);
+
+  useLayoutEffect(() => () => { removalEpoch.current++; }, [assets, permissions.manage, active, operationScope]);
+
+  useLayoutEffect(() => {
+    if (refreshRequiredAfter.current !== null && librarySnapshotRequest > refreshRequiredAfter.current) {
+      refreshRequiredAfter.current = null;
+      setRemoveError(null);
+    }
+  }, [librarySnapshotRequest]);
 
   const remove = async (asset: Asset) => {
-    if (!active || !permissions.manage || !onDelete || removalFlight.current || refreshRequired.current) return;
+    if (!active || !permissions.manage || !onDelete || removalFlight.current || refreshRequiredAfter.current !== null) return;
     const beforeConfirm = removalEpoch.current;
     if (!window.confirm(`Remove “${asset.name.replace(/[\u0000-\u001f\u007f]/g, " ")}” from this library? The file will no longer appear here.`)) return;
     if (beforeConfirm !== removalEpoch.current || !mounted.current || removalFlight.current) return;
-    const current = ++removalEpoch.current;
+    const currentScope = scopeEpoch.current;
+    ++removalEpoch.current;
     removalFlight.current = true; setRemoving(asset.id); setRemoveError(null);
     try { await onDelete(asset.id); }
-    catch { if (current === removalEpoch.current) { refreshRequired.current = true; setRemoveError("Removal could not be confirmed and may still complete. Refresh the library and check the file before trying again."); } }
+    catch { if (mounted.current && currentScope === scopeEpoch.current) { refreshRequiredAfter.current = getLibraryRequest(); setRemoveError("Removal could not be confirmed and may still complete. Refresh the library and check the file before trying again."); } }
     finally { removalFlight.current = false; if (mounted.current) setRemoving(null); }
   };
 
