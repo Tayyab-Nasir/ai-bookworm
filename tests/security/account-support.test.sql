@@ -27,8 +27,9 @@ do $$ begin
   exception when insufficient_privilege then null; end;
 end $$;
 
-insert into public.data_rights_requests(id,user_id,request_type,status,reason)
-values ('a8910000-0000-4000-8000-000000000001','a8900000-0000-4000-8000-000000000001','export','submitted','Portability');
+insert into public.data_rights_requests(user_id,request_type,status,reason)
+values ('a8900000-0000-4000-8000-000000000001','export','submitted','Portability');
+select set_config('test.bookworm_request_id', id::text, true) from public.data_rights_requests where request_type='export';
 do $$ declare v_request public.data_rights_requests; begin
   assert (select count(*) from public.data_rights_requests) = 1, 'author cannot read own request';
   begin
@@ -46,10 +47,10 @@ do $$ declare v_request public.data_rights_requests; begin
     values ('a8900000-0000-4000-8000-000000000001','export','submitted');
     assert false, 'duplicate open export request accepted';
   exception when unique_violation then null; end;
-  v_request := public.cancel_data_rights_request('a8910000-0000-4000-8000-000000000001');
+  v_request := public.cancel_data_rights_request(current_setting('test.bookworm_request_id')::uuid);
   assert v_request.status = 'cancelled', 'submitted request did not cancel';
   begin
-    perform public.cancel_data_rights_request('a8910000-0000-4000-8000-000000000001');
+    perform public.cancel_data_rights_request(current_setting('test.bookworm_request_id')::uuid);
     assert false, 'terminal request cancelled twice';
   exception when invalid_parameter_value then null; end;
 end $$;
@@ -59,7 +60,7 @@ do $$ begin
   assert (select count(*) from public.support_tickets) = 0, 'support ticket leaked cross-user';
   assert (select count(*) from public.data_rights_requests) = 0, 'data request leaked cross-user';
   begin
-    perform public.cancel_data_rights_request('a8910000-0000-4000-8000-000000000001');
+    perform public.cancel_data_rights_request(current_setting('test.bookworm_request_id')::uuid);
     assert false, 'other user cancelled private request';
   exception when no_data_found then null; end;
 end $$;

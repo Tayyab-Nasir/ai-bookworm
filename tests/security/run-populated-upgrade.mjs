@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 128 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 129 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -17,7 +17,8 @@ import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
 const guardedCustomerJobs = '20261024040000_customer_ai_jobs.sql';
-const targetEnd = '20261029120000_audiobook_export_column_privacy.sql';
+const audioPrivacy = '20261029120000_audiobook_export_column_privacy.sql';
+const targetEnd = '20261102160000_account_intake_guard.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -135,9 +136,9 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 128, 'This reviewed rehearsal pins the 45 -> 128 target; review before extending');
+  assert.equal(names.length, 129, 'This reviewed rehearsal pins the 45 -> 129 target; review before extending');
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
-  assert.equal(names[127], targetEnd);
+  assert.equal(names[127], audioPrivacy);
   assert.equal(names[117], '20261028010000_customer_ai_ready_discovery.sql');
   assert.equal(names[118], '20261028020000_customer_ai_preparation_timestamp.sql');
   assert.equal(names[119], '20261028030000_customer_ai_reconciliation.sql');
@@ -190,7 +191,7 @@ try {
         "v_request:=jsonb_build_object('userId',p_user_id", 'unexpected legacy deduction definition');
     }
     let audioProbe = null;
-    if (migration.name === targetEnd) {
+    if (migration.name === audioPrivacy) {
       step = 'populated audio export before privacy upgrade';
       const tenant = fixture.tenants[0], edition = randomUUID(), job = randomUUID(), runningJob = randomUUID(), succeededJob = randomUUID(), lease = randomUUID(), outputLease = randomUUID(), key = 'synthetic-upgrade-' + randomUUID(), runningKey = 'synthetic-running-' + randomUUID(), succeededKey = 'synthetic-succeeded-' + randomUUID();
       const asset = tenant.assets[1].id;
@@ -206,7 +207,22 @@ try {
       assert.ok(allCount >= 3, 'Whole-table snapshot includes every synthetic audio job');
       audioProbe = { tenant, edition, job, runningJob, succeededJob, lease, key, runningKey, succeededKey, asset, before, allCount, allDigest };
     }
+    let intakeProbe = null;
+    if (migration.name === targetEnd) {
+      const tenant = fixture.tenants[0], ticketId = randomUUID(), requestId = randomUUID();
+      await db.query("insert into public.support_tickets(id,user_id,category,subject,body,created_at) values($1,$2,'legacy','x','old','2001-01-01')",[ticketId,tenant.user]);
+      await db.query("insert into public.data_rights_requests(id,user_id,request_type,status,reason,requested_at) values($1,$2,'export','completed',$3,'2002-01-01')",[requestId,tenant.user,'x'.repeat(2001)]);
+      const ticket=(await db.query('select to_jsonb(t) value from public.support_tickets t where id=$1',[ticketId])).rows[0].value;
+      const request=(await db.query('select to_jsonb(r) value from public.data_rights_requests r where id=$1',[requestId])).rows[0].value;
+      intakeProbe={ticketId,requestId,ticket,request};
+    }
     await migrate(migration, 'upgrade');
+    if (intakeProbe) {
+      assert.deepEqual((await db.query('select to_jsonb(t) value from public.support_tickets t where id=$1',[intakeProbe.ticketId])).rows[0].value,intakeProbe.ticket,'legacy support row preserved');
+      assert.deepEqual((await db.query('select to_jsonb(r) value from public.data_rights_requests r where id=$1',[intakeProbe.requestId])).rows[0].value,intakeProbe.request,'legacy rights request preserved');
+      await db.exec(await readFile(join(root,'tests/security/account-intake-hardening.test.sql'),'utf8'));
+      console.log('PASS populated intake guard: historical rows preserved and direct-role privilege assertions passed');
+    }
     if (audioProbe) {
       step = 'populated audio export after privacy upgrade';
       const { tenant, edition, job, runningJob, succeededJob, lease, key, runningKey, succeededKey, asset, before, allCount, allDigest } = audioProbe;
