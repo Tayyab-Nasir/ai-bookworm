@@ -507,6 +507,38 @@ test("Billing continues its authorized usage read when preference storage is blo
   assert.deepEqual(reads, [`org-${B}`]); assert(!nodes(h.render()).some(node => node.props?.role === "alert"));
 });
 
+test("Billing does not show a free plan or zero balance while usage is loading", async () => {
+  const usage = deferred<any>();
+  const h = harness("apps/web/components/BillingCenter.tsx", { listWorkspaces: async () => ({ workspaces: available }), listPlans: async () => ({ plans: [] }), getUsage: () => usage.promise }, { query: `?ws=${B}` });
+  h.render(); const loading = h.callbacks.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+  const pending = JSON.stringify(h.render());
+  assert.match(pending, /Loading plan and usage/); assert.doesNotMatch(pending, /Current billing summary|No paid subscription|Credit balance/);
+  usage.resolve(overview(B).usage); await loading;
+  const ready = JSON.stringify(h.render());
+  assert.match(ready, /Current billing summary/); assert.match(ready, /No plans are available to purchase right now/);
+});
+
+test("Billing offers retry after usage fails without presenting unverified balances", async () => {
+  let attempts = 0;
+  const h = harness("apps/web/components/BillingCenter.tsx", { listWorkspaces: async () => ({ workspaces: available }), listPlans: async () => ({ plans: [] }), getUsage: async () => { if (++attempts === 1) throw new Error("Usage unavailable"); return overview(B).usage; } }, { query: `?ws=${B}` });
+  h.render(); await h.callbacks.find(fn => fn.toString().includes("api.listWorkspaces"))!();
+  const failure = h.render(); const snapshot = JSON.stringify(failure);
+  assert.match(snapshot, /Could not load billing details/); assert.match(snapshot, /could not be confirmed/); assert.doesNotMatch(snapshot, /Current billing summary|No paid subscription|Credit balance/);
+  const retry = nodes(failure).find(node => node.type === "button" && node.props.children === "Try again");
+  assert(retry); retry.props.onClick(); await settle();
+  assert.equal(attempts, 2); assert.match(JSON.stringify(h.render()), /Current billing summary/);
+});
+
+test("Billing distinguishes no workspace from a failed workspace lookup", async () => {
+  const empty = harness("apps/web/components/BillingCenter.tsx", { listWorkspaces: async () => ({ workspaces: [] }), listPlans: async () => ({ plans: [] }) });
+  empty.render(); await empty.callbacks.find(fn => fn.toString().includes("api.listWorkspaces"))!();
+  assert.match(JSON.stringify(empty.render()), /Create a workspace first/);
+  const failed = harness("apps/web/components/BillingCenter.tsx", { listWorkspaces: async () => { throw new Error("Workspace lookup failed"); }, listPlans: async () => ({ plans: [] }) });
+  failed.render(); await failed.callbacks.find(fn => fn.toString().includes("api.listWorkspaces"))!();
+  const snapshot = JSON.stringify(failed.render());
+  assert.match(snapshot, /Could not load billing details/); assert.match(snapshot, /Try again/); assert.doesNotMatch(snapshot, /Create a workspace first|Current billing summary/);
+});
+
 for (const action of ["checkout", "portal"] as const) {
   test(`Billing ${action} keeps the validated workspace and organization through blocked-storage return navigation`, async () => {
     let payload: any;
