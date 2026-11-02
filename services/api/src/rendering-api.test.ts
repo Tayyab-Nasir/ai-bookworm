@@ -634,6 +634,31 @@ test("package request recovery survives changed sources and plan loss without a 
   } finally { await app.close(); }
 });
 
+test("expired paid period blocks new retailer packages while preserving existing recovery", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  store.tables.subscriptions[0].current_period_end = new Date(Date.now() + 60_000).toISOString();
+  const sent: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(sent) });
+  try {
+    const sources = await createReadySources(app);
+    const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+    const headers = { ...auth, "idempotency-key": payload.idempotencyKey };
+    const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers, payload });
+    assert.equal(created.statusCode, 201, created.body);
+    store.tables.subscriptions[0].current_period_end = new Date(Date.now() - 60_000).toISOString();
+    const recovered = await app.inject({ method: "GET", url: `/v1/publishing/requests/${payload.idempotencyKey}?bookId=${BOOK}`, headers: auth });
+    assert.equal(recovered.statusCode, 200, recovered.body);
+    assert.equal(recovered.json().job.id, created.json().id);
+    const replay = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers, payload });
+    assert.equal(replay.statusCode, 200, replay.body);
+    const newKey = crypto.randomUUID();
+    const refused = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: { ...auth, "idempotency-key": newKey }, payload: { ...payload, idempotencyKey: newKey } });
+    assert.equal(refused.statusCode, 422, refused.body);
+    assert.equal(sent.length, 1);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 1);
+  } finally { await app.close(); }
+});
+
 test("closing an unaccepted package request blocks delayed dispatch and never changes accepted work", async () => {
   const store = baseStore(); enableRetailerPackages(store);
   const sent: unknown[] = [];

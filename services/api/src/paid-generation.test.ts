@@ -35,3 +35,16 @@ test("missing plan cannot silently grant paid generation; explicit allowances st
   await requireEntitlement(db, "org", "audio_credits", 1);
   await requireEntitlement(db, "org", "translation_credits", 1);
 });
+
+test("explicit expired or invalid paid-through dates do not grant paid entitlements", async () => {
+  const plan = { id: "paid", name: "Paid", entitlements_json: { ai_credits_monthly: 10, publishing_channels: ["export", "kdp"] } };
+  for (const current_period_end of [new Date(Date.now() - 60_000).toISOString(), "not-a-date"]) {
+    const db = database({ id: "subscription", plan_id: "paid", status: "active", current_period_end }, plan);
+    assert.equal((await currentEntitlements(db, "org")).plan.name, "free");
+    assert.deepEqual((await currentEntitlements(db, "org")).entitlements.publishing_channels, ["export"]);
+    await assert.rejects(requireEntitlement(db, "org", "ai_credits", 1), { code: "quota_exceeded" });
+  }
+  const active = database({ id: "subscription", plan_id: "paid", status: "active", current_period_end: new Date(Date.now() + 60_000).toISOString() }, plan);
+  assert.equal((await currentEntitlements(active, "org")).plan.name, "Paid");
+  await requireEntitlement(active, "org", "ai_credits", 1);
+});

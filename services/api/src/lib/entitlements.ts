@@ -47,7 +47,13 @@ export async function currentEntitlements(supabase: SupabaseClient, organization
     .limit(1)
     .maybeSingle();
   if (error) throw new AppError(500, error.message);
-  if (!sub) return { plan: { id: null, name: "free" }, subscription: null, entitlements: FREE_DEFAULTS };
+  // An explicit paid-through date is authoritative even if the provider has
+  // not yet changed the subscription status. Preserve legacy null periods;
+  // they require separate reconciliation before manual provisioning is safe.
+  const periodEnd = sub?.current_period_end;
+  if (!sub || (periodEnd != null && (typeof periodEnd !== "string" || !Number.isFinite(Date.parse(periodEnd)) || Date.parse(periodEnd) <= Date.now()))) {
+    return { plan: { id: null, name: "free" }, subscription: null, entitlements: FREE_DEFAULTS };
+  }
   const { data: plan, error: pErr } = await supabase.from("plans").select("id,name,entitlements_json").eq("id", sub.plan_id).maybeSingle();
   if (pErr) throw new AppError(500, pErr.message);
   return {

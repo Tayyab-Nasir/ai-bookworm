@@ -129,6 +129,10 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
       updated_at: "2026-10-13T00:00:00.000Z", edition_metadata_json: { kind: audio ? "audiobook" : "print", cover: { asset_id: null } } }));
     window.bookwormApi = {
       getBook: async bookId => ({ book: { id: bookId, workspace_id: ids.workspace, title: "Saved author manuscript", language: "en" }, role: "owner" }),
+      getDashboardOverview: async workspaceId => { window.planCalls = (window.planCalls ?? 0) + 1;
+        if (window.holdPlan) await new Promise(resolve => { window.releasePlan = resolve; });
+        if (window.planError) throw Error("Plan temporarily unavailable");
+        return { viewerId: window.planViewer ?? ids.asset, workspace: { id: window.planWorkspace ?? workspaceId }, usage: { entitlements: { entitlements: { rendering: window.planRendering ?? true, publishing_channels: window.planChannels ?? ["export"] } } } }; },
       listEditions: async () => ({ editions }), listPublishingJobs: async () => ({ jobs: [] }), listAssets: async () => ({ assets: [] }), listChapters: async () => ({ chapters: [] }),
       listNarrationModels: async () => ({ models: [] }), listAudiobookGooglePlayExports: async () => ({ jobs: [] }),
       listPrivateAudiobookProjects: async editionId => ({ projects: [{ id: ids.job, editionId, chapterId: ids.asset, status: "running", segmentCount: 1,
@@ -174,6 +178,84 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
   return { page, errors };
 }
 async function open(page) { await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled(); await page.getByRole("button", { name: "Open saved print", exact: true }).click(); await page.getByRole("button", { name: "Renew private links", exact: true }).waitFor(); }
+
+test("studio shows verified retailer plan access and refreshes after a plan change", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.getByLabel("Preflight target").selectOption("kdp");
+    const access = page.getByLabel("Plan publishing access");
+    await expect(access).toContainText("The selected retailer package is not included in the current plan.");
+    await expect(access).toContainText("EPUB/PDF rendering is included in the current plan.");
+    await page.evaluate(() => { window.planChannels = ["export", "kdp"]; window.planRendering = false; });
+    await access.getByRole("button", { name: "Refresh access" }).click();
+    await expect(access).toContainText("The selected retailer package is included in the current plan.");
+    await expect(access).toContainText("EPUB/PDF rendering is not included in the current plan.");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("studio reports unavailable access for errors or mismatched account and workspace", async () => {
+  for (const failure of ["error", "account", "workspace"]) {
+    const { page, errors } = await fixture({ parent: true });
+    try {
+      const access = page.getByLabel("Plan publishing access");
+      await expect(access.getByRole("button", { name: "Refresh access" })).toBeVisible();
+      await page.evaluate(kind => { if (kind === "error") window.planError = true; else if (kind === "account") window.planViewer = window.ids.otherAsset; else window.planWorkspace = window.ids.otherEdition; }, failure);
+      await access.getByRole("button", { name: "Refresh access" }).click();
+      await expect(access).toContainText("Publishing access could not be checked.");
+      await page.evaluate(() => { window.planError = false; window.planViewer = null; window.planWorkspace = null; });
+      await access.getByRole("button", { name: "Try again" }).click();
+      await expect(access).toContainText("EPUB/PDF rendering is included in the current plan.");
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
+
+test("late plan access cannot appear after the signed-in account changes", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    const access = page.getByLabel("Plan publishing access");
+    await expect(access.getByRole("button", { name: "Refresh access" })).toBeVisible();
+    await page.evaluate(() => {
+      window.holdPlan = true;
+      const original = window.fetch.bind(window);
+      window.fetch = async (url, options) => String(url) === "/api/auth/session"
+        ? Response.json({ user: { id: window.fixtureActor }, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}` }) : original(url, options);
+    });
+    await access.getByRole("button", { name: "Refresh access" }).click();
+    await page.waitForFunction(() => typeof window.releasePlan === "function");
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.dispatchEvent(new Event("focus")); window.releasePlan(); });
+    await expect(page.getByText("Checking your account…")).toHaveCount(0);
+    await expect(access.getByText("EPUB/PDF rendering is included in the current plan.")).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("late plan access cannot overwrite the next book workspace", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    let access = page.getByLabel("Plan publishing access");
+    await expect(access.getByRole("button", { name: "Refresh access" })).toBeVisible();
+    await page.evaluate(() => {
+      window.bookwormApi.getDashboardOverview = async workspaceId => {
+        if (workspaceId === window.ids.workspace) await new Promise(resolve => { window.releaseOldPlan = resolve; });
+        return { viewerId: window.ids.asset, workspace: { id: workspaceId }, usage: { entitlements: { entitlements: {
+          rendering: true, publishing_channels: workspaceId === window.ids.otherEdition ? ["kdp"] : ["export"] } } } };
+      };
+      window.bookwormApi.getBook = async bookId => ({ book: { id: bookId, workspace_id: bookId === window.ids.otherJob ? window.ids.otherEdition : window.ids.workspace, title: "Book", language: "en" }, role: "owner" });
+      window.bookwormApi.listEditions = async () => ({ editions: [] });
+    });
+    await access.getByRole("button", { name: "Refresh access" }).click();
+    await page.waitForFunction(() => typeof window.releaseOldPlan === "function");
+    await page.evaluate(() => window.showStudio(window.ids.otherJob));
+    await page.getByLabel("Preflight target").selectOption("kdp");
+    access = page.getByLabel("Plan publishing access");
+    await expect(access).toContainText("The selected retailer package is included in the current plan.");
+    await page.evaluate(() => window.releaseOldPlan());
+    await expect(access).toContainText("The selected retailer package is included in the current plan.");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
 
 test("actual Studio recovers a lost export reply after remount without submitting another package", async () => {
   const { page, errors } = await fixture({ parent: true });

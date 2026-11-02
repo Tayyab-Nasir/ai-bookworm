@@ -27,6 +27,7 @@ type TimedAudioExport = AudiobookGooglePlayExportJob & { downloadExpiresAt: Down
 const timeAudio = (job: AudiobookGooglePlayExportJob, startedAt: DownloadClock): TimedAudioExport => ({ ...job, downloadExpiresAt: job.downloadUrl && job.downloadExpiresIn ? signedDownloadDeadline({ url: job.downloadUrl, expiresIn: job.downloadExpiresIn }, startedAt) : null });
 const timePackage = (job: PublishingPackageJob, startedAt: DownloadClock): TimedPackageJob => ({ ...job, downloadExpiresAt: packageDownloadDeadline(job, startedAt) });
 const CHANNEL_FORMATS: Record<RetailerChannel, Kind[]> = { kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"] };
+const CHANNEL_ENTITLEMENTS: Record<RetailerChannel, string> = { kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu", googleplay: "google_play" };
 const artifactUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function renderedStoragePath(workspace: string | undefined, artifact: RenderedEditionResult["artifacts"][number]) {
   if (!workspace || !artifactUuid.test(workspace) || !artifactUuid.test(artifact.asset.id) || artifact.asset.workspace_id !== workspace) return "";
@@ -121,6 +122,8 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   useLayoutEffect(() => { mountedView.current = true; return () => { mountedView.current = false; committedRender.current = null; }; }, []);
   const handlerCurrent = () => mountedView.current && committedRender.current === renderedAt && active && renderedScope();
   const [book, setBook] = useState<Book | null>(null);
+  const [planRevision, setPlanRevision] = useState(0);
+  const [planAccess, setPlanAccess] = useState<{ status: "loading" | "unavailable" | "ready"; workspace: string; valid: () => boolean; rendering?: boolean; channels?: string[] }>({ status: "loading", workspace: "", valid: () => false });
   const [role, setRole] = useState("viewer");
   const [editions, setEditions] = useState<Edition[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -178,6 +181,26 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const linkOwner = loadedEditionOwner.current;
   const linkScope = scope.begin();
   const editable = currentIdentity && EDIT_ROLES.has(role);
+  useEffect(() => {
+    if (!active || !book?.workspace_id || !scope.current()) return;
+    const workspace = book.workspace_id, current = scope.begin();
+    let cancelled = false;
+    const valid = () => !cancelled && current();
+    setPlanAccess({ status: "loading", workspace, valid });
+    void (async () => {
+      try {
+        const result = await api.getDashboardOverview(workspace, scope.actor);
+        if (!valid()) return;
+        const entitlements = result?.usage?.entitlements?.entitlements;
+        if (result?.viewerId !== scope.actor || result?.workspace?.id !== workspace || typeof entitlements?.rendering !== "boolean"
+          || !Array.isArray(entitlements.publishing_channels) || entitlements.publishing_channels.length > 100
+          || entitlements.publishing_channels.some(item => typeof item !== "string" || item.length > 100)) throw new Error("Plan access could not be verified.");
+        setPlanAccess({ status: "ready", workspace, valid, rendering: entitlements.rendering, channels: [...entitlements.publishing_channels] });
+      } catch { if (valid()) setPlanAccess({ status: "unavailable", workspace, valid }); }
+    })();
+    return () => { cancelled = true; };
+  }, [active, api, book?.workspace_id, planRevision, scope]);
+  const planStatus = active && planAccess.workspace === book?.workspace_id && planAccess.valid() ? planAccess : null;
   // Navigation invalidates replies, not durable work already accepted by the server.
   const captureView = () => {
     const version = viewEpoch.current, ownerCurrent = scope.begin();
@@ -722,6 +745,13 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="package-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="package-title" className="text-xl font-semibold">Retailer export packages</h2><p className="mt-1 max-w-2xl text-sm text-white/45">Create a private ZIP from the exact saved render after a zero-error retailer preflight. The package is downloaded and submitted manually; this does not publish or track retailer review status.</p></div>
+          </div>
+          <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4 text-sm" aria-label="Plan publishing access">
+            {!planStatus || planStatus.status === "loading" ? <p role="status" className="text-white/60">Checking this workspace’s publishing access…</p>
+              : planStatus.status === "unavailable" ? <p role="status" className="text-amber-100">Publishing access could not be checked. <button type="button" className="underline underline-offset-4" onClick={() => setPlanRevision(value => value + 1)}>Try again</button></p>
+              : <><p className="text-white/70">{planStatus.rendering ? "EPUB/PDF rendering is included in the current plan." : "EPUB/PDF rendering is not included in the current plan."}</p>
+                <p className="mt-2 text-white/70">{channel === "export" ? "Choose a retailer above to check package access." : planStatus.channels?.includes(CHANNEL_ENTITLEMENTS[channel]) ? "The selected retailer package is included in the current plan." : "The selected retailer package is not included in the current plan."}</p>
+                <p className="mt-2 text-xs text-white/45">Access can change; the server checks the plan again when a package is created. <button type="button" className="underline underline-offset-4" onClick={() => setPlanRevision(value => value + 1)}>Refresh access</button></p></>}
           </div>
           <RetailerPackageRequest key={bookId} bookId={bookId} canEdit={editable} disabled={Boolean(busy) && busy !== "package"}
             request={activeId && !dirty && channel !== "export" && channelCompatible && rendered && preflight && preflight.requestedChannel === channel && preflight.errors === 0
