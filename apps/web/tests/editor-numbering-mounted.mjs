@@ -26,6 +26,8 @@ const bundle = await build({ stdin: { contents: `import React from "react";
 const parentBundle = await build({ stdin: { contents: `import React from "react";
   import { createRoot } from "react-dom/client";
   import BookEditor from "./apps/web/components/BookEditorClient";
+  import { ApiClientError } from "@bookworm/api-client";
+  window.ApiClientError = ApiClientError;
   const root = createRoot(document.getElementById("root"));
   window.renderBookEditor = (props = {}) => root.render(React.createElement(BookEditor, { bookId: "book", ...props }));`,
   loader: "tsx", resolveDir: process.cwd() }, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", outfile: "editor-page.js",
@@ -1383,10 +1385,16 @@ for (const refreshFails of [false, true]) test(`actual chapter creation opens pr
       await page.evaluate(() => window.finishApply());
     }
     if (refreshFails) {
-      await page.getByRole("alert").filter({ hasText: "chapter refresh unavailable" }).waitFor();
-      assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).count(), 0);
-      assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).count(), 0);
-      await page.getByRole("button", { name: "Retry loading chapter", exact: true }).click();
+      await page.locator('div[role="alert"]').filter({ hasText: "chapter refresh unavailable" }).waitFor();
+      await page.getByText(/saving and AI requests are paused until you reload/).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
+      assert.equal(await page.getByRole("button", { name: "Restore version 1", exact: true }).count(), 0);
+      await page.evaluate(() => { window.confirm = () => { document.querySelector('.ProseMirror').editor.commands.insertContent(' RELOAD-CONFIRM-EDIT'); return true; }; });
+      await page.getByRole("button", { name: "Reload saved version", exact: true }).click();
+      await page.getByText(/Your draft changed while confirming the reload/).waitFor();
+      assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /RELOAD-CONFIRM-EDIT/);
+      await page.evaluate(() => { window.confirm = () => true; });
+      await page.getByRole("button", { name: "Reload saved version", exact: true }).click();
       await page.getByText("accepted", { exact: true }).waitFor();
     }
     await page.getByRole("textbox", { name: "Manuscript editor" }).getByText("Mara reached the harbor before dawn.", { exact: true }).waitFor();
@@ -2130,7 +2138,7 @@ test("scratch restore retains late transaction atop the verified new version",as
   assert.match(await page.locator(".ProseMirror").innerText(),/AFTER-RESTORE/);assert.doesNotMatch(await page.locator(".ProseMirror").innerText(),/Server restored version/);
   assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
   assert.equal(await page.evaluate(()=>window.requests.length),0);
-  assert.equal(await page.getByText(/The saved chapter changed while you had unsaved edits/).count(),1);
+  assert.equal(await page.getByText(/The saved chapter may have changed/).count(),1);
   await page.evaluate(()=>{URL.createObjectURL=blob=>{window.restoreBackup=blob.text();return "blob:fixture"};HTMLAnchorElement.prototype.click=()=>{};});
   await page.getByText("Back up chapter draft",{exact:true}).click();await page.getByRole("button",{name:"Download JSON backup",exact:true}).click();
   const backup=JSON.parse(await page.evaluate(()=>window.restoreBackup));assert.equal(backup.baseVersion,1);assert.match(JSON.stringify(backup.nodes),/AFTER-RESTORE/);
@@ -2224,4 +2232,266 @@ test("scratch same-turn JSON backup retains invalid editor state",async()=>{
   await page.evaluate(()=>{URL.createObjectURL=blob=>{window.sameTurnBackup=blob.text();return "blob:fixture"};HTMLAnchorElement.prototype.click=()=>{};const ed=document.querySelector(".ProseMirror").editor;ed.commands.setTextSelection(3);ed.commands.updateAttributes("orderedList",{start:1000000});[...document.querySelectorAll("button")].find(x=>x.textContent==="Download JSON backup").click();});
   const backup=JSON.parse(await page.evaluate(()=>window.sameTurnBackup));assert.equal(backup.baseVersion,1);assert.equal(backup.canonicalState,"last-valid-draft");assert.ok(backup.validationError);assert.ok(backup.editorDocument);
  }finally{await page.close()}
+});
+
+test("same-turn chapter switch preserves a delayed editor transaction", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.confirm = () => true;
+      const editor = document.querySelector('.ProseMirror').editor;
+      const target = [...document.querySelectorAll('nav[aria-label="Chapters"] button')].find(button => button.textContent.includes('Second chapter'));
+      if (!target) throw Error('chapter button missing');
+      target.click();
+      editor.commands.insertContent(' LATE-SWITCH-EDIT');
+    });
+    await page.getByText(/Your draft changed while the chapter was loading/).waitFor();
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /LATE-SWITCH-EDIT/);
+    assert.equal(await page.getByRole('button', { name: 'Save chapter', exact: true }).isEnabled(), true);
+  } finally { await page.close(); }
+});
+
+test("chapter loading preserves a transaction arriving while the target is fetched", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      const read = window.bookwormApi.getChapterDocument;
+      window.bookwormApi.getChapterDocument = async chapterId => {
+        if (chapterId === 'second') await new Promise(resolve => { window.finishChapterRead = resolve; });
+        return read(chapterId);
+      };
+    });
+    await page.locator('nav[aria-label="Chapters"] button').filter({ hasText: 'Second chapter' }).click();
+    await page.waitForFunction(() => typeof window.finishChapterRead === 'function');
+    await page.evaluate(() => {
+      document.querySelector('.ProseMirror').editor.commands.insertContent(' IN-FLIGHT-EDIT');
+      window.finishChapterRead();
+    });
+    await page.getByText(/Your draft changed while the chapter was loading/).waitFor();
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /IN-FLIGHT-EDIT/);
+    assert.equal(await page.getByRole('button', { name: 'Save chapter', exact: true }).isEnabled(), true);
+  } finally { await page.close(); }
+});
+
+for (const status of [401, 403, 404]) test(`chapter access ${status} hides the draft until original access is verified`, async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(status => {
+      window.confirm = () => true;
+      const originalRead = window.bookwormApi.getChapterDocument;
+      window.allowOriginalRead = false;
+      window.bookwormApi.getChapterDocument = async id => {
+        if (id === 'second' || !window.allowOriginalRead) throw new window.ApiClientError(status, 'denied', 'Access denied', 'fixture');
+        return originalRead(id);
+      };
+      document.querySelector('.ProseMirror').editor.commands.insertContent(' RETAINED-PRIVATE-DRAFT');
+    }, status);
+    await page.locator('nav[aria-label="Chapters"] button').filter({ hasText: 'Second chapter' }).click();
+    await page.getByText(/Access to this manuscript could not be verified/).waitFor();
+    assert.equal(await page.getByRole('textbox', { name: 'Manuscript editor' }).count(), 0);
+    await page.getByRole('button', { name: 'Recheck chapter access' }).click();
+    await page.getByRole('status').filter({ hasText: /Your draft remains hidden in this tab/ }).waitFor();
+    assert.equal(await page.getByRole('textbox', { name: 'Manuscript editor' }).count(), 0);
+    await page.evaluate(() => { window.allowOriginalRead = true; });
+    await page.getByRole('button', { name: 'Recheck chapter access' }).click();
+    await page.getByRole('textbox', { name: 'Manuscript editor' }).waitFor();
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /RETAINED-PRIVATE-DRAFT/);
+  } finally { await page.close(); }
+});
+
+test('access recheck preserves a draft and detects a changed server version', async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.confirm = () => true;
+      const originalRead = window.bookwormApi.getChapterDocument;
+      window.bookwormApi.getChapterDocument = async id => {
+        if (id === 'second') throw new window.ApiClientError(403, 'denied', 'Access denied', 'fixture');
+        const result = await originalRead(id);
+        return { role: 'owner', document: { ...result.document, version: 2 } };
+      };
+      document.querySelector('.ProseMirror').editor.commands.insertContent(' RECHECK-DRAFT');
+    });
+    await page.locator('nav[aria-label="Chapters"] button').filter({ hasText: 'Second chapter' }).click();
+    await page.getByRole('button', { name: 'Recheck chapter access' }).click();
+    await page.getByRole('textbox', { name: 'Manuscript editor' }).waitFor();
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /RECHECK-DRAFT/);
+    assert.equal(await page.getByRole('button', { name: 'Save chapter', exact: true }).isDisabled(), true);
+  } finally { await page.close(); }
+});
+
+test('same-turn chapter creation asks before discarding the latest draft', async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.getByLabel('New chapter', { exact: true }).fill('New chapter');
+    await page.evaluate(() => {
+      window.confirmations = 0; window.confirm = () => { window.confirmations++; return false; };
+      document.querySelector('.ProseMirror').editor.commands.insertContent(' BEFORE-CREATION');
+      [...document.querySelectorAll('button')].find(button => button.textContent === 'Add chapter').click();
+    });
+    assert.equal(await page.evaluate(() => window.confirmations), 1);
+    assert.equal(await page.evaluate(() => window.creations), 0);
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /BEFORE-CREATION/);
+  } finally { await page.close(); }
+});
+
+test('a transaction during chapter creation confirmation invalidates consent', async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.getByLabel('New chapter', { exact: true }).fill('New chapter');
+    await page.evaluate(() => {
+      const editor = document.querySelector('.ProseMirror').editor;
+      editor.commands.insertContent(' BEFORE-CONFIRM');
+      window.confirm = () => { editor.commands.insertContent(' DURING-CONFIRM'); return true; };
+      [...document.querySelectorAll('button')].find(button => button.textContent === 'Add chapter').click();
+    });
+    await page.getByText(/Your draft changed while confirming chapter creation/).waitFor();
+    assert.equal(await page.evaluate(() => window.creations), 0);
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /DURING-CONFIRM/);
+  } finally { await page.close(); }
+});
+
+test('same-turn unsaved editor change prompts before restoring', async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.confirmations = [];
+      window.confirm = message => { window.confirmations.push(message); return window.confirmations.length === 1; };
+      document.querySelector('.ProseMirror').editor.commands.insertContent(' BEFORE-RESTORE');
+      [...document.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Restore version 1').click();
+    });
+    assert.equal(await page.evaluate(() => window.confirmations.length), 2);
+    assert.equal(await page.evaluate(() => window.restores), 0);
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /BEFORE-RESTORE/);
+  } finally { await page.close(); }
+});
+
+test('a transaction during restore confirmation invalidates consent', async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.confirm = () => { document.querySelector('.ProseMirror').editor.commands.insertContent(' DURING-RESTORE-CONFIRM'); return true; };
+      [...document.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Restore version 1').click();
+    });
+    await page.getByText(/Your draft changed while confirming the restore/).waitFor();
+    assert.equal(await page.evaluate(() => window.restores), 0);
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /DURING-RESTORE-CONFIRM/);
+  } finally { await page.close(); }
+});
+
+test('a late transaction during chapter creation retains the old draft and brief', async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.createChapter = async (bookId, body) => {
+        await new Promise(resolve => { window.finishCreation = resolve; });
+        return { chapter: { id: 'created', book_id: bookId, title: body.title } };
+      };
+      window.bookwormApi.listChapters = async () => ({ chapters: [
+        { id: 'chapter', book_id: 'book', title: 'First chapter' },
+        { id: 'second', book_id: 'book', title: 'Second chapter' },
+        { id: 'created', book_id: 'book', title: 'New chapter' },
+      ] });
+    });
+    await page.getByLabel('New chapter', { exact: true }).fill('New chapter');
+    await page.getByLabel('Optional AI drafting brief').fill('Keep this brief');
+    await page.getByRole('button', { name: 'Add & review AI brief' }).click();
+    await page.waitForFunction(() => typeof window.finishCreation === 'function');
+    await page.evaluate(() => { document.querySelector('.ProseMirror').editor.commands.insertContent(' DURING-CREATION'); window.finishCreation(); });
+    await page.getByText(/Your new chapter was created, but your earlier draft changed/).waitFor();
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /DURING-CREATION/);
+    assert.equal(await page.getByLabel('Optional AI drafting brief').inputValue(), 'Keep this brief');
+    assert.equal(await page.locator('nav[aria-label="Chapters"] button').filter({ hasText: 'New chapter' }).count(), 1);
+  } finally { await page.close(); }
+});
+
+async function readyEditorSuggestion(page) {
+  await page.evaluate(() => {
+    const api = window.bookwormApi;
+    window.applyCalls = 0;
+    window.aiJob = { id: 'timing-job', book_id: 'book', chapter_ids: ['chapter'], agent_type: 'writer', status: 'succeeded', context_source_count: 0, usage_json: {}, created_at: new Date().toISOString(), suggestions: [{ id: 'timing-suggestion', entity_type: 'chapter', entity_id: 'chapter', status: 'pending', rationale: 'Timing proposal', operation_json: { operationId: crypto.randomUUID(), type: 'replace_text', expectedVersion: 1, target: { chapterId: 'chapter', nodeId: 'first' }, payload: { nodeId: 'first', from: 0, to: 0, text: 'AI inserted' } } }] };
+    api.getAiJob = async () => structuredClone(window.aiJob);
+    api.applySuggestion = () => new Promise(resolve => { window.finishTimingApply = () => { window.applyCalls++; resolve({ version: 2 }); }; });
+    window.renderBookEditor({ initialAiJobId: 'timing-job' });
+  });
+  await page.getByText('Timing proposal', { exact: true }).waitFor();
+}
+
+test("same-turn unsaved editor change prevents AI Apply dispatch", async () => {
+  const page = await fixture(1280, true, true);
+  try {
+    await readyEditorSuggestion(page);
+    await page.evaluate(() => {
+      document.querySelector('.ProseMirror').editor.commands.insertContent(' SAME-TURN-AI-EDIT');
+      [...document.querySelectorAll('button')].find(button => button.textContent === 'Apply').click();
+    });
+    await page.getByText(/Save the chapter before running or applying AI suggestions/).waitFor();
+    assert.equal(await page.evaluate(() => typeof window.finishTimingApply), 'undefined');
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /SAME-TURN-AI-EDIT/);
+  } finally { await page.close(); }
+});
+
+test("same-turn editor change prevents an AI token-count request", async () => {
+  const page = await fixture(1280, true, true);
+  try {
+    await page.evaluate(() => { window.aiCountWrites = 0; window.bookwormApi.createAiReviewQuote = async () => { window.aiCountWrites++; throw Error('Unexpected count'); }; });
+    await page.getByRole('checkbox', { name: /I agree to send the selected saved chapter/ }).check();
+    await page.getByRole('button', { name: 'Prepare usage quote', exact: true }).waitFor();
+    await page.evaluate(() => {
+      document.querySelector('.ProseMirror').editor.commands.insertContent(' SAME-TURN-COUNT-EDIT');
+      [...document.querySelectorAll('button')].find(button => button.textContent === 'Prepare usage quote').click();
+    });
+    await page.getByText(/Save the chapter before running or applying AI suggestions/).waitFor();
+    assert.equal(await page.evaluate(() => window.aiCountWrites), 0);
+  } finally { await page.close(); }
+});
+
+test("same-turn invalid editor change prevents AI Apply dispatch", async () => {
+  const page = await fixture(1280, true, true);
+  try {
+    await readyEditorSuggestion(page);
+    await page.evaluate(() => {
+      const editor = document.querySelector('.ProseMirror').editor;
+      editor.commands.setTextSelection(3);
+      editor.commands.updateAttributes('orderedList', { start: 1000000 });
+      [...document.querySelectorAll('button')].find(button => button.textContent === 'Apply').click();
+    });
+    await page.getByText(/not been sent to save/).waitFor();
+    assert.equal(await page.evaluate(() => typeof window.finishTimingApply), 'undefined');
+  } finally { await page.close(); }
+});
+
+test("late editor transaction during AI Apply remains as a conflicted draft", async () => {
+  const page = await fixture(1280, true, true);
+  try {
+    await readyEditorSuggestion(page);
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishTimingApply === 'function');
+    await page.evaluate(() => {
+      document.querySelector('.ProseMirror').editor.commands.insertContent(' IN-FLIGHT-AI-EDIT');
+      window.finishTimingApply();
+    });
+    await page.getByText(/Your unsaved draft is still here/).first().waitFor();
+    assert.match(await page.getByRole('textbox', { name: 'Manuscript editor' }).innerText(), /IN-FLIGHT-AI-EDIT/);
+    assert.equal(await page.getByRole('button', { name: 'Save chapter', exact: true }).isDisabled(), true);
+    assert.equal(await page.evaluate(() => window.applyCalls), 1);
+  } finally { await page.close(); }
+});
+
+test("invalid editor transaction during AI Apply is retained for conflict review", async () => {
+  const page = await fixture(1280, true, true);
+  try {
+    await readyEditorSuggestion(page);
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishTimingApply === 'function');
+    await page.evaluate(() => {
+      const editor = document.querySelector('.ProseMirror').editor;
+      editor.commands.setTextSelection(3);
+      editor.commands.updateAttributes('orderedList', { start: 1000000 });
+      window.finishTimingApply();
+    });
+    await page.getByText(/Your unsaved draft is still here/).first().waitFor();
+    await page.getByText(/not been sent to save/).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Save chapter', exact: true }).isDisabled(), true);
+  } finally { await page.close(); }
 });

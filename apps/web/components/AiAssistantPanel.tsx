@@ -23,10 +23,11 @@ function modeLabel(agentType: string) {
 }
 
 export default function AiAssistantPanel({
-  actorId, bookId, chapterId, savedChapter, initialJobId, initialDraftInstruction, dirty, editable, canDispatch, onApplied, onDecisionBusy,
-}: { actorId: string; bookId: string; chapterId: string | null; savedChapter: SavedChapterPreview | null; initialJobId?: string; initialDraftInstruction?: string; dirty: boolean; editable: boolean; canDispatch: () => boolean; onApplied: () => Promise<void>; onDecisionBusy?: (busy: boolean) => void }) {
+  actorId, bookId, chapterId, savedChapter, initialJobId, initialDraftInstruction, dirty, editable, canDispatch, isDraftDirty, onDraftConflict, onApplied, onDecisionBusy,
+}: { actorId: string; bookId: string; chapterId: string | null; savedChapter: SavedChapterPreview | null; initialJobId?: string; initialDraftInstruction?: string; dirty: boolean; editable: boolean; canDispatch: () => boolean; isDraftDirty?: () => boolean; onDraftConflict?: () => void; onApplied: () => Promise<void>; onDecisionBusy?: (busy: boolean) => void }) {
   const api = apiClient(actorId);
-  const latest = useRef({ dirty, editable, onApplied, onDecisionBusy }); latest.current = { dirty, editable, onApplied, onDecisionBusy };
+  const latest = useRef({ dirty, editable, isDraftDirty, onDraftConflict, onApplied, onDecisionBusy }); latest.current = { dirty, editable, isDraftDirty, onDraftConflict, onApplied, onDecisionBusy };
+  const draftIsDirty = () => latest.current.dirty || latest.current.isDraftDirty?.() === true;
   const reviewScope = useRef({ actorId, bookId, chapterId });
   if (reviewScope.current.actorId !== actorId || reviewScope.current.bookId !== bookId || reviewScope.current.chapterId !== chapterId) reviewScope.current = { actorId, bookId, chapterId };
   const [mode, setMode] = useState<Mode>("proofreader");
@@ -96,7 +97,8 @@ export default function AiAssistantPanel({
     }
     if (result.status === "accepted" || result.status === "stale") {
       setLastAppliedVersion(result.version ?? decision.expectedVersion + 1);
-      if (latest.current.dirty) {
+      if (draftIsDirty()) {
+        latest.current.onDraftConflict?.();
         clearDecision(decision);
         setError(`${result.status === "stale" ? "The saved chapter changed." : "The suggestion is saved."} Your unsaved draft is still here. Back it up before reloading the saved chapter.`);
         return;
@@ -301,7 +303,7 @@ export default function AiAssistantPanel({
   }, [api, bookId, chapterId, job?.id, job?.status, unconfirmed, remember, pendingRequest, verifiedStatus, adoptRecovery]);
 
   const run = async () => {
-    if (!canDispatch() || !chapterId || !userId || !recoveryReady || !selectedModelId || !models.length || unconfirmed || acceptanceUncertain || quote || quoteRequestId || verifiedStatus || (!countingConsent && pendingRequest?.allowProviderTokenCounting !== true) || requestInFlight.current || processing || dirty || !editable || (mode === "writer" && !instruction.trim())) return;
+    if (!canDispatch() || !chapterId || !userId || !recoveryReady || !selectedModelId || !models.length || unconfirmed || acceptanceUncertain || quote || quoteRequestId || verifiedStatus || (!countingConsent && pendingRequest?.allowProviderTokenCounting !== true) || requestInFlight.current || processing || draftIsDirty() || !editable || (mode === "writer" && !instruction.trim())) return;
     const scope = reviewScope.current;
     requestInFlight.current = true;
     setBusy(true); setError(null); setNotice(null);
@@ -334,6 +336,7 @@ export default function AiAssistantPanel({
       }
       if (reviewScope.current !== scope) return;
       if (!canDispatch()) throw new Error("Verify the original account before starting the token count. The original request remains available for recovery.");
+      if (draftIsDirty()) throw new Error("Save your draft before starting the token count. The original request remains available for recovery.");
       setJob(null); setVerifiedStatus(null);
       const result = await api.createAiReviewQuote(bookId, {
         modelId: request.modelId ?? selectedModelId, agentType: request.mode, chapterIds: [request.chapterId],
@@ -357,7 +360,7 @@ export default function AiAssistantPanel({
   };
 
   const acceptQuote = async () => {
-    if (!canDispatch() || !quote || !pendingRequest || requestInFlight.current || !canAcceptReviewQuote(quote, { pending: pendingRequest, bookId, chapterId, editable, dirty, recoveryReady, busy: processing, acceptanceUncertain })) return;
+    if (!canDispatch() || draftIsDirty() || !quote || !pendingRequest || requestInFlight.current || !canAcceptReviewQuote(quote, { pending: pendingRequest, bookId, chapterId, editable, dirty, recoveryReady, busy: processing, acceptanceUncertain })) return;
     const scope = reviewScope.current;
     let request = pendingRequest;
     let dispatched = false, acceptedReply = false;
@@ -440,7 +443,7 @@ export default function AiAssistantPanel({
   };
 
   const restore = async (review: AiJobReview) => {
-    if (processing || reviewing || dirty || pendingRequest || !reviewTargetsChapter(review, chapterId)) return;
+    if (processing || reviewing || draftIsDirty() || pendingRequest || !reviewTargetsChapter(review, chapterId)) return;
     const scope = reviewScope.current;
     setBusy(true); setError(null); setNotice(null);
     try {
@@ -462,7 +465,7 @@ export default function AiAssistantPanel({
   const decide = async (action: SuggestionDecision["action"], suggestion: AiSuggestion, retry = false) => {
     if (!canDispatch() || !job || !chapterId || !userId || !recoveryReady || decisionInFlight.current || reviewing || busy || !editable
       || (pendingDecision && (!retry || pendingDecision.action !== action || pendingDecision.suggestionId !== suggestion.id))
-      || (action === "apply" && (dirty || !retry && previewAiSuggestion(suggestion, savedChapter).state !== "ready"
+      || (action === "apply" && (draftIsDirty() || !retry && previewAiSuggestion(suggestion, savedChapter).state !== "ready"
         || lastAppliedVersion !== null && (savedChapter?.version ?? 0) < lastAppliedVersion))) return;
     const operation = suggestion.operation_json;
     const version = operation && typeof operation === "object" && !Array.isArray(operation) ? operation.expectedVersion : null;
@@ -475,12 +478,12 @@ export default function AiAssistantPanel({
     setDecisionCanRetry(false); setError(null); setNotice(null);
     try {
       await verifyDecisionAccount(decision);
-      if (reviewScope.current !== scope || !canDispatch() || !latest.current.editable || action === "apply" && latest.current.dirty) return;
+      if (reviewScope.current !== scope || !canDispatch() || !latest.current.editable || action === "apply" && draftIsDirty()) return;
       if (retry) {
         const current = await readDecision(decision, scope);
         if (reviewScope.current !== scope || current.status !== "pending") return;
       }
-      if (!canDispatch() || !latest.current.editable || action === "apply" && latest.current.dirty) return;
+      if (!canDispatch() || !latest.current.editable || action === "apply" && draftIsDirty()) return;
       window.sessionStorage.setItem(suggestionDecisionKey(userId, bookId, chapterId), JSON.stringify(decision));
       setPendingDecision(decision);
       dispatched = true;
@@ -511,7 +514,7 @@ export default function AiAssistantPanel({
           else if (!earlierAttempt && reason instanceof ApiClientError && [400, 401, 403, 404, 409, 422].includes(reason.status)) {
             clearDecision(decision);
             setNotice("The action was refused. The saved suggestion is still pending.");
-            if (action === "apply" && !latest.current.dirty) {
+            if (action === "apply" && !draftIsDirty()) {
               try { await latest.current.onApplied(); }
               catch { if (reviewScope.current === scope) setError("The action was refused, but the saved chapter could not refresh. Reload it before another decision."); }
             }
