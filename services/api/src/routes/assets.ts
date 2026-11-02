@@ -82,6 +82,7 @@ interface AssetRow {
   id: string;
   workspace_id: string;
   deleted_at: string | null;
+  status: string;
 }
 
 interface PendingVersionRow {
@@ -94,7 +95,7 @@ interface PendingVersionRow {
 }
 
 async function loadAsset(sb: SupabaseClient, assetId: string): Promise<AssetRow> {
-  const { data } = await sb.from("assets").select("id,workspace_id,deleted_at").eq("id", assetId).maybeSingle();
+  const { data } = await sb.from("assets").select("id,workspace_id,deleted_at,status").eq("id", assetId).maybeSingle();
   if (!data) throw new AppError(404, "asset not found");
   return data as AssetRow;
 }
@@ -763,8 +764,12 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     const asset = await loadAsset(sb, assetId);
     await requireWorkspaceEditor(sb, asset.workspace_id, req.userId);
     if (asset.deleted_at) throw new AppError(409, "asset already deleted");
-    const { error } = await app.supabaseFactory().from("assets").update({ deleted_at: new Date().toISOString(), status: "archived" }).eq("id", assetId);
+    const { data: updated, error } = await app.supabaseFactory().from("assets")
+      .update({ deleted_at: new Date().toISOString(), status: "archived" })
+      .eq("id", assetId).eq("workspace_id", asset.workspace_id).eq("status", asset.status).is("deleted_at", null)
+      .select("id").maybeSingle();
     if (error) throw new AppError(500, error.message);
+    if (!updated) throw new AppError(409, "asset changed while removal was in progress; refresh the library");
     await logActivity(sb, { workspaceId: asset.workspace_id, actorId: req.userId, eventType: "asset_deleted", entityType: "asset", entityId: assetId });
     return { assetId, deleted: true };
   });
@@ -775,8 +780,12 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     const asset = await loadAsset(sb, assetId);
     await requireWorkspaceEditor(sb, asset.workspace_id, req.userId);
     if (!asset.deleted_at) throw new AppError(409, "asset is not deleted");
-    const { error } = await app.supabaseFactory().from("assets").update({ deleted_at: null, status: "draft" }).eq("id", assetId);
+    const { data: updated, error } = await app.supabaseFactory().from("assets")
+      .update({ deleted_at: null, status: "draft" })
+      .eq("id", assetId).eq("workspace_id", asset.workspace_id).eq("status", asset.status).eq("deleted_at", asset.deleted_at)
+      .select("id").maybeSingle();
     if (error) throw new AppError(500, error.message);
+    if (!updated) throw new AppError(409, "asset changed while restore was in progress; refresh the library");
     await logActivity(sb, { workspaceId: asset.workspace_id, actorId: req.userId, eventType: "asset_restored", entityType: "asset", entityId: assetId });
     return { assetId, restored: true };
   });
