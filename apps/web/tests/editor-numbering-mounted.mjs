@@ -1985,3 +1985,243 @@ test("uppercase book and chapter UUIDs load canonical manuscript scope", async (
     assert.equal(await page.getByRole("navigation", { name: "Chapters" }).getByText("Canonical chapter", { exact: true }).count(), 1);
   } finally { await page.close(); }
 });
+
+
+test("scratch late transaction survives the original save and is saved as a new version", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => { window.bookwormApi.saveChapterDocument = async (chapterId, body) => {
+      window.requests.push(structuredClone(body));
+      if (window.requests.length === 1) await new Promise(resolve => { window.finishSavedRequest = resolve; });
+      return { version: body.expectedVersion + 1, document: { chapterId, version: body.expectedVersion + 1, nodes: body.nodes } };
+    }; });
+    await page.getByRole("textbox", { name: "Manuscript editor" }).fill("Before save.");
+    await page.getByRole("button", { name: "Save chapter", exact: true }).click();
+    await page.waitForFunction(() => typeof window.finishSavedRequest === "function");
+    await page.evaluate(() => document.querySelector(".ProseMirror").editor.commands.insertContent(" LATE-CHANGE"));
+    await page.evaluate(() => window.finishSavedRequest());
+    await page.getByText("Saved version 2; newer edits remain unsaved.", { exact: true }).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /LATE-CHANGE/);
+    assert.doesNotMatch(JSON.stringify(await page.evaluate(() => window.requests[0].nodes)), /LATE-CHANGE/);
+    assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), false);
+    await page.evaluate(() => { URL.createObjectURL = blob => { window.backupText = blob.text(); return "blob:fixture"; }; HTMLAnchorElement.prototype.click = () => {}; });
+    await page.getByText("Back up chapter draft", { exact: true }).click();
+    await page.getByRole("button", { name: "Download JSON backup", exact: true }).click();
+    assert.match(await page.evaluate(() => window.backupText), /LATE-CHANGE/);
+    await page.getByRole("button", { name: "Save chapter", exact: true }).click();
+    await page.getByText("Saved · v3", { exact: true }).waitFor();
+    const requests = await page.evaluate(() => window.requests);
+    assert.equal(requests[0].expectedVersion, 1); assert.equal(requests[1].expectedVersion, 2);
+    assert.notEqual(requests[0].operationId, requests[1].operationId);
+    assert.match(JSON.stringify(requests[1].nodes), /LATE-CHANGE/);
+  } finally { await page.close(); }
+});
+
+
+test("scratch lost save recovery keeps multiple later transactions and original receipt", async () => {
+ const page=await manualSaveFixture();try{
+  await page.evaluate(()=>{const ed=document.querySelector(".ProseMirror").editor;ed.commands.insertContent(" LATER-ONE");ed.commands.insertContent(" LATER-TWO");});
+  await page.getByRole("button",{name:"Check saved status",exact:true}).click();
+  await page.getByText(/Your original save is confirmed at version 2/).waitFor();
+  assert.match(await page.locator(".ProseMirror").innerText(),/LATER-ONE.*LATER-TWO/);
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
+  assert.equal(await page.evaluate(()=>window.requests.length),1);
+  await page.evaluate(()=>{URL.createObjectURL=blob=>{window.backupText=blob.text();return "blob:fixture"}; HTMLAnchorElement.prototype.click=()=>{};});
+  await page.getByText("Back up chapter draft",{exact:true}).click();await page.getByRole("button",{name:"Download JSON backup",exact:true}).click();
+  const backup=await page.evaluate(()=>window.backupText);assert.match(backup,/LATER-ONE/);assert.match(backup,/LATER-TWO/);
+ }finally{await page.close()}
+});
+
+test("scratch no-receipt retry keeps identical original request and later edits unsaved",async()=>{
+ const page=await manualSaveFixture({stored:false});try{
+  await page.evaluate(()=>document.querySelector(".ProseMirror").editor.commands.insertContent(" RETAIN-LATER"));
+  await page.getByRole("button",{name:"Check saved status",exact:true}).click();
+  await page.getByRole("button",{name:"Retry original save",exact:true}).waitFor();
+  await page.evaluate(()=>{window.retryConfirmed=true});
+  await page.getByRole("button",{name:"Retry original save",exact:true}).click();
+  await page.getByText("Saved version 2; newer edits remain unsaved.",{exact:true}).waitFor();
+  const requests=await page.evaluate(()=>window.requests);assert.deepEqual(requests[1],requests[0]);
+  assert.doesNotMatch(JSON.stringify(requests[1].nodes),/RETAIN-LATER/);
+  assert.match(await page.locator(".ProseMirror").innerText(),/RETAIN-LATER/);
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),false);
+ }finally{await page.close()}
+});
+
+test("scratch closure retains later unsaved changes instead of replacing the editor",async()=>{
+ const page=await manualSaveFixture({stored:false});try{
+  await page.evaluate(()=>document.querySelector(".ProseMirror").editor.commands.insertContent(" AFTER-CLOSURE"));
+  await page.getByRole("button",{name:"Check saved status",exact:true}).click();
+  await page.getByRole("button",{name:"Close unconfirmed save",exact:true}).waitFor();
+  page.once("dialog",dialog=>dialog.accept());await page.getByRole("button",{name:"Close unconfirmed save",exact:true}).click();
+  await page.getByText(/original request is safely closed or superseded/i).waitFor();
+  assert.match(await page.locator(".ProseMirror").innerText(),/AFTER-CLOSURE/);
+  assert.equal(await page.evaluate(()=>window.manualClosures),1);
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
+ }finally{await page.close()}
+});
+
+test("scratch account change after lost save retains later draft and immutable pointer",async()=>{
+ const page=await manualSaveFixture();let actor="other-author";try{
+  await page.evaluate(()=>document.querySelector(".ProseMirror").editor.commands.insertContent(" ACCOUNT-LATER"));
+  await page.route("**/api/auth/session",route=>route.fulfill({json:{user:{id:actor}}}));
+  await page.evaluate(()=>window.dispatchEvent(new Event("focus")));
+  await page.getByRole("alert").filter({hasText:"original account could not be verified"}).waitFor();
+  assert.equal(await page.getByRole("textbox",{name:"Manuscript editor"}).count(),0);
+  assert.equal(await page.evaluate(()=>Object.keys(sessionStorage).some(k=>k.startsWith("bookworm:manual-save:"))),true);
+  actor="fixture-author";await page.getByRole("button",{name:"Recheck original account",exact:true}).click();
+  await page.getByRole("textbox",{name:"Manuscript editor"}).waitFor();
+  await page.getByRole("button",{name:"Check saved status",exact:true}).click();
+  await page.getByText(/Your original save is confirmed at version 2/).waitFor();
+  assert.match(await page.locator(".ProseMirror").innerText(),/ACCOUNT-LATER/);
+  assert.equal(await page.evaluate(()=>window.requests.length),1);
+ }finally{await page.close()}
+});
+
+test("scratch edit during receipt digest cannot be cleared by a stale success",async()=>{
+ const page=await fixture(1280,true);try{
+  await page.evaluate(()=>{window.bookwormApi.saveChapterDocument=async(chapterId,body)=>{window.requests.push(structuredClone(body));await new Promise(resolve=>window.finishSavedRequest=resolve);return{version:2,document:{chapterId,version:2,nodes:body.nodes}}};});
+  await page.getByRole("textbox",{name:"Manuscript editor"}).fill("Before save.");await page.getByRole("button",{name:"Save chapter",exact:true}).click();
+  await page.waitForFunction(()=>typeof window.finishSavedRequest==="function");
+  await page.evaluate(()=>{const original=crypto.subtle.digest.bind(crypto.subtle);let count=0;Object.defineProperty(crypto.subtle,"digest",{configurable:true,value:async(...args)=>{if(++count===2)await new Promise(resolve=>window.releaseReceiptDigest=resolve);return original(...args)}});window.finishSavedRequest();});
+  await page.waitForFunction(()=>typeof window.releaseReceiptDigest==="function");
+  await page.evaluate(()=>{document.querySelector(".ProseMirror").editor.commands.insertContent(" DIGEST-LATER");window.releaseReceiptDigest();});
+  await page.getByText("Saved version 2; newer edits remain unsaved.",{exact:true}).waitFor();
+  assert.match(await page.locator(".ProseMirror").innerText(),/DIGEST-LATER/);
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),false);
+ }finally{await page.close()}
+});
+
+
+test("scratch recovered old receipt keeps later edits when collaborator version advanced",async()=>{
+ const page=await manualSaveFixture();try{
+  await page.evaluate(()=>{document.querySelector(".ProseMirror").editor.commands.insertContent(" REMOTE-CONFLICT-LATER");window.apiDocument={chapterId:"chapter",version:3,nodes:[{id:"remote",type:"paragraph",text:"Remote edit"}]};});
+  await page.getByRole("button",{name:"Check saved status",exact:true}).click();
+  await page.getByText(/Your original save is confirmed at version 2/).waitFor();
+  assert.match(await page.locator(".ProseMirror").innerText(),/REMOTE-CONFLICT-LATER/);
+  assert.doesNotMatch(await page.locator(".ProseMirror").innerText(),/Remote edit/);
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
+ }finally{await page.close()}
+});
+
+test("scratch retry sends original snapshot even when later editor state is invalid",async()=>{
+ const page=await manualSaveFixture({stored:false});try{
+  await page.evaluate(()=>{const ed=document.querySelector(".ProseMirror").editor;ed.commands.setTextSelection(3);ed.commands.updateAttributes("orderedList",{start:1000000});});
+  await page.getByText(/not been sent to save/).waitFor();
+  await page.getByRole("button",{name:"Check saved status",exact:true}).click();
+  await page.getByRole("button",{name:"Retry original save",exact:true}).waitFor();await page.evaluate(()=>window.retryConfirmed=true);
+  await page.getByRole("button",{name:"Retry original save",exact:true}).click();
+  await page.getByText("Saved version 2; newer edits remain unsaved.",{exact:true}).waitFor();
+  const requests=await page.evaluate(()=>window.requests);assert.deepEqual(requests[1],requests[0]);
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
+  assert.equal(await page.getByText("Unsaved · correct numbering before saving",{exact:true}).count(),1);
+ }finally{await page.close()}
+});
+
+test("scratch restore retains late transaction atop the verified new version",async()=>{
+ const page=await fixture(1280,true);try{
+  await page.evaluate(()=>{window.confirm=()=>true;window.restoreBodies=[];window.restored=null;
+   window.bookwormApi.restoreDocumentVersion=async(chapterId,versionId,body)=>{window.restoreBodies.push(structuredClone(body));await new Promise(resolve=>window.finishRestore=resolve);window.restored={chapterId,version:2,nodes:[{id:"restored",type:"paragraph",text:"Server restored version"}]};return{version:2,versionId:"saved-version",document:window.restored};};
+   const read=window.bookwormApi.getChapterDocument;window.bookwormApi.getChapterDocument=async id=>window.restored?{role:"owner",document:structuredClone(window.restored)}:read(id);
+   window.bookwormApi.saveChapterDocument=async(chapterId,body)=>{window.requests.push(structuredClone(body));return{version:body.expectedVersion+1,document:{chapterId,version:body.expectedVersion+1,nodes:body.nodes}}};
+  });
+  await page.getByRole("button",{name:"Restore version 1",exact:true}).click();await page.waitForFunction(()=>typeof window.finishRestore==="function");
+  await page.evaluate(()=>{document.querySelector(".ProseMirror").editor.commands.insertContent(" AFTER-RESTORE");window.finishRestore();});
+  await page.getByText("Restored as version 2. Your later edits still use the previous draft; back them up and review before replacing them with the restored version.",{exact:true}).waitFor();
+  assert.match(await page.locator(".ProseMirror").innerText(),/AFTER-RESTORE/);assert.doesNotMatch(await page.locator(".ProseMirror").innerText(),/Server restored version/);
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
+  assert.equal(await page.evaluate(()=>window.requests.length),0);
+  assert.equal(await page.getByText(/The saved chapter changed while you had unsaved edits/).count(),1);
+  await page.evaluate(()=>{URL.createObjectURL=blob=>{window.restoreBackup=blob.text();return "blob:fixture"};HTMLAnchorElement.prototype.click=()=>{};});
+  await page.getByText("Back up chapter draft",{exact:true}).click();await page.getByRole("button",{name:"Download JSON backup",exact:true}).click();
+  const backup=JSON.parse(await page.evaluate(()=>window.restoreBackup));assert.equal(backup.baseVersion,1);assert.match(JSON.stringify(backup.nodes),/AFTER-RESTORE/);
+ }finally{await page.close()}
+});
+
+test("scratch lost restore retry preserves the original operation and later edit",async()=>{
+ const page=await fixture(1280,true);try{
+  await page.evaluate(()=>{window.confirm=()=>true;window.restoreBodies=[];window.restored=null;
+   window.bookwormApi.restoreDocumentVersion=async(chapterId,versionId,body)=>{window.restoreBodies.push(structuredClone(body));window.restored={chapterId,version:2,nodes:[{id:"restored",type:"paragraph",text:"Server restore"}]};if(window.restoreBodies.length===1)throw Error("Restore response lost");return{version:2,versionId:"saved-version",document:window.restored};};
+   window.bookwormApi.getChapterDocument=async()=>({role:"owner",document:structuredClone(window.restored)});
+  });
+  await page.getByRole("button",{name:"Restore version 1",exact:true}).click();await page.getByText("Restore response lost",{exact:true}).waitFor();
+  await page.evaluate(()=>document.querySelector(".ProseMirror").editor.commands.insertContent(" RESTORE-RETRY-LATER"));
+  await page.getByRole("button",{name:"Retry original restore",exact:true}).click();
+  await page.getByText("Restored as version 2. Your later edits still use the previous draft; back them up and review before replacing them with the restored version.",{exact:true}).waitFor();
+  const bodies=await page.evaluate(()=>window.restoreBodies);assert.deepEqual(bodies[0],bodies[1]);
+  assert.match(await page.locator(".ProseMirror").innerText(),/RESTORE-RETRY-LATER/);
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
+ }finally{await page.close()}
+});
+
+
+test("scratch same-turn keyboard save includes latest valid editor transaction",async()=>{
+ const page=await fixture(1280,true);try{
+  await page.evaluate(()=>{document.querySelector(".ProseMirror").editor.commands.insertContent(" SAME-TURN");window.dispatchEvent(new KeyboardEvent("keydown",{key:"s",ctrlKey:true,bubbles:true,cancelable:true}));});
+  await page.getByText("Saved · v2",{exact:true}).waitFor();
+  const req=await page.evaluate(()=>window.requests);assert.equal(req.length,1);assert.match(JSON.stringify(req[0].nodes),/SAME-TURN/);
+ }finally{await page.close()}
+});
+
+test("scratch same-turn invalid editor transaction blocks the keyboard save",async()=>{
+ const page=await fixture(1280,true);try{
+  await page.evaluate(()=>{const ed=document.querySelector(".ProseMirror").editor;ed.commands.setTextSelection(3);ed.commands.updateAttributes("orderedList",{start:1000000});window.dispatchEvent(new KeyboardEvent("keydown",{key:"s",ctrlKey:true,bubbles:true,cancelable:true}));});
+  await page.getByText(/not been sent to save/).waitFor();
+  assert.equal(await page.evaluate(()=>window.requests.length),0);
+ }finally{await page.close()}
+});
+
+
+test("scratch recovery preserves an edit arriving during final receipt digest",async()=>{
+ const page=await manualSaveFixture();try{
+  await page.evaluate(()=>{const original=crypto.subtle.digest.bind(crypto.subtle);let count=0;Object.defineProperty(crypto.subtle,"digest",{configurable:true,value:async(...args)=>{if(++count===4)await new Promise(resolve=>window.releaseRecoveryDigest=resolve);return original(...args)}});});
+  await page.getByRole("button",{name:"Check saved status",exact:true}).click();await page.waitForFunction(()=>typeof window.releaseRecoveryDigest==="function");
+  await page.evaluate(()=>{document.querySelector(".ProseMirror").editor.commands.insertContent(" RECOVERY-DIGEST-LATER");window.releaseRecoveryDigest();});
+  await page.getByText(/Your original save is confirmed at version 2/).waitFor();assert.match(await page.locator(".ProseMirror").innerText(),/RECOVERY-DIGEST-LATER/);
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
+ }finally{await page.close()}
+});
+
+test("scratch restore preserves a validation-only transaction for explicit reconciliation",async()=>{
+ const page=await fixture(1280,true);try{
+  await page.evaluate(()=>{window.confirm=()=>true;window.restored=null;
+   window.bookwormApi.restoreDocumentVersion=async(chapterId,versionId,body)=>{await new Promise(resolve=>window.finishRestore=resolve);window.restored={chapterId,version:2,nodes:[{id:"restored",type:"paragraph",text:"Saved restored content"}]};return{version:2,versionId:"saved-version",document:window.restored};};
+   const read=window.bookwormApi.getChapterDocument;window.bookwormApi.getChapterDocument=async id=>window.restored?{role:"owner",document:structuredClone(window.restored)}:read(id);
+  });
+  await page.getByRole("button",{name:"Restore version 1",exact:true}).click();await page.waitForFunction(()=>typeof window.finishRestore==="function");
+  await page.evaluate(()=>{const ed=document.querySelector(".ProseMirror").editor;ed.commands.setTextSelection(3);ed.commands.updateAttributes("orderedList",{start:1000000});window.finishRestore();});
+  await page.getByText("Restored as version 2. Your later edits still use the previous draft; back them up and review before replacing them with the restored version.",{exact:true}).waitFor();
+  await page.getByText(/not been sent to save/).waitFor();
+  assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
+  assert.match(await page.locator(".ProseMirror").innerText(),/Imported first step/);
+ }finally{await page.close()}
+});
+
+test("scratch restore preserves late edit during final receipt digest",async()=>{
+ const page=await fixture(1280,true);try{
+  await page.evaluate(()=>{window.confirm=()=>true;window.restored=null;
+   window.bookwormApi.restoreDocumentVersion=async(chapterId,versionId,body)=>{await new Promise(resolve=>window.finishRestore=resolve);window.restored={chapterId,version:2,nodes:[{id:"restored",type:"paragraph",text:"Saved restored content"}]};return{version:2,versionId:"saved-version",document:window.restored};};
+   const read=window.bookwormApi.getChapterDocument;window.bookwormApi.getChapterDocument=async id=>window.restored?{role:"owner",document:structuredClone(window.restored)}:read(id);
+  });
+  await page.getByRole("button",{name:"Restore version 1",exact:true}).click();await page.waitForFunction(()=>typeof window.finishRestore==="function");
+  await page.evaluate(()=>{const original=crypto.subtle.digest.bind(crypto.subtle);let count=0;Object.defineProperty(crypto.subtle,"digest",{configurable:true,value:async(...args)=>{if(++count===2)await new Promise(resolve=>window.releaseRestoreDigest=resolve);return original(...args)}});window.finishRestore();});
+  await page.waitForFunction(()=>typeof window.releaseRestoreDigest==="function");
+  await page.evaluate(()=>{document.querySelector(".ProseMirror").editor.commands.insertContent(" RESTORE-DIGEST-LATER");window.releaseRestoreDigest();});
+  await page.getByText("Restored as version 2. Your later edits still use the previous draft; back them up and review before replacing them with the restored version.",{exact:true}).waitFor();
+  assert.match(await page.locator(".ProseMirror").innerText(),/RESTORE-DIGEST-LATER/);assert.equal(await page.getByRole("button",{name:"Save chapter",exact:true}).isDisabled(),true);
+ }finally{await page.close()}
+});
+
+
+test("scratch same-turn JSON backup captures latest valid transaction",async()=>{
+ const page=await fixture(1280,true);try{
+  await page.evaluate(()=>{URL.createObjectURL=blob=>{window.sameTurnBackup=blob.text();return "blob:fixture"};HTMLAnchorElement.prototype.click=()=>{};document.querySelector(".ProseMirror").editor.commands.insertContent(" BACKUP-SAME-TURN");[...document.querySelectorAll("button")].find(x=>x.textContent==="Download JSON backup").click();});
+  const backup=JSON.parse(await page.evaluate(()=>window.sameTurnBackup));assert.equal(backup.baseVersion,1);assert.match(JSON.stringify(backup.nodes),/BACKUP-SAME-TURN/);assert.equal(backup.canonicalState,"current-draft");
+ }finally{await page.close()}
+});
+
+test("scratch same-turn JSON backup retains invalid editor state",async()=>{
+ const page=await fixture(1280,true);try{
+  await page.evaluate(()=>{URL.createObjectURL=blob=>{window.sameTurnBackup=blob.text();return "blob:fixture"};HTMLAnchorElement.prototype.click=()=>{};const ed=document.querySelector(".ProseMirror").editor;ed.commands.setTextSelection(3);ed.commands.updateAttributes("orderedList",{start:1000000});[...document.querySelectorAll("button")].find(x=>x.textContent==="Download JSON backup").click();});
+  const backup=JSON.parse(await page.evaluate(()=>window.sameTurnBackup));assert.equal(backup.baseVersion,1);assert.equal(backup.canonicalState,"last-valid-draft");assert.ok(backup.validationError);assert.ok(backup.editorDocument);
+ }finally{await page.close()}
+});

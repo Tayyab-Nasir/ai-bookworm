@@ -28,12 +28,16 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   const [book, setBook] = useState<Book | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [document, setDocument] = useState<EditorDocument | null>(null);
-  const [draft, setDraft] = useState<BookNode[]>([]);
+  const [draft, setDraftState] = useState<BookNode[]>([]);
+  const latestDraft = useRef(draft);
+  const setDraft = (nodes: BookNode[]) => { latestDraft.current = nodes; setDraftState(nodes); };
   const [editorSeed, setEditorSeed] = useState<BookNode[] | null>(null);
   const [versions, setVersions] = useState<DocumentVersionSummary[]>([]);
   const [role, setRole] = useState("viewer");
   const [dirty, setDirty] = useState(false);
-  const [editorValidation, setEditorValidation] = useState<EditorValidationError | null>(null);
+  const [editorValidation, setEditorValidationState] = useState<EditorValidationError | null>(null);
+  const latestValidation = useRef(editorValidation);
+  const setEditorValidation = (value: EditorValidationError | null) => { latestValidation.current = value; setEditorValidationState(value); };
   const [titleState, setTitleState] = useState<ChapterTitleEditorState>({ dirty: false, busy: false, pending: false });
   const titleBlocked = titleState.dirty || titleState.busy || titleState.pending;
   const hasUnsavedChanges = dirty || editorValidation !== null || titleState.dirty;
@@ -84,7 +88,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   const [saveRecoveryReady, setSaveRecoveryReady] = useState(false);
   const [manualSave, setManualSave] = useState<ChapterSavePointer | null>(null);
   const [saveMissing, setSaveMissing] = useState(false);
-  const [pendingRestore, setPendingRestore] = useState<{ owner: string; chapterId: string; versionId: string; body: { operationId: string; expectedVersion: number } } | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<{ owner: string; chapterId: string; versionId: string; draftRevision: number; body: { operationId: string; expectedVersion: number } } | null>(null);
   const [restoreHidden, setRestoreHidden] = useState<string | null>(null);
   const [accountVerifying, setAccountVerifying] = useState(false);
   const [passiveCheck, setPassiveCheck] = useState<"checking" | "blocked" | null>(null);
@@ -248,12 +252,12 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   }, [hasUnsavedChanges, hasAnyChapterSetup, hasChapterSetup, titleBlocked, manualSave, pendingRestore, pendingOrder]);
 
   const save = useCallback(async (retry = false) => {
-    if (!document || passiveLocked.current || !editorInteractionAvailable.current || loadTransition.current !== null || titleBlocked || saveFlight.current !== null || saving || loading || aiDecisionBusy || conflict || !dirty || pendingRestore || editorValidation || !EDIT_ROLES.has(role)
+    if (!document || passiveLocked.current || !editorInteractionAvailable.current || loadTransition.current !== null || titleBlocked || saveFlight.current !== null || saving || loading || aiDecisionBusy || conflict || !liveDraft.current || pendingRestore || (latestValidation.current && !retry) || !EDIT_ROLES.has(role)
       || !saveAccount || !saveRecoveryReady || (manualSave && (!retry || !saveMissing || !pendingSave.current))) return;
     const sequence = loadSequence.current, accountEpoch = passiveEpoch.current;
     saveFlight.current = sequence;
     setSaving(true); setError(null); setNotice(null);
-    const request = pendingSave.current ?? { operationId: crypto.randomUUID(), nodes: structuredClone(draft), expectedVersion: document.version };
+    const request = pendingSave.current ?? { operationId: crypto.randomUUID(), nodes: structuredClone(latestDraft.current), expectedVersion: document.version };
     pendingSave.current = request;
     try {
       await editorAccount(saveAccount);
@@ -270,9 +274,14 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       if (result.version !== result.document.version) throw new Error("The saved revision could not be confirmed. Check its original status.");
       await editorAccount(pointer.userId);
       if (sequence !== loadSequence.current) return;
+      const revision = draftRevision.current, currentDraft = structuredClone(latestDraft.current);
+      const matchesReceipt = await chapterSaveDigest(currentDraft) === pointer.digest;
+      if (sequence !== loadSequence.current) return;
+      const hasLaterChanges = revision !== draftRevision.current || latestValidation.current !== null || !matchesReceipt;
       clearChapterSave(window.sessionStorage, pointer);
-      setManualSave(null); setDocument(result.document); setDraft(result.document.nodes); setEditorSeed(null); setDirty(false); pendingSave.current = null;
-      setNotice(`Saved version ${result.version}.`);
+      setManualSave(null); setDocument(result.document); pendingSave.current = null;
+      if (hasLaterChanges) { setDirty(true); setNotice(`Saved version ${result.version}; newer edits remain unsaved.`); }
+      else { setDraft(result.document.nodes); setEditorSeed(null); setDirty(false); setNotice(`Saved version ${result.version}.`); }
       try { const history = await api.listDocumentVersions(document.chapterId, pointer.userId); await editorAccount(pointer.userId); if (sequence === loadSequence.current) setVersions(history.versions); }
       catch {
         try { await editorAccount(pointer.userId); } catch { if (sequence === loadSequence.current) setRestoreHidden(pointer.userId); }
@@ -312,12 +321,15 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       if (result.receipt && current.document.version === result.receipt.document.version
         && await chapterSaveDigest(current.document.nodes) !== await chapterSaveDigest(result.receipt.document.nodes))
         throw new Error("The current chapter could not be verified against its immutable receipt. Keep this recovery record and check again.");
-      const exactSavedDraft = result.status === "saved" && current.document.version === pointer.expectedVersion + 1 && await chapterSaveDigest(draft) === pointer.digest;
+      const revision = draftRevision.current, currentDraft = structuredClone(latestDraft.current);
+      const exactSavedDraft = result.status === "saved" && current.document.version === pointer.expectedVersion + 1
+        && await chapterSaveDigest(currentDraft) === pointer.digest;
       if (sequence !== loadSequence.current) return;
+      const retainLocalDraft = revision !== draftRevision.current || latestValidation.current !== null || (liveDraft.current && !exactSavedDraft);
       clearChapterSave(window.sessionStorage, pointer);
       setManualSave(null); setSaveMissing(false); pendingSave.current = null; setVersions(history.versions);
-      if (hasUnsavedChanges && !exactSavedDraft) {
-        setConflict(true);
+      if (retainLocalDraft) {
+        setDirty(true); setConflict(true);
         setNotice(`${result.status === "saved" ? `Your original save is confirmed at version ${pointer.expectedVersion + 1}.` : "The original request is safely closed or superseded."} Your local draft is still here. Back it up before loading the current saved chapter.`);
       } else {
         setDocument(current.document); setDraft(current.document.nodes); setEditorSeed(null); setRole(current.role); setDirty(false); setEditorValidation(null); setConflict(false); setReloadKey(v => v + 1);
@@ -466,7 +478,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     if (pendingRestore && (pendingRestore.versionId !== versionId || pendingRestore.chapterId !== document.chapterId)) return;
     if (!pendingRestore && !window.confirm("Restore this version as a new saved version? Current saved history will remain available.")) return;
     if (!pendingRestore && hasUnsavedChanges && !window.confirm("Your unsaved draft will be replaced. Continue?")) return;
-    const request = pendingRestore ?? { owner: saveAccount, chapterId: document.chapterId, versionId, body: { expectedVersion: document.version, operationId: crypto.randomUUID() } };
+    const request = pendingRestore ?? { owner: saveAccount, chapterId: document.chapterId, versionId, draftRevision: draftRevision.current, body: { expectedVersion: document.version, operationId: crypto.randomUUID() } };
     if (request.owner !== saveAccount) return;
     const sequence = loadSequence.current, accountEpoch = passiveEpoch.current;
     restoring.current = true;
@@ -500,9 +512,13 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       if (sequence !== loadSequence.current) return;
       // Adopt the confirmed receipt before refreshing history. A failed history
       // request must not leave the old draft marked as the restored manuscript.
-      setDocument(current.document); setDraft(current.document.nodes); setEditorSeed(null); setRole(current.role); setDirty(false); setEditorValidation(null);
-      setPendingRestore(null); setConflict(false); pendingSave.current = null; setReloadKey((v) => v + 1);
-      setNotice(`Restored as version ${result.version}.`);
+      setRole(current.role); setPendingRestore(null); pendingSave.current = null;
+      if (draftRevision.current !== request.draftRevision) {
+        setDirty(true); setConflict(true); setNotice(`Restored as version ${result.version}. Your later edits still use the previous draft; back them up and review before replacing them with the restored version.`);
+      } else {
+        setDocument(current.document); setConflict(false); setDraft(current.document.nodes); setEditorSeed(null); setDirty(false); setEditorValidation(null); setReloadKey((v) => v + 1);
+        setNotice(`Restored as version ${result.version}.`);
+      }
       try { const history = await api.listDocumentVersions(request.chapterId, request.owner); await editorAccount(request.owner); if (sequence === loadSequence.current) setVersions(history.versions); }
       catch {
         try { await editorAccount(request.owner); }
@@ -525,11 +541,12 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   const downloadDraft = (format: "json" | "txt" = "json") => {
     if (!document || passiveLocked.current || !editorInteractionAvailable.current || loading) return;
     const backupActor = saveAccount ?? editorOwner.current ?? "";
-    const content = format === "txt" ? editorValidation?.draftText ?? bookNodesPlainText(draft)
+    const currentDraft = latestDraft.current, currentValidation = latestValidation.current;
+    const content = format === "txt" ? currentValidation?.draftText ?? bookNodesPlainText(currentDraft)
       : JSON.stringify(chapterDraftBackup({ userId: backupActor, bookId, chapterId: document.chapterId, baseVersion: document.version,
-        nodes: draft, capturedAt: new Date().toISOString(), validation: editorValidation }), null, 2);
+        nodes: currentDraft, capturedAt: new Date().toISOString(), validation: currentValidation }), null, 2);
     const blob = new Blob([content], { type: format === "txt" ? "text/plain;charset=utf-8" : "application/json;charset=utf-8" });
-    const warning = format === "json" ? chapterDraftReopenWarning(content, blob.size, Boolean(editorValidation), { userId: backupActor, bookId, chapterId: document.chapterId, baseVersion: document.version }) : null;
+    const warning = format === "json" ? chapterDraftReopenWarning(content, blob.size, Boolean(currentValidation), { userId: backupActor, bookId, chapterId: document.chapterId, baseVersion: document.version }) : null;
     if (warning) setNotice(warning);
     const url = URL.createObjectURL(blob); const link = window.document.createElement("a");
     link.href = url; link.download = `bookworm-chapter-${document.chapterId}-draft.${format}`;
@@ -583,7 +600,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       if (!window.confirm("Replace the current editor draft with this local backup? The backup will remain unsaved until you review and save it.")) return;
       if (!await verifyLatest() || !current()) return;
       if (draftRevision.current !== confirmedRevision) throw new Error("Your draft changed while the backup was being checked. Choose the file again to review the replacement.");
-      setEditorSeed(nodes); setDraft(nodes); setDirty(true); setEditorValidation(null); setError(null);
+      draftRevision.current++; liveDraft.current = true; setEditorSeed(nodes); setDraft(nodes); setDirty(true); setEditorValidation(null); setError(null);
       pendingSave.current = null; setReloadKey(value => value + 1);
       setNotice("Local backup opened as an unsaved draft. Review it and save when ready. Artwork files are not included in the backup.");
     } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "The local backup could not be opened."); }
@@ -634,7 +651,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       {pendingOrder.observed && <p role="status" className="mt-2">{pendingOrder.observed}</p>}
       <button type="button" disabled={saving || loading} className="mt-3 underline" onClick={() => void checkPendingOrder()}>Check saved chapter order</button>
     </section>}
-    {conflict && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Another save changed this chapter. Your unsaved draft is still here. Download the JSON backup before reloading if you need to merge changes. It preserves artwork references, not image files.</p><button className="mr-4 mt-3 underline" onClick={() => downloadDraft()}>Download my draft</button><button className="underline" onClick={() => { if (document && window.confirm("Reload saved content and replace this unsaved draft?")) void loadChapter(document.chapterId); }}>Reload saved version</button></div>}
+    {conflict && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>The saved chapter changed while you had unsaved edits. Your draft is still here. Download the JSON backup before reloading if you need to merge changes. It preserves artwork references, not image files.</p><button className="mr-4 mt-3 underline" onClick={() => downloadDraft()}>Download my draft</button><button className="underline" onClick={() => { if (document && window.confirm("Reload saved content and replace this unsaved draft?")) void loadChapter(document.chapterId); }}>Reload saved version</button></div>}
     <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_260px]">
       <aside className="self-start rounded-2xl border border-white/10 p-2">
         <button type="button" className="flex min-h-11 w-full items-center justify-between px-3 text-sm text-white/75 lg:hidden" aria-expanded={structureOpen} aria-controls="chapter-structure" onClick={() => setStructureOpen((open) => !open)}><span>Chapters · {chapters.length}</span><span>{structureOpen ? "Hide" : "Show"}</span></button>
@@ -658,7 +675,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
           captureAccountEpoch={() => passiveEpoch.current} accountEpochCurrent={epoch => !passiveLocked.current && childActionsAvailable.current && passiveEpoch.current === epoch}
           onState={setTitleState} onTitle={title => setChapters(items => items.map(chapter => chapter.id === document.chapterId ? { ...chapter, title } : chapter))} />}
         {document && <p className="mb-3 px-1 text-right text-xs tabular-nums text-white/45">{wordCount.toLocaleString()} words</p>}
-        {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={editorSeed ? { ...document, nodes: editorSeed } : document} workspaceId={book.workspace_id} actorId={saveAccount ?? ""} permissions={editable && !saving && !aiDecisionBusy ? "editor" : "viewer"} onValidationChange={(value) => { draftRevision.current++; setEditorValidation(value); }} onChange={(nodes) => { if (aiDecisionBusy || manualSave || saveFlight.current !== null) return; draftRevision.current++; setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border-dashed border border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
+        {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={editorSeed ? { ...document, nodes: editorSeed } : document} workspaceId={book.workspace_id} actorId={saveAccount ?? ""} permissions={editable && !saving && !aiDecisionBusy ? "editor" : "viewer"} onValidationChange={(value) => { draftRevision.current++; latestValidation.current = value; if (value) liveDraft.current = true; setEditorValidation(value); }} onChange={(nodes) => { if (aiDecisionBusy) return; draftRevision.current++; latestDraft.current = nodes; liveDraft.current = true; setDraft(nodes); setDirty(true); if (!manualSave && saveFlight.current === null) pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border-dashed border border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
       </section>
       <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">
         {book?.id === bookId && editorOwner.current && <AiAssistantPanel key={`${editorOwner.current}:${document?.chapterId ?? "empty"}`} actorId={editorOwner.current} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} initialDraftInstruction={document?.chapterId === draftPlanTargetChapterId ? initialDraftInstruction : undefined} dirty={hasUnsavedChanges} editable={editable && !saving && !loading} canDispatch={() => !passiveLocked.current && childActionsAvailable.current} onDecisionBusy={setAiDecisionBusy} onApplied={async () => { if (passiveLocked.current || !childActionsAvailable.current) throw new Error("Verify the original account before refreshing the saved chapter."); if (liveDraft.current) throw new Error("Back up the unsaved draft before refreshing the saved chapter."); if (document && editorSequence === loadSequence.current) await loadChapter(document.chapterId, true, true); }} />}
