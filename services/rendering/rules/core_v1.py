@@ -3,6 +3,8 @@
 Generic, channel-agnostic checks. Values here follow public EPUB3 spec + common sense;
 channel-specific thresholds live in the channel rule modules.
 """
+import struct
+
 from editions import language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
 from print_fonts import BASE_FONTS, EMBEDDED_FONTS, print_font_issues
@@ -11,7 +13,7 @@ from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.11"
+VERSION = "core-1.0.12"
 
 
 def _find(code, msg, loc=""):
@@ -45,9 +47,18 @@ def check_mimetype_first(ctx):
     if zf is None:
         return []
     infos = zf.infolist()
-    if not infos or infos[0].filename != "mimetype" or infos[0].compress_type != 0:
-        return _find("MIMETYPE", "mimetype must be first zip entry, stored uncompressed", "mimetype")
-    if infos[0].file_size != len(b"application/epub+zip") or zf.read(infos[0]) != b"application/epub+zip":
+    first = min(infos, key=lambda info: info.header_offset) if infos else None
+    blob = ctx["artifact"]
+    # The central directory can list entries in a different order from their
+    # physical local headers. EPUB identification must begin at byte zero.
+    if not first or first.filename != "mimetype" or first.header_offset != 0 or len(blob) < 30:
+        return _find("MIMETYPE", "mimetype must be the first physical ZIP entry, stored uncompressed without extra fields", "mimetype")
+    signature, _version, flags, compression, _time, _date, _crc, _compressed, _size, name_len, extra_len = struct.unpack_from("<IHHHHHIIIHH", blob)
+    if (signature != 0x04034B50 or flags != first.flag_bits or flags & 1 or compression != 0
+            or first.compress_type != 0 or first.extra or extra_len != 0
+            or name_len != len(b"mimetype") or blob[30:30 + name_len] != b"mimetype"):
+        return _find("MIMETYPE", "mimetype must be the first physical ZIP entry, stored uncompressed without extra fields", "mimetype")
+    if first.file_size != len(b"application/epub+zip") or zf.read(first) != b"application/epub+zip":
         return _find("MIMETYPE_CONTENT", "mimetype content must be application/epub+zip", "mimetype")
     return []
 
