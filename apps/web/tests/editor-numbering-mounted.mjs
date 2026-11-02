@@ -1091,10 +1091,158 @@ test("explicit local draft backup preserves rows-only tables, captions, styles a
     assert.doesNotMatch(backup.plainText, /Private accessibility/);
     await page.getByRole("button", { name: "Download draft text", exact: true }).click();
     assert.equal(await page.evaluate(async () => window.localBackups[1].text()), backup.plainText);
+    const confirmation = page.waitForEvent("dialog");
+    await page.getByLabel("Open a JSON backup from this account and saved chapter version").setInputFiles({ name: "backup.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+    await (await confirmation).accept();
+    await page.getByText(/Local backup opened as an unsaved draft/).waitFor();
+    await page.getByText("Three bridges", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Download JSON backup", exact: true }).click();
+    const reopened = await page.evaluate(async () => JSON.parse(await window.localBackups[2].text()));
+    assert.deepEqual(reopened.nodes, backup.nodes, "reopening preserves original tables, illustration references and list attributes");
     assert.equal(await page.evaluate(() => window.requests.length), 0);
     assert.equal(await page.evaluate(() => [...Object.values(localStorage), ...Object.values(sessionStorage)].some(value => value.includes("moonlit harbour"))), false);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({ path: resolve(artifacts, "chapter-backup-mobile.png"), fullPage: true });
+  } finally { await page.close(); }
+});
+
+test("local draft recovery requires confirmation and remains unsaved", async () => {
+  const page = await fixture(375, true);
+  try {
+    await page.getByText("Imported first step", { exact: true }).click(); await page.keyboard.press("End"); await page.keyboard.type(" current private draft");
+    const backup = { format: "bookworm-chapter-draft", formatVersion: 2, userId: "fixture-author", bookId: "book", chapterId: "chapter", baseVersion: 1, canonicalState: "current-draft", plainText: "Recovered private draft", nodes: [{ id: "recovered", type: "paragraph", text: "Recovered private draft" }] };
+    await page.getByText("Back up chapter draft", { exact: true }).click();
+    const input = page.getByLabel("Open a JSON backup from this account and saved chapter version");
+    const select = async value => input.setInputFiles({ name: "draft.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(value)) });
+    let dialog = page.waitForEvent("dialog"); await select(backup); await (await dialog).dismiss();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /current private draft/);
+    await select({ ...backup, userId: "different-author" }); await page.getByText(/different account, book, or chapter/).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /current private draft/);
+    await select({ ...backup, baseVersion: 2 }); await page.getByText(/saved chapter has changed/).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /current private draft/);
+    dialog = page.waitForEvent("dialog"); await select(backup); await (await dialog).accept();
+    await page.getByText("Recovered private draft", { exact: true }).waitFor();
+    await page.getByText(/Local backup opened as an unsaved draft/).waitFor();
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+    assert.equal(await page.evaluate(() => [...Object.values(localStorage), ...Object.values(sessionStorage)].some(value => value.includes("Recovered private draft"))), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  } finally { await page.close(); }
+});
+
+test("draft recovery refuses a newer saved revision and revoked edit access", async () => {
+  for (const scenario of ["version", "role"]) {
+    const page = await fixture(1280, true);
+    try {
+      await page.evaluate(scenario => { window.bookwormApi.getChapterDocument = async id => ({ role: scenario === "role" ? "viewer" : "owner", document: { chapterId: id, version: scenario === "version" ? 2 : 1, nodes: structuredClone(window.nodes) } }); }, scenario);
+      const backup = { format: "bookworm-chapter-draft", formatVersion: 2, userId: "fixture-author", bookId: "book", chapterId: "chapter", baseVersion: 1, canonicalState: "current-draft", plainText: "Recovery candidate", nodes: [{ id: "candidate", type: "paragraph", text: "Recovery candidate" }] };
+      await page.getByText("Back up chapter draft", { exact: true }).click();
+      await page.getByLabel("Open a JSON backup from this account and saved chapter version").setInputFiles({ name: "draft.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+      await page.getByText(scenario === "version" ? /saved chapter has changed/ : /Editing access could not be confirmed/).waitFor();
+      assert.equal(await page.getByText("Recovery candidate", { exact: true }).count(), 0);
+      assert.equal(await page.evaluate(() => window.requests.length), 0);
+    } finally { await page.close(); }
+  }
+});
+
+test("a delayed draft file cannot replace a different chapter", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => { const original = File.prototype.arrayBuffer; File.prototype.arrayBuffer = function () { const file = this; return new Promise(resolve => { window.releaseBackupRead = () => original.call(file).then(resolve); }); }; });
+    const backup = { format: "bookworm-chapter-draft", formatVersion: 2, userId: "fixture-author", bookId: "book", chapterId: "chapter", baseVersion: 1, canonicalState: "current-draft", plainText: "Late draft", nodes: [{ id: "late", type: "paragraph", text: "Late draft" }] };
+    await page.getByText("Back up chapter draft", { exact: true }).click();
+    await page.getByLabel("Open a JSON backup from this account and saved chapter version").setInputFiles({ name: "draft.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+    await page.waitForFunction(() => typeof window.releaseBackupRead === "function");
+    await page.getByRole("navigation", { name: "Chapters" }).getByText("Second chapter", { exact: true }).click();
+    await page.waitForFunction(() => window.documentReads.includes("second"));
+    await page.evaluate(() => window.releaseBackupRead());
+    await page.waitForTimeout(200);
+    assert.equal(await page.getByText("Late draft", { exact: true }).count(), 0);
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+  } finally { await page.close(); }
+});
+
+test("draft file is not applied when the account changes during reading", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => { const original = File.prototype.arrayBuffer; File.prototype.arrayBuffer = function () { const file = this; return new Promise(resolve => { window.releaseBackupRead = () => original.call(file).then(resolve); }); }; });
+    const backup = { format: "bookworm-chapter-draft", formatVersion: 2, userId: "fixture-author", bookId: "book", chapterId: "chapter", baseVersion: 1, canonicalState: "current-draft", plainText: "Foreign draft", nodes: [{ id: "foreign", type: "paragraph", text: "Foreign draft" }] };
+    await page.getByText("Back up chapter draft", { exact: true }).click();
+    await page.getByLabel("Open a JSON backup from this account and saved chapter version").setInputFiles({ name: "draft.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+    await page.waitForFunction(() => typeof window.releaseBackupRead === "function");
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: "different-author" } } }));
+    await page.evaluate(() => window.releaseBackupRead());
+    await page.getByText(/original account could not be verified/).first().waitFor();
+    assert.equal(await page.getByText("Foreign draft", { exact: true }).count(), 0);
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+  } finally { await page.close(); }
+});
+
+test("typing while the confirmed draft backup is rechecked does not lose the newer edit", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      let calls = 0;
+      window.bookwormApi.getChapterDocument = id => {
+        const result = { role: "owner", document: { chapterId: id, version: 1, nodes: structuredClone(window.nodes) } };
+        if (++calls === 2) return new Promise(resolve => { window.releaseFinalBackupRead = () => resolve(result); });
+        return Promise.resolve(result);
+      };
+    });
+    const backup = { format: "bookworm-chapter-draft", formatVersion: 2, userId: "fixture-author", bookId: "book", chapterId: "chapter", baseVersion: 1, canonicalState: "current-draft", plainText: "Recovery candidate", nodes: [{ id: "candidate", type: "paragraph", text: "Recovery candidate" }] };
+    await page.getByText("Back up chapter draft", { exact: true }).click();
+    const dialog = page.waitForEvent("dialog");
+    await page.getByLabel("Open a JSON backup from this account and saved chapter version").setInputFiles({ name: "draft.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+    await (await dialog).accept(); await page.waitForFunction(() => typeof window.releaseFinalBackupRead === "function");
+    await page.getByText("Imported first step", { exact: true }).click(); await page.keyboard.press("End"); await page.keyboard.type(" latest edit");
+    await page.evaluate(() => window.releaseFinalBackupRead());
+    await page.getByText(/draft changed while the backup was being checked/).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /latest edit/);
+    assert.equal(await page.getByText("Recovery candidate", { exact: true }).count(), 0);
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
+  } finally { await page.close(); }
+});
+
+test("invalid live editor changes during backup recheck are not replaced", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      let calls = 0;
+      window.bookwormApi.getChapterDocument = id => {
+        const result = { role: "owner", document: { chapterId: id, version: 1, nodes: structuredClone(window.nodes) } };
+        if (++calls === 2) return new Promise(resolve => { window.releaseInvalidBackupRead = () => resolve(result); });
+        return Promise.resolve(result);
+      };
+    });
+    const backup = { format: "bookworm-chapter-draft", formatVersion: 2, userId: "fixture-author", bookId: "book", chapterId: "chapter", baseVersion: 1, canonicalState: "current-draft", plainText: "Recovery candidate", nodes: [{ id: "candidate", type: "paragraph", text: "Recovery candidate" }] };
+    await page.getByText("Back up chapter draft", { exact: true }).click();
+    const dialog = page.waitForEvent("dialog");
+    await page.getByLabel("Open a JSON backup from this account and saved chapter version").setInputFiles({ name: "draft.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+    await (await dialog).accept(); await page.waitForFunction(() => typeof window.releaseInvalidBackupRead === "function");
+    await page.getByText("Imported first step", { exact: true }).click();
+    await page.getByRole("spinbutton", { name: "Start list at" }).fill("1000000");
+    await page.getByRole("alert").waitFor();
+    await page.evaluate(() => window.releaseInvalidBackupRead());
+    await page.getByText(/draft changed while the backup was being checked/).waitFor();
+    assert.equal(await page.getByText("Recovery candidate", { exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Save chapter", exact: true }).isDisabled(), true);
+  } finally { await page.close(); }
+});
+
+test("a saved revision changed while confirming leaves the current draft intact", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      let calls = 0;
+      window.bookwormApi.getChapterDocument = async id => ({ role: "owner", document: { chapterId: id, version: ++calls === 1 ? 1 : 2, nodes: structuredClone(window.nodes) } });
+    });
+    const backup = { format: "bookworm-chapter-draft", formatVersion: 2, userId: "fixture-author", bookId: "book", chapterId: "chapter", baseVersion: 1, canonicalState: "current-draft", plainText: "Recovery candidate", nodes: [{ id: "candidate", type: "paragraph", text: "Recovery candidate" }] };
+    await page.getByText("Back up chapter draft", { exact: true }).click();
+    const dialog = page.waitForEvent("dialog");
+    await page.getByLabel("Open a JSON backup from this account and saved chapter version").setInputFiles({ name: "draft.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(backup)) });
+    await (await dialog).accept();
+    await page.getByText(/saved chapter has changed/).waitFor();
+    assert.equal(await page.getByText("Recovery candidate", { exact: true }).count(), 0);
+    assert.equal(await page.evaluate(() => window.requests.length), 0);
   } finally { await page.close(); }
 });
 

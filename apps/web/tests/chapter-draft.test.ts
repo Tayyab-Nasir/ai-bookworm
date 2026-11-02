@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chapterDraftBackup } from "../lib/chapter-draft";
+import { chapterDraftBackup, chapterDraftExportWarning, chapterDraftReopenWarning, parseChapterDraftBackup, MAX_CHAPTER_DRAFT_BACKUP_BYTES } from "../lib/chapter-draft";
 import type { BookNode } from "@bookworm/book-model";
 
 const nodes: BookNode[] = [
@@ -9,12 +9,13 @@ const nodes: BookNode[] = [
   { id: "picture", type: "image", assetId: "11111111-1111-4111-8111-111111111111", assetVersionNumber: 7, caption: "A moonlit harbour", altText: "Accessibility text is not manuscript prose" },
   { id: "list", type: "listItem", text: "First observation", attributes: { listStyle: "ordered", listStart: 12, listNumberStyle: "upper-roman" } },
 ];
-const input = { bookId: "book", chapterId: "chapter", baseVersion: 4, capturedAt: "2026-10-13T12:00:00.000Z", nodes };
+const input = { userId: "author", bookId: "book", chapterId: "chapter", baseVersion: 4, capturedAt: "2026-10-13T12:00:00.000Z", nodes };
 
 test("local JSON chapter backup preserves complete rich nodes and exact saved base identity", () => {
   const backup = JSON.parse(JSON.stringify(chapterDraftBackup(input)));
   assert.equal(backup.format, "bookworm-chapter-draft");
-  assert.equal(backup.formatVersion, 1);
+  assert.equal(backup.formatVersion, 2);
+  assert.equal(backup.userId, "author");
   assert.equal(backup.canonicalState, "current-draft");
   assert.deepEqual(backup.nodes, nodes);
   assert.equal(backup.baseVersion, 4);
@@ -24,6 +25,33 @@ test("local JSON chapter backup preserves complete rich nodes and exact saved ba
   assert.doesNotMatch(backup.plainText, /Accessibility/u);
   assert.equal("editorDocument" in backup, false);
   assert(backup.limitations.some((notice: string) => notice.includes("image bytes are not embedded")));
+});
+
+test("reopening validates identity, base revision and manuscript blocks", () => {
+  const backup = chapterDraftBackup(input);
+  const parse = (value: unknown, scope = input) => parseChapterDraftBackup(JSON.stringify(value), scope);
+  assert.deepEqual(parse(backup), nodes);
+  for (const [scope, message] of [[{ ...input, userId: "other" }, /different account/], [{ ...input, bookId: "other" }, /different account/], [{ ...input, chapterId: "other" }, /different account/], [{ ...input, baseVersion: 5 }, /has changed/]] as const) assert.throws(() => parse(backup, scope), message);
+  assert.throws(() => parse({ ...backup, formatVersion: 1 }), /Earlier backups/);
+  assert.throws(() => parse({ ...backup, canonicalState: "last-valid-draft" }), /invalid editor state/);
+  assert.throws(() => parse({ ...backup, nodes: [...nodes, nodes[0]] }), /invalid manuscript blocks/);
+  assert.throws(() => parse({ ...backup, nodes: [{ id: "bad", type: "script" }] }), /invalid manuscript blocks/);
+  assert.throws(() => parse({ ...backup, nodes: [{ id: "bad", type: "listItem", attributes: { listDepth: { toString: null, valueOf: null } } }] }), /invalid manuscript blocks/);
+  assert.throws(() => parse({ ...backup, plainText: "altered" }), /text does not match/);
+  assert.throws(() => parse({ ...backup, userId: "" }, { ...input, userId: "" }), /could not be verified/);
+  assert.throws(() => parseChapterDraftBackup("{", input), /valid JSON/);
+});
+
+test("oversize and invalid editor backups explicitly say they cannot be reopened", () => {
+  assert.equal(chapterDraftExportWarning(MAX_CHAPTER_DRAFT_BACKUP_BYTES, false, "author"), null);
+  assert.match(chapterDraftExportWarning(MAX_CHAPTER_DRAFT_BACKUP_BYTES + 1, false, "author")!, /exceeds 5 MB/);
+  assert.match(chapterDraftExportWarning(1, true, "author")!, /invalid editor state/);
+  assert.match(chapterDraftExportWarning(1, false, "")!, /no verified account identity/);
+  const good = chapterDraftBackup(input);
+  assert.equal(chapterDraftReopenWarning(JSON.stringify(good), 100, false, input), null);
+  for (const bad of [{ ...good, nodes: [...nodes, nodes[0]] }, { ...good, plainText: "mismatch" }, { ...good, nodes: Array.from({ length: 20001 }, (_, i) => ({ id: String(i), type: "paragraph", text: "" })) }, { ...good, nodes: [{ id: "bad", type: "listItem", attributes: { listDepth: { toString: null } } }] }]) {
+    assert.match(chapterDraftReopenWarning(JSON.stringify(bad), 100, false, input)!, /cannot be reopened automatically/);
+  }
 });
 
 test("invalid numbering backup labels canonical nodes as last-valid and captures actual editor state", () => {

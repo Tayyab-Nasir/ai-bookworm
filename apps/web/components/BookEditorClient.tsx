@@ -13,7 +13,7 @@ import RichBookEditor, { type EditorDocument, type EditorValidationError } from 
 import VersionTimeline from "./VersionTimeline";
 import AiAssistantPanel from "./AiAssistantPanel";
 import { storyBlueprintWriterBrief } from "../lib/story-blueprint-draft";
-import { chapterDraftBackup } from "../lib/chapter-draft";
+import { chapterDraftBackup, chapterDraftReopenWarning, parseChapterDraftBackup, MAX_CHAPTER_DRAFT_BACKUP_BYTES } from "../lib/chapter-draft";
 import { chapterSaveDigest, chapterSaveKey, clearChapterSave, editorAccount, parseChapterSave, persistChapterSave,
   validateChapterSaveResult, validateCurrentChapter, validateSavedChapter, type ChapterSavePointer } from "../lib/manual-chapter-save";
 
@@ -29,6 +29,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [document, setDocument] = useState<EditorDocument | null>(null);
   const [draft, setDraft] = useState<BookNode[]>([]);
+  const [editorSeed, setEditorSeed] = useState<BookNode[] | null>(null);
   const [versions, setVersions] = useState<DocumentVersionSummary[]>([]);
   const [role, setRole] = useState("viewer");
   const [dirty, setDirty] = useState(false);
@@ -70,6 +71,8 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   const [accountVerifying, setAccountVerifying] = useState(false);
   const restoring = useRef(false);
   const liveDraft = useRef(hasUnsavedChanges); liveDraft.current = hasUnsavedChanges;
+  const draftRevision = useRef(0);
+  const backupRead = useRef(0);
 
   const loadChapter = useCallback(async (chapterId: string, reportFailure = false, preserveCurrentReview = false, expectedActor?: string) => {
     const sequence = ++loadSequence.current;
@@ -84,7 +87,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       setLoading(true);
       // Keep a confirmed same-chapter AI review mounted during its refresh, never across targets or a failed revalidation.
       if (!preserveCurrentReview) { setDocument(null); setDraft([]); setVersions([]); setRole("viewer"); }
-      setDirty(false); setEditorValidation(null); setConflict(false); setError(null); setNotice(null);
+      setEditorSeed(null); setDirty(false); setEditorValidation(null); setConflict(false); setError(null); setNotice(null);
       pendingSave.current = null;
       setSaveRecoveryReady(false); setManualSave(null); setSaveMissing(false); setSaveAccount(null);
       const [content, history] = await Promise.all([api.getChapterDocument(chapterId, userId), api.listDocumentVersions(chapterId, userId)]);
@@ -120,7 +123,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     loadTransition.current = null;
     editorOwner.current = null;
     setAccountVerifying(false); setRestoreHidden(null);
-    setBook(null); setChapters([]); setDocument(null); setDraft([]); setVersions([]); setRole("viewer");
+    setBook(null); setChapters([]); setDocument(null); setDraft([]); setEditorSeed(null); setVersions([]); setRole("viewer");
     setDirty(false); setEditorValidation(null); setSaving(false); setLoading(true); setError(null); setNotice(null);
     setConflict(false); setPendingRestore(null); setRequestedChapterId(null);
     pendingSave.current = null; creatingChapter.current = false; restoring.current = false;
@@ -204,7 +207,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       await editorAccount(pointer.userId);
       if (sequence !== loadSequence.current) return;
       clearChapterSave(window.sessionStorage, pointer);
-      setManualSave(null); setDocument(result.document); setDraft(result.document.nodes); setDirty(false); pendingSave.current = null;
+      setManualSave(null); setDocument(result.document); setDraft(result.document.nodes); setEditorSeed(null); setDirty(false); pendingSave.current = null;
       setNotice(`Saved version ${result.version}.`);
       try { const history = await api.listDocumentVersions(document.chapterId, pointer.userId); await editorAccount(pointer.userId); if (sequence === loadSequence.current) setVersions(history.versions); }
       catch {
@@ -252,7 +255,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
         setConflict(true);
         setNotice(`${result.status === "saved" ? `Your original save is confirmed at version ${pointer.expectedVersion + 1}.` : "The original request is safely closed or superseded."} Your local draft is still here. Back it up before loading the current saved chapter.`);
       } else {
-        setDocument(current.document); setDraft(current.document.nodes); setRole(current.role); setDirty(false); setEditorValidation(null); setConflict(false); setReloadKey(v => v + 1);
+        setDocument(current.document); setDraft(current.document.nodes); setEditorSeed(null); setRole(current.role); setDirty(false); setEditorValidation(null); setConflict(false); setReloadKey(v => v + 1);
         setNotice(`${result.status === "saved" ? "Original save confirmed." : "Original request closed or superseded."} Loaded saved version ${current.document.version}.`);
       }
     } catch (reason) {
@@ -419,7 +422,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       if (sequence !== loadSequence.current) return;
       // Adopt the confirmed receipt before refreshing history. A failed history
       // request must not leave the old draft marked as the restored manuscript.
-      setDocument(current.document); setDraft(current.document.nodes); setRole(current.role); setDirty(false); setEditorValidation(null);
+      setDocument(current.document); setDraft(current.document.nodes); setEditorSeed(null); setRole(current.role); setDirty(false); setEditorValidation(null);
       setPendingRestore(null); setConflict(false); pendingSave.current = null; setReloadKey((v) => v + 1);
       setNotice(`Restored as version ${result.version}.`);
       try { const history = await api.listDocumentVersions(request.chapterId, request.owner); await editorAccount(request.owner); if (sequence === loadSequence.current) setVersions(history.versions); }
@@ -443,10 +446,13 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
 
   const downloadDraft = (format: "json" | "txt" = "json") => {
     if (!document || loading) return;
+    const backupActor = saveAccount ?? editorOwner.current ?? "";
     const content = format === "txt" ? editorValidation?.draftText ?? bookNodesPlainText(draft)
-      : JSON.stringify(chapterDraftBackup({ bookId, chapterId: document.chapterId, baseVersion: document.version,
+      : JSON.stringify(chapterDraftBackup({ userId: backupActor, bookId, chapterId: document.chapterId, baseVersion: document.version,
         nodes: draft, capturedAt: new Date().toISOString(), validation: editorValidation }), null, 2);
     const blob = new Blob([content], { type: format === "txt" ? "text/plain;charset=utf-8" : "application/json;charset=utf-8" });
+    const warning = format === "json" ? chapterDraftReopenWarning(content, blob.size, Boolean(editorValidation), { userId: backupActor, bookId, chapterId: document.chapterId, baseVersion: document.version }) : null;
+    if (warning) setNotice(warning);
     const url = URL.createObjectURL(blob); const link = window.document.createElement("a");
     link.href = url; link.download = `bookworm-chapter-${document.chapterId}-draft.${format}`;
     window.document.body.append(link); link.click(); link.remove();
@@ -469,6 +475,36 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     }
   };
   const editable = EDIT_ROLES.has(role) && !titleBlocked && !pendingRestore && !manualSave && (!document || saveRecoveryReady);
+  const backupScope = useRef({ document, saveAccount, allowed: false });
+  backupScope.current = { document, saveAccount, allowed: Boolean(editable && !saving && !loading && !aiDecisionBusy && !conflict && !accountVerifying && !restoreHidden) };
+  const openDraftBackup = async (file: File | undefined) => {
+    if (!file || !document || !saveAccount || !backupScope.current.allowed || saveFlight.current !== null) return;
+    const readId = ++backupRead.current, sequence = loadSequence.current, original = document, actor = saveAccount;
+    const current = () => backupRead.current === readId && loadSequence.current === sequence && backupScope.current.document === original && backupScope.current.saveAccount === actor && backupScope.current.allowed && saveFlight.current === null;
+    try {
+      if (!file.name.toLowerCase().endsWith(".json") || !["", "application/json", "text/plain", "application/octet-stream"].includes(file.type) || file.size <= 0 || file.size > MAX_CHAPTER_DRAFT_BACKUP_BYTES) throw new Error("Choose a JSON backup no larger than 5 MB.");
+      const raw = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+      const nodes = parseChapterDraftBackup(raw, { userId: actor, bookId, chapterId: original.chapterId, baseVersion: original.version });
+      const verifyActor = async () => { try { await editorAccount(actor); } catch { if (current()) setRestoreHidden(actor); throw new Error("The original account could not be verified."); } };
+      const verifyLatest = async () => {
+        await verifyActor(); if (!current()) return false;
+        const latest = await api.getChapterDocument(original.chapterId, actor);
+        await verifyActor(); if (!current()) return false;
+        validateCurrentChapter(latest.document, original.chapterId);
+        if (!EDIT_ROLES.has(latest.role)) throw new Error("Editing access could not be confirmed. Your current draft is unchanged.");
+        if (latest.document.version !== original.version) throw new Error("The saved chapter has changed since this backup. Review the backup separately before merging.");
+        return true;
+      };
+      if (!await verifyLatest()) return;
+      const confirmedRevision = draftRevision.current;
+      if (!window.confirm("Replace the current editor draft with this local backup? The backup will remain unsaved until you review and save it.")) return;
+      if (!await verifyLatest() || !current()) return;
+      if (draftRevision.current !== confirmedRevision) throw new Error("Your draft changed while the backup was being checked. Choose the file again to review the replacement.");
+      setEditorSeed(nodes); setDraft(nodes); setDirty(true); setEditorValidation(null); setError(null);
+      pendingSave.current = null; setReloadKey(value => value + 1);
+      setNotice("Local backup opened as an unsaved draft. Review it and save when ready. Artwork files are not included in the backup.");
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "The local backup could not be opened."); }
+  };
   const editorSequence = loadSequence.current;
   const wordCount = editorValidation ? (editorValidation.draftText.match(/\S+/gu)?.length ?? 0)
     : bookNodesWordCount(draft);
@@ -484,7 +520,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       <div className="flex flex-wrap items-center gap-3 text-sm"><Link href={`/books/${bookId}/plan`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Plan</Link><Link href={`/books/${bookId}/memory`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Book Bible</Link><Link href={`/books/${bookId}/translate`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Translate</Link><Link href={`/books/${bookId}/publish`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Layout & publish</Link><span role="status" className="text-white/50">{editorValidation ? "Unsaved · correct numbering before saving" : saving ? "Saving…" : manualSave ? "Save outcome unconfirmed" : dirty ? "Unsaved changes" : document ? `Saved · v${document.version}` : ""}</span>
         {EDIT_ROLES.has(role) && document && <button type="button" onClick={() => void save()} disabled={!editable || !dirty || saving || aiDecisionBusy || conflict || loading || editorValidation !== null} className="rounded-full bg-white px-5 py-2 font-medium text-black disabled:opacity-40">Save chapter</button>}
         {editorValidation && <button type="button" onClick={() => downloadDraft("txt")} className="min-h-11 rounded-full border border-white/20 px-4 py-2">Download draft text</button>}
-{document && !loading && <details className="relative basis-full lg:basis-auto"><summary className="inline-flex min-h-11 cursor-pointer rounded-full border border-white/20 px-4 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">Back up chapter draft</summary><div className="absolute left-0 z-30 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-2xl border border-white/15 bg-[#101010] p-4 shadow-xl lg:left-auto lg:right-0"><p className="text-xs leading-5 text-white/60">JSON preserves structure, formatting and artwork references. Image files are not embedded. Text export does not keep formatting. Neither action saves to the server.</p><button type="button" onClick={() => downloadDraft()} className="mt-3 block min-h-11 w-full rounded-xl border border-white/20 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download JSON backup</button><button type="button" onClick={() => downloadDraft("txt")} className="mt-2 block min-h-11 w-full rounded-xl border border-white/15 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download draft text</button></div></details>}
+{document && !loading && <details className="relative basis-full lg:basis-auto"><summary className="inline-flex min-h-11 cursor-pointer rounded-full border border-white/20 px-4 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">Back up chapter draft</summary><div className="absolute left-0 z-30 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-2xl border border-white/15 bg-[#101010] p-4 shadow-xl lg:left-auto lg:right-0"><p className="text-xs leading-5 text-white/60">JSON includes your account and chapter identity, structure, formatting and artwork references. Keep it private; image files are not embedded. Text export does not keep formatting. Neither action saves to the server.</p><button type="button" onClick={() => downloadDraft()} className="mt-3 block min-h-11 w-full rounded-xl border border-white/20 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download JSON backup</button><button type="button" onClick={() => downloadDraft("txt")} className="mt-2 block min-h-11 w-full rounded-xl border border-white/15 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download draft text</button><label className="mt-4 block text-xs leading-5 text-white/65">Open a JSON backup from this account and saved chapter version<input type="file" accept=".json,application/json" disabled={!backupScope.current.allowed} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void openDraftBackup(file); }} className="mt-2 block w-full text-xs text-white/70 file:mr-3 file:rounded-lg file:border file:border-white/20 file:bg-transparent file:px-3 file:py-2 file:text-white disabled:opacity-40" /></label></div></details>}
       </div>
     </div>
     {error && <div role="alert" className="mb-4 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}
@@ -532,7 +568,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
           disabled={saving || loading || aiDecisionBusy || !!manualSave || !!pendingRestore || !saveRecoveryReady || conflict}
           onState={setTitleState} onTitle={title => setChapters(items => items.map(chapter => chapter.id === document.chapterId ? { ...chapter, title } : chapter))} />}
         {document && <p className="mb-3 px-1 text-right text-xs tabular-nums text-white/45">{wordCount.toLocaleString()} words</p>}
-        {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={document} workspaceId={book.workspace_id} actorId={saveAccount ?? ""} permissions={editable && !saving && !aiDecisionBusy ? "editor" : "viewer"} onValidationChange={setEditorValidation} onChange={(nodes) => { if (aiDecisionBusy || manualSave || saveFlight.current !== null) return; setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border-dashed border border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
+        {loading ? <p className="p-8 text-white/50" role="status">Loading manuscript…</p> : document && book ? <RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={editorSeed ? { ...document, nodes: editorSeed } : document} workspaceId={book.workspace_id} actorId={saveAccount ?? ""} permissions={editable && !saving && !aiDecisionBusy ? "editor" : "viewer"} onValidationChange={(value) => { draftRevision.current++; setEditorValidation(value); }} onChange={(nodes) => { if (aiDecisionBusy || manualSave || saveFlight.current !== null) return; draftRevision.current++; setDraft(nodes); setDirty(true); pendingSave.current = null; setNotice(null); }} /> : <div className="rounded-2xl border-dashed border border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div>}
       </section>
       <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">
         <AiAssistantPanel key={document?.chapterId ?? "empty"} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} initialDraftInstruction={document?.chapterId === draftPlanTargetChapterId ? initialDraftInstruction : undefined} dirty={hasUnsavedChanges} editable={editable && !saving && !loading} onDecisionBusy={setAiDecisionBusy} onApplied={async () => { if (liveDraft.current) throw new Error("Back up the unsaved draft before refreshing the saved chapter."); if (document && editorSequence === loadSequence.current) await loadChapter(document.chapterId, true, true); }} />
