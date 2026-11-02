@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.base import AgentResult, AgentValidationError, BaseAgent
+from agents.base import AgentResult, AgentValidationError, BaseAgent, sanitize
 from tools import ToolValidationError, validate_tool_input
 
 TOOL_NAME = "propose_metadata"
@@ -35,6 +35,10 @@ def _normalized_ref(source: object) -> dict[str, str] | None:
         ref["documentVersionId"] = document_version_id
     if isinstance(text_hash, str):
         ref["textHash"] = text_hash
+    # Sanitization may remove delimiter markers or control characters from
+    # rendered optional JSON; never validate a value that was altered there.
+    if any(sanitize(value) != value for value in ref.values()):
+        return None
     return ref
 
 
@@ -53,47 +57,20 @@ class MetadataAgent(BaseAgent):
             self._evidence_refs.append(ref)
 
     def build_user_message(self, request: dict) -> str:
-        # Collect only references from inputs that BaseAgent will place in the
-        # prompt. The provider may cite a less-specific version of a known ref,
-        # but may never invent a version or hash absent from that evidence.
+        # References are collected from the same structured sources that the
+        # base builder actually includes, not a second read or substring scan.
         self._evidence_refs = []
-        for chapter_id in request.get("chapterIds") or []:
-            chapter = self.executor.get_chapter(chapter_id)
-            chapter_version = _value(chapter, "documentVersionId", "document_version_id")
-            for node in chapter.get("nodes", []):
-                evidence = {
-                    "chapterId": chapter_id,
-                    "nodeId": node.get("id"),
-                    "documentVersionId": chapter_version,
-                    "textHash": _value(node, "textHash", "text_hash"),
-                }
-                self._remember_ref(evidence)
+        return super().build_user_message(request)
 
-        policy = request.get("contextPolicy", {})
-        if policy.get("includeBookBible", False):
-            for item in self.executor.get_book_bible(None, None):
-                refs = item.get("sourceRefs") or item.get("source_refs_json") or []
-                for ref in refs if isinstance(refs, list) else []:
-                    self._remember_ref(ref)
-        if policy.get("includeRelatedContext", True):
-            top_k = min(int(policy.get("semanticTopK", 5)), 20)
-            for source in self.executor.search_book(request.get("userInstruction") or "", top_k, None):
-                self._remember_ref(source)
-
-        message = super().build_user_message(request)
-        visible_refs: list[dict[str, str]] = []
-        for ref in self._evidence_refs:
-            if ref["chapterId"] not in message or ref["nodeId"] not in message:
-                continue
-            visible = {"chapterId": ref["chapterId"], "nodeId": ref["nodeId"]}
-            for key in ("documentVersionId", "textHash"):
-                value = ref.get(key)
-                if value and value in message:
-                    visible[key] = value
-            if visible not in visible_refs:
-                visible_refs.append(visible)
-        self._evidence_refs = visible_refs
-        return message
+    def on_context_source(self, kind: str, value: dict) -> None:
+        if not isinstance(value, dict):
+            return
+        if kind == "bible":
+            refs = value.get("sourceRefs") or value.get("source_refs_json") or []
+            for ref in refs if isinstance(refs, list) else []:
+                self._remember_ref(ref)
+        elif kind in ("chapter", "related"):
+            self._remember_ref(value)
 
     def tool_schemas(self) -> list[dict]:
         from tools import TOOL_SCHEMAS

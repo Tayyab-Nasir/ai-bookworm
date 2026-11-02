@@ -117,6 +117,62 @@ def test_metadata_agent_rejects_fabricated_optional_source_identifiers():
     assert "not present in the supplied evidence" in result.error
 
 
+def test_metadata_ignores_omitted_bible_references_even_if_instruction_mentions_them():
+    agent = make_agent(tool_call())
+    agent.executor = InMemoryExecutor(chapters={}, bible=[{
+        "name": "Too large for the optional context budget",
+        "description": "x" * 4000,
+        "sourceRefs": copy.deepcopy(VALID_CANDIDATE["sourceRefs"]),
+    }], search_results=[])
+    result = agent.run(request(chapterIds=[], userInstruction=f"{CHAPTER_ID} n1 {VERSION_ID} source-hash",
+                               contextPolicy={"includeBookBible": True, "includeRelatedContext": False, "maxTokens": 256}))
+    assert result.status == "failed"
+    assert "not present in the supplied evidence" in result.error
+    assert result.suggestions == []
+
+
+def test_metadata_reads_chapter_evidence_once_and_cites_the_actual_prompt():
+    agent = make_agent(tool_call())
+    original = agent.executor.get_chapter
+    calls = []
+    def changing_chapter(chapter_id):
+        calls.append(chapter_id)
+        if len(calls) == 1:
+            return original(chapter_id)
+        return {"id": chapter_id, "documentVersionId": VERSION_ID,
+                "nodes": [{"id": "different-node", "text": "A different version of the source."}]}
+    agent.executor.get_chapter = changing_chapter
+    result = agent.run(request(contextPolicy={"includeBookBible": False, "includeRelatedContext": False}))
+    assert result.status == "succeeded"
+    assert calls == [CHAPTER_ID]
+    assert "NODE n1" in agent.provider.calls[0]["messages"][1]["content"]
+
+
+def test_metadata_does_not_compose_a_citation_from_different_related_sources():
+    candidate = copy.deepcopy(VALID_CANDIDATE)
+    candidate["sourceRefs"] = [{"chapterId": CHAPTER_ID, "nodeId": "n1", "textHash": "other-hash"}]
+    agent = make_agent(tool_call(candidate))
+    agent.executor = InMemoryExecutor(chapters={}, bible=[], search_results=[
+        {"chapter_id": CHAPTER_ID, "node_id": "n1", "text_hash": "first-hash", "excerpt": "First"},
+        {"chapter_id": CHAPTER_ID, "node_id": "n2", "text_hash": "other-hash", "excerpt": "Second"},
+    ])
+    result = agent.run(request(chapterIds=[], contextPolicy={"includeBookBible": False, "includeRelatedContext": True}))
+    assert result.status == "failed"
+    assert "not present in the supplied evidence" in result.error
+
+
+def test_metadata_does_not_cite_a_reference_changed_by_prompt_sanitization():
+    candidate = copy.deepcopy(VALID_CANDIDATE)
+    candidate["sourceRefs"] = [{"chapterId": CHAPTER_ID, "nodeId": DELIM_BEGIN}]
+    agent = make_agent(tool_call(candidate))
+    agent.executor = InMemoryExecutor(chapters={}, bible=[], search_results=[
+        {"chapter_id": CHAPTER_ID, "node_id": DELIM_BEGIN, "excerpt": "Related source"},
+    ])
+    result = agent.run(request(chapterIds=[], contextPolicy={"includeBookBible": False, "includeRelatedContext": True}))
+    assert result.status == "failed"
+    assert "not present in the supplied evidence" in result.error
+
+
 @pytest.mark.parametrize("candidate", [
     {**VALID_CANDIDATE, "keywords": ["Fantasy", "fantasy"]},
     {**VALID_CANDIDATE, "categories": [" Fiction / Fantasy"]},
