@@ -25,6 +25,7 @@ import { editionRoutes } from "./routes/editions.js";
 import { publishingRoutes } from "./routes/publishing.js";
 import { readerRoutes } from "./routes/reader.js";
 import { savedPrintRoutes } from "./routes/saved-print.js";
+import { renderRequestRoutes } from "./routes/render-requests.js";
 import { accountRoutes } from "./routes/account.js";
 import { aiConnectionRoutes } from "./routes/ai-connections.js";
 import { customerAiRoutes, type CustomerAiPreparation } from "./routes/customer-ai.js";
@@ -94,6 +95,7 @@ export async function buildApp(
     assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner });
     imageQuoteRoutes(v1);
     editionRoutes(v1, { fetcher: opts.renderFetch });
+    renderRequestRoutes(v1);
     publishingRoutes(v1, { renderFetcher: opts.renderFetch, publishingFetcher: opts.publishingFetch });
     readerRoutes(v1, { fetcher: opts.renderFetch });
     savedPrintRoutes(v1, { fetcher: opts.renderFetch });

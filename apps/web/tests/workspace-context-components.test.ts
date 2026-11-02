@@ -10,6 +10,7 @@ import { privateDownloadUrl } from "../lib/private-download";
 import { privateUploadUrl } from "../lib/private-upload";
 import { renderLinksDeadline } from "../lib/pdf-proof";
 import * as publishingRequests from "../lib/publishing-request";
+import * as renderRequests from "../lib/render-request";
 import { jobLink } from "../lib/job-link";
 import { BookNodeSchema } from "@bookworm/book-model/schema";
 
@@ -46,7 +47,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     getItem(key: string) { if (options.blockedStorage) throw new Error("Storage blocked"); return values.get(key) ?? null; },
     setItem(key: string, value: string) { if (options.blockedStorage) throw new Error("Storage blocked"); values.set(key, value); },
     removeItem(key: string) { if (options.blockedStorage) throw new Error("Storage blocked"); values.delete(key); },
-  }, sessionStorage: { getItem: () => null }, setTimeout: (callback: () => void, milliseconds: number) => { if (api.fixtureSetTimeout) return api.fixtureSetTimeout(callback, milliseconds); const timer = setTimeout(callback, milliseconds); timer.unref(); return timer; }, clearTimeout };
+  }, sessionStorage: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } }, setTimeout: (callback: () => void, milliseconds: number) => { if (api.fixtureSetTimeout) return api.fixtureSetTimeout(callback, milliseconds); const timer = setTimeout(callback, milliseconds); timer.unref(); return timer; }, clearTimeout };
   const jsx = (type: unknown, props: any, key?: string | number) => ({ type, props, key: key === undefined ? null : String(key) });
   const react = {
     useState(initial: any) { const index = stateCursor++; if (!(index in states)) states[index] = initial; return [states[index], (value: any) => { states[index] = typeof value === "function" ? value(states[index]) : value; }]; },
@@ -102,6 +103,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "SavedPdfProof", "RetailerPackageRequest", "PrivateArtifactDownload", "PrivateCoverPreview"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
     if (name.endsWith("/pdf-proof")) return { renderLinksDeadline };
     if (name.endsWith("/publishing-request")) return { ...publishingRequests, downloadClock: api.fixtureDownloadClock ?? publishingRequests.downloadClock };
+    if (name.endsWith("/render-request")) return renderRequests;
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
     if (name.endsWith("/epub-reader")) return readerHelpers;
     if (name.endsWith("/private-download")) return { privateDownloadUrl };
@@ -117,7 +119,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
   };
   const source = readFileSync(resolve(path), "utf8") + (options.inner ? `\nexport { ${options.inner} as auditInner };` : "");
   let key = 0;
-  vm.runInNewContext(compile(source), { exports, require, window, performance, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, URL, URLSearchParams, crypto: { randomUUID: () => `fixture-request-${++key}` }, navigator: { clipboard: { writeText: api.copyInvitation ?? (async () => {}) } }, fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user", displayName: "Fixture author" } }) }) }, { filename: path });
+  vm.runInNewContext(compile(source), { exports, require, window, performance, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, URL, URLSearchParams, crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++key).padStart(12, "0")}` }, navigator: { clipboard: { writeText: api.copyInvitation ?? (async () => {}) } }, fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user", displayName: "Fixture author" } }) }) }, { filename: path });
   const fixtureScope = { actor: A, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() };
   const render = () => { stateCursor = 0; refCursor = 0; memoCursor = 0; effectCursor = 0; effects.length = 0; callbacks.length = 0; return (options.inner ? exports.auditInner : exports.default)(options.props ?? (options.inner === "AssetsPageInner" ? { scope: fixtureScope, active: true, revision: {}, retry: async () => {} } : {})); };
   return { render, states, refs, effects, callbacks, values, window, assigned, setProps(value: object) { options.props = value; } };
@@ -1011,13 +1013,15 @@ test("Publishing render refreshes the real saved reader once; unsaved edits pres
     scope: { actor: A, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() },
     editionRisks: { current: new Map() }, verifiedAccess: { book: { id: B, workspace_id: A, language: "en", title: "Fixture book" }, role: "owner" } } });
   parent.render(); await parent.callbacks.find(fn => fn.toString().includes("api.getBook"))!();
-  let parentTree = parent.render(); const initial = props(parentTree, "SavedEpubReader"); assert(initial);
+  let parentTree = parent.render();
+  parent.effects.find(fn => fn.toString().includes("readRenderPointer"))!();
+  parentTree = parent.render(); const initial = props(parentTree, "SavedEpubReader"); assert(initial);
   const child = harness("apps/web/components/SavedEpubReader.tsx", api, { props: initial, trackDependencies: true });
   const syncReader = async () => { child.setProps(props(parent.render(), "SavedEpubReader")); child.render(); for (const effect of [...child.effects]) effect(); await settle(); return child.render(); };
   await syncReader(); assert.equal(historyReads, 1);
   const renderButton = nodes(parent.render()).find(node => node.type === "button" && node.props.children === "Render EPUB"); assert(renderButton); renderButton.props.onClick();
   await syncReader(); assert.equal(historyReads, 1, "starting a render is not a completed saved export");
-  pendingRender.resolve({ jobId: latest.jobId, status: "succeeded", artifacts: [{ asset: { ...asset(latest.assetId, B), name: "Saved.epub", mime_type: "application/epub+zip" }, role: "rendered_ebook", download: { url: `https://storage.example.test/storage/v1/object/sign/book-assets/workspaces/${B}/assets/${latest.assetId}/v1/book.epub?token=synthetic`, expiresIn: 300 } }] }); await settle();
+  pendingRender.resolve({ jobId: latest.jobId, status: "succeeded", artifacts: [{ asset: { ...asset(latest.assetId, A), name: "Saved.epub", mime_type: "application/epub+zip", storage_path: `workspaces/${A}/assets/${latest.assetId}/v1/book.epub` }, role: "rendered_ebook", download: { url: `https://storage.example.test/storage/v1/object/sign/book-assets/workspaces/${A}/assets/${latest.assetId}/v1/book.epub?token=synthetic`, expiresIn: 300 } }] }); await settle();
   await syncReader(); parentTree = parent.render(); const completed = props(parentTree, "SavedEpubReader");
   assert.notEqual(completed.refreshKey, initial.refreshKey); assert.equal(historyReads, 2);
   let childTree = await syncReader(); assert.equal(historyReads, 2, "ordinary rerenders must not repeat history GETs");

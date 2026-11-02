@@ -1145,6 +1145,10 @@ export function createClient(opts: ClientOptions) {
       call<Edition>("PATCH", `/v1/editions/${editionId}`, body, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
     renderEdition: (editionId: string, body: { idempotencyKey: string }) =>
       call<RenderedEditionResult>("POST", `/v1/editions/${editionId}/render`, body),
+    getRenderRequest: (bookId: string, editionId: string, requestId: string, expectedActor: string) =>
+      call<{ bookId: string; editionId: string; requestId: string; job: { id: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" } | null }>(
+        "GET", `/v1/editions/${encodeURIComponent(editionId)}/render-requests/${encodeURIComponent(requestId)}?bookId=${encodeURIComponent(bookId)}`,
+        undefined, true, { "x-bookworm-actor": expectedActor }),
     listEditionRenders: (editionId: string) =>
       call<{ renders: SavedEpubRender[] }>("GET", `/v1/editions/${encodeURIComponent(editionId)}/renders`),
     listPrintRenders: (editionId: string, signal?: AbortSignal) =>

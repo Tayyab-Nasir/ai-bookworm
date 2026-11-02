@@ -362,6 +362,50 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/editions/{editionId}/render-requests/{requestId}:
+    get:
+      tags: [v1]
+      operationId: getRenderRequest
+      summary: Read the current author's original render request status
+      description: Current book membership is required. This actor-scoped lookup is read-only and remains available after manuscript, edition or plan changes. A null job means no matching request was visible at the time of the read; the original request may still arrive. No new render, file download, provider call or purchase is started.
+      parameters:
+        - { name: editionId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: bookId, in: query, required: true, schema: { type: string, format: uuid } }
+        - name: X-Bookworm-Actor
+          in: header
+          required: false
+          description: Expected original account UUID. When supplied, the proxy and API compare it with the authenticated session; it does not grant access.
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Original request identity and status, or null if no matching request is visible
+          headers: { Cache-Control: { schema: { type: string, const: 'private, no-store' } } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bookId, editionId, requestId, job]
+                properties:
+                  bookId: { type: string, format: uuid }
+                  editionId: { type: string, format: uuid }
+                  requestId: { type: string, format: uuid }
+                  job:
+                    oneOf:
+                      - { type: 'null' }
+                      - type: object
+                        additionalProperties: false
+                        required: [id, status]
+                        properties:
+                          id: { type: string, format: uuid }
+                          status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/editions/{editionId}/print-renders:
     get:
       operationId: listSavedPrintRenders

@@ -1450,3 +1450,126 @@ test("silent account switch withdraws saved PDF proof on next page request", asy
     await expect(page.getByRole("button", {name: "Download private file", exact: true})).toHaveCount(0);
   } finally { await page.close(); }
 });
+
+test("lost render reply keeps original identity through remount and read-only recovery", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCalls = [];
+      window.renderStatus = null;
+      window.bookwormApi.renderEdition = async (editionId, body) => {
+        window.renderCalls.push({ editionId, ...body });
+        throw new Error("Lost render reply");
+      };
+      window.bookwormApi.getRenderRequest = async (bookId, editionId, requestId) => ({
+        bookId, editionId, requestId, job: window.renderStatus,
+      });
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await expect(page.getByRole("button", {name: "Check original render"})).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    const first = await page.evaluate(() => ({ calls: window.renderCalls, pointers: Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")) }));
+    assert.equal(first.calls.length, 1); assert.equal(first.pointers.length, 1);
+    await page.evaluate(() => window.showStudio(null));
+    await page.getByRole("heading", {name: "Saved print proofs", exact: true}).waitFor({state: "hidden"});
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(page.getByRole("button", {name: "Check original render"})).toBeVisible();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("No saved request is visible yet.", {exact: false})).toBeVisible();
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    await page.evaluate(() => { window.renderStatus = { id: window.ids.job, status: "running" }; });
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("The original render is still in progress", {exact: false})).toBeVisible();
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    await page.evaluate(() => { window.renderStatus = { id: window.ids.job, status: "succeeded" }; });
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("The original render completed.", {exact: false})).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeEnabled();
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:render:v1:"))), false);
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("render recovery refuses mismatched request identity and keeps original pointer", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost reply"); };
+      window.bookwormApi.getRenderRequest = async (bookId, editionId) => ({bookId, editionId, requestId: window.ids.otherJob, job: {id: window.ids.job, status: "succeeded"}});
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("Render status belongs to a different request.")).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("late render recovery cannot clear or display the original account after a switch", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (url, options) => String(url) === "/api/auth/session"
+        ? Response.json({user: {id: window.fixtureActor}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`}) : originalFetch(url, options);
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost reply"); };
+      window.bookwormApi.getRenderRequest = (bookId, editionId, requestId) => new Promise(resolve => {
+        window.releaseRenderStatus = () => resolve({bookId, editionId, requestId, job: {id: window.ids.job, status: "succeeded"}});
+      });
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await page.waitForFunction(() => typeof window.releaseRenderStatus === "function");
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.dispatchEvent(new Event("focus")); window.releaseRenderStatus(); });
+    await expect(page.getByText("The original render completed.", {exact: false})).toHaveCount(0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("revoked render access keeps the original pointer and never dispatches again", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCount = 0;
+      window.bookwormApi.renderEdition = async () => { window.renderCount++; throw new Error("Lost reply"); };
+      window.bookwormApi.getRenderRequest = async () => { throw new window.ApiClientError(403, "forbidden", "Workspace access revoked", "fixture"); };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("Workspace access revoked")).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    assert.equal(await page.evaluate(() => window.renderCount), 1);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("account switch between the session check and render dispatch rejects the original actor", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCount = 0; window.enforceFixtureActor = true;
+      window.bookwormApi.renderEdition = async () => { window.renderCount++; throw new Error("unexpected dispatch"); };
+      const original = window.fetch.bind(window);
+      window.fetch = async (url, options) => {
+        if (String(url) !== "/api/auth/session") return original(url, options);
+        if (window.renderRaceArmed && Object.keys(sessionStorage).some(key => key.startsWith("bookworm:render:v1:"))) {
+          window.renderRaceArmed = false;
+          window.fixtureActor = window.ids.otherAsset;
+          return Response.json({user: {id: window.ids.asset}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`});
+        }
+        return Response.json({user: {id: window.fixtureActor}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`});
+      };
+      window.renderRaceArmed = true;
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.waitForFunction(() => window.fixtureActor === window.ids.otherAsset);
+    await expect(page.getByText("Checking your account…")).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.renderCount), 0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
