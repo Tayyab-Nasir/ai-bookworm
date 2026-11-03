@@ -326,8 +326,8 @@ export async function manualBookBibleRecoveryRaces({ sql, session, until, databa
       let fields, insert, remove;
       if (boundary === "image") {
         const image = randomUUID();
-        // No version exists yet. Service insertion takes only FK key-share,
-        // compatible with the asset SHARE lock held by the paused mutation.
+        // No version exists yet. Version allocation now rotates the parent
+        // lifecycle revision and must wait for the mutation's asset SHARE lock.
         await sql(`begin; set local request.jwt.claim.role='service_role';
           insert into public.assets(id,workspace_id,type,name,storage_path,mime_type,size_bytes,checksum,created_by)
             values('${image}','${f.workspace}','image','Late cleared','native/${image}.png','image/png',128,repeat('a',64),'${f.actor}'); commit;`);
@@ -377,6 +377,37 @@ export async function manualBookBibleRecoveryRaces({ sql, session, until, databa
         return await sql(`select count(*) from pg_stat_activity where application_name='${mutationName}'
           and wait_event_type='Lock' and wait_event='advisory';`) === "1";
       }, "Mutation did not reach the advisory fence after its bulk prelocks");
+      if (boundary === "image") {
+        // The revision trigger takes a parent update lock before allocating a
+        // version. Prove the actual lock wait, then let the canon mutation see
+        // that no version is available and roll back before insertion commits.
+        const insertName = `manual_bible_late_insert_${suffix}`;
+        const inserting = session(database, insertName); handles.push(inserting);
+        inserting.child.stdin.end(insert);
+        await until(async () => {
+          assert.equal(inserting.ended, false, `Version insertion did not wait: ${inserting.stderr}`);
+          return await sql(`select count(*) from pg_stat_activity waiter join pg_stat_activity blocker
+            on blocker.pid=any(pg_catalog.pg_blocking_pids(waiter.pid))
+            where waiter.application_name='${insertName}' and waiter.wait_event_type='Lock'
+              and blocker.application_name='${mutationName}';`) === "1";
+        }, "Version insertion did not wait for the parent asset lock");
+        assert.equal(await sql(`select count(*) from ${relation} where id='${version}';`), "0");
+        mutation.child.stdin.end("commit;\n");
+        gate.child.stdin.end("commit;\n");
+        assert.equal((await gate.done).code, 0, gate.stderr);
+        denied(await mutation.done, "22023", "not scan-cleared");
+        assert.equal((await inserting.done).code, 0, inserting.stderr);
+        assert.equal(await sql(`select count(*) from ${relation} where id='${version}';`), "1");
+        await state(f, 0, 0);
+        assert.deepEqual(output(await sql(`begin; ${f.recover(request)} commit;`)), emptyResult);
+        const retried = output(await sql(`begin; ${f.create(request, fields)} commit;`));
+        assert.equal(retried.replayed, false);
+        assert.equal(retried.disposition, "unchanged");
+        assert.equal(retried.receipt.requestId, request);
+        await state(f, 1, 1);
+        log("late image version waits for canon rejection; original-key retry succeeds");
+        return;
+      }
       // Commit the exact selected UUID AFTER the bulk prelock statement. This
       // statement must finish while the mutation still holds its parent locks.
       await sql(insert);
@@ -425,9 +456,8 @@ export async function manualBookBibleRecoveryRaces({ sql, session, until, databa
     }
   }
 
-  for (const boundary of ["image", "document"]) for (const rollback of [false, true]) {
-    await lateVersionSelection(boundary, rollback);
-  }
+  await lateVersionSelection("image", false);
+  for (const rollback of [false, true]) await lateVersionSelection("document", rollback);
   for (const boundary of ["current bytes", "saved version"]) for (const first of ["change", "mutation"]) for (const rollback of [false, true]) {
     const f = await fixture(), image = await imageFixture(f), request = randomUUID();
     const change = boundary === "current bytes"

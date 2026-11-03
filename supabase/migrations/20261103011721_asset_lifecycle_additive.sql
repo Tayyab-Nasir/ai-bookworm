@@ -1,3 +1,7 @@
+-- One SQL statement preserves the migration lock under both CLI batching and outer-transaction runners.
+DO $bookworm_asset_migration$
+BEGIN
+  EXECUTE $bookworm_asset_sql$
 -- Install revision and operation identities without enabling lifecycle RPCs.
 -- The separate, reviewed cutover must grant execution only after old writers drain.
 -- Run only as a single migration transaction; fail instead of queueing writes.
@@ -307,3 +311,7 @@ begin
     raise exception 'unexpected default receipt grant in asset lifecycle' using errcode='55000';
   end if;
 end $asset_additive_acl$;
+
+$bookworm_asset_sql$;
+END
+$bookworm_asset_migration$;

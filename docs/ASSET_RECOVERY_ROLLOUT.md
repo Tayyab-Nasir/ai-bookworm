@@ -10,6 +10,11 @@ recovery functions. It does not grant access to those functions or activate
 the recovery workflow. Applying it is a database change and must follow the
 reviewed migration order and recovery procedure; do not apply it to a live
 project without a current, verified database and Storage recovery plan.
+The same migration version appeared in commit `5be55bf` before its SQL was
+wrapped for Supabase CLI transaction compatibility. If an environment already
+applied that earlier file through another runner, changing the source does not
+run it again. Compare that environment's schema and migration history before
+proceeding; do not replay the migration to resolve a source mismatch.
 
 Activation also requires a separately reviewed cutover that fences older
 writers, grants only the intended RPC permissions and installs the readiness
@@ -17,6 +22,10 @@ check. That cutover has not been added as an automatic migration. Before any
 activation, verify the exact hosted schema and permissions, stop old writers
 and privileged schema changes, and test signed-in PostgREST and private
 Storage behavior. Confirm that all API instances use the same setting.
+
+The non-automatic review draft and its transaction requirements are in
+`ops/asset-lifecycle/README.md`. The draft pins the reviewed project's managed
+Auth functions and must be re-reviewed if those functions change.
 
 When the feature is enabled but readiness fails, the asset-library interface
 remains readable while its guarded write actions are unavailable. This is not
