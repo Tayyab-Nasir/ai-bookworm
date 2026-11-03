@@ -1,5 +1,13 @@
 begin;
 do $$ begin
+ assert (select prosecdef from pg_proc where oid='private.close_render_request_internal(uuid,uuid,text)'::regprocedure);
+ assert has_schema_privilege('authenticated', 'private', 'usage');
+ assert not has_schema_privilege('anon', 'private', 'usage');
+ assert not (select prosecdef from pg_proc where oid='public.close_render_request(uuid,uuid,text)'::regprocedure);
+ assert has_function_privilege('authenticated','private.close_render_request_internal(uuid,uuid,text)','execute');
+ assert not has_function_privilege('anon','private.close_render_request_internal(uuid,uuid,text)','execute');
+ assert not has_function_privilege('service_role','private.close_render_request_internal(uuid,uuid,text)','execute');
+ assert (select proconfig @> array['search_path=""'] from pg_proc where oid='private.close_render_request_internal(uuid,uuid,text)'::regprocedure);
  assert has_function_privilege('authenticated','public.close_render_request(uuid,uuid,text)','execute');
  assert not has_function_privilege('anon','public.close_render_request(uuid,uuid,text)','execute');
  assert not has_function_privilege('service_role','public.close_render_request(uuid,uuid,text)','execute');
@@ -42,6 +50,14 @@ select set_config('request.jwt.claims','{"role":"authenticated","sub":"a1900000-
 do $$ begin
  begin perform public.close_render_request('d1900000-0000-4000-8000-000000000001','e1900000-0000-4000-8000-000000000001','01900000-0000-4000-8000-000000000010');
  raise exception 'viewer allowed'; exception when insufficient_privilege then null; end;
+ begin perform private.close_render_request_internal('d1900000-0000-4000-8000-000000000001','e1900000-0000-4000-8000-000000000001','01900000-0000-4000-8000-000000000010');
+ raise exception 'viewer private call allowed'; exception when insufficient_privilege then null; end;
+end $$;
+-- An authenticated database role cannot substitute a non-authenticated JWT role.
+select set_config('request.jwt.claims','{"role":"service_role","sub":"a1900000-0000-4000-8000-000000000001"}',true);
+do $$ begin
+ begin perform public.close_render_request('d1900000-0000-4000-8000-000000000001','e1900000-0000-4000-8000-000000000001','01900000-0000-4000-8000-000000000099');
+ raise exception 'wrong JWT role allowed'; exception when insufficient_privilege then null; end;
 end $$;
 select set_config('request.jwt.claims','{"role":"authenticated","sub":"a1900000-0000-4000-8000-000000000001"}',true);
 do $$ declare message_other text; message_missing text; begin
@@ -59,6 +75,7 @@ do $$ declare r jsonb; begin
  r:=public.close_render_request('d1900000-0000-4000-8000-000000000001','e1900000-0000-4000-8000-000000000001','01900000-0000-4000-8000-000000000010');
  assert r->'job'->>'status'='cancelled' and (r->>'closedBeforeAcceptance')::boolean;
  assert public.close_render_request('d1900000-0000-4000-8000-000000000001','e1900000-0000-4000-8000-000000000001','01900000-0000-4000-8000-000000000010')=r;
+ assert private.close_render_request_internal('d1900000-0000-4000-8000-000000000001','e1900000-0000-4000-8000-000000000001','01900000-0000-4000-8000-000000000010')=r;
  r:=public.close_render_request('d1900000-0000-4000-8000-000000000001','e1900000-0000-4000-8000-000000000001','A1900000-0000-4000-8000-000000000010');
  assert r->>'requestId'='A1900000-0000-4000-8000-000000000010';
  begin perform public.close_render_request('d1900000-0000-4000-8000-000000000001','e1900000-0000-4000-8000-000000000001','not-a-uuid');

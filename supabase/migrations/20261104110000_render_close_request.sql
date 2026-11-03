@@ -2,8 +2,8 @@
 create index render_close_actor_created_idx on public.publishing_jobs(created_by, created_at desc)
 where channel = 'render' and status = 'cancelled' and request_json @> '{"action":"render","closedBeforeAcceptance":true}'::jsonb;
 
-create function public.close_render_request(p_book_id uuid, p_edition_id uuid, p_request_id text)
-returns jsonb language plpgsql security definer set search_path=pg_catalog,pg_temp as $$
+create function private.close_render_request_internal(p_book_id uuid, p_edition_id uuid, p_request_id text)
+returns jsonb language plpgsql security definer set search_path='' as $$
 declare
   v_actor uuid := auth.uid();
   v_workspace uuid;
@@ -56,5 +56,13 @@ begin
     'job',jsonb_build_object('id',v_job.id,'status',v_job.status),
     'closedBeforeAcceptance',v_job.status='cancelled' and v_job.request_json @> '{"action":"render","closedBeforeAcceptance":true}'::jsonb);
 end $$;
+revoke all on function private.close_render_request_internal(uuid,uuid,text) from public,anon,authenticated,service_role;
+grant execute on function private.close_render_request_internal(uuid,uuid,text) to authenticated;
+
+-- Expose only an invoker wrapper; the private function checks the JWT actor and membership.
+create function public.close_render_request(p_book_id uuid, p_edition_id uuid, p_request_id text)
+returns jsonb language sql security invoker set search_path='' as $$
+  select private.close_render_request_internal(p_book_id, p_edition_id, p_request_id)
+$$;
 revoke all on function public.close_render_request(uuid,uuid,text) from public,anon,authenticated,service_role;
 grant execute on function public.close_render_request(uuid,uuid,text) to authenticated;
