@@ -129,6 +129,26 @@ test("edition input rejects unsafe QR destinations and unconfirmed cover assets"
   await app.close();
 });
 
+test("malformed QR destinations return validation errors without creating or updating editions", async () => {
+  const store = baseStore();
+  const original = { id: EDITION, book_id: BOOK, type: "ebook", status: "draft", updated_at: "2026-09-03T00:00:00.000Z", edition_metadata_json: { kind: "ebook" } };
+  const snapshot = structuredClone(original);
+  store.tables.editions.push(original);
+  const app = await buildApp(() => fakeSupabase(store));
+  try {
+    for (const url of ["not-a-url", "https://", "https://[invalid", "http://author.example"]) {
+      const config = { kind: "ebook", cover: { asset_id: COVER, qr_code: { enabled: true, url } } };
+      const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: { config } });
+      assert.equal(created.statusCode, 422, `create ${url}: ${created.body}`);
+      const updated = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth,
+        payload: { config, expectedUpdatedAt: original.updated_at } });
+      assert.equal(updated.statusCode, 422, `update ${url}: ${updated.body}`);
+      assert.deepEqual(store.tables.editions, [snapshot]);
+      assert.equal(store.tables.activity_events.length, 0);
+    }
+  } finally { await app.close(); }
+});
+
 test("edition config requires approval of the exact current cover version", async () => {
   const store = baseStore();
   const bytes = Buffer.from("approved cover bytes");

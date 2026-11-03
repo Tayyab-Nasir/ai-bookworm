@@ -13,7 +13,9 @@ export { loadRenderImages } from "../lib/render-images.js";
 
 const BUCKET = "book-assets";
 
-const httpsUrl = z.string().trim().url().max(2_048).refine((value) => new URL(value).protocol === "https:", "QR destination must use HTTPS.");
+const httpsUrl = z.string().trim().url().max(2_048).refine((value) => {
+  try { return new URL(value).protocol === "https:"; } catch { return false; }
+}, "QR destination must use HTTPS.");
 const qrSchema = z.object({
   enabled: z.boolean().default(false),
   url: httpsUrl.nullable().default(null),
