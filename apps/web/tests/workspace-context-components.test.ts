@@ -11,6 +11,8 @@ import { privateUploadUrl } from "../lib/private-upload";
 import { renderLinksDeadline } from "../lib/pdf-proof";
 import * as publishingRequests from "../lib/publishing-request";
 import * as renderRequests from "../lib/render-request";
+import * as editionTabRecovery from "../lib/edition-tab-recovery";
+import * as editionCreateFence from "../lib/edition-create-fence";
 import { jobLink } from "../lib/job-link";
 import { BookNodeSchema } from "@bookworm/book-model/schema";
 
@@ -106,6 +108,8 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/pdf-proof")) return { renderLinksDeadline };
     if (name.endsWith("/publishing-request")) return { ...publishingRequests, downloadClock: api.fixtureDownloadClock ?? publishingRequests.downloadClock };
     if (name.endsWith("/render-request")) return renderRequests;
+    if (name.endsWith("/edition-tab-recovery")) return editionTabRecovery;
+    if (name.endsWith("/edition-create-fence")) return editionCreateFence;
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
     if (name.endsWith("/epub-reader")) return readerHelpers;
     if (name.endsWith("/private-download")) return { privateDownloadUrl };

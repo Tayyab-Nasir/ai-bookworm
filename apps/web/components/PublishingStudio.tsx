@@ -16,6 +16,8 @@ import { renderLinksDeadline } from "../lib/pdf-proof";
 import { clearRenderPointer, persistRenderPointer, readRenderPointer, validateRenderClosure, validateRenderStatus, type RenderPointer } from "../lib/render-request";
 import RetailerPackageRequest from "./RetailerPackageRequest";
 import { readBrowserSession } from "../lib/browser-session";
+import { discardEditionTab, editionBase, parseEditionTab, readEditionTab, writeEditionTab } from "../lib/edition-tab-recovery";
+import { beginEditionCreateFence, clearEditionCreateFence, readEditionCreateFence, type EditionCreateFence } from "../lib/edition-create-fence";
 import { packageDownloadDeadline, signedDownloadDeadline, downloadClock, downloadExpired, nextDownloadClockWait, type DownloadClock } from "../lib/publishing-request";
 
 import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, matchesCreatedEditionConfig, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
@@ -58,12 +60,12 @@ function audioArchivePath(workspace: string | undefined, jobId: string): string 
 const fieldClass = "mt-2 block w-full rounded-xl border border-white/10 bg-black/60 px-3 py-2.5 text-white outline-none focus:border-white/35";
 const cardClass = "rounded-2xl border border-white/10 bg-white/[0.035] p-5";
 
-type EditionRisk = { current: Map<string, { actor: string }> };
+type EditionRisk = { current: Map<string, EditionCreateFence> };
 type PublishingScope = { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> };
 function superseded() { const e = new Error("Account check superseded."); e.name = "PublishingScopeChanged"; return e; }
 export default function PublishingStudio({ bookId }: { bookId: string }) {
   const latestBook = useRef(bookId); latestBook.current = bookId;
-  const editionRisks = useRef(new Map<string, { actor: string }>());
+  const editionRisks = useRef(new Map<string, EditionCreateFence>());
   const isBookCurrent = useCallback(() => latestBook.current === bookId, [bookId]);
   return <ScopedPublishingStudio key={bookId} bookId={bookId} isBookCurrent={isBookCurrent} editionRisks={editionRisks} />;
 }
@@ -140,6 +142,12 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const [activeId, setActiveId] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(DEFAULT_FORM);
   const [dirty, setDirty] = useState(false);
+  const liveDirty = useRef(false);
+  const latestForm = useRef(form); latestForm.current = form;
+  const formRevision = useRef(0);
+  const [tabCopy, setTabCopy] = useState<string | null>(null), [tabEnabled, setTabEnabled] = useState(false), [tabBusy, setTabBusy] = useState(false), [tabError, setTabError] = useState<string | null>(null);
+  const tabRef = useRef<{ raw: string | null; edition: Edition | null }>({ raw: null, edition: null });
+  const tabEnabledRef = useRef(false), tabFlight = useRef(false);
   const [busy, setBusy] = useState<"load" | "save" | "render" | "preflight" | "package" | "history" | "audiobook" | null>("load");
   const [channel, setChannel] = useState<Channel>("export");
   const currentChannel = useRef(channel); currentChannel.current = channel;
@@ -165,9 +173,13 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const uncertainEditionCreates = editionRisks;
-  const editionRiskKey = `${scope.actor}:${bookId}`;
+  const editionRiskKey = bookId.toLowerCase();
+  const [editionRiskChecked, setEditionRiskChecked] = useState(false);
+  const [editionRiskStorageError, setEditionRiskStorageError] = useState<string | null>(null);
   const [, setEditionGuardVersion] = useState(0);
   const [acceptDuplicateRisk, setAcceptDuplicateRisk] = useState(false);
+  const editionRiskConsent = useRef(false), editionRiskConsentVersion = useRef(0);
+  const setEditionRiskConsent = (value: boolean) => { editionRiskConsent.current = value; editionRiskConsentVersion.current++; setAcceptDuplicateRisk(value); };
   const [verifyingEditionRisk, setVerifyingEditionRisk] = useState(false);
   const editionRiskFlight = useRef<object | null>(null), editionSaveFlight = useRef<object | null>(null);
   const loadedEditionOwner = useRef<string | null>(null);
@@ -282,10 +294,11 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, renderBlocked } = resolveEditionRenderSafety(form, book, activeEdition?.edition_metadata_json);
 
   const load = useCallback(async () => {
+    formRevision.current++; liveDirty.current = false; tabEnabledRef.current = false; setTabEnabled(false); setTabCopy(null); setTabError(null); tabRef.current = { raw: null, edition: null };
     const version = ++viewEpoch.current, ownerCurrent = scope.begin();
     audioHistoryEpoch.current++; audioProjectEpoch.current++; packageHistoryEpoch.current++; audioMutation.current = null; audioManualRead.current = null;
     const valid = () => ownerCurrent() && viewEpoch.current === version && currentBook.current === bookId;
-    editionRiskFlight.current = null; editionSaveFlight.current = null; loadedEditionOwner.current = null; setEditionSessionHidden(false); setVerifyingEditionSession(false); setVerifyingEditionRisk(false); setAcceptDuplicateRisk(false);
+    editionRiskFlight.current = null; editionSaveFlight.current = null; loadedEditionOwner.current = null; setEditionSessionHidden(false); setVerifyingEditionSession(false); setVerifyingEditionRisk(false); setEditionRiskConsent(false); setEditionRiskChecked(false); setEditionRiskStorageError(null);
     setBusy("load");
     setBook(null); setRole("viewer"); setEditions([]); setAssets([]); setChapters([]); setPublishingJobs([]);
     currentEdition.current = null; setActiveId(null); setForm(DEFAULT_FORM); setDirty(false); setError(null);
@@ -303,7 +316,17 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
       const assetResult = await api.listAssets(identity.book.workspace_id, undefined, owner);
       await readBrowserSession(owner);
       if (!valid()) return;
+      try {
+        const persisted = readEditionCreateFence(window.sessionStorage, bookId);
+        const retained = uncertainEditionCreates.current.get(editionRiskKey);
+        if (retained && retained.raw !== persisted?.raw) throw new Error("The edition create warning changed. A previous request could still finish. Contact support before creating another edition.");
+        if (persisted) uncertainEditionCreates.current.set(editionRiskKey, persisted);
+        setEditionRiskStorageError(null);
+      } catch (reason) { setEditionRiskStorageError(reason instanceof Error ? reason.message : "The browser cannot check the edition save warning."); }
+      setEditionRiskChecked(true); setEditionGuardVersion(v => v + 1);
       loadedEditionOwner.current = owner;
+      try { const raw = readEditionTab(window.sessionStorage, { actor: owner, bookId }); tabRef.current = { raw, edition: null }; setTabCopy(raw); }
+      catch { setTabError("The local edition copy could not be read. Contact support; clearing site data can remove unconfirmed request warnings."); }
       setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setChapters(chapterResult.chapters);
       setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
       if (editionResult.editions[0]) {
@@ -327,10 +350,11 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   }, []);
   useLayoutEffect(() => {
     if (!active) {
+      tabEnabledRef.current = false; setTabEnabled(false); formRevision.current++;
       // An old in-flight operation may still complete; its actor/book checkpoint
       // remains in editionRisks, but its obsolete UI lock cannot block this view.
       editionSaveFlight.current = null; editionRiskFlight.current = null;
-      setBusy(null); setVerifyingEditionRisk(false); setVerifyingEditionSession(false); setAcceptDuplicateRisk(false);
+      setBusy(null); setVerifyingEditionRisk(false); setVerifyingEditionSession(false); setEditionRiskConsent(false);
     }
   }, [active]);
   useLayoutEffect(() => { if (active && loadedEditionOwner.current === scope.actor) { setBook(verifiedAccess.book); setRole(verifiedAccess.role); } }, [active, verifiedAccess, scope]);
@@ -381,14 +405,79 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     return () => { active = false; window.clearInterval(timer); };
   }, [bookId, activeId, api, form.kind, hasActiveGooglePlayExport]);
 
+  const recordTabCopy = (next: FormState) => {
+    const entry = tabRef.current;
+    if (!tabEnabledRef.current || !entry.edition) return;
+    try {
+      if (!scope.current() || loadedEditionOwner.current !== scope.actor || currentEdition.current !== entry.edition.id || !activeEdition
+          || editionBase(activeEdition, bookId) !== editionBase(entry.edition, bookId)) throw new Error("Edition recovery stopped because the account or saved edition changed. The earlier copy is retained.");
+      entry.raw = writeEditionTab(window.sessionStorage, { actor: scope.actor, bookId }, entry.edition, next, entry.raw); setTabCopy(entry.raw); setTabError(null);
+    }
+    catch (reason) { tabEnabledRef.current = false; setTabEnabled(false); setTabError(reason instanceof Error ? reason.message : "The local edition copy could not be updated."); }
+  };
+  const checkTabCopyAccess = async (source: Edition, valid: () => boolean) => {
+    await readBrowserSession(scope.actor); if (!valid()) throw new Error("The edition view changed.");
+    const [access, result] = await Promise.all([api.getBook(bookId, scope.actor), api.listEditions(bookId, scope.actor)]);
+    await readBrowserSession(scope.actor); if (!valid()) throw new Error("The edition view changed.");
+    if (access?.book?.id !== bookId || access.book.workspace_id !== book?.workspace_id || !EDIT_ROLES.has(access.role)
+        || !Array.isArray(result?.editions)) throw new Error("Edition access could not be verified.");
+    const matches = result.editions.filter(edition => edition.id === source.id && edition.book_id === bookId);
+    if (matches.length !== 1 || editionBase(matches[0],bookId) !== editionBase(source,bookId)) throw new Error("The saved edition changed. Download the local copy to review it separately.");
+  };
+  const openTabCopy = async (restore: boolean) => {
+    const source = activeEdition, entry = tabRef.current, raw = entry.raw, scopeKey = { actor: scope.actor, bookId };
+    if (!source || !editable || busy || tabFlight.current || editionSaveFlight.current || (restore && liveDirty.current) || (restore ? raw === null : raw !== null)) return;
+    const validView = captureView(), revision = formRevision.current, valid = () => validView() && formRevision.current === revision
+      && tabRef.current === entry && entry.raw === raw && currentEdition.current === source.id && loadedEditionOwner.current === scope.actor;
+    if (!valid()) return;
+    tabFlight.current = true; setTabBusy(true); setTabError(null);
+    try {
+      await checkTabCopyAccess(source, valid); if (!valid()) return;
+      if (readEditionTab(window.sessionStorage,scopeKey) !== raw) throw new Error("The local edition copy changed. Reload before continuing.");
+      if (restore) {
+        const copy = parseEditionTab(raw!, scopeKey);
+        if (copy.editionId !== source.id || copy.form.kind !== source.type || copy.base !== editionBase(source,bookId)) throw new Error("Select the original saved edition and check for newer changes. Download the copy to review it separately.");
+        latestForm.current = copy.form; formRevision.current++; liveDirty.current = true; setForm(copy.form); setDirty(true); setRendered(null); setPreflight(null);
+        setNotice("Local edition settings opened as unsaved work. Review and save when ready; an earlier save may still finish.");
+      } else if (liveDirty.current) { entry.raw = writeEditionTab(window.sessionStorage,scopeKey,source,latestForm.current,null); setTabCopy(entry.raw); }
+      entry.edition = source; tabEnabledRef.current = true; setTabEnabled(true);
+    } catch (reason) { if (valid()) setTabError(reason instanceof Error ? reason.message : "Edition recovery could not be started."); }
+    finally { tabFlight.current = false; setTabBusy(false); }
+  };
+  const discardTabCopy = async () => {
+    const entry = tabRef.current, raw = entry.raw, scopeKey = { actor: scope.actor, bookId }, validView = captureView(), revision = formRevision.current;
+    const valid = () => validView() && formRevision.current === revision && tabRef.current === entry && entry.raw === raw && loadedEditionOwner.current === scope.actor;
+    if (!valid() || tabFlight.current) return;
+    tabFlight.current = true; setTabBusy(true);
+    try { await readBrowserSession(scope.actor); if (!valid()) return; if (raw !== null) discardEditionTab(window.sessionStorage,scopeKey,raw);
+      tabEnabledRef.current = false; setTabEnabled(false); tabRef.current = { raw: null, edition: null }; setTabCopy(null); setTabError(null);
+    } catch (reason) { if (valid()) setTabError(reason instanceof Error ? reason.message : "The local copy could not be removed."); }
+    finally { tabFlight.current = false; setTabBusy(false); }
+  };
+  const downloadTabCopy = async () => {
+    const entry = tabRef.current, raw = entry.raw, scopeKey = { actor: scope.actor, bookId }, validView = captureView(), revision = formRevision.current;
+    const valid = () => validView() && formRevision.current === revision && tabRef.current === entry && entry.raw === raw && loadedEditionOwner.current === scope.actor;
+    if (!valid() || !raw || tabFlight.current) return;
+    tabFlight.current = true; setTabBusy(true);
+    try { await readBrowserSession(scope.actor); if (!valid()) return; const access = await api.getBook(bookId,scope.actor);
+      await readBrowserSession(scope.actor); if (!valid()) return;
+      if (access?.book?.id !== bookId || access.book.workspace_id !== book?.workspace_id || !EDIT_ROLES.has(access.role)) throw new Error("Edition access could not be verified.");
+      if (readEditionTab(window.sessionStorage,scopeKey) !== raw) throw new Error("The local edition copy changed. Reload before downloading it.");
+      const url = URL.createObjectURL(new Blob([raw], { type: "application/json;charset=utf-8" })); const a = document.createElement("a");
+      a.href = url; a.download = `bookworm-edition-${bookId}-tab-copy.json`; document.body.append(a); a.click(); a.remove(); window.setTimeout(() => URL.revokeObjectURL(url),1000);
+    } catch (reason) { if (valid()) setTabError(reason instanceof Error ? reason.message : "The local copy could not be downloaded."); }
+    finally { tabFlight.current = false; setTabBusy(false); }
+  };
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
-    if (!handlerCurrent() || !editable || busy) return;
-    setForm((current) => ({ ...current, [key]: value })); setDirty(true); setRendered(null); setPreflight(null); setNotice(null);
+    if (!handlerCurrent() || !editable || busy || tabFlight.current) return;
+    const next = { ...latestForm.current, [key]: value }; latestForm.current = next; formRevision.current++; liveDirty.current = true; recordTabCopy(next);
+    setForm(next); setDirty(true); setRendered(null); setPreflight(null); setNotice(null);
   };
 
   const selectEdition = (edition: Edition) => {
-    if (!handlerCurrent() || busy) return;
-    if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
+    if (!handlerCurrent() || busy || tabFlight.current || editionSaveFlight.current) return;
+    if (liveDirty.current && !window.confirm("Discard unsaved edition settings?")) return;
+    formRevision.current++; liveDirty.current = false; tabEnabledRef.current = false; setTabEnabled(false);
     const version = ++viewEpoch.current;
     audioManualRead.current = null;
     currentEdition.current = edition.id;
@@ -402,8 +491,9 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   };
 
   const newEdition = (kind: Kind) => {
-    if (!handlerCurrent() || !editable || busy) return;
-    if (dirty && !window.confirm("Discard unsaved edition settings?")) return;
+    if (!handlerCurrent() || !editable || busy || tabFlight.current || editionSaveFlight.current) return;
+    if (liveDirty.current && !window.confirm("Discard unsaved edition settings?")) return;
+    formRevision.current++; liveDirty.current = true; tabEnabledRef.current = false; setTabEnabled(false);
     ++viewEpoch.current; audioManualRead.current = null; currentEdition.current = null;
     exportRequestKey.current = null;
     setGooglePlayIdentifier(""); setGooglePlayCoverId(""); setNotice(null);
@@ -424,18 +514,20 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   };
 
   const acknowledgeEditionRisk = async () => {
-    if (!acceptDuplicateRisk || verifyingEditionRisk || busy || editionRiskFlight.current) return;
+    if (!editionRiskConsent.current || verifyingEditionRisk || busy || editionRiskFlight.current) return;
     const pending = uncertainEditionCreates.current.get(editionRiskKey), valid = captureView();
     if (!pending || !valid()) return;
     if (loadedEditionOwner.current !== pending.actor) {
-      setError("This warning belongs to a different account. Leaving or reloading this page removes the warning, but the earlier request could still finish.");
+      setError("Sign in to the original account to review this warning. The earlier request could still finish.");
       return;
     }
+    const consentVersion = editionRiskConsentVersion.current;
     const flight = {}; editionRiskFlight.current = flight; setVerifyingEditionRisk(true);
     try {
       await verifyEditionOwner(pending.actor, valid);
-      if (!valid() || loadedEditionOwner.current !== pending.actor || editionRiskFlight.current !== flight || uncertainEditionCreates.current.get(editionRiskKey) !== pending) return;
-      uncertainEditionCreates.current.delete(editionRiskKey); setEditionGuardVersion(v => v + 1); setAcceptDuplicateRisk(false);
+      if (!valid() || !editionRiskConsent.current || editionRiskConsentVersion.current !== consentVersion || loadedEditionOwner.current !== pending.actor || editionRiskFlight.current !== flight || uncertainEditionCreates.current.get(editionRiskKey) !== pending) return;
+      clearEditionCreateFence(window.sessionStorage, pending);
+      uncertainEditionCreates.current.delete(editionRiskKey); setEditionGuardVersion(v => v + 1); setEditionRiskConsent(false);
       setError(null); setNotice("Another new edition can be saved. The earlier request may still finish.");
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Your account could not be verified."); }
     finally { if (editionRiskFlight.current === flight) { editionRiskFlight.current = null; if (valid()) setVerifyingEditionRisk(false); } }
@@ -452,9 +544,10 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   };
 
   const save = async () => {
-    if (!handlerCurrent() || !editable || busy || editionSaveFlight.current || (!activeId && uncertainEditionCreates.current.has(editionRiskKey))) return;
+    if (!handlerCurrent() || !editable || busy || tabFlight.current || editionSaveFlight.current || (!activeId && (!editionRiskChecked || editionRiskStorageError || uncertainEditionCreates.current.has(editionRiskKey)))) return;
     if (activeId && !activeEdition) { setError("This edition is no longer in the saved list. Reload before saving."); return; }
     const valid = captureView(); if (!valid()) return;
+    const saveRevision = formRevision.current, submittedForm = latestForm.current;
     const flight = {}; editionSaveFlight.current = flight;
     setBusy("save"); setError(null); setNotice(null);
     let creating = false;
@@ -464,28 +557,37 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
       let saved: Edition;
       owner = loadedEditionOwner.current; if (!owner) throw new Error("Verify the original account before saving this edition.");
       await verifyEditionOwner(owner, valid); if (!valid()) return;
+      if (formRevision.current !== saveRevision) throw new Error("The edition settings changed while saving was being prepared. Review them and save again.");
       if (activeEdition) {
-        const config = toConfig(form, activeEdition.edition_metadata_json);
+        const config = toConfig(submittedForm, activeEdition.edition_metadata_json);
         submitted = true;
-        saved = await api.updateEdition(activeEdition.id, { config, language: form.language, expectedUpdatedAt: activeEdition.updated_at }, owner);
+        saved = await api.updateEdition(activeEdition.id, { config, language: submittedForm.language, expectedUpdatedAt: activeEdition.updated_at }, owner);
         await verifyEditionOwner(owner, valid);
-        if (!matchesEditionReply(saved, config, form.language, activeEdition.id)) throw new Error("The edition update reply could not be verified.");
+        if (!matchesEditionReply(saved, config, submittedForm.language, activeEdition.id)) throw new Error("The edition update reply could not be verified.");
       } else {
-        const config = toConfig(form);
+        const config = toConfig(submittedForm);
         // The endpoint has no durable request identity. Once dispatched, a failure
         // cannot distinguish a rejected request from a lost success response.
-        creating = true; submitted = true; uncertainEditionCreates.current.set(editionRiskKey, { actor: owner }); setEditionGuardVersion(v => v + 1); setAcceptDuplicateRisk(false);
-        saved = await api.createEdition(bookId, { config, language: form.language }, owner);
+        const fence = beginEditionCreateFence(window.sessionStorage, owner, bookId, crypto.randomUUID());
+        creating = true; submitted = true; uncertainEditionCreates.current.set(editionRiskKey, fence); setEditionGuardVersion(v => v + 1); setEditionRiskConsent(false);
+        saved = await api.createEdition(bookId, { config, language: submittedForm.language }, owner);
         await verifyEditionOwner(owner, valid);
-        if (!matchesEditionReply(saved, config, form.language)) throw new Error("The edition creation reply could not be verified.");
+        if (!matchesEditionReply(saved, config, submittedForm.language)) throw new Error("The edition creation reply could not be verified.");
         if (!valid()) return;
+        clearEditionCreateFence(window.sessionStorage, fence);
         uncertainEditionCreates.current.delete(editionRiskKey); setEditionGuardVersion(v => v + 1); creating = false;
       }
       if (!valid()) return;
-      currentEdition.current = saved.id;
+      const newerEdits = formRevision.current !== saveRevision;
+      formRevision.current++; liveDirty.current = newerEdits; tabEnabledRef.current = false; setTabEnabled(false);
+      if (tabRef.current.raw !== null) setTabError("The saved edition changed. The retained local copy is no longer being updated; download or discard it before enabling recovery again.");
       setEditions((current) => [saved, ...current.filter((edition) => edition.id !== saved.id)]);
-      setActiveId(saved.id); setForm(formFromEdition(saved, book?.language)); setDirty(false); setNotice("Edition settings saved.");
-      if (saved.type === "audiobook") {
+      const retainAsNew = newerEdits && latestForm.current.kind !== saved.type;
+      currentEdition.current = retainAsNew ? null : saved.id;
+      setActiveId(retainAsNew ? null : saved.id);
+      if (newerEdits) { setDirty(true); setNotice(retainAsNew ? "The earlier edition was saved. Your newer format remains a separate unsaved edition; review it before saving." : "Earlier edition settings were saved. Newer edits remain unsaved; review and save them when ready."); }
+      else { setForm(formFromEdition(saved, book?.language)); setDirty(false); setNotice("Edition settings saved."); }
+      if (!retainAsNew && saved.type === "audiobook") {
         await Promise.all([readAudioProjects(saved.id, true), readAudioHistory(saved.id, true)]);
         if (!valid()) return;
       }
@@ -660,7 +762,19 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     </div>}
     {notice && <p role="status" className="mb-5 text-sm text-emerald-200">{notice}</p>}
 
-    <fieldset disabled={Boolean(busy) || !currentIdentity} className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+    {currentIdentity && <section aria-label="Optional edition tab recovery" className="mb-5 rounded-xl border border-white/15 p-4 text-sm text-white/75">
+      <h2 className="font-medium">Optional edition tab recovery</h2>
+      <p>With your permission, this browser tab stores edition settings and saved edition metadata in plaintext, including listing, back-cover and copyright text, narration instructions, QR destinations and artwork identifiers. Other people using this browser and scripts on this site may read it. Duplicated tabs may receive a copy and the browser may restore closed sessions. Artwork files are not included. This is not a server save and is never submitted automatically. New editions cannot be recovered.</p>
+      {tabError && <p role="alert" className="mt-2 text-amber-100">{tabError}</p>}
+      {tabCopy ? <p className="mt-2">{tabEnabled ? "Recovery is on for this saved edition." : "A local copy is retained. Select its saved edition to restore it, or download or discard it."}</p> : <p className="mt-2">{tabEnabled ? "Recovery is on for this saved edition." : "Recovery is off."}</p>}
+      <div className="mt-3 flex flex-wrap gap-3">
+        {!tabCopy && !tabEnabled && <button type="button" disabled={tabBusy || !activeEdition || !editable || Boolean(busy)} onClick={() => void openTabCopy(false)} className="min-h-11 underline disabled:opacity-40">Enable edition recovery</button>}
+        {tabCopy && <button type="button" disabled={tabBusy || !activeEdition || !editable || Boolean(busy) || dirty} onClick={() => void openTabCopy(true)} className="min-h-11 underline disabled:opacity-40">Restore local edition</button>}
+        {tabCopy && <button type="button" disabled={tabBusy} onClick={() => void downloadTabCopy()} className="min-h-11 underline disabled:opacity-40">Download local edition copy</button>}
+        {(tabCopy || tabEnabled) && <button type="button" disabled={tabBusy} onClick={() => void discardTabCopy()} className="min-h-11 underline disabled:opacity-40">Discard local edition copy and turn off</button>}
+      </div>
+    </section>}
+    <fieldset disabled={Boolean(busy) || tabBusy || !currentIdentity} className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
       <aside className={`${cardClass} h-fit`}>
         <div className="flex items-center justify-between"><h2 className="font-semibold">Editions</h2><span className="text-xs text-white/40">{editions.length}</span></div>
         <div className="mt-4 space-y-2">
@@ -679,12 +793,14 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
       <div className="min-w-0 space-y-6">
         <section className={cardClass} aria-labelledby="edition-settings">
           <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 id="edition-settings" className="text-xl font-semibold">Edition settings</h2><p className="mt-1 text-sm text-white/45">Changes are saved before rendering or validation.</p></div>
-            <button type="button" onClick={() => void save()} disabled={!editable || Boolean(busy) || (!dirty && Boolean(activeId)) || (!activeId && uncertainEditionCreates.current.has(editionRiskKey))} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "save" ? "Saving…" : "Save edition"}</button>
+            <button type="button" onClick={() => void save()} disabled={!editable || Boolean(busy) || (!dirty && Boolean(activeId)) || (!activeId && (!editionRiskChecked || Boolean(editionRiskStorageError) || uncertainEditionCreates.current.has(editionRiskKey)))} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "save" ? "Saving…" : "Save edition"}</button>
           </div>
-          {uncertainEditionCreates.current.has(editionRiskKey) && <div role="alert" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/5 p-4 text-sm text-amber-100">
+          {editionRiskStorageError && <p role="alert" className="mt-3 text-sm text-amber-100">{editionRiskStorageError} New editions cannot be saved until this tab can verify the warning. Existing editions remain available.</p>}
+          {uncertainEditionCreates.current.has(editionRiskKey) && uncertainEditionCreates.current.get(editionRiskKey)?.actor !== scope.actor && <p role="alert" className="mt-5 text-sm text-amber-100">This tab has an unconfirmed edition request from another account. Sign in to that account to review it before creating an edition here.</p>}
+          {uncertainEditionCreates.current.get(editionRiskKey)?.actor === scope.actor && <div role="alert" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/5 p-4 text-sm text-amber-100">
             <p>A previous new-edition save may have completed, but its reply was not confirmed. Creating another could produce a duplicate. The previous request could still finish after you check.</p>
-            <p className="mt-2">This warning lasts only while this page remains open. Reloading or closing it removes the warning; your unsaved edition settings are not saved.</p>
-            <label className="mt-3 flex items-start gap-2"><input type="checkbox" checked={acceptDuplicateRisk} onChange={event => setAcceptDuplicateRisk(event.target.checked)} />I understand that another create can duplicate the earlier request.</label>
+            <p className="mt-2">This tab retains the warning across navigation and reload when browser session storage is available. Other tabs and devices do not reliably share this warning; a duplicated tab may start with a copy. Closing the session or clearing site data may remove it; your unsaved edition settings are not saved.</p>
+            <label className="mt-3 flex items-start gap-2"><input type="checkbox" checked={acceptDuplicateRisk} onChange={event => setEditionRiskConsent(event.target.checked)} />I understand that another create can duplicate the earlier request.</label>
             <button type="button" disabled={!editable || Boolean(busy) || verifyingEditionRisk || !acceptDuplicateRisk} onClick={() => void acknowledgeEditionRisk()} className="mt-3 rounded-lg border border-amber-200/40 px-3 py-2 underline disabled:opacity-40">Allow another create despite duplicate risk</button>
           </div>}
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
@@ -699,8 +815,8 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
             {paginated && <>
               <div className="sm:col-span-2"><label htmlFor="layout-preset" className="text-sm text-white/65">Layout starter</label><select id="layout-preset" value="" onChange={(event) => {
                 const presetId = event.target.value;
-                if (!isLayoutPresetId(presetId)) return;
-                setForm((current) => applyLayoutPreset(current, presetId));
+                if (!isLayoutPresetId(presetId) || !handlerCurrent() || !editable || busy || tabFlight.current) return;
+                const next = applyLayoutPreset(latestForm.current, presetId); latestForm.current = next; formRevision.current++; liveDirty.current = true; recordTabCopy(next); setForm(next);
                 setDirty(true); setRendered(null); setPreflight(null); setError(null);
                 setNotice("Layout starter applied. Review settings, then save and render a new proof.");
               }} disabled={!editable || Boolean(busy)} aria-describedby="layout-preset-help" className={fieldClass}>
