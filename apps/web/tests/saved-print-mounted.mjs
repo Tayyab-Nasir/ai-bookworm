@@ -1586,6 +1586,9 @@ test("closing an unaccepted render fences its identity before enabling a new req
       };
     });
     await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    // Render dispatch follows asynchronous account verification. Await the
+    // actual synthetic request before asserting which key closure fences.
+    await page.waitForFunction(() => window.renderCalls.length === 1);
     const render = (await page.evaluate(() => window.renderCalls))[0];
     await page.evaluate(() => { window.confirm = () => true; });
     await page.getByRole("button", {name: "Close if not started"}).click();
@@ -1593,6 +1596,7 @@ test("closing an unaccepted render fences its identity before enabling a new req
     await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeEnabled();
     const calls = await page.evaluate(() => window.closeCalls);
     assert.equal(calls.length, 1); assert.equal(calls[0].requestId, render.idempotencyKey);
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
     assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 0);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
