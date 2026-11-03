@@ -9,6 +9,7 @@ import type { SupabaseClient } from "../lib/supabase.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import { loadRenderImages, renderImagesFingerprint, assertRenderImagesCurrent } from "../lib/render-images.js";
 import { boundedServiceText } from "../lib/bounded-service-response.js";
+import { nextEditionTimestamp } from "../lib/edition-timestamp.js";
 export { loadRenderImages } from "../lib/render-images.js";
 
 const BUCKET = "book-assets";
@@ -151,7 +152,7 @@ const updateSchema = z.object({
   config: editionConfigSchema.optional(),
   language: z.string().trim().min(2).max(35).optional(),
   status: z.enum(["draft", "in_review", "approved", "archived"]).optional(),
-  expectedUpdatedAt: z.string().datetime(),
+  expectedUpdatedAt: z.string().datetime({ offset: true }),
 }).strict().refine((value) => value.config || value.language || value.status, "nothing to update");
 
 const renderSchema = z.object({ idempotencyKey: z.string().trim().min(8).max(200) }).strict();
@@ -346,7 +347,10 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
     const edition = await loadEdition(sb, editionId);
     const { book } = await loadBook(sb, edition.book_id, req.userId, true);
     if (parsed.data.config) await validateCover(sb, book.workspace_id, parsed.data.config);
-    const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    let updatedAt: string;
+    try { updatedAt = nextEditionTimestamp(parsed.data.expectedUpdatedAt, Date.now()); }
+    catch { throw new AppError(422, "The saved edition timestamp is invalid. Reload before saving."); }
+    const update: Record<string, unknown> = { updated_at: updatedAt };
     if (parsed.data.config) {
       update.type = parsed.data.config.kind;
       update.trim_size = parsed.data.config.kind === "print" ? parsed.data.config.trim_size : null;

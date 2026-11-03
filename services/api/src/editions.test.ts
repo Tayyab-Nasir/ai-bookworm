@@ -246,3 +246,35 @@ test("edition updates use optimistic concurrency", async () => {
   assert.equal(store.tables.editions[0].status, "in_review");
   await app.close();
 });
+
+test("equal wall clock still advances the revision and rejects a stale save", async () => {
+  const store = baseStore();
+  const fixed = "2026-11-03T00:00:00.000Z";
+  store.tables.editions.push({ id: EDITION, book_id: BOOK, type: "ebook", status: "draft", updated_at: fixed, edition_metadata_json: { kind: "ebook" } });
+  const app = await buildApp(() => fakeSupabase(store));
+  const realNow = Date.now;
+  try {
+    Date.now = () => Date.parse(fixed);
+    for (const [language, expectedStatus] of [["fr", 200], ["de", 409]] as const) {
+      const response = await app.inject({method:"PATCH",url:`/v1/editions/${EDITION}`,headers:auth,payload:{language,expectedUpdatedAt:fixed}});
+      assert.equal(response.statusCode,expectedStatus,response.body);
+    }
+    assert.equal(store.tables.editions[0].language,"fr");
+    assert.equal(store.tables.editions[0].updated_at,"2026-11-03T00:00:00.000001Z");
+  } finally { Date.now=realNow; await app.close(); }
+});
+
+test("edition updates accept the exact PostgREST offset timestamp and reject an impossible date", async () => {
+  const store = baseStore();
+  const expected = "2099-11-03T05:00:00.123456+05:00";
+  store.tables.editions.push({ id: EDITION, book_id: BOOK, type: "ebook", status: "draft", updated_at: expected, edition_metadata_json: { kind: "ebook" } });
+  const app = await buildApp(() => fakeSupabase(store));
+  try {
+    const saved = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth, payload: { language: "fr", expectedUpdatedAt: expected } });
+    assert.equal(saved.statusCode, 200, saved.body);
+    assert.equal(store.tables.editions[0].updated_at, "2099-11-03T00:00:00.123457Z");
+    const invalid = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth, payload: { language: "de", expectedUpdatedAt: "2099-02-30T00:00:00Z" } });
+    assert.equal(invalid.statusCode, 422, invalid.body);
+    assert.equal(store.tables.editions[0].language, "fr");
+  } finally { await app.close(); }
+});
