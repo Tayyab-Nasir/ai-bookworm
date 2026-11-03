@@ -545,8 +545,11 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
         ({ data: version, error: versionReadError } = await readVersion());
         if (versionReadError) throw new AppError(503, "Upload version recovery is temporarily unavailable");
       } else if (versionError) {
-        if (!requestId && created) await app.supabaseFactory().from("assets").delete().eq("id", assetId);
-        throw new AppError(503, "Upload version allocation failed; retry the same request.");
+        // A failed response does not prove the version insert rolled back. Keep
+        // the asset and any committed version for recovery or reconciliation.
+        throw new AppError(503, requestId
+          ? "Upload version allocation could not be confirmed; retry the same request."
+          : "Upload version allocation could not be confirmed; check Assets before starting another upload.");
       } else version = { asset_id: assetId, version_number: 1, storage_path: path, checksum: "pending",
         mime_type: mimeType, size_bytes: sizeBytes, scan_status: "pending", created_by: req.userId };
     }

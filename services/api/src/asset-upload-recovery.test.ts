@@ -13,7 +13,7 @@ function fixture() {
   const tables: Record<string, Record<string, unknown>[]> = { assets: [], asset_versions: [], activity_events: [] };
   let actor = userId;
   let role = "editor";
-  let failVersionOnce = false;
+  let versionFailure: "none" | "before_commit" | "after_commit" = "none";
   let signs = 0;
   const app = Fastify();
   app.decorate("supabaseFactory", ((token?: string) => {
@@ -45,8 +45,9 @@ function fixture() {
               : table === "asset_versions" ? { scan_status: "pending" } : {};
             const row: Record<string, unknown> = { ...defaults, ...insertion };
             insertion = null;
-            if (table === "asset_versions" && failVersionOnce) {
-              failVersionOnce = false;
+            if (table === "asset_versions" && versionFailure !== "none") {
+              if (versionFailure === "after_commit") rows.push(row);
+              versionFailure = "none";
               return { data: null, error: { code: "08006", message: "temporary version outage" } };
             }
             if (rows.some((existing) => table === "assets" ? existing.id === row.id
@@ -72,7 +73,7 @@ function fixture() {
   });
   assetRoutes(app);
   return { app, tables, get signs() { return signs; }, setActor: (value: string) => { actor = value; },
-    setRole: (value: string) => { role = value; }, failNextVersion: () => { failVersionOnce = true; } };
+    setRole: (value: string) => { role = value; }, failNextVersion: (mode: "before_commit" | "after_commit" = "before_commit") => { versionFailure = mode; } };
 }
 
 test("upload allocation reissues a URL for one exact pending asset and version", async () => {
@@ -98,6 +99,38 @@ test("a partial asset allocation repairs version one without a second asset", as
     assert.equal((await f.app.inject({ method: "POST", url: "/assets/upload-url", payload: body })).statusCode, 503);
     assert.equal(f.tables.assets.length, 1);
     assert.equal(f.tables.asset_versions.length, 0);
+    const recovered = await f.app.inject({ method: "POST", url: "/assets/upload-url", payload: body });
+    assert.equal(recovered.statusCode, 200);
+    assert.equal(recovered.json().assetId, requestId);
+    assert.equal(f.tables.assets.length, 1);
+    assert.equal(f.tables.asset_versions.length, 1);
+  } finally { await f.app.close(); }
+});
+
+for (const mode of ["before_commit", "after_commit"] as const) {
+  test(`legacy upload retains its pending allocation after ${mode} version error`, async () => {
+    const f = fixture(); f.failNextVersion(mode);
+    const { requestId: _requestId, ...legacyBody } = body;
+    try {
+      const response = await f.app.inject({ method: "POST", url: "/assets/upload-url", payload: legacyBody });
+      assert.equal(response.statusCode, 503);
+      assert.match(response.json().error, /check Assets/);
+      assert.equal(f.tables.assets.length, 1);
+      assert.equal(f.tables.asset_versions.length, mode === "after_commit" ? 1 : 0);
+      if (mode === "after_commit") assert.equal(f.tables.asset_versions[0].asset_id, f.tables.assets[0].id);
+      assert.equal(f.signs, 0);
+    } finally { await f.app.close(); }
+  });
+}
+
+test("idempotent upload recovers a committed version after its response is lost", async () => {
+  const f = fixture(); f.failNextVersion("after_commit");
+  try {
+    const first = await f.app.inject({ method: "POST", url: "/assets/upload-url", payload: body });
+    assert.equal(first.statusCode, 503);
+    assert.match(first.json().error, /retry the same request/);
+    assert.equal(f.tables.assets.length, 1);
+    assert.equal(f.tables.asset_versions.length, 1);
     const recovered = await f.app.inject({ method: "POST", url: "/assets/upload-url", payload: body });
     assert.equal(recovered.statusCode, 200);
     assert.equal(recovered.json().assetId, requestId);
