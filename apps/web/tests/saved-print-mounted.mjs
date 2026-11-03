@@ -1755,6 +1755,64 @@ test("closing an unaccepted render fences its identity before enabling a new req
   } finally { await page.close(); }
 });
 
+test("unavailable render closure retains the request and gives an actionable support reference", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCalls = []; window.closeCalls = []; window.confirm = () => true;
+      window.bookwormApi.renderEdition = async (editionId, body) => { window.renderCalls.push({editionId, ...body}); throw new Error("Lost reply"); };
+      window.bookwormApi.getRenderRequest = async (bookId, editionId, requestId) => ({bookId, editionId, requestId, job: null});
+      window.bookwormApi.closeRenderRequest = async (bookId, editionId, requestId) => {
+        window.closeCalls.push({bookId, editionId, requestId});
+        throw new Error("Closing this request is temporarily unavailable. The original render may still finish; check its status again.");
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.waitForFunction(() => window.renderCalls.length === 1);
+    const requestId = await page.evaluate(() => window.renderCalls[0].idempotencyKey);
+    await expect(page.getByText(requestId, {exact: true})).toBeVisible();
+    await expect(page.getByText(/Keep this browser's site data/)).toBeVisible();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText(/original request may still arrive/).first()).toBeVisible();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText(/Closing this request is temporarily unavailable/)).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    assert.equal(await page.evaluate(() => window.closeCalls[0].requestId), requestId);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("render support reference is hidden while the account changes and remains private to its original actor", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCalls = [];
+      window.bookwormApi.renderEdition = async (_editionId, body) => { window.renderCalls.push(body); throw new Error("Lost reply"); };
+      const original = window.fetch.bind(window);
+      window.fetch = async (url, options) => {
+        if (String(url) !== "/api/auth/session") return original(url, options);
+        if (window.holdAccountCheck) await new Promise(resolve => { window.releaseAccountCheck = resolve; });
+        return Response.json({user: {id: window.fixtureActor}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`});
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.waitForFunction(() => window.renderCalls.length === 1);
+    const requestId = await page.evaluate(() => window.renderCalls[0].idempotencyKey);
+    await expect(page.getByText(requestId, {exact: true})).toBeVisible();
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.holdAccountCheck = true; window.dispatchEvent(new Event("focus")); });
+    await page.waitForFunction(() => typeof window.releaseAccountCheck === "function");
+    await expect(page.getByText(requestId, {exact: true})).toHaveCount(0);
+    await page.evaluate(() => { window.holdAccountCheck = false; window.releaseAccountCheck(); });
+    await expect(page.getByRole("heading", {name: "Layout & publishing"})).toBeVisible();
+    await expect(page.getByText(requestId, {exact: true})).toHaveCount(0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("closing cannot cancel an accepted render or forget an uncertain close", async () => {
   const {page, errors} = await fixture({parent: true});
   try {
