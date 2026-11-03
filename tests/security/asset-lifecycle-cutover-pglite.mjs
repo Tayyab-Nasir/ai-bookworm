@@ -11,8 +11,11 @@ import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const read=path=>readFile(join(root,path),'utf8');
 const hash=x=>createHash('sha256').update(x).digest('hex');
-const atomic=await read('ops/asset-lifecycle/atomic-cutover.source-only.sql');
-assert.equal(hash(atomic),'7adb6243572a4fe2d049023479921801954e22cefa0a00fc240cd41e8b439424','Review source changes and regenerate proof before running');
+const canonicalSql=sql=>{const normalized=sql.replace(/\r\n/g,'\n'); assert(!normalized.includes('\r'),'SQL contains a lone carriage return'); return normalized};
+assert.equal(canonicalSql('a\r\nb'),'a\nb');
+assert.throws(()=>canonicalSql('a\rb'),/lone carriage return/);
+const atomic=canonicalSql(await read('ops/asset-lifecycle/atomic-cutover.source-only.sql'));
+assert.equal(hash(atomic),'52e38a90f7b96fa6234ffbeaa4002f74dba2d7f366ef863ccf79807686347231','Review source changes and regenerate proof before running');
 const boundary='-- Isolated readiness prototype; never apply to a live database without review.';
 assert.equal(atomic.split(boundary).length,2,'The injected-failure boundary must be unique');
 const db=new PGlite({extensions:{citext,pgcrypto}});
@@ -23,10 +26,11 @@ try {
   const files=(await readdir(join(root,'supabase/migrations'))).filter(f=>f.endsWith('.sql')).sort();
   const additive=files.filter(f=>f.endsWith('_asset_lifecycle_additive.sql'));
   assert.equal(additive.length,1,'Exactly one additive lifecycle migration is required');
-  assert.equal(hash(await read('supabase/migrations/'+additive[0])),'75f967991b7993eadc9ee7eb17373c76767d1638837121da50c121685c86c008');
+  const additiveSql=canonicalSql(await read('supabase/migrations/'+additive[0]));
+  assert.equal(hash(additiveSql),'75f967991b7993eadc9ee7eb17373c76767d1638837121da50c121685c86c008');
   for(const f of files){
     phase=f;
-    const migration=await read('supabase/migrations/'+f);
+    const migration=f===additive[0]?additiveSql:await read('supabase/migrations/'+f);
     if (f===additive[0]) {
       const absent=async()=>assert.equal((await db.query("select count(*)::int as n from information_schema.columns where table_schema='public' and table_name='assets' and column_name='lifecycle_revision'")).rows[0].n,0);
       await db.exec('begin;\n'+migration+'\nrollback;');
