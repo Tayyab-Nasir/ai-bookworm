@@ -2605,3 +2605,44 @@ test('independent same-turn actual AI decision guards unload link and cancelable
     assert.equal(later, true);
   } finally { await page.close(); }
 });
+
+
+test('independent recovery snapshot change during async verification fails closed', async () => {
+  for (const action of ['Restore local draft','Download local copy']) {
+    const page=await fixture(1280,true);
+    try {
+      await page.evaluate(() => {
+        const snapshot={format:'bookworm-chapter-draft',formatVersion:2,userId:'fixture-author',bookId:'book',chapterId:'chapter',baseVersion:1,capturedAt:'2026-11-03T00:00:00Z',canonicalState:'current-draft',nodes:[{id:'restore-id',type:'paragraph',text:'Private old snapshot'}],plainText:'Private old snapshot'};
+        window.recoveryKey='bookworm-tab-draft-v1:'+JSON.stringify(['fixture-author','book','chapter']);
+        sessionStorage.setItem(window.recoveryKey,JSON.stringify(snapshot));window.renderBookEditor({key:'recovery-race'});
+      });
+      await page.getByText(/A local draft is waiting for review/).waitFor();
+      await page.evaluate(() => {const old=window.bookwormApi.getChapterDocument;window.recoveryWaiting=false;window.bookwormApi.getChapterDocument=async id=>{window.recoveryWaiting=true;await new Promise(resolve=>window.releaseRecovery=resolve);return old(id)};});
+      await page.getByRole('button',{name:action,exact:true}).click();
+      await page.waitForFunction(()=>window.recoveryWaiting);
+      await page.evaluate(()=>{sessionStorage.setItem(window.recoveryKey,'different snapshot');window.releaseRecovery()});
+      await page.getByRole('alert').filter({hasText:/local.*changed/i}).waitFor();
+      assert.equal(await page.evaluate(()=>sessionStorage.getItem(window.recoveryKey)),'different snapshot');
+      assert.equal(await page.getByText('Private old snapshot',{exact:true}).count(),0);
+    } finally {await page.close()}
+  }
+});
+
+
+test('independent tab draft waits for pending save and rejects old base version', async () => {
+  const page=await manualSaveFixture({stored:true});
+  try {
+    await page.evaluate(()=>{const snapshot={format:'bookworm-chapter-draft',formatVersion:2,userId:'fixture-author',bookId:'book',chapterId:'chapter',baseVersion:1,capturedAt:'2026-11-03T00:00:00Z',canonicalState:'current-draft',nodes:[{id:'pending',type:'paragraph',text:'Older unsaved draft'}],plainText:'Older unsaved draft'};window.tabKey='bookworm-tab-draft-v1:'+JSON.stringify(['fixture-author','book','chapter']);sessionStorage.setItem(window.tabKey,JSON.stringify(snapshot));window.renderBookEditor({key:'pending-with-tab'});});
+    await page.getByRole('region',{name:'Manual save recovery'}).waitFor();
+    await page.getByText(/A local draft is waiting for review/).waitFor();
+    assert.equal(await page.getByRole('button',{name:'Restore local draft',exact:true}).isDisabled(),true);
+    assert.equal(await page.evaluate(()=>window.requests.length),1);
+    await page.getByRole('button',{name:'Check saved status',exact:true}).click();
+    await page.getByText('Original save confirmed. Loaded saved version 2.',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'Restore local draft',exact:true}).click();
+    await page.getByRole('alert').filter({hasText:/saved chapter has changed/i}).waitFor();
+    assert.equal(await page.evaluate(()=>window.requests.length),1);
+    assert.match(await page.evaluate(()=>sessionStorage.getItem(window.tabKey)),/Older unsaved draft/);
+    assert.equal(await page.getByText('Older unsaved draft',{exact:true}).count(),0);
+  } finally {await page.close()}
+});

@@ -14,6 +14,7 @@ import VersionTimeline from "./VersionTimeline";
 import AiAssistantPanel from "./AiAssistantPanel";
 import { storyBlueprintWriterBrief } from "../lib/story-blueprint-draft";
 import { chapterDraftBackup, chapterDraftReopenWarning, inspectChapterDraftBackup, MAX_CHAPTER_DRAFT_BACKUP_BYTES } from "../lib/chapter-draft";
+import { discardChapterTabRecovery, openChapterTabRecovery, readChapterTabRecovery, writeChapterTabRecovery } from "../lib/chapter-tab-recovery";
 import { chapterSaveDigest, chapterSaveKey, clearChapterSave, editorAccount, parseChapterSave, persistChapterSave,
   validateChapterSaveResult, validateCurrentChapter, validateSavedChapter, type ChapterSavePointer } from "../lib/manual-chapter-save";
 
@@ -113,6 +114,20 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
   const liveDraft = useRef(hasUnsavedChanges); liveDraft.current = hasUnsavedChanges;
   const draftRevision = useRef(0);
   const backupRead = useRef(0);
+  const [tabDraft, setTabDraft] = useState<string | null>(null);
+  const [tabDraftEnabled, setTabDraftEnabled] = useState(false);
+  const [tabDraftReviewed, setTabDraftReviewed] = useState(false);
+  const [tabDraftBusy, setTabDraftBusy] = useState(false);
+  const [tabDraftError, setTabDraftError] = useState<string | null>(null);
+  const tabDraftRef = useRef<{ userId: string; bookId: string; chapterId: string; baseVersion: number; raw: string | null } | null>(null);
+  const tabDraftEnabledRef = useRef(false);
+  const stopTabDraftForVersion = (version: number) => {
+    const entry = tabDraftRef.current;
+    if (tabDraftEnabledRef.current) { tabDraftEnabledRef.current = false; setTabDraftEnabled(false); }
+    if (!entry || entry.baseVersion === version) return;
+    if (entry.raw === null) tabDraftRef.current = { ...entry, baseVersion: version };
+    else setTabDraftError("The saved chapter changed. The earlier local copy is retained for review and is not being updated.");
+  };
 
   useLayoutEffect(() => {
     let live = true;
@@ -166,6 +181,12 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       if (passiveLocked.current || accountEpoch !== passiveEpoch.current) throw new Error("Account verification interrupted manuscript loading. Try again.");
       if (draftRevision.current !== originalDraftRevision) throw new Error("Your draft changed while the chapter was loading. It is still here; review it before trying again.");
       validateCurrentChapter(content.document, chapterId);
+      tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftReviewed(false); setTabDraft(null); setTabDraftError(null);
+      const draftScope = { userId, bookId, chapterId, baseVersion: content.document.version };
+      try {
+        const raw = readChapterTabRecovery(window.sessionStorage, draftScope);
+        tabDraftRef.current = { ...draftScope, raw }; setTabDraft(raw);
+      } catch { tabDraftRef.current = null; setTabDraftError("Tab recovery could not be read. Your saved chapter is still available; download drafts manually."); }
       setDocument(content.document); setDraft(content.document.nodes); setRole(content.role); setVersions(history.versions);
       setEditorSeed(null); setDirty(false); setEditorValidation(null); setConflict(false); setError(null); setPendingRestore(null); pendingSave.current = null; setReloadKey((v) => v + 1);
       setSaveRecoveryReady(false); setManualSave(null); setSaveMissing(false);
@@ -228,6 +249,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     ++loadSequence.current;
     loadTransition.current = null;
     editorOwner.current = null;
+    tabDraftEnabledRef.current = false; tabDraftRef.current = null; setTabDraftEnabled(false); setTabDraftReviewed(false); setTabDraft(null); setTabDraftError(null);
     accessBlockedRef.current = false; setAccessBlocked(false);
     setNewTitle(""); setNewChapterBrief("");
     setAccountVerifying(false); setRestoreHidden(null);
@@ -296,7 +318,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       const titleAtConfirmation = titleRevision.current;
       const flightsAtConfirmation = JSON.stringify(flights());
       const setupsBefore = JSON.stringify(Array.from(chapterSetups.current.entries()));
-      const confirmed = window.confirm(manualSave || saveFlight.current !== null ? "Leave with an unconfirmed save? Only its recovery ID is stored in this tab, not your draft text. Download your draft first if needed." : pendingCreation.current || creatingChapter.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder || structureFlight.current ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : pendingRestore || restoring.current ? "Leave with an unconfirmed restore? Keep this page open to recover the original request." : aiDecisionFlight.current ? "Leave while an AI decision is being processed? Keep this page open to check its outcome." : hasChapterSetup && !hasLiveDraft() && !hasLiveTitle() ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?");
+      const confirmed = window.confirm(manualSave || saveFlight.current !== null ? "Leave with an unconfirmed save? Its recovery record does not contain draft text. Any optional tab draft is separate and may be incomplete. Download your draft first if needed." : pendingCreation.current || creatingChapter.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder || structureFlight.current ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : pendingRestore || restoring.current ? "Leave with an unconfirmed restore? Keep this page open to recover the original request." : aiDecisionFlight.current ? "Leave while an AI decision is being processed? Keep this page open to check its outcome." : hasChapterSetup && !hasLiveDraft() && !hasLiveTitle() ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?");
       if (!confirmed || revision !== draftRevision.current || titleAtConfirmation !== titleRevision.current || flightsAtConfirmation !== JSON.stringify(flights()) || setupsBefore !== JSON.stringify(Array.from(chapterSetups.current.entries()))) {
         event.preventDefault(); event.stopPropagation();
         if (confirmed) setError("Your draft changed while confirming navigation. Review it before leaving.");
@@ -349,6 +371,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       if (sequence !== loadSequence.current) return;
       const hasLaterChanges = revision !== draftRevision.current || latestValidation.current !== null || !matchesReceipt;
       clearChapterSave(window.sessionStorage, pointer);
+      stopTabDraftForVersion(result.document.version);
       setManualSave(null); setDocument(result.document); pendingSave.current = null;
       if (hasLaterChanges) { setDirty(true); setNotice(`Saved version ${result.version}; newer edits remain unsaved.`); }
       else { setDraft(result.document.nodes); setEditorSeed(null); setDirty(false); setNotice(`Saved version ${result.version}.`); }
@@ -398,6 +421,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       const retainLocalDraft = revision !== draftRevision.current || latestValidation.current !== null || (liveDraft.current && !exactSavedDraft);
       clearChapterSave(window.sessionStorage, pointer);
       setManualSave(null); setSaveMissing(false); pendingSave.current = null; setVersions(history.versions);
+      stopTabDraftForVersion(current.document.version);
       if (retainLocalDraft) {
         setDirty(true); setConflict(true);
         setNotice(`${result.status === "saved" ? `Your original save is confirmed at version ${pointer.expectedVersion + 1}.` : "The original request is safely closed or superseded."} Your local draft is still here. Back it up before loading the current saved chapter.`);
@@ -582,6 +606,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       if (sequence !== loadSequence.current) return;
       validateCurrentChapter(current.document, request.chapterId, result.version);
       if (current.document.version > result.version) {
+        stopTabDraftForVersion(current.document.version);
         setConflict(true);
         setNotice(`The restore returned version ${result.version}, but the current chapter is already at version ${current.document.version}. Your local draft remains here; review saved history before choosing what to do.`);
         return;
@@ -591,6 +616,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       }
       await editorAccount(request.owner);
       if (sequence !== loadSequence.current) return;
+      stopTabDraftForVersion(current.document.version);
       // Adopt the confirmed receipt before refreshing history. A failed history
       // request must not leave the old draft marked as the restored manuscript.
       setRole(current.role); setPendingRestore(null); pendingSave.current = null;
@@ -650,10 +676,81 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       throw new Error("The saved revision could not be verified.");
     }
   };
-  const editable = EDIT_ROLES.has(role) && !passiveCheck && !accountVerifying && !restoreHidden && !accessBlocked && !titleBlocked && !pendingRestore && !manualSave && (!document || saveRecoveryReady);
+  const editable = EDIT_ROLES.has(role) && !passiveCheck && !accountVerifying && !restoreHidden && !accessBlocked && !titleBlocked && !pendingRestore && !manualSave && (!document || saveRecoveryReady) && (!tabDraft || tabDraftReviewed) && !tabDraftBusy;
   editorInteractionAvailable.current = !passiveLocked.current && !accessBlockedRef.current && !passiveCheck && !accountVerifying && !restoreHidden
     && Boolean(editorOwner.current) && book?.id === bookId;
-  childActionsAvailable.current = editorInteractionAvailable.current && editorOwner.current === saveAccount && Boolean(saveAccount);
+  childActionsAvailable.current = editorInteractionAvailable.current && editorOwner.current === saveAccount && Boolean(saveAccount) && (!tabDraft || tabDraftReviewed);
+  const tabDraftFlight = useRef(false);
+  const prepareTabDraft = async (restore: boolean) => {
+    const source = document, actor = saveAccount, entry = tabDraftRef.current;
+    if (!source || !actor || !entry || tabDraftFlight.current || !editorInteractionAvailable.current || manualSave || saveFlight.current !== null || pendingRestore || saving || loading || aiDecisionBusy || conflict || !saveRecoveryReady || !EDIT_ROLES.has(role)) return;
+    if (entry.userId !== actor || entry.bookId !== bookId || entry.chapterId !== source.chapterId || entry.baseVersion !== source.version) { setTabDraftError("The saved chapter changed. Download the local copy to review and merge it separately."); return; }
+    if (restore && (liveDraft.current || latestValidation.current)) { setTabDraftError("Download or save your current draft before replacing it."); return; }
+    if ((!restore && entry.raw !== null) || (restore && entry.raw === null)) return;
+    const sequence = loadSequence.current, epoch = passiveEpoch.current, revision = draftRevision.current;
+    const current = () => loadSequence.current === sequence && passiveEpoch.current === epoch && !passiveLocked.current && editorOwner.current === actor && currentDocument.current === source && tabDraftRef.current === entry && draftRevision.current === revision && saveFlight.current === null;
+    tabDraftFlight.current = true; setTabDraftBusy(true); setTabDraftError(null);
+    try {
+      await editorAccount(actor); if (!current()) return;
+      const latest = await api.getChapterDocument(source.chapterId, actor);
+      await editorAccount(actor); if (!current()) return;
+      validateCurrentChapter(latest.document, source.chapterId);
+      if (!EDIT_ROLES.has(latest.role)) throw new Error("Editing access could not be confirmed.");
+      if (latest.document.version !== source.version || await chapterSaveDigest(latest.document.nodes) !== await chapterSaveDigest(source.nodes)) throw new Error("The saved chapter changed. Download the local copy to review and merge it separately.");
+      if (!current()) return;
+      if (restore) {
+        if (readChapterTabRecovery(window.sessionStorage, entry) !== entry.raw) throw new Error("The local draft changed while it was being checked. Reload before restoring it.");
+        const nodes = openChapterTabRecovery(entry.raw!, entry);
+        draftRevision.current++; liveDraft.current = true; setEditorSeed(nodes); setDraft(nodes); setDirty(true); setEditorValidation(null);
+        pendingSave.current = null; setReloadKey(value => value + 1);
+        setNotice("Local tab draft opened as unsaved work. Review it and save when ready.");
+      } else if (latestValidation.current) throw new Error("This editor state cannot be stored automatically. Download your draft instead.");
+      else if (liveDraft.current) {
+        entry.raw = writeChapterTabRecovery(window.sessionStorage, entry, latestDraft.current, null); setTabDraft(entry.raw);
+      }
+      tabDraftEnabledRef.current = true; setTabDraftEnabled(true); setTabDraftReviewed(true);
+    } catch (reason) { if (current()) setTabDraftError(reason instanceof Error ? reason.message : "Tab recovery could not be started."); }
+    finally { tabDraftFlight.current = false; setTabDraftBusy(false); }
+  };
+  const recordTabDraft = (nodes: BookNode[]) => {
+    const entry = tabDraftRef.current;
+    if (!tabDraftEnabledRef.current || !entry) return;
+    if (!editorInteractionAvailable.current || entry.userId !== editorOwner.current || entry.chapterId !== currentDocument.current?.chapterId || entry.baseVersion !== currentDocument.current?.version) {
+      tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftError("Tab recovery stopped because the account or saved chapter changed. The previous local copy is retained for review."); return;
+    }
+    try { entry.raw = writeChapterTabRecovery(window.sessionStorage, entry, nodes, entry.raw); setTabDraft(entry.raw); setTabDraftError(null); }
+    catch (reason) { tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftError(reason instanceof Error ? reason.message : "Tab recovery could not store this change."); }
+  };
+  const discardTabDraft = async () => {
+    const entry = tabDraftRef.current, actor = saveAccount, source = document;
+    if (!entry || !actor || !source || !editorInteractionAvailable.current || entry.userId !== actor || tabDraftFlight.current) return;
+    const sequence = loadSequence.current, epoch = passiveEpoch.current, raw = entry.raw;
+    const current = () => sequence === loadSequence.current && epoch === passiveEpoch.current && !passiveLocked.current && editorOwner.current === actor && currentDocument.current === source && tabDraftRef.current === entry && entry.raw === raw;
+    tabDraftFlight.current = true; setTabDraftBusy(true);
+    try {
+      await editorAccount(actor); if (!current()) return;
+      if (entry.raw !== null) discardChapterTabRecovery(window.sessionStorage, entry, entry.raw);
+      tabDraftRef.current = { ...entry, baseVersion: source.version, raw: null }; tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftReviewed(false); setTabDraft(null); setTabDraftError(null);
+    } catch (reason) { try { await editorAccount(actor); } catch { if (current()) setRestoreHidden(actor); } if (current()) setTabDraftError(reason instanceof Error ? reason.message : "The local copy could not be removed."); }
+    finally { tabDraftFlight.current = false; setTabDraftBusy(false); }
+  };
+  const downloadTabDraft = async () => {
+    const entry = tabDraftRef.current, actor = saveAccount, source = document;
+    if (!entry?.raw || !actor || !source || !editorInteractionAvailable.current || entry.userId !== actor || tabDraftFlight.current) return;
+    const sequence = loadSequence.current, epoch = passiveEpoch.current, raw = entry.raw;
+    const current = () => sequence === loadSequence.current && epoch === passiveEpoch.current && !passiveLocked.current && editorOwner.current === actor && currentDocument.current === source && tabDraftRef.current === entry && entry.raw === raw;
+    tabDraftFlight.current = true; setTabDraftBusy(true);
+    try {
+      await editorAccount(actor); if (!current()) return;
+      const latest = await api.getChapterDocument(source.chapterId, actor);
+      await editorAccount(actor); if (!current()) return;
+      validateCurrentChapter(latest.document, source.chapterId);
+      if (readChapterTabRecovery(window.sessionStorage, entry) !== raw) throw new Error("The local draft changed while it was being checked. Reload before downloading it.");
+      const url = URL.createObjectURL(new Blob([raw], { type: "application/json;charset=utf-8" }));
+      const a = window.document.createElement("a"); a.href = url; a.download = `bookworm-chapter-${entry.chapterId}-tab-draft.json`; window.document.body.append(a); a.click(); a.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (reason) { try { await editorAccount(actor); } catch { if (current()) setRestoreHidden(actor); } if (current()) setTabDraftError(reason instanceof Error ? reason.message : "The account or chapter access could not be verified. The local copy is retained."); }
+    finally { tabDraftFlight.current = false; setTabDraftBusy(false); }
+  };
   const backupScope = useRef({ document, saveAccount, allowed: false });
   backupScope.current = { document, saveAccount, allowed: Boolean(editable && !passiveLocked.current && !saving && !loading && !aiDecisionBusy && !conflict && !accountVerifying && !restoreHidden) };
   const openDraftBackup = async (file: File | undefined) => {
@@ -720,9 +817,21 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     {(hasUnsavedChanges || hasAnyChapterSetup || titleBlocked || manualSave || pendingRestore || pendingOrder || pendingCreation.current || aiDecisionBusy) && <p className="mb-4 text-sm text-amber-100">Browser Back or Forward may leave without a warning. Save your work and resolve pending requests before leaving.</p>}
     {draftPlanMessage && <p role="status" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-3 text-sm leading-6 text-amber-100">{draftPlanMessage}</p>}
     {notice && <p role="status" className="mb-4 text-sm text-emerald-200">{notice}</p>}
+    {document && saveAccount && <section aria-label="Optional tab draft recovery" className="mb-4 rounded-xl border border-white/15 p-4 text-sm leading-6 text-white/80">
+      <h2 className="font-medium">Optional tab draft recovery</h2>
+      <p>With your permission, this tab stores manuscript text in plaintext in browser session storage. Other people using this browser and scripts on this site may read it. A duplicated tab may receive a copy, and the browser may restore closed sessions. This copy is not a server save, does not include image files, and is never submitted automatically.</p>
+      {tabDraftError && <p role="alert" className="mt-2 text-amber-100">{tabDraftError}</p>}
+      {tabDraft && !tabDraftReviewed ? <p className="mt-2 text-amber-100">A local draft is waiting for review. Restore it only if the saved chapter is unchanged, download it for comparison, or discard the local copy. Resolve any unconfirmed save first.</p> : tabDraftEnabled ? <p role="status" className="mt-2">Tab recovery is on for this chapter. Download a backup for protection beyond this tab.</p> : tabDraft ? <p className="mt-2">The retained copy is not being updated. Download or discard it before enabling recovery again.</p> : <p className="mt-2">Tab recovery is off.</p>}
+      <div className="mt-3 flex flex-wrap gap-3">
+        {!tabDraft && !tabDraftEnabled && <button type="button" disabled={tabDraftBusy || !tabDraftRef.current || !editable || saving || loading || aiDecisionBusy || conflict} onClick={() => void prepareTabDraft(false)} className="min-h-11 rounded-lg border border-white/20 px-3 disabled:opacity-40">Enable tab recovery</button>}
+        {tabDraft && !tabDraftReviewed && <button type="button" disabled={tabDraftBusy || !!manualSave || !!pendingRestore || saving || loading || aiDecisionBusy || conflict || !EDIT_ROLES.has(role)} onClick={() => void prepareTabDraft(true)} className="min-h-11 rounded-lg border border-white/20 px-3 disabled:opacity-40">Restore local draft</button>}
+        {tabDraft && <button type="button" disabled={tabDraftBusy} onClick={() => void downloadTabDraft()} className="min-h-11 px-3 underline">Download local copy</button>}
+        {(tabDraft || tabDraftEnabled) && <button type="button" disabled={tabDraftBusy} onClick={() => void discardTabDraft()} className="min-h-11 px-3 underline">Discard local copy and turn off</button>}
+      </div>
+    </section>}
     {manualSave && <section aria-label="Manual save recovery" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-4 text-sm leading-6 text-amber-100">
       <h2 className="font-medium">Confirm your last save</h2>
-      <p>Editing is paused until this exact save is confirmed. This tab stores only its account, chapter, revision and content fingerprint—not manuscript text. A reload cannot recover draft text that never reached the server.</p>
+      <p>Editing is paused until this exact save is confirmed. The save recovery record stores only its account, chapter, revision and content fingerprint. An optional tab draft copy, if enabled, is separate and is never resubmitted automatically.</p>
       <div className="mt-3 flex flex-wrap gap-3">
         <button type="button" disabled={saving || loading} onClick={() => void recoverSave()} className="min-h-11 rounded-lg border border-amber-200/30 px-3 disabled:opacity-40">Check saved status</button>
         {saveMissing && pendingSave.current && EDIT_ROLES.has(role) && <button type="button" disabled={saving || loading} onClick={() => void save(true)} className="min-h-11 rounded-lg border border-amber-200/30 px-3 disabled:opacity-40">Retry original save</button>}
@@ -761,7 +870,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
           captureAccountEpoch={() => passiveEpoch.current} accountEpochCurrent={epoch => !passiveLocked.current && childActionsAvailable.current && passiveEpoch.current === epoch}
           onState={setTitleState} onTitle={title => setChapters(items => items.map(chapter => chapter.id === document.chapterId ? { ...chapter, title } : chapter))} />}
         {document && <p className="mb-3 px-1 text-right text-xs tabular-nums text-white/45">{wordCount.toLocaleString()} words</p>}
-        {loading && <p className="p-8 text-white/50" role="status">Loading manuscript…</p>}{document && book ? <div hidden={loading}><RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={editorSeed ? { ...document, nodes: editorSeed } : document} workspaceId={book.workspace_id} actorId={saveAccount ?? ""} permissions={editable && !saving && !loading && !aiDecisionBusy ? "editor" : "viewer"} onValidationChange={(value) => { draftRevision.current++; latestValidation.current = value; if (value) liveDraft.current = true; setEditorValidation(value); }} onChange={(nodes) => { draftRevision.current++; latestDraft.current = nodes; liveDraft.current = true; setDraft(nodes); setDirty(true); if (!manualSave && saveFlight.current === null) pendingSave.current = null; setNotice(null); }} /></div> : !loading ? <div className="rounded-2xl border-dashed border border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div> : null}
+        {loading && <p className="p-8 text-white/50" role="status">Loading manuscript…</p>}{document && book ? <div hidden={loading}><RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={editorSeed ? { ...document, nodes: editorSeed } : document} workspaceId={book.workspace_id} actorId={saveAccount ?? ""} permissions={editable && !saving && !loading && !aiDecisionBusy ? "editor" : "viewer"} onValidationChange={(value) => { draftRevision.current++; latestValidation.current = value; if (value) { liveDraft.current = true; if (tabDraftEnabledRef.current) { tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftError("This editor state cannot be stored in tab recovery. Download your draft text; the earlier local copy remains available."); } } setEditorValidation(value); }} onChange={(nodes) => { draftRevision.current++; latestDraft.current = nodes; liveDraft.current = true; setDraft(nodes); setDirty(true); recordTabDraft(nodes); if (!manualSave && saveFlight.current === null) pendingSave.current = null; setNotice(null); }} /></div> : !loading ? <div className="rounded-2xl border-dashed border border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div> : null}
       </section>
       <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">
         {book?.id === bookId && editorOwner.current && <AiAssistantPanel key={`${editorOwner.current}:${document?.chapterId ?? "empty"}`} actorId={editorOwner.current} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} initialDraftInstruction={document?.chapterId === draftPlanTargetChapterId ? initialDraftInstruction : undefined} dirty={hasUnsavedChanges || conflict} editable={editable && !saving && !loading && !conflict} canDispatch={() => !passiveLocked.current && !conflictRef.current && childActionsAvailable.current} isDraftDirty={() => conflictRef.current || liveDraft.current || latestValidation.current !== null} onDraftConflict={() => setConflict(true)} onDecisionBusy={setAiDecisionBusy} onApplied={async () => { if (passiveLocked.current || !childActionsAvailable.current) throw new Error("Verify the original account before refreshing the saved chapter."); if (liveDraft.current) throw new Error("Back up the unsaved draft before refreshing the saved chapter."); if (document && editorSequence === loadSequence.current) { try { await loadChapter(document.chapterId, true, true); } catch (reason) { if (currentDocument.current === document) setConflict(true); throw reason; } } }} />}

@@ -13,7 +13,7 @@ export function chapterDraftExportWarning(bytes: number, invalidEditorState: boo
   return null;
 }
 
-/** A user-requested local backup, never uploaded or stored in browser recovery. */
+/** Builds a user-requested local backup; callers may store it only with explicit consent. */
 export function chapterDraftBackup(input: {
   userId: string; bookId: string; chapterId: string; baseVersion: number; nodes: BookNode[];
   capturedAt: string; validation?: { message: string; draftText: string; editorDocument?: unknown } | null;
