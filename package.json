@@ -16,7 +16,7 @@
     "worker": "node --import tsx workers/run.mjs",
     "test:worker-launcher": "node --test tests/worker-launcher.test.mjs",
     "test:native-author-guard": "node --test tests/native-author-files-guard.test.mjs",
-    "test:migrations:inventory": "node --test tests/migration-inventory.test.mjs",
+    "test:migrations:inventory": "node --test tests/migration-inventory.test.mjs tests/sql-line-endings.test.mjs",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
