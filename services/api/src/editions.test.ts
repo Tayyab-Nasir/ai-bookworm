@@ -136,7 +136,7 @@ test("malformed QR destinations return validation errors without creating or upd
   store.tables.editions.push(original);
   const app = await buildApp(() => fakeSupabase(store));
   try {
-    for (const url of ["not-a-url", "https://", "https://[invalid", "http://author.example"]) {
+    for (const url of ["not-a-url", "https://", "https://[invalid", "https:author.example", "https:/author.example", "https:///author.example", "https://author.example/a\nb", "https://author.example\\@other.example", "https://author.example:65536", "http://author.example"]) {
       const config = { kind: "ebook", cover: { asset_id: COVER, qr_code: { enabled: true, url } } };
       const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: { config } });
       assert.equal(created.statusCode, 422, `create ${url}: ${created.body}`);

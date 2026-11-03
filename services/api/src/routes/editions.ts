@@ -14,7 +14,7 @@ export { loadRenderImages } from "../lib/render-images.js";
 const BUCKET = "book-assets";
 
 const httpsUrl = z.string().trim().url().max(2_048).refine((value) => {
-  try { return new URL(value).protocol === "https:"; } catch { return false; }
+  try { return /^https:\/\/[^/?#\s\\]+/i.test(value) && !/[\x00-\x20\x7f\\]/.test(value) && new URL(value).protocol === "https:"; } catch { return false; }
 }, "QR destination must use HTTPS.");
 const qrSchema = z.object({
   enabled: z.boolean().default(false),

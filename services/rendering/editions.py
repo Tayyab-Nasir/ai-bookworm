@@ -2,6 +2,7 @@
 (trim size, bleed, margins, typography, page numbering). Discriminated by `kind`."""
 from typing import Literal
 from urllib.parse import urlsplit
+import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -57,8 +58,16 @@ class QrCodeConfig(BaseModel):
     @model_validator(mode="after")
     def _valid_destination(self):
         destination = urlsplit(self.url or "")
-        if self.enabled and (destination.scheme.lower() != "https" or not destination.netloc):
-            raise ValueError("enabled QR code requires an HTTPS URL")
+        if self.enabled:
+            url = self.url or ""
+            if (not re.match(r"^https://[^/?#\s\\]+", url, re.IGNORECASE)
+                    or re.search(r"[\x00-\x20\x7f\\]", url)
+                    or destination.scheme.lower() != "https" or not destination.hostname):
+                raise ValueError("enabled QR code requires an HTTPS URL")
+            try:
+                destination.port  # Reject malformed and out-of-range ports.
+            except ValueError as error:
+                raise ValueError("enabled QR code requires an HTTPS URL") from error
         return self
 
 

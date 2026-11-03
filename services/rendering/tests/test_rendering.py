@@ -262,6 +262,23 @@ def test_cover_qr_rejects_non_https_and_missing_artwork():
         parse_edition({"kind": "ebook", "cover": {"qr_code": {"enabled": True, "url": "https://safe.example"}}})
 
 
+@pytest.mark.parametrize("url", [
+    "not-a-url", "https://", "https://[invalid", "https:author.example",
+    "https:/author.example", "https:///author.example", "https://author.example/a\nb",
+    "https://author.example\\@other.example", "https://author.example:65536",
+    "https://author.example:bad", "https://@", "https://:443", "http://author.example",
+])
+def test_cover_qr_rejects_ambiguous_https_destinations(url):
+    with pytest.raises(ValueError):
+        parse_edition({"kind": "ebook", "cover": {"asset_id": "cover", "qr_code": {"enabled": True, "url": url}}})
+
+
+@pytest.mark.parametrize("url", ["https://author.example/book?lang=en#read", "HTTPS://author.example:443/book"])
+def test_cover_qr_preserves_valid_destination(url):
+    edition = parse_edition({"kind": "ebook", "cover": {"asset_id": "cover", "qr_code": {"enabled": True, "url": url}}})
+    assert edition.cover.qr_code.url == url
+
+
 def test_rtl_print_and_cover_refuse_base_fonts_that_cannot_shape_the_script():
     book = copy.deepcopy(VALID)
     book["metadata"].update({"language": "ar", "title": "عنوان", "author": "كاتب"})
