@@ -54,6 +54,7 @@ export function renderRequestRoutes(app: FastifyInstance) {
     }
     const { data, error } = resultRpc;
     if (error) {
+      if (error.code === "PGRST202" || error.code === "42883") throw new AppError(503, "Closing this request is temporarily unavailable. The original render may still finish; check its status again.");
       if (error.code === "42501") throw new AppError(403, "Editing access is required to close a render request.");
       if (error.code === "P0002") throw new AppError(404, "Book or edition is unavailable.");
       if (error.code === "22023") throw new AppError(422, "Check the saved render request.");

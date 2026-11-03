@@ -109,6 +109,19 @@ test("closing uses only the authenticated actor's RPC and returns the verified s
   } finally { await f.app.close(); }
 });
 
+test("missing close capability reports unavailable without claiming the original request stopped", async () => {
+  for (const code of ["PGRST202", "42883"]) {
+    const f = await setup(null, "editor", { data: null, error: { code } });
+    try {
+      const response = await f.app.inject({ method: "POST", url: `/v1/editions/${edition}/render-requests/${request}/close`,
+        headers: { authorization: "Bearer good", "x-bookworm-actor": actor }, payload: { bookId: book } });
+      assert.equal(response.statusCode, 503);
+      assert.match(response.body, /temporarily unavailable.*may still finish/iu);
+      assert.doesNotMatch(response.body, /PGRST202|42883/);
+    } finally { await f.app.close(); }
+  }
+});
+
 test("close denies mismatched actor, malformed results and reports unknown RPC outcomes without leaking details", async () => {
   for (const result of [
     { data: { bookId: book, editionId: edition, requestId: request, job: { id: jobId, status: "running" }, closedBeforeAcceptance: true }, error: null },
