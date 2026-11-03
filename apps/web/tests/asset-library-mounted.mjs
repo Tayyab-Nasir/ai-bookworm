@@ -41,7 +41,7 @@ test.after(async () => { await browser.close(); console.log(JSON.stringify({ ass
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
 const ASSET = "33333333-3333-4333-8333-333333333333";
-async function fixture(width = 1280, admin = false) {
+async function fixture(width = 1280, admin = false, lifecycleEnabled = true, lifecycleReady = true) {
   const page = await browser.newPage({ viewport: { width, height: 900 } }); page.setDefaultTimeout(6000);
   const signedRequests = [];
   await page.context().route("**/*", route => {
@@ -57,11 +57,11 @@ async function fixture(width = 1280, admin = false) {
     @font-face {font-family:BookwormInstrument;src:url(data:font/ttf;base64,${instrument});font-style:italic;font-weight:400;font-display:swap}
     :root {--font-inter:Arial,sans-serif;--font-instrument-serif:BookwormInstrument,serif}
     body {font-family:var(--font-inter);color:white}` });
-  await page.evaluate(({ A, B, ASSET, admin }) => {
-    window.actor = A; window.storageOrigin = "https://storage.example"; window.calls = []; window.revision = 0; window.gates = {}; window.scanStatus = "clean";
+  await page.evaluate(({ A, B, ASSET, admin, lifecycleEnabled, lifecycleReady }) => {
+    window.actor = A; window.storageOrigin = "https://storage.example"; window.calls = []; window.revision = 0; window.gates = {}; window.scanStatus = "clean"; window.lifecycleReady = lifecycleReady;
     window.defer = name => new Promise((resolve, reject) => { window.gates[name] = { resolve, reject }; });
     window.file = workspace => ({ id: ASSET, workspace_id: workspace, folder_id: null, name: workspace === A ? (window.revision ? "My revised draft.pdf" : "My draft.pdf") : "Other studio draft.pdf",
-      storage_path: `workspaces/${workspace}/assets/${ASSET}/v2/draft.pdf`, mime_type: "application/pdf", size_bytes: 2400, checksum: "a".repeat(64), type: "source_document", status: "draft", current_version_number: 2 });
+      storage_path: `workspaces/${workspace}/assets/${ASSET}/v2/draft.pdf`, mime_type: "application/pdf", size_bytes: 2400, checksum: "a".repeat(64), type: "source_document", status: "draft", current_version_number: 2, lifecycle_revision: null });
     window.versionHistory = workspace => ({ versions: [{ id: "version-2", asset_id: ASSET, storage_path: window.file(workspace).storage_path,
       version_number: 2, checksum: "a".repeat(64), mime_type: "application/pdf", size_bytes: 2400, scan_status: window.scanStatus,
       detected_mime_type: "application/pdf", created_at: "2026-10-13T00:00:00Z" }] });
@@ -75,10 +75,13 @@ async function fixture(width = 1280, admin = false) {
     window.api = {
       adminAccess: async () => ({ admin, viewerId: window.actor }), claimReferral: async () => ({ claimed: true }),
       listWorkspaces: async () => ({ workspaces: [{ id: A, name: "Author studio" }, { id: B, name: "Other studio" }] }),
-      getAssetAccess: async workspace => { window.calls.push({ operation: "access", workspace }); return { canEdit: true }; },
+      getAssetAccess: async workspace => { window.calls.push({ operation: "access", workspace }); return { canEdit: true, assetLifecycleEnabled: lifecycleEnabled, assetLifecycleReady: lifecycleEnabled && window.lifecycleReady }; },
       listFolders: async workspace => { window.calls.push({ operation: "folders", workspace }); return { folders: [] }; },
       listBooks: async workspace => { window.calls.push({ operation: "books", workspace }); return { books: [] }; },
       listAssets: async workspace => { window.calls.push({ operation: "assets", workspace }); window.selected = workspace; return { assets: [window.file(workspace)] }; },
+      listRemovedAssets: async () => ({ assets: [] }),
+      getAssetLifecycleStatus: async () => ({ operation: null }),
+      removeAssetLifecycle: async (asset, body) => { await window.api.deleteAsset(asset); return {assetId:asset,operationId:body.operationId,action:"remove",expectedRevision:body.expectedRevision,replayed:false}; },
       listImageGenerationJobs: async workspace => { window.calls.push({ operation: "images", workspace }); return { jobs: [] }; },
       listAssetVersions: async () => window.versionHistory(window.selected), getAssetUsage: async () => ({ links: [] }),
       getAssetDownloadUrl: async (asset, version) => {
@@ -87,7 +90,7 @@ async function fixture(width = 1280, admin = false) {
         return window.signed(window.selected);
       },
     };
-  }, { A, B, ASSET, admin });
+  }, { A, B, ASSET, admin, lifecycleEnabled, lifecycleReady });
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
   await page.evaluate(() => window.renderAssets());
   await expect(page.getByRole("button", { name: "Refresh library", exact: true })).toBeEnabled();
@@ -100,12 +103,59 @@ async function openFile(page, name = /^My draft\.pdf/) {
   await expect(page.getByRole("status").filter({ hasText: "Loading file details" })).toHaveCount(0);
 }
 
+test("default capability keeps legacy removal and never advertises restore", async () => {
+  const { page } = await fixture(1280, false, false);
+  try {
+    await page.evaluate(() => { window.api.deleteAsset = async asset => { window.calls.push({ operation: "legacy-delete", asset }); return { assetId: asset, deleted: true }; }; window.api.removeAssetLifecycle = async () => { throw Error("new route must remain disabled"); }; });
+    await expect(page.getByRole("heading", {name:"Removed files"})).toHaveCount(0);
+    page.once("dialog", dialog => { assert.match(dialog.message(), /Restoration is not available here yet/); return dialog.accept(); });
+    await page.getByRole("button", { name: "Remove My draft.pdf", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.calls.filter(call => call.operation === "legacy-delete").length)).toBe(1);
+  } finally { await page.close(); }
+});
+
+test("enabled but unready lifecycle keeps files readable and never uses legacy writes", async () => {
+  const { page } = await fixture(1280, false, true, false);
+  try {
+    await page.evaluate(() => { window.api.deleteAsset = async () => { window.calls.push({operation:"legacy-delete"}); }; });
+    await expect(page.getByText('Changes from this library are temporarily unavailable. You can still view and download files.')).toBeVisible();
+    await expect(page.getByRole('button',{name:/^My draft\.pdf/})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Remove My draft.pdf'})).toHaveCount(0);
+    await openFile(page);
+    await expect(page.getByRole('button',{name:'Prepare download'})).toBeEnabled();
+    await page.getByRole('button',{name:'Prepare download'}).click();
+    await expect(page.getByRole('button',{name:'Download original file · v2'})).toBeVisible();
+    await page.getByRole('button',{name:'Close asset details'}).click();
+    assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.operation==='legacy-delete').length),0);
+    await page.evaluate(()=>{window.lifecycleReady=true});
+    await page.getByRole('button',{name:'Retry file changes'}).click();
+    await expect(page.getByRole('button',{name:'Remove My draft.pdf'})).toBeVisible();
+    await expect(page.getByText('Changes from this library are temporarily unavailable. You can still view and download files.')).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
+test("legacy fallback does not discard an unresolved lifecycle operation", async () => {
+  const { page } = await fixture(1280, false, false);
+  try {
+    await page.evaluate(({ A, ASSET }) => {
+      window.api.deleteAsset = async () => { window.calls.push({ operation: "legacy-delete" }); return { assetId: ASSET, deleted: true }; };
+      const op = { actor:A, workspaceId:A, assetId:ASSET, operationId:"44444444-4444-4444-8444-444444444444", action:"remove", expectedDeletedAt:null };
+      sessionStorage.setItem(`bookworm:asset-operation:v1:${A}:${A}:${ASSET}`,JSON.stringify(op));
+    }, { A, ASSET });
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Remove My draft.pdf", exact: true }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "older file request cannot be retried safely" })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "legacy-delete").length), 0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(k => k.startsWith('bookworm:asset-operation:v1:')).length), 1);
+  } finally { await page.close(); }
+});
+
 test("removing a library asset requires explicit confirmation", async () => {
   const { page } = await fixture();
   try {
     await page.evaluate(() => { window.api.deleteAsset = async asset => { window.calls.push({ operation: "delete", asset }); return { assetId: asset, deleted: true }; }; });
     const remove = page.getByRole("button", { name: "Remove My draft.pdf", exact: true });
-    page.once("dialog", dialog => { assert.match(dialog.message(), /Remove.*My draft\.pdf/); assert.match(dialog.message(), /Books that use this file may no longer display or export it/); assert.match(dialog.message(), /cannot currently be restored from the library/); return dialog.dismiss(); });
+    page.once("dialog", dialog => { assert.match(dialog.message(), /Remove.*My draft\.pdf/); assert.match(dialog.message(), /Books that use this file may no longer display or export it/); assert.match(dialog.message(), /request a restore from Removed files/); return dialog.dismiss(); });
     await remove.click();
     assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "delete").length), 0);
     await expect(page.getByRole("button", { name: /^My draft\.pdf/ })).toBeVisible();
@@ -553,4 +603,20 @@ test("small mobile admin header keeps navigation, account settings and sign-out 
     assert(folderBox.y + folderBox.height <= fileBox.y, "folders and file library must stack without overlap");
     await page.screenshot({ path: resolve(artifacts, "mobile-small-admin-header.png"), fullPage: true });
   } finally { await page.close(); }
+});
+
+test('integrated lost removal is recovered with original receipt and no second write', async () => {
+  const {page}=await fixture(); try {
+    await page.evaluate(() => {
+      window.receipt=null; window.api.removeAssetLifecycle=async (asset,body)=>{ window.calls.push({operation:'lifecycle-remove',asset,id:body.operationId}); window.receipt={assetId:asset,operationId:body.operationId,action:'remove',expectedDeletedAt:null,expectedRevision:body.expectedRevision,outcome:'committed',committedAt:'2026-11-03T00:00:00Z',closedAt:null}; window.api.listAssets=async()=>({assets:[]}); throw Error('reply lost'); };
+      window.api.getAssetLifecycleStatus=async()=>({operation:window.receipt});
+    });
+    page.once('dialog',dialog=>dialog.accept()); await page.getByRole('button',{name:'Remove My draft.pdf',exact:true}).click();
+    await expect(page.getByRole('alert').filter({hasText:'Removal could not be confirmed'})).toBeVisible();
+    await expect(page.getByText('Requests needing confirmation on this tab')).toBeVisible();
+    await page.getByRole('button',{name:'Check status',exact:true}).click();
+    await expect(page.getByText('Removal confirmed.')).toBeVisible();
+    assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.operation==='lifecycle-remove').length),1);
+    assert.equal(await page.evaluate(()=>sessionStorage.length),0);
+  } finally {await page.close()}
 });

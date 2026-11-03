@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 132 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 133 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -139,8 +139,9 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 132, 'This reviewed rehearsal pins the 45 -> 132 target; review before extending');
-  assert.equal(names[130], assetGuard);
+  assert.equal(names.length, 133, 'This reviewed rehearsal pins the 45 -> 133 target; review before extending');
+  assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
+  assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
   assert.equal(names[127], audioPrivacy);
   assert.equal(names[128], intakeGuard);

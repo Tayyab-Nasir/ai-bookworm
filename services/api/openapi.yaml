@@ -2721,6 +2721,139 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /v1/assets/access:
+    get:
+      tags: [v1]
+      operationId: getAssetAccess
+      summary: Read caller access and server-selected asset lifecycle mode
+      description: Lifecycle mode defaults off until the operator completes database and writer preflight. When enabled but not ready, the library is readable and lifecycle writes are unavailable; clients must not fall back to legacy writes.
+      parameters:
+        - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Access and active server mode, content: { application/json: { schema: { type: object, required: [canEdit, assetLifecycleEnabled, assetLifecycleReady], properties: { canEdit: { type: boolean }, assetLifecycleEnabled: { type: boolean }, assetLifecycleReady: { type: boolean } } } } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/assets/removed:
+    get:
+      tags: [v1]
+      operationId: listRemovedAssets
+      summary: List the 50 most recently removed workspace files
+      parameters:
+        - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Removed files; a recorded checksum does not guarantee that restoration will succeed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [assets]
+                properties:
+                  assets: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/RemovedAsset" } }
+        "404": { description: Recoverable lifecycle is disabled on this server }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/assets/{assetId}/lifecycle/{operationId}:
+    get:
+      tags: [v1]
+      operationId: getAssetLifecycleStatus
+      summary: Check the signed-in actor's original operation without issuing a new mutation
+      description: A null result does not prove an earlier request has stopped; retry only with the original operation ID.
+      parameters:
+        - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: operationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Original operation receipt, or null if not yet confirmed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [operation]
+                properties:
+                  operation: { oneOf: [{ $ref: "#/components/schemas/AssetLifecycleStatus" }, { type: "null" }] }
+        "404": { description: Recoverable lifecycle is disabled on this server }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/assets/{assetId}/lifecycle/close:
+    post:
+      tags: [v1]
+      operationId: closeAssetLifecycle
+      summary: Resolve an unconfirmed file operation without allowing it to commit later
+      parameters:
+        - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssetLifecycleClose" }
+      responses:
+        "200":
+          description: The existing committed outcome or a durable closure
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [operation]
+                properties:
+                  operation: { $ref: "#/components/schemas/AssetLifecycleStatus" }
+        "404": { description: Recoverable lifecycle is disabled on this server }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/assets/{assetId}/lifecycle/remove:
+    post:
+      tags: [v1]
+      operationId: removeAssetLifecycle
+      summary: Remove a file using a recoverable operation identity
+      parameters:
+        - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssetLifecycleRemove" }
+      responses:
+        "200": { description: Original operation receipt, content: { application/json: { schema: { $ref: "#/components/schemas/AssetLifecycleReceipt" } } } }
+        "404": { description: Recoverable lifecycle is disabled on this server }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/assets/{assetId}/lifecycle/restore:
+    post:
+      tags: [v1]
+      operationId: restoreAssetLifecycle
+      summary: Restore a removed file after verifying its recorded private bytes
+      description: Verification confirms bytes at the time checked; storage retention cannot be guaranteed by the database transaction.
+      parameters:
+        - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AssetLifecycleRestore" }
+      responses:
+        "200": { description: Original operation receipt, content: { application/json: { schema: { $ref: "#/components/schemas/AssetLifecycleReceipt" } } } }
+        "404": { description: Recoverable lifecycle is disabled on this server }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/assets/{assetId}:
     patch:
       tags: [v1]
@@ -2747,28 +2880,26 @@ paths:
     delete:
       tags: [v1]
       operationId: deleteAsset
-      summary: Soft delete (status archived + deleted_at; row kept for audit)
+      summary: Legacy removal; returns 410 once recoverable lifecycle is enabled
       parameters:
         - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        "200": { description: Deleted, content: { application/json: { schema: { type: object, required: [assetId, deleted], properties: { assetId: { type: string }, deleted: { type: boolean } } } } } }
+        "200": { description: Legacy removal confirmed }
+        "410": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/assets/{assetId}/restore:
     post:
       tags: [v1]
       operationId: restoreAsset
-      summary: Create a short-lived private download URL for a clean or trusted generated asset
+      summary: Legacy restore; returns 410 once recoverable lifecycle is enabled
       parameters:
         - { name: assetId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
-        "200": { description: Restored, content: { application/json: { schema: { type: object } } } }
+        "200": { description: Legacy restore confirmed }
+        "410": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
-        "403": { $ref: "#/components/responses/Error" }
-        "404": { $ref: "#/components/responses/Error" }
-        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/assets/{assetId}/versions:
     get:
       tags: [v1]
@@ -4159,6 +4290,70 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    RemovedAsset:
+      type: object
+      additionalProperties: false
+      required: [id, workspace_id, name, deleted_at, lifecycle_revision, hasRecordedChecksum]
+      properties:
+        id: { type: string, format: uuid }
+        workspace_id: { type: string, format: uuid }
+        name: { type: string, maxLength: 500 }
+        deleted_at: { type: string, format: date-time }
+        lifecycle_revision: { type: [string, "null"], format: uuid }
+        hasRecordedChecksum: { type: boolean }
+    AssetLifecycleRemove:
+      type: object
+      additionalProperties: false
+      required: [workspaceId, operationId, expectedRevision]
+      properties:
+        workspaceId: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        expectedRevision: { type: [string, "null"], format: uuid }
+    AssetLifecycleRestore:
+      type: object
+      additionalProperties: false
+      required: [workspaceId, operationId, expectedDeletedAt, expectedRevision]
+      properties:
+        workspaceId: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        expectedDeletedAt: { type: string, format: date-time }
+        expectedRevision: { type: [string, "null"], format: uuid }
+    AssetLifecycleClose:
+      type: object
+      additionalProperties: false
+      required: [workspaceId, operationId, action, expectedDeletedAt, expectedRevision]
+      properties:
+        workspaceId: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        action: { type: string, enum: [remove, restore] }
+        expectedDeletedAt: { type: [string, "null"], format: date-time }
+        expectedRevision: { type: [string, "null"], format: uuid }
+      oneOf:
+        - properties: { action: { const: remove }, expectedDeletedAt: { type: "null" } }
+        - properties: { action: { const: restore }, expectedDeletedAt: { type: string, format: date-time } }
+    AssetLifecycleReceipt:
+      type: object
+      additionalProperties: false
+      required: [assetId, operationId, action, expectedRevision, replayed]
+      properties:
+        assetId: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        action: { type: string, enum: [remove, restore] }
+        expectedRevision: { type: [string, "null"], format: uuid }
+        replayed: { type: boolean }
+    AssetLifecycleStatus:
+      type: object
+      additionalProperties: false
+      required: [assetId, operationId, action, expectedDeletedAt, expectedRevision, outcome, committedAt, closedAt]
+      properties:
+        assetId: { type: string, format: uuid }
+        operationId: { type: string, format: uuid }
+        action: { type: string, enum: [remove, restore] }
+        expectedDeletedAt: { type: [string, "null"], format: date-time }
+        expectedRevision: { type: [string, "null"], format: uuid }
+        outcome: { type: string, enum: [committed, closed] }
+        committedAt: { type: [string, "null"], format: date-time }
+        closedAt: { type: [string, "null"], format: date-time }
     AiConnection:
       type: object
       additionalProperties: false

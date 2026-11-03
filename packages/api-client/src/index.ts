@@ -1046,7 +1046,7 @@ export function createClient(opts: ClientOptions) {
       if (filter?.status) qs.set("status", filter.status);
       return call<{ assets: Asset[] }>("GET", `/v1/assets?${qs}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {});
     },
-    getAssetAccess: (workspaceId: string) => call<{ canEdit: boolean }>("GET", `/v1/assets/access?${new URLSearchParams({ workspaceId })}`),
+    getAssetAccess: (workspaceId: string) => call<{ canEdit: boolean; assetLifecycleEnabled?: boolean; assetLifecycleReady?: boolean }>("GET", `/v1/assets/access?${new URLSearchParams({ workspaceId })}`),
     listImageGenerationJobs: (workspaceId: string) => call<{ jobs: ImageGenerationJob[] }>("GET", `/v1/assets/generation-jobs?${new URLSearchParams({ workspaceId })}`),
     listImageQuoteModels: (workspaceId: string) => call<{ catalogVersion: string; pricingBasis: "maximum_token_budget"; purchaseAvailable: boolean; models: ImageQuoteModel[] }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-models`),
     recoverImageQuote: (workspaceId: string, idempotencyKey: string) =>
@@ -1064,8 +1064,15 @@ export function createClient(opts: ClientOptions) {
       call<{ url: string; expiresIn: number }>("GET", `/v1/assets/${assetId}/download-url${versionNumber === undefined ? "" : `?versionNumber=${encodeURIComponent(String(versionNumber))}`}`),
     updateAsset: (assetId: string, body: { name?: string; folderId?: string | null }) =>
       call<Asset>("PATCH", `/v1/assets/${assetId}`, body),
-    deleteAsset: (assetId: string) => call<{ assetId: string; deleted: boolean }>("DELETE", `/v1/assets/${assetId}`),
-    restoreAsset: (assetId: string) => call<{ assetId: string; restored: boolean }>("POST", `/v1/assets/${assetId}/restore`),
+    listRemovedAssets: (workspaceId: string) => call<{ assets: { id: string; workspace_id: string; name: string; deleted_at: string; lifecycle_revision: string | null; hasRecordedChecksum: boolean }[] }>('GET', `/v1/assets/removed?${new URLSearchParams({ workspaceId })}`),
+    getAssetLifecycleStatus: (workspaceId: string, assetId: string, operationId: string) => call<{ operation: { assetId: string; operationId: string; action: 'remove' | 'restore'; expectedDeletedAt: string | null; expectedRevision: string | null; outcome: 'committed' | 'closed'; committedAt: string | null; closedAt: string | null } | null }>('GET', `/v1/assets/${encodeURIComponent(assetId)}/lifecycle/${encodeURIComponent(operationId)}?${new URLSearchParams({ workspaceId })}`),
+    closeAssetLifecycle: (assetId: string, body: { workspaceId: string; operationId: string; action: 'remove' | 'restore'; expectedDeletedAt: string | null; expectedRevision: string | null }) => call<{ operation: { assetId: string; operationId: string; action: 'remove' | 'restore'; expectedDeletedAt: string | null; expectedRevision: string | null; outcome: 'committed' | 'closed'; committedAt: string | null; closedAt: string | null } }>('POST', `/v1/assets/${encodeURIComponent(assetId)}/lifecycle/close`, body),
+    removeAssetLifecycle: (assetId: string, body: { workspaceId: string; operationId: string; expectedRevision: string | null }) => call<{ assetId: string; operationId: string; action: 'remove'; expectedRevision: string | null; replayed: boolean }>('POST', `/v1/assets/${encodeURIComponent(assetId)}/lifecycle/remove`, body),
+    restoreAssetLifecycle: (assetId: string, body: { workspaceId: string; operationId: string; expectedDeletedAt: string; expectedRevision: string | null }) => call<{ assetId: string; operationId: string; action: 'restore'; expectedRevision: string | null; replayed: boolean }>('POST', `/v1/assets/${encodeURIComponent(assetId)}/lifecycle/restore`, body),
+    /** Legacy route returns 410 after lifecycle cutover. */
+    deleteAsset: (assetId: string) => call<{ assetId: string; deleted: boolean }>("DELETE", `/v1/assets/${encodeURIComponent(assetId)}`),
+    /** Legacy route returns 410 after lifecycle cutover. */
+    restoreAsset: (assetId: string) => call<{ assetId: string; restored: boolean }>("POST", `/v1/assets/${encodeURIComponent(assetId)}/restore`),
     createAssetVersion: (assetId: string, body: { filename: string; mimeType: string; sizeBytes: number }) =>
       call<{ assetId: string; version: number; uploadUrl: string; path: string }>("POST", `/v1/assets/${assetId}/versions`, body),
     confirmAssetVersion: (assetId: string, version: number, body: { checksumSha256: string; sizeBytes: number }) =>

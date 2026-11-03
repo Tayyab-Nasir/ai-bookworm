@@ -155,6 +155,7 @@ export interface Asset extends Timestamps {
   current_version_number?: number | null;
   current_scan_status?: string | null;
   deleted_at?: string | null;
+  lifecycle_revision?: string | null;
   created_by: string;
 }
 

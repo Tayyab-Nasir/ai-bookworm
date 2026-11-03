@@ -2,6 +2,7 @@
 
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Asset, Folder } from "@bookworm/types";
+import { LegacyAssetOperationError } from "../lib/asset-lifecycle-operation";
 
 export interface AssetPermissions {
   edit: boolean;
@@ -24,6 +25,7 @@ export interface AssetBrowserProps {
   onSeedTemplate?: () => void;
   onDelete?: (assetId: string) => void | Promise<void>;
   onRestore?: (assetId: string) => void;
+  restorationAvailable?: boolean;
 }
 
 export function StatusBadge({ status }: { status: string }) {
@@ -61,6 +63,7 @@ export default function AssetBrowser({
   onSeedTemplate,
   onDelete,
   onRestore,
+  restorationAvailable = false,
 }: AssetBrowserProps) {
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [view, setView] = useState<"grid" | "list">("grid");
@@ -94,13 +97,13 @@ export default function AssetBrowser({
   const remove = async (asset: Asset) => {
     if (!active || !permissions.manage || !onDelete || removalFlight.current || refreshRequiredAfter.current !== null) return;
     const beforeConfirm = removalEpoch.current;
-    if (!window.confirm(`Remove “${asset.name.replace(/[\u0000-\u001f\u007f]/g, " ")}” from this library? Books that use this file may no longer display or export it. Removed files cannot currently be restored from the library.`)) return;
+    if (!window.confirm(`Remove “${asset.name.replace(/[\u0000-\u001f\u007f]/g, " ")}” from this library? Books that use this file may no longer display or export it. ${restorationAvailable ? "You can request a restore from Removed files if the saved file passes verification." : "Restoration is not available here yet."}`)) return;
     if (beforeConfirm !== removalEpoch.current || !mounted.current || removalFlight.current) return;
     const currentScope = scopeEpoch.current;
     ++removalEpoch.current;
     removalFlight.current = true; setRemoving(asset.id); setRemoveError(null);
     try { await onDelete(asset.id); }
-    catch { if (mounted.current && currentScope === scopeEpoch.current) { refreshRequiredAfter.current = getLibraryRequest(); setUncertainRefreshComplete(false); setRemoveError("Removal could not be confirmed and may still complete. Refresh the library and check the file before trying again."); } }
+    catch (error) { if (mounted.current && currentScope === scopeEpoch.current) { refreshRequiredAfter.current = getLibraryRequest(); setUncertainRefreshComplete(false); setRemoveError(error instanceof LegacyAssetOperationError ? error.message : restorationAvailable ? "Removal could not be confirmed and may still complete. Use Removed files to check or retry the original request." : "Removal could not be confirmed and may still complete. Refresh the library to check its current state."); } }
     finally { removalFlight.current = false; if (mounted.current) setRemoving(null); }
   };
 

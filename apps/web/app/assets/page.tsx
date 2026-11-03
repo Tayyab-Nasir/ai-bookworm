@@ -6,6 +6,8 @@ import { Suspense } from "react";
 import { AuthorHeader, AuthorPage } from "../../components/AuthorShell";
 import type { Asset, Book, Folder, Workspace } from "@bookworm/types";
 import AssetBrowser from "../../components/AssetBrowser";
+import RemovedAssets from "../../components/RemovedAssets";
+import { beginAssetOperation, clearConfirmedAssetOperation, isAssetMutationReceipt, readAssetOperation } from "../../lib/asset-lifecycle-operation";
 import ImageQuoteStudio from "../../components/ImageQuoteStudio";
 import { createClient } from "@bookworm/api-client";
 import { readArtifactSession, readBrowserSession } from "../../lib/browser-session";
@@ -116,14 +118,14 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [assetAccess, setAssetAccess] = useState<{ workspaceId: string; canEdit: boolean } | null>(null);
+  const [assetAccess, setAssetAccess] = useState<{ workspaceId: string; canEdit: boolean; lifecycleEnabled: boolean; lifecycleReady: boolean } | null>(null);
   const [accessError, setAccessError] = useState(false);
   const [accessRevision, setAccessRevision] = useState(0);
   const [libraryWorkspaceId, setLibraryWorkspaceId] = useState("");
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [librarySnapshotRequest, setLibrarySnapshotRequest] = useState(0);
   const dataReady = Boolean(workspaceId && libraryWorkspaceId === workspaceId && !libraryLoading);
-  const canEdit = dataReady && !accessError && assetAccess?.workspaceId === workspaceId && assetAccess.canEdit;
+  const canEdit = dataReady && !accessError && assetAccess?.workspaceId === workspaceId && assetAccess.canEdit && (!assetAccess.lifecycleEnabled || assetAccess.lifecycleReady);
   const [books, setBooks] = useState<Book[]>([]);
   const [open, setOpen] = useState<Asset | null>(null);
   const [previewUrl, setPreviewUrl] = useState<{ url: string; expiresAt: number } | null>(null);
@@ -143,6 +145,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   const [downloadBusy, setDownloadBusy] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [download, setDownload] = useState<{ assetId: string; version: number; request: number; url: string; filename: string; storageOrigin: string; expiresAt: number } | null>(null);
+  const [operationRevision, setOperationRevision] = useState(0);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeDialogRef = useRef<HTMLButtonElement>(null);
   const activeWorkspace = useRef("");
@@ -167,6 +170,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   }, []);
 
   const isWorkspaceCurrent = useCallback((id: string) => activeWorkspace.current === id, []);
+  const canOperateCurrent = useCallback(() => scope.current() && editReady.current && activeWorkspace.current === workspaceId, [scope, workspaceId]);
 
   function changeWorkspace(id: string) {
     try {
@@ -207,7 +211,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     const current = () => live && version === scopeVersion.current && activeWorkspace.current === workspaceId;
     setAssetAccess(null); setAccessError(false);
     if (workspaceId) void api.getAssetAccess(workspaceId).then(access => {
-      if (current()) setAssetAccess({ workspaceId, canEdit: access.canEdit });
+      if (current()) setAssetAccess({ workspaceId, canEdit: access.canEdit, lifecycleEnabled: access.assetLifecycleEnabled === true, lifecycleReady: access.assetLifecycleReady === true });
     }).catch(() => { if (current()) setAccessError(true); });
     return () => { live = false; };
   }, [api, workspaceId, accessRevision]);
@@ -284,7 +288,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     void Promise.all([api.listWorkspaces(), api.getAssetAccess(id), api.listFolders(id), api.listAssets(id), api.listBooks(id)]).then(([available, access, f, a, b]) => {
       if (!live || !valid() || activeWorkspace.current !== id) return;
       if (!available.workspaces.some(w => w.id === id) || f.folders.some(x => x.workspace_id !== id) || a.assets.some(x => x.workspace_id !== id) || b.books.some(x => x.workspace_id !== id)) throw new Error("Workspace access could not be verified.");
-      setWorkspaces(available.workspaces); setAssetAccess({ workspaceId: id, canEdit: access.canEdit }); setAccessError(false); setFolders(f.folders); setAssets(a.assets); setBooks(b.books); setLibraryWorkspaceId(id); setLibrarySnapshotRequest(request); setLibraryLoading(false); setHistoryRevision(x => x + 1); setVerified(true);
+      setWorkspaces(available.workspaces); setAssetAccess({ workspaceId: id, canEdit: access.canEdit, lifecycleEnabled: access.assetLifecycleEnabled === true, lifecycleReady: access.assetLifecycleReady === true }); setAccessError(false); setFolders(f.folders); setAssets(a.assets); setBooks(b.books); setLibraryWorkspaceId(id); setLibrarySnapshotRequest(request); setLibraryLoading(false); setHistoryRevision(x => x + 1); setVerified(true);
     }).catch(() => { if (live && valid()) { setVerificationError(true); setLibraryLoading(false); } });
     return () => { live = false; };
   }, [active, revision, api, scope, workspaceId]);
@@ -511,6 +515,12 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
         {workspaceId && !accessError && assetAccess?.workspaceId === workspaceId && !assetAccess.canEdit && (
           <p role="status" className="mb-6 rounded-lg border border-white/10 bg-white/[0.04] px-6 py-4 text-sm text-[#c5c5c5]">Read-only access: you can view assets, but cannot upload, generate, or change them.</p>
         )}
+        {workspaceId && !accessError && assetAccess?.workspaceId === workspaceId && assetAccess.canEdit && assetAccess.lifecycleEnabled && !assetAccess.lifecycleReady && (
+          <div role="status" className="mb-6 rounded-lg border border-amber-400/25 bg-amber-400/5 px-6 py-4 text-sm text-amber-200">
+            Changes from this library are temporarily unavailable. You can still view and download files.
+            <button type="button" onClick={retryAssetAccess} className="ml-2 min-h-11 underline">Retry file changes</button>
+          </div>
+        )}
 
         {workspaceId && <ImageQuoteStudio key={`image-quote:${workspaceId}`} isWorkspaceCurrent={isWorkspaceCurrent} scope={scope} active={active && verified} workspaceId={workspaceId} books={books} assets={assets} canEdit={Boolean(canEdit)} onCompleted={load} />}
         {libraryLoading && <p role="status" className="mb-5 text-sm text-[#999]">Loading asset library…</p>}
@@ -535,7 +545,9 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
             }}>{finalizingImage === job.id ? "Finalizing…" : "Finalize saved image"}</button><p className="mt-1 text-xs text-[#999]">Uses the existing generated file, if available. Records the original image credit once; never starts another AI generation.</p></div>}
           </li>)}</ul>
         </section>
+        {workspaceId && assetAccess?.lifecycleEnabled && <RemovedAssets key={`removed:${workspaceId}`} api={api} scope={scope} workspaceId={workspaceId} canEdit={Boolean(canEdit && active && verified)} current={canOperateCurrent} revision={operationRevision} onChanged={load} />}
         <AssetBrowser
+          restorationAvailable={assetAccess?.lifecycleEnabled === true && assetAccess.lifecycleReady}
           key={`asset-browser:${workspaceId}`}
           folders={folders}
           assets={assets}
@@ -556,7 +568,22 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
             await mutateLibrary(() => api.seedFolderTemplate(workspaceId));
           }}
           onDelete={async (assetId) => {
-            await mutateLibrary(() => api.deleteAsset(assetId));
+            await mutateLibrary(async () => {
+              if (!assetAccess?.lifecycleEnabled) {
+                if (readAssetOperation(sessionStorage,scope.actor,workspaceId,assetId)) throw new Error("Check the original file request when recovery is available.");
+                await api.deleteAsset(assetId); return;
+              }
+              const valid=scope.begin();
+              const selected=assets.find(a=>a.id===assetId && a.workspace_id===workspaceId);
+              if (!selected || !Object.hasOwn(selected,'lifecycle_revision') || selected.lifecycle_revision === undefined) throw new Error('File version is unavailable. Refresh the library.');
+              const operation=beginAssetOperation(sessionStorage,{actor:scope.actor,workspaceId,assetId,action:'remove',expectedDeletedAt:null,expectedRevision:selected.lifecycle_revision},()=>crypto.randomUUID());
+              try {
+                const receipt=await api.removeAssetLifecycle(assetId,{workspaceId,operationId:operation.operationId,expectedRevision:operation.expectedRevision});
+                if (!valid() || !canOperateCurrent()) throw scopeChanged();
+                if (!isAssetMutationReceipt(receipt) || receipt.expectedRevision !== operation.expectedRevision) throw new Error('The original file operation could not be verified.');
+                clearConfirmedAssetOperation(sessionStorage,operation,receipt);
+              } finally { if (valid() && canOperateCurrent()) setOperationRevision(value=>value+1); }
+            });
           }}
         />
       </div>

@@ -7,6 +7,7 @@ process.env.SUPABASE_SERVICE_ROLE_KEY ??= "test-service";
 process.env.REDIS_URL ??= "redis://localhost:6379";
 process.env.QDRANT_URL ??= "http://localhost:6333";
 process.env.NODE_ENV = "test";
+process.env.ASSET_LIFECYCLE_ENABLED = "true";
 process.env.LOG_LEVEL = "error";
 
 const { buildApp } = await import("./app.js");
@@ -19,6 +20,7 @@ const { FOLDER_TEMPLATE } = await import("./routes/folders.js");
 function fakeSupabase(responses: Record<string, { data?: unknown; error?: unknown }>, writes?: { table: string; op: string; row: unknown }[]) {
   writes ??= [];
   const client = {
+    rpc: async (name: string) => name === "asset_lifecycle_readiness" ? { data: "asset-lifecycle-v1", error: null } : { data: null, error: { code: "PGRST202" } },
     auth: {
       getUser: async (token: string) =>
         token === "good"
@@ -245,45 +247,23 @@ test("comment create parses mentions into comment_mentions inserts", async () =>
   await app.close();
 });
 
-// ---- assets: soft delete + restore ----------------------------------------
-const deletedAsset = { assets: { data: { id: "as1", workspace_id: "w1", deleted_at: "2026-01-01T00:00:00Z" }, error: null } };
-const liveAsset = { assets: { data: { id: "as1", workspace_id: "w1", deleted_at: null }, error: null } };
-
-test("soft delete then delete again -> 409; restore deleted -> ok", async () => {
-  const { app } = await appWith({ ...editor, ...deletedAsset });
-  const res = await app.inject({ method: "DELETE", url: "/v1/assets/as1", headers: auth });
-  assert.equal(res.statusCode, 409); // already deleted
-  const restore = await app.inject({ method: "POST", url: "/v1/assets/as1/restore", headers: auth });
-  assert.equal(restore.statusCode, 200);
-  assert.equal(restore.json().restored, true);
-  await app.close();
-});
-
-test("restore of live asset -> 409; viewer cannot delete -> 403", async () => {
-  const { app } = await appWith({ ...editor, ...liveAsset });
-  const restore = await app.inject({ method: "POST", url: "/v1/assets/as1/restore", headers: auth });
-  assert.equal(restore.statusCode, 409);
-  await app.close();
-
-  const { app: app2 } = await appWith({
-    workspace_members: { data: { role: "viewer" }, error: null },
-    ...liveAsset,
-  });
-  const del = await app2.inject({ method: "DELETE", url: "/v1/assets/as1", headers: auth });
-  assert.equal(del.statusCode, 403);
-  await app2.close();
-});
-
+// Version creation remains unavailable for removed assets in either mode.
 test("new version on deleted asset -> 409", async () => {
+  const deletedAsset = { assets: { data: { id: "as1", workspace_id: "w1", deleted_at: "2026-01-01T00:00:00Z" }, error: null } };
   const { app } = await appWith({ ...editor, ...deletedAsset });
-  const res = await app.inject({
-    method: "POST",
-    url: "/v1/assets/as1/versions",
-    headers: auth,
-    payload: { filename: "v2.png", mimeType: "image/png", sizeBytes: 10 },
-  });
-  assert.equal(res.statusCode, 409);
-  await app.close();
+  try {
+    const res = await app.inject({ method: "POST", url: "/v1/assets/as1/versions", headers: auth,
+      payload: { filename: "v2.png", mimeType: "image/png", sizeBytes: 10 } });
+    assert.equal(res.statusCode, 409);
+  } finally { await app.close(); }
+});
+
+// ---- retired asset lifecycle endpoints -------------------------------------
+test('old lifecycle endpoints fail closed and direct clients to refresh', async () => {
+  const {app}=await appWith(editor);
+  try { for (const [method,url] of [['DELETE','/v1/assets/as1'],['POST','/v1/assets/as1/restore']] as const) {
+    const result=await app.inject({method,url,headers:auth}); assert.equal(result.statusCode,410);
+  }} finally {await app.close()}
 });
 
 // ---- team ------------------------------------------------------------------

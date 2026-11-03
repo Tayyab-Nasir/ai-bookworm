@@ -11,6 +11,7 @@ import { bookMemoryRoutes } from "./routes/book-memory.js";
 import { storyBlueprintRoutes } from "./routes/story-blueprints.js";
 import { storyBlueprintProposalRoutes } from "./routes/story-blueprint-proposals.js";
 import { assetRoutes } from "./routes/assets.js";
+import { assetLifecycleRoutes } from "./routes/asset-lifecycle.js";
 import { imageQuoteRoutes } from "./routes/image-quotes.js";
 import { folderRoutes } from "./routes/folders.js";
 import { collabRoutes } from "./routes/collab.js";
@@ -53,6 +54,8 @@ export async function buildApp(
   opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner; customerAiPreparation?: CustomerAiPreparation; customerAiReadiness?: CustomerAiReadiness; enableLegacyMetadataGenerationForTests?: boolean; enableLegacyAiReviewForTests?: boolean } = {},
 ): Promise<FastifyInstance> {
   const env = loadEnv();
+  // All instances must cut over together after database and writer preflight.
+  const assetLifecycleEnabled = process.env.ASSET_LIFECYCLE_ENABLED === "true";
   const app = Fastify({ logger: { level: env.LOG_LEVEL, serializers: { req: safeRequestLog } } });
 
   app.addHook("onRequest", async (req, reply) => {
@@ -92,7 +95,8 @@ export async function buildApp(
     audiobookRoutes(v1, { fetcher: opts.renderFetch });
     narrationQuoteRoutes(v1);
     translationRoutes(v1);
-    assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner });
+    assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner, assetLifecycleEnabled });
+    if (assetLifecycleEnabled) assetLifecycleRoutes(v1);
     imageQuoteRoutes(v1);
     editionRoutes(v1, { fetcher: opts.renderFetch });
     renderRequestRoutes(v1);

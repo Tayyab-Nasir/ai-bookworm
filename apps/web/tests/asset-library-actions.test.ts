@@ -6,6 +6,7 @@ import { test } from "node:test";
 import ts from "typescript";
 import { ApiClientError } from "@bookworm/api-client";
 import { privateUploadUrl } from "../lib/private-upload";
+import { isAssetMutationReceipt } from "../lib/asset-lifecycle-operation";
 
 const workspace = "11111111-1111-4111-8111-111111111111";
 const otherWorkspace = "22222222-2222-4222-8222-222222222222";
@@ -69,6 +70,8 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
     if (name.endsWith("/api")) return { apiClient: () => api };
     if (name.endsWith("/AuthorShell")) return { AuthorHeader: "AuthorHeader", AuthorPage: "AuthorPage" };
     if (name.endsWith("/AssetBrowser")) return { default: "AssetBrowser" };
+    if (name.endsWith("/RemovedAssets")) return { default: "RemovedAssets" };
+    if (name.endsWith("/asset-lifecycle-operation")) return { beginAssetOperation: (_s: any, input: any, uuid: () => string) => ({...input, operationId: uuid()}), clearConfirmedAssetOperation: () => {}, readAssetOperation: () => null, isAssetMutationReceipt };
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
     if (name.endsWith("/workspace-selection")) return selection;
     if (name.endsWith("/private-upload")) return { privateUploadUrl };
@@ -89,7 +92,7 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
   const accountRequire = (name: string) => name.endsWith("/browser-session") ? sessionModule : require(name);
   const document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {}, createElement: (type: string) => ({ href: "", download: "", rel: "", click() { if (type === "input") inputClicks.push(type); else downloads.push({ href: this.href, download: this.download, rel: this.rel }); } }) };
   const scope = { actor: workspace, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() };
-  vm.runInNewContext(compile(source), { exports, require: accountRequire, window, document, AbortSignal, URL, URLSearchParams, Date: Clock, Headers, fetch });
+  vm.runInNewContext(compile(source), { exports, require: accountRequire, window, document, AbortSignal, URL, URLSearchParams, Date: Clock, Headers, fetch, sessionStorage: {}, crypto: {randomUUID: () => "00000000-0000-4000-8000-000000000001"} });
   const render = () => { stateIndex = 0; refIndex = 0; effects.length = 0; callbacks.length = 0; return account ? exports.AccountMenu() : exports.AssetsPageInner({ scope, active: true, revision: {}, retry: async () => {} }); };
   const initialize = async () => {
     render(); effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
@@ -216,9 +219,10 @@ test("account settings remains an accessible mobile link and preserves sign-out 
 test("retained asset actions cannot cross an A-to-B-to-A workspace replacement", async () => {
   let deletes = 0; let details = 0;
   const h = harness({
-    listAssets: async (id: string) => ({ assets: [{ ...file, workspace_id: id, storage_path: `workspaces/${id}/assets/${assetId}/v2/draft.pdf` }] }),
+    getAssetAccess: async () => ({ canEdit: true, assetLifecycleEnabled: true, assetLifecycleReady: true }),
+    listAssets: async (id: string) => ({ assets: [{ ...file, workspace_id: id, lifecycle_revision: null, storage_path: `workspaces/${id}/assets/${assetId}/v2/draft.pdf` }] }),
     listAssetVersions: async () => { details++; return { versions: [version] }; },
-    deleteAsset: async () => { deletes++; },
+    removeAssetLifecycle: async (_id: string, body: any) => { deletes++; return { assetId, operationId: body.operationId, action: "remove", expectedRevision: body.expectedRevision, replayed: false }; },
   });
   let tree = await h.initialize(); h.effects.find(fn => fn.toString().includes("api.getAssetAccess"))!(); await settle(); tree = h.render();
   const oldBrowser = nodes(tree).find(node => node.type === "AssetBrowser");

@@ -1,3 +1,4 @@
+import { assetLifecycleReady } from "../lib/asset-lifecycle-readiness.js";
 import type { FastifyInstance } from "fastify";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -100,9 +101,13 @@ async function loadAsset(sb: SupabaseClient, assetId: string): Promise<AssetRow>
   return data as AssetRow;
 }
 
-export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner } = {}) {
+export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner; assetLifecycleEnabled?: boolean } = {}) {
   const imageGenerator = options.imageGenerator ?? openAiImageGenerator;
   const assetScanner = options.assetScanner ?? createHttpAssetScanner();
+  const requireWriteReady = async () => {
+    if (options.assetLifecycleEnabled === true && !await assetLifecycleReady(app.supabaseFactory))
+      throw new AppError(503, "This file action is temporarily unavailable.");
+  };
 
   async function persistScanVerdict(service: SupabaseClient, input: {
     assetId: string;
@@ -225,7 +230,9 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     if (!parsed.success) throw new AppError(422, "Check the workspace access request.");
     const role = await requireWorkspaceMember(app.supabaseFactory(req.userToken), parsed.data.workspaceId, req.userId);
     reply.header("cache-control", "private, no-store");
-    return { canEdit: canEditWorkspace(role) };
+    const enabled = options.assetLifecycleEnabled === true;
+    const ready = enabled && await assetLifecycleReady(app.supabaseFactory);
+    return { canEdit: canEditWorkspace(role), assetLifecycleEnabled: enabled, assetLifecycleReady: ready };
   });
 
   app.get("/assets/generation-jobs", async (req, reply) => {
@@ -244,7 +251,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
       billingMode: job.billing_mode ?? "operational", createdAt: job.created_at, completedAt: job.completed_at ?? null })) };
   });
 
-  app.post("/assets/generation-jobs/:jobId/finalize", async (req, reply) => {
+  app.post("/assets/generation-jobs/:jobId/finalize", { preHandler: requireWriteReady }, async (req, reply) => {
     const jobId = z.string().uuid().safeParse((req.params as { jobId: string }).jobId);
     if (!jobId.success) throw new AppError(422, "Invalid image request.");
     const user = app.supabaseFactory(req.userToken);
@@ -282,7 +289,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     throw new AppError(503, "Image finalization is unconfirmed. Refresh history before retrying. No new image generation was started.");
   });
 
-  app.post("/assets/generate", async (req, reply) => {
+  app.post("/assets/generate", { preHandler: requireWriteReady }, async (req, reply) => {
     if (process.env.NODE_ENV !== "test" && process.env.IMAGE_LEGACY_GENERATION_ENABLED !== "true") {
       throw new AppError(410, "Direct image generation is retired. Prepare and accept a token-priced image quote.", undefined, "image_quote_required");
     }
@@ -484,7 +491,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
       model: generated.model, requestId: generated.requestId,
     });
   });
-  app.post("/assets/upload-url", async (req) => {
+  app.post("/assets/upload-url", { preHandler: requireWriteReady }, async (req) => {
     const parsed = uploadUrlSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid upload request", { issues: parsed.error.issues });
     const { workspaceId, requestId, filename, mimeType, sizeBytes, folderId, type } = parsed.data;
@@ -570,7 +577,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     return { assetId, uploadUrl: signed.signedUrl, path };
   });
 
-  app.post("/assets/:assetId/confirm", async (req) => {
+  app.post("/assets/:assetId/confirm", { preHandler: requireWriteReady }, async (req) => {
     const { assetId } = req.params as { assetId: string };
     const parsed = confirmSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid confirm request", { issues: parsed.error.issues });
@@ -624,7 +631,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
   // New immutable version: returns a signed upload URL for v{n+1}; the row
   // keeps checksum "pending" until /confirm-version. Versions are never
   // updated after confirm (PRD 13: immutable versions w/ checksum).
-  app.post("/assets/:assetId/versions", async (req) => {
+  app.post("/assets/:assetId/versions", { preHandler: requireWriteReady }, async (req) => {
     const { assetId } = req.params as { assetId: string };
     const parsed = newVersionSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid version request", { issues: parsed.error.issues });
@@ -666,7 +673,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
 
   // Confirm a pending version: sets its checksum and points the asset row at
   // it. Conditional update on checksum='pending' prevents double-confirm.
-  app.post("/assets/:assetId/versions/:version/confirm", async (req) => {
+  app.post("/assets/:assetId/versions/:version/confirm", { preHandler: requireWriteReady }, async (req) => {
     const { assetId, version } = req.params as { assetId: string; version: string };
     const parsed = confirmVersionSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid confirm request", { issues: parsed.error.issues });
@@ -735,7 +742,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
   });
 
   // Asset review state is changed only by its server-side workflow.
-  app.patch("/assets/:assetId", async (req) => {
+  app.patch("/assets/:assetId", { preHandler: requireWriteReady }, async (req) => {
     const { assetId } = req.params as { assetId: string };
     const parsed = patchSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid asset update", { issues: parsed.error.issues });
@@ -760,38 +767,45 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     return data;
   });
 
-  // Soft delete: status archived + deleted_at marker; row stays for audit.
-  app.delete("/assets/:assetId", async (req) => {
-    const { assetId } = req.params as { assetId: string };
-    const sb = app.supabaseFactory(req.userToken);
-    const asset = await loadAsset(sb, assetId);
-    await requireWorkspaceEditor(sb, asset.workspace_id, req.userId);
-    if (asset.deleted_at) throw new AppError(409, "asset already deleted");
-    const { data: updated, error } = await app.supabaseFactory().from("assets")
-      .update({ deleted_at: new Date().toISOString(), status: "archived" })
-      .eq("id", assetId).eq("workspace_id", asset.workspace_id).eq("status", asset.status).is("deleted_at", null)
-      .select("id").maybeSingle();
-    if (error) throw new AppError(500, error.message);
-    if (!updated) throw new AppError(409, "asset changed while removal was in progress; refresh the library");
-    await logActivity(sb, { workspaceId: asset.workspace_id, actorId: req.userId, eventType: "asset_deleted", entityType: "asset", entityId: assetId });
-    return { assetId, deleted: true };
-  });
+  if (options.assetLifecycleEnabled === true) {
+    // Old clients cannot bypass the receipt-based flow after cutover.
+    app.delete('/assets/:assetId', async () => { throw new AppError(410, 'Refresh the app before removing a file.'); });
+    app.post('/assets/:assetId/restore', async () => { throw new AppError(410, 'Refresh the app before restoring a file.'); });
+  } else {
+    // Soft delete: status archived + deleted_at marker; row stays for audit.
+    app.delete("/assets/:assetId", async (req) => {
+      const { assetId } = req.params as { assetId: string };
+      const sb = app.supabaseFactory(req.userToken);
+      const asset = await loadAsset(sb, assetId);
+      await requireWorkspaceEditor(sb, asset.workspace_id, req.userId);
+      if (asset.deleted_at) throw new AppError(409, "asset already deleted");
+      const { data: updated, error } = await app.supabaseFactory().from("assets")
+        .update({ deleted_at: new Date().toISOString(), status: "archived" })
+        .eq("id", assetId).eq("workspace_id", asset.workspace_id).eq("status", asset.status).is("deleted_at", null)
+        .select("id").maybeSingle();
+      if (error) throw new AppError(500, error.message);
+      if (!updated) throw new AppError(409, "asset changed while removal was in progress; refresh the library");
+      await logActivity(sb, { workspaceId: asset.workspace_id, actorId: req.userId, eventType: "asset_deleted", entityType: "asset", entityId: assetId });
+      return { assetId, deleted: true };
+    });
 
-  app.post("/assets/:assetId/restore", async (req) => {
-    const { assetId } = req.params as { assetId: string };
-    const sb = app.supabaseFactory(req.userToken);
-    const asset = await loadAsset(sb, assetId);
-    await requireWorkspaceEditor(sb, asset.workspace_id, req.userId);
-    if (!asset.deleted_at) throw new AppError(409, "asset is not deleted");
-    const { data: updated, error } = await app.supabaseFactory().from("assets")
-      .update({ deleted_at: null, status: "draft" })
-      .eq("id", assetId).eq("workspace_id", asset.workspace_id).eq("status", asset.status).eq("deleted_at", asset.deleted_at)
-      .select("id").maybeSingle();
-    if (error) throw new AppError(500, error.message);
-    if (!updated) throw new AppError(409, "asset changed while restore was in progress; refresh the library");
-    await logActivity(sb, { workspaceId: asset.workspace_id, actorId: req.userId, eventType: "asset_restored", entityType: "asset", entityId: assetId });
-    return { assetId, restored: true };
-  });
+    app.post("/assets/:assetId/restore", async (req) => {
+      const { assetId } = req.params as { assetId: string };
+      const sb = app.supabaseFactory(req.userToken);
+      const asset = await loadAsset(sb, assetId);
+      await requireWorkspaceEditor(sb, asset.workspace_id, req.userId);
+      if (!asset.deleted_at) throw new AppError(409, "asset is not deleted");
+      const { data: updated, error } = await app.supabaseFactory().from("assets")
+        .update({ deleted_at: null, status: "draft" })
+        .eq("id", assetId).eq("workspace_id", asset.workspace_id).eq("status", asset.status).eq("deleted_at", asset.deleted_at)
+        .select("id").maybeSingle();
+      if (error) throw new AppError(500, error.message);
+      if (!updated) throw new AppError(409, "asset changed while restore was in progress; refresh the library");
+      await logActivity(sb, { workspaceId: asset.workspace_id, actorId: req.userId, eventType: "asset_restored", entityType: "asset", entityId: assetId });
+      return { assetId, restored: true };
+    });
+
+  }
 
   // Usage: where this asset is referenced (chapters, nodes, covers...).
   app.get("/assets/:assetId/usage", async (req) => {
