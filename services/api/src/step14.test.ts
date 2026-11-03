@@ -657,10 +657,20 @@ test("delete intake routes only through confirmation RPC, with safe database err
     const app = await appWith(store);
     const response = await app.inject({ method:"POST", url:"/v1/account/data-requests", headers:as("good"), payload:{type:"delete", confirmation:"DELETE MY ACCOUNT", reason:"  Moving  "} });
     assert.equal(response.statusCode, status, code);
+    if (status === 503) assert.equal(response.json().error.message, "This data request is temporarily unavailable. Please try again later.");
     assert.deepEqual(calls, [{name:"submit_delete_data_rights_request", args:{p_confirmation:"DELETE MY ACCOUNT",p_reason:"Moving"}}]);
     assert.equal((store.tables.data_rights_requests ?? []).length, 0, "must not fall back to a direct insert");
     await app.close();
   }
+});
+test("missing cancellation capability gives a usable status message", async () => {
+  const store: Store = { tables: {}, rpc: () => ({ data: null, error: { code: "PGRST202" } }) };
+  const app = await appWith(store);
+  try {
+    const response = await app.inject({ method: "DELETE", url: "/v1/account/data-requests/a8900000-0000-4000-8000-000000000001", headers: as("good") });
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.json().error.message, "Cancellation is temporarily unavailable. Check your request status before trying again.");
+  } finally { await app.close(); }
 });
 test("delete intake rejects an RPC result for a different authenticated actor", async () => {
   const store: Store = {tables:{},rpc:()=>({data:{id:crypto.randomUUID(),user_id:"other-user",request_type:"delete",status:"submitted"},error:null})};

@@ -107,7 +107,7 @@ export function accountRoutes(app: FastifyInstance) {
     if (error?.code === "23505")
       throw new AppError(409, `An active ${input.type} request already exists.`);
     if (error?.code === "42883" || error?.code === "PGRST202")
-      throw new AppError(503, "Data-request migration is not installed.");
+      throw new AppError(503, "This data request is temporarily unavailable. Please try again later.");
     if (error?.code === "22023") throw new AppError(422, "Check the submitted fields.");
     const request = Array.isArray(data) ? data[0] : data;
     if (error || !request || request.user_id !== req.userId || request.request_type !== input.type || request.status !== "submitted")
@@ -129,7 +129,7 @@ export function accountRoutes(app: FastifyInstance) {
     if (error?.code === "22023")
       throw new AppError(409, "Only submitted requests can be cancelled.");
     if (error?.code === "42883" || error?.code === "PGRST202")
-      throw new AppError(503, "Data-request migration is not installed.");
+      throw new AppError(503, "Cancellation is temporarily unavailable. Check your request status before trying again.");
     if (error) throw new AppError(500, "Could not cancel the data request.");
     return { viewerId: req.userId, request: Array.isArray(data) ? data[0] : data };
   });
