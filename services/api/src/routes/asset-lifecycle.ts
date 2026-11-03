@@ -16,10 +16,14 @@ const closeRequest = request.extend({ action: z.enum(["remove", "restore"]), exp
 
 // PostgreSQL timestamps preserve microseconds; Date.parse alone collapses them.
 function timestampMicros(value: string): bigint | null {
-  const match = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{1,6}))?(?:Z|[+-]\d{2}:\d{2})$/i.exec(value);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?(?:Z|[+-]\d{2}:\d{2})$/i.exec(value);
   const milliseconds = Date.parse(value);
   if (!match || !Number.isFinite(milliseconds)) return null;
-  return BigInt(milliseconds) * 1000n + BigInt((match[1] ?? '').padEnd(6, '0').slice(3));
+  const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > days[month - 1] || hour > 23 || minute > 59 || second > 59) return null;
+  return BigInt(milliseconds) * 1000n + BigInt((match[7] ?? '').padEnd(6, '0').slice(3));
 }
 
 function checkResult(data: unknown, assetId: string, operationId: string, action: "remove" | "restore", expectedRevision: string | null) {
@@ -33,17 +37,30 @@ function checkResult(data: unknown, assetId: string, operationId: string, action
 export function assetLifecycleRoutes(app: FastifyInstance) {
   const requireReady = async () => { if (!await assetLifecycleReady(app.supabaseFactory)) throw new AppError(503, 'File operations are temporarily unavailable.'); };
   app.get('/assets/removed', { preHandler: requireReady }, async (req, reply) => {
-    const query = z.object({ workspaceId: z.string().uuid() }).strict().safeParse(req.query);
-    if (!query.success) throw new AppError(422, 'Check the workspace.');
+    const query = z.object({ workspaceId: z.string().uuid(), beforeDeletedAt: z.string().datetime({ offset: true }).optional(), beforeId: z.string().uuid().optional() }).strict().safeParse(req.query);
+    if (!query.success || (query.data.beforeDeletedAt === undefined) !== (query.data.beforeId === undefined)
+        || (query.data.beforeDeletedAt !== undefined && timestampMicros(query.data.beforeDeletedAt) === null)) throw new AppError(422, 'Check the workspace and page.');
     const sb = app.supabaseFactory(req.userToken);
     await requireWorkspaceEditor(sb, query.data.workspaceId, req.userId);
-    const { data, error } = await sb.from('assets').select('id,workspace_id,name,deleted_at,checksum,lifecycle_revision').eq('workspace_id', query.data.workspaceId).not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(50);
+    let list = sb.from('assets').select('id,workspace_id,name,deleted_at,checksum,lifecycle_revision').eq('workspace_id', query.data.workspaceId).not('deleted_at', 'is', null);
+    // Validated timestamp and UUID are the only interpolated values. Both parts
+    // are needed to page deterministically when removals share a timestamp.
+    if (query.data.beforeDeletedAt && query.data.beforeId) list = list.or(`deleted_at.lt.${query.data.beforeDeletedAt},and(deleted_at.eq.${query.data.beforeDeletedAt},id.lt.${query.data.beforeId})`);
+    const { data, error } = await list.order('deleted_at', { ascending: false }).order('id', { ascending: false }).limit(51);
     if (error) throw new AppError(503, 'Removed files are unavailable.');
     await requireWorkspaceEditor(sb, query.data.workspaceId, req.userId);
-    const rows = z.array(z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), name: z.string().max(500), deleted_at: z.string().datetime({ offset: true }), checksum: z.string().nullable(), lifecycle_revision: z.string().uuid().nullable() }).strict()).max(50).safeParse(data);
+    const rows = z.array(z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), name: z.string().max(500), deleted_at: z.string().datetime({ offset: true }), checksum: z.string().nullable(), lifecycle_revision: z.string().uuid().nullable() }).strict()).max(51).safeParse(data);
     if (!rows.success || rows.data.some(row => row.workspace_id !== query.data.workspaceId)) throw new AppError(503, 'Removed files could not be verified.');
+    let previous = query.data.beforeDeletedAt && query.data.beforeId ? { time: timestampMicros(query.data.beforeDeletedAt)!, id: query.data.beforeId.toLowerCase() } : null;
+    for (const row of rows.data) {
+      const time = timestampMicros(row.deleted_at), id = row.id.toLowerCase();
+      if (time === null || (previous && (time > previous.time || (time === previous.time && id >= previous.id)))) throw new AppError(503, 'Removed files could not be verified.');
+      previous = { time, id };
+    }
+    const page = rows.data.slice(0, 50), last = page.at(-1);
     reply.header('cache-control', 'private, no-store');
-    return { assets: rows.data.map(({ checksum, ...row }) => ({ ...row, hasRecordedChecksum: typeof checksum === 'string' && /^[a-f0-9]{64}$/i.test(checksum) })) };
+    return { assets: page.map(({ checksum, ...row }) => ({ ...row, hasRecordedChecksum: typeof checksum === 'string' && /^[a-f0-9]{64}$/i.test(checksum) })),
+      nextCursor: rows.data.length > 50 && last ? { beforeDeletedAt: last.deleted_at, beforeId: last.id } : null };
   });
   app.get("/assets/:assetId/lifecycle/:operationId", { preHandler: requireReady }, async (req, reply) => {
     const path = z.object({ assetId: z.string().uuid(), operationId: z.string().uuid() }).strict().safeParse(req.params);

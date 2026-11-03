@@ -34,6 +34,75 @@ test('lost restore reply persists identity and status recovery does not repeat t
  } finally {await page.close()}
 });
 
+test('older removed files can be loaded and restored without losing the first page',async()=>{
+ const page=await fixture();try {
+  await page.evaluate(()=>{window.pages=[];window.api.listRemovedAssets=async(_workspace,cursor)=>{window.pages.push(cursor??null);const first={id:window.asset,workspace_id:window.workspace,name:'Newest.pdf',deleted_at:window.date,lifecycle_revision:null,hasRecordedChecksum:true};const older={...first,id:'44444444-4444-4444-8444-444444444444',name:'Older.pdf'};return cursor?{assets:[older],nextCursor:null}:{assets:[first],nextCursor:{beforeDeletedAt:window.date,beforeId:window.asset}}};});
+  await page.getByRole('button',{name:'Refresh removed files'}).click();
+  await expect(page.getByText('Newest.pdf')).toBeVisible(); await page.getByRole('button',{name:'Load older removed files'}).click();
+  await expect(page.getByText('Older.pdf')).toBeVisible(); await expect(page.getByText('Newest.pdf')).toBeVisible();
+  assert.deepEqual(await page.evaluate(()=>window.pages[1]),{beforeDeletedAt:date,beforeId:asset});
+  assert.equal(await page.getByRole('button',{name:'Restore',exact:true}).count(),2);
+  await expect(page.getByRole('button',{name:'Load older removed files'})).toHaveCount(0);
+  await page.getByText('Older.pdf').locator('..').getByRole('button',{name:'Restore'}).click();
+  await expect(page.getByRole('alert')).toContainText('could not be confirmed');
+  assert.equal(await page.evaluate(()=>window.receipt.assetId),'44444444-4444-4444-8444-444444444444');
+ } finally {await page.close()}
+});
+
+test('an older service without paging shows its returned files and warns that older files may be hidden',async()=>{
+ const page=await fixture();try {
+  await page.evaluate(()=>{window.api.listRemovedAssets=async()=>({assets:Array.from({length:50},(_,i)=>({id:`aaaaaaaa-aaaa-4aaa-8aaa-${String(i+1).padStart(12,'0')}`,workspace_id:window.workspace,name:`File ${i+1}.pdf`,deleted_at:window.date,lifecycle_revision:null,hasRecordedChecksum:true}))})});
+  await page.getByRole('button',{name:'Refresh removed files'}).click();
+  await expect(page.getByText('File 50.pdf')).toBeVisible();
+  await expect(page.getByText('Older removed files may not be shown because this file service does not support paging yet.',{exact:false})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Load older removed files'})).toHaveCount(0);
+ } finally {await page.close()}
+});
+
+test('a delayed older page cannot cross into a changed workspace',async()=>{
+ const page=await fixture();try {
+  await page.evaluate(()=>{window.api.listRemovedAssets=async(w,cursor)=>{const r={id:window.asset,workspace_id:w,name:w===window.workspace?'Current.pdf':'New workspace.pdf',deleted_at:window.date,lifecycle_revision:null,hasRecordedChecksum:true}; if(cursor){window.pageStarted=true;return await new Promise(resolve=>window.releasePage=()=>resolve({assets:[{...r,id:'44444444-4444-4444-8444-444444444444',name:'STALE PRIVATE FILE'}],nextCursor:null}))}return {assets:[r],nextCursor:{beforeDeletedAt:window.date,beforeId:window.asset}}};});
+  await page.getByRole('button',{name:'Refresh removed files'}).click(); await expect(page.getByText('Current.pdf')).toBeVisible();
+  await page.getByRole('button',{name:'Load older removed files'}).click(); await page.waitForFunction(()=>window.pageStarted);
+  await page.evaluate(()=>{window.epoch++;window.workspace='55555555-5555-4555-8555-555555555555';window.rev++;window.api.listRemovedAssets=async w=>({assets:[{id:window.asset,workspace_id:w,name:'New workspace.pdf',deleted_at:window.date,lifecycle_revision:null,hasRecordedChecksum:true}],nextCursor:null});window.render()});
+  await expect(page.getByText('New workspace.pdf')).toBeVisible(); await page.evaluate(()=>window.releasePage());
+  await expect(page.getByText('STALE PRIVATE FILE')).toHaveCount(0); await expect(page.getByText('Current.pdf')).toHaveCount(0);
+ } finally {await page.close()}
+});
+
+test('refresh invalidates an older page already in flight in the same workspace',async()=>{
+ const page=await fixture();try {
+  await page.evaluate(()=>{window.showNew=false;window.api.listRemovedAssets=async(w,cursor)=>{const r={id:window.asset,workspace_id:w,name:window.showNew?'After refresh.pdf':'Before refresh.pdf',deleted_at:window.date,lifecycle_revision:null,hasRecordedChecksum:true};if(cursor){window.pageStarted=true;return await new Promise(resolve=>window.releasePage=()=>resolve({assets:[{...r,id:'44444444-4444-4444-8444-444444444444',name:'STALE PAGE'}],nextCursor:null}))}return {assets:[r],nextCursor:window.showNew?null:{beforeDeletedAt:window.date,beforeId:window.asset}}};});
+  await page.getByRole('button',{name:'Refresh removed files'}).click(); await expect(page.getByText('Before refresh.pdf')).toBeVisible();
+  await page.getByRole('button',{name:'Load older removed files'}).click(); await page.waitForFunction(()=>window.pageStarted);
+  await page.evaluate(()=>window.showNew=true); await page.getByRole('button',{name:'Refresh removed files'}).click();
+  await expect(page.getByText('After refresh.pdf')).toBeVisible(); await page.evaluate(()=>window.releasePage());
+  await expect(page.getByText('STALE PAGE')).toHaveCount(0); await expect(page.getByText('Before refresh.pdf')).toHaveCount(0);
+ } finally {await page.close()}
+});
+
+test('a late page from the previous account never appears after an account switch',async()=>{
+ const page=await fixture();try {
+  await page.evaluate(()=>{window.api.listRemovedAssets=async(w,cursor)=>{const r={id:window.asset,workspace_id:w,name:'Current account.pdf',deleted_at:window.date,lifecycle_revision:null,hasRecordedChecksum:true};if(cursor){window.pageStarted=true;return await new Promise(resolve=>window.releasePage=()=>resolve({assets:[{...r,id:'44444444-4444-4444-8444-444444444444',name:'OLD ACCOUNT FILE'}],nextCursor:null}))}return {assets:[r],nextCursor:{beforeDeletedAt:window.date,beforeId:window.asset}}};});
+  await page.getByRole('button',{name:'Refresh removed files'}).click(); await expect(page.getByText('Current account.pdf')).toBeVisible();
+  await page.getByRole('button',{name:'Load older removed files'}).click(); await page.waitForFunction(()=>window.pageStarted);
+  await page.evaluate(()=>{window.epoch++;window.actor='66666666-6666-4666-8666-666666666666';window.rev++;window.api.listRemovedAssets=async()=>({assets:[],nextCursor:null});window.render()});
+  await expect(page.getByText('No removed files in this list.')).toBeVisible(); await page.evaluate(()=>window.releasePage());
+  await expect(page.getByText('OLD ACCOUNT FILE')).toHaveCount(0); await expect(page.getByText('Current account.pdf')).toHaveCount(0);
+ } finally {await page.close()}
+});
+
+test('a failed or duplicate older page retains the verified list and cursor for retry',async()=>{
+ const page=await fixture();try {
+  await page.evaluate(()=>{window.failureMode=true;window.api.listRemovedAssets=async(_w,cursor)=>{const r={id:window.asset,workspace_id:window.workspace,name:'First.pdf',deleted_at:window.date,lifecycle_revision:null,hasRecordedChecksum:true};if(!cursor)return {assets:[r],nextCursor:{beforeDeletedAt:window.date,beforeId:window.asset}};if(window.failureMode)throw Error('network');return {assets:[r],nextCursor:null}}});
+  await page.getByRole('button',{name:'Refresh removed files'}).click(); await expect(page.getByText('First.pdf')).toBeVisible();
+  await page.getByRole('button',{name:'Load older removed files'}).click(); await expect(page.getByRole('alert')).toContainText('Older removed files could not be loaded');
+  await expect(page.getByText('First.pdf')).toBeVisible(); await page.evaluate(()=>window.failureMode=false);
+  await page.getByRole('button',{name:'Load older removed files'}).click(); await expect(page.getByRole('alert')).toContainText('Older removed files could not be loaded');
+  assert.equal(await page.getByText('First.pdf').count(),1); await expect(page.getByRole('button',{name:'Load older removed files'})).toBeEnabled();
+ } finally {await page.close()}
+});
+
 test('close fences an unconfirmed request and never claims restoration',async()=>{
  const page=await fixture();try {
  await page.getByRole('button',{name:'Restore',exact:true}).click(); await expect(page.getByRole('alert')).toBeVisible();

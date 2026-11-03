@@ -37,6 +37,25 @@ test("OpenAPI exposes recoverable operations and documents the gated legacy rout
   assert.match(spec, /required: \[workspaceId, operationId, expectedDeletedAt, expectedRevision\]/);
   assert.match(spec, /required: \[id, workspace_id, name, deleted_at, lifecycle_revision, hasRecordedChecksum\]/);
   assert.match(spec, /required: \[assetId, operationId, action, expectedRevision, replayed\]/);
+  const removed = pathBlock('/v1/assets/removed');
+  assert.match(removed, /name: beforeDeletedAt/);
+  assert.match(removed, /name: beforeId/);
+  assert.match(removed, /required: \[assets, nextCursor\]/);
+});
+
+test('client preserves exact timestamp and ID cursor in the removed-file query', async () => {
+  const original = globalThis.fetch;
+  let requested: URL | null = null;
+  globalThis.fetch = async input => { requested = new URL(String(input)); return Response.json({assets: [], nextCursor: null}); };
+  try {
+    const client = createClient({ baseUrl: 'https://fixture.invalid', token: 'synthetic' });
+    const cursor = { beforeDeletedAt: '2026-11-03T06:00:00.123456+05:00', beforeId: 'aaaaaaaa-aaaa-4aaa-8aaa-000000000001' };
+    await client.listRemovedAssets('22222222-2222-4222-8222-222222222222', cursor);
+    assert.ok(requested); const url = requested as URL;
+    assert.equal(url.searchParams.get('workspaceId'), '22222222-2222-4222-8222-222222222222');
+    assert.equal(url.searchParams.get('beforeDeletedAt'), cursor.beforeDeletedAt);
+    assert.equal(url.searchParams.get('beforeId'), cursor.beforeId);
+  } finally { globalThis.fetch = original; }
 });
 
 test("typed client carries the saved operation identity and surfaces legacy 410 responses", async () => {

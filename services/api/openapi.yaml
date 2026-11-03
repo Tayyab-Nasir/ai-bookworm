@@ -2738,9 +2738,12 @@ paths:
     get:
       tags: [v1]
       operationId: listRemovedAssets
-      summary: List the 50 most recently removed workspace files
+      summary: List removed workspace files, newest first
+      description: Return up to 50 files. Supply both values of nextCursor for the next page. Refresh the first page to see files removed or re-removed while paging; a cursor does not freeze the list.
       parameters:
         - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: beforeDeletedAt, in: query, required: false, schema: { type: string, format: date-time }, description: Exact deletion timestamp from nextCursor; must be supplied with beforeId. }
+        - { name: beforeId, in: query, required: false, schema: { type: string, format: uuid }, description: File ID from nextCursor; must be supplied with beforeDeletedAt. }
       responses:
         "200":
           description: Removed files; a recorded checksum does not guarantee that restoration will succeed
@@ -2749,9 +2752,18 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [assets]
+                required: [assets, nextCursor]
                 properties:
                   assets: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/RemovedAsset" } }
+                  nextCursor:
+                    oneOf:
+                      - type: object
+                        additionalProperties: false
+                        required: [beforeDeletedAt, beforeId]
+                        properties:
+                          beforeDeletedAt: { type: string, format: date-time }
+                          beforeId: { type: string, format: uuid }
+                      - { type: "null" }
         "404": { description: Recoverable lifecycle is disabled on this server }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
