@@ -29,7 +29,7 @@
     "test:db:crypto": "node tests/security/pgcrypto-digest-compatibility.mjs",
     "test:asset-cutover": "node tests/security/asset-lifecycle-cutover-pglite.mjs",
     "test:customer-catalog": "node --import tsx --test tests/security/customer-ai-catalog-collector.test.mjs tests/security/customer-ai-catalog-migrations.test.mjs tests/security/customer-ai-catalog-full.test.mjs tests/security/customer-ai-catalog-artifact.test.mjs",
-    "test:services": "node scripts/run-python.mjs -m pytest services/ai services/document services/rendering services/publishing services/scanning -q",
+    "test:services": "node scripts/run-python.mjs -m pytest services/ai services/document services/rendering services/publishing services/scanning tests/integration/test_google_play_cover_transport.py -q",
     "test:e2e": "node scripts/run-python.mjs -m pytest tests/e2e -q",
     "test:security": "node scripts/run-python.mjs -m pytest tests/security -q",
     "test:load": "npm exec tsx tests/load/load-smoke.mjs",

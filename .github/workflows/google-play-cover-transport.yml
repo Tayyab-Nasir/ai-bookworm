@@ -1,0 +1,28 @@
+name: Google Play cover transport
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['package.json', 'package-lock.json', 'services/api/**', 'services/rendering/**', 'packages/**', 'tests/integration/google-play-cover-worker.mjs', 'tests/integration/test_google_play_cover_transport.py', '.github/workflows/google-play-cover-transport.yml']
+  push:
+    branches: [main, master, 'codex/**']
+    paths: ['package.json', 'package-lock.json', 'services/api/**', 'services/rendering/**', 'packages/**', 'tests/integration/google-play-cover-worker.mjs', 'tests/integration/test_google_play_cover_transport.py', '.github/workflows/google-play-cover-transport.yml']
+permissions:
+  contents: read
+jobs:
+  cover-transport:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: services/rendering/requirements.txt
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: python -m pip install -r services/rendering/requirements.txt 'pytest>=8.0'
+      - run: python -m pytest tests/integration/test_google_play_cover_transport.py -q
