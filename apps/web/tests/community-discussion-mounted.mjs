@@ -47,6 +47,7 @@ async function fixture(run) {
   ]);
   let actor = accountA;
   let rejectNextPost = false;
+  let rejectNextDiscussion = false;
   let switchOnDispatch = false;
   let deniedDispatches = 0;
   function hold(kind) {
@@ -86,6 +87,10 @@ async function fixture(run) {
       const posts = postsByActor.get(owner);
       const role = members.get(owner);
       if (method === "GET") {
+        if (rejectNextDiscussion) {
+          rejectNextDiscussion = false;
+          return route.fulfill({ status: 503, json: { error: { message: "Discussion refresh is unavailable." } } });
+        }
         const payload = { posts: [...posts], role };
         await delayReply("posts");
         return route.fulfill({ json: payload });
@@ -138,6 +143,7 @@ async function fixture(run) {
       changeAccount: (destination = accountB) => { actor = destination; },
       switchAtDispatch: () => { switchOnDispatch = true; },
       rejectPost: () => { rejectNextPost = true; },
+      rejectDiscussion: () => { rejectNextDiscussion = true; },
       deniedAtDispatch: () => deniedDispatches,
       focus: () => page.evaluate(() => window.dispatchEvent(new Event("focus"))),
     });
@@ -293,6 +299,19 @@ test("moderation refresh reloads the queue and announces a confirmed decision", 
     assert.deepEqual(writes, [{ kind: "dismiss", actor: accountA }]);
     assert.equal(calls.filter(call => call.path.endsWith("/moderation/queue")).length, 2);
     assert.ok(calls.every(call => call.expected === accountA));
+  });
+});
+
+test("a failed refresh keeps the confirmed moderation outcome", async () => {
+  await fixture(async ({ page, rejectDiscussion, writes }) => {
+    await page.getByRole("button", { name: "Moderation Queue" }).click();
+    await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+    rejectDiscussion();
+    await page.getByRole("button", { name: "Confirm dismissal", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Discussion refresh is unavailable.");
+    await expect(page.getByRole("status").filter({ hasText: "Report dismissed." })).toBeVisible();
+    await expect(page.getByText("No posts yet")).toHaveCount(0);
+    assert.deepEqual(writes, [{ kind: "dismiss", actor: accountA }]);
   });
 });
 

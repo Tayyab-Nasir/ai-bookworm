@@ -75,19 +75,20 @@ function CommunityDiscussion({ id }: { id: string }) {
         setReportReason("");
       }
       const api = apiClient(actor);
-      const result = await api.listCommunityPosts(id);
+      const [discussion] = await Promise.allSettled([api.listCommunityPosts(id)]);
       if (!current()) return;
       const confirmation = confirmed?.owner === draftOwner.current ? confirmed : undefined;
-      const reopenQueue = confirmation?.reopenQueue && canModerate(result.role);
+      const reopenQueue = discussion.status === "fulfilled" && confirmation?.reopenQueue && canModerate(discussion.value.role);
       const reports = reopenQueue ? await api.moderationQueue({ limit: 50, offset: 0 }).catch(() => null) : null;
       if (!current()) return;
       await readBrowserSession(actor);
       if (!current()) return;
 
+      setNotice(confirmation?.message ?? null);
+      if (discussion.status === "rejected") throw discussion.reason;
       const scope = { actor };
       activeScope.current = scope;
-      setView({ scope, posts: result.posts, role: result.role });
-      setNotice(confirmation?.message ?? null);
+      setView({ scope, posts: discussion.value.posts, role: discussion.value.role });
       if (reports) setQueue(mergeReports(reports));
       else if (reopenQueue) setError("The decision was saved. Open the moderation queue again to refresh reports.");
     } catch (reason) {

@@ -111,8 +111,9 @@ route and component patterns to model the browser states at that boundary.
   verified actor in the web proxy. An account change invalidates previous drafts,
   moderation decisions and delayed results. Foreground checks hide data while
   access is revalidated. The same verified author can finish a pending save
-  and keep drafts after a rejection. The browser fixture exercises the real
-  API client against a synthetic boundary. Hosted account behavior and durable
+  and keep drafts after a rejection. A confirmed moderation decision remains
+  visible when the following discussion refresh fails. The browser fixture
+  exercises the real API client against a synthetic boundary. Hosted account behavior and durable
   recovery after a lost write response are separate checks.
 - Generic POST deduplication marks a key before the handler responds. A duplicate
   error confirms the key was seen in that process. Recovering the original result
