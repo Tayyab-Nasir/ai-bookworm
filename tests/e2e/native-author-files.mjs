@@ -98,6 +98,31 @@ try {
   assert.deepEqual(data(await bob.client.from('workspaces').select('id').eq('id', alice.workspace.id), 'foreign workspace read'), []);
   console.log('PASS native Auth signup, automatic profiles, API authentication and tenant isolation');
 
+  const accountRequests = '/account/data-requests';
+  const deleteInput = { type: 'delete', confirmation: 'DELETE MY ACCOUNT', reason: 'Synthetic privacy request' };
+  await request(null, 'POST', accountRequests, deleteInput, 401);
+  await request(alice.token, 'POST', accountRequests, { ...deleteInput, confirmation: 'delete my account' }, 422);
+  const rejectedIntake = await alice.client.rpc('submit_delete_data_rights_request', { p_confirmation: 'delete my account' });
+  assert.equal(rejectedIntake.error?.code, '22023', 'Database accepted an unconfirmed request');
+  const exportRequest = await request(alice.token, 'POST', accountRequests, { type: 'export' }, 201);
+  assert.equal(exportRequest.request.request_type, 'export');
+  const deletion = await request(alice.token, 'POST', accountRequests, deleteInput, 201);
+  assert.equal(deletion.viewerId, alice.userId);
+  assert.equal(deletion.request.user_id, alice.userId);
+  assert.equal(deletion.request.request_type, 'delete');
+  assert.equal(deletion.request.status, 'submitted');
+  await request(alice.token, 'POST', accountRequests, deleteInput, 409);
+  assert.deepEqual((await request(bob.token, 'GET', accountRequests)).requests, []);
+  await request(bob.token, 'DELETE', accountRequests + '/' + deletion.request.id, undefined, 404);
+  const cancelled = await request(alice.token, 'DELETE', accountRequests + '/' + deletion.request.id);
+  assert.equal(cancelled.request.status, 'cancelled');
+  const ticket = await request(alice.token, 'POST', '/support/tickets',
+    { category: 'technical', subject: 'Synthetic support request', body: 'Native fixture for the account intake boundary.' }, 201);
+  assert.equal(ticket.ticket.status, 'open');
+  assert.equal(ticket.ticket.priority, 'normal');
+  assert.deepEqual((await request(bob.token, 'GET', '/support/tickets')).tickets, []);
+  console.log('PASS confirmed data-rights intake, duplicate and foreign-account refusal, cancellation and support');
+
   const bookRequest = { workspaceId: alice.workspace.id, requestId: randomUUID(), title: 'Native author manuscript', authorName: 'Synthetic author' };
   const book = await request(alice.token, 'POST', '/books', bookRequest, 201);
   assert.equal((await request(alice.token, 'POST', '/books', bookRequest)).id, book.id);

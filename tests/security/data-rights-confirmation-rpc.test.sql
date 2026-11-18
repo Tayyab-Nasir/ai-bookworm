@@ -3,12 +3,23 @@ begin;
 insert into auth.users(id,email) values
  ('a8940000-0000-4000-8000-000000000001','confirm-owner@invalid.test'),
  ('a8940000-0000-4000-8000-000000000002','confirm-other@invalid.test');
-do $$ begin
- assert not has_function_privilege('anon','public.submit_delete_data_rights_request(text,text)','execute'),'anon can execute';
- assert not has_function_privilege('service_role','public.submit_delete_data_rights_request(text,text)','execute'),'service role can execute';
- assert has_function_privilege('authenticated','public.submit_delete_data_rights_request(text,text)','execute'),'member cannot execute';
+do $$
+declare
+ entrypoint constant regprocedure := 'public.submit_delete_data_rights_request(text,text)'::regprocedure;
+ implementation constant regprocedure := 'private.submit_delete_data_rights_request_internal(text,text)'::regprocedure;
+begin
+ assert (select not prosecdef from pg_proc where oid=entrypoint),'RPC must use caller privileges';
+ assert (select prosecdef from pg_proc where oid=implementation),'expected private implementation';
+ assert not has_schema_privilege('anon','private','usage'),'anonymous schema usage';
+ assert has_schema_privilege('authenticated','private','usage'),'authenticated wrapper cannot reach implementation';
+ assert not has_function_privilege('anon',entrypoint,'execute') and not has_function_privilege('anon',implementation,'execute'),
+   'anonymous execution is granted';
+ assert not has_function_privilege('service_role',entrypoint,'execute') and not has_function_privilege('service_role',implementation,'execute'),
+   'service execution is granted';
+ assert has_function_privilege('authenticated',entrypoint,'execute') and has_function_privilege('authenticated',implementation,'execute'),
+   'authenticated execution is missing';
  assert not exists(select 1 from pg_proc p, lateral aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
-   where p.oid='public.submit_delete_data_rights_request(text,text)'::regprocedure and a.grantee=0),'PUBLIC can execute';
+   where p.oid in (entrypoint,implementation) and a.grantee=0),'PUBLIC can execute';
 end $$;
 set local role authenticated;
 select set_config('request.jwt.claim.sub','',true);
