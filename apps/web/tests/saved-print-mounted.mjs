@@ -52,7 +52,7 @@ const bundles = await Promise.all([false, true].map(parent => build({ stdin: { c
          selected && React.createElement("div", null, selected.artifacts.map(artifact => React.createElement("a", {key: artifact.asset.id,
            href: artifact.download.url, download: true}, artifact.role === "rendered_print" ? "Download exact saved interior" : "Download exact saved cover"))));
      }
-     const root = createRoot(document.getElementById("root")); window.mountLibrary = () => root.render(React.createElement(Parent));`,
+     const root = createRoot(document.getElementById("root")); window.mountLibrary = () => root.render(React.createElement(Parent)); window.unmountLibrary = () => root.render(null);`,
   loader: "tsx", resolveDir: process.cwd() }, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
   outfile: parent ? "saved-print-studio.js" : "saved-print-library.js",
   plugins: [{ name: "synthetic-print-transports", setup(builder) {
@@ -1335,9 +1335,10 @@ test('two same-turn saves cannot dispatch twice while account preflight is pendi
  const {page}=await fixture({parent:true});let held=null,sessionCalls=0;
  try{
   await page.waitForLoadState('networkidle');
-  await page.route('**/api/auth/session',route=>{sessionCalls++;if(sessionCalls===1){held=route;return;}return route.fulfill({json:{user:{id:ids.asset}}});});
   await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async(bookId,body)=>{window.creationCalls++;return {id:window.ids.otherEdition,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,metadata_overrides:{}},updated_at:new Date().toISOString(),status:'draft'};};});
   await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+  await page.waitForLoadState('networkidle');
+  await page.route('**/api/auth/session',route=>{sessionCalls++;if(sessionCalls===1){held=route;return;}return route.fulfill({json:{user:{id:ids.asset}}});});
   await page.evaluate(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent?.trim()==='Save edition');b.dispatchEvent(new MouseEvent('click',{bubbles:true}));b.dispatchEvent(new MouseEvent('click',{bubbles:true}));});
   await expect.poll(()=>sessionCalls).toBeGreaterThan(0);await page.waitForTimeout(200);assert.equal(sessionCalls,1,'duplicate preflight was started');
   await held.fulfill({json:{user:{id:ids.asset}}});await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();assert.equal(await page.evaluate(()=>window.creationCalls),1);
@@ -1346,9 +1347,11 @@ test('two same-turn saves cannot dispatch twice while account preflight is pendi
 
 test('account preflight failure sends no edition and does not create a false uncertainty warning',async()=>{
  const {page}=await fixture({parent:true});try{
-  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({status:503,json:{error:'unavailable'}}));
+  await page.waitForLoadState('networkidle');
   await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('must not execute');};});
-  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.waitForLoadState('networkidle');
+  await page.route('**/api/auth/session',route=>route.fulfill({status:503,json:{error:'unavailable'}}));
+  await page.getByRole('button',{name:'Save edition',exact:true}).click();
   await expect(page.getByText(/Your session could not be verified/)).toBeVisible();await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();await expect(page.getByText(/A previous new-edition save may have completed/)).toHaveCount(0);assert.equal(await page.evaluate(()=>window.creationCalls),0);
   await page.unroute('**/api/auth/session');await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();
  }finally{await page.close()}
@@ -1884,6 +1887,98 @@ test("late closure response cannot clear the original pointer after an account s
     await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.dispatchEvent(new Event("focus")); window.releaseRenderClose(); });
     await expect(page.getByText("The original request was closed before it started.", {exact: false})).toHaveCount(0);
     assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const staleOutcome of ["success", "failure"]) test(`saved print history retries after edits supersede a pending ${staleOutcome}`, async () => {
+  const { page, errors } = await fixture({ disabled: true });
+  try {
+    await page.evaluate(outcome => {
+      const original = window.bookwormApi.listPrintRenders;
+      let call = 0;
+      window.bookwormApi.listPrintRenders = async (...args) => {
+        const n = ++call, result = await original(...args);
+        if (n === 1 && outcome === "failure") throw new Error("Stale history error");
+        return result;
+      };
+      window.holdHistory = true;
+      window.setProofProps({ disabled: false });
+    }, staleOutcome);
+    await page.waitForFunction(() => window.historyWaiters.length === 1);
+    await page.evaluate(() => window.setProofProps({ dirty: true, disabled: true }));
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
+    await expect(page.getByText("Save your edition settings to check saved print proofs.", { exact: true })).toBeVisible();
+    await expect(page.getByText(/No verified saved print proofs are available/)).toHaveCount(0);
+    await page.evaluate(() => { window.holdHistory = false; window.setProofProps({ dirty: false, disabled: false }); });
+    await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled();
+    await page.evaluate(async () => { window.historyWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled();
+    assert.equal(await page.getByRole("alert").count(), 0);
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.action === "history").length), 2);
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method !== "GET")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("dirty pending print history remains scoped to the selected edition", async () => {
+  const { page, errors } = await fixture({ disabled: true });
+  try {
+    await page.evaluate(() => { window.holdHistory = true; window.setProofProps({ disabled: false }); });
+    await page.waitForFunction(() => window.historyWaiters.length === 1);
+    await page.evaluate(() => window.setProofProps({ dirty: true, disabled: true, editionId: window.ids.otherEdition }));
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
+    await expect(page.getByText("Save your edition settings to check saved print proofs.", { exact: true })).toBeVisible();
+    await expect(page.getByText(/No verified saved print proofs are available/)).toHaveCount(0);
+    await page.evaluate(() => { window.holdHistory = false; window.setProofProps({ dirty: false, disabled: false }); });
+    await open(page);
+    await page.evaluate(async () => { window.historyWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    assert.equal(await page.getByRole("status", { name: "Selected print source" }).textContent(), ids.otherJob);
+    assert.deepEqual(await page.evaluate(() => window.selected.map(result => result.jobId)), [ids.otherJob]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("unmounting during dirty print history never restarts or applies the pending read", async () => {
+  const { page, errors } = await fixture({ disabled: true });
+  try {
+    await page.evaluate(() => { window.holdHistory = true; window.setProofProps({ disabled: false }); });
+    await page.waitForFunction(() => window.historyWaiters.length === 1);
+    await page.evaluate(() => window.setProofProps({ dirty: true, disabled: true }));
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
+    await expect(page.getByText("Save your edition settings to check saved print proofs.", { exact: true })).toBeVisible();
+    await expect(page.getByText(/No verified saved print proofs are available/)).toHaveCount(0);
+    await page.evaluate(async () => { window.unmountLibrary(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); window.historyWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.action === "history").length), 1);
+    assert.equal(await page.evaluate(() => window.selected.length), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("dirty pending print history cannot update after the account changes", async () => {
+  const { page, errors } = await fixture({ disabled: true });
+  try {
+    await page.evaluate(() => {
+      const original = window.bookwormApi.listPrintRenders;
+      let call = 0;
+      window.bookwormApi.listPrintRenders = async (...args) => {
+        const n = ++call, result = await original(...args);
+        if (n === 1) throw new Error("Prior account history error");
+        return result;
+      };
+      window.enforceFixtureActor = true; window.holdHistory = true;
+      window.setProofProps({ disabled: false });
+    });
+    await page.waitForFunction(() => window.historyWaiters.length === 1);
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.setProofProps({ actor: window.ids.otherAsset, dirty: true, disabled: true }); });
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
+    await expect(page.getByText("Save your edition settings to check saved print proofs.", { exact: true })).toBeVisible();
+    await expect(page.getByText(/No verified saved print proofs are available/)).toHaveCount(0);
+    await page.evaluate(() => { window.holdHistory = false; window.setProofProps({ dirty: false, disabled: false }); });
+    await open(page);
+    await page.evaluate(async () => { window.historyWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    await expect(page.getByRole("status", { name: "Selected print source" })).toHaveText(ids.job);
+    assert.equal(await page.getByRole("alert").count(), 0);
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.action === "history").length), 2);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

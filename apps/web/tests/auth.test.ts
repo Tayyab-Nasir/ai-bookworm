@@ -64,6 +64,7 @@ test("workspace reads, creation and admin access preserve optional actor fences 
   provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
   for (const [path, method, handler] of [
     [["v1", "workspaces"], "GET", backendGet], [["v1", "workspaces"], "POST", backendPost],
+    [["v1", "workspaces", "invitations", "accept"], "POST", backendPost],
     [["v1", "dashboard"], "GET", backendGet], [["v1", "admin", "access"], "GET", backendGet],
     [["v1", "books", "11111111-1111-4111-8111-111111111111", "editions"], "POST", backendPost],
     [["v1", "books", "11111111-1111-4111-8111-111111111111", "editions"], "GET", backendGet],

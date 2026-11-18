@@ -41,7 +41,7 @@ export default function SavedPrintLibrary({ actor, bookId, workspaceId, editionI
   }, [owner, refreshKey, refresh]);
   useEffect(() => {
     if (!dirty) return;
-    epoch.current++; busyRef.current = false; setBusy(false); invalidate();
+    epoch.current++; busyRef.current = false; needsHistory.current = true; setBusy(false); invalidate();
   }, [dirty, invalidate]);
   useEffect(() => { if (!disabled && !dirty && needsHistory.current) void refresh(); }, [disabled, dirty, refresh]);
   useEffect(() => {
@@ -76,6 +76,6 @@ export default function SavedPrintLibrary({ actor, bookId, workspaceId, editionI
     <p className="mt-2 text-xs leading-5 text-white/50">Open a previous PDF and its exact cover without rendering again. Private links expire after five minutes. Older proofs keep their saved content; run fresh preflight before packaging.</p>
     {error && <p role="alert" className="mt-3 rounded-lg border border-red-400/20 p-3 text-sm text-red-100">{error}</p>}
     {visible.length ? <ol className="mt-4 space-y-2">{visible.map((proof, index) => <li key={proof.jobId} className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-lg border border-white/10 p-3"><div className="min-w-0"><p className="text-sm">Print proof {visible.length - index}{opened?.jobId === proof.jobId ? " · opened" : ""}</p><p className="mt-1 text-xs text-white/45">{new Date(proof.createdAt).toLocaleString()} · {(proof.source.sizeBytes / (1024 * 1024)).toFixed(1)} MiB</p><p className="mt-1 break-all font-mono text-[10px] text-white/35">SHA-256 {proof.source.sha256.slice(0, 16)}…</p></div><button type="button" onClick={() => void open(proof)} disabled={busy || disabled} className="min-h-11 rounded-full border border-white/20 px-4 text-xs focus-visible:ring-2 focus-visible:ring-white disabled:opacity-40">{opened?.jobId === proof.jobId ? "Renew private links" : "Open saved print"}</button></li>)}</ol>
-      : !busy && !error && <p role="status" className="mt-4 text-sm text-white/45">No verified saved print proofs are available. Save this edition and render a PDF to create one.</p>}
+      : !busy && !error && <p role="status" className="mt-4 text-sm text-white/45">{dirty ? "Save your edition settings to check saved print proofs." : "No verified saved print proofs are available. Save this edition and render a PDF to create one."}</p>}
   </section>;
 }
