@@ -49,6 +49,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/saved-print-mounted.mjs
+      - name: Verify community directory account isolation in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/community-directory-mounted.mjs
       - name: Verify manuscript recovery and imported structure in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium

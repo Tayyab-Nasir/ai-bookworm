@@ -1,44 +1,91 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Community } from "@bookworm/api-client";
 import { apiClient } from "./api";
+import { readBrowserSession } from "../lib/browser-session";
 
 export default function CommunityDirectory() {
-  const api = apiClient();
   const [communities, setCommunities] = useState<Community[]>([]);
   const [query, setQuery] = useState("");
-  const [revision, setRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [joining, setJoining] = useState<string | null>(null);
   const [joined, setJoined] = useState<Set<string>>(new Set());
+  const actor = useRef<string | null>(null);
+  const epoch = useRef(0);
+  const mounted = useRef(false);
   const joiningRef = useRef(false);
+  const joinedByActor = useRef(new Map<string, Set<string>>());
+  const uncertainByActor = useRef(new Map<string, Set<string>>());
+
+  const refresh = useCallback(async () => {
+    const ticket = ++epoch.current;
+    const valid = () => mounted.current && epoch.current === ticket;
+    actor.current = null;
+    setLoading(true); setError(null); setNotice(null); setCommunities([]); setJoined(new Set());
+    try {
+      const session = await readBrowserSession();
+      if (!valid()) return;
+      const result = await apiClient(session.id).listCommunities();
+      await readBrowserSession(session.id);
+      if (!valid()) return;
+      actor.current = session.id;
+      setCommunities(result.communities);
+      setJoined(new Set(joinedByActor.current.get(session.id)));
+      if (uncertainByActor.current.get(session.id)?.size) setNotice("A previous join may have completed. Select Join again to check your membership.");
+    } catch (reason) {
+      if (valid()) setError(reason instanceof Error ? reason.message : "Communities could not be loaded.");
+    } finally { if (valid()) setLoading(false); }
+  }, []);
 
   useEffect(() => {
-    let live = true;
-    setLoading(true); setError(null); setCommunities([]);
-    void api.listCommunities().then(result => {
-      if (live) setCommunities(result.communities);
-    }).catch(reason => {
-      if (live) setError(reason instanceof Error ? reason.message : "Communities could not be loaded.");
-    }).finally(() => { if (live) setLoading(false); });
-    return () => { live = false; };
-  }, [api, revision]);
+    mounted.current = true;
+    void refresh();
+    const verify = () => { if (document.visibilityState !== "hidden") void refresh(); };
+    window.addEventListener("focus", verify);
+    document.addEventListener("visibilitychange", verify);
+    return () => { mounted.current = false; epoch.current++; actor.current = null; window.removeEventListener("focus", verify); document.removeEventListener("visibilitychange", verify); };
+  }, [refresh]);
 
   async function join(community: Community) {
-    if (joiningRef.current) return;
+    const owner = actor.current;
+    if (!owner || joiningRef.current) return;
+    const ticket = epoch.current;
+    const valid = () => mounted.current && actor.current === owner && epoch.current === ticket;
     joiningRef.current = true; setJoining(community.id); setError(null); setNotice(null);
+    let sent = false;
     try {
-      const result = await api.joinCommunity(community.id);
-      setJoined(previous => new Set([...previous, community.id]));
+      await readBrowserSession(owner);
+      if (!valid()) return;
+      sent = true;
+      const uncertain = new Set(uncertainByActor.current.get(owner)); uncertain.add(community.id);
+      uncertainByActor.current.set(owner, uncertain);
+      const result = await apiClient(owner).joinCommunity(community.id);
+      if (result.communityId !== community.id || typeof result.role !== "string" || !result.role.trim() || result.role.length > 100
+          || (result.alreadyMember !== undefined && typeof result.alreadyMember !== "boolean")) throw new Error("The service did not confirm the community membership.");
+      await readBrowserSession(owner);
+      if (!valid()) return;
+      uncertain.delete(community.id);
+      if (!uncertain.size) uncertainByActor.current.delete(owner);
+      const next = new Set(joinedByActor.current.get(owner)); next.add(community.id);
+      joinedByActor.current.set(owner, next); setJoined(new Set(next));
       setNotice(result.alreadyMember ? `You already belong to ${community.name}.` : `You joined ${community.name}. Open the discussion to post or reply.`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not join this community."); }
-    finally { joiningRef.current = false; setJoining(null); }
+    } catch (reason) {
+      if (!valid()) return;
+      actor.current = null; epoch.current++;
+      setCommunities([]); setJoined(new Set());
+      setError(sent ? "Your membership could not be confirmed. Refresh communities before trying again." : reason instanceof Error ? reason.message : "Could not verify your account.");
+    } finally {
+      joiningRef.current = false;
+      if (mounted.current) {
+        setJoining(null);
+        if (actor.current === owner && uncertainByActor.current.get(owner)?.size) setNotice("A previous join may have completed. Select Join again to check your membership.");
+      }
+    }
   }
-
   const needle = query.trim().toLocaleLowerCase();
   const visible = communities.filter(community => `${community.name} ${community.description ?? ""}`.toLocaleLowerCase().includes(needle));
 
@@ -53,7 +100,7 @@ export default function CommunityDirectory() {
         <input type="search" value={query} onChange={event => setQuery(event.target.value)} maxLength={200}
           placeholder="Search by name or description" className="mt-2 block w-full rounded-xl border border-white/15 bg-white/[0.03] px-4 py-3 text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-white" />
       </label>
-      <button type="button" disabled={loading || joining !== null} onClick={() => setRevision(value => value + 1)} className="rounded-full border border-white/20 px-5 py-3 text-sm disabled:opacity-40">Refresh communities</button>
+      <button type="button" disabled={loading || joining !== null} onClick={() => void refresh()} className="rounded-full border border-white/20 px-5 py-3 text-sm disabled:opacity-40">Refresh communities</button>
     </div>
     {error && <div role="alert" className="mb-6 rounded-xl border border-red-400/20 bg-red-400/10 p-4 text-sm text-red-100">{error}</div>}
     {notice && <div role="status" className="mb-6 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{notice}</div>}

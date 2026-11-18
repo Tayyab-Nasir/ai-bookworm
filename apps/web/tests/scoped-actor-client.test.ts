@@ -50,3 +50,21 @@ test("referral reads and claim carry the verified actor to the BFF", async () =>
     assert.deepEqual(calls.map(call => call.url), ["/api/backend/v1/referrals/code", "/api/backend/v1/referrals", "/api/backend/v1/referrals/ledger", "/api/backend/v1/referrals/claim"]);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("community discovery and join carry their original actor", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: { method: string; path: string; actor: string | null }[] = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ method: init?.method ?? "GET", path: String(input), actor: new Headers(init?.headers).get("x-bookworm-actor") });
+    return Response.json({});
+  };
+  try {
+    const client = createClient({ baseUrl: "/api/backend", expectedActor: actor, idempotencyKey: () => "synthetic-idempotency" });
+    await client.listCommunities();
+    await client.joinCommunity("33333333-3333-4333-8333-333333333333");
+    assert.deepEqual(calls, [
+      { method: "GET", path: "/api/backend/v1/communities", actor },
+      { method: "POST", path: "/api/backend/v1/communities/33333333-3333-4333-8333-333333333333/join", actor },
+    ]);
+  } finally { globalThis.fetch = originalFetch; }
+});

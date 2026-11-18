@@ -75,9 +75,11 @@ workflow so developers and agents can extend it without guessing.
   a durable accepted-invitation receipt. Referral reads and claims now bind to
   the verified actor; an uncertain claim retains the original code for an
   explicit retry in the same tab. This does not coordinate different tabs, and
-  hosted uniqueness has not been verified. The community account-switch risk
-  remains under investigation. These tests do
-  not establish hosted authentication or data behavior.
+  hosted uniqueness has not been verified. Community discovery and join now
+  bind to a verified actor and hide prior results during revalidation. Its
+  locally remembered Joined state is not refreshed after external membership
+  revocation, and uncertain joins are not persisted across remounts or tabs.
+  These tests do not establish hosted authentication or data behavior.
 - Chapters and editions originally have text status columns; edition API
   validation is not proof that every direct database writer enforces the same
   transitions. Inspect later migrations and live ACLs before adding constraints.
@@ -87,3 +89,18 @@ workflow so developers and agents can extend it without guessing.
 - This index is grouped rather than an assertion of exhaustive state coverage.
   For a change, search its routes, workers, SQL functions, frontend consumers,
   recovery identifiers and tests; verify its current state before acting.
+
+## Maintaining a workflow
+
+1. List the durable owner, browser-only state and every authorized transition.
+   Include the actor, resource and revision or request identity needed to
+   distinguish stale work from the current operation.
+2. Trace success, definitive rejection and unknown outcomes separately. A
+   timeout or lost reply does not establish that a write failed. Specify what
+   survives a reload, which retries are safe and how the user can recover.
+3. Test late success and failure, account/workspace changes, duplicate actions,
+   access revocation, concurrent writes and unmount or remount when relevant.
+   Include a real boundary test when mocks cannot establish the property.
+4. Update this index and the shared handoff when ownership, transitions or
+   rollout gates change. Point to exact tests and distinguish local fixtures
+   from hosted acceptance. Keep credentials and user data out of both.

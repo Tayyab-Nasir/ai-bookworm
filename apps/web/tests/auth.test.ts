@@ -649,3 +649,25 @@ test("workspace proxy forwards bearer only over HTTPS or local loopback", async 
     }
   }
 });
+
+test("community directory forwards actor-bound reads and joins only for the verified account", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const upstream = "https://api.example.test/v1/communities";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  const community = "33333333-3333-4333-8333-333333333333";
+  for (const [method, path, handler] of [
+    ["GET", ["v1", "communities"], backendGet],
+    ["POST", ["v1", "communities", community, "join"], backendPost],
+  ] as const) {
+    for (const [actor, expected] of [["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", "x-bookworm-actor": actor },
+      }), { params: Promise.resolve({ path: [...path] }) });
+      assert.equal(response.status, expected);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + Number(expected === 200));
+      if (expected === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+    }
+  }
+});
