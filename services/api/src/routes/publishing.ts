@@ -171,9 +171,12 @@ export async function loadRenderedPackageInputs(
   kind: "ebook" | "print",
   renderJob: Record<string, unknown>,
   config: z.infer<typeof editionConfigSchema>,
-  expectedPrimarySha256?: string,
+  sourceEpub?: z.infer<typeof sourceEpubSchema>,
 ) {
   if (config.kind !== kind) throw new AppError(422, "The selected render format does not match these saved edition settings.");
+  if (sourceEpub && (kind !== "ebook" || renderJob.id !== sourceEpub.jobId)) {
+    throw new AppError(422, "Run preflight on the same saved EPUB before creating its package.");
+  }
   assertSavedRenderedCoverPolicy(config, renderJob);
   const response = renderJobResponseSchema.safeParse(renderJob.response_json);
   if (!response.success) throw new AppError(422, "The selected render has no valid stored artifacts. Render this edition again.");
@@ -188,7 +191,7 @@ export async function loadRenderedPackageInputs(
   if (primary[0].mimeType !== primaryMime || primary[0].filename !== primaryName) {
     throw new AppError(422, "The selected render format does not match this edition.");
   }
-  if (expectedPrimarySha256 && primary[0].checksum.toLowerCase() !== expectedPrimarySha256) {
+  if (sourceEpub && primary[0].checksum.toLowerCase() !== sourceEpub.sha256) {
     throw new AppError(409, "The saved EPUB does not match the selected checksum. Refresh the proof desk.");
   }
   for (const cover of covers) {
@@ -205,17 +208,35 @@ export async function loadRenderedPackageInputs(
   if (error || !assets || assets.length !== ids.length) {
     throw new AppError(422, "A selected render artifact is missing from private storage.");
   }
+  // Reopening a saved proof follows the same version eligibility as its reader.
+  // Legacy requests may refer to renders created before scan receipts existed.
+  const versions = sourceEpub ? await sb.from("asset_versions")
+    .select("asset_id,version_number,storage_path,checksum,mime_type,size_bytes,scan_status")
+    .eq("version_number", 1).in("asset_id", ids) : null;
+  if (versions?.error) throw new AppError(503, "The saved proof's verification status could not be checked.");
+
+  for (const descriptor of descriptors) {
+    const asset = assets.find((candidate) => candidate.id === descriptor.assetId);
+    const matches = (row: Record<string, unknown> | undefined) => row?.storage_path === descriptor.storagePath
+      && row.mime_type === descriptor.mimeType && Number(row.size_bytes) === descriptor.sizeBytes
+      && String(row.checksum).toLowerCase() === descriptor.checksum.toLowerCase();
+    if (!matches(asset)) {
+      throw new AppError(422, "A selected render artifact no longer matches its confirmed version.");
+    }
+    if (versions) {
+      const version = versions.data?.find(row => row.asset_id === descriptor.assetId);
+      const path = `workspaces/${workspaceId}/assets/${descriptor.assetId}/v1/${descriptor.filename}`;
+      if (descriptor.storagePath !== path || asset?.type !== descriptor.type || !["draft", "in_review", "approved"].includes(String(asset?.status))
+        || !matches(version) || version?.version_number !== 1 || !["clean", "trusted_generated"].includes(String(version?.scan_status))) {
+        throw new AppError(422, "The saved EPUB or cover is no longer verified for packaging. Choose a current proof.");
+      }
+    }
+  }
 
   const encoded: Record<string, string> = {};
   let total = 0;
   for (const descriptor of descriptors) {
-    const asset = assets.find((candidate) => candidate.id === descriptor.assetId);
-    if (!asset || asset.storage_path !== descriptor.storagePath || asset.mime_type !== descriptor.mimeType
-      || Number(asset.size_bytes) !== descriptor.sizeBytes
-      || String(asset.checksum).toLowerCase() !== descriptor.checksum.toLowerCase()) {
-      throw new AppError(422, "A selected render artifact no longer matches its confirmed version.");
-    }
-    const { data: stored, error: downloadError } = await sb.storage.from(BUCKET).download(asset.storage_path);
+    const { data: stored, error: downloadError } = await sb.storage.from(BUCKET).download(descriptor.storagePath);
     if (downloadError || !stored) throw new AppError(503, "A selected render artifact could not be loaded from private storage.");
     const bytes = Buffer.from(await stored.arrayBuffer());
     total += bytes.length;
@@ -377,7 +398,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       if (error) throw new AppError(503, "The selected EPUB could not be verified.");
       assertSourceJob(renderJob, { bookId: body.bookId, editionId: body.editionId, editionUpdatedAt: edition.updated_at,
         bookModelSha256: modelSha256, imageSha256, action: "render", channel: "render" });
-      savedArtifacts = await loadRenderedPackageInputs(service, book.workspace_id, "ebook", renderJob!, config, sourceEpub.sha256);
+      savedArtifacts = await loadRenderedPackageInputs(service, book.workspace_id, "ebook", renderJob!, config, sourceEpub);
     }
     const jobId = randomUUID();
     const { data: inserted, error: insertError } = await service.from("publishing_jobs").insert({
@@ -541,12 +562,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     if (!storedPreflight.success || storedPreflight.data.requestedChannel !== body.channel || storedPreflight.data.errors !== 0) {
       throw new AppError(422, "Resolve all channel preflight errors and run preflight again before creating a package.");
     }
-    const sourceEpub = storedPreflight.data.sourceEpub;
-    if (sourceEpub && (config.kind !== "ebook" || sourceEpub.jobId !== body.renderJobId)) {
-      throw new AppError(422, "Run preflight on the same saved EPUB before creating its package.");
-    }
-
-    const artifactsBase64 = await loadRenderedPackageInputs(service, book.workspace_id, config.kind, renderJob!, config, sourceEpub?.sha256);
+    const artifactsBase64 = await loadRenderedPackageInputs(service, book.workspace_id, config.kind, renderJob!, config, storedPreflight.data.sourceEpub);
     const jobId = randomUUID();
     const requestJson = {
       action: "export_package", editionUpdatedAt: edition.updated_at,

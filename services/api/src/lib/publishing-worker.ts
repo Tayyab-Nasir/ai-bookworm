@@ -157,7 +157,7 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
     if (!validation.success || validation.data.errors !== 0 || validation.data.requestedChannel !== job.channel) {
       throw new WorkerFailure("worker_preflight_failed", false);
     }
-    const artifactsBase64 = await loadRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config);
+    const artifactsBase64 = await loadRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, validation.data.sourceEpub);
     const raw = await serviceRequest(fetcher, "PUBLISHING", "/v1/publishing/package",
       { channel: job.channel, editionConfig: config, bookModel: model, artifactsBase64 }, 280_000_000, signal);
     const parsed = packageServiceResponseSchema.safeParse(raw);

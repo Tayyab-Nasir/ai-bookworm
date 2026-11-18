@@ -262,6 +262,17 @@ test("publishing worker rejects unsupported saved cover policy before private re
   }
 });
 
+test("leased packaging refuses a saved EPUB preflight bound to a different render", async () => {
+  const fixture = await savedCoverWorkerFixture(false);
+  const preflight = fixture.tables.publishing_jobs[1].response_json as Row;
+  preflight.sourceEpub = { jobId: crypto.randomUUID(), sha256: fixture.digest(fixture.epub) };
+  const job = { ...fixture.job, channel: "kdp", request_json: { ...fixture.job.request_json, action: "export_package" as const } };
+  await assert.rejects(buildPublishingOutput(fixture.sb, job, async () => assert.fail("different render must not be packaged"),
+    new AbortController().signal, []), /same saved EPUB/iu);
+  assert.deepEqual(fixture.reads, []);
+  assert.deepEqual(fixture.uploads, []);
+});
+
 test("leased render completion persists verified cover version and policy", async () => {
   const fixture = await savedCoverWorkerFixture(true, "fr");
   let completed: Row | undefined;

@@ -162,7 +162,8 @@ function fakeSupabase(store: Store) {
           storage_path: artifact.storagePath, mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes,
           checksum: artifact.checksum, status: "draft", deleted_at: null, created_by: USER,
         });
-        store.tables.asset_versions.push({ asset_id: artifact.assetId, version_number: 1, storage_path: artifact.storagePath, checksum: artifact.checksum });
+        store.tables.asset_versions.push({ asset_id: artifact.assetId, version_number: 1, storage_path: artifact.storagePath,
+          checksum: artifact.checksum, mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes, scan_status: "trusted_generated" });
         store.tables.asset_links.push({ asset_id: artifact.assetId, entity_type: "book", entity_id: BOOK, usage_role: artifact.role });
       }
       store.tables.usage_events.push({ publishing_job_id: job.id, organization_id: ORG, workspace_id: WORKSPACE, user_id: USER, meter: "rendering", quantity: 1 });
@@ -569,6 +570,7 @@ test("preflight validates saved content and persists deterministic findings", as
 
 test("saved EPUB preflight verifies the stored bytes and binds packaging to the selected render", async () => {
   const store = baseStore(); enableRetailerPackages(store);
+  const downloads: string[] = []; store.downloads = downloads;
   const rendering: unknown[] = [], packages: unknown[] = [];
   const validated: { artifactsBase64: Record<string, string> }[] = [];
   let returnDigest = true;
@@ -590,11 +592,20 @@ test("saved EPUB preflight verifies the stored bytes and binds packaging to the 
   try {
     const saved = await render(), other = await render();
     const asset = saved.artifacts.find((entry: { role: string }) => entry.role === "rendered_ebook").asset;
+    const coverId = saved.artifacts.find((entry: { role: string }) => entry.role === "rendered_cover").asset.id;
+    const epubVersion = store.tables.asset_versions.find(row => row.asset_id === asset.id)!;
+    const coverVersion = store.tables.asset_versions.find(row => row.asset_id === coverId)!;
     const sourceEpub = { jobId: saved.jobId, sha256: asset.checksum };
     const preflight = { bookId: BOOK, editionId: EDITION, channel: "kdp", sourceEpub, idempotencyKey: crypto.randomUUID() };
     const wrongDigest = await request("publishing/validate", { ...preflight, sourceEpub: { ...sourceEpub, sha256: "0".repeat(64) } });
     assert.equal(wrongDigest.statusCode, 409, wrongDigest.body);
     assert.equal(validated.length, 0);
+    epubVersion.scan_status = "infected";
+    const quarantined = await request("publishing/validate", preflight);
+    assert.equal(quarantined.statusCode, 422, quarantined.body);
+    assert.equal(validated.length, 0);
+    assert.equal(downloads.includes(asset.storage_path), false);
+    epubVersion.scan_status = "trusted_generated";
     const result = await request("publishing/validate", preflight);
     assert.equal(result.statusCode, 201, result.body);
     assert.deepEqual(result.json().sourceEpub, sourceEpub);
@@ -607,7 +618,15 @@ test("saved EPUB preflight verifies the stored bytes and binds packaging to the 
     const wrongRender = await request("publishing/jobs", { ...preview, renderJobId: other.jobId, idempotencyKey: crypto.randomUUID() });
     assert.equal(wrongRender.statusCode, 422, wrongRender.body);
     assert.equal(packages.length, 0);
-    const created = await request("publishing/jobs", { ...preview, renderJobId: saved.jobId, idempotencyKey: crypto.randomUUID() });
+    const exportRequest = { ...preview, renderJobId: saved.jobId, idempotencyKey: crypto.randomUUID() };
+    downloads.length = 0;
+    coverVersion.scan_status = "infected";
+    const refused = await request("publishing/jobs", exportRequest);
+    assert.equal(refused.statusCode, 422, refused.body);
+    assert.equal(packages.length, 0);
+    assert.equal(downloads.includes(asset.storage_path), false);
+    coverVersion.scan_status = "trusted_generated";
+    const created = await request("publishing/jobs", exportRequest);
     assert.equal(created.statusCode, 201, created.body);
     assert.equal(created.json().sourceRenderJobId, saved.jobId);
 
