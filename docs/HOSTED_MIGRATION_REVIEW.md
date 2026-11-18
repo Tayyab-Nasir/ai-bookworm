@@ -1,5 +1,20 @@
 # Hosted database upgrade review
 
+## Publishing follow-up on 2026-11-18
+
+The hosted project now has retailer submission status and render request
+closure. Both additions passed separate rehearsals against the recorded
+hosted dependencies and shared a verified, encrypted recovery copy of
+publishing jobs. All 112 earlier history entries were preserved.
+
+The 114 hosted entries map to 114 of 134 source files. The recorded order
+reflects the two independent installations. The broader upgrade still
+requires migration-history reconciliation and verified project recovery.
+See the [publishing rollout receipt](evidence/supabase-publishing-rollout-2026-11-18.json)
+for the exact hosted versions, source hashes, and permission checks.
+
+## Historical upgrade on 2026-10-23
+
 Recorded on 2026-10-23 for Supabase **AI-BookWorm** (`cyhqtwndadlyzpeatxws`).
 The upgrade is applied and verified. Earlier preflight notes below are historical.
 
