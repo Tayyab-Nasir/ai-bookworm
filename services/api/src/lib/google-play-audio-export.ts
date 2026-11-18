@@ -80,11 +80,14 @@ export function googlePlayCoverDimensions(bytes: Buffer, mimeType: string): { wi
   } else if (mimeType === "image/jpeg" && bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
     extension = "jpg";
     let offset = 2;
-    while (offset + 4 <= bytes.length) {
+    while (offset < bytes.length) {
       if (bytes[offset] !== 0xff) throw new AppError(422, "The selected cover image is malformed.");
-      const marker = bytes[offset + 1]!;
-      offset += 2;
+      // JPEG permits any number of 0xff fill bytes before a marker code.
+      while (offset < bytes.length && bytes[offset] === 0xff) offset++;
+      if (offset >= bytes.length) throw new AppError(422, "The selected cover image is malformed.");
+      const marker = bytes[offset++]!;
       if (marker === 0xd9 || marker === 0xda) break;
+      if (offset + 2 > bytes.length) throw new AppError(422, "The selected cover image is malformed.");
       const length = bytes.readUInt16BE(offset);
       const isFrameHeader = [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker);
       if (length < (isFrameHeader ? 7 : 2) || offset + length > bytes.length) throw new AppError(422, "The selected cover image is malformed.");

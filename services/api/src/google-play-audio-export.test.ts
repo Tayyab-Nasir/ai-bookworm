@@ -27,6 +27,17 @@ test("Google Play cover must be JPEG/PNG with pixel bounds", () => {
   assert.throws(() => googlePlayCoverDimensions(Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x02]), "image/jpeg"), /malformed/);
 });
 
+test("JPEG marker fill bytes are accepted without accepting truncated markers", () => {
+  const sof = Buffer.from([0xc0, 0x00, 0x0b, 0x08, 0x04, 0x00, 0x04, 0x00, 0x01, 0x01, 0x11, 0x00]);
+  for (const prefix of [[0xff], [0xff, 0xff], [0xff, 0xff, 0xff]]) {
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, ...prefix]), sof]);
+    assert.deepEqual(googlePlayCoverDimensions(jpeg, "image/jpeg"), { width: 1024, height: 1024, extension: "jpg" });
+  }
+  for (const bytes of [[0xff, 0xd8, 0xff, 0xff], [0xff, 0xd8, 0xff, 0xff, 0xc0], [0xff, 0xd8, 0xff, 0xff, 0xc0, 0x00]]) {
+    assert.throws(() => googlePlayCoverDimensions(Buffer.from(bytes), "image/jpeg"), /malformed/);
+  }
+});
+
 test("archive uses Google Play audio/cover folders, ordered names and stored media", async () => {
   const archive = await GooglePlayAudioZip.create();
   try {

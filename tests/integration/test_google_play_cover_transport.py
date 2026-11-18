@@ -22,6 +22,12 @@ def test_google_play_worker_inspects_real_cover_before_archive(tmp_path, monkeyp
         valid = tmp_path / f"valid.{kind}"
         Image.new("RGB", (1024, 1024), "navy").save(valid, format=image_format)
         content = valid.read_bytes()
+        if kind == "jpeg":
+            padded = content[:2] + b"\xff\xff" + content[2:]
+            (tmp_path / "padded.jpeg").write_bytes(padded)
+            with Image.open(tmp_path / "padded.jpeg") as image:
+                image.load()
+                assert image.size == (1024, 1024)
         if kind == "png":
             truncated = content[:24]  # Header-only PNG passes the cheap size probe.
         else:
@@ -55,6 +61,7 @@ def test_google_play_worker_inspects_real_cover_before_archive(tmp_path, monkeyp
         for kind in ("png", "jpeg"):
             for case in ("valid", "malformed", "hash-mismatch", "receipt-mismatch"):
                 assert f"{kind}: {case} cover uses real decoding before upload" in result.stdout
+        assert "jpeg: valid-padded cover uses real decoding before upload" in result.stdout
     finally:
         server.should_exit = True
         thread.join(timeout=10)

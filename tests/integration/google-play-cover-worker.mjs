@@ -19,7 +19,7 @@ async function exercise(format, scenario) {
   const mime = format === 'jpeg' ? 'image/jpeg' : 'image/png';
   const valid = await readFile(join(directory, `valid.${format}`));
   const malformed = await readFile(join(directory, `truncated.${format}`));
-  const pinned = scenario === 'malformed' ? malformed : valid;
+  const pinned = scenario === 'malformed' ? malformed : scenario === 'valid-padded' ? await readFile(join(directory, 'padded.jpeg')) : valid;
   const delivered = scenario === 'hash-mismatch' ? Buffer.from(valid) : pinned;
   if (scenario === 'hash-mismatch') delivered[delivered.length - 1] ^= 1;
   const segment = Buffer.from('ID3 synthetic private segment');
@@ -111,7 +111,7 @@ async function exercise(format, scenario) {
     throw new Error('unexpected network request');
   };
   const result = await runOneGooglePlayAudioExport(sb, { fetcher, storage: { projectUrl: 'https://project-ref.supabase.co', serviceKey: 'synthetic-service-key' } });
-  if (scenario === 'valid') {
+  if (scenario === 'valid' || scenario === 'valid-padded') {
     assert.equal(result.status, 'succeeded', JSON.stringify({ failure, calls, inspections })); assert.deepEqual(inspections, [200]);
     const zip = Buffer.concat(uploads); let offset = 0, matched = 0;
     while (offset + 30 <= zip.length && zip.readUInt32LE(offset) === 0x04034b50) {
@@ -119,7 +119,7 @@ async function exercise(format, scenario) {
       const name = zip.subarray(offset + 30, offset + 30 + nameLength).toString('utf8');
       const start = offset + 30 + nameLength + extraLength;
       assert(start + size <= zip.length, 'ZIP entry must be complete');
-      if (name.startsWith('Cover/')) { assert.deepEqual(zip.subarray(start, start + size), valid); matched++; }
+      if (name.startsWith('Cover/')) { assert.deepEqual(zip.subarray(start, start + size), pinned); matched++; }
       offset = start + size;
     }
     assert.equal(matched, 1, 'exactly one ZIP entry must contain the original cover bytes');
@@ -137,3 +137,4 @@ async function exercise(format, scenario) {
 for (const format of ['png', 'jpeg']) for (const scenario of ['valid', 'malformed', 'hash-mismatch', 'receipt-mismatch']) {
   test(`${format}: ${scenario} cover uses real decoding before upload`, () => exercise(format, scenario));
 }
+test('jpeg: valid-padded cover uses real decoding before upload', () => exercise('jpeg', 'valid-padded'));
