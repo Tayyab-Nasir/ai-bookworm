@@ -13,6 +13,7 @@ entire product is release-ready.
 | Claude context | `C:/Users/Asus/Memory-Ai/Claude Sessions/2026-08/2026-08-31-ai-bookworm-project-final-handoff.md` | Historical UI and project takeover context. |
 | Hermes/Codex shared task board | `C:/Users/Asus/Memory-Ai/Hermes Context/active-tasks.md` | Only the AI Bookworm section may be edited by project agents. |
 | Product and release gaps | `docs/release-checklist.md` | Release readiness, not deployment authorization. |
+| Workflow states and recovery | [Web state inventory](WEB_STATE_MACHINES.md) | Transition owners, retry behavior and regression checks. |
 | Operations and secret ownership | `docs/operations.md` | Environment-variable matrix, workers, recovery and runbooks. |
 | Web hosting | `docs/VERCEL_DEPLOYMENT.md` | Vercel web hosting boundary and pre-deploy procedure. |
 | Shared code context | `graphify-out/GRAPH_REPORT.md` and `graphify-out/graph.json` | Local AST graph for code and SQL; refresh it after source changes. |
