@@ -53,6 +53,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/community-directory-mounted.mjs
+      - name: Verify removal history and file recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/asset-library-mounted.mjs apps/web/tests/removed-assets-mounted.mjs
       - name: Verify manuscript recovery and imported structure in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium

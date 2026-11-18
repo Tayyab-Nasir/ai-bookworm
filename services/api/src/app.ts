@@ -96,7 +96,7 @@ export async function buildApp(
     narrationQuoteRoutes(v1);
     translationRoutes(v1);
     assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner, assetLifecycleEnabled });
-    if (assetLifecycleEnabled) assetLifecycleRoutes(v1);
+    assetLifecycleRoutes(v1, assetLifecycleEnabled);
     imageQuoteRoutes(v1);
     editionRoutes(v1, { fetcher: opts.renderFetch });
     renderRequestRoutes(v1);

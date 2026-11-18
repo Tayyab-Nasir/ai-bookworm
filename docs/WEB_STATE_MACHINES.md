@@ -86,6 +86,10 @@ workflow so developers and agents can extend it without guessing.
 - Asset lifecycle recovery is staged and default-off. Hosted render closure,
   deletion intake and asset revision were absent in the latest read-only check;
   local/native tests do not prove hosted identity, Storage or retailer behavior.
+  Editors can check removal history on the legacy schema. This read confirms
+  the file's current removed state while restore still requires verified recovery
+  readiness and a new, revision-bound operation. A lost removal reply remains
+  unconfirmed even when the file appears in history.
 - This index is grouped rather than an assertion of exhaustive state coverage.
   For a change, search its routes, workers, SQL functions, frontend consumers,
   recovery identifiers and tests; verify its current state before acting.

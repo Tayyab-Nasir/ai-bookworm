@@ -3,7 +3,7 @@ import test from 'node:test';
 import { build } from 'esbuild';
 import { chromium, expect } from '@playwright/test';
 const output=await build({stdin:{contents:`import React from 'react'; import {createRoot} from 'react-dom/client'; import Removed from './apps/web/components/RemovedAssets';
-const root=createRoot(document.getElementById('root')); window.clear=()=>root.render(null); window.render=()=>root.render(React.createElement(Removed,{api:window.api,scope:{actor:window.actor,begin:()=>{const n=window.epoch;return ()=>window.epoch===n}},workspaceId:window.workspace,canEdit:window.edit,current:()=>window.edit,revision:window.rev,onChanged:async()=>{window.changed++;if(window.refreshFail)throw Error('refresh failed')}}));`,loader:'tsx',resolveDir:process.cwd()},bundle:true,write:false,format:'iife',platform:'browser',jsx:'automatic'});
+const root=createRoot(document.getElementById('root')); window.clear=()=>root.render(null); window.render=()=>root.render(React.createElement(Removed,{api:window.api,scope:{actor:window.actor,begin:()=>{const n=window.epoch;return ()=>window.epoch===n}},workspaceId:window.workspace,canEdit:window.edit,recoveryAvailable:true,current:()=>window.edit,revision:window.rev,onChanged:async()=>{window.changed++;if(window.refreshFail)throw Error('refresh failed')}}));`,loader:'tsx',resolveDir:process.cwd()},bundle:true,write:false,format:'iife',platform:'browser',jsx:'automatic'});
 const browser=await chromium.launch({headless:true,channel:process.env.BROWSER_TEST_CHANNEL||'msedge'});
 test.after(()=>browser.close());
 const actor='11111111-1111-4111-8111-111111111111', workspace='22222222-2222-4222-8222-222222222222', asset='33333333-3333-4333-8333-333333333333', date='2026-11-03T01:00:00.000Z';
@@ -43,7 +43,7 @@ test('older removed files can be loaded and restored without losing the first pa
   assert.deepEqual(await page.evaluate(()=>window.pages[1]),{beforeDeletedAt:date,beforeId:asset});
   assert.equal(await page.getByRole('button',{name:'Restore',exact:true}).count(),2);
   await expect(page.getByRole('button',{name:'Load older removed files'})).toHaveCount(0);
-  await page.getByText('Older.pdf').locator('..').getByRole('button',{name:'Restore'}).click();
+  await page.getByRole('listitem').filter({ hasText: 'Older.pdf' }).getByRole('button', { name: 'Restore' }).click();
   await expect(page.getByRole('alert')).toContainText('could not be confirmed');
   assert.equal(await page.evaluate(()=>window.receipt.assetId),'44444444-4444-4444-8444-444444444444');
  } finally {await page.close()}

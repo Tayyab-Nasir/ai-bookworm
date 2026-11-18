@@ -2,7 +2,10 @@
 
 Asset recovery is staged and disabled by default. Without
 `ASSET_LIFECYCLE_ENABLED=true`, existing removal and restore endpoints remain
-available, and the web interface does not offer the new recovery workflow.
+available. Workspace editors can inspect removed-file history in the web app.
+The history reads the existing schema and shows when a file was removed. Its
+restore and request-recovery controls appear only when the verified lifecycle
+workflow is available.
 Do not set this flag on a user-facing service yet.
 
 The additive migration installs a server-managed asset revision and dormant

@@ -19,15 +19,16 @@ const id = (n: number) => `aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12, '0')
 const micros = (value: string) => BigInt(Date.parse(value)) * 1000n + BigInt((/\.(\d+)/.exec(value)?.[1] ?? '').padEnd(6, '0').slice(3));
 const row = (n: number, deleted_at = '2026-11-03T01:00:00.123456+00:00'): Row => ({ id: id(n), workspace_id: workspace, name: `File ${n}`, deleted_at, checksum: 'a'.repeat(64), lifecycle_revision: null });
 
-async function fixture(role = 'editor') {
+async function fixture(role = 'editor', lifecycleEnabled = true) {
   let rows: Row[] = Array.from({ length: 105 }, (_, index) => row(index + 1));
   let corrupt: 'foreign' | 'unordered' | null = null, filters: string[] = [], reads = 0, revokeOnRead = false;
+  const columns: string[] = [], rpcCalls: string[] = [];
   const factory = () => ({
     auth: { getUser: async () => ({ data: { user: { id: actor } }, error: null }) },
     from(table: string) {
       let scope = '', cursor: { time: string; id: string } | null = null;
       const builder = {
-        select: () => builder,
+        select: (fields: string) => { if (table === 'assets') columns.push(fields); return builder; },
         eq: (key: string, value: string) => { if (key === 'workspace_id') scope = value; return builder; },
         not: () => builder,
         or: (filter: string) => {
@@ -43,18 +44,50 @@ async function fixture(role = 'editor') {
           if (corrupt === 'foreign' && output.length) output = [{ ...output[0], workspace_id: other }, ...output.slice(1)];
           if (corrupt === 'unordered' && output.length > 1) output = [output[1], output[0], ...output.slice(2)];
           if (revokeOnRead) role = 'viewer';
-          return { data: output, error: null };
+          return { data: lifecycleEnabled ? output : output.map(({ lifecycle_revision, ...asset }) => asset), error: null };
         },
         maybeSingle: async () => ({ data: table === 'workspace_members' ? { role, workspace_id: scope, user_id: actor, status: 'active' } : null, error: null }),
       };
       return builder;
     },
-    rpc: async (name: string) => ({ data: name === 'asset_lifecycle_readiness' ? 'asset-lifecycle-v1' : null, error: null }),
+    rpc: async (name: string) => {
+      rpcCalls.push(name);
+      return { data: name === 'asset_lifecycle_readiness' ? 'asset-lifecycle-v1' : null, error: null };
+    },
   });
-  const app = await buildApp(factory as never);
+  const prior = process.env.ASSET_LIFECYCLE_ENABLED;
+  process.env.ASSET_LIFECYCLE_ENABLED = String(lifecycleEnabled);
+  let app;
+  try { app = await buildApp(factory as never); }
+  finally {
+    if (prior === undefined) delete process.env.ASSET_LIFECYCLE_ENABLED;
+    else process.env.ASSET_LIFECYCLE_ENABLED = prior;
+  }
   const get = (query: Record<string, string>) => app.inject({ method: 'GET', url: `/v1/assets/removed?${new URLSearchParams({ workspaceId: workspace, ...query })}`, headers: auth });
-  return { app, get, remove: (n: number) => { rows = rows.filter(item => item.id !== id(n)); }, add: (item: Row) => rows.push(item), corrupt: (kind: typeof corrupt) => { corrupt = kind; }, revokeOnRead: () => { revokeOnRead = true; }, filters, reads: () => reads };
+  return { app, get, remove: (n: number) => { rows = rows.filter(item => item.id !== id(n)); }, add: (item: Row) => rows.push(item), corrupt: (kind: typeof corrupt) => { corrupt = kind; }, revokeOnRead: () => { revokeOnRead = true; }, filters, columns, rpcCalls, reads: () => reads };
 }
+
+test('default-off history reads older schemas without enabling lifecycle operations', async () => {
+  const f = await fixture('editor', false);
+  try {
+    const first = await f.get({});
+    assert.equal(first.statusCode, 200, first.body);
+    assert.match(first.headers['cache-control'] as string, /private, no-store/);
+    assert.deepEqual(first.json().assets[0], {
+      id: id(105), workspace_id: workspace, name: 'File 105', deleted_at: row(105).deleted_at,
+      lifecycle_revision: null, hasRecordedChecksum: true,
+    });
+    const next = await f.get(first.json().nextCursor);
+    assert.equal(next.statusCode, 200);
+    assert.equal(next.json().assets[0].id, id(55));
+    assert.deepEqual(f.columns, ['id,workspace_id,name,deleted_at,checksum', 'id,workspace_id,name,deleted_at,checksum']);
+    const restore = await f.app.inject({ method: 'POST', url: `/v1/assets/${id(105)}/lifecycle/restore`, headers: auth, payload: {} });
+    assert.equal(restore.statusCode, 404);
+    assert.deepEqual(f.rpcCalls, []);
+    f.revokeOnRead();
+    assert.equal((await f.get({})).statusCode, 403);
+  } finally { await f.app.close(); }
+});
 
 test('keyset pagination reaches every older file with identical microsecond timestamps despite concurrent list changes', async () => {
   const f = await fixture();

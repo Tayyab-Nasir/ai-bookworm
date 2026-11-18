@@ -56,7 +56,7 @@ test('default-off capability preserves authorized legacy removal and disables ne
   const f = await fixture(live, undefined, 'editor', false);
   try {
     const access = await f.app.inject({ method: 'GET', url: '/v1/assets/access?workspaceId=cc910000-0000-4000-8000-000000000001', headers: auth });
-    assert.equal(access.statusCode, 200); assert.deepEqual(access.json(), { canEdit: true, assetLifecycleEnabled: false, assetLifecycleReady: false });
+    assert.equal(access.statusCode, 200); assert.deepEqual(access.json(), { canEdit: true, assetLifecycleEnabled: false, assetLifecycleReady: false, removedFileHistoryAvailable: true });
     const inactive = await f.app.inject({ method: 'POST', url: '/v1/assets/asset/lifecycle/remove', headers: auth, payload: {} });
     assert.equal(inactive.statusCode, 404); assert.equal(f.getUpdates(), 0);
     const removed = await f.app.inject({ method: 'DELETE', url: '/v1/assets/asset', headers: auth });
@@ -111,7 +111,7 @@ test('enabled capability reports the active server mode and retires legacy route
   const f = await fixture(live);
   try {
     const access = await f.app.inject({ method: 'GET', url: '/v1/assets/access?workspaceId=cc910000-0000-4000-8000-000000000001', headers: auth });
-    assert.equal(access.statusCode, 200); assert.deepEqual(access.json(), { canEdit: true, assetLifecycleEnabled: true, assetLifecycleReady: true });
+    assert.equal(access.statusCode, 200); assert.deepEqual(access.json(), { canEdit: true, assetLifecycleEnabled: true, assetLifecycleReady: true, removedFileHistoryAvailable: true });
     const disabled = await f.app.inject({ method: 'DELETE', url: '/v1/assets/asset', headers: auth }); assert.equal(disabled.statusCode, 410); assert.equal(f.getUpdates(), 0);
   } finally { await f.app.close(); }
 });
@@ -120,7 +120,7 @@ test('enabled but unready capability never falls back to legacy writes', async (
   const f = await fixture(live, undefined, 'editor', true, false);
   try {
     const access = await f.app.inject({method:'GET',url:'/v1/assets/access?workspaceId=cc910000-0000-4000-8000-000000000001',headers:auth});
-    assert.equal(access.statusCode,200); assert.deepEqual(access.json(),{canEdit:true,assetLifecycleEnabled:true,assetLifecycleReady:false});
+    assert.equal(access.statusCode,200); assert.deepEqual(access.json(),{canEdit:true,assetLifecycleEnabled:true,assetLifecycleReady:false,removedFileHistoryAvailable:false});
     for (const [method,url] of [['DELETE','/v1/assets/asset'],['POST','/v1/assets/asset/restore']] as const) {
       const response=await f.app.inject({method,url,headers:auth}); assert.equal(response.statusCode,410);
     }

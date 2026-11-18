@@ -182,9 +182,9 @@ export default function AssetBrowser({
   };
 
   return (
-    <div className="flex gap-6 min-h-[400px]">
+    <div className="flex min-h-[400px] flex-col gap-6 sm:flex-row">
       {/* Folders Sidebar */}
-      <aside aria-label="Folders" className="w-64 border-r border-ink-700 pr-4">
+      <aside aria-label="Folders" className="w-full border-b border-white/10 pb-4 sm:w-64 sm:border-b-0 sm:border-r sm:pb-0 sm:pr-4">
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-sm font-semibold text-ink-300 uppercase tracking-wider">Folders</h2>
           {permissions.manage && onNewFolder && (
@@ -217,7 +217,7 @@ export default function AssetBrowser({
       </aside>
 
       {/* Assets Grid/List */}
-      <section className="flex-1">
+      <section className="min-w-0 flex-1">
         <div className="flex justify-between items-center mb-4">
           <div className="flex gap-2">
             <button

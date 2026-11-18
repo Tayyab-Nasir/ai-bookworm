@@ -2730,7 +2730,7 @@ paths:
       parameters:
         - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
       responses:
-        "200": { description: Access and active server mode, content: { application/json: { schema: { type: object, required: [canEdit, assetLifecycleEnabled, assetLifecycleReady], properties: { canEdit: { type: boolean }, assetLifecycleEnabled: { type: boolean }, assetLifecycleReady: { type: boolean } } } } } }
+        "200": { description: Access and active server mode, content: { application/json: { schema: { type: object, required: [canEdit, assetLifecycleEnabled, assetLifecycleReady], properties: { canEdit: { type: boolean }, assetLifecycleEnabled: { type: boolean }, assetLifecycleReady: { type: boolean }, removedFileHistoryAvailable: { type: boolean } } } } } }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
@@ -2739,7 +2739,7 @@ paths:
       tags: [v1]
       operationId: listRemovedAssets
       summary: List removed workspace files, newest first
-      description: Return up to 50 files. Supply both values of nextCursor for the next page. Refresh the first page to see files removed or re-removed while paging; a cursor does not freeze the list.
+      description: Return up to 50 files to a workspace editor. History is read-only when lifecycle recovery is disabled and lifecycle_revision is then null. Supply both values of nextCursor for the next page. Refresh the first page to see later changes.
       parameters:
         - { name: workspaceId, in: query, required: true, schema: { type: string, format: uuid } }
         - { name: beforeDeletedAt, in: query, required: false, schema: { type: string, format: date-time }, description: Exact deletion timestamp from nextCursor; must be supplied with beforeId. }
@@ -2764,7 +2764,6 @@ paths:
                           beforeDeletedAt: { type: string, format: date-time }
                           beforeId: { type: string, format: uuid }
                       - { type: "null" }
-        "404": { description: Recoverable lifecycle is disabled on this server }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }

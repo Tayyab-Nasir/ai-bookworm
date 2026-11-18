@@ -1046,7 +1046,7 @@ export function createClient(opts: ClientOptions) {
       if (filter?.status) qs.set("status", filter.status);
       return call<{ assets: Asset[] }>("GET", `/v1/assets?${qs}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {});
     },
-    getAssetAccess: (workspaceId: string) => call<{ canEdit: boolean; assetLifecycleEnabled?: boolean; assetLifecycleReady?: boolean }>("GET", `/v1/assets/access?${new URLSearchParams({ workspaceId })}`),
+    getAssetAccess: (workspaceId: string) => call<{ canEdit: boolean; assetLifecycleEnabled?: boolean; assetLifecycleReady?: boolean; removedFileHistoryAvailable?: boolean }>("GET", `/v1/assets/access?${new URLSearchParams({ workspaceId })}`),
     listImageGenerationJobs: (workspaceId: string) => call<{ jobs: ImageGenerationJob[] }>("GET", `/v1/assets/generation-jobs?${new URLSearchParams({ workspaceId })}`),
     listImageQuoteModels: (workspaceId: string) => call<{ catalogVersion: string; pricingBasis: "maximum_token_budget"; purchaseAvailable: boolean; models: ImageQuoteModel[] }>("GET", `/v1/workspaces/${encodeURIComponent(workspaceId)}/image-models`),
     recoverImageQuote: (workspaceId: string, idempotencyKey: string) =>

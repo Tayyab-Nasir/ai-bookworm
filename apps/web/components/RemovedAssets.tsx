@@ -42,13 +42,14 @@ function checkedPage(value: { assets: Removed[]; nextCursor: Cursor | null }, wo
   if (next && (!last || next.beforeId !== last.id || !sameTimestamp(next.beforeDeletedAt,last.deleted_at))) throw new Error('Invalid page cursor');
   return next;
 }
-export default function RemovedAssets({ api, scope, workspaceId, canEdit, current, revision, onChanged }: {
-  api: Client; scope: Scope; workspaceId: string; canEdit: boolean; current: () => boolean; revision: number; onChanged: () => Promise<void>;
+export default function RemovedAssets({ api, scope, workspaceId, canEdit, recoveryAvailable, current, revision, onChanged }: {
+  api: Client; scope: Scope; workspaceId: string; canEdit: boolean; recoveryAvailable: boolean;
+  current: () => boolean; revision: number; onChanged: () => Promise<void>;
 }) {
   const [removed,setRemoved] = useState<Removed[]>([]), [pending,setPending] = useState<AssetOperation[]>([]);
   const [legacyAssetIds,setLegacyAssetIds] = useState<string[]>([]);
   const [error,setError] = useState(''), [notice,setNotice] = useState(''), [busy,setBusy] = useState(''), [refresh,setRefresh] = useState(0);
-  const [nextCursor,setNextCursor] = useState<Cursor | null>(null), [paginationUnavailable,setPaginationUnavailable] = useState(false), [listLoading,setListLoading] = useState(false), [pageBusy,setPageBusy] = useState(false);
+  const [nextCursor,setNextCursor] = useState<Cursor | null>(null), [paginationUnavailable,setPaginationUnavailable] = useState(false), [listLoading,setListLoading] = useState(true), [pageBusy,setPageBusy] = useState(false);
   const flight=useRef<object | null>(null);
   const listEpoch=useRef(0), pageFlight=useRef(false), removedRef=useRef<Removed[]>([]);
   useEffect(() => { if (!canEdit) { flight.current=null; setBusy(''); } }, [canEdit]);
@@ -57,13 +58,15 @@ export default function RemovedAssets({ api, scope, workspaceId, canEdit, curren
     const epoch=++listEpoch.current, valid=scope.begin(); const alive=()=>epoch===listEpoch.current && valid() && current();
     pageFlight.current=false; setPageBusy(false); setListLoading(true); setNextCursor(null); setPaginationUnavailable(false); removedRef.current=[]; setRemoved([]);
     try {
-      const saved=listAssetOperations(sessionStorage,scope.actor,workspaceId);
-      if (alive()) { setPending(saved.operations); setLegacyAssetIds(saved.legacyAssetIds); }
+      if (recoveryAvailable) {
+        const saved=listAssetOperations(sessionStorage,scope.actor,workspaceId);
+        if (alive()) { setPending(saved.operations); setLegacyAssetIds(saved.legacyAssetIds); }
+      }
       const result=await api.listRemovedAssets(workspaceId);
       if (alive()) { const next=checkedPage(result,workspaceId); removedRef.current=result.assets; setRemoved(result.assets); setNextCursor(next); setPaginationUnavailable(!Object.hasOwn(result,'nextCursor')); setError(''); }
     } catch { if (alive()) setError('Removed files or saved operations could not be loaded. Refresh to try again.'); }
     finally { if (alive()) setListLoading(false); }
-  },[api,scope,workspaceId,canEdit,current]);
+  },[api,scope,workspaceId,canEdit,current,recoveryAvailable]);
   useEffect(()=>{ void load(); return () => { ++listEpoch.current; }; },[load,revision,refresh]);
   async function loadOlder() {
     if (!canEdit || !current() || !nextCursor || pageFlight.current || flight.current || listLoading) return;
@@ -80,7 +83,7 @@ export default function RemovedAssets({ api, scope, workspaceId, canEdit, curren
     finally { if (alive()) { pageFlight.current=false; setPageBusy(false); } }
   }
   async function complete(op: AssetOperation, mode: 'check' | 'retry' | 'close') {
-    if (!canEdit || !current() || flight.current || pageFlight.current || listLoading) return;
+    if (!recoveryAvailable || !canEdit || !current() || flight.current || pageFlight.current || listLoading) return;
     const token={}; flight.current=token;
     const valid=scope.begin(); const alive=()=>valid() && current();
     setBusy(op.assetId); setError(''); setNotice('Checking the original request…');
@@ -119,7 +122,7 @@ export default function RemovedAssets({ api, scope, workspaceId, canEdit, curren
     finally { if (flight.current===token) { flight.current=null; if (alive()) setBusy(''); } }
   }
   function restore(row: Removed) {
-    if (!canEdit || !current() || flight.current || pageFlight.current || listLoading || !row.hasRecordedChecksum) return;
+    if (!recoveryAvailable || !canEdit || !current() || flight.current || pageFlight.current || listLoading || !row.hasRecordedChecksum) return;
     try {
       if (!Object.hasOwn(row,'lifecycle_revision')) throw new Error('File version is unavailable.');
       const op=beginAssetOperation(sessionStorage,{actor:scope.actor,workspaceId,assetId:row.id,action:'restore',expectedDeletedAt:row.deleted_at,expectedRevision:row.lifecycle_revision},()=>crypto.randomUUID());
@@ -129,14 +132,31 @@ export default function RemovedAssets({ api, scope, workspaceId, canEdit, curren
     } catch { setError('The original request must be resolved before starting a restore.'); }
   }
   if (!canEdit) return null;
-  return <section className="mb-8 rounded-2xl border border-white/10 p-5" aria-labelledby="removed-files-title">
+  return <section className="mt-8 rounded-2xl border border-white/10 p-5" aria-labelledby="removed-files-title">
     <div className="flex flex-wrap items-center justify-between gap-3"><h2 id="removed-files-title" className="text-lg font-semibold">Removed files</h2><button type="button" disabled={!!busy} onClick={()=>{ ++listEpoch.current; setRefresh(n=>n+1); }} className="text-sm underline disabled:opacity-50">Refresh removed files</button></div>
-    <p className="mt-2 text-xs leading-5 text-[#999]">Files are shown newest first. Refresh to see changes made in another tab. Restore checks that the saved file is available and matches its recorded contents. Prior approvals do not carry over.</p>
+    <p className="mt-2 text-xs leading-5 text-[#999]">{recoveryAvailable
+      ? 'Refresh to see changes made in another tab. Restore checks the saved file against its recorded contents. Prior approvals do not carry over.'
+      : 'Refresh to check whether a file was removed. Restoring files is currently unavailable.'}</p>
     {paginationUnavailable && <p className="mt-3 text-sm text-amber-200">Older removed files may not be shown because this file service does not support paging yet. Refresh after the service is updated.</p>}
     {notice && <p role="status" className="mt-3 text-sm text-[#bbb]">{notice}</p>}{error && <p role="alert" className="mt-3 text-sm text-amber-200">{error}</p>}
-    {legacyAssetIds.length > 0 && <div role="alert" className="mt-3 text-sm text-amber-200"><p>An older file request cannot be retried safely. Keep this tab open and contact support for help.</p><ul>{legacyAssetIds.map(id=><li key={id} className="break-all">File {id}</li>)}</ul></div>}
-    {pending.length > 0 && <div className="mt-4"><h3 className="text-sm font-medium">Requests needing confirmation on this tab</h3><ul className="mt-2 space-y-3">{pending.map(op=><li key={op.operationId} className="text-sm"><p className="break-all text-[#bbb]">{op.action === 'remove' ? 'Removal' : 'Restoration'} · file {op.assetId}</p><div className="mt-2 flex flex-wrap gap-4"><button type="button" disabled={!!busy || pageBusy || listLoading} onClick={()=>void complete(op,'check')} className="underline disabled:opacity-50">Check status</button><button type="button" disabled={!!busy || pageBusy || listLoading} onClick={()=>void complete(op,'retry')} className="underline disabled:opacity-50">Retry original request</button><button type="button" disabled={!!busy || pageBusy || listLoading} onClick={()=>{if(window.confirm('Close this unconfirmed request? If it has not completed, it will not complete later.')) void complete(op,'close');}} className="underline disabled:opacity-50">Close unconfirmed request</button></div></li>)}</ul></div>}
-    {listLoading ? <p role="status" className="mt-4 text-sm text-[#999]">Loading removed files…</p> : !removed.length ? !error && <p className="mt-4 text-sm text-[#999]">No removed files in this list.</p> : <ul className="mt-3 divide-y divide-white/10">{removed.map(row=><li key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm"><span className="break-all">{row.name}</span>{row.hasRecordedChecksum ? <button type="button" disabled={!!busy || pageBusy || legacyAssetIds.includes(row.id) || pending.some(op=>op.assetId===row.id)} onClick={()=>restore(row)} className="underline disabled:opacity-50">{busy===row.id ? 'Checking…' : 'Restore'}</button> : <span className="text-[#999]">Restore unavailable: no usable file checksum was recorded.</span>}</li>)}</ul>}
+    {recoveryAvailable && legacyAssetIds.length > 0 && <div role="alert" className="mt-3 text-sm text-amber-200"><p>An older file request cannot be retried safely. Keep this tab open and contact support for help.</p><ul>{legacyAssetIds.map(id=><li key={id} className="break-all">File {id}</li>)}</ul></div>}
+    {recoveryAvailable && pending.length > 0 && <div className="mt-4"><h3 className="text-sm font-medium">Requests needing confirmation on this tab</h3><ul className="mt-2 space-y-3">{pending.map(op=><li key={op.operationId} className="text-sm"><p className="break-all text-[#bbb]">{op.action === 'remove' ? 'Removal' : 'Restoration'} · file {op.assetId}</p><div className="mt-2 flex flex-wrap gap-4"><button type="button" disabled={!!busy || pageBusy || listLoading} onClick={()=>void complete(op,'check')} className="underline disabled:opacity-50">Check status</button><button type="button" disabled={!!busy || pageBusy || listLoading} onClick={()=>void complete(op,'retry')} className="underline disabled:opacity-50">Retry original request</button><button type="button" disabled={!!busy || pageBusy || listLoading} onClick={()=>{if(window.confirm('Close this unconfirmed request? If it has not completed, it will not complete later.')) void complete(op,'close');}} className="underline disabled:opacity-50">Close unconfirmed request</button></div></li>)}</ul></div>}
+    {listLoading ? <p role="status" className="mt-4 text-sm text-[#999]">Loading removed files…</p> : !removed.length ? !error && <p className="mt-4 text-sm text-[#999]">No removed files in this list.</p> : (
+      <ul className="mt-3 divide-y divide-white/10">
+        {removed.map(row => (
+          <li key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-3 text-sm">
+            <div className="min-w-0">
+              <p className="break-all">{row.name}</p>
+              <time className="text-xs text-[#999]" dateTime={row.deleted_at}>{new Date(row.deleted_at).toLocaleString()}</time>
+            </div>
+            {recoveryAvailable && (row.hasRecordedChecksum ? (
+              <button type="button" disabled={!!busy || pageBusy || legacyAssetIds.includes(row.id) || pending.some(op => op.assetId === row.id)}
+                onClick={() => restore(row)} className="underline disabled:opacity-50">{busy === row.id ? 'Checking…' : 'Restore'}</button>
+            ) : <span className="text-[#999]">Restore unavailable: no usable file checksum was recorded.</span>)}
+          </li>
+        ))}
+      </ul>
+    )}
     {nextCursor && <button type="button" disabled={!!busy || pageBusy || listLoading} onClick={()=>void loadOlder()} className="mt-4 text-sm underline disabled:opacity-50">{pageBusy ? 'Loading older files…' : 'Load older removed files'}</button>}
   </section>;
 }

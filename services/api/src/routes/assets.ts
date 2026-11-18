@@ -232,7 +232,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     reply.header("cache-control", "private, no-store");
     const enabled = options.assetLifecycleEnabled === true;
     const ready = enabled && await assetLifecycleReady(app.supabaseFactory);
-    return { canEdit: canEditWorkspace(role), assetLifecycleEnabled: enabled, assetLifecycleReady: ready };
+    return { canEdit: canEditWorkspace(role), assetLifecycleEnabled: enabled, assetLifecycleReady: ready, removedFileHistoryAvailable: !enabled || ready };
   });
 
   app.get("/assets/generation-jobs", async (req, reply) => {

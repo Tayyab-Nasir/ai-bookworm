@@ -180,6 +180,13 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
   }
   const savedPackage = packages[0];
   await request(alice.token, 'DELETE', `/assets/${savedPackage.assetId}`);
+  const removedPath = `/assets/removed?workspaceId=${alice.workspace.id}`;
+  const removed = await request(alice.token, 'GET', removedPath);
+  const removedFile = removed.assets.find(asset => asset.id === savedPackage.assetId);
+  assert.ok(removedFile?.deleted_at, 'Removed package was missing from history');
+  assert.equal(removedFile.lifecycle_revision, null);
+  assert.ok(!('checksum' in removedFile) && !('storage_path' in removedFile), 'Removal history exposed storage metadata');
+  await request(bob.token, 'GET', removedPath, undefined, 403);
   await request(alice.token, 'GET', `/assets/${savedPackage.assetId}/download-url`, undefined, 404);
   assert.ok((await alice.client.storage.from('book-assets').download(savedPackage.path)).error);
   assert.ok((await alice.client.storage.from('book-assets').createSignedUrl(savedPackage.path, 60)).error);
@@ -193,6 +200,7 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
   }
   await request(bob.token, 'POST', `/assets/${savedPackage.assetId}/restore`, {}, 404);
   await request(alice.token, 'POST', `/assets/${savedPackage.assetId}/restore`, {});
+  assert.ok(!(await request(alice.token, 'GET', removedPath)).assets.some(asset => asset.id === savedPackage.assetId));
   const restoredPackage = await request(alice.token, 'GET', `/publishing/jobs/${savedPackage.id}`);
   assert.equal(restoredPackage.package.asset.id, savedPackage.assetId);
   const restoredBytes = await fetch(restoredPackage.package.download.url);
