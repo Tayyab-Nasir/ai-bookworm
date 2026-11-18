@@ -128,7 +128,7 @@ test("Supabase readiness has one absolute deadline for stalled headers and respo
         transportSignal?.addEventListener("abort", () => { deadlineObserved = true; }, { once: true });
         // The guard also lets the pre-fix regression finish: no orphan promise.
         if (phase === "headers") return new Promise<Response>((_resolve, reject) => {
-          guard = setTimeout(() => reject(new DOMException("Synthetic stalled headers", "AbortError")), 2_600);
+          guard = setTimeout(() => reject(new DOMException("Synthetic stalled headers", "AbortError")), 5_500);
           init?.signal?.addEventListener("abort", () => {
             clearTimeout(guard);
             reject(init.signal!.reason);
@@ -137,7 +137,7 @@ test("Supabase readiness has one absolute deadline for stalled headers and respo
         return new Response(new ReadableStream<Uint8Array>({
           start(controller) {
             controller.enqueue(Buffer.from("["));
-            guard = setTimeout(() => controller.error(new DOMException("Synthetic stalled body", "AbortError")), 2_600);
+            guard = setTimeout(() => controller.error(new DOMException("Synthetic stalled body", "AbortError")), 5_500);
           },
           cancel() { clearTimeout(guard); },
         }), { headers: { "content-type": "application/json" } });
@@ -151,7 +151,7 @@ test("Supabase readiness has one absolute deadline for stalled headers and respo
       const elapsed = performance.now() - started;
       assert.equal(response.statusCode, 503);
       assert.deepEqual(response.json(), { status: "not_ready", checks: { supabase: false, redis: true } });
-      assert.ok(elapsed < 1_900, "Supabase readiness did not honor its absolute deadline");
+      assert.ok(elapsed < 4_800, "Supabase readiness did not honor its absolute deadline");
       assert.equal(deadlineObserved, true, "The transport must observe the readiness abort, not only the fixture guard");
       assert.equal(transportSignal?.aborted, true);
       assert.equal(transportSignal?.reason?.name, "TimeoutError");
@@ -161,6 +161,22 @@ test("Supabase readiness has one absolute deadline for stalled headers and respo
   }
 });
 
+test("Supabase readiness tolerates a successful response beyond one second", async (t) => {
+  let attempts = 0;
+  const factory = await syntheticSupabaseFactory(t, async (_input, init) => {
+    attempts++;
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, 1_500);
+      init?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(init.signal!.reason); }, { once: true });
+    });
+    return new Response("[]", { status: 200, headers: { "content-type": "application/json" } });
+  });
+  const fixture = await redisFixture(t, (socket) => socket.write("+PONG\r\n"));
+  const response = await requestReady(t, fixture.url, factory);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { status: "ready", checks: { supabase: true, redis: true } });
+  assert.equal(attempts, 1);
+});
 test("Supabase readiness does not retry transient HTTP responses and preserves healthy behavior", async (t) => {
   for (const status of [503, 200]) {
     await t.test(`HTTP ${status}`, async (sub) => {

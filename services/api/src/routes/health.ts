@@ -17,7 +17,7 @@ export function healthRoutes(app: FastifyInstance, supabaseFactory: SupabaseFact
     try {
       // One deadline covers headers and streamed bodies. Supplying the private
       // transport also disables SDK retries, including unbounded Retry-After.
-      const signal = AbortSignal.timeout(1_000);
+      const signal = AbortSignal.timeout(3_000);
       const { error } = await supabaseFactory(undefined, boundedSupabaseFetch(signal)).from("profiles").select("id").limit(1);
       checks.supabase = !error;
     } catch {
