@@ -470,6 +470,78 @@ test("actual Studio distinguishes unavailable package history and restores its l
   } finally { await page.close(); }
 });
 
+test("retailer submission status handles unavailable reads, lost replies and stale edits", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const { job, book, edition, otherAsset, cover } = window.ids;
+      const jobRecord = { id: job, bookId: book, editionId: edition, channel: "kdp", status: "succeeded",
+        createdAt: "2026-10-18T00:00:00Z", package: null };
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [jobRecord] });
+      window.statusUnavailable = true;
+      window.submission = null;
+      window.bookwormApi.getRetailerSubmission = async (jobId, actor) => {
+        window.requests.push({ method: "GET", action: "submission", jobId, actor });
+        if (window.statusUnavailable) throw new Error("Status service unavailable");
+        return structuredClone(window.submission);
+      };
+      window.bookwormApi.saveRetailerSubmission = async (jobId, body, actor) => {
+        window.requests.push({ method: "PUT", action: "submission", jobId, actor, body });
+        if (body.expectedRevision !== (window.submission?.revision ?? null)) {
+          throw new window.ApiClientError(409, "conflict", "Status changed", "fixture");
+        }
+        window.submission = { jobId, status: body.status, revision: window.submission ? cover : otherAsset,
+          updatedAt: "2026-10-18T01:00:00Z" };
+        if (window.loseSubmissionReply) throw new Error("Lost save reply");
+        return structuredClone(window.submission);
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const status = history.locator("details");
+    assert.equal(await page.evaluate(() => window.requests.some(row => row.action === "submission")), false);
+    await status.getByText("Retailer submission status", { exact: true }).click();
+    await expect(status.getByRole("alert")).toHaveText("Submission status could not be loaded.");
+    await expect(status.getByText(/No status recorded/)).toHaveCount(0);
+    await page.evaluate(() => { window.statusUnavailable = false; });
+    await status.getByRole("button", { name: "Check saved status" }).click();
+    await expect(status.getByText("Author-reported status · No status recorded")).toBeVisible();
+    await status.getByRole("combobox", { name: "Update status" }).selectOption("submitted");
+    await status.getByRole("button", { name: "Save status" }).click();
+    await expect(status.getByText("Author-reported status · Submitted")).toBeVisible();
+    await expect(status.getByRole("status")).toHaveText("Submission status saved.");
+
+    await page.evaluate(() => { window.loseSubmissionReply = true; });
+    await status.getByRole("combobox", { name: "Update status" }).selectOption("in_review");
+    await status.getByRole("button", { name: "Save status" }).click();
+    await expect(status.getByRole("alert")).toContainText("The save could not be confirmed.");
+    await expect(status.getByRole("button", { name: "Save status" })).toHaveCount(0);
+    await status.getByRole("button", { name: "Check saved status" }).click();
+    await expect(status.getByText("Author-reported status · In review")).toBeVisible();
+    await expect(status.getByText("Submission status saved.")).toHaveCount(0);
+
+    await page.evaluate(() => {
+      window.submission = { ...window.submission, status: "published", revision: window.ids.otherJob };
+    });
+    await status.getByRole("combobox", { name: "Update status" }).selectOption("withdrawn");
+    await status.getByRole("button", { name: "Save status" }).click();
+    await expect(status.getByRole("alert")).toContainText("Someone changed the status.");
+    await status.getByRole("button", { name: "Check saved status" }).click();
+    await expect(status.getByText("Author-reported status · Published")).toBeVisible();
+    const operations = await page.evaluate(() => window.requests.filter(row => row.action === "submission"));
+    assert.ok(operations.every(row => row.jobId === ids.job && row.actor === ids.asset));
+    assert.deepEqual(operations.filter(row => row.method === "PUT").map(row => row.body), [
+      { status: "submitted", expectedRevision: null },
+      { status: "in_review", expectedRevision: ids.otherAsset },
+      { status: "withdrawn", expectedRevision: ids.cover },
+    ]);
+    assert.equal(await page.evaluate(() => window.requests.some(row => row.method === "POST")), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+    await status.screenshot({ path: resolve(artifacts, "retailer-submission-status-mobile.png") });
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("retailer download uses attachment, expires and refreshes without creating another package", async () => {
   const { page, errors } = await fixture({ parent: true });
   try {

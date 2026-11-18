@@ -2,6 +2,7 @@
 // ponytail: hand-written minimal client — will be replaced by a generated
 // client from services/api/openapi.yaml (e.g. openapi-typescript) later.
 import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task, Approval, WorkspaceMember, Edition, BookBibleItem as CanonicalBookBibleItem } from "@bookworm/types";
+import { RETAILER_SUBMISSION_STATUSES, type RetailerSubmission, type RetailerSubmissionStatus } from "@bookworm/types";
 import type { BookNode } from "@bookworm/book-model";
 import { parseBookOverview } from "@bookworm/api-client/book-overview";
 import { parseAiConnections, parseAiConnectionMutation, parseAiConnectionReceipt, type AiProvider, type AiConnectionMutation, type AiConnectionPending } from "@bookworm/api-client/ai-connections";
@@ -619,6 +620,19 @@ export interface PublishingPackageJob {
   failureCode: string | null;
   submissionMode: "manual";
   package: { asset: Asset; download: { url: string; expiresIn: number } } | null;
+}
+
+function parseRetailerSubmission(value: unknown, expectedJobId: string): RetailerSubmission | null {
+  const record = (value as { submission?: Partial<RetailerSubmission> | null } | null)?.submission;
+  if (record === null) return null;
+  const status = RETAILER_SUBMISSION_STATUSES.find(candidate => candidate === record?.status);
+  const { jobId, revision, updatedAt } = record ?? {};
+  if (!status || jobId !== expectedJobId || typeof revision !== "string"
+    || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(revision)
+    || typeof updatedAt !== "string" || !Number.isFinite(Date.parse(updatedAt))) {
+    throw new Error("The retailer submission status could not be verified.");
+  }
+  return { jobId, status, revision, updatedAt };
 }
 
 export class ApiClientError extends Error {
@@ -1246,6 +1260,20 @@ export function createClient(opts: ClientOptions) {
       return call<{ jobs: PublishingPackageJob[] }>("GET", `/v1/publishing/jobs?${qs}`, undefined, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {});
     },
     getPublishingJob: (jobId: string) => call<PublishingPackageJob>("GET", `/v1/publishing/jobs/${jobId}`),
+    getRetailerSubmission: (jobId: string, expectedActorId: string) =>
+      call<unknown>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/submission`, undefined, false, {
+        "x-bookworm-actor": expectedActorId,
+      }).then(value => parseRetailerSubmission(value, jobId.toLowerCase())),
+    saveRetailerSubmission: (jobId: string, body: { status: RetailerSubmissionStatus; expectedRevision: string | null }, expectedActorId: string) =>
+      call<unknown>("PUT", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/submission`, body, false, {
+        "x-bookworm-actor": expectedActorId,
+      }).then(value => {
+        const submission = parseRetailerSubmission(value, jobId.toLowerCase());
+        if (!submission || submission.status !== body.status || submission.revision === body.expectedRevision) {
+          throw new Error("The saved submission status could not be verified.");
+        }
+        return submission;
+      }),
     getUsage: (organizationId: string) =>
       call<BillingUsageSummary>(
         "GET", `/v1/usage?organizationId=${encodeURIComponent(organizationId)}`),

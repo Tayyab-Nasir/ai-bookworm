@@ -179,7 +179,21 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
     }
   }
   const savedPackage = packages[0];
+  const submissionPath = `/publishing/jobs/${savedPackage.id}/submission`;
+  assert.deepEqual(await request(alice.token, "GET", submissionPath), { submission: null });
+  await request(bob.token, "GET", submissionPath, undefined, 404);
+  await request(bob.token, "PUT", submissionPath, { status: "published", expectedRevision: null }, 404);
+  const submitted = await request(alice.token, "PUT", submissionPath, { status: "submitted", expectedRevision: null });
+  assert.equal(submitted.submission.jobId, savedPackage.id);
+  assert.equal(submitted.submission.status, "submitted");
+  const inReview = await request(alice.token, "PUT", submissionPath, {
+    status: "in_review", expectedRevision: submitted.submission.revision,
+  });
+  assert.equal(inReview.submission.status, "in_review");
+  assert.notEqual(inReview.submission.revision, submitted.submission.revision);
+  await request(alice.token, "PUT", submissionPath, { status: "withdrawn", expectedRevision: submitted.submission.revision }, 409);
   await request(alice.token, 'DELETE', `/assets/${savedPackage.assetId}`);
+  assert.deepEqual(await request(alice.token, "GET", submissionPath), inReview);
   const removedPath = `/assets/removed?workspaceId=${alice.workspace.id}`;
   const removed = await request(alice.token, 'GET', removedPath);
   const removedFile = removed.assets.find(asset => asset.id === savedPackage.assetId);

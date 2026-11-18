@@ -7,6 +7,34 @@ const id = (n: number) => `d1000000-0000-4000-8000-${String(n).padStart(12, "0")
 const pointer: PackagePointer = { schema: 1, userId: id(1), request: { bookId: id(2), editionId: id(3), channel: "kdp", renderJobId: id(4), preflightJobId: id(5), idempotencyKey: id(6) } };
 const job = { id: id(7), requestId: id(6), bookId: id(2), editionId: id(3), channel: "kdp", sourceRenderJobId: id(4), sourcePreflightJobId: id(5), status: "succeeded", submissionMode: "manual", package: null, createdAt: "2026-10-17T01:00:00Z" };
 
+test("retailer submission SDK sends the original actor and rejects mismatched receipts", async () => {
+  const before = globalThis.fetch;
+  const submission = { jobId: job.id, status: "submitted", revision: id(8), updatedAt: "2026-10-17T02:00:00Z" };
+  let reply: unknown = { submission: null };
+  const requests: { method: string; actor: string | null; body: unknown }[] = [];
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), `https://api.example.test/v1/publishing/jobs/${job.id}/submission`);
+    requests.push({ method: options!.method!, actor: new Headers(options!.headers).get("x-bookworm-actor"),
+      body: options?.body ? JSON.parse(String(options.body)) : undefined });
+    return Response.json(reply);
+  };
+  try {
+    const api = createClient({ baseUrl: "https://api.example.test" });
+    assert.equal(await api.getRetailerSubmission(job.id, id(1)), null);
+    reply = { submission };
+    assert.deepEqual(await api.saveRetailerSubmission(job.id, { status: "submitted", expectedRevision: null }, id(1)), submission);
+    assert.deepEqual(requests, [
+      { method: "GET", actor: id(1), body: undefined },
+      { method: "PUT", actor: id(1), body: { status: "submitted", expectedRevision: null } },
+    ]);
+    await assert.rejects(api.saveRetailerSubmission(job.id, { status: "submitted", expectedRevision: id(8) }, id(1)), /verified/);
+    reply = { submission: { ...submission, jobId: id(9) } };
+    await assert.rejects(api.getRetailerSubmission(job.id, id(1)), /verified/);
+    reply = {};
+    await assert.rejects(api.getRetailerSubmission(job.id, id(1)), /verified/);
+  } finally { globalThis.fetch = before; }
+});
+
 test("package pointer is strict, account/book scoped and never overwrites a different pending request", () => {
   const values = new Map<string, string>();
   const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };

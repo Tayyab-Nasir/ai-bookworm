@@ -2641,6 +2641,64 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/publishing/jobs/{jobId}/submission:
+    parameters:
+      - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [v1]
+      operationId: getRetailerSubmission
+      summary: Read author-reported status for a completed retailer package
+      responses:
+        "200":
+          description: Saved submission status or null when no status has been recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [submission]
+                additionalProperties: false
+                properties:
+                  submission:
+                    oneOf:
+                      - { $ref: "#/components/schemas/RetailerSubmission" }
+                      - { type: "null" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [v1]
+      operationId: saveRetailerSubmission
+      summary: Save reported retailer status if the existing revision matches
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, expectedRevision]
+              additionalProperties: false
+              properties:
+                status: { $ref: "#/components/schemas/RetailerSubmissionStatus" }
+                expectedRevision: { type: [string, "null"], format: uuid, description: "Use null only for the first record." }
+      responses:
+        "200":
+          description: Saved submission status and its new revision
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [submission]
+                additionalProperties: false
+                properties:
+                  submission: { $ref: "#/components/schemas/RetailerSubmission" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/workspaces/{workspaceId}/folders:
     get:
       tags: [v1]
@@ -5093,6 +5151,18 @@ components:
     RetailerChannel:
       type: string
       enum: [kdp, apple, barnesnoble, lulu, googleplay]
+    RetailerSubmissionStatus:
+      type: string
+      enum: [not_submitted, submitted, in_review, changes_requested, published, withdrawn]
+    RetailerSubmission:
+      type: object
+      required: [jobId, status, revision, updatedAt]
+      additionalProperties: false
+      properties:
+        jobId: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/RetailerSubmissionStatus" }
+        revision: { type: string, format: uuid }
+        updatedAt: { type: string, format: date-time }
     PreflightResult:
       type: object
       required: [jobId, ruleVersion, channel, requestedChannel, errors, warnings, findings]

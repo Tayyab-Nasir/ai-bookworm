@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
+import { RETAILER_SUBMISSION_STATUSES, type RetailerSubmission } from "@bookworm/types";
 import { renderImagesFingerprint, assertRenderImagesCurrent } from "../lib/render-images.js";
 import { AppError } from "../errors.js";
 import { boundedServiceText } from "../lib/bounded-service-response.js";
@@ -12,6 +13,28 @@ import { editionConfigSchema, loadRenderImages, withEditionLanguage, requiresEff
 
 const channelSchema = z.enum(["export", "kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
 const retailerChannelSchema = z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
+const submissionJobIdSchema = z.object({ jobId: z.string().uuid().transform(value => value.toLowerCase()) });
+const submissionStatusSchema = z.enum(RETAILER_SUBMISSION_STATUSES);
+const submissionUpdateSchema = z.object({
+  status: submissionStatusSchema,
+  expectedRevision: z.string().uuid().nullable(),
+}).strict();
+const submissionRowSchema = z.object({
+  publishing_job_id: z.string().uuid(),
+  status: submissionStatusSchema,
+  revision: z.string().uuid(),
+  updated_at: z.string().datetime({ offset: true }),
+});
+
+function submissionResult(row: unknown, jobId: string): RetailerSubmission {
+  const parsed = submissionRowSchema.safeParse(row);
+  if (!parsed.success || parsed.data.publishing_job_id !== jobId) {
+    throw new AppError(503, "The submission status could not be verified.");
+  }
+  const { status, revision, updated_at: updatedAt } = parsed.data;
+  return { jobId, status, revision, updatedAt };
+}
+
 const preflightSchema = z.object({
   bookId: z.string().uuid(),
   editionId: z.string().uuid(),
@@ -658,5 +681,50 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     const { book } = await loadBook(user, job.book_id, req.userId);
     reply.header("cache-control", "private, no-store");
     return hydratePackageJob(app.supabaseFactory(), book.workspace_id, job);
+  });
+
+  app.get("/publishing/jobs/:jobId/submission", async (req, reply) => {
+    const path = submissionJobIdSchema.safeParse(req.params);
+    if (!path.success) throw new AppError(422, "Invalid publishing job id.");
+    const { jobId } = path.data;
+    const user = app.supabaseFactory(req.userToken);
+    const { data: job, error: jobError } = await user.from("publishing_jobs")
+      .select("id,book_id,channel,status,request_json").eq("id", jobId).maybeSingle();
+    if (jobError) throw new AppError(503, "The publishing package could not be verified.");
+    if (!job || job.id !== jobId || job.status !== "succeeded" || requestJson(job).action !== "export_package"
+      || !retailerChannelSchema.safeParse(job.channel).success) {
+      throw new AppError(404, "Completed retailer package not found.");
+    }
+    const { data, error } = await user.from("retailer_submissions")
+      .select("publishing_job_id,status,revision,updated_at").eq("publishing_job_id", jobId).maybeSingle();
+    if (error) throw new AppError(503, "Retailer submission status is unavailable.");
+    await loadBook(user, job.book_id, req.userId);
+    reply.header("cache-control", "private, no-store");
+    return { submission: data === null ? null : submissionResult(data, jobId) };
+  });
+
+  app.put("/publishing/jobs/:jobId/submission", async (req, reply) => {
+    const path = submissionJobIdSchema.safeParse(req.params);
+    const body = submissionUpdateSchema.safeParse(req.body);
+    if (!path.success || !body.success) throw new AppError(422, "Check the retailer package and status.");
+    const { jobId } = path.data;
+    const { status, expectedRevision } = body.data;
+    const user = app.supabaseFactory(req.userToken);
+    const { data, error } = await user.rpc("save_retailer_submission", {
+      p_job_id: jobId,
+      p_status: status,
+      p_expected_revision: expectedRevision,
+    });
+    if (error?.code === "PT404") throw new AppError(404, "Completed retailer package not found.");
+    if (error?.code === "42501") throw new AppError(403, "Your workspace role cannot update submission status.");
+    if (error?.code === "PT409") throw new AppError(409, "Submission status changed. Check the saved status.");
+    if (error) throw new AppError(503, "Retailer submission status is unavailable.");
+    const row = Array.isArray(data) && data.length === 1 ? data[0] : data;
+    const submission = submissionResult(row, jobId);
+    if (submission.status !== status || submission.revision === expectedRevision) {
+      throw new AppError(503, "The saved submission status could not be verified.");
+    }
+    reply.header("cache-control", "private, no-store");
+    return { submission };
   });
 }

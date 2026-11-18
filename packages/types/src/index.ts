@@ -7,6 +7,16 @@ export type MemberRole =
 export type BookStatus = "draft" | "in_review" | "approved" | "published" | "archived";
 export type AssetStatus = "draft" | "in_review" | "approved" | "rejected" | "archived";
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export const RETAILER_SUBMISSION_STATUSES = [
+  "not_submitted", "submitted", "in_review", "changes_requested", "published", "withdrawn",
+] as const;
+export type RetailerSubmissionStatus = typeof RETAILER_SUBMISSION_STATUSES[number];
+export interface RetailerSubmission {
+  jobId: string;
+  status: RetailerSubmissionStatus;
+  revision: string;
+  updatedAt: string;
+}
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type TaskStatus = "todo" | "in_progress" | "blocked" | "done" | "cancelled";
 
