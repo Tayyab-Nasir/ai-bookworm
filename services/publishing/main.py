@@ -1,5 +1,6 @@
 """Publishing channel adapters service (export-first)."""
 import base64
+import hashlib
 import hmac
 import os
 import sys
@@ -11,9 +12,10 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 
-from adapters import get_adapter  # noqa: E402
+from adapters import _assert_saved_epub_metadata, get_adapter, publishing_metadata  # noqa: E402
 from editions import parse_edition  # noqa: E402
 from epub_renderer import render_epub  # noqa: E402
+from preflight import Finding  # noqa: E402
 from publication_metadata import effective_publication_metadata  # noqa: E402
 from rules import load_ruleset  # noqa: E402
 
@@ -23,12 +25,10 @@ class ValidateRequest(BaseModel):
     channel: str
     editionConfig: dict
     bookModel: dict
+    artifactsBase64: dict[str, str] | None = None
 
 
-class PackageRequest(BaseModel):
-    channel: str
-    editionConfig: dict
-    bookModel: dict
+class PackageRequest(ValidateRequest):
     artifactsBase64: dict[str, str] = Field(default_factory=dict)
 
 
@@ -58,13 +58,23 @@ def channels() -> dict:
 
 @app.post("/v1/publishing/validate", dependencies=[Depends(require_service_token)])
 def validate(req: ValidateRequest) -> dict:
-    try:
-        adapter = get_adapter(req.channel)
-        edition = parse_edition(req.editionConfig)
-        effective_publication_metadata(req.bookModel.get("metadata", {}),
-                                       edition.metadata_overrides if edition.kind == "ebook" else None)
-    except (KeyError, ValueError) as e:
-        raise HTTPException(422, str(e)) from e
+    adapter, edition = _publication_edition(req)
+    if req.artifactsBase64 is not None:
+        if edition.kind != "ebook":
+            raise HTTPException(422, "Exact saved validation requires an EPUB edition")
+        ctx, artifacts = _saved_artifact_context(req, edition, adapter)
+        result = adapter.validate(ctx)
+        if result["errors"] == 0:
+            try:
+                listing = publishing_metadata(req.bookModel, req.editionConfig)
+                _assert_saved_epub_metadata(artifacts["book.epub"], listing["metadata"])
+            except ValueError as error:
+                result["errors"] += 1
+                result["findings"].append(Finding(code="SAVED_EPUB_METADATA", message=str(error),
+                    location="book.epub/metadata", category="metadata", rule_id="CORE-META-SAVED",
+                    rule_version=result["ruleVersion"]).to_dict())
+        return {**result, "artifactSha256": hashlib.sha256(artifacts["book.epub"]).hexdigest()}
+
     artifact = None
     if edition.kind == "ebook":
         artifact, _ = render_epub(req.bookModel, edition)
@@ -73,26 +83,25 @@ def validate(req: ValidateRequest) -> dict:
     return adapter.validate(ctx)
 
 
-def build_package(req: PackageRequest) -> dict:
-    """Package exact, already-rendered private artifacts supplied by the API.
-
-    The API authorizes the book and verifies the source render/preflight jobs.
-    This service still constrains names, formats, signatures, and package size,
-    then reruns the versioned rules before producing a deterministic ZIP.
-    """
+def _publication_edition(req: ValidateRequest):
     try:
         adapter = get_adapter(req.channel)
         edition = parse_edition(req.editionConfig)
         effective_publication_metadata(req.bookModel.get("metadata", {}),
                                        edition.metadata_overrides if edition.kind == "ebook" else None)
-    except (KeyError, ValueError) as error:
-        raise HTTPException(422, str(error)) from error
+    except (KeyError, ValueError) as e:
+        raise HTTPException(422, str(e)) from e
+    return adapter, edition
 
+
+def _saved_artifact_context(req: ValidateRequest, edition, adapter) -> tuple[dict, dict[str, bytes]]:
+    """Use the same bounded artifact intake for preflight and for the ZIP."""
     expected_format = "epub" if edition.kind == "ebook" else "pdf"
     if expected_format not in adapter.capabilities().formats:
         raise HTTPException(422, f"{req.channel} does not accept {expected_format} editions")
     primary_name = f"book.{expected_format}"
-    names = set(req.artifactsBase64)
+    encoded_artifacts = req.artifactsBase64 or {}
+    names = set(encoded_artifacts)
     cover_name = "cover.pdf" if edition.kind == "print" and edition.wrap_cover.enabled else "cover.png"
     if primary_name not in names or not names.issubset({primary_name, cover_name}):
         raise HTTPException(422, f"artifacts must contain {primary_name} and optional {cover_name}")
@@ -100,7 +109,7 @@ def build_package(req: PackageRequest) -> dict:
     artifacts: dict[str, bytes] = {}
     total = 0
     for name in sorted(names):
-        encoded = req.artifactsBase64[name]
+        encoded = encoded_artifacts[name]
         if not encoded or len(encoded) > 280_000_000:
             raise HTTPException(422, "an encoded publishing artifact exceeds the supported size")
         try:
@@ -128,6 +137,13 @@ def build_package(req: PackageRequest) -> dict:
         "cover_bytes": artifacts.get("cover.png"),
         "cover_pdf_bytes": artifacts.get("cover.pdf"),
     }
+    return ctx, artifacts
+
+
+def build_package(req: PackageRequest) -> dict:
+    """Package exact, already-rendered private artifacts supplied by the API."""
+    adapter, edition = _publication_edition(req)
+    ctx, artifacts = _saved_artifact_context(req, edition, adapter)
     # EPUB-checked channels validate inside build_package against ZIP-bound bytes.
     # Running it here as well doubles the potentially long EPUBCheck process.
     validation = None if req.channel in {"apple", "googleplay"} else adapter.validate(ctx)

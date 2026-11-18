@@ -210,6 +210,19 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
       const render = await nativeBrowserJson(rendered);
       assert.equal(render.status, 'succeeded');
       await expect(page.getByText('Private render completed.', { exact: true })).toBeVisible();
+      let sourceEpub;
+      if (edition.kind === 'ebook') {
+        const originalCount = requests.filter(path => path.endsWith(`/editions/${edition.id}/render`)).length;
+        sourceEpub = { jobId: render.jobId, sha256: render.artifacts.find(artifact => artifact.role === 'rendered_ebook').asset.checksum };
+        onStage('retailer browser reopens a saved EPUB for packaging after reload');
+        await page.reload();
+        await select(edition);
+        const desk = page.getByRole('region', { name: 'Saved EPUB proof', exact: true });
+        await desk.getByRole('combobox', { name: 'Saved EPUB export', exact: true }).selectOption(render.jobId);
+        await desk.getByRole('button', { name: 'Use this EPUB for packaging', exact: true }).click();
+        await expect(history.getByText(/Package source · Saved EPUB/)).toContainText(sourceEpub.sha256.slice(0, 12));
+        assert.equal(requests.filter(path => path.endsWith(`/editions/${edition.id}/render`)).length, originalCount);
+      }
       for (const channel of edition.channels) {
         onStage(`retailer browser ${channel} ${edition.kind} preflight and package creation`);
         await page.getByRole('combobox', { name: 'Preflight target', exact: true }).selectOption(channel);
@@ -220,6 +233,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         assert.equal(validated.status(), 201);
         const preflight = await nativeBrowserJson(validated);
         assert.equal(preflight.errors, 0); assert.equal(preflight.requestedChannel, channel);
+        assert.deepEqual(preflight.sourceEpub, sourceEpub);
         const loseReply = packages.length === 6;
         if (loseReply) await page.evaluate(discardNextPackageReply);
         const [created] = await Promise.all([

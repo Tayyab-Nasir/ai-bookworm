@@ -595,6 +595,7 @@ export interface PreflightResult {
   errors: number;
   warnings: number;
   findings: PreflightFinding[];
+  sourceEpub?: Pick<SavedEpubSource, "jobId" | "sha256">;
 }
 
 export type RetailerChannel = "kdp" | "apple" | "barnesnoble" | "lulu" | "googleplay";
@@ -1250,7 +1251,8 @@ export function createClient(opts: ClientOptions) {
       call<TranslationProposalResult>("GET", `/v1/translation-quotes/${proposalId}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     listTranslationModels: (expectedActor?: string) =>
       call<{ catalogVersion: string; models: TranslationModelChoice[] }>("GET", "/v1/translations/models", undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
-    runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string }) =>
+    runPreflight: (body: { bookId: string; editionId: string; channel: PreflightResult["requestedChannel"]; idempotencyKey: string;
+      sourceEpub?: PreflightResult["sourceEpub"] }) =>
       call<PreflightResult>("POST", "/v1/publishing/validate", body),
     createPublishingJob: (body: PublishingPackageRequest, expectedActorId?: string) =>
       call<PublishingPackageJob>("POST", "/v1/publishing/jobs", body, false, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),

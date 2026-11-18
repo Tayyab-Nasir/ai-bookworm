@@ -103,6 +103,15 @@ route and component patterns to model the browser states at that boundary.
 - Hosted render closure and retailer status are installed. [The rollout evidence](evidence/supabase-publishing-rollout-2026-11-18.json)
   records the migration and access checks. Signed-in hosted UI acceptance is
   pending. Retailer status records what the author reports about the submission.
+- Saved EPUB proofs can be selected for packaging after reopening Publishing
+  Studio. Retailer preflight checks the stored EPUB and cover through the
+  private publishing service. It requires the saved render to match the
+  current manuscript, edition settings and artwork. The preflight receipt
+  binds the selected render ID and EPUB checksum to the new package. Older
+  proofs remain available for reading and download. Render and package jobs
+  keep their existing storage and entitlement checks. See
+  `services/api/src/rendering-api.test.ts`, `services/publishing/tests/test_adapters.py`,
+  and `tests/e2e/native-author-files-publishing.mjs`.
 - Editors can check removal history using the existing schema. The read confirms
   the file's current removed state. A lost removal reply remains unconfirmed.
   Restore is gated on verified asset-recovery readiness and uses a new,

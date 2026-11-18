@@ -567,6 +567,60 @@ test("preflight validates saved content and persists deterministic findings", as
   await app.close();
 });
 
+test("saved EPUB preflight verifies the stored bytes and binds packaging to the selected render", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const rendering: unknown[] = [], packages: unknown[] = [];
+  const validated: { artifactsBase64: Record<string, string> }[] = [];
+  let returnDigest = true;
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight(rendering),
+    publishingFetch: async (url, init) => {
+      if (!String(url).endsWith("/v1/publishing/validate")) return successfulPackager(packages)(url, init);
+      const body = JSON.parse(String(init?.body)); validated.push(body);
+      const digest = sha(Buffer.from(body.artifactsBase64["book.epub"], "base64"));
+      return Response.json({ channel: "kdp", ruleVersion: "core-test+kdp-test", errors: 0, warnings: 0, findings: [],
+        ...(returnDigest ? { artifactSha256: digest } : {}) });
+    },
+  });
+  const request = (url: string, payload: object) => app.inject({ method: "POST", url: `/v1/${url}`, headers: auth, payload });
+  const render = async () => {
+    const result = await request(`editions/${EDITION}/render`, { idempotencyKey: crypto.randomUUID() });
+    assert.equal(result.statusCode, 201, result.body); return result.json();
+  };
+  try {
+    const saved = await render(), other = await render();
+    const asset = saved.artifacts.find((entry: { role: string }) => entry.role === "rendered_ebook").asset;
+    const sourceEpub = { jobId: saved.jobId, sha256: asset.checksum };
+    const preflight = { bookId: BOOK, editionId: EDITION, channel: "kdp", sourceEpub, idempotencyKey: crypto.randomUUID() };
+    const wrongDigest = await request("publishing/validate", { ...preflight, sourceEpub: { ...sourceEpub, sha256: "0".repeat(64) } });
+    assert.equal(wrongDigest.statusCode, 409, wrongDigest.body);
+    assert.equal(validated.length, 0);
+    const result = await request("publishing/validate", preflight);
+    assert.equal(result.statusCode, 201, result.body);
+    assert.deepEqual(result.json().sourceEpub, sourceEpub);
+    assert.deepEqual(Buffer.from(validated[0].artifactsBase64["book.epub"], "base64"), store.objects.get(asset.storage_path));
+    assert.equal(rendering.length, 2, "saved preflight must not regenerate an EPUB");
+    const rebound = await request("publishing/validate", { ...preflight, sourceEpub: { ...sourceEpub, jobId: other.jobId } });
+    assert.equal(rebound.statusCode, 409, rebound.body);
+    assert.equal(validated.length, 1);
+    const preview = { bookId: BOOK, editionId: EDITION, channel: "kdp", preflightJobId: result.json().jobId };
+    const wrongRender = await request("publishing/jobs", { ...preview, renderJobId: other.jobId, idempotencyKey: crypto.randomUUID() });
+    assert.equal(wrongRender.statusCode, 422, wrongRender.body);
+    assert.equal(packages.length, 0);
+    const created = await request("publishing/jobs", { ...preview, renderJobId: saved.jobId, idempotencyKey: crypto.randomUUID() });
+    assert.equal(created.statusCode, 201, created.body);
+    assert.equal(created.json().sourceRenderJobId, saved.jobId);
+
+    returnDigest = false;
+    const unverified = await request("publishing/validate", { ...preflight, idempotencyKey: crypto.randomUUID() });
+    assert.equal(unverified.statusCode, 503, unverified.body);
+    store.tables.editions[0].updated_at = "2026-09-04T00:00:00.000Z";
+    const stale = await request("publishing/validate", { ...preflight, idempotencyKey: crypto.randomUUID() });
+    assert.equal(stale.statusCode, 422, stale.body);
+    assert.equal(validated.length, 2);
+  } finally { await app.close(); }
+});
+
 test("preflight rejects a validator response for another channel", async () => {
   const store = baseStore();
   const app = await buildApp(() => fakeSupabase(store), { renderFetch: async () => new Response(JSON.stringify({

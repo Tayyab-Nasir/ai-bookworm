@@ -11,7 +11,11 @@ const control = "min-h-11 rounded-lg border border-[var(--bookworm-proof-edge)] 
 const authorizationFailure = (reason: unknown) => reason instanceof ApiClientError && [401, 403, 409].includes(reason.status);
 const retryMessage = (reason: unknown) => reason instanceof ApiClientError && reason.status === 503 ? "The saved reader is busy. Retry this saved export in a moment; no credits are used." : "This saved export could not be read or verified. Retry, or download the exact EPUB for inspection.";
 
-export default function SavedEpubReader({ actor, workspaceId, bookId, editionId, dirty = false, refreshKey = "" }: { actor: string | null; workspaceId: string; bookId: string; editionId: string; dirty?: boolean; refreshKey?: string }) {
+export default function SavedEpubReader({ actor, workspaceId, bookId, editionId, dirty = false, refreshKey = "",
+  onUseForPackaging, packageSourceJobId, packagingDisabled = false }: {
+  actor: string | null; workspaceId: string; bookId: string; editionId: string; dirty?: boolean; refreshKey?: string;
+  onUseForPackaging?: (source: SavedEpubSource) => void; packageSourceJobId?: string; packagingDisabled?: boolean;
+}) {
   const api = apiClient(actor ?? undefined); const id = useId(); const owner = `${actor ?? ""}:${workspaceId}:${bookId}:${editionId}`;
   const ownerRef = useRef(owner); ownerRef.current = owner;
   const [visibleOwner, setVisibleOwner] = useState(owner);
@@ -163,6 +167,11 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
       <p className="mt-4 border-s-2 border-[var(--bookworm-proof-edge)] ps-3 text-sm leading-6 text-[var(--bookworm-proof-copy)]">{dirty ? "Unsaved edition settings are not included. " : ""}Manuscript and settings changes after the export are not included in this snapshot.</p>
       {(current && renders.length > 0) && <label className="mt-5 block text-xs font-semibold uppercase tracking-wider text-[var(--bookworm-proof-muted)]">Saved export<select aria-label="Saved EPUB export" value={source?.jobId ?? ""} onChange={(event) => { const render = renders.find((entry) => entry.jobId === event.target.value); if (render) void readSection(render.source, 0); }} className={`${control} mt-2 block w-full min-w-0 font-normal normal-case tracking-normal`}><option value="" disabled>Select a saved export</option>{renders.map((render) => <option key={render.jobId} value={render.jobId}>{new Date(render.createdAt).toLocaleString()} · {render.source.sha256.slice(0, 12)}…</option>)}</select></label>}
       {activeRender && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--bookworm-proof-muted)]"><p><time dateTime={activeRender.createdAt}>{new Date(activeRender.createdAt).toLocaleString()}</time> · immutable v1 · {(activeRender.source.sizeBytes / 1024).toFixed(0)} KB</p><details className="min-w-0 max-w-full"><summary className="cursor-pointer rounded py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Source & checksum</summary><dl className="mt-2 grid gap-2 break-all font-mono text-[11px]"><dt>SHA-256</dt><dd>{activeRender.source.sha256}</dd><dt>Saved job / asset v1</dt><dd>{activeRender.source.jobId} / {activeRender.source.assetId}</dd></dl></details></div>}
+      {activeRender && onUseForPackaging && <div className="mt-4 flex flex-wrap items-center gap-3">
+        <button type="button" className={control} disabled={dirty || packagingDisabled || packageSourceJobId === activeRender.jobId}
+          onClick={() => onUseForPackaging(activeRender.source)}>{packageSourceJobId === activeRender.jobId ? "Selected for packaging" : "Use this EPUB for packaging"}</button>
+        <p className="text-xs text-[var(--bookworm-proof-muted)]">Retailer preflight will check this saved file against the current manuscript and edition.</p>
+      </div>}
     </header>
     {current && (error || frame.failed) && <div role="alert" className="m-5 rounded-lg border border-[var(--bookworm-proof-edge)] p-4 text-sm leading-6">{error ?? "The saved section could not be safely displayed. Retry it or download the exact EPUB for inspection."}</div>}
     {current && (historyBusy || sectionBusy) && <p role="status" className="p-5 text-sm text-[var(--bookworm-proof-muted)]">{historyBusy ? "Checking private saved exports…" : "Opening this exact saved section…"}</p>}

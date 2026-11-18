@@ -2,6 +2,7 @@
 import json
 import base64
 import copy
+import hashlib
 import importlib.util
 import struct
 import sys
@@ -66,6 +67,35 @@ def test_kdp_validate_flags_missing_description():
     result = get_adapter("kdp").validate(ctx)
     assert result["errors"] >= 1
     assert any(f["rule_id"] == "KDP-META-001" for f in result["findings"])
+
+
+def test_saved_epub_preflight_uses_the_exact_artifact_and_checks_its_listing(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    artifact, _ = render_epub(VALID, parse_edition(EBOOK))
+    request = {"channel": "kdp", "editionConfig": EBOOK, "bookModel": VALID,
+               "artifactsBase64": {"book.epub": base64.b64encode(artifact).decode("ascii")}}
+    monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", "saved-epub-fixture-only")
+
+    def unexpected_render(*_args):
+        pytest.fail("saved EPUB validation must not regenerate the book")
+
+    monkeypatch.setattr(_PUBLISHING_MAIN, "render_epub", unexpected_render)
+    endpoint = "/v1/publishing/validate"
+    headers = {"x-service-token": "saved-epub-fixture-only"}
+    with TestClient(_PUBLISHING_MAIN.app) as client:
+        assert client.post(endpoint, json=request).status_code == 401
+        valid = client.post(endpoint, headers=headers, json=request)
+        assert valid.status_code == 200, valid.text
+        assert valid.json()["errors"] == 0
+        assert valid.json()["artifactSha256"] == hashlib.sha256(artifact).hexdigest()
+        changed = {**VALID, "metadata": {**VALID["metadata"], "title": "A later listing title"}}
+        stale = client.post(endpoint, headers=headers, json={**request, "bookModel": changed})
+        assert stale.status_code == 200
+        assert stale.json()["errors"] == 1
+        assert any(f["code"] == "SAVED_EPUB_METADATA" for f in stale.json()["findings"])
+        missing = client.post(endpoint, headers=headers, json={**request, "artifactsBase64": {}})
+        assert missing.status_code == 422
 
 
 def test_google_play_requires_embedded_front_cover_and_builds_single_title_handoff(monkeypatch):

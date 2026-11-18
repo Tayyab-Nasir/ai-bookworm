@@ -35,11 +35,19 @@ function submissionResult(row: unknown, jobId: string): RetailerSubmission {
   return { jobId, status, revision, updatedAt };
 }
 
+function publishingServiceUrl() {
+  return (process.env.PUBLISHING_SERVICE_URL
+    ?? `http://127.0.0.1:${process.env.PUBLISHING_SERVICE_PORT ?? "8003"}`).replace(/\/$/u, "");
+}
+
+const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+const sourceEpubSchema = z.object({ jobId: z.string().uuid(), sha256: sha256Schema }).strict();
 const preflightSchema = z.object({
   bookId: z.string().uuid(),
   editionId: z.string().uuid(),
   channel: channelSchema.default("export"),
   idempotencyKey: z.string().trim().min(8).max(200),
+  sourceEpub: sourceEpubSchema.optional(),
 }).strict();
 
 const findingSchema = z.object({
@@ -62,7 +70,9 @@ export const preflightResponseSchema = z.object({
 
 export const storedPreflightResponseSchema = preflightResponseSchema.extend({
   requestedChannel: channelSchema,
+  sourceEpub: sourceEpubSchema.optional(),
 }).strict();
+const validatorResponseSchema = preflightResponseSchema.extend({ artifactSha256: sha256Schema.optional() }).strict();
 
 const packageRequestSchema = z.object({
   bookId: z.string().uuid(),
@@ -161,6 +171,7 @@ export async function loadRenderedPackageInputs(
   kind: "ebook" | "print",
   renderJob: Record<string, unknown>,
   config: z.infer<typeof editionConfigSchema>,
+  expectedPrimarySha256?: string,
 ) {
   if (config.kind !== kind) throw new AppError(422, "The selected render format does not match these saved edition settings.");
   assertSavedRenderedCoverPolicy(config, renderJob);
@@ -176,6 +187,9 @@ export async function loadRenderedPackageInputs(
   }
   if (primary[0].mimeType !== primaryMime || primary[0].filename !== primaryName) {
     throw new AppError(422, "The selected render format does not match this edition.");
+  }
+  if (expectedPrimarySha256 && primary[0].checksum.toLowerCase() !== expectedPrimarySha256) {
+    throw new AppError(409, "The saved EPUB does not match the selected checksum. Refresh the proof desk.");
   }
   for (const cover of covers) {
     if (!((cover.filename === "cover.png" && cover.mimeType === "image/png")
@@ -316,6 +330,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
   const publishingFetcher = options.publishingFetcher ?? fetch;
 
   app.post("/publishing/validate", async (req, reply) => {
+    assertPackageActor(req);
     const parsed = preflightSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "Check the preflight request.", { issues: parsed.error.issues });
     const body = parsed.data;
@@ -336,6 +351,10 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     if (body.channel !== "export" && !CHANNEL_FORMATS[body.channel].includes(config.kind)) {
       throw new AppError(422, `${body.channel} does not accept ${config.kind} export packages.`);
     }
+    const sourceEpub = body.sourceEpub;
+    if (sourceEpub && (config.kind !== "ebook" || body.channel === "export")) {
+      throw new AppError(422, "Choose a retailer that accepts EPUB before validating a saved ebook.");
+    }
     const service = app.supabaseFactory();
     const { data: workspace, error: workspaceError } = await service.from("workspaces")
       .select("organization_id").eq("id", book.workspace_id).maybeSingle();
@@ -351,6 +370,15 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       model.chapters.flatMap((chapter) => chapter.nodes));
     const { artworkSnapshot, ...images } = loadedImages;
     const imageSha256 = renderImagesFingerprint(loadedImages);
+    let savedArtifacts: Record<string, string> | undefined;
+    if (sourceEpub) {
+      const { data: renderJob, error } = await user.from("publishing_jobs").select("*")
+        .eq("id", sourceEpub.jobId).eq("book_id", body.bookId).eq("edition_id", body.editionId).maybeSingle();
+      if (error) throw new AppError(503, "The selected EPUB could not be verified.");
+      assertSourceJob(renderJob, { bookId: body.bookId, editionId: body.editionId, editionUpdatedAt: edition.updated_at,
+        bookModelSha256: modelSha256, imageSha256, action: "render", channel: "render" });
+      savedArtifacts = await loadRenderedPackageInputs(service, book.workspace_id, "ebook", renderJob!, config, sourceEpub.sha256);
+    }
     const jobId = randomUUID();
     const { data: inserted, error: insertError } = await service.from("publishing_jobs").insert({
       id: jobId,
@@ -358,7 +386,8 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       edition_id: body.editionId,
       channel: body.channel,
       status: "running",
-      request_json: { action: "validate", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256, artworkSnapshot },
+      request_json: { action: "validate", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256, artworkSnapshot,
+        ...(sourceEpub ? { sourceEpub } : {}) },
       idempotency_key: body.idempotencyKey,
       created_by: req.userId,
       started_at: new Date().toISOString(),
@@ -369,9 +398,11 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
         .eq("created_by", req.userId).maybeSingle();
       if (!existing) throw new AppError(409, "That preflight request key is already in use.");
       const request = requestJson(existing);
+      const previousSource = sourceEpubSchema.optional().safeParse(request.sourceEpub);
       if (request.action !== "validate" || existing.edition_id !== body.editionId || existing.channel !== body.channel
-        || request.editionUpdatedAt !== edition.updated_at || request.bookModelSha256 !== modelSha256 || request.imageSha256 !== imageSha256) {
-        throw new AppError(409, "That preflight request key belongs to different saved book content, edition settings, or channel.");
+        || request.editionUpdatedAt !== edition.updated_at || request.bookModelSha256 !== modelSha256 || request.imageSha256 !== imageSha256
+        || !previousSource.success || previousSource.data?.jobId !== sourceEpub?.jobId || previousSource.data?.sha256 !== sourceEpub?.sha256) {
+        throw new AppError(409, "That preflight request key belongs to different saved content, edition settings, channel, or EPUB.");
       }
       if (existing.status !== "succeeded") throw new AppError(409, `That preflight request is already ${existing.status}.`);
       reply.header("cache-control", "private, no-store");
@@ -381,17 +412,19 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
     let completionPersisted = false;
     try {
-      const baseUrl = (process.env.RENDERING_SERVICE_URL
+      const baseUrl = savedArtifacts ? publishingServiceUrl() : (process.env.RENDERING_SERVICE_URL
         ?? `http://127.0.0.1:${process.env.RENDERING_SERVICE_PORT ?? "8002"}`).replace(/\/$/u, "");
-      const response = await renderFetcher(`${baseUrl}/preflight`, {
+      const serviceToken = (savedArtifacts ? process.env.PUBLISHING_SERVICE_TOKEN : process.env.RENDERING_SERVICE_TOKEN) || process.env.SERVICE_AUTH_TOKEN;
+      const url = savedArtifacts ? `${baseUrl}/v1/publishing/validate` : `${baseUrl}/preflight`;
+      const response = await (savedArtifacts ? publishingFetcher : renderFetcher)(url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          ...(process.env.RENDERING_SERVICE_TOKEN || process.env.SERVICE_AUTH_TOKEN
-            ? { "x-service-token": process.env.RENDERING_SERVICE_TOKEN || process.env.SERVICE_AUTH_TOKEN! }
-            : {}),
+          ...(serviceToken ? { "x-service-token": serviceToken } : {}),
         },
-        body: JSON.stringify({
+        body: JSON.stringify(savedArtifacts ? {
+          editionConfig: config, bookModel: model, channel: body.channel, artifactsBase64: savedArtifacts,
+        } : {
           editionConfig: config,
           bookModel: model,
           channel: body.channel === "export" ? null : body.channel,
@@ -405,13 +438,15 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       if (!response.ok) throw new AppError(503, "The edition validator could not complete this request.");
       let raw: unknown;
       try { raw = JSON.parse(responseText); } catch { throw new AppError(503, "The validator returned an invalid response."); }
-      const validation = preflightResponseSchema.safeParse(raw);
+      const validation = validatorResponseSchema.safeParse(raw);
       if (!validation.success) throw new AppError(503, "The validator returned an invalid response.");
       if (body.channel !== "export" && validation.data.channel !== body.channel) {
         throw new AppError(503, "The validator returned results for the wrong publishing channel.");
       }
 
-      const result = { ...validation.data, requestedChannel: body.channel };
+      const { artifactSha256, ...report } = validation.data;
+      if (artifactSha256 !== sourceEpub?.sha256) throw new AppError(503, "The validator did not verify the selected saved EPUB.");
+      const result = { ...report, requestedChannel: body.channel, ...(sourceEpub ? { sourceEpub } : {}) };
       await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
         model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
       const { data: completed, error: completeError } = await service.rpc("complete_preflight_job", {
@@ -506,8 +541,12 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     if (!storedPreflight.success || storedPreflight.data.requestedChannel !== body.channel || storedPreflight.data.errors !== 0) {
       throw new AppError(422, "Resolve all channel preflight errors and run preflight again before creating a package.");
     }
+    const sourceEpub = storedPreflight.data.sourceEpub;
+    if (sourceEpub && (config.kind !== "ebook" || sourceEpub.jobId !== body.renderJobId)) {
+      throw new AppError(422, "Run preflight on the same saved EPUB before creating its package.");
+    }
 
-    const artifactsBase64 = await loadRenderedPackageInputs(service, book.workspace_id, config.kind, renderJob!, config);
+    const artifactsBase64 = await loadRenderedPackageInputs(service, book.workspace_id, config.kind, renderJob!, config, sourceEpub?.sha256);
     const jobId = randomUUID();
     const requestJson = {
       action: "export_package", editionUpdatedAt: edition.updated_at,
@@ -532,9 +571,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     let completionPersisted = false;
     let completionAttempted = false;
     try {
-      const baseUrl = (process.env.PUBLISHING_SERVICE_URL
-        ?? `http://127.0.0.1:${process.env.PUBLISHING_SERVICE_PORT ?? "8003"}`).replace(/\/$/u, "");
-      const response = await publishingFetcher(`${baseUrl}/v1/publishing/package`, {
+      const response = await publishingFetcher(`${publishingServiceUrl()}/v1/publishing/package`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
