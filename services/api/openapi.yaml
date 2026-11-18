@@ -2496,6 +2496,7 @@ paths:
       tags: [v1]
       operationId: runPreflight
       summary: Run deterministic preflight validation
+      description: A saved EPUB source selects the exact stored bytes for retailer preflight and binds the report to that render for packaging.
       requestBody:
         required: true
         content:
@@ -2509,6 +2510,7 @@ paths:
                 editionId: { type: string, format: uuid }
                 channel: { type: string, enum: [export, kdp, apple, barnesnoble, lulu, googleplay] }
                 idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+                sourceEpub: { $ref: "#/components/schemas/SavedEpubPreflightSource" }
       responses:
         "201":
           description: Preflight report
@@ -5163,6 +5165,14 @@ components:
         status: { $ref: "#/components/schemas/RetailerSubmissionStatus" }
         revision: { type: string, format: uuid }
         updatedAt: { type: string, format: date-time }
+    SavedEpubPreflightSource:
+      type: object
+      description: A verified saved EPUB render selected for a retailer channel. The saved manuscript, artwork and edition must still match the render.
+      additionalProperties: false
+      required: [jobId, sha256]
+      properties:
+        jobId: { type: string, format: uuid }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
     PreflightResult:
       type: object
       required: [jobId, ruleVersion, channel, requestedChannel, errors, warnings, findings]
@@ -5174,6 +5184,7 @@ components:
         errors: { type: integer, minimum: 0 }
         warnings: { type: integer, minimum: 0 }
         findings: { type: array, items: { type: object } }
+        sourceEpub: { $ref: "#/components/schemas/SavedEpubPreflightSource" }
     PublishingPackageJob:
       type: object
       required: [id, requestId, bookId, editionId, channel, status, createdAt, sourceRenderJobId, sourcePreflightJobId, failureCode, submissionMode, package]
