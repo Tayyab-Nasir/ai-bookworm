@@ -36,7 +36,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
         || (path.length === 6 && path[5] === "close" && request.method === "POST")))
     );
     const chapterRestore = path[1] === "chapters" && path.length === 6
-      && path[3] === "versions" && path[5] === "restore" && request.method === "POST";
+      && path[3] === "versions" && path[5] === "restore" && ["GET", "POST"].includes(request.method);
     const chapterStructure = path[1] === "books" && path[3] === "chapters"
       && ((path.length === 4 && request.method === "POST")
         || (path.length === 5 && path[4] === "order" && request.method === "PUT"));

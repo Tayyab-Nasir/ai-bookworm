@@ -775,6 +775,41 @@ test("lost restore reply retries exactly the same account and operation before a
   } finally { await page.close(); }
 });
 
+test("a lost restore reply can be checked twice without resending the original restore", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.confirm = () => true;
+      const api = window.bookwormApi;
+      window.restoreCalls = []; window.restoreChecks = [];
+      api.restoreDocumentVersion = async (...args) => {
+        window.restoreCalls.push(args);
+        throw new Error("synthetic lost response");
+      };
+      api.getDocumentRestoreStatus = async (chapterId, targetVersionId, intent, actor) => {
+        window.restoreChecks.push([chapterId, targetVersionId, intent, actor]);
+        const identity = { chapterId, targetVersionId, ...intent };
+        if (window.restoreChecks.length === 1) return { ...identity, status: "not_found" };
+        const document = { chapterId, version: 2, nodes: [{ id: "restored", type: "paragraph", text: "Restored by status check" }] };
+        api.getChapterDocument = async () => ({ role: "owner", document });
+        return { ...identity, status: "saved", version: 2, versionId: "restored-version", document };
+      };
+    });
+    await page.getByText("Imported first step", { exact: true }).click(); await page.keyboard.press("End"); await page.keyboard.type(" unsaved");
+    await page.getByRole("button", { name: "Restore version 1" }).click();
+    const check = page.getByRole("button", { name: "Check restore status" });
+    await check.click();
+    await page.getByText(/no saved restore was found for this request yet/i).waitFor();
+    assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /unsaved/);
+    await check.click();
+    await page.getByText("Restored by status check", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Retry original restore" }).count(), 0);
+    const { sends, checks } = await page.evaluate(() => ({ sends: window.restoreCalls, checks: window.restoreChecks }));
+    assert.equal(sends.length, 1);
+    assert.deepEqual(checks, [sends[0], sends[0]]);
+  } finally { await page.close(); }
+});
+
 test("a replayed restore receipt cannot replace a newer saved chapter or local draft", async () => {
   const page = await fixture(1280, true);
   try {
@@ -791,7 +826,8 @@ test("a replayed restore receipt cannot replace a newer saved chapter or local d
     assert.match(await page.getByRole("textbox", { name: "Manuscript editor" }).innerText(), /unsaved/);
     assert.equal(await page.getByText("Old restored text", { exact: true }).count(), 0);
     assert.equal(await page.getByText("Restored as version 2.", { exact: true }).count(), 0);
-    await page.getByRole("button", { name: "Retry original restore" }).waitFor();
+    await page.getByRole("button", { name: "Reload saved version" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Retry original restore" }).count(), 0);
   } finally { await page.close(); }
 });
 

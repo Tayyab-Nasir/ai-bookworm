@@ -6,7 +6,7 @@ import { AppError } from "./errors.js";
 
 const user = "11111111-1111-4111-8111-111111111111", chapter = "22222222-2222-4222-8222-222222222222", operation = "33333333-3333-4333-8333-333333333333";
 const body = [{ id: "n", type: "paragraph", text: "Saved base" }];
-type Row = { id: string; chapter_id: string; operation_id: string; created_by: string; version_number: number; content_json: { schemaVersion: string; nodes: typeof body } };
+type Row = { id: string; chapter_id: string; operation_id: string; created_by: string; version_number: number; change_summary?: string; content_json: { schemaVersion: string; nodes: typeof body } };
 const row = (op = "initial", version = 1): Row => ({ id: `v${version}`, chapter_id: chapter, operation_id: op, created_by: user, version_number: version, content_json: { schemaVersion: "1.0", nodes: structuredClone(body) } });
 async function fixture({ role = "writer", initial = [row()], race = false } = {}) {
   const rows = structuredClone(initial); let writes = 0;
@@ -98,4 +98,39 @@ test("another author's receipt cannot be returned as this author's saved content
   const f = await fixture({ initial: [row(), { ...row(operation, 2), created_by: "44444444-4444-4444-8444-444444444444" }] });
   try { const r = (await f.read()).json(); assert.equal(r.status, "superseded"); assert.equal(r.receipt, null); assert.equal(f.writes(), 0); }
   finally { await f.app.close(); }
+});
+
+test("restore status proves the original saved effect even when the artwork is unavailable and a newer version exists", async () => {
+  const targetId = "55555555-5555-4555-8555-555555555555";
+  const otherTargetId = "66666666-6666-4666-8666-666666666666";
+  const otherActor = "77777777-7777-4777-8777-777777777777";
+  const nodes = [...body, { id: "image", type: "image", text: "",
+    assetId: "88888888-8888-4888-8888-888888888888", attributes: { crop: { x: 0.5, y: 0.25 } } }];
+  const content = { schemaVersion: "1.0", nodes };
+  const f = await fixture({ role: "viewer", initial: [
+    { ...row(), id: targetId, content_json: content },
+    { ...row("other-target", 2), id: otherTargetId, content_json: content },
+    { ...row(operation, 3), change_summary: "Restored version 1", content_json: content },
+    { ...row("another-authors-restore", 4), change_summary: "Restored version 1", created_by: otherActor, content_json: content },
+  ] });
+  const check = (id: string, query: string, actor?: string) => f.app.inject({
+    url: `/chapters/${chapter}/versions/${id}/restore?${query}`, headers: actor ? { "x-bookworm-actor": actor } : {},
+  });
+  const query = `operationId=${operation}&expectedVersion=2`;
+  try {
+    const saved = await check(targetId, query, user);
+    assert.equal(saved.statusCode, 200);
+    assert.equal(saved.headers["cache-control"], "private, no-store");
+    assert.deepEqual(saved.json(), { status: "saved", chapterId: chapter, targetVersionId: targetId,
+      operationId: operation, expectedVersion: 2, versionId: "v3", version: 3, document: { chapterId: chapter, version: 3, nodes } });
+    assert.equal((await check(otherTargetId, query, user)).statusCode, 409);
+    assert.equal((await check(targetId, `operationId=${operation}&expectedVersion=1`, user)).statusCode, 409);
+    assert.equal((await check(targetId, `operationId=${operation}&expectedVersion=02`, user)).statusCode, 422);
+    assert.equal((await check(targetId, query, otherActor)).statusCode, 409);
+    assert.equal((await check(targetId, query)).statusCode, 422);
+    assert.deepEqual((await check(targetId, "operationId=another-authors-restore&expectedVersion=3", user)).json(), {
+      status: "not_found", chapterId: chapter, targetVersionId: targetId, operationId: "another-authors-restore", expectedVersion: 3,
+    });
+    assert.equal(f.writes(), 0);
+  } finally { await f.app.close(); }
 });

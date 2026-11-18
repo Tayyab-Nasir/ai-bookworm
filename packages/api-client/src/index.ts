@@ -874,6 +874,10 @@ export type ManualChapterSaveResult = {
   receipt: { versionId: string; document: ChapterDocument } | null;
 };
 
+export type ChapterRestoreStatus = {
+  chapterId: string; targetVersionId: string; operationId: string; expectedVersion: number;
+} & ({ status: "not_found" } | { status: "saved"; version: number; versionId: string; document: ChapterDocument });
+
 function accountResult<T extends { viewerId?: string }>(value: T, expectedActor?: string): T {
   if (expectedActor) {
     const result = value as T & { requests?: unknown; tickets?: unknown; request?: unknown; ticket?: unknown };
@@ -1038,6 +1042,8 @@ export function createClient(opts: ClientOptions) {
       call<ManualChapterSaveResult>("POST", `/v1/chapters/${encodeURIComponent(chapterId)}/manual-saves/${encodeURIComponent(operationId)}/close`, { expectedVersion }, false, { "x-bookworm-actor": expectedActorId }),
     restoreDocumentVersion: (chapterId: string, versionId: string, body: { expectedVersion: number; operationId: string }, expectedActorId: string) =>
       call<{ version: number; versionId: string; document: ChapterDocument }>("POST", `/v1/chapters/${chapterId}/versions/${versionId}/restore`, body, false, { "x-bookworm-actor": expectedActorId }),
+    getDocumentRestoreStatus: (chapterId: string, versionId: string, { operationId, expectedVersion }: { operationId: string; expectedVersion: number }, expectedActorId: string) =>
+      call<ChapterRestoreStatus>("GET", `/v1/chapters/${encodeURIComponent(chapterId)}/versions/${encodeURIComponent(versionId)}/restore?${new URLSearchParams({ operationId, expectedVersion: String(expectedVersion) })}`, undefined, false, { "x-bookworm-actor": expectedActorId }),
     applyOperation: (chapterId: string, op: DocumentOperation) =>
       call<{ version: number }>("POST", `/v1/chapters/${chapterId}/operations`, op),
     createAssetUploadUrl: (body: { workspaceId: string; requestId?: string; filename: string; mimeType: string; sizeBytes: number; folderId?: string | null; type?: string }, expectedActor?: string) =>

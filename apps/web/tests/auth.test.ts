@@ -212,6 +212,7 @@ test("manual manuscript recovery and actor-bound saves refuse account crossover"
     [["title-changes", operation], "GET", backendGet, 422],
     [["title-changes", operation], "PUT", backendPut, 422],
     [["title-changes", operation, "close"], "POST", backendPost, 422],
+    [["versions", operation, "restore"], "GET", backendGet, 422],
     [["versions", operation, "restore"], "POST", backendPost, 422],
     [["document"], "PUT", backendPut, 200],
   ] as const) {

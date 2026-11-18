@@ -233,6 +233,32 @@ try {
   assert.deepEqual((await request(alice.token, 'GET', `/chapters/${chapter.id}/versions`)).versions, currentVersions.versions,
     'Historical comparisons do not append or modify any revision');
   console.log('PASS native immutable canonical revision reads, exact identity, authentication, cross-chapter/tenant isolation and no extra versions');
+
+  const restoreChapter = `/chapters/${created.chapter.id}`;
+  const editedRows = [...rows, { id: randomUUID(), type: 'paragraph', text: 'Later edits to the manual chapter.' }];
+  const appendManualRevision = expectedVersion => request(alice.token, 'PUT', `${restoreChapter}/document`, {
+    expectedVersion, operationId: randomUUID(), nodes: editedRows,
+  });
+  const laterTarget = await appendManualRevision(1);
+  const restoreTarget = initial.versions[0].id;
+  const restorePath = `${restoreChapter}/versions/${restoreTarget}/restore`;
+  const restore = { expectedVersion: 2, operationId: randomUUID() };
+  const restoreQuery = new URLSearchParams({ ...restore, expectedVersion: String(restore.expectedVersion) });
+  const restoreStatus = `${restorePath}?${restoreQuery}`;
+  const restoreIdentity = { chapterId: created.chapter.id, targetVersionId: restoreTarget, ...restore };
+  assert.deepEqual(await request(alice.token, 'GET', restoreStatus, undefined, 200, actor), { ...restoreIdentity, status: 'not_found' });
+  const restoreReceipt = await request(alice.token, 'POST', restorePath, restore, 200, actor);
+  assert.equal(restoreReceipt.version, 3);
+  assert.deepEqual(restoreReceipt.document.nodes, rows);
+  assert.equal((await appendManualRevision(3)).version, 4);
+  assert.deepEqual(await request(alice.token, 'GET', restoreStatus, undefined, 200, actor), { ...restoreIdentity, status: 'saved', ...restoreReceipt });
+  await request(alice.token, 'GET', `${restoreChapter}/versions/${laterTarget.versionId}/restore?${restoreQuery}`, undefined, 409, actor);
+  await request(alice.token, 'GET', restoreStatus, undefined, 422);
+  await request(alice.token, 'GET', restoreStatus, undefined, 409, { 'x-bookworm-actor': bob.userId });
+  await request(bob.token, 'GET', restoreStatus, undefined, 404, { 'x-bookworm-actor': bob.userId });
+  assert.equal((await request(alice.token, 'GET', `${restoreChapter}/versions`)).versions.length, 4);
+  console.log('PASS native read-only chapter restore recovery, same-request receipt, target and actor binding, and preservation of newer history');
+
   const passage = edit.nodes.at(-1);
   const source = { chapterId: chapter.id, documentVersionId: currentVersion.id, nodeId: passage.id, textHash: hash(passage.text) };
   const intent = { requestId: randomUUID(), type: 'character', name: 'Captain Mira', description: 'An author-reviewed character.',

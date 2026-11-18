@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { applyOperation, DocumentOperationSchema, type BookModel } from "@bookworm/book-model";
@@ -10,6 +11,12 @@ const saveSchema = z.object({
   expectedVersion: z.number().int().nonnegative(), nodes: nodesSchema,
   operationId: z.string().min(1).max(200), changeSummary: z.string().max(500).default("Manuscript edited"),
 });
+const versionParams = z.object({ chapterId: z.string().uuid(), versionId: z.string().uuid() });
+const restoreStatusQuery = z.object({
+  operationId: saveSchema.shape.operationId,
+  expectedVersion: z.string().regex(/^(0|[1-9][0-9]{0,9})$/u).transform(Number).pipe(z.number().max(2_147_483_646)),
+}).strict();
+const restorePath = "/chapters/:chapterId/versions/:versionId/restore";
 
 export function chapterRoutes(app: FastifyInstance) {
   manualChapterSaveRoutes(app);
@@ -38,7 +45,7 @@ export function chapterRoutes(app: FastifyInstance) {
   // A historical manuscript is private, immutable data, not an asset download.
   app.get("/chapters/:chapterId/versions/:versionId", async (req, reply) => {
     reply.header("Cache-Control", "private, no-store");
-    const parsed = z.object({ chapterId: z.string().uuid(), versionId: z.string().uuid() }).safeParse(req.params);
+    const parsed = versionParams.safeParse(req.params);
     if (!parsed.success) throw new AppError(422, "invalid chapter or version ID");
     const { chapterId, versionId } = parsed.data;
     const sb = app.supabaseFactory(req.userToken);
@@ -81,7 +88,38 @@ export function chapterRoutes(app: FastifyInstance) {
     return appendVersion(sb, chapterId, parsed.data.expectedVersion, parsed.data.nodes, parsed.data.operationId, parsed.data.changeSummary);
   });
 
-  app.post("/chapters/:chapterId/versions/:versionId/restore", async (req) => {
+  app.get(restorePath, async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    checkChapterActor(req, true);
+    const path = versionParams.safeParse(req.params), query = restoreStatusQuery.safeParse(req.query);
+    if (!path.success || !query.success) throw new AppError(422, "Valid chapter, target version, original operation and expected revision are required.");
+    const { chapterId, versionId: targetVersionId } = path.data;
+    const { operationId, expectedVersion } = query.data;
+    const intent = { chapterId, targetVersionId, operationId, expectedVersion };
+    const sb = app.supabaseFactory(req.userToken);
+    await loadChapter(sb, chapterId, req.userId);
+    const { data: saved, error } = await sb.from("document_versions")
+      .select("id,version_number,content_json,change_summary").eq("chapter_id", chapterId)
+      .eq("operation_id", operationId).eq("created_by", req.userId).maybeSingle();
+    if (error) throw new AppError(503, "Could not verify the saved restore. Keep the original request.");
+    if (!saved) return { ...intent, status: "not_found" };
+
+    // Verify the effect against immutable history. Illustration eligibility is
+    // checked when writing a new version and can change after it was committed.
+    const { data: target, error: targetError } = await sb.from("document_versions")
+      .select("version_number,content_json").eq("chapter_id", chapterId).eq("id", targetVersionId).maybeSingle();
+    if (targetError) throw new AppError(503, "Could not verify the restore target. Keep the original request.");
+    if (!target) throw new AppError(404, "version not found in this chapter");
+    const nodes = parseNodes(saved.content_json);
+    if (saved.version_number !== expectedVersion + 1 || target.version_number > expectedVersion
+      || saved.change_summary !== `Restored version ${target.version_number}` || !isDeepStrictEqual(nodes, parseNodes(target.content_json))) {
+      throw new AppError(409, "The saved revision does not match this restore request.");
+    }
+    return { ...intent, status: "saved", version: saved.version_number, versionId: saved.id,
+      document: { chapterId, version: saved.version_number, nodes } };
+  });
+
+  app.post(restorePath, async (req) => {
     checkChapterActor(req, true);
     const { chapterId, versionId } = req.params as { chapterId: string; versionId: string };
     const body = z.object({ expectedVersion: z.number().int().nonnegative(), operationId: z.string().min(1).max(200) }).safeParse(req.body);

@@ -36,6 +36,7 @@ route and component patterns to model the browser states at that boundary.
 | Book settings and workspace folders | Book edits can save against the observed update timestamp or conflict. Folders can be created, renamed or moved within their workspace. Template seeding walks existing and missing folders and can be partially applied if a later insert fails. | `services/api/src/routes/books.ts`, `services/api/src/routes/folders.ts` |
 | Book setup and manuscript intake | Book setup, upload allocation, quarantine/scan, import, starter content and its quote are separate; a completed upload is not a completed import. | `apps/web/components/BookSetupClient.tsx`, `services/api/src/routes/assets.ts`, `services/api/src/lib/manuscript-import.ts` |
 | Manuscript editing and recovery | Saved base, dirty draft, save pending, confirmed/conflict/unknown; opt-in tab recovery is distinct from a server save. Chapter create, title, reorder and restore each have separate operations. | `apps/web/components/BookEditorClient.tsx`, `apps/web/components/ChapterTitleEditor.tsx`, `services/api/src/routes/chapters.ts`, `tests/security/chapter-creation.test.sql`, `tests/security/chapter-title.test.sql` |
+| Chapter version restore | Confirmation, request in flight, outcome unknown, saved and current, or saved and superseded. Check restore status reads the existing version by actor, chapter, target, expected revision and operation. An absent receipt leaves the outcome unknown. A superseded restore keeps the draft and prompts review. | `apps/web/components/BookEditorClient.tsx`, `services/api/src/routes/chapters.ts`, `services/api/src/manual-chapter-save.test.ts`, `apps/web/tests/editor-numbering-mounted.mjs`, `tests/e2e/native-author-files.mjs` |
 | Manual Book Bible and source search | Draft, saved/conflicting/unknown mutation, deleted/closed receipt; selected source and read result are bound to book and source version. | `apps/web/components/BookMemoryClient.tsx`, `apps/web/components/BookSearchPanel.tsx`, `services/api/src/routes/book-memory.ts`, `tests/security/manual-book-bible-recovery.test.sql` |
 | Asset upload, versions and review | Selected, allocated, uploaded, scanned/quarantined, versioned, reviewed/approved; removal and restore are separate actor/revision-bound operations with uncertain/closed outcomes. | `apps/web/components/AssetBrowser.tsx`, `apps/web/components/RemovedAssets.tsx`, `services/api/src/routes/assets.ts`, `services/api/src/routes/asset-lifecycle.ts`, `tests/security/asset-lifecycle-additive.test.sql` |
 | Saved edition and print proof | Edition draft, dirty/saved/conflict or uncertain create; render status, proof history and private-link expiry are distinct. Dirty settings invalidate an in-flight history read. | `apps/web/components/PublishingStudio.tsx`, `apps/web/components/SavedPrintLibrary.tsx`, `apps/web/components/SavedPdfProof.tsx`, `apps/web/tests/saved-print-mounted.mjs` |
@@ -106,6 +107,12 @@ route and component patterns to model the browser states at that boundary.
   the file's current removed state. A lost removal reply remains unconfirmed.
   Restore is gated on verified asset-recovery readiness and uses a new,
   revision-bound operation. The local release keeps the restore gate off.
+- Chapter restore status uses the saved document version and its canonical
+  content, so an illustration's availability today cannot hide a previously
+  saved restore. Recovery stays in the original tab. A status check does not
+  cancel a pending write. The original restore write and its illustration checks
+  continue to apply for retries. The separate chapter restore ledger is outside
+  this flow.
 - A mounted discussion fixture reproduced a draft being posted under an account
   that replaced the one that opened the page. Reads and writes now use the
   verified actor in the web proxy. An account change invalidates previous drafts,

@@ -576,8 +576,9 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     } finally { if (sequence === loadSequence.current) { structureFlight.current = false; setSaving(false); } }
   };
 
-  const restore = async (versionId: string) => {
-    if (!document || !saveAccount || passiveLocked.current || !editorInteractionAvailable.current || loadTransition.current !== null || restoreHidden || titleBlocked || saving || loading || aiDecisionBusy || manualSave || !saveRecoveryReady || restoring.current || (conflictRef.current && !pendingRestore) || !EDIT_ROLES.has(role)) return;
+  const restore = async (versionId: string, action: "send" | "check" = "send") => {
+    if (!document || !saveAccount || passiveLocked.current || !editorInteractionAvailable.current || loadTransition.current !== null || restoreHidden || titleBlocked || saving || loading || aiDecisionBusy || manualSave || !saveRecoveryReady || restoring.current || (conflictRef.current && !pendingRestore)) return;
+    if (action === "check" ? !pendingRestore : !EDIT_ROLES.has(role)) return;
     if (pendingRestore && (pendingRestore.versionId !== versionId || pendingRestore.chapterId !== document.chapterId)) return;
     const confirmedRevision = draftRevision.current;
     if (!pendingRestore && !window.confirm("Restore this version as a new saved version? Current saved history will remain available.")) return;
@@ -593,25 +594,35 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       if (sequence !== loadSequence.current) return;
       if (passiveLocked.current || accountEpoch !== passiveEpoch.current) {
         if (!pendingRestore) setPendingRestore(null);
-        setError("Account verification interrupted restore before it was sent."); return;
+        setError("Account verification interrupted this restore action. Try again after checking your account."); return;
       }
-      const result = await api.restoreDocumentVersion(request.chapterId, request.versionId, request.body, request.owner);
+      const result = await (action === "check"
+        ? api.getDocumentRestoreStatus(request.chapterId, request.versionId, request.body, request.owner)
+        : api.restoreDocumentVersion(request.chapterId, request.versionId, request.body, request.owner));
       await editorAccount(request.owner);
       if (sequence !== loadSequence.current) return;
-      validateCurrentChapter(result.document, request.chapterId, request.body.expectedVersion + 1);
-      if (result.version !== request.body.expectedVersion + 1 || result.document.version !== result.version
+      if (!result || typeof result !== "object") throw new Error("The service returned an unreadable restore result. Keep the original request for recovery.");
+      if (action === "check") {
+        if (!("status" in result) || result.chapterId !== request.chapterId || result.targetVersionId !== request.versionId
+          || result.operationId !== request.body.operationId || result.expectedVersion !== request.body.expectedVersion
+          || (result.status !== "not_found" && result.status !== "saved")) {
+          throw new Error("The service did not verify the original restore request. Keep this page open to check again.");
+        }
+        if (result.status === "not_found") {
+          setNotice("No saved restore was found for this request yet. You can check again or retry the original restore.");
+          return;
+        }
+      }
+      if (!("document" in result) || result.version !== request.body.expectedVersion + 1
         || typeof result.versionId !== "string" || !result.versionId.trim()) throw new Error("The restored revision could not be verified. Keep the original request for recovery.");
+      validateCurrentChapter(result.document, request.chapterId, result.version);
+      if (result.document.version !== result.version) throw new Error("The restore receipt returned a different revision. Keep the original request for recovery.");
       const current = await api.getChapterDocument(request.chapterId, request.owner);
       await editorAccount(request.owner);
       if (sequence !== loadSequence.current) return;
       validateCurrentChapter(current.document, request.chapterId, result.version);
-      if (current.document.version > result.version) {
-        stopTabDraftForVersion(current.document.version);
-        setConflict(true);
-        setNotice(`The restore returned version ${result.version}, but the current chapter is already at version ${current.document.version}. Your local draft remains here; review saved history before choosing what to do.`);
-        return;
-      }
-      if (await chapterSaveDigest(current.document.nodes) !== await chapterSaveDigest(result.document.nodes)) {
+      const newerRevision = current.document.version > result.version;
+      if (!newerRevision && await chapterSaveDigest(current.document.nodes) !== await chapterSaveDigest(result.document.nodes)) {
         throw new Error("Current chapter content does not match the restore receipt. Keep the original request for recovery.");
       }
       await editorAccount(request.owner);
@@ -620,7 +631,10 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       // Adopt the confirmed receipt before refreshing history. A failed history
       // request must not leave the old draft marked as the restored manuscript.
       setRole(current.role); setPendingRestore(null); pendingSave.current = null;
-      if (draftRevision.current !== request.draftRevision) {
+      if (newerRevision) {
+        setConflict(true);
+        setNotice(`Restore saved as version ${result.version}. The current chapter is already at version ${current.document.version}. Your draft remains here; review saved history.`);
+      } else if (draftRevision.current !== request.draftRevision) {
         setDirty(true); setConflict(true); setNotice(`Restored as version ${result.version}. Your later edits still use the previous draft; back them up and review before replacing them with the restored version.`);
       } else {
         setDocument(current.document); setConflict(false); setDraft(current.document.nodes); setEditorSeed(null); setDirty(false); setEditorValidation(null); setReloadKey((v) => v + 1);
@@ -640,7 +654,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       // A conflict response can follow an earlier lost reply. Retain the exact
       // operation rather than replacing an outcome that may already be saved.
       if (reason instanceof ApiClientError && reason.status === 409) setConflict(true);
-      setError(reason instanceof Error ? reason.message : "Could not confirm restore. Retry the original request or reload saved content.");
+      setError(reason instanceof Error ? reason.message : "Could not confirm restore. Check its status or reload saved content.");
     }
     finally { if (sequence === loadSequence.current) { restoring.current = false; setSaving(false); } }
   };
@@ -840,7 +854,15 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       </div>
       {saveMissing && <p className="mt-2 text-xs text-amber-100/75">Closing keeps history and records an unchanged revision to block a late write. It will not undo a save that already committed.</p>}
     </section>}
-    {pendingRestore && !saving && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>Restore outcome is not confirmed. Your current draft remains here; editing is paused until you recover the request or reload saved content. Reloading cannot cancel a restore already in flight.</p><div className="mt-3 flex flex-wrap gap-4"><button type="button" disabled={loading} className="underline" onClick={() => void restore(pendingRestore.versionId)}>Retry original restore</button><button type="button" className="underline" onClick={() => downloadDraft()}>Download my draft</button><button type="button" disabled={loading} className="underline" onClick={() => { if (window.confirm("Reload saved content and replace this draft? The original restore may still arrive later; reloading does not cancel it. Download your draft first if needed.")) void loadChapter(pendingRestore.chapterId); }}>Reload saved content</button></div></div>}
+    {pendingRestore && !saving && <section aria-label="Unconfirmed chapter restore" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm">
+      <p>Restore outcome is not confirmed. Your draft stays here while you check the saved status or retry the original request. Editing is paused, and reloading cannot cancel a restore still in flight.</p>
+      <div className="mt-3 flex flex-wrap gap-4">
+        <button type="button" disabled={loading} className="underline" onClick={() => void restore(pendingRestore.versionId, "check")}>Check restore status</button>
+        {EDIT_ROLES.has(role) && <button type="button" disabled={loading} className="underline" onClick={() => void restore(pendingRestore.versionId)}>Retry original restore</button>}
+        <button type="button" className="underline" onClick={() => downloadDraft()}>Download my draft</button>
+        <button type="button" disabled={loading} className="underline" onClick={() => { if (window.confirm("Reload saved content and replace this draft? The original restore may still arrive later; reloading does not cancel it. Download your draft first if needed.")) void loadChapter(pendingRestore.chapterId); }}>Reload saved content</button>
+      </div>
+    </section>}
     {pendingOrder && <section aria-label="Unconfirmed chapter order" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm">
       <p>The reorder outcome is unconfirmed. Checking shows the current order but cannot prove who changed it or cancel a request still in flight. Further chapter structure changes are paused on this page. Reloading or closing the page loses this checkpoint and cannot cancel the original request; it could still arrive later even if the order changes back.</p>
       {pendingOrder.observed && <p role="status" className="mt-2">{pendingOrder.observed}</p>}
