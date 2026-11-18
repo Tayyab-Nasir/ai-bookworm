@@ -65,6 +65,8 @@ test("workspace reads, creation and admin access preserve optional actor fences 
   for (const [path, method, handler] of [
     [["v1", "workspaces"], "GET", backendGet], [["v1", "workspaces"], "POST", backendPost],
     [["v1", "workspaces", "invitations", "accept"], "POST", backendPost],
+    [["v1", "referrals", "code"], "GET", backendGet], [["v1", "referrals"], "GET", backendGet],
+    [["v1", "referrals", "ledger"], "GET", backendGet], [["v1", "referrals", "claim"], "POST", backendPost],
     [["v1", "dashboard"], "GET", backendGet], [["v1", "admin", "access"], "GET", backendGet],
     [["v1", "books", "11111111-1111-4111-8111-111111111111", "editions"], "POST", backendPost],
     [["v1", "books", "11111111-1111-4111-8111-111111111111", "editions"], "GET", backendGet],

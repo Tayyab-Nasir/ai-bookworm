@@ -72,8 +72,11 @@ workflow so developers and agents can extend it without guessing.
   races. The invitation fix binds the request to the verified actor,
   rechecks the session and keeps an unconfirmed result separate from success;
   its warning remains tab-memory only and the existing backend does not provide
-  a durable accepted-invitation receipt. Referral recovery is under review.
-  The community account-switch risk remains under investigation. These tests do
+  a durable accepted-invitation receipt. Referral reads and claims now bind to
+  the verified actor; an uncertain claim retains the original code for an
+  explicit retry in the same tab. This does not coordinate different tabs, and
+  hosted uniqueness has not been verified. The community account-switch risk
+  remains under investigation. These tests do
   not establish hosted authentication or data behavior.
 - Chapters and editions originally have text status columns; edition API
   validation is not proof that every direct database writer enforces the same

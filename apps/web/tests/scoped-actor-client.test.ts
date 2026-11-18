@@ -34,3 +34,19 @@ test("unbound client still permits explicit actors and does not invent one", asy
     assert.deepEqual(actors, [null, otherActor]);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("referral reads and claim carry the verified actor to the BFF", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: { method: string; actor: string | null; url: string }[] = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ method: init?.method ?? "GET", actor: new Headers(init?.headers).get("x-bookworm-actor"), url: String(url) });
+    return Response.json({});
+  };
+  try {
+    const client = createClient({ baseUrl: "/api/backend", expectedActor: actor });
+    await client.getReferralCode(); await client.listReferrals(); await client.listCreditLedger(); await client.claimReferral("bw-12345678");
+    assert.deepEqual(calls.map(call => call.method), ["GET", "GET", "GET", "POST"]);
+    assert(calls.every(call => call.actor === actor));
+    assert.deepEqual(calls.map(call => call.url), ["/api/backend/v1/referrals/code", "/api/backend/v1/referrals", "/api/backend/v1/referrals/ledger", "/api/backend/v1/referrals/claim"]);
+  } finally { globalThis.fetch = originalFetch; }
+});

@@ -33,6 +33,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/invitation-mounted.mjs
+      - name: Verify referral account and recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/referral-center-mounted.mjs
       - name: Verify private AI connection recovery and account changes in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium
