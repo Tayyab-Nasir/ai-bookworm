@@ -49,10 +49,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/saved-print-mounted.mjs
-      - name: Verify community directory account isolation in full Chromium
+      - name: Verify community directory and discussion account isolation in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium
-        run: node --test apps/web/tests/community-directory-mounted.mjs
+        run: node --test --test-timeout=15000 apps/web/tests/community-directory-mounted.mjs apps/web/tests/community-discussion-mounted.mjs
       - name: Verify removal history and file recovery in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium

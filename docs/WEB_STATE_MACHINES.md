@@ -48,7 +48,7 @@ route and component patterns to model the browser states at that boundary.
 | BYO AI connection | Credential saved/revoked, option selected, prepared/confirmed/closed and job/receipt states; customer execution remains disabled pending its separate readiness gates. | `apps/web/components/AiConnections.tsx`, `apps/web/components/CustomerAiStudio.tsx`, `services/api/src/routes/ai-connections.ts`, `services/api/src/routes/customer-ai.ts` |
 | Team roster and invitations | Membership and role changes are separate from pending, expired, revoked and accepted invitation links. Read or accept under the intended account and recheck workspace access. | `apps/web/components/TeamTable.tsx`, `apps/web/components/InvitationAcceptance.tsx`, `services/api/src/routes/team.ts` |
 | Community membership and referrals | Read and join, referral entry and claim, reward and credit ledger each need actor-bound visibility. Unknown outcomes have limited same-tab recovery. | `apps/web/components/CommunityDirectory.tsx`, `apps/web/components/ReferralCenter.tsx`, `services/api/src/routes/community.ts`, `services/api/src/routes/referrals.ts` |
-| Community discussion and moderation | Posts and comments load independently. Draft, post, reaction and report actions differ from pending moderation review and a decided report. The selected community, viewer and verified moderator role can change independently. | `apps/web/app/community/[id]/page.tsx`, `services/api/src/routes/community.ts`, `services/api/src/routes/admin.ts` |
+| Community discussion and moderation | A verified account owns the discussion view and drafts. Revalidation hides posts, replies and the moderation queue. A confirmed write can finish across a same-account refresh. An account change discards the prior view, draft and review. | `apps/web/app/community/[id]/page.tsx`, `services/api/src/routes/community.ts`, `apps/web/tests/community-discussion-mounted.mjs` |
 | Book comments, tasks and approvals | Open/resolved comments, flexible task status edits, and approval decisions each have their own rules. Repeating the legacy comment toggle can reverse a prior result. Artwork approval also requires the exact asset version. | `apps/web/components/CommentThread.tsx`, `apps/web/components/CollaborationCenter.tsx`, `services/api/src/routes/collab.ts`, `services/api/src/step9.test.ts` |
 | Account requests and operations | Data-rights request submission, processing, completion/rejection/cancellation and support ticket states; unavailable hosted functions must not be presented as completed actions. | `apps/web/components/AccountMenu.tsx`, `apps/web/components/AdminConsole.tsx`, `services/api/src/routes/account.ts`, `services/api/src/routes/admin.ts` |
 | Analytics and billing views | Workspace/actor selection, loading/error, imported report state and credit ledger/plan access; manual report data is not live retailer connectivity. Stripe activation remains deferred. | `apps/web/app/analytics/page.tsx`, `apps/web/components/BillingCenter.tsx`, `services/api/src/routes/sales.ts`, `services/api/src/routes/billing.ts` |
@@ -80,8 +80,8 @@ route and component patterns to model the browser states at that boundary.
   result in Git before relying on it.
 - The existing `POST /comments/:id/resolve` is a toggle. An isolated invocation
   of the current handler showed two identical requests resolve and then reopen a
-  comment. Existing clients depend on the toggle contract; replacing it silently
-  would break compatibility. A desired-state prototype alone still permits a
+  comment. The toggle is an SDK/API contract. The web editor does not mount
+  the standalone comment thread. A desired-state prototype alone still permits a
   delayed earlier request to reverse a later action. Durable operation identity,
   revision fencing and old/direct-writer coordination need further design.
 - Mounted synthetic tests reproduced referral and invitation account-switch
@@ -106,10 +106,14 @@ route and component patterns to model the browser states at that boundary.
   the file's current removed state. A lost removal reply remains unconfirmed.
   Restore is gated on verified asset-recovery readiness and uses a new,
   revision-bound operation. The local release keeps the restore gate off.
-- The discussion page binds its local state to the community ID and checks
-  component lifetime. Source review found no equivalent account binding to
-  the directory's. Reproduce account switch and moderator revocation in a
-  mounted test before changing those actions.
+- A mounted discussion fixture reproduced a draft being posted under an account
+  that replaced the one that opened the page. Reads and writes now use the
+  verified actor in the web proxy. An account change invalidates previous drafts,
+  moderation decisions and delayed results. Foreground checks hide data while
+  access is revalidated. The same verified author can finish a pending save
+  and keep drafts after a rejection. The browser fixture exercises the real
+  API client against a synthetic boundary. Hosted account behavior and durable
+  recovery after a lost write response are separate checks.
 - Generic POST deduplication marks a key before the handler responds. A duplicate
   error confirms the key was seen in that process. Recovering the original result
   requires a workflow receipt or a fresh read.

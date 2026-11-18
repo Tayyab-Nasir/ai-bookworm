@@ -3,11 +3,29 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import type { CommunityPost, CommunityComment, CommunityModerationReport } from "@bookworm/api-client";
+import { ApiClientError, type CommunityPost, type CommunityComment, type CommunityModerationReport } from "@bookworm/api-client";
 import { apiClient } from "../../../components/api";
 import { AuthorHeader } from "../../../components/AuthorShell";
+import { readBrowserSession } from "../../../lib/browser-session";
 
 const KINDS = ["like", "love", "insightful", "celebrate"] as const;
+type DiscussionClient = ReturnType<typeof apiClient>;
+type DiscussionScope = { actor: string };
+type Confirmation = { message: string; reopenQueue?: boolean };
+type ReportPage = Awaited<ReturnType<DiscussionClient["moderationQueue"]>>;
+type OpenReports = Pick<ReportPage, "reports" | "hasMore"> & { nextOffset: number };
+
+function canModerate(role: string | null) {
+  return role === "owner" || role === "moderator";
+}
+
+function mergeReports(page: ReportPage, previous?: OpenReports | null): OpenReports {
+  return {
+    reports: previous ? [...previous.reports, ...page.reports.filter(row => !previous.reports.some(saved => saved.id === row.id))] : page.reports,
+    hasMore: page.hasMore,
+    nextOffset: page.offset + page.reports.length,
+  };
+}
 
 export default function CommunityDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -15,71 +33,139 @@ export default function CommunityDetailPage() {
 }
 
 function CommunityDiscussion({ id }: { id: string }) {
-  const api = apiClient();
-  const [posts, setPosts] = useState<CommunityPost[]>([]);
-  const [role, setRole] = useState<string | null>(null);
+  const [view, setView] = useState<{ scope: DiscussionScope; posts: CommunityPost[]; role: string | null } | null>(null);
   const [body, setBody] = useState("");
   const [comments, setComments] = useState<Record<string, CommunityComment[]>>({});
   const [commentDraft, setCommentDraft] = useState<Record<string, string>>({});
-  const [queue, setQueue] = useState<CommunityModerationReport[]>([]);
-  const [queueOffset, setQueueOffset] = useState(0);
-  const [queueHasMore, setQueueHasMore] = useState(false);
+  const [queue, setQueue] = useState<OpenReports | null>(null);
   const [review, setReview] = useState<{ report: CommunityModerationReport; action: "remove" | "dismiss" } | null>(null);
-  const [showQueue, setShowQueue] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [reportPost, setReportPost] = useState<string | null>(null);
   const [reportReason, setReportReason] = useState("");
-  const gate = useRef(false);
-  const live = useRef(true);
+  const actionInFlight = useRef<symbol | null>(null);
+  const mounted = useRef(false);
+  const generation = useRef(0);
+  const activeScope = useRef<DiscussionScope | null>(null);
+  const draftOwner = useRef<DiscussionScope | null>(null);
 
-  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
-
-  async function act(work: () => Promise<void>) {
-    if (gate.current) return;
-    gate.current = true; setBusy(true); setError(null); setNotice(null);
-    try { await work(); }
-    catch (reason) { if (live.current) setError(reason instanceof Error ? reason.message : "The request could not be confirmed. Refresh before trying again."); }
-    finally { gate.current = false; if (live.current) setBusy(false); }
-  }
-
-  const load = useCallback(async () => {
+  const load = useCallback(async (confirmed?: Confirmation & { owner: DiscussionScope }) => {
+    const ticket = ++generation.current;
+    const current = () => mounted.current && generation.current === ticket;
+    activeScope.current = null;
+    setView(null);
     setLoading(true);
+    setError(null);
+    setNotice(null);
+    setComments({});
+    setQueue(null);
+    setReview(null);
     try {
-      const r = await api.listCommunityPosts(id);
-      if (!live.current) return;
-      setPosts(r.posts);
-      setRole(r.role);
-      setComments({});
-      setReview(null);
-      if (r.role !== "owner" && r.role !== "moderator") { setQueue([]); setShowQueue(false); }
-    } catch (e) {
-      if (live.current) { setRole(null); setPosts([]); setComments({}); setQueue([]); setShowQueue(false); setError(e instanceof Error ? e.message : "Discussion could not be loaded."); }
+      const { id: actor } = await readBrowserSession();
+      if (!current()) return;
+      if (draftOwner.current?.actor !== actor) {
+        draftOwner.current = { actor };
+        actionInFlight.current = null;
+        setBusy(false);
+        setBody("");
+        setCommentDraft({});
+        setReportPost(null);
+        setReportReason("");
+      }
+      const api = apiClient(actor);
+      const result = await api.listCommunityPosts(id);
+      if (!current()) return;
+      const confirmation = confirmed?.owner === draftOwner.current ? confirmed : undefined;
+      const reopenQueue = confirmation?.reopenQueue && canModerate(result.role);
+      const reports = reopenQueue ? await api.moderationQueue({ limit: 50, offset: 0 }).catch(() => null) : null;
+      if (!current()) return;
+      await readBrowserSession(actor);
+      if (!current()) return;
+
+      const scope = { actor };
+      activeScope.current = scope;
+      setView({ scope, posts: result.posts, role: result.role });
+      setNotice(confirmation?.message ?? null);
+      if (reports) setQueue(mergeReports(reports));
+      else if (reopenQueue) setError("The decision was saved. Open the moderation queue again to refresh reports.");
+    } catch (reason) {
+      if (current()) setError(reason instanceof Error ? reason.message : "Discussion could not be loaded.");
     } finally {
-      if (live.current) setLoading(false);
+      if (current()) setLoading(false);
     }
-  }, [api, id]);
+  }, [id]);
 
   useEffect(() => {
+    mounted.current = true;
     void load();
+    const verify = () => { if (document.visibilityState !== "hidden") void load(); };
+    window.addEventListener("focus", verify);
+    document.addEventListener("visibilitychange", verify);
+    return () => {
+      mounted.current = false;
+      generation.current++;
+      activeScope.current = null;
+      window.removeEventListener("focus", verify);
+      document.removeEventListener("visibilitychange", verify);
+    };
   }, [load]);
 
-  const loadComments = async (postId: string) => {
-    const r = await api.listPostComments(postId);
-    if (live.current) setComments((c) => ({ ...c, [postId]: r.comments }));
-  };
-
-  const isMod = role === "owner" || role === "moderator";
-
-  async function loadQueue(offset = 0) {
-    const result = await api.moderationQueue({ limit: 50, offset });
-    if (!live.current) return;
-    setQueue(previous => offset ? [...previous, ...result.reports.filter(row => !previous.some(saved => saved.id === row.id))] : result.reports);
-    setQueueOffset(result.offset + result.reports.length); setQueueHasMore(result.hasMore); setReview(null);
+  async function act<T>(
+    kind: "read" | "write",
+    request: (api: DiscussionClient) => Promise<T>,
+    apply: (result: T, scope: DiscussionScope) => Confirmation | void,
+  ) {
+    const scope = view?.scope;
+    const owner = draftOwner.current;
+    if (!scope || !owner || activeScope.current !== scope || actionInFlight.current) return;
+    const current = () => activeScope.current === scope;
+    // A confirmed write can clear its original draft after a same-account
+    // refresh. Older reads and results from a replaced account stay hidden.
+    const ownsReply = () => current() || (kind === "write" && mounted.current && draftOwner.current === owner);
+    const action = Symbol();
+    actionInFlight.current = action;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await readBrowserSession(scope.actor);
+      if (!current()) return;
+      const [reply] = await Promise.allSettled([request(apiClient(scope.actor))]);
+      if (!ownsReply()) return;
+      await readBrowserSession(scope.actor);
+      if (!ownsReply()) return;
+      if (reply.status === "fulfilled") {
+        const confirmation = apply(reply.value, scope);
+        if (confirmation) {
+          if (!current() || confirmation.reopenQueue) void load({ ...confirmation, owner });
+          else setNotice(confirmation.message);
+        }
+      } else {
+        const reason: unknown = reply.reason;
+        if (reason instanceof ApiClientError && (reason.status === 401 || reason.status === 403)) void load();
+        setError(reason instanceof Error ? reason.message : "The request could not be confirmed. Refresh before trying again.");
+      }
+    } catch {
+      if (current()) void load();
+    } finally {
+      if (actionInFlight.current === action) {
+        actionInFlight.current = null;
+        if (mounted.current) setBusy(false);
+      }
+    }
   }
 
+  function loadQueue(offset = 0) {
+    void act("read", api => api.moderationQueue({ limit: 50, offset }), result => {
+      setQueue(previous => mergeReports(result, offset ? previous : null));
+      setReview(null);
+    });
+  }
+
+  const posts = view?.posts ?? [];
+  const role = view?.role ?? null;
   return (
     <div className="min-h-screen bg-black pb-16">
       <AuthorHeader />
@@ -90,16 +176,16 @@ function CommunityDiscussion({ id }: { id: string }) {
             <h1 className="text-3xl font-medium tracking-[-0.04em] text-white sm:text-4xl">Community</h1>
             <p className="mt-2 text-sm text-[#9a9a9a]">Join the conversation with fellow authors</p>
           </div>
-          {isMod && (
+          {canModerate(role) && (
             <button
               disabled={busy || loading}
-              onClick={() => void act(async () => {
-                if (showQueue) { setShowQueue(false); setReview(null); return; }
-                await loadQueue(); if (live.current) setShowQueue(true);
-              })}
+              onClick={() => {
+                if (queue) { setQueue(null); setReview(null); }
+                else loadQueue();
+              }}
               className="glass-ghost metal-shine"
             >
-              {showQueue ? "Hide" : "Moderation Queue"}
+              {queue ? "Hide" : "Moderation Queue"}
             </button>
           )}
         </div>
@@ -110,20 +196,20 @@ function CommunityDiscussion({ id }: { id: string }) {
           </div>
         )}
         {notice && <p role="status" className="mb-6 text-sm text-emerald-100">{notice}</p>}
-        <button type="button" disabled={busy || loading} onClick={() => void act(load)} className="mb-6 rounded-full border border-white/20 px-4 py-2 text-sm disabled:opacity-40">Refresh discussion</button>
+        <button type="button" disabled={loading || (busy && view !== null)} onClick={() => void load()} className="mb-6 rounded-full border border-white/20 px-4 py-2 text-sm disabled:opacity-40">Refresh discussion</button>
         {loading && <p role="status" className="mb-6 text-white/60">Loading discussion…</p>}
-        {!loading && !role && !error && <p className="mb-6 text-sm text-white/60">You can read this discussion. Join from the community directory to post or reply.</p>}
+        {view && !role && !error && <p className="mb-6 text-sm text-white/60">You can read this discussion. Join from the community directory to post or reply.</p>}
 
-        {showQueue && (
+        {queue && (
           <div className="mb-8 rounded-2xl border border-white/10 bg-white/[0.025] p-6">
             <h3 className="mb-4 text-lg font-semibold text-white">Open Reports</h3>
             <p className="mb-4 text-xs text-white/60">Reports across all communities you moderate.</p>
-            <button type="button" disabled={busy || loading} onClick={() => void act(() => loadQueue())} className="mb-4 glass-ghost text-xs">Refresh reports</button>
-            {queue.length === 0 ? (
+            <button type="button" disabled={busy || loading} onClick={() => loadQueue()} className="mb-4 glass-ghost text-xs">Refresh reports</button>
+            {queue.reports.length === 0 ? (
               <p className="text-[#6f6f6f]">No open reports.</p>
             ) : (
               <div className="space-y-3">
-                {queue.map((r) => (
+                {queue.reports.map((r) => (
                   <div key={r.id} className="rounded-lg border border-white/10 bg-white/[0.04] p-4 break-words">
                     <p className="text-sm text-[#d8d8d8]">
                       <span className="font-medium">{r.entity_type}</span> {r.entity_id}: {r.reason}
@@ -153,20 +239,21 @@ function CommunityDiscussion({ id }: { id: string }) {
                 ))}
               </div>
             )}
-            {queueHasMore && <button type="button" disabled={busy || loading} onClick={() => void act(() => loadQueue(queueOffset))} className="mt-4 glass-ghost text-xs">Load more reports</button>}
+            {queue.hasMore && <button type="button" disabled={busy || loading} onClick={() => loadQueue(queue.nextOffset)} className="mt-4 glass-ghost text-xs">Load more reports</button>}
             {review && <section aria-label="Review moderation decision" className="mt-5 rounded-xl border border-amber-200/30 bg-amber-200/5 p-4 space-y-3">
               <h4 className="font-medium text-white">Confirm {review.action === "remove" ? "removal" : "dismissal"}</h4>
               <p className="text-sm text-white/75 break-words">{review.report.reason}</p>
               <p className="text-xs text-white/60">{review.action === "remove" ? "This soft-hides the reported content and preserves its audit history." : "This closes the report without removing the content."} The first saved decision cannot be replaced by a retry.</p>
               <div className="flex flex-wrap gap-2">
                 <button type="button" disabled={busy} onClick={() => setReview(null)} className="glass-ghost text-xs">Cancel</button>
-                <button type="button" disabled={busy || loading} onClick={() => void act(async () => {
-                  const decision = review; setReview(null);
-                  const result = await api.moderateReport(decision.report.id,decision.action);
-                  if (!live.current) return;
-                  await load(); await loadQueue();
-                  if (live.current) setNotice(result.alreadyResolved ? "Original moderation decision recovered." : result.status === "actioned" ? "Reported content removed." : "Report dismissed.");
-                })} className="glass-solid text-xs">Confirm {review.action === "remove" ? "removal" : "dismissal"}</button>
+                <button type="button" disabled={busy || loading} onClick={() => {
+                  const decision = review;
+                  setReview(null);
+                  void act("write", api => api.moderateReport(decision.report.id, decision.action), result => {
+                    const message = result.alreadyResolved ? "Original moderation decision recovered." : result.status === "actioned" ? "Reported content removed." : "Report dismissed.";
+                    return { message, reopenQueue: true };
+                  });
+                }} className="glass-solid text-xs">Confirm {review.action === "remove" ? "removal" : "dismissal"}</button>
               </div>
             </section>}
           </div>
@@ -177,10 +264,11 @@ function CommunityDiscussion({ id }: { id: string }) {
             onSubmit={(e) => {
               e.preventDefault();
               if (!body.trim()) return;
-              void act(async () => {
-                const post = await api.createCommunityPost(id, { body: body.trim() });
-                setPosts(previous => [post, ...previous.filter(item => item.id !== post.id)]);
-                setBody(""); setNotice("Post published.");
+              void act("write", api => api.createCommunityPost(id, { body: body.trim() }), (post, scope) => {
+                setView(previous => previous?.scope === scope
+                  ? { ...previous, posts: [post, ...previous.posts.filter(item => item.id !== post.id)] } : previous);
+                setBody("");
+                return { message: "Post published." };
               });
             }}
             className="mb-8 rounded-2xl border border-white/10 bg-white/[0.025] p-6"
@@ -206,7 +294,7 @@ function CommunityDiscussion({ id }: { id: string }) {
         )}
 
         <div className="space-y-6">
-          {posts.length === 0 && !error && !loading && (
+          {view && posts.length === 0 && !error && (
             <div className="rounded-2xl border border-white/10 bg-white/[0.025] p-6 text-center">
               <h3 className="text-lg font-semibold text-white">No posts yet</h3>
               <p className="mt-2 text-sm text-[#6f6f6f]">Be the first to start a conversation.</p>
@@ -229,10 +317,9 @@ function CommunityDiscussion({ id }: { id: string }) {
                 {KINDS.map((k) => (
                   <button
                     key={k}
-                    onClick={() => void act(async () => {
-                      const result = await api.toggleReaction(p.id, k);
-                      setNotice(`${k} reaction ${result.active ? "added" : "removed"}.`);
-                    })}
+                    onClick={() => void act("write", api => api.toggleReaction(p.id, k), result => ({
+                      message: `${k} reaction ${result.active ? "added" : "removed"}.`,
+                    }))}
                     disabled={!role || busy || loading || p.status !== "published"}
                     className="glass-ghost text-xs capitalize"
                   >
@@ -246,16 +333,19 @@ function CommunityDiscussion({ id }: { id: string }) {
                 >
                   Report
                 </button>
-                <button disabled={busy || loading} onClick={() => void act(() => loadComments(p.id))} className="glass-ghost text-xs">
+                <button disabled={busy || loading} onClick={() => void act("read", api => api.listPostComments(p.id), result => {
+                  setComments(previous => ({ ...previous, [p.id]: result.comments }));
+                })} className="glass-ghost text-xs">
                   Comments
                 </button>
               </div>
               {reportPost === p.id && <form className="mt-4 space-y-3" onSubmit={event => {
                 event.preventDefault();
                 if (!reportReason.trim()) return;
-                void act(async () => {
-                  await api.createReport({ entityType: "post", entityId: p.id, reason: reportReason.trim() });
-                  setReportPost(null); setReportReason(""); setNotice("Report sent for moderation.");
+                void act("write", api => api.createReport({ entityType: "post", entityId: p.id, reason: reportReason.trim() }), () => {
+                  setReportPost(null);
+                  setReportReason("");
+                  return { message: "Report sent for moderation." };
                 });
               }}>
                 <label className="block text-sm">Report reason<textarea required maxLength={1000} disabled={busy} value={reportReason} onChange={event => setReportReason(event.target.value)} className="mt-2 block w-full rounded-xl border border-white/20 bg-black p-3" /></label>
@@ -280,10 +370,10 @@ function CommunityDiscussion({ id }: { id: string }) {
                     e.preventDefault();
                     const draft = commentDraft[p.id] ?? "";
                     if (!draft.trim()) return;
-                    void act(async () => {
-                      const comment = await api.createPostComment(p.id, { body: draft.trim() });
+                    void act("write", api => api.createPostComment(p.id, { body: draft.trim() }), comment => {
                       setComments(previous => ({ ...previous, [p.id]: [...(previous[p.id] ?? []).filter(item => item.id !== comment.id), comment] }));
-                      setCommentDraft((d) => ({ ...d, [p.id]: "" })); setNotice("Reply published.");
+                      setCommentDraft(d => ({ ...d, [p.id]: "" }));
+                      return { message: "Reply published." };
                     });
                   }}
                 >
