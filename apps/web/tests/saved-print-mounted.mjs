@@ -269,6 +269,8 @@ test("studio validates and saves a print edition ISBN before another proof can b
       };
     });
     await open(page);
+    await page.getByRole("button", { name: "Enable edition recovery", exact: true }).click();
+    await expect(page.getByText("Recovery is on for this saved edition.", { exact: true })).toBeVisible();
     const field = page.getByRole("textbox", { name: "Print ISBN-13", exact: true });
     const save = page.getByRole("button", { name: "Save edition", exact: true });
     await field.fill("9780000000010");
@@ -276,6 +278,11 @@ test("studio validates and saves a print edition ISBN before another proof can b
     await expect(page.getByRole("alert")).toContainText("Enter a valid ISBN-13");
     assert.equal(await page.evaluate(() => window.isbnSaves.length), 0);
     await field.fill("978-0-000-00001-9");
+    const storedIsbn = await page.evaluate(() => {
+      const key = Object.keys(sessionStorage).find(key => key.startsWith("bookworm-edition-tab-v1:"));
+      return key ? JSON.parse(sessionStorage.getItem(key)).form.printIsbn : null;
+    });
+    assert.equal(storedIsbn, "978-0-000-00001-9");
     await save.click();
     await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
     await expect(field).toHaveValue("9780000000019");
@@ -287,7 +294,7 @@ test("studio validates and saves a print edition ISBN before another proof can b
     await page.getByRole("checkbox", { name: "Create full cover PDF", exact: true }).check();
     await page.getByRole("combobox", { name: "ISBN barcode", exact: true }).selectOption("lulu");
     await save.click();
-    await expect(page.getByRole("alert")).toContainText("Use the matching Lulu template");
+    await expect(page.getByRole("alert").filter({ hasText: "Use the matching Lulu template" })).toBeVisible();
     assert.equal(await page.evaluate(() => window.isbnSaves.length), 1);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Edition } from "@bookworm/types";
-import { DEFAULT_FORM } from "../lib/publishing-edition-form";
+import { DEFAULT_FORM, toConfig } from "../lib/publishing-edition-form";
 import { editionBase, editionTabKey, parseEditionTab, readEditionTab, writeEditionTab, discardEditionTab } from "../lib/edition-tab-recovery";
 
 const scope = { actor: "11111111-1111-4111-8111-111111111111", bookId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
@@ -36,4 +36,22 @@ test("storage quota errors do not replace the previous copy", () => {
   storage.setItem = () => { throw new Error("quota"); };
   assert.throws(() => writeEditionTab(storage,scope,edition,{...DEFAULT_FORM,publisher:"updated"},raw),/could not save/);
   assert.equal(readEditionTab(storage,scope),raw);
+});
+
+test("edition recovery preserves optional ISBN fields and still reads legacy copies", () => {
+  const print = { ...edition, type: "print", edition_metadata_json: { kind: "print" } } as Edition;
+  const legacy = { ...DEFAULT_FORM, kind: "print" as const, printIsbn: undefined };
+  const legacyCopy = parseEditionTab(writeEditionTab(memory(), scope, print, legacy, null), scope);
+  assert.equal(Object.hasOwn(toConfig(legacyCopy.form), "isbn13"), false);
+
+  const draft = { ...legacy, printIsbn: "978-0-000-00001-9", wrapEnabled: true, wrapBarcode: "lulu" as const };
+  const raw = writeEditionTab(memory(), scope, print, draft, null);
+  const recovered = parseEditionTab(raw, scope).form;
+  assert.equal(recovered.printIsbn, draft.printIsbn);
+  assert.equal(recovered.wrapBarcode, "lulu");
+  for (const unexpected of [{ printIsbn: 9780000000019 }, { printIsbn: "1".repeat(33) }, { wrapBarcode: "apple" }, { extra: "value" }]) {
+    const saved = JSON.parse(raw);
+    saved.form = { ...saved.form, ...unexpected };
+    assert.throws(() => parseEditionTab(JSON.stringify(saved), scope), /invalid/);
+  }
 });

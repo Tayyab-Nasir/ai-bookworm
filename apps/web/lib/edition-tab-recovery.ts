@@ -3,6 +3,8 @@ import { DEFAULT_FORM, FONTS, type FormState } from "./publishing-edition-form";
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const MAX_BYTES = 512 * 1024;
+const optionalFields = new Set(["printIsbn", "wrapBarcode"]);
+const formDefaults: Record<string, unknown> = { ...DEFAULT_FORM, wrapBarcode: "" };
 const choices: Record<string, readonly string[]> = {
   kind: ["ebook", "print", "audiobook"], textDirection: ["auto", "ltr", "rtl"], flow: ["reflowable", "fixed"],
   navigation: ["toc", "toc+landmarks", "none"], trimSize: ["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"],
@@ -10,6 +12,7 @@ const choices: Record<string, readonly string[]> = {
   numbering: ["arabic", "roman", "none"], numberPosition: ["bottom-center", "bottom-outer", "top-center"],
   qrPosition: ["bottom-left", "bottom-right"], voice: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"],
   wrapProfile: ["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"],
+  wrapBarcode: ["kdp", "lulu"],
 };
 type Scope = { actor: string; bookId: string };
 export type EditionTabCopy = Scope & { editionId: string; base: string; form: FormState; format: 1 };
@@ -32,11 +35,16 @@ export function parseEditionTab(raw: string, scope: Scope): EditionTabCopy {
   const record = value as Record<string, unknown>;
   if (record.format !== 1 || record.actor !== scope.actor || record.bookId !== scope.bookId || typeof record.editionId !== "string" || !uuid.test(record.editionId)
       || typeof record.base !== "string" || !record.form || typeof record.form !== "object" || Array.isArray(record.form)) throw new Error("The local edition copy belongs to another account or book.");
-  const form = record.form as Record<string, unknown>, defaults = DEFAULT_FORM as unknown as Record<string, unknown>;
-  if (Object.keys(form).length !== Object.keys(defaults).length || Object.keys(defaults).some(key => !Object.hasOwn(form,key)
-      || typeof form[key] !== typeof defaults[key] || (typeof form[key] === "string" && form[key].length > 4096)
-      || (typeof form[key] === "number" && (!Number.isFinite(form[key]) || Math.abs(form[key]) > 1_000_000)))) throw new Error("The local edition copy is invalid.");
-  if (Object.entries(choices).some(([key, values]) => !values.includes(form[key] as string))) throw new Error("The local edition copy has an invalid format or setting.");
+  const form = record.form as Record<string, unknown>;
+  if (Object.keys(form).some(key => !Object.hasOwn(formDefaults, key)) || Object.entries(formDefaults).some(([key, defaultValue]) => {
+    if (!Object.hasOwn(form, key)) return !optionalFields.has(key);
+    const value = form[key];
+    return typeof value !== typeof defaultValue || (typeof value === "string" && value.length > (key === "printIsbn" ? 32 : 4096))
+      || (typeof value === "number" && (!Number.isFinite(value) || Math.abs(value) > 1_000_000));
+  })) throw new Error("The local edition copy is invalid.");
+  if (Object.entries(choices).some(([key, values]) => Object.hasOwn(form, key) && !values.includes(form[key] as string))) {
+    throw new Error("The local edition copy has an invalid format or setting.");
+  }
   return record as unknown as EditionTabCopy;
 }
 export function readEditionTab(storage: Storage, scope: Scope): string | null {
