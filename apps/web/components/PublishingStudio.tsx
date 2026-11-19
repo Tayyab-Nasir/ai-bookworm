@@ -946,7 +946,23 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
             <div className="flex flex-wrap items-center gap-4 pt-6 text-sm text-white/65">{(["titleOnCover", "subtitleOnCover", "authorOnCover"] as const).map((key) => <label key={key} className="inline-flex items-center gap-2"><input type="checkbox" checked={form[key]} onChange={(event) => update(key, event.target.checked)} />{key === "titleOnCover" ? "Title" : key === "subtitleOnCover" ? "Subtitle" : "Author"}</label>)}</div>
           </div>
           <label className="mt-5 inline-flex items-center gap-2 text-sm text-white/65"><input type="checkbox" checked={form.qrEnabled} onChange={(event) => update("qrEnabled", event.target.checked)} />Add QR code</label>
-          {form.qrEnabled && <div className="mt-4 grid gap-4 sm:grid-cols-2"><label className="text-sm text-white/65">HTTPS destination<input type="url" value={form.qrUrl} onChange={(event) => update("qrUrl", event.target.value)} placeholder="https://author.example/book" className={fieldClass} /></label><label className="text-sm text-white/65">QR label<input value={form.qrLabel} onChange={(event) => update("qrLabel", event.target.value)} maxLength={120} placeholder="Read more" className={fieldClass} /></label></div>}
+          {form.qrEnabled && <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="text-sm text-white/65">HTTPS destination<input type="url" value={form.qrUrl} onChange={(event) => update("qrUrl", event.target.value)} placeholder="https://author.example/book" className={fieldClass} /></label>
+            <label className="text-sm text-white/65">QR label<input value={form.qrLabel} onChange={(event) => update("qrLabel", event.target.value)} maxLength={120} placeholder="Read more" className={fieldClass} /></label>
+            <label className="text-sm text-white/65">QR placement
+              <select value={form.qrPosition} disabled={!editable} className={fieldClass}
+                onChange={(event) => update("qrPosition", event.target.value as FormState["qrPosition"])}>
+                <option value="bottom-left">Bottom left</option>
+                <option value="bottom-right">Bottom right</option>
+              </select>
+            </label>
+            <label className="text-sm text-white/65">QR size <span aria-hidden="true" className="ml-1 tabular-nums text-white/50">{form.qrSize} px</span>
+              <input type="range" min={96} max={512} step={1} value={form.qrSize} disabled={!editable}
+                aria-valuetext={`${form.qrSize} pixels`} aria-describedby="cover-qr-size-help"
+                onChange={(event) => update("qrSize", event.target.valueAsNumber)} className="mt-2 block h-11 w-full accent-white" />
+            </label>
+            <p id="cover-qr-size-help" className="text-xs leading-relaxed text-white/55 sm:col-span-2">Larger codes can fit longer URLs. Scan the code on the rendered cover before exporting.</p>
+          </div>}
           {rtlCoverTextUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL cover text cannot be safely composed with the current cover renderer.</p><p className="mt-1 text-amber-100/80">Turn off the selected title, subtitle, and author overlays for artwork-only cover output, or use a shaping-capable cover workflow.</p></div>}
         </section>}
 

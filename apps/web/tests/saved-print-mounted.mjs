@@ -102,13 +102,13 @@ test.after(async () => {
 await new Promise((resolve, reject) => { storage.once("error", reject); storage.listen(0, "127.0.0.1", resolve); });
 const storageOrigin = `http://127.0.0.1:${storage.address().port}`;
 
-async function fixture({ parent = false, width = 1280, disabled = false, audio = false, audioFailure = null } = {}) {
+async function fixture({ parent = false, width = 1280, disabled = false, audio = false, audioFailure = null, coverArtwork = false } = {}) {
   const page = await browser.newPage({ viewport: { width, height: 980 } }); page.setDefaultTimeout(6000);
   const errors = []; page.on("pageerror", error => errors.push(error.message));
   // Different hosts enforce cross-origin download behavior without intercepting Chrome's PDF viewer.
   await page.goto(`http://localhost:${storage.address().port}/bookworm-saved-print-fixture`);
   await page.addStyleTag({ content: styles.css + "body { background: #050505; color: white; } output { display: block; margin-top: 16px; }" });
-  await page.evaluate(({ ids, disabled, primaryDigest, primarySize, coverDigest, coverSize, audio, storageOrigin }) => {
+  await page.evaluate(({ ids, disabled, primaryDigest, primarySize, coverDigest, coverSize, audio, storageOrigin, coverArtwork }) => {
     window.ids = ids; window.fixtureActor = ids.asset; window.fixtureStoragePort = new URL(storageOrigin).port; window.requests = []; window.selected = []; window.invalidated = []; window.historyWaiters = []; window.downloadWaiters = []; window.pageWaiters = [];
     window.initialProps = { actor: ids.asset, bookId: ids.book, workspaceId: ids.workspace, editionId: ids.edition, disabled };
     const proof = (editionId, jobId, assetId, letter) => ({ jobId, createdAt: "2026-10-13T12:00:00.000Z", fingerprint: letter.repeat(64),
@@ -133,7 +133,9 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
         if (window.holdPlan) await new Promise(resolve => { window.releasePlan = resolve; });
         if (window.planError) throw Error("Plan temporarily unavailable");
         return { viewerId: window.planViewer ?? ids.asset, workspace: { id: window.planWorkspace ?? workspaceId }, usage: { entitlements: { entitlements: { rendering: window.planRendering ?? true, publishing_channels: window.planChannels ?? ["export"] } } } }; },
-      listEditions: async () => ({ editions }), listPublishingJobs: async () => ({ jobs: [] }), listAssets: async () => ({ assets: [] }), listChapters: async () => ({ chapters: [] }),
+      listEditions: async () => ({ editions }), listPublishingJobs: async () => ({ jobs: [] }),
+      listAssets: async () => ({ assets: coverArtwork ? [{ ...window.results[ids.job].artifacts[1].asset, name: "Cover artwork.png", type: "illustration" }] : [] }),
+      listChapters: async () => ({ chapters: [] }),
       listNarrationModels: async () => ({ models: [] }), listAudiobookGooglePlayExports: async () => ({ jobs: [] }),
       listPrivateAudiobookProjects: async editionId => ({ projects: [{ id: ids.job, editionId, chapterId: ids.asset, status: "running", segmentCount: 1,
         billingMode: "quoted", creditUnits: 1, voice: "marin", segments: [{ index: 0, status: "succeeded", audioAvailable: true }] }] }),
@@ -169,7 +171,7 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
       renderEdition: async () => { window.requests.push({ method: "POST", action: "render" }); throw new Error("Unexpected rendering request"); },
       createPublishingJob: async () => { window.requests.push({ method: "POST", action: "package" }); throw new Error("Unexpected package request"); },
     };
-  }, { ids, disabled, primaryDigest, primarySize: pdfBytes.length, coverDigest, coverSize: pngBytes.length, audio, storageOrigin });
+  }, { ids, disabled, primaryDigest, primarySize: pdfBytes.length, coverDigest, coverSize: pngBytes.length, audio, storageOrigin, coverArtwork });
   if (audioFailure) await page.evaluate(kind => { window.bookwormApi[kind] = async () => { throw new Error(`Initial ${kind} failure`); }; }, audioFailure);
   for (const file of bundles[parent ? 1 : 0].outputFiles.filter(file => file.path.endsWith(".css"))) await page.addStyleTag({ content: file.text });
   await page.addScriptTag({ content: bundles[parent ? 1 : 0].outputFiles.find(file => file.path.endsWith(".js")).text });
@@ -296,6 +298,58 @@ test("studio validates and saves a print edition ISBN before another proof can b
     await save.click();
     await expect(page.getByRole("alert").filter({ hasText: "Use the matching Lulu template" })).toBeVisible();
     assert.equal(await page.evaluate(() => window.isbnSaves.length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("studio saves cover QR size and placement and restores them when reopening the edition", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390, coverArtwork: true });
+  try {
+    await page.evaluate(() => {
+      window.qrSaves = [];
+      window.bookwormApi.updateEdition = async (id, body, actor) => {
+        window.qrSaves.push({ id, body, actor });
+        return { id, book_id: window.ids.book, type: "print", language: body.language,
+          edition_metadata_json: body.config, updated_at: "2026-11-20T12:00:00.000Z", status: "draft" };
+      };
+    });
+    await open(page);
+    const enabled = page.getByRole("checkbox", { name: "Add QR code", exact: true });
+    const placement = page.getByRole("combobox", { name: "QR placement", exact: true });
+    const size = page.getByRole("slider", { name: "QR size", exact: true });
+    await expect(size).toHaveCount(0);
+    await page.getByRole("combobox", { name: "Cover artwork", exact: true }).selectOption(ids.cover);
+    await enabled.check();
+    await expect(placement).toHaveValue("bottom-right");
+    await expect(size).toHaveValue("180");
+    const destination = "https://author.example/books/harbor?campaign=" + "long-reader-campaign-abcdefghijklmnop".repeat(6);
+    await page.getByRole("textbox", { name: "HTTPS destination", exact: true }).fill(destination);
+    await page.getByRole("textbox", { name: "QR label", exact: true }).fill("Reader extras");
+    await placement.selectOption("bottom-left");
+    await size.fill("320");
+    await expect(size).toHaveAttribute("aria-valuetext", "320 pixels");
+    assert.equal(await page.getByRole("region", { name: "Cover composition" })
+      .evaluate((section) => section.scrollWidth <= section.clientWidth + 1), true);
+    await expect(page.getByText(/Package source · Saved print PDF/)).toHaveCount(0);
+    await page.getByRole("button", { name: "Save edition", exact: true }).click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    const saves = await page.evaluate(() => window.qrSaves);
+    assert.equal(saves.length, 1);
+    assert.equal(saves[0].id, ids.edition);
+    assert.equal(saves[0].actor, ids.asset);
+    assert.deepEqual(saves[0].body.config.cover.qr_code, {
+      enabled: true, url: destination, label: "Reader extras", position: "bottom-left", size_px: 320,
+    });
+
+    const editions = page.getByRole("button", { name: /^print en · draft$/i });
+    await editions.nth(1).click();
+    await expect(enabled).not.toBeChecked();
+    await expect(size).toHaveCount(0);
+    await editions.first().click();
+    await expect(enabled).toBeChecked();
+    await expect(placement).toHaveValue("bottom-left");
+    await expect(size).toHaveValue("320");
+    await expect(page.getByRole("textbox", { name: "HTTPS destination", exact: true })).toHaveValue(destination);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
