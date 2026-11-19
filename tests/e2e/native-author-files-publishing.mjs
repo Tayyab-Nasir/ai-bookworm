@@ -415,8 +415,14 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     ]);
     assert.equal(packageReply.status(), 201);
     const uploadedPackage = await nativeBrowserJson(packageReply);
+    assert.equal(uploadedPackage.status, 'succeeded');
     assert.equal(uploadedPackage.sourceRenderJobId, uploadedRender.jobId);
-    const archiveBytes = await download(page, history.getByRole('listitem').first().getByRole('button', { name: 'Download private ZIP', exact: true }), uploadedPackage.package.asset.checksum);
+    assert.equal(uploadedPackage.sourcePreflightJobId, uploadedPreflight.jobId);
+    await expect(page.getByText('barnesnoble package is ready for manual submission.', { exact: true })).toBeVisible();
+    const packageChecksum = uploadedPackage.package.asset.checksum;
+    const packageRow = history.getByRole('listitem').filter({ hasText: packageChecksum.slice(0, 12) });
+    await expect(packageRow).toHaveCount(1);
+    const archiveBytes = await download(page, packageRow.getByRole('button', { name: 'Download private ZIP', exact: true }), packageChecksum);
     const archive = inspectNativePackage(archiveBytes);
     assert.equal(archive.files['cover.pdf'].sha256, finishedCover.checksum);
     assert.equal(archive.files['book.pdf'].sha256, interior);
