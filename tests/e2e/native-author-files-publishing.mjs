@@ -388,14 +388,17 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     const uploadedRender = await nativeBrowserJson(renderReply);
     assert.equal(uploadedRender.artifacts.find(artifact => artifact.role === 'rendered_cover').asset.checksum, finishedCover.checksum);
     const interior = uploadedRender.artifacts.find(artifact => artifact.role === 'rendered_print').asset.checksum;
+    await expect(page.getByText('Private render completed.', { exact: true })).toBeVisible();
 
-    onStage('retailer browser packages the uploaded cover from the saved proof');
+    onStage('retailer browser reopens the uploaded cover proof');
     await page.reload();
     await select(print);
     await expect(pdf).toHaveValue(`${source.id}:1`);
     const proof = page.getByRole('region', { name: 'Saved print proofs', exact: true }).getByRole('listitem')
       .filter({ hasText: interior.slice(0, 16) }).first();
     await proof.getByRole('button', { name: 'Open saved print', exact: true }).click();
+    await expect(history.getByText(/Package source · Saved print PDF/)).toContainText(interior.slice(0, 12));
+    onStage('retailer browser preflights the uploaded cover proof');
     await page.getByRole('combobox', { name: 'Preflight target', exact: true }).selectOption('barnesnoble');
     const [preflightReply] = await Promise.all([
       page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publishing/validate') && response.request().method() === 'POST', { timeout: 90_000 }),
@@ -405,6 +408,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     const uploadedPreflight = await nativeBrowserJson(preflightReply);
     assert.equal(uploadedPreflight.errors, 0);
     assert.deepEqual(uploadedPreflight.sourcePrint, { jobId: uploadedRender.jobId, sha256: interior, coverSha256: finishedCover.checksum });
+    onStage('retailer browser downloads the exact uploaded cover from the private package');
     const [packageReply] = await Promise.all([
       page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publishing/jobs') && response.request().method() === 'POST', { timeout: 90_000 }),
       history.getByRole('button', { name: 'Create retailer package', exact: true }).click(),

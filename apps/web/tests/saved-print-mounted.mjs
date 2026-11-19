@@ -300,6 +300,28 @@ test("studio validates and saves a print edition ISBN before another proof can b
   } finally { await page.close(); }
 });
 
+test("Studio waits for the selected print proof before running preflight", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.getByLabel("Preflight target").selectOption("barnesnoble");
+    await page.evaluate(() => { window.holdDownload = true; });
+    const preflight = page.getByRole("button", { name: "Run preflight", exact: true });
+    await page.getByRole("button", { name: "Open saved print", exact: true }).click();
+    await page.waitForFunction(() => window.downloadWaiters.length === 1);
+    await expect(preflight).toBeDisabled({ timeout: 1200 });
+    await expect(page.getByText("Opening the selected print proof…", { exact: true })).toBeVisible();
+    await page.evaluate(() => window.downloadWaiters[0]());
+    await expect(page.getByText(/Package source · Saved print PDF/)).toContainText(primaryDigest.slice(0, 12));
+    await preflight.click();
+    await expect(page.getByText("Preflight results · Barnes & Noble Press", { exact: true })).toBeVisible();
+    const calls = await page.evaluate(() => window.requests.filter(request => request.action === "preflight"));
+    assert.deepEqual(calls.map(call => call.body.sourcePrint), [
+      { jobId: ids.job, sha256: primaryDigest, coverSha256: coverDigest },
+    ]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("actual Studio requires preflight for the opened print interior and its cover", async () => {
   const { page, errors } = await fixture({ parent: true });
   try {
