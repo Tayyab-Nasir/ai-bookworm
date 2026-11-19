@@ -108,7 +108,7 @@ export async function runNativePublishingBrowser({ page, bookId, passage, screen
       await page.reload();
       await page.getByRole('button', { name: /^print /i }).click();
       await page.getByRole('button', { name: 'Open saved print', exact: true }).click();
-      await expect(page.getByText('Saved print proof opened. Run fresh preflight before creating a package.', { exact: true })).toBeVisible();
+      await expect(page.getByText(/Package source · Saved print PDF/)).toContainText(artifact.asset.checksum.slice(0, 12));
       const link = page.getByRole('button', { name: 'Download private file', exact: true });
       const desk = page.getByRole('region', { name: 'Saved PDF page proof', exact: true });
       const image = desk.getByRole('img');
