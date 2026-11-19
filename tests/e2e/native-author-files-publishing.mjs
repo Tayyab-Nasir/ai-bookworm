@@ -169,6 +169,13 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
   const origin = new URL(page.url()).origin;
   const publishUrl = `${origin}/books/${retailer.bookId}/publish`;
   const { inspectNativePackage } = await import('./native-author-files-packages.mjs');
+  const portals = {
+    kdp: ['KDP Bookshelf', 'https://kdp.amazon.com/en_US/bookshelf'],
+    apple: ['Apple Books Publishing Portal', 'https://authors.apple.com/epub-upload'],
+    barnesnoble: ['B&N Press', 'https://press.barnesandnoble.com/'],
+    lulu: ['Lulu print book projects', 'https://www.lulu.com/create/print-books'],
+    googleplay: ['Google Play Books Partner Center', 'https://play.google.com/books/publish/'],
+  };
   const requests = [];
   const observe = request => {
     const path = new URL(request.url()).pathname;
@@ -260,6 +267,9 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         assert.equal(preflight.errors, 0); assert.equal(preflight.requestedChannel, channel);
         assert.deepEqual(preflight.sourceEpub, sourceEpub);
         assert.deepEqual(preflight.sourcePrint, sourcePrint);
+        const review = history.getByText('Review retailer listing', { exact: true });
+        await review.click();
+        await expect(history.locator('details dd').filter({ hasText: preflight.listing.metadata.title }).first()).toBeVisible();
         const loseReply = packages.length === 6;
         if (loseReply) await page.evaluate(discardNextPackageReply);
         const [created] = await Promise.all([
@@ -294,15 +304,15 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         onStage(`retailer browser ${channel} ${edition.kind} exact private ZIP download`);
         const row = history.getByRole('listitem').first();
         await expect(row.getByText('ready', { exact: true })).toBeVisible();
-        if (channel === 'kdp') {
-          const portal = row.getByRole('link', { name: 'KDP Bookshelf', exact: true });
-          assert.equal(await portal.getAttribute('href'), 'https://kdp.amazon.com/en_US/bookshelf');
-          assert.equal(await portal.getAttribute('target'), '_blank');
-        }
+        const [label, href] = portals[channel];
+        const portal = row.getByRole('link', { name: label, exact: true });
+        assert.equal(await portal.getAttribute('href'), href);
+        assert.equal(await portal.getAttribute('target'), '_blank');
         const bytes = await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), job.package.asset.checksum);
         assert.equal(page.url(), publishUrl, 'ZIP download replaced the author interface');
         const archive = inspectNativePackage(bytes);
         assert.equal(archive.manifest.channel, channel); assert.equal(archive.preflight.errors, 0);
+        assert.deepEqual(archive.metadata, preflight.listing);
         if (channel === 'kdp' && edition.kind === 'ebook') {
           assert.equal(archive.files['cover.jpg'].signature, 'ffd8ff');
           assert.equal(archive.manifest.files['cover.jpg'], archive.files['cover.jpg'].sha256);
@@ -424,6 +434,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     await expect(packageRow).toHaveCount(1);
     const archiveBytes = await download(page, packageRow.getByRole('button', { name: 'Download private ZIP', exact: true }), packageChecksum);
     const archive = inspectNativePackage(archiveBytes);
+    assert.deepEqual(archive.metadata, uploadedPreflight.listing);
     assert.equal(archive.files['cover.pdf'].sha256, finishedCover.checksum);
     assert.equal(archive.files['book.pdf'].sha256, interior);
     await screenshot('retailer-uploaded-paperback-cover');

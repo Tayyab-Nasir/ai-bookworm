@@ -233,6 +233,9 @@ function entryDraft(item: BookBibleItem): EntryDraft {
 export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const bookScope = useRef({ bookId });
   if (bookScope.current.bookId !== bookId) bookScope.current = { bookId };
+  const scrollToPublishingMetadata = useCallback((section: HTMLElement | null) => {
+    if (section && window.location.hash === "#publishing-metadata") section.scrollIntoView({ block: "start" });
+  }, []);
   const quoteInFlight = useRef(false);
   const [memory, setMemory] = useState<Memory | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1313,7 +1316,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
         </div>
       </section>
 
-      <section className="mt-12 grid grid-cols-1 items-start gap-5 lg:grid-cols-2" aria-label="Publishing metadata">
+      <section id="publishing-metadata" ref={scrollToPublishingMetadata} className="mt-12 grid scroll-mt-24 grid-cols-1 items-start gap-5 lg:grid-cols-2" aria-label="Publishing metadata">
         <form key={`identity-${formRevision}`} onSubmit={saveIdentity} onChange={() => setIdentityDirty(true)} className={panelClass}>
           <h2 className="text-xl font-medium">Book details</h2><p className="mt-2 text-sm leading-6 text-[#999]">The title and author shown throughout your workspace.</p>
           <fieldset disabled={!memory.canEdit || busy} className="mt-5 min-w-0 space-y-4">

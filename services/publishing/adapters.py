@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
 from rules.kdp_v1 import KDP_MARKETING_COVER_BYTES, open_kdp_ebook_cover  # noqa: E402
-from publication_metadata import edition_publication_metadata  # noqa: E402
+from publication_metadata import edition_publication_metadata, retailer_listing  # noqa: E402
 
 
 class NotSupportedError(Exception):
@@ -26,22 +26,7 @@ class NotSupportedError(Exception):
 
 def publishing_metadata(book: dict, edition: dict | None = None) -> dict:
     """Project public listing fields only; never serialize the full book model."""
-    source = edition_publication_metadata(book.get("metadata", {}), edition or {})
-    result = {}
-    for field in ("title", "subtitle", "author", "language", "description", "isbn13", "edition"):
-        value = source.get(field)
-        if value is not None and not isinstance(value, str):
-            raise ValueError(f"publishing metadata {field} must be text")
-        if field in source:
-            result[field] = value
-    for field in ("keywords", "categories"):
-        value = source.get(field, [])
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            raise ValueError(f"publishing metadata {field} must be a text list")
-        result[field] = value
-    if "publicationDate" in source:
-        result["publicationDate"] = source["publicationDate"]
-    return {"schemaVersion": "1.0", "metadata": result}
+    return retailer_listing(edition_publication_metadata(book.get("metadata", {}), edition or {}))
 
 
 def _assert_saved_epub_metadata(blob: bytes, metadata: dict) -> None:

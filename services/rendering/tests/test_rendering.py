@@ -116,10 +116,13 @@ def test_render_service_returns_rtl_preflight_findings_before_attempting_print_o
     spec.loader.exec_module(module)
     monkeypatch.setenv("RENDERING_SERVICE_TOKEN", "fixture-render-token")
     book = copy.deepcopy(VALID)
-    book["metadata"].update({"language": "ar", "title": "عنوان", "author": "كاتب"})
+    book["metadata"].update({"language": "ar", "title": "عنوان", "author": "كاتب", "internalNotes": "Only visible to the author"})
     with TestClient(module.app) as client:
         preflight = client.post("/preflight", headers={"x-service-token": "fixture-render-token"}, json={
             "bookModel": book, "editionConfig": PRINT,
+        })
+        listing = client.post("/preflight", headers={"x-service-token": "fixture-render-token", "x-bookworm-include-listing": "true"}, json={
+            "bookModel": book, "editionConfig": {**PRINT, "isbn13": "9780306406157"}, "channel": "kdp",
         })
         render = client.post("/render", headers={"x-service-token": "fixture-render-token"}, json={
             "bookModel": book, "editionConfig": PRINT,
@@ -128,7 +131,14 @@ def test_render_service_returns_rtl_preflight_findings_before_attempting_print_o
             "bookModel": book, "editionConfig": EBOOK,
         })
     assert preflight.status_code == 200, preflight.text
+    assert "listing" not in preflight.json()
     assert "RTL_PRINT_FONT_UNSUPPORTED" in {item["code"] for item in preflight.json()["findings"]}
+    assert listing.status_code == 200, listing.text
+    report = listing.json()
+    assert "RTL_PRINT_FONT_UNSUPPORTED" in {item["code"] for item in report["findings"]}
+    checked_metadata = report["listing"]["metadata"]
+    assert checked_metadata["title"] == "عنوان" and checked_metadata["isbn13"] == "9780306406157"
+    assert "internalNotes" not in checked_metadata
     assert render.status_code == 422
     assert "RTL print PDF" in render.json()["detail"]
     assert ebook.status_code == 200, ebook.text

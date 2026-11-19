@@ -5,6 +5,7 @@ import hmac
 import os
 import sys
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -59,15 +60,19 @@ def channels() -> dict:
 
 
 @app.post("/v1/publishing/validate", dependencies=[Depends(require_service_token)])
-def validate(req: ValidateRequest) -> dict:
+def validate(req: ValidateRequest, include_listing: Annotated[bool, Header(alias="x-bookworm-include-listing")] = False) -> dict:
     adapter, edition = _publication_edition(req)
+    try:
+        listing = publishing_metadata(req.bookModel, req.editionConfig) if include_listing else None
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
     if req.artifactsBase64 is not None:
         ctx, artifacts = _saved_artifact_context(req, edition, adapter)
         result = adapter.validate(ctx)
         if edition.kind == "ebook" and result["errors"] == 0:
             try:
-                listing = publishing_metadata(req.bookModel, req.editionConfig)
-                _assert_saved_epub_metadata(artifacts["book.epub"], listing["metadata"])
+                checked_listing = listing if listing is not None else publishing_metadata(req.bookModel, req.editionConfig)
+                _assert_saved_epub_metadata(artifacts["book.epub"], checked_listing["metadata"])
             except ValueError as error:
                 result["errors"] += 1
                 result["findings"].append(Finding(code="SAVED_EPUB_METADATA", message=str(error),
@@ -77,6 +82,8 @@ def validate(req: ValidateRequest) -> dict:
         if edition.kind == "print":
             cover = artifacts.get("cover.pdf") or artifacts.get("cover.png")
             result["coverSha256"] = hashlib.sha256(cover).hexdigest() if cover else None
+        if listing is not None:
+            result["listing"] = listing
         return result
 
     artifact = None
@@ -84,7 +91,10 @@ def validate(req: ValidateRequest) -> dict:
         artifact, _ = render_epub(req.bookModel, edition)
     ctx = {"book": req.bookModel, "edition": req.editionConfig, "artifact": artifact,
            "channel": req.channel, "image_bytes": {}}
-    return adapter.validate(ctx)
+    result = adapter.validate(ctx)
+    if listing is not None:
+        result["listing"] = listing
+    return result
 
 
 def _publication_edition(req: ValidateRequest):

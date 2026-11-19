@@ -37,13 +37,19 @@ const bundle = await build({
 const browser = await chromium.launch({ headless: true, channel: process.env.BROWSER_TEST_CHANNEL || "msedge" });
 test.after(() => browser.close());
 
-async function fixture() {
+async function fixture(fragment = "") {
   const page = await browser.newPage({ viewport: { width: 1280, height: 980 } });
   page.setDefaultTimeout(6000);
   await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: '<!doctype html><html><body><div id="root"></div></body></html>' }));
-  await page.goto("http://127.0.0.1/books/11111111-1111-4111-8111-111111111111/memory");
+  await page.goto(`http://127.0.0.1/books/11111111-1111-4111-8111-111111111111/memory${fragment}`);
   await page.evaluate(() => {
     window.prompts = []; window.confirmAnswer = false; window.navigations = 0; window.writes = [];
+    window.listingScrolls = [];
+    const scrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (options) {
+      window.listingScrolls.push(this.id);
+      return scrollIntoView.call(this, options);
+    };
     window.actor = "33333333-3333-4333-8333-333333333333";
     window.confirm = message => { window.prompts.push(message); return window.confirmAnswer; };
     window.bookwormApi = { adminAccess: async () => ({ admin: false }), claimReferral: async () => ({ claimed: true }) };
@@ -83,6 +89,14 @@ async function fixture() {
   await expect(page.getByRole("button", { name: "Reload saved data", exact: true })).toBeEnabled();
   return page;
 }
+
+test("the listing deep link scrolls to metadata after the book loads", async () => {
+  const page = await fixture("#publishing-metadata");
+  try {
+    await expect(page.getByRole("region", { name: "Publishing metadata", exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.listingScrolls)).toContain("publishing-metadata");
+  } finally { await page.close(); }
+});
 
 test("cancelled manuscript navigation keeps an unsaved Book Bible entry available for explicit save", async () => {
   const page = await fixture();

@@ -10,7 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import UUID
 from threading import BoundedSemaphore
-from typing import Literal
+from typing import Annotated, Literal
 import warnings
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
@@ -36,7 +36,7 @@ from rtl_text import cover_rtl_issues  # noqa: E402
 from wrap_cover import VERSION as WRAP_VERSION, UPLOADED_VERSION, prepare_wrap_cover  # noqa: E402
 from preflight import Finding  # noqa: E402
 from audio_assembly import assemble_audio_with_quality, encode_narration_pcm  # noqa: E402
-from publication_metadata import edition_publication_metadata  # noqa: E402
+from publication_metadata import edition_publication_metadata, retailer_listing  # noqa: E402
 from epub_preview_transport import preview_epub_request  # noqa: E402
 from pdf_preview import preview_pdf_page, MAX_PDF_BYTES  # noqa: E402
 
@@ -332,11 +332,12 @@ def render(req: RenderRequest) -> RenderResponse:
 
 
 @app.post("/preflight", dependencies=[Depends(require_service_token)])
-def preflight(req: PreflightRequest) -> dict:
+def preflight(req: PreflightRequest, include_listing: Annotated[bool, Header(alias="x-bookworm-include-listing")] = False) -> dict:
     try:
         edition = parse_edition(req.editionConfig)
         metadata = edition_publication_metadata(req.bookModel.get("metadata", {}), req.editionConfig)
         ruleset = load_ruleset(req.channel)
+        listing = {"listing": retailer_listing(metadata)} if include_listing and req.channel else {}
     except (ValueError, KeyError) as e:
         raise HTTPException(422, str(e)) from e
     rtl_render_blocked = (
@@ -353,6 +354,7 @@ def preflight(req: PreflightRequest) -> dict:
                "image_bytes": {}, "cover_bytes": _cover_bytes(req.coverBase64)}
         findings = run_preflight(ctx, ruleset)
         return {
+            **listing,
             "ruleVersion": ruleset.version,
             "channel": req.channel,
             "errors": sum(1 for f in findings if f.severity == "error"),
@@ -368,6 +370,7 @@ def preflight(req: PreflightRequest) -> dict:
     initial_findings = run_preflight(initial_ctx, ruleset)
     if any(f.code.startswith("PRINT_FULL_BLEED_") or f.rule_id == "CORE-LAYOUT-001" for f in initial_findings):
         return {
+            **listing,
             "ruleVersion": ruleset.version,
             "channel": req.channel,
             "errors": sum(1 for f in initial_findings if f.severity == "error"),
@@ -398,6 +401,7 @@ def preflight(req: PreflightRequest) -> dict:
                                 location="edition.wrap_cover", severity="error", category="channel",
                                 rule_id="CORE-COVER-002", rule_version=ruleset.version))
     return {
+        **listing,
         "ruleVersion": ruleset.version,
         "channel": req.channel,
         "errors": sum(1 for f in findings if f.severity == "error"),

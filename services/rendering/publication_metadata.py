@@ -51,3 +51,22 @@ def effective_publication_metadata(metadata: dict, overrides: dict | None = None
     else:
         effective["publicationDate"] = saved_date
     return effective
+
+
+def retailer_listing(metadata: dict) -> dict:
+    """Project the effective metadata into the versioned retailer handoff."""
+    result = {}
+    for field in ("title", "subtitle", "author", "language", "description", "isbn13", "edition"):
+        value = metadata.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"publishing metadata {field} must be text")
+        if field in metadata:
+            result[field] = value
+    for field in ("keywords", "categories"):
+        value = metadata.get(field, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError(f"publishing metadata {field} must be a text list")
+        result[field] = value
+    if "publicationDate" in metadata:
+        result["publicationDate"] = metadata["publicationDate"]
+    return {"schemaVersion": "1.0", "metadata": result}

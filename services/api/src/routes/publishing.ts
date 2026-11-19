@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
+import { BookMetadataSchema } from "@bookworm/book-model";
 import { RETAILER_SUBMISSION_STATUSES, type RetailerSubmission } from "@bookworm/types";
 import { artworkSnapshotSchema, renderImagesFingerprint, assertRenderImagesCurrent, printProofImageInputs } from "../lib/render-images.js";
 import { AppError } from "../errors.js";
@@ -89,6 +90,9 @@ const storedPreflightResponseSchema = preflightResponseSchema.extend({
 }).strict().refine(singleSavedPreflightSource);
 const validatorResponseSchema = preflightResponseSchema.extend({
   artifactSha256: sha256Schema.optional(), coverSha256: sha256Schema.nullable().optional(),
+  listing: z.object({ schemaVersion: z.literal("1.0"), metadata: BookMetadataSchema.extend({
+    title: z.string(), author: z.string(),
+  }).strict() }).strict().optional(),
 }).strict();
 
 export function verifyPreflightReport(raw: unknown, channel: string, sources: SavedPreflightSources) {
@@ -512,6 +516,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
         method: "POST",
         headers: {
           "content-type": "application/json",
+          ...(body.channel === "export" ? {} : { "x-bookworm-include-listing": "true" }),
           ...(serviceToken ? { "x-service-token": serviceToken } : {}),
         },
         body: JSON.stringify(savedArtifacts ? {
@@ -531,7 +536,9 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       if (!response.ok) throw new AppError(503, "The edition validator could not complete this request.");
       let raw: unknown;
       try { raw = JSON.parse(responseText); } catch { throw new AppError(503, "The validator returned an invalid response."); }
-      const result = verifyPreflightReport(raw, body.channel, sources);
+      // The listing is a view of the exact checked model. Keep the durable
+      // receipt shape compatible with active package workers and old reads.
+      const { listing, ...result } = verifyPreflightReport(raw, body.channel, sources);
       await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
         model.chapters.flatMap(chapter => chapter.nodes), imageSha256, uploadedCoverVersion(config));
       if (savedRender) await checkRenderedPackageInputs(service, book.workspace_id, config.kind, savedRender, config, proof);
@@ -560,7 +567,8 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       }
       completionPersisted = true;
       reply.header("cache-control", "private, no-store");
-      return reply.status(201).send({ jobId: completedJob.id, ...(completedJob.response_json as Record<string, unknown>) });
+      return reply.status(201).send({ jobId: completedJob.id, ...(completedJob.response_json as Record<string, unknown>),
+        ...(body.channel !== "export" && listing ? { listing } : {}) });
     } catch (error) {
       if (!completionPersisted) await failPreflightJob(service, jobId);
       if (error instanceof AppError) throw error;

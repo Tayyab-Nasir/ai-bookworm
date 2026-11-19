@@ -3,7 +3,7 @@
 // client from services/api/openapi.yaml (e.g. openapi-typescript) later.
 import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task, Approval, WorkspaceMember, Edition, BookBibleItem as CanonicalBookBibleItem } from "@bookworm/types";
 import { RETAILER_SUBMISSION_STATUSES, type RetailerSubmission, type RetailerSubmissionStatus } from "@bookworm/types";
-import type { BookNode } from "@bookworm/book-model";
+import type { BookMetadata, BookNode } from "@bookworm/book-model";
 import { parseBookOverview } from "@bookworm/api-client/book-overview";
 import { parseAiConnections, parseAiConnectionMutation, parseAiConnectionReceipt, type AiProvider, type AiConnectionMutation, type AiConnectionPending } from "@bookworm/api-client/ai-connections";
 import { customerAiClient } from "@bookworm/api-client/customer-ai";
@@ -606,6 +606,7 @@ export interface PreflightResult {
   findings: PreflightFinding[];
   sourceEpub?: Pick<SavedEpubSource, "jobId" | "sha256">;
   sourcePrint?: SavedPrintPreflightSource;
+  listing?: { schemaVersion: "1.0"; metadata: BookMetadata };
 }
 
 export type RetailerChannel = "kdp" | "apple" | "barnesnoble" | "lulu" | "googleplay";

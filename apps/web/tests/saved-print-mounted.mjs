@@ -323,7 +323,7 @@ test("Studio waits for the selected print proof before running preflight", async
 });
 
 test("actual Studio requires preflight for the opened print interior and its cover", async () => {
-  const { page, errors } = await fixture({ parent: true });
+  const { page, errors } = await fixture({ parent: true, width: 390 });
   try {
     await open(page);
     const packageButton = page.getByRole("button", { name: "Create retailer package", exact: true });
@@ -335,16 +335,30 @@ test("actual Studio requires preflight for the opened print interior and its cov
       const original = window.bookwormApi.runPreflight;
       window.bookwormApi.runPreflight = async body => {
         const report = await original(body);
-        return window.badCover ? { ...report, sourcePrint: { ...body.sourcePrint, coverSha256: null } } : report;
+        const listing = { schemaVersion: "1.0", metadata: { title: "Harbor Letters", author: "An author", language: "en",
+          description: "The first line.\nUne deuxième ligne.", isbn13: "9780306406157", keywords: ["coast", "letter"], categories: [] } };
+        return window.badCover ? { ...report, listing, sourcePrint: { ...body.sourcePrint, coverSha256: null } } : { ...report, listing };
       };
+      Object.defineProperty(navigator, "clipboard", { value: { writeText: async value => { window.copiedDescription = value; } }, configurable: true });
       window.badCover = true;
     });
     await validate.click();
     await expect(page.getByRole("alert")).toContainText("Preflight did not confirm this saved print interior and cover.");
     await expect(packageButton).toBeDisabled();
+    await expect(page.getByText("Review retailer listing", { exact: true })).toHaveCount(0);
     await page.evaluate(() => { window.badCover = false; });
     await validate.click();
     await expect(packageButton).toBeEnabled();
+    await page.getByText("Review retailer listing", { exact: true }).click();
+    await expect(page.getByText("Harbor Letters", { exact: true })).toBeVisible();
+    await expect(page.getByText("9780306406157", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Copy description", exact: true }).click();
+    await expect(page.getByText("Description copied.", { exact: true })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.copiedDescription), "The first line.\nUne deuxième ligne.");
+    await expect(page.getByRole("link", { name: "Edit book listing", exact: true })).toHaveAttribute("href", `/books/${ids.book}/memory#publishing-metadata`);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("barnesnoble");
+    await expect(page.getByText("Review retailer listing", { exact: true })).toHaveCount(0);
     const writes = await page.evaluate(() => window.requests.filter(row => row.method === "POST"));
     assert.deepEqual(writes.map(row => [row.action, row.body.sourcePrint]), Array(2).fill(["preflight", {
       jobId: ids.job, sha256: primaryDigest, coverSha256: coverDigest,

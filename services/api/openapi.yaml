@@ -5198,6 +5198,28 @@ components:
         findings: { type: array, items: { type: object } }
         sourceEpub: { $ref: "#/components/schemas/SavedEpubPreflightSource" }
         sourcePrint: { $ref: "#/components/schemas/SavedPrintPreflightSource" }
+        listing:
+          description: Retailer listing from the exact model checked by this validator when the processor supports this view.
+          type: object
+          additionalProperties: false
+          required: [schemaVersion, metadata]
+          properties:
+            schemaVersion: { type: string, enum: ['1.0'] }
+            metadata:
+              type: object
+              additionalProperties: false
+              required: [title, author, language]
+              properties:
+                title: { type: string }
+                subtitle: { type: string }
+                author: { type: string }
+                language: { type: string }
+                description: { type: string }
+                isbn13: { type: [string, 'null'] }
+                edition: { type: [string, 'null'] }
+                publicationDate: { type: [string, 'null'], format: date }
+                keywords: { type: array, items: { type: string } }
+                categories: { type: array, items: { type: string } }
     PublishingPackageJob:
       type: object
       required: [id, requestId, bookId, editionId, channel, status, createdAt, sourceRenderJobId, sourcePreflightJobId, failureCode, submissionMode, package]

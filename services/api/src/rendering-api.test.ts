@@ -537,14 +537,18 @@ test("atomic completion refusals retain uncertain files and never publish artifa
 test("preflight validates saved content and persists deterministic findings", async () => {
   const store = baseStore();
   store.tables.editions[0].language = "he";
+  const listing = { schemaVersion: "1.0", metadata: { title: "River Moon", author: "Test Author", language: "he",
+    description: "A saved description.", keywords: ["fantasy"], categories: [], isbn13: null } };
   const requests: unknown[] = [];
   const preflightFetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(new Headers(init?.headers).get("x-bookworm-include-listing"), "true");
     requests.push(JSON.parse(String(init?.body)));
     return new Response(JSON.stringify({
       ruleVersion: "core-1.0.0+kdp-1.1.0",
       channel: "kdp",
       errors: 1,
       warnings: 0,
+      listing,
       findings: [{
         code: "NO_ALT_TEXT", message: "image lacks alt text", location: `chapter:${CHAPTER} node:i1`, severity: "error",
         category: "accessibility", rule_id: "CORE-A11Y-001", rule_version: "core-1.0.0+kdp-1.1.0",
@@ -558,6 +562,8 @@ test("preflight validates saved content and persists deterministic findings", as
   assert.equal(response.statusCode, 201, response.body);
   const body = response.json();
   assert.equal(body.requestedChannel, "kdp");
+  assert.deepEqual(body.listing, listing);
+  assert.equal(Object.hasOwn(store.tables.publishing_jobs[0].response_json as object, "listing"), false);
   assert.equal(body.errors, 1);
   assert.equal(store.tables.publishing_validations.length, 1);
   assert.equal(store.tables.publishing_jobs[0].status, "succeeded");

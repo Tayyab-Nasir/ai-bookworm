@@ -17,6 +17,7 @@ import PrivateCoverPreview from "./PrivateCoverPreview";
 import { renderLinksDeadline } from "../lib/pdf-proof";
 import { clearRenderPointer, persistRenderPointer, readRenderPointer, validateRenderClosure, validateRenderStatus, type RenderPointer } from "../lib/render-request";
 import RetailerPackageRequest from "./RetailerPackageRequest";
+import RetailerListingReview from "./RetailerListingReview";
 import RetailerSubmission from "./RetailerSubmission";
 import { readBrowserSession } from "../lib/browser-session";
 import { discardEditionTab, editionBase, parseEditionTab, readEditionTab, writeEditionTab } from "../lib/edition-tab-recovery";
@@ -35,6 +36,13 @@ const timePackage = (job: PublishingPackageJob, startedAt: DownloadClock): Timed
 const CHANNEL_FORMATS: Record<RetailerChannel, Kind[]> = { kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"] };
 const CHANNEL_LABELS: Record<Channel, string> = { export: "Universal export", kdp: "Amazon KDP", apple: "Apple Books", barnesnoble: "Barnes & Noble Press", lulu: "Lulu", googleplay: "Google Play Books" };
 const CHANNEL_ENTITLEMENTS: Record<RetailerChannel, string> = { kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu", googleplay: "google_play" };
+const CHANNEL_PORTALS: Record<RetailerChannel, { label: string; href: string }> = {
+  kdp: { label: "KDP Bookshelf", href: "https://kdp.amazon.com/en_US/bookshelf" },
+  apple: { label: "Apple Books Publishing Portal", href: "https://authors.apple.com/epub-upload" },
+  barnesnoble: { label: "B&N Press", href: "https://press.barnesandnoble.com/" },
+  lulu: { label: "Lulu print book projects", href: "https://www.lulu.com/create/print-books" },
+  googleplay: { label: "Google Play Books Partner Center", href: "https://play.google.com/books/publish/" },
+};
 const artifactUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function renderedStoragePath(workspace: string | undefined, artifact: RenderedEditionResult["artifacts"][number]) {
   if (!workspace || !artifactUuid.test(workspace) || !artifactUuid.test(artifact.asset.id) || artifact.asset.workspace_id !== workspace) return "";
@@ -1039,6 +1047,11 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
                 <p className="mt-2 text-white/70">{channel === "export" ? "Choose a retailer above to check package access." : planStatus.channels?.includes(CHANNEL_ENTITLEMENTS[channel]) ? "The selected retailer package is included in the current plan." : "The selected retailer package is not included in the current plan."}</p>
                 <p className="mt-2 text-xs text-white/45">Access can change; the server checks the plan again when a package is created. <button type="button" className="underline underline-offset-4" onClick={() => setPlanRevision(value => value + 1)}>Refresh access</button></p></>}
           </div>
+          {activeId && !dirty && channel !== "export" && channelCompatible && editable && <div className="mt-4">
+            <Link href={`/books/${bookId}/memory#publishing-metadata`} className="inline-flex min-h-11 items-center text-sm text-violet-200 underline underline-offset-4">Edit book listing</Link>
+            {preflight?.requestedChannel === channel && preflight.listing && <RetailerListingReview key={preflight.jobId}
+              metadata={preflight.listing.metadata} isCurrent={handlerCurrent} />}
+          </div>}
           <RetailerPackageRequest key={bookId} bookId={bookId} canEdit={editable} disabled={Boolean(busy) && busy !== "package"}
             request={activeId && !dirty && channel !== "export" && channelCompatible && packageRenderId && preflight && preflight.requestedChannel === channel && preflight.errors === 0
               && (!savedEpub || (preflight.sourceEpub?.jobId === savedEpub.jobId && preflight.sourceEpub.sha256 === savedEpub.sha256))
@@ -1064,9 +1077,9 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
           {packageHistory.editionId === activeId && packageHistory.status === "ready" && activePublishingJobs.length ? <ul className="mt-4 space-y-3">{activePublishingJobs.map((job) => <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium capitalize">{job.channel === "barnesnoble" ? "Barnes & Noble" : job.channel === "googleplay" ? "Google Play Books" : job.channel} package</p><p className="mt-1 text-xs text-white/40">{new Date(job.createdAt).toLocaleString()} · {job.ruleVersion ?? "rules pending"}</p></div><span className={`rounded-full px-3 py-1 text-xs ${job.status === "succeeded" && job.package ? "bg-emerald-400/15 text-emerald-100" : job.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{job.status === "succeeded" ? (job.package ? "ready" : "unavailable") : job.status}</span></div>
             {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <PrivateArtifactDownload actor={linkOwner} url={job.package.download.url} filename={`${job.channel}-export.zip`} expectedPath={packageStoragePath(book?.workspace_id, job)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && publishingJobsRef.current.includes(job)} isExpired={() => { const now = observePackageClock(); return clockFault.current || downloadExpired(job.downloadExpiresAt, now); }} onInvalid={(message, kind) => { if (kind === "expired") return; setPackageHistory({ editionId: activeId, status: "unavailable" }); setError(message); }} className="underline disabled:opacity-40">Download private ZIP</PrivateArtifactDownload> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified. Refresh package history to renew it."}</span>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
-            {currentIdentity && job.status === "succeeded" && job.package && job.channel === "kdp" && (
+            {currentIdentity && job.status === "succeeded" && job.package && CHANNEL_PORTALS[job.channel] && (
               <p className="mt-2 text-sm text-white/65">
-                Open your <a href="https://kdp.amazon.com/en_US/bookshelf" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">KDP Bookshelf</a> and follow the upload steps in the ZIP.
+                Open <a href={CHANNEL_PORTALS[job.channel].href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">{CHANNEL_PORTALS[job.channel].label}</a> and follow the upload steps in the ZIP.
               </p>
             )}
             {currentIdentity && job.status === "succeeded" && job.bookId === bookId && job.editionId === activeId && (

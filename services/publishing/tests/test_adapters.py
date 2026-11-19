@@ -1076,6 +1076,7 @@ def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geom
 
 
 def test_print_edition_isbn_is_bound_to_the_interior_cover_and_listing():
+    from fastapi.testclient import TestClient
     from PIL import Image
     from adapters import publishing_metadata
     from pdf_renderer import render_pdf
@@ -1097,11 +1098,21 @@ def test_print_edition_isbn_is_bound_to_the_interior_cover_and_listing():
     cover, _ = render_wrap_cover(image.getvalue(), interior, parsed)
     artifacts = {"book.pdf": base64.b64encode(interior).decode(), "cover.pdf": base64.b64encode(cover).decode()}
     request = PackageRequest(channel="kdp", editionConfig=config, bookModel=book, artifactsBase64=artifacts)
-    report = _PUBLISHING_MAIN.validate(request)
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv("PUBLISHING_SERVICE_TOKEN", "fixture-publisher-token")
+        with TestClient(_PUBLISHING_MAIN.app) as client:
+            old = client.post("/v1/publishing/validate", json=request.model_dump(), headers={"x-service-token": "fixture-publisher-token"})
+            assert old.status_code == 200 and "listing" not in old.json()
+            response = client.post("/v1/publishing/validate", json=request.model_dump(), headers={
+                "x-service-token": "fixture-publisher-token", "x-bookworm-include-listing": "true",
+            })
+    assert response.status_code == 200
+    report = response.json()
     assert report["errors"] == 0, report["findings"]
     package = build_package(request)["packages"][0]
     with zipfile.ZipFile(BytesIO(base64.b64decode(package["dataBase64"]))) as archive:
-        assert json.loads(archive.read("metadata.json"))["metadata"]["isbn13"] == isbn
+        assert report["listing"]["metadata"]["isbn13"] == isbn
+        assert json.loads(archive.read("metadata.json")) == report["listing"]
         assert (archive.read("book.pdf"), archive.read("cover.pdf")) == (interior, cover)
     wrong_retailer = request.model_copy(update={"channel": "barnesnoble"})
     assert any(item["code"] == "PRINT_BARCODE_CHANNEL" for item in _PUBLISHING_MAIN.validate(wrong_retailer)["findings"])
