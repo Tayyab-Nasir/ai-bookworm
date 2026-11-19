@@ -26,7 +26,12 @@ const bundle = await build({
   plugins: [{ name: "local-view-fixtures", setup(builder) {
     builder.onResolve({ filter: /(?:\/|^)(?:api|AuthorShell)$/ }, args => args.importer.replaceAll("\\", "/").startsWith(resolve("apps/web").replaceAll("\\", "/"))
       ? { path: args.path.endsWith("AuthorShell") ? "shell" : "api", namespace: "fixture" } : undefined);
-    builder.onLoad({ filter: /^api$/, namespace: "fixture" }, () => ({ contents: "export const apiClient = () => window.api;" }));
+    builder.onLoad({ filter: /^api$/, namespace: "fixture" }, () => ({
+      contents: `import { createClient } from "@bookworm/api-client";
+        export const apiClient = actor => window.useRealClient
+          ? createClient({ baseUrl: "/api/backend", expectedActor: actor }) : window.api;`,
+      resolveDir: process.cwd(),
+    }));
     builder.onLoad({ filter: /^shell$/, namespace: "fixture" }, () => ({ contents: 'import React from "react"; export function AuthorPage({children}) { return React.createElement("div", null, children); } export function AuthorHeader() { return null; }', resolveDir: process.cwd() }));
     builder.onResolve({ filter: /^next\/navigation$/ }, () => ({ path: "navigation", namespace: "fixture" }));
     builder.onLoad({ filter: /^navigation$/, namespace: "fixture" }, () => ({ contents: 'export const useSearchParams = () => new URLSearchParams(window.query); export const useParams = () => ({ id: window.communityId });' }));
@@ -55,7 +60,7 @@ async function fixture({ width = 1280, styled = false } = {}) {
     window.account = "11111111-1111-4111-8111-111111111111";
     window.fetch = async () => Response.json({ user: { id: window.account, email: "author@example.test" } });
     window.defer = name => new Promise((resolve, reject) => { window.gates[name] = { resolve, reject }; });
-    window.sales = id => ({ imports: [{ id: id + "-receipt", file_name: id + " receipt.csv", row_count: 1, source: "amazon_kdp", period_start: "2026-09-01", period_end: "2026-09-30", created_at: "2026-10-01T00:00:00Z" }],
+    window.sales = id => ({ imports: [{ id: id + "-receipt", workspace_id: id, file_name: id + " receipt.csv", row_count: 1, source: "amazon_kdp", period_start: "2026-09-01", period_end: "2026-09-30", created_at: "2026-10-01T00:00:00Z" }],
       summary: { available: true, status: "imported", imports: 1, units: 2, royaltyCents: id === "b" ? 123 : 456, reportedProceedsCents: null, currency: "USD", currencies: [] },
       analytics: { available: true, windowStart: "2026-09-01", windowEnd: "2026-10-01", monthCount: 1, monthly: [{ month: "2026-09-01", currency: "USD", units: 2, royaltyCents: 123, reportedProceedsCents: null }], books: [], sources: [], bookCount: 0, booksTruncated: false } });
     window.overview = (id, suffix = "") => ({ viewerId: window.account, workspace: { id, name: `Workspace ${id.toUpperCase()}`, organizationId: `${id}-organization`, role: "writer" },
@@ -68,8 +73,9 @@ async function fixture({ width = 1280, styled = false } = {}) {
     window.api = { listWorkspaces: async () => ({ workspaces: [{ id: "a", name: "Workspace A" }, { id: "b", name: "Workspace B" }] }),
       getDashboardOverview: async id => window.overview(id),
       listRetailerSalesImports: async id => window.sales(id),
-      importRetailerSales: async body => { window.calls.push({ operation: "import", body }); return { rowCount: 1, duplicate: false }; },
-      adminList: async () => [], adminModerationReports: async () => ({ reports: [] }) };
+      importRetailerSales: async body => { window.calls.push({ operation: "import", body }); return { importId: "saved-receipt", rowCount: 1, duplicate: false }; },
+      adminList: async () => [], adminModerationReports: async () => ({ reports: [] }),
+      adminAccess: async () => ({ admin: true, viewerId: window.account }) };
   });
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
   return page;
@@ -378,8 +384,174 @@ test("a sales import cannot be redirected by switching workspaces during its sav
     await expect(page.getByText("b receipt.csv", { exact: true })).toBeVisible();
     await page.evaluate(() => window.gates["import-a"].resolve({ rowCount: 1, duplicate: false }));
     await expect(page.getByText("b receipt.csv", { exact: true })).toBeVisible();
-    await expect(page.getByText("1 retailer sales rows imported.", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Imported 1 row from the retailer report.", { exact: true })).toHaveCount(0);
     assert.equal((await page.evaluate(() => window.calls))[0].body.workspaceId, "a");
+  } finally { await page.close(); }
+});
+
+test("a confirmed sales receipt stays visible when the ledger cannot be refreshed", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.api.importRetailerSales = async body => {
+        window.calls.push({ operation: "import", body });
+        window.api.listRetailerSalesImports = async () => { throw new Error("Sales refresh is unavailable."); };
+        return { importId: "saved-receipt", rowCount: 1, duplicate: false };
+      };
+      window.renderAnalytics("ws=a");
+    });
+    await expect(page.getByText("a receipt.csv", { exact: true })).toBeVisible();
+    await page.locator('input[type="file"]').setInputFiles({ name: "report.csv", mimeType: "text/csv", buffer: Buffer.from("date,title,units,royalty,currency\n2026-09-01,River,1,2.50,USD") });
+    await page.getByRole("button", { name: "Import 1 verified rows", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Sales refresh is unavailable.");
+    await expect(page.getByRole("status")).toContainText("Imported 1 row from the retailer report.");
+    await expect(page.getByText("Awaiting report", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Saved reports could not be verified.", { exact: true })).toBeVisible();
+    await expect(page.getByText(/No retailer report saved yet/)).toHaveCount(0);
+    await page.evaluate(() => { window.api.listRetailerSalesImports = async id => window.sales(id); });
+    await page.getByRole("button", { name: "Refresh reports", exact: true }).click();
+    await expect(page.getByText("a receipt.csv", { exact: true })).toBeVisible();
+    assert.equal((await page.evaluate(() => window.calls)).length, 1);
+  } finally { await page.close(); }
+});
+
+test("a sales draft survives a same-account focus check and cannot be sent by a replacement account", async () => {
+  const page = await fixture();
+  try {
+    const original = "11111111-1111-4111-8111-111111111111";
+    await page.evaluate(() => {
+      window.useRealClient = true;
+      window.sessionReads = 0;
+      window.fetch = async (path, request = {}) => {
+        if (path === "/api/auth/session") {
+          window.sessionReads++;
+          return Response.json({ user: { id: window.account } });
+        }
+        const { pathname } = new URL(path, location.origin);
+        const expected = new Headers(request.headers).get("x-bookworm-actor");
+        if (request.method === "POST") window.calls.push({ expected, actor: window.account });
+        if (expected && expected !== window.account) return Response.json({ error: { code: "auth_error", message: "Your account changed." } }, { status: 409 });
+        if (pathname.endsWith("/workspaces")) return Response.json({ workspaces: [{ id: "a", name: "Shared workspace" }] });
+        if (pathname.endsWith("/dashboard")) return Response.json(window.overview("a"));
+        if (request.method === "POST") {
+          window.writes = (window.writes || 0) + 1;
+          return Response.json({ importId: "saved-receipt", rowCount: 1, duplicate: false }, { status: 201 });
+        }
+        const sales = window.sales("a");
+        if (!window.account.startsWith("1111")) sales.imports[0].file_name = "replacement receipt.csv";
+        return Response.json(sales);
+      };
+      window.renderAnalytics("ws=a");
+    });
+    await expect(page.getByText("a receipt.csv", { exact: true })).toBeVisible();
+    await page.locator('input[type="file"]').setInputFiles({ name: "draft.csv", mimeType: "text/csv", buffer: Buffer.from("date,title,units,royalty,currency\n2026-09-01,River,1,2.50,USD") });
+    const submit = page.getByRole("button", { name: "Import 1 verified rows", exact: true });
+    await expect(submit).toBeEnabled();
+    const before = await page.evaluate(() => window.sessionReads);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.waitForFunction(before => window.sessionReads > before, before);
+    await expect(submit).toBeEnabled();
+    await page.evaluate(() => { window.account = "22222222-2222-4222-8222-222222222222"; });
+    await submit.click();
+    await expect(page.getByText("replacement receipt.csv", { exact: true })).toBeVisible();
+    await expect(page.getByText("draft.csv", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Imported 1 row from the retailer report.", { exact: true })).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(() => ({ writes: window.writes || 0, expected: window.calls.map(call => call.expected) })), { writes: 0, expected: [original] });
+  } finally { await page.close(); }
+});
+
+test("a moderation confirmation stays bound to the original administrator", async () => {
+  const page = await fixture();
+  try {
+    const original = "11111111-1111-4111-8111-111111111111";
+    await page.evaluate(() => {
+      window.useRealClient = true;
+      window.fetch = async (path, request = {}) => {
+        if (path === "/api/auth/session") return Response.json({ user: { id: window.account } });
+        const { pathname } = new URL(path, location.origin);
+        const expected = new Headers(request.headers).get("x-bookworm-actor");
+        if (request.method === "POST") window.calls.push({ expected, actor: window.account });
+        if (expected && expected !== window.account) return Response.json({ error: { code: "auth_error", message: "Your account changed." } }, { status: 409 });
+        if (pathname.endsWith("/access")) return Response.json({ admin: true, viewerId: window.account });
+        if (pathname.endsWith("/users")) return Response.json({ users: [] });
+        if (pathname.endsWith("/reports")) return Response.json({ reports: window.account.startsWith("1111") ? [{
+          id: "report", entity_type: "post", status: "open", reason: "First account report",
+          target: { type: "post", title: "First account post", body: "First account content" },
+        }] : [] });
+        window.writes = (window.writes || 0) + 1;
+        return Response.json({ reportId: "report", status: "actioned", action: "remove", alreadyResolved: false });
+      };
+      window.renderAdmin();
+    });
+    await page.getByRole("button", { name: "moderation", exact: true }).click();
+    await page.getByRole("button", { name: "Review removal", exact: true }).click();
+    await page.evaluate(() => { window.account = "22222222-2222-4222-8222-222222222222"; });
+    await page.getByRole("button", { name: "Confirm removal", exact: true }).click();
+    await expect(page.getByText("No reports match these filters", { exact: true })).toBeVisible();
+    await expect(page.getByText("First account content", { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/Moderation outcome saved/)).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(() => ({ writes: window.writes || 0, expected: window.calls.map(call => call.expected) })), { writes: 0, expected: [original] });
+  } finally { await page.close(); }
+});
+
+test("a same-account admin review resumes after revalidation and a late reply stays with that account", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.api.adminModerationReports = async () => ({ reports: window.account.startsWith("1111") ? [{
+        id: "report", entity_type: "post", status: "open", reason: "First account report",
+        target: { type: "post", title: "First account post", body: "First account content" },
+      }] : [] });
+      window.api.adminResolveModerationReport = () => window.defer("decision");
+      window.renderAdmin();
+    });
+    await page.getByRole("button", { name: "moderation", exact: true }).click();
+    await page.getByRole("button", { name: "Review removal", exact: true }).click();
+    await page.evaluate(() => {
+      window.api.adminAccess = () => window.defer("recheck");
+      window.dispatchEvent(new Event("focus"));
+    });
+    await page.waitForFunction(() => !!window.gates.recheck);
+    await expect(page.getByRole("button", { name: "Confirm removal", exact: true })).toHaveCount(0);
+    await page.evaluate(() => {
+      window.api.adminAccess = async () => ({ admin: true, viewerId: window.account });
+      window.gates.recheck.resolve({ admin: true, viewerId: window.account });
+    });
+    await page.getByRole("button", { name: "Confirm removal", exact: true }).click();
+    await page.waitForFunction(() => !!window.gates.decision);
+    await page.evaluate(() => {
+      window.account = "22222222-2222-4222-8222-222222222222";
+      window.dispatchEvent(new Event("focus"));
+    });
+    await expect(page.getByText("No reports match these filters", { exact: true })).toBeVisible();
+    await page.evaluate(async () => {
+      window.gates.decision.resolve({ reportId: "report", status: "actioned", action: "remove", alreadyResolved: false });
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await expect(page.getByText("First account content", { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/Moderation outcome saved/)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Refresh", exact: true })).toBeEnabled();
+  } finally { await page.close(); }
+});
+
+test("admin document health is hidden during refresh and stays hidden on failure", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.api.adminDocumentJobHealth = async () => ({ health: { due_queued: 71 } });
+      window.renderAdmin();
+    });
+    await page.getByRole("button", { name: "jobs", exact: true }).click();
+    await page.getByRole("combobox", { name: "Job type", exact: true }).selectOption("document");
+    await expect(page.getByRole("region", { name: "Document queue health" })).toContainText("71");
+    await page.evaluate(() => { window.api.adminList = () => window.defer("job-queue"); });
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.waitForFunction(() => !!window.gates["job-queue"]);
+    await expect(page.getByRole("region", { name: "Document queue health" })).toHaveCount(0);
+    await page.evaluate(() => window.gates["job-queue"].reject(new Error("Jobs refresh is unavailable.")));
+    await expect(page.getByRole("alert")).toContainText("Jobs refresh is unavailable.");
+    await expect(page.getByRole("region", { name: "Document queue health" })).toHaveCount(0);
+    await expect(page.getByText("No matching records", { exact: true })).toHaveCount(0);
   } finally { await page.close(); }
 });
 
@@ -401,6 +573,7 @@ test("moderation requires review and confirmation and recovers a lost decision b
     await page.getByRole("button", { name: "Review removal", exact: true }).click();
     await page.getByRole("button", { name: "Confirm removal", exact: true }).click();
     await expect(page.getByRole("alert")).toContainText("Decision reply lost");
+    await expect(page.getByRole("button", { name: "Confirm removal", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByRole("button", { name: "Confirm removal", exact: true })).toHaveCount(0);
     assert.deepEqual(await page.evaluate(() => window.calls), [{ id: "report", action: "remove" }]);

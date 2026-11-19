@@ -11,10 +11,11 @@ import { privateUploadUrl } from "../lib/private-upload";
 import { renderLinksDeadline } from "../lib/pdf-proof";
 import * as publishingRequests from "../lib/publishing-request";
 import * as renderRequests from "../lib/render-request";
+import * as savedPrint from "../lib/saved-print";
 import * as editionTabRecovery from "../lib/edition-tab-recovery";
 import * as editionCreateFence from "../lib/edition-create-fence";
 import { jobLink } from "../lib/job-link";
-import { BookNodeSchema } from "@bookworm/book-model/schema";
+import { BookNodeSchema, Isbn13Schema } from "@bookworm/book-model/schema";
 
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
@@ -108,6 +109,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/pdf-proof")) return { renderLinksDeadline };
     if (name.endsWith("/publishing-request")) return { ...publishingRequests, downloadClock: api.fixtureDownloadClock ?? publishingRequests.downloadClock };
     if (name.endsWith("/render-request")) return renderRequests;
+    if (name.endsWith("/saved-print")) return savedPrint;
     if (name.endsWith("/edition-tab-recovery")) return editionTabRecovery;
     if (name.endsWith("/edition-create-fence")) return editionCreateFence;
     if (name.endsWith("/publishing-edition-form")) return pure("apps/web/lib/publishing-edition-form.ts");
@@ -121,6 +123,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/sales-csv")) return csv;
     if (name.endsWith("/sales-analytics")) return {};
     if (name === "@bookworm/api-client") return { ApiClientError: class extends Error {}, createClient: () => api };
+    if (name === "@bookworm/book-model/schema") return { Isbn13Schema };
     throw new Error(`Unexpected audit import: ${name}`);
   };
   const source = readFileSync(resolve(path), "utf8") + (options.inner ? `\nexport { ${options.inner} as auditInner };` : "");
@@ -432,7 +435,7 @@ async function deferredAnalytics() {
   let heldOverview: ReturnType<typeof deferred<any>> | null = null;
   const h = harness("apps/web/app/analytics/page.tsx", {
     listWorkspaces: async () => ({ workspaces: available }),
-    getDashboardOverview: async (workspace: string) => { reads.push(workspace); const pending = heldOverview; heldOverview = null; return pending ? pending.promise : { ...overview(workspace), books: [{ id: `${workspace}-book`, title: `Book ${workspace}` }] }; },
+    getDashboardOverview: async (workspace: string) => { reads.push(workspace); const pending = heldOverview; heldOverview = null; return pending ? pending.promise : { ...overview(workspace), books: [{ id: `${workspace}-book`, workspace_id: workspace, title: `Book ${workspace}` }] }; },
     listRetailerSalesImports: async (workspace: string) => { reads.push(workspace); return { imports: [], summary: { currencies: [], currency: null, available: true }, analytics: { monthly: [], books: [], sources: [], available: true, windowStart: "2026-01-01", monthCount: 9 } }; },
     importRetailerSales: (payload: any) => { const result = deferred<any>(); requests.push({ payload, result }); return result.promise; },
   }, { inner: "AnalyticsPageInner", query: `?ws=${A}`, blockedStorage: true });
@@ -450,25 +453,27 @@ for (const boundary of ["replacement", "unmount"] as const) for (const outcome o
   const { h, requests, reads, cleanup, choose, replace } = await deferredAnalytics(); const old = await choose(A); old(); assert.equal(requests.length, 1);
   if (boundary === "unmount") cleanup(); else { await replace(); await choose(B); }
   const before = snapshot(h); const count = reads.length;
-  if (outcome === "success") requests[0].result.resolve({ rowCount: 1, duplicate: false }); else requests[0].result.reject(new Error("Synthetic stale import failure"));
+  if (outcome === "success") requests[0].result.resolve({ importId: "original-import", rowCount: 1, duplicate: false }); else requests[0].result.reject(new Error("Synthetic stale import failure"));
   await settle(); assert.equal(snapshot(h), before); assert.equal(reads.length, count);
   if (boundary === "replacement") { old(); assert.equal(requests.length, 1, "retained old submit cannot import A after B is validated"); }
 });
 for (const outcome of ["success", "error"] as const) test(`Analytics stale ${outcome} cannot clear a newer B import lock`, async () => {
   const { h, requests, reads, choose, replace } = await deferredAnalytics(); (await choose(A))(); await replace();
-  assert.equal(h.states[14], false, "workspace replacement releases only the old scope's busy state");
+  assert.equal(props(h.render(), "form")["aria-busy"], false, "workspace replacement releases only the old scope's busy state");
   const current = await choose(B); current(); current(); assert.equal(requests.length, 2); assert.equal(requests[1].payload.workspaceId, B); assert.equal(requests[1].payload.rows[0].bookId, `${B}-book`);
   const before = snapshot(h); const count = reads.length;
-  if (outcome === "success") requests[0].result.resolve({ rowCount: 1, duplicate: false }); else requests[0].result.reject(new Error("Synthetic stale A failure"));
+  if (outcome === "success") requests[0].result.resolve({ importId: "original-import", rowCount: 1, duplicate: false }); else requests[0].result.reject(new Error("Synthetic stale A failure"));
   await settle(); assert.equal(snapshot(h), before); assert.equal(reads.length, count); assert.equal(props(h.render(), "form")["aria-busy"], true);
-  requests[1].result.resolve({ rowCount: 1, duplicate: false }); await settle(); assert.equal(props(h.render(), "form")["aria-busy"], false); assert(nodes(h.render()).some(node => node.props?.role === "status"));
+  requests[1].result.resolve({ importId: "current-import", rowCount: 1, duplicate: false }); await settle(); assert.equal(props(h.render(), "form")["aria-busy"], false); assert(nodes(h.render()).some(node => node.props?.role === "status"));
 });
 test("Analytics duplicate submit is blocked and ordinary failure/retry completes its own reload", async () => {
   const { h, requests, reads, choose } = await deferredAnalytics(); const start = await choose(A); start(); start(); assert.equal(requests.length, 1);
   requests[0].result.reject(new Error("Synthetic current import failure")); await settle(); assert(nodes(h.render()).some(node => node.props?.role === "alert")); assert.equal(props(h.render(), "form")["aria-busy"], false);
   props(h.render(), "form").onSubmit(event()); assert.equal(requests.length, 2); const count = reads.length;
-  requests[1].result.resolve({ rowCount: 1, duplicate: true }); await settle(); assert(reads.length > count); assert.equal(props(h.render(), "form")["aria-busy"], false);
-  assert(!nodes(h.render()).some(node => node.props?.role === "alert")); assert.equal(h.states[11], null); assert.equal(h.states[12].length, 0);
+  requests[1].result.resolve({ importId: "current-import", rowCount: 1, duplicate: true }); await settle(); assert(reads.length > count); assert.equal(props(h.render(), "form")["aria-busy"], false);
+  assert(!nodes(h.render()).some(node => node.props?.role === "alert"));
+  assert(nodes(h.render()).some(node => node.type === "span" && node.props.children === "Choose retailer CSV"));
+  assert(!nodes(h.render()).some(node => String(node.props?.children).includes("rows ready")));
   assert(nodes(h.render()).some(node => node.props?.role === "status" && String(node.props.children).includes("already imported")));
 });
 for (const boundary of ["replacement", "unmount"] as const) for (const outcome of ["success", "error"] as const) test(`Analytics CSV parsing ignores late ${outcome} after ${boundary}`, async () => {
@@ -483,11 +488,11 @@ for (const boundary of ["replacement", "unmount"] as const) for (const outcome o
 });
 test("Analytics replacement during its own receipt reload cannot publish stale totals or unlock B", async () => {
   const { h, requests, choose, replace, holdNextOverview } = await deferredAnalytics(); (await choose(A))();
-  const read = holdNextOverview(); requests[0].result.resolve({ rowCount: 1, duplicate: false }); await settle();
+  const read = holdNextOverview(); requests[0].result.resolve({ importId: "original-import", rowCount: 1, duplicate: false }); await settle();
   await replace(); (await choose(B))(); const before = snapshot(h);
-  read.resolve({ ...overview(A), books: [{ id: "synthetic-stale-a-book", title: "Synthetic stale A" }] }); await settle();
+  read.resolve({ ...overview(A), books: [{ id: "synthetic-stale-a-book", workspace_id: A, title: "Synthetic stale A" }] }); await settle();
   assert.equal(snapshot(h), before); assert.equal(props(h.render(), "form")["aria-busy"], true);
-  requests[1].result.resolve({ rowCount: 1, duplicate: false }); await settle(); assert.equal(props(h.render(), "form")["aria-busy"], false);
+  requests[1].result.resolve({ importId: "current-import", rowCount: 1, duplicate: false }); await settle(); assert.equal(props(h.render(), "form")["aria-busy"], false);
 });
 
 const callers = [

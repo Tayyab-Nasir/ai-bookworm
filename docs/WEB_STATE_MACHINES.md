@@ -3,8 +3,8 @@
 Reviewed on 2026-11-19 against the 27 Next.js pages and five route handlers in
 `apps/web/app`, the 37 `/v1` route group registrations and health routes in
 `services/api/src/app.ts`, and all 14 launcher roles in `workers/run.mjs`.
-The tables group product workflows whose state affects a user action, data
-ownership or a retry. Multiple machines can govern one screen. Identity,
+The tables map 45 product workflow groups whose state affects a user action,
+data ownership or a retry. Multiple machines can govern one screen. Identity,
 authorization, revision, request receipts, expiry, leases and provider dispatch
 can all affect which transitions are valid. Hosted verification is linked
 where available.
@@ -15,7 +15,9 @@ Mobile and Stripe activation are deferred by the product owner.
 Keep each durable workflow in its owning database or service. Use the existing
 route and component patterns to model the browser states at that boundary. Make
 transitions explicit where actions need a guard, a durable result, or recovery
-after a lost reply.
+after a lost reply. Use local tagged states when a screen must distinguish
+loading, a verified result, and denied or unavailable access. A menu that only
+opens and closes can use a boolean.
 
 - **UX** Show whether the result is confirmed, rejected, stale or still unknown.
   For an unknown outcome, offer a status check. Show an empty result only after
@@ -83,8 +85,8 @@ resolve a write whose reply was lost.
 | Community discussion and moderation | A verified account owns the discussion view and drafts. Revalidation hides posts, replies and the moderation queue. Reactions toggle active or inactive. Reports can move from open to actioned or dismissed. A confirmed write can finish across a same-account refresh. An account change discards the prior view, draft and review. | `apps/web/app/community/[id]/page.tsx`, `services/api/src/routes/community.ts`, `apps/web/tests/community-discussion-mounted.mjs` |
 | Book comments, tasks and approvals | Open/resolved comments, flexible task status edits, and approval decisions each have their own rules. Repeating the legacy comment toggle can reverse a prior result. Artwork approval also requires the exact asset version. | `apps/web/components/CommentThread.tsx`, `apps/web/components/CollaborationCenter.tsx`, `services/api/src/routes/collab.ts`, `services/api/src/step9.test.ts` |
 | Account requests and support | Data requests move between submitted, processing, completed, rejected and cancelled as allowed by the API or operator. A same-tab marker records an uncertain request without keeping its contents. Support tickets have open, pending, resolved and closed states. | `apps/web/app/settings/data-rights/page.tsx`, `apps/web/components/AccountMenu.tsx`, `services/api/src/routes/account.ts`, `tests/security/data-rights-confirmation-rpc.test.sql` |
-| Operator access and actions | Verified administrator, denied, or stale view. Moderation, job retry or hold settlement, user suspension and feature flag changes have distinct access checks and outcomes. | `apps/web/components/AdminConsole.tsx`, `services/api/src/routes/admin.ts`, `services/api/src/plugins/admin.ts`, `tests/security/admin-flags.test.sql` |
-| Analytics and billing views | Workspace/actor selection, loading/error, imported report state and credit ledger/plan access; manual report data is not live retailer connectivity. Stripe activation remains deferred. | `apps/web/app/analytics/page.tsx`, `apps/web/components/BillingCenter.tsx`, `services/api/src/routes/sales.ts`, `services/api/src/routes/billing.ts` |
+| Operator access and actions | Loading, verified account and filters, denied access, or unavailable records. Revalidation hides rows, health and pending confirmations. A same-account foreground check can resume the review after verifying access. Writes use the verified view's actor. A confirmed result can coexist with a failed refresh. An unconfirmed decision requires a read before the next write. | `apps/web/components/AdminConsole.tsx`, `services/api/src/routes/admin.ts`, `services/api/src/plugins/admin.ts`, `tests/security/admin-flags.test.sql`, `apps/web/tests/analytics-admin-mounted.mjs` |
+| Analytics and billing views | Sales reads and imports bind to the verified account and selected workspace. Checking, no workspace, unavailable and ready have distinct views. A confirmed import survives an unavailable follow-up read for the same account. Refresh reports checks the current ledger without sending another import. Billing has separate plan and credit ledger states. Stripe activation remains deferred. | `apps/web/app/analytics/page.tsx`, `apps/web/components/BillingCenter.tsx`, `services/api/src/routes/sales.ts`, `services/api/src/routes/billing.ts`, `apps/web/tests/analytics-admin-mounted.mjs` |
 
 ## Durable and worker state machines
 
@@ -203,6 +205,14 @@ resolve a write whose reply was lost.
   visible when the following discussion refresh fails. The browser fixture
   exercises the real API client against a synthetic boundary. Hosted account behavior and durable
   recovery after a lost write response are separate checks.
+- Mounted admin and sales fixtures cover replacement accounts with the same
+  privileges. The console and sales form use the existing web proxy's expected
+  actor check. Admin discards a late reply from a replaced account and hides
+  old health counts on refresh. An unconfirmed admin change clears actionable
+  records until a fresh read. Sales keeps the selected CSV on a same-account
+  focus check and hides its preview when the account changes. The receipts and
+  state transitions in these cases use synthetic browser boundaries. The
+  sales import RPC still owns exact-input deduplication and report replacement.
 - Generic POST deduplication marks a key before the handler responds. A duplicate
   error confirms the key was seen in that process. Recovering the original result
   requires a workflow receipt or a fresh read.

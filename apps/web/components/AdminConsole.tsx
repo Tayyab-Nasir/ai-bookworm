@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiClientError } from "@bookworm/api-client";
+import { readBrowserSession } from "../lib/browser-session";
 import { apiClient } from "./api";
 
 const tabs = ["users", "jobs", "moderation", "flags", "support", "audit", "usage"] as const;
@@ -9,6 +11,11 @@ type Tab = typeof tabs[number];
 type Row = Record<string, unknown>;
 type TicketStatus = "open" | "pending" | "resolved" | "closed";
 type ModerationAction = "remove" | "dismiss";
+type AdminSnapshot =
+  | { kind: "loading" | "denied" }
+  | { kind: "ready"; actor: string; query: string; version: number; rows: Row[]; documentHealth: Row | null }
+  | { kind: "unavailable"; actor: string | null; message: string };
+type AdminOutcome = { kind: "confirmed" | "rejected" | "unconfirmed"; actor: string; message: string };
 const ticketStatuses: TicketStatus[] = ["open", "pending", "resolved", "closed"];
 const input = "rounded-xl border border-white/15 bg-[#101010] px-3 py-2.5 text-sm text-white outline-none focus-visible:ring-2 focus-visible:ring-white";
 const button = "rounded-full border border-white/15 px-4 py-2 text-sm text-white/80 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white disabled:opacity-40";
@@ -19,19 +26,17 @@ function date(value: unknown) {
 }
 
 export default function AdminConsole() {
-  const api = apiClient();
   const [tab, setTab] = useState<Tab>("users");
   const [offset, setOffset] = useState(0);
   const [jobType, setJobType] = useState<"ai" | "publishing" | "document">("ai");
-  const [documentHealth, setDocumentHealth] = useState<Row | null>(null);
   const [status, setStatus] = useState("");
   const [reportStatus, setReportStatus] = useState<"open" | "actioned" | "dismissed" | "all">("open");
   const [reportType, setReportType] = useState<"all" | "post" | "comment">("all");
   const [pendingModeration, setPendingModeration] = useState<{ reportId: string; action: ModerationAction } | null>(null);
   const [search, setSearch] = useState("");
   const [searchDraft, setSearchDraft] = useState("");
-  const [rows, setRows] = useState<Row[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [snapshot, setSnapshot] = useState<AdminSnapshot>({ kind: "loading" });
+  const [outcome, setOutcome] = useState<AdminOutcome | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [holdJobId, setHoldJobId] = useState<string | null>(null);
   const [incidentRef, setIncidentRef] = useState("");
@@ -39,66 +44,150 @@ export default function AdminConsole() {
   const [receiptReviewed, setReceiptReviewed] = useState(false);
   const [reviewHoldAction, setReviewHoldAction] = useState<"settle" | "release">("settle");
   const [providerReviewed, setProviderReviewed] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [forbidden, setForbidden] = useState(false);
   const requestId = useRef(0);
+  const account = useRef<string | null>(null);
+  const pendingAction = useRef<object | null>(null);
+  const query = JSON.stringify([tab, offset, jobType, status, search, reportStatus, reportType]);
+  const ready = snapshot.kind === "ready" && snapshot.query === query ? snapshot : null;
+  const loading = snapshot.kind === "loading" || (snapshot.kind === "ready" && !ready);
+  const visibleActor = ready?.actor ?? (snapshot.kind === "unavailable" ? snapshot.actor : null);
+  const visibleOutcome = outcome?.actor === visibleActor ? outcome : null;
+  const notice = visibleOutcome?.kind === "confirmed" ? visibleOutcome.message : null;
+  const error = [visibleOutcome?.kind !== "confirmed" ? visibleOutcome?.message : null,
+    snapshot.kind === "unavailable" ? snapshot.message : null].filter(Boolean).join(" ");
+  const rows = ready?.rows ?? [];
+  const documentHealth = ready?.documentHealth;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (reasonForRead: "reload" | "foreground" = "reload") => {
     const current = ++requestId.current;
-    setLoading(true); setError(null); setRows([]);
+    const isCurrent = () => current === requestId.current;
+    setSnapshot({ kind: "loading" });
+    const closeReview = () => { setPendingModeration(null); setHoldJobId(null); };
+    if (reasonForRead === "reload") closeReview();
+    let verifiedActor: string | null = null;
     try {
-      const result = tab === "usage"
-        ? (await api.adminUsageSummary(30)).orgs as unknown as Row[]
+      const { id: actor } = await readBrowserSession();
+      if (!isCurrent()) return;
+      const switched = account.current !== null && account.current !== actor;
+      account.current = actor;
+      if (switched) {
+        closeReview();
+        pendingAction.current = null;
+        setBusy(null);
+        setOutcome(null);
+        setSearchDraft("");
+        if (search || offset !== 0) {
+          // The next read uses fresh filters for the replacement account.
+          setSearch("");
+          setOffset(0);
+          return;
+        }
+      }
+      const api = apiClient(actor);
+      const records = tab === "usage"
+        ? api.adminUsageSummary(30).then(result => result.orgs as unknown as Row[])
         : tab === "moderation"
-          ? (await api.adminModerationReports({
+          ? api.adminModerationReports({
             limit: 50, offset, status: reportStatus,
             ...(reportType === "all" ? {} : { entityType: reportType }),
-          })).reports as unknown as Row[]
-        : await api.adminList(tab as Exclude<Tab, "moderation" | "usage">, {
+          }).then(result => result.reports as unknown as Row[])
+        : api.adminList(tab, {
           limit: 50, offset,
           ...(tab === "jobs" ? { type: jobType, status } : {}),
           ...(tab === "support" ? { status } : {}),
           ...(tab === "users" ? { search } : {}),
         });
       const health = tab === "jobs" && jobType === "document"
-        ? (await api.adminDocumentJobHealth()).health as unknown as Row
-        : null;
-      if (current !== requestId.current) return false;
-      setRows(result); setDocumentHealth(health); setForbidden(false);
-      return true;
+        ? api.adminDocumentJobHealth().then(result => result.health as unknown as Row)
+        : Promise.resolve(null);
+      const [result, queueHealth] = await Promise.allSettled([records, health]);
+      if (!isCurrent()) return;
+      const access = await api.adminAccess();
+      if (!isCurrent()) return;
+      if (access.viewerId !== actor || access.admin !== true) {
+        closeReview();
+        setSnapshot({ kind: "denied" });
+        return;
+      }
+      verifiedActor = actor;
+      if (result.status === "rejected") throw result.reason;
+      if (queueHealth.status === "rejected") throw queueHealth.reason;
+      if (!Array.isArray(result.value)) throw new Error("The service did not return the requested records.");
+      setSnapshot({ kind: "ready", actor, query, version: current, rows: result.value, documentHealth: queueHealth.value });
     } catch (reason) {
-      if (current !== requestId.current) return false;
-      setForbidden((reason as { status?: number } | null)?.status === 403);
-      setError(reason instanceof Error ? reason.message : "Unable to load the admin console.");
-      return false;
-    } finally { if (current === requestId.current) setLoading(false); }
-  }, [api, tab, offset, jobType, status, search, reportStatus, reportType]);
+      if (!isCurrent()) return;
+      if (reason instanceof ApiClientError && reason.status === 403) {
+        closeReview();
+        setSnapshot({ kind: "denied" });
+      } else {
+        setSnapshot({ kind: "unavailable", actor: verifiedActor, message: reason instanceof Error ? reason.message : "Unable to load the admin console." });
+      }
+    }
+  }, [query, tab, offset, jobType, status, search, reportStatus, reportType]);
 
-  useEffect(() => { void load(); return () => { requestId.current++; }; }, [load]);
+  useEffect(() => {
+    void load();
+    const recheck = () => { if (document.visibilityState !== "hidden") void load("foreground"); };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      requestId.current++;
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    };
+  }, [load]);
+  useEffect(() => () => { pendingAction.current = null; account.current = null; }, []);
 
-  async function update(id: string, action: () => Promise<unknown>, message: string) {
-    if (busy || loading) return;
-    setBusy(id); setError(null); setNotice(null);
+  async function update(id: string, action: (api: ReturnType<typeof apiClient>) => Promise<unknown>, message: string) {
+    if (!ready || ready.version !== requestId.current || pendingAction.current) return;
+    const { actor } = ready;
+    const operation = {};
+    pendingAction.current = operation;
+    const isCurrent = () => pendingAction.current === operation;
+    setBusy(id);
+    setOutcome(null);
     try {
-      await action();
-      if (await load()) setNotice(message);
-      else setNotice("Change saved. Refresh to reload the latest data.");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "The change could not be saved."); }
-    finally { setBusy(null); }
+      await action(apiClient(actor));
+      if (!isCurrent()) return;
+      setOutcome({ kind: "confirmed", actor, message });
+      await load();
+    } catch (reason) {
+      if (!isCurrent()) return;
+      const problem = reason instanceof Error ? reason.message : "The change could not be confirmed.";
+      const accessChanged = reason instanceof ApiClientError && (reason.status === 401 || reason.status === 403
+        || (reason.status === 409 && reason.code === "auth_error"));
+      const rejection = reason instanceof ApiClientError && reason.status >= 400 && reason.status < 500
+        && reason.status !== 408 && reason.status !== 409 && reason.code !== "invalid_response";
+      if (accessChanged) {
+        setOutcome({ kind: "rejected", actor, message: problem });
+        await load();
+        return;
+      }
+      if (rejection) {
+        setOutcome({ kind: "rejected", actor, message: problem });
+      } else {
+        requestId.current++;
+        setPendingModeration(null);
+        setHoldJobId(null);
+        setSnapshot({ kind: "unavailable", actor, message: "" });
+        setOutcome({ kind: "unconfirmed", actor, message: `${problem} Refresh to check the current state before trying again.` });
+      }
+    } finally {
+      if (isCurrent()) { pendingAction.current = null; setBusy(null); }
+    }
   }
 
   function changeTab(next: Tab) {
-    if (busy) return;
+    if (pendingAction.current) return;
     setTab(next); setOffset(0); setStatus(""); setReportStatus("open"); setReportType("all");
-    setPendingModeration(null); setSearch(""); setSearchDraft(""); setNotice(null); setHoldJobId(null);
+    setPendingModeration(null); setSearch(""); setSearchDraft(""); setOutcome(null); setHoldJobId(null);
   }
 
-  if (forbidden) return <main className="mx-auto max-w-3xl px-6 py-20">
+  if (snapshot.kind === "denied") return <main className="mx-auto max-w-3xl px-6 py-20">
     <p className="text-xs uppercase tracking-[0.18em] text-white/40">Platform administration</p>
     <h1 className="mt-4 text-4xl font-medium tracking-tight">Administrator access required</h1>
     <p className="mt-5 text-sm leading-6 text-white/60">This account does not have platform administrator access. Workspace owner and team roles do not grant access to this console.</p>
-    <Link href="/dashboard" className={`${button} mt-8 inline-flex`}>Back to dashboard</Link>
+    <div className="mt-8 flex flex-wrap gap-3"><Link href="/dashboard" className={button}>Back to dashboard</Link><button type="button" onClick={() => void load()} className={button}>Recheck access</button></div>
   </main>;
 
   return <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
@@ -134,7 +223,7 @@ export default function AdminConsole() {
     </section>}
 
     <section aria-label={`${tab} records`} aria-busy={loading} className="mt-5 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.025]">
-      {loading ? <p role="status" className="p-12 text-center text-sm text-white/45">Loading {tab}…</p> : !rows.length ? <div className="p-12 text-center"><p className="text-base text-white/80">{error ? "Data unavailable" : tab === "moderation" ? "No reports match these filters" : "No matching records"}</p><p className="mt-2 text-sm text-white/40">{error ? "Use Refresh to try again." : tab === "moderation" ? "The queue is clear for this filter. Check another status or content type." : "Records will appear here when there is activity. Adjust filters or check another page."}</p></div> : <div className="divide-y divide-white/10">
+      {loading ? <p role="status" className="p-12 text-center text-sm text-white/45">Loading {tab}…</p> : !rows.length ? <div className="p-12 text-center"><p className="text-base text-white/80">{!ready ? "Data unavailable" : tab === "moderation" ? "No reports match these filters" : "No matching records"}</p><p className="mt-2 text-sm text-white/40">{!ready ? "Use Refresh to check the latest records." : tab === "moderation" ? "The queue is clear for this filter. Check another status or content type." : "Records will appear here when there is activity. Adjust filters or check another page."}</p></div> : <div className="divide-y divide-white/10">
         {rows.map((row, index) => {
           const id = value(row, "id", String(index));
           const stamp = date(row.created_at);
@@ -160,11 +249,9 @@ export default function AdminConsole() {
               {row.status === "open" && <div>
                 {pendingAction ? <div role="group" aria-labelledby={"moderation-confirm-" + id} className="rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4">
                   <p id={"moderation-confirm-" + id} className="text-sm text-amber-100">{pendingAction === "remove" ? "Remove this community content from ordinary readers? The content is soft-hidden and retained for audit." : "Dismiss this report without changing the community content?"}</p>
-                  <div className="mt-4 flex flex-wrap gap-2"><button type="button" className={button} disabled={!!busy} onClick={() => setPendingModeration(null)}>Cancel</button><button type="button" className={button} disabled={!!busy || (pendingAction === "remove" && !target)} onClick={() => void update(id, async () => {
-                    const result = await api.adminResolveModerationReport(id, pendingAction);
-                    setPendingModeration(null);
-                    return result;
-                  }, "Moderation outcome saved or recovered; refresh the status filter to review closed reports.")}>{busy === id ? "Saving…" : pendingAction === "remove" ? "Confirm removal" : "Confirm dismissal"}</button></div>
+                  <div className="mt-4 flex flex-wrap gap-2"><button type="button" className={button} disabled={!!busy} onClick={() => setPendingModeration(null)}>Cancel</button><button type="button" className={button} disabled={!!busy || (pendingAction === "remove" && !target)} onClick={() => void update(id,
+                    api => api.adminResolveModerationReport(id, pendingAction),
+                    "Moderation outcome saved or recovered. Use the status filter to review closed reports.")}>{busy === id ? "Saving…" : pendingAction === "remove" ? "Confirm removal" : "Confirm dismissal"}</button></div>
                 </div> : <div className="flex flex-wrap gap-2">
                   <button type="button" className={button} disabled={!!busy || !target} onClick={() => setPendingModeration({ reportId: id, action: "remove" })}>Review removal</button>
                   <button type="button" className={button} disabled={!!busy} onClick={() => setPendingModeration({ reportId: id, action: "dismiss" })}>Dismiss report</button>
@@ -180,7 +267,7 @@ export default function AdminConsole() {
                 {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4" onSubmit={(event) => {
                   event.preventDefault();
                   if (!storageChecked || !providerReviewed) return;
-                  void update(id, () => api.adminReleaseImageHold(id, { incidentRef, storageChecked: true, providerReviewed: true }),
+                  void update(id, api => api.adminReleaseImageHold(id, { incidentRef, storageChecked: true, providerReviewed: true }),
                     "Unresolved image hold released without a customer debit. Audit the incident record.");
                 }}>
                   <p className="text-sm text-amber-100">Only release an aged job with no saved output after reviewing provider usage and private storage. Bookworm may still have been billed; this action never charges the author.</p>
@@ -199,7 +286,7 @@ export default function AdminConsole() {
                 {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 p-4" onSubmit={(event) => {
                   event.preventDefault();
                   if (!receiptReviewed || !providerReviewed) return;
-                  void update(id, () => api.adminReleaseBibleHold(id, { incidentRef, receiptReviewed: true, providerReviewed: true }),
+                  void update(id, api => api.adminReleaseBibleHold(id, { incidentRef, receiptReviewed: true, providerReviewed: true }),
                     "Book Bible hold released without a customer debit. Audit the incident record.");
                 }}>
                   <p className="text-sm text-amber-100">Release only a request and receipt at least 15 minutes old with no saved result, output or debit. Age alone does not prove failure. Recover saved results from the author’s Book Bible; malformed saved results require separate investigation. Bookworm may still have provider costs.</p>
@@ -216,7 +303,7 @@ export default function AdminConsole() {
                 {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4" onSubmit={(event) => {
                   event.preventDefault();
                   if (!receiptReviewed || !providerReviewed) return;
-                  void update(id, () => reviewHoldAction === "settle"
+                  void update(id, api => reviewHoldAction === "settle"
                     ? api.adminSettleReviewReceipt(id, { incidentRef, receiptReviewed: true, providerReviewed: true })
                     : api.adminReleaseReviewHold(id, { incidentRef, receiptReviewed: true, providerReviewed: true }),
                   reviewHoldAction === "settle"
@@ -237,8 +324,8 @@ export default function AdminConsole() {
                 </form>}
               </div>}
             </div>}
-            {tab === "flags" && <div className="flex flex-wrap items-center justify-between gap-4"><div><h3 className="font-medium">{value(row, "key")}</h3><p className="mt-2 break-all text-xs text-white/45">{value(row, "scope_type", "global")} {row.scope_id ? `· ${value(row, "scope_id")}` : ""}</p></div><button type="button" role="switch" aria-checked={row.enabled === true} aria-label={`Enable ${value(row, "key")} for ${value(row, "scope_type", "global")} ${value(row, "scope_id", "")}`} disabled={loading || !!busy} onClick={() => void update(id, () => api.adminToggleFlag(String(row.key), row.enabled !== true, { scopeType: value(row, "scope_type", "global"), scopeId: typeof row.scope_id === "string" ? row.scope_id : null }), "Feature flag saved.")} className={button}>{busy === id ? "Saving…" : row.enabled === true ? "Enabled" : "Disabled"}</button></div>}
-            {tab === "support" && <div><div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-medium">{value(row, "subject", "Support request")}</h3><p className="mt-2 text-xs capitalize text-white/45">{value(row, "category", "general")} · {value(row, "priority", "normal")} priority · {stamp}</p><p className="mt-2 break-all text-xs text-white/35">User {value(row, "user_id")}</p></div><label className="text-xs text-white/50">Ticket status<select value={value(row, "status", "open")} disabled={loading || !!busy} onChange={(event) => void update(id, () => api.adminUpdateTicket(id, event.target.value as TicketStatus), "Ticket status saved.")} className={`${input} mt-2 block`}>{ticketStatuses.map((item) => <option key={item} value={item}>{item}</option>)}</select></label></div><details className="mt-4 text-sm text-white/60"><summary className="w-fit cursor-pointer rounded focus-visible:outline focus-visible:outline-white">Read request</summary><p className="mt-3 whitespace-pre-wrap break-words leading-6">{value(row, "body", "No message supplied.")}</p></details></div>}
+            {tab === "flags" && <div className="flex flex-wrap items-center justify-between gap-4"><div><h3 className="font-medium">{value(row, "key")}</h3><p className="mt-2 break-all text-xs text-white/45">{value(row, "scope_type", "global")} {row.scope_id ? `· ${value(row, "scope_id")}` : ""}</p></div><button type="button" role="switch" aria-checked={row.enabled === true} aria-label={`Enable ${value(row, "key")} for ${value(row, "scope_type", "global")} ${value(row, "scope_id", "")}`} disabled={loading || !!busy} onClick={() => void update(id, api => api.adminToggleFlag(String(row.key), row.enabled !== true, { scopeType: value(row, "scope_type", "global"), scopeId: typeof row.scope_id === "string" ? row.scope_id : null }), "Feature flag saved.")} className={button}>{busy === id ? "Saving…" : row.enabled === true ? "Enabled" : "Disabled"}</button></div>}
+            {tab === "support" && <div><div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-medium">{value(row, "subject", "Support request")}</h3><p className="mt-2 text-xs capitalize text-white/45">{value(row, "category", "general")} · {value(row, "priority", "normal")} priority · {stamp}</p><p className="mt-2 break-all text-xs text-white/35">User {value(row, "user_id")}</p></div><label className="text-xs text-white/50">Ticket status<select value={value(row, "status", "open")} disabled={loading || !!busy} onChange={(event) => void update(id, api => api.adminUpdateTicket(id, event.target.value as TicketStatus), "Ticket status saved.")} className={`${input} mt-2 block`}>{ticketStatuses.map((item) => <option key={item} value={item}>{item}</option>)}</select></label></div><details className="mt-4 text-sm text-white/60"><summary className="w-fit cursor-pointer rounded focus-visible:outline focus-visible:outline-white">Read request</summary><p className="mt-3 whitespace-pre-wrap break-words leading-6">{value(row, "body", "No message supplied.")}</p></details></div>}
             {tab === "audit" && <div><h3 className="text-sm font-medium">{value(row, "action")}</h3><p className="mt-2 break-all text-xs text-white/45">{value(row, "entity_type")} · {value(row, "entity_id")}</p><p className="mt-2 break-all text-xs text-white/35">Actor {value(row, "actor_id", "System")} · {stamp}</p></div>}
             {tab === "usage" && <div><h3 className="break-all text-sm font-medium">{value(row, "organizationId")}</h3><dl className="mt-4 flex flex-wrap gap-6">{Object.entries(row.byMeter && typeof row.byMeter === "object" ? row.byMeter : {}).map(([meter, quantity]) => <div key={meter}><dt className="text-xs capitalize text-white/45">{meter.replaceAll("_", " ")}</dt><dd className="mt-1 text-lg">{Number(quantity).toLocaleString()}</dd></div>)}</dl></div>}
           </article>;
