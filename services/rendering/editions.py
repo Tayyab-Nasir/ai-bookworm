@@ -5,6 +5,7 @@ from urllib.parse import urlsplit
 import re
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+from publication_metadata import print_isbn13
 
 EDITION_SCHEMA_VERSION = "1.1.0"
 
@@ -147,6 +148,7 @@ class PageNumbering(BaseModel):
 
 class WrapCover(BaseModel):
     enabled: bool = False
+    barcode: Literal["kdp", "lulu"] | None = None
     profile: Literal["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"] = "kdp-white"
     spine_width_in: float = Field(default=0.25, ge=0.01, le=3)
     expected_page_count: int | None = Field(default=None, ge=1, le=2000)
@@ -159,6 +161,7 @@ class WrapCover(BaseModel):
 class PrintEdition(BaseModel):
     include_table_of_contents: bool = False
     kind: Literal["print"] = "print"
+    isbn13: str | None = None
     schema_version: str = EDITION_SCHEMA_VERSION
     text_direction: Literal["auto", "ltr", "rtl"] = "auto"
     trim_size: str = "6x9"
@@ -178,7 +181,16 @@ class PrintEdition(BaseModel):
                 raise ValueError("full paperback cover requires front cover artwork")
             if self.wrap_cover.profile == "custom" and not self.wrap_cover.expected_page_count:
                 raise ValueError("custom spine width requires the template page count")
+        if self.wrap_cover.barcode and (not self.wrap_cover.enabled or not self.isbn13):
+            raise ValueError("Enable the full cover and enter this print edition's ISBN-13 for a barcode.")
+        if self.wrap_cover.barcode == "lulu" and self.wrap_cover.profile != "custom":
+            raise ValueError("Use the matching Lulu template with a Lulu barcode.")
         return self
+
+    @field_validator("isbn13", mode="before")
+    @classmethod
+    def _normalize_isbn13(cls, value):
+        return print_isbn13(value)
 
     @field_validator("trim_size")
     @classmethod

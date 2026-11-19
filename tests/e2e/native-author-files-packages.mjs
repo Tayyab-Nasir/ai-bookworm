@@ -91,18 +91,18 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
   const editions = [
     { config: { kind: 'ebook', navigation: 'toc+landmarks', include_title_page: true, cover: coverConfig, front_matter: front },
       channels: ['kdp', 'apple', 'barnesnoble', 'googleplay'] },
-    { config: printConfig, channels: ['kdp'] },
+    { config: { ...printConfig, isbn13: '9780000000019', wrap_cover: { ...printConfig.wrap_cover, barcode: 'kdp' } }, channels: ['kdp'] },
     { config: { ...printConfig,
       wrap_cover: { enabled: true, profile: 'custom', expected_page_count: 36, spine_width_in: 0.1 } }, channels: ['barnesnoble'] },
-    { config: { ...printConfig, bleed_edges: 'all',
-      wrap_cover: { enabled: true, profile: 'custom', expected_page_count: 36, spine_width_in: 0.1 } }, channels: ['lulu'] },
+    { config: { ...printConfig, bleed_edges: 'all', isbn13: '9780000000026',
+      wrap_cover: { enabled: true, profile: 'custom', expected_page_count: 36, spine_width_in: 0.1, barcode: 'lulu' } }, channels: ['lulu'] },
   ];
   const packages = [];
   const browserEditions = [];
   let granted = false;
   for (const { config, channels } of editions) {
     const edition = await request(alice.token, 'POST', `/books/${book.id}/editions`, { config }, 201);
-    browserEditions.push({ id: edition.id, kind: config.kind, channels });
+    browserEditions.push({ id: edition.id, kind: config.kind, channels, isbn13: config.isbn13, barcode: config.wrap_cover?.barcode });
     const render = await request(alice.token, 'POST', `/editions/${edition.id}/render`, { idempotencyKey: randomUUID() }, 201);
     assert.equal(render.status, 'succeeded'); assert.equal(render.artifacts.length, 2);
     const sourceFiles = Object.fromEntries(render.artifacts.map(({ role, asset }) => [
@@ -162,6 +162,8 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
       assert.equal(archive.preflight.ruleVersion, packaged.ruleVersion);
       assert.equal(archive.preflight.warnings, archive.preflight.findings.filter(item => item.severity === 'warning').length);
       assert.equal(archive.metadata.metadata.title, book.title);
+      if (config.isbn13) assert.equal(archive.metadata.metadata.isbn13, config.isbn13);
+      if (channel === 'lulu') assert.match(archive.readme, /separate bookstore and distribution cover templates/);
       assert.equal(archive.metadata.metadata.description, listing.description);
       assert.deepEqual(archive.metadata.metadata.keywords, listing.keywords);
       assert.deepEqual(archive.metadata.metadata.categories, listing.categories);

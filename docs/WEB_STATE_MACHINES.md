@@ -155,6 +155,18 @@ resolve a write whose reply was lost.
   after a zero-error report for that selection. The API and worker check the
   same stored bytes and use the current approved full-bleed illustrations for
   resolution checks. Universal export keeps its existing preflight.
+- A saved print edition can set its own assigned ISBN-13. An omitted field
+  preserves existing book-level inheritance, and an explicit blank lets the
+  retailer assign an ISBN. A saved ISBN updates the copyright page and
+  package listing. KDP and Lulu barcode layouts require the full cover and
+  an assigned print ISBN. Preflight checks the ISBN on the selected PDF and
+  checks the paired cover and barcode target. B&N Press adds its own barcode.
+  Lulu Global Distribution uses different bookstore and distribution cover
+  templates. Render each with its matching template. See
+  `services/rendering/tests/test_wrap_cover.py` and `services/publishing/tests/test_adapters.py`.
+  [KDP barcodes](https://kdp.amazon.com/en_US/help/topic/G5HDYGP4BXLX4RUW) ·
+  [Lulu distribution requirements](https://help.lulu.com/en/support/solutions/articles/64000255462) ·
+  [B&N Press ISBN guidance](https://help-press.barnesandnoble.com/hc/en-us/articles/5358254743963-ISBN-FAQs)
 - All EPUB and print package requests now require a verified render and cover
   when present. If eligibility changes while packaging, the API asks the author
   to choose a current proof or render again. Migration

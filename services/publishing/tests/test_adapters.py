@@ -52,7 +52,7 @@ def test_all_channels_registered():
 
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
-    assert result["ruleVersion"] == "core-1.0.14+kdp-1.5.0"
+    assert result["ruleVersion"] == "core-1.0.15+kdp-1.5.0"
     ids = {f["rule_id"] for f in result["findings"]}
     assert not result["findings"] or all(
         rid.startswith(("CORE-", "KDP-")) for rid in ids)
@@ -166,7 +166,7 @@ def test_google_play_requires_embedded_front_cover_and_builds_single_title_hando
            "cover_bytes": cover.getvalue()}
     result = adapter.validate(ctx)
     assert result["errors"] == 0, result["findings"]
-    assert result["ruleVersion"] == "core-1.0.14+google-play-1.2.0"
+    assert result["ruleVersion"] == "core-1.0.15+google-play-1.2.0"
     exported = adapter.build_package(ctx, {"book.epub": epub})[0]
     assert exported.path == "googleplay-export.zip"
     with zipfile.ZipFile(BytesIO(exported.data)) as archive:
@@ -381,7 +381,7 @@ def test_apple_package_endpoint_checks_exact_saved_epub_once(monkeypatch, status
     if status == "valid":
         result = build_package(request)
         assert result["errors"] == 0
-        assert result["ruleVersion"] == "core-1.0.14+apple-1.2.0"
+        assert result["ruleVersion"] == "core-1.0.15+apple-1.2.0"
         with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
             assert archive.read("book.epub") == epub
     else:
@@ -540,7 +540,7 @@ def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
                              artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
     first = build_package(request)
     second = build_package(request)
-    assert first["ruleVersion"] == "core-1.0.14+kdp-1.5.0"
+    assert first["ruleVersion"] == "core-1.0.15+kdp-1.5.0"
     assert first["packages"][0]["sha256"] == second["packages"][0]["sha256"]
     package = base64.b64decode(first["packages"][0]["dataBase64"])
     with zipfile.ZipFile(BytesIO(package)) as archive:
@@ -1075,6 +1075,55 @@ def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geom
                                      artifactsBase64={"book.pdf": artifacts["book.pdf"]}))
 
 
+def test_print_edition_isbn_is_bound_to_the_interior_cover_and_listing():
+    from PIL import Image
+    from adapters import publishing_metadata
+    from pdf_renderer import render_pdf
+    from pypdf import PdfReader
+    from wrap_cover import render_wrap_cover
+
+    book = copy.deepcopy(VALID)
+    book["metadata"]["isbn13"] = "9780000000002"
+    book["chapters"] = [{**copy.deepcopy(VALID["chapters"][0]), "id": f"chapter-{i}", "order": i} for i in range(24)]
+    isbn = "9780000000019"
+    config = {"kind": "print", "isbn13": isbn, "cover": {"asset_id": "77777777-7777-4777-8777-777777777777"},
+              "wrap_cover": {"enabled": True, "profile": "kdp-cream", "barcode": "kdp"},
+              "front_matter": {"copyright_notice": "Synthetic example for testing."}}
+    parsed = parse_edition(config)
+    interior, _ = render_pdf(book, parsed)
+    assert f"ISBN: {isbn}" in PdfReader(BytesIO(interior)).pages[1].extract_text()
+    image = BytesIO()
+    Image.new("RGB", (1800, 2700), "#204050").save(image, "PNG")
+    cover, _ = render_wrap_cover(image.getvalue(), interior, parsed)
+    artifacts = {"book.pdf": base64.b64encode(interior).decode(), "cover.pdf": base64.b64encode(cover).decode()}
+    request = PackageRequest(channel="kdp", editionConfig=config, bookModel=book, artifactsBase64=artifacts)
+    report = _PUBLISHING_MAIN.validate(request)
+    assert report["errors"] == 0, report["findings"]
+    package = build_package(request)["packages"][0]
+    with zipfile.ZipFile(BytesIO(base64.b64decode(package["dataBase64"]))) as archive:
+        assert json.loads(archive.read("metadata.json"))["metadata"]["isbn13"] == isbn
+        assert (archive.read("book.pdf"), archive.read("cover.pdf")) == (interior, cover)
+    wrong_retailer = request.model_copy(update={"channel": "barnesnoble"})
+    assert any(item["code"] == "PRINT_BARCODE_CHANNEL" for item in _PUBLISHING_MAIN.validate(wrong_retailer)["findings"])
+
+    # An older proof can have valid PDF geometry but a different ISBN. A null
+    # edition ISBN deliberately leaves assignment to the retailer.
+    no_barcode = {**config, "wrap_cover": {"enabled": True, "profile": "kdp-cream"}}
+    legacy = parse_edition({key: value for key, value in no_barcode.items() if key != "isbn13"})
+    legacy_pdf, _ = render_pdf(book, legacy)
+    assert "9780000000002" in PdfReader(BytesIO(legacy_pdf)).pages[1].extract_text()
+    unassigned_pdf, _ = render_pdf(book, parse_edition({**no_barcode, "isbn13": None}))
+    assert "9780000000002" not in PdfReader(BytesIO(unassigned_pdf)).pages[1].extract_text()
+    assert publishing_metadata(book, {**no_barcode, "isbn13": None})["metadata"]["isbn13"] is None
+    swapped = request.model_copy(update={"artifactsBase64": {**artifacts, "book.pdf": base64.b64encode(legacy_pdf).decode()}})
+    assert any(item["code"] == "PRINT_ISBN_MISMATCH" for item in _PUBLISHING_MAIN.validate(swapped)["findings"])
+    with pytest.raises(Exception, match="no longer pass"):
+        build_package(swapped)
+    blank_wrap, _ = render_wrap_cover(image.getvalue(), interior, parse_edition(no_barcode))
+    swapped = request.model_copy(update={"artifactsBase64": {**artifacts, "cover.pdf": base64.b64encode(blank_wrap).decode()}})
+    assert any("cover ISBN barcode" in item["message"] for item in _PUBLISHING_MAIN.validate(swapped)["findings"])
+
+
 def test_saved_print_preflight_and_package_use_original_full_bleed_resolution():
     from PIL import Image
     from pypdf import PdfWriter
@@ -1144,7 +1193,7 @@ def test_odd_book_renders_preflights_and_packages_without_manual_blank_page(monk
         response = client.post("/render", headers=headers, json=payload)
         assert response.status_code == 200, response.text
         rendered = response.json()
-        assert rendered["coverRendererVersion"] == "paperback-cover-1.1.0"
+        assert rendered["coverRendererVersion"] == "paperback-cover-1.2.0"
         interior = base64.b64decode(rendered["artifactBase64"])
         cover = base64.b64decode(rendered["coverArtifactBase64"])
         assert len(PdfReader(BytesIO(interior)).pages) == 25

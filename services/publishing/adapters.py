@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
 from rules.kdp_v1 import KDP_MARKETING_COVER_BYTES, open_kdp_ebook_cover  # noqa: E402
-from publication_metadata import effective_publication_metadata  # noqa: E402
+from publication_metadata import edition_publication_metadata  # noqa: E402
 
 
 class NotSupportedError(Exception):
@@ -26,9 +26,7 @@ class NotSupportedError(Exception):
 
 def publishing_metadata(book: dict, edition: dict | None = None) -> dict:
     """Project public listing fields only; never serialize the full book model."""
-    config = edition or {}
-    overrides = config.get("metadata_overrides") if config.get("kind") == "ebook" else None
-    source = effective_publication_metadata(book.get("metadata", {}), overrides)
+    source = edition_publication_metadata(book.get("metadata", {}), edition or {})
     result = {}
     for field in ("title", "subtitle", "author", "language", "description", "isbn13", "edition"):
         value = source.get(field)
@@ -198,6 +196,9 @@ class ExportAdapter:
                         "Review your Apple Books agreement, publisher, original publication date, subject categories, permanent Vendor ID, rights, pricing and territories in Apple's account.\n"
                         "Apple requires cover art before release; a pre-order may have different requirements.\n"
                         if self.CHANNEL == "apple" else "")
+                     + ("For Lulu Global Distribution, match the print ISBN in your Lulu listing, copyright page and cover barcode.\n"
+                        "Lulu uses separate bookstore and distribution cover templates. Check which template this cover matches and render the other cover with its own template.\n"
+                        if self.CHANNEL == "lulu" else "")
                      + "Confirm rights, ISBN entitlement, territories, pricing and required AI-content disclosures yourself.\n"
                      "Inspect the retailer preview or physical proof before approving publication.\n"
                      "manifest.json records checksums and the validation rule version; zero errors is not retailer approval.\n"

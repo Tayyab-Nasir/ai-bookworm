@@ -3,7 +3,11 @@
 Generic, channel-agnostic checks. Values here follow public EPUB3 spec + common sense;
 channel-specific thresholds live in the channel rule modules.
 """
+import re
 import struct
+from io import BytesIO
+
+from pypdf import PdfReader
 
 from editions import language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
@@ -15,7 +19,7 @@ from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.14"
+VERSION = "core-1.0.15"
 
 
 def _find(code, msg, loc=""):
@@ -216,6 +220,10 @@ def check_print_wrap(ctx):
     channel = ctx.get("channel")
     if not wrap.get("enabled"):
         return _find("PRINT_WRAP_REQUIRED", "Enable a full paperback cover (back, spine and front) before creating a retailer package", "edition.wrap_cover") if channel in {"kdp", "barnesnoble", "lulu"} else []
+    if wrap.get("barcode") and channel not in {None, "export", wrap["barcode"]}:
+        message = ("Choose Printer adds the barcode for B&N Press and render the cover again." if channel == "barnesnoble"
+                   else "Choose a barcode for this retailer or let the printer add it, then render the cover again.")
+        return _find("PRINT_BARCODE_CHANNEL", message, "edition.wrap_cover.barcode")
     if wrap.get("profile", "kdp-white") != "custom" and channel not in {None, "export", "kdp"}:
         return _find("PRINT_WRAP_PROFILE", "Use this printer's cover template and custom spine width; KDP paper settings cannot be reused for another printer", "edition.wrap_cover.profile")
     interior = ctx.get("package_bytes")
@@ -228,6 +236,25 @@ def check_print_wrap(ctx):
         except ValueError as error:
             return _find("PRINT_WRAP_INVALID", str(error), "cover.pdf")
     return []
+
+
+def check_saved_print_isbn(ctx):
+    edition = ctx.get("edition") or {}
+    isbn = edition.get("isbn13")
+    interior = ctx.get("package_bytes")
+    if edition.get("kind") != "print" or not isbn or not interior:
+        return []
+    expected = _meta(ctx)["isbn13"]
+    label = re.compile(r"\bISBN:\s*" + r"\s*".join(expected) + r"(?!\d)")
+    try:
+        reader = PdfReader(BytesIO(interior))
+        if not reader.is_encrypted and (reader.metadata or {}).get("/Subject") == f"ISBN-13 {expected}":
+            # A large type size can make the title matter span multiple pages.
+            if any(label.search(page.extract_text()) for page in reader.pages[1:24]):
+                return []
+    except Exception:
+        pass  # The interior must expose the ISBN on its copyright page.
+    return _find("PRINT_ISBN_MISMATCH", "The saved interior’s copyright page must show this edition’s ISBN-13. Render again.", "book.pdf/copyright")
 
 
 def check_rtl_typography(ctx):
@@ -316,6 +343,7 @@ RULESET = RuleSet(name="core", version=VERSION, rules=[
     Rule("CORE-FONT-003", "error", "fonts", "print font glyph coverage", check_print_glyphs),
     Rule("CORE-LAYOUT-001", "error", "channel", "print body and page-number space", check_print_layout),
     Rule("CORE-COVER-001", "error", "channel", "full paperback cover geometry", check_print_wrap),
+    Rule("CORE-ISBN-001", "error", "metadata", "saved print ISBN", check_saved_print_isbn),
     Rule("CORE-A11Y-001", "error", "accessibility", "image alt text", check_alt_text),
     Rule("CORE-LINK-001", "error", "links", "link well-formedness", check_links),
     Rule("CORE-LANG-001", "error", "language", "valid language tag", check_language),

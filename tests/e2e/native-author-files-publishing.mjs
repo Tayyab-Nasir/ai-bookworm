@@ -202,6 +202,10 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
       await select(edition);
       await expect(page.getByRole('checkbox', { name: 'Add QR code', exact: true })).toBeChecked();
       await expect(page.getByLabel('HTTPS destination', { exact: true })).toHaveValue('https://example.com/harbor');
+      if (edition.isbn13) {
+        await expect(page.getByRole('textbox', { name: 'Print ISBN-13', exact: true })).toHaveValue(edition.isbn13);
+        await expect(page.getByRole('combobox', { name: 'ISBN barcode', exact: true })).toHaveValue(edition.barcode);
+      }
       const [rendered] = await Promise.all([
         page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/editions/${edition.id}/render`) && response.request().method() === 'POST', { timeout: 90_000 }),
         page.getByRole('button', { name: edition.kind === 'ebook' ? 'Render EPUB' : 'Render PDF', exact: true }).click(),

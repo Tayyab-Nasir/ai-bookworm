@@ -415,6 +415,7 @@ export type EditionConfig = {
   image_policy?: { max_width_px?: number; max_bytes?: number; embed?: boolean; allowed_formats?: ("jpeg" | "png" | "gif" | "webp")[] };
 } | {
   kind: "print";
+  isbn13?: string | null;
   include_table_of_contents?: boolean;
   schema_version?: "1.0.0" | "1.1.0";
   text_direction?: "auto" | "ltr" | "rtl";
@@ -436,6 +437,7 @@ export type EditionConfig = {
   page_numbering?: { style?: "arabic" | "roman" | "none"; start_at?: number; position?: "bottom-center" | "bottom-outer" | "top-center" };
   wrap_cover?: {
     enabled?: boolean;
+    barcode?: "kdp" | "lulu";
     profile?: "kdp-white" | "kdp-cream" | "kdp-standard-color" | "kdp-premium-color" | "custom";
     spine_width_in?: number; expected_page_count?: number | null;
     back_text?: string; spine_text?: string; background_color?: string; text_color?: string;

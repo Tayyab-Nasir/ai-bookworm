@@ -3,11 +3,12 @@ from preflight import Finding, Rule
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "lulu-1.3.0"
+VERSION = "lulu-1.4.0"
 EFFECTIVE_DATE = "2026-09-18"
 SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255584"
 PAGE_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255583"
 MARGIN_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255590-interior-formatting-the-basics"
+DISTRIBUTION_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255462"
 
 
 def check_lulu_bleed(ctx):
@@ -18,6 +19,15 @@ def check_lulu_bleed(ctx):
             return [Finding(code="LULU-BLEED",
                             message="Lulu print-ready PDFs require 0.125in bleed on all four edges; select all-edge bleed and render again",
                             location="edition.bleed_in")]
+    return []
+
+
+def check_lulu_barcode(ctx):
+    edition = ctx.get("edition") or {}
+    if edition.get("kind") == "print" and (edition.get("wrap_cover") or {}).get("barcode") != "lulu":
+        return [Finding(code="LULU-DISTRIBUTION-BARCODE",
+                        message="Lulu Global Distribution requires the assigned print ISBN in the copyright page and back-cover barcode. Choose the Lulu barcode when preparing your own distribution cover.",
+                        location="edition.wrap_cover.barcode")]
     return []
 
 
@@ -73,4 +83,6 @@ RULESET = make_ruleset("lulu", VERSION, metadata_rules(
          channels=("lulu",), effective_date=EFFECTIVE_DATE, source_ref=MARGIN_SOURCE_REF),
     Rule("LULU-PRINT-005", "warning", "channel", "Lulu recommended gutter", check_lulu_recommended_gutter,
          channels=("lulu",), effective_date=EFFECTIVE_DATE, source_ref=MARGIN_SOURCE_REF),
+    Rule("LULU-PRINT-006", "warning", "channel", "Lulu distribution barcode", check_lulu_barcode,
+         channels=("lulu",), effective_date="2026-11-19", source_ref=DISTRIBUTION_SOURCE_REF),
 ])

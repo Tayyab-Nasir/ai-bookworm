@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState } from "react";
 import type { AudiobookGooglePlayExportJob, PrivateAudiobookProjectResult, AudiobookVoice, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel, SavedEpubSource } from "@bookworm/api-client";
 import type { Asset, Book, Chapter, Edition } from "@bookworm/types";
+import { Isbn13Schema } from "@bookworm/book-model/schema";
 import { apiClient } from "./api";
 import ChapterAudioDownload from "./ChapterAudioDownload";
 import NarrationQuoteStudio from "./NarrationQuoteStudio";
@@ -557,6 +558,18 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     if (activeId && !activeEdition) { setError("This edition is no longer in the saved list. Reload before saving."); return; }
     const valid = captureView(); if (!valid()) return;
     const saveRevision = formRevision.current, submittedForm = latestForm.current;
+    const config = toConfig(submittedForm, activeEdition?.edition_metadata_json);
+    if (config.kind === "print") {
+      if (config.isbn13 && !Isbn13Schema.safeParse(config.isbn13).success) {
+        setError("Enter a valid ISBN-13 assigned to this print edition."); return;
+      }
+      if (config.wrap_cover?.barcode && !config.isbn13) {
+        setError("Enter this print edition’s ISBN-13 for the selected barcode."); return;
+      }
+      if (config.wrap_cover?.barcode === "lulu" && config.wrap_cover.profile !== "custom") {
+        setError("Use the matching Lulu template with a Lulu barcode."); return;
+      }
+    }
     const flight = {}; editionSaveFlight.current = flight;
     setBusy("save"); setError(null); setNotice(null);
     let creating = false;
@@ -568,13 +581,11 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
       await verifyEditionOwner(owner, valid); if (!valid()) return;
       if (formRevision.current !== saveRevision) throw new Error("The edition settings changed while saving was being prepared. Review them and save again.");
       if (activeEdition) {
-        const config = toConfig(submittedForm, activeEdition.edition_metadata_json);
         submitted = true;
         saved = await api.updateEdition(activeEdition.id, { config, language: submittedForm.language, expectedUpdatedAt: activeEdition.updated_at }, owner);
         await verifyEditionOwner(owner, valid);
         if (!matchesEditionReply(saved, config, submittedForm.language, activeEdition.id)) throw new Error("The edition update reply could not be verified.");
       } else {
-        const config = toConfig(submittedForm);
         // The endpoint has no durable request identity. Once dispatched, a failure
         // cannot distinguish a rejected request from a lost success response.
         const fence = beginEditionCreateFence(window.sessionStorage, owner, bookId, crypto.randomUUID());
@@ -886,7 +897,12 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="front-matter-settings">
           <h2 id="front-matter-settings" className="text-xl font-semibold">Title & copyright pages</h2>
-          <p className="mt-1 text-sm text-white/45">Print includes a title page; EPUB can include one below. It uses your saved book title, subtitle and author. Add your own notice or publisher to include a copyright page, with the saved ISBN when available. This does not register copyright or assign an ISBN.</p>
+          <p className="mt-1 text-sm text-white/45">Print includes a title page. You can also add one to your EPUB. Add your notice or imprint to include a copyright page.</p>
+          {form.kind === "print" && <div className="mt-4 max-w-lg">
+            <label className="text-sm text-white/65">Print ISBN-13<input value={form.printIsbn ?? ""} disabled={!editable} onChange={event => update("printIsbn", event.target.value)} maxLength={32} inputMode="numeric" autoComplete="off" aria-describedby="print-isbn-help" className={fieldClass} /></label>
+            <p id="print-isbn-help" className="mt-2 text-xs text-white/50">Enter the ISBN assigned to this edition. It appears in the interior PDF and listing metadata. Leave blank to let the retailer assign one.</p>
+            {form.printIsbn === undefined && <p className="mt-2 text-xs text-white/60">This edition inherits the book’s ISBN. <button type="button" disabled={!editable} onClick={() => update("printIsbn", "")} className="underline underline-offset-4">Use a retailer-assigned ISBN instead</button></p>}
+          </div>}
           <div className="mt-5 grid gap-4">
             {form.kind === "print" && <label className="inline-flex items-center gap-2 text-sm text-white/65"><input type="checkbox" checked={form.printContents} onChange={(event) => update("printContents", event.target.checked)} />Include chapter contents (page references follow your numbering settings; changes affect the final page count)</label>}
             {form.kind === "ebook" && <label className="inline-flex items-center gap-2 text-sm text-white/65"><input type="checkbox" checked={form.ebookTitlePage} onChange={(event) => update("ebookTitlePage", event.target.checked)} />Include EPUB title page (leave off if your manuscript already contains one)</label>}
@@ -909,11 +925,15 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
 
         {form.kind === "print" && <section className={cardClass} aria-labelledby="paperback-cover-title">
           <h2 id="paperback-cover-title" className="text-xl font-semibold">Full paperback cover</h2>
-          <p className="mt-2 text-sm leading-relaxed text-white/50">Create one PDF with back cover, spine and front artwork. The spine follows your rendered page count; KDP profiles round an odd count up to the next even page. A blank area is reserved for your printer’s ISBN barcode.</p>
+          <p className="mt-2 text-sm leading-relaxed text-white/50">Create one PDF with back cover, spine and front artwork. The spine follows your rendered page count. KDP profiles round an odd count up to the next even page.</p>
           <label className="mt-5 inline-flex items-center gap-2 text-sm text-white/70"><input type="checkbox" checked={form.wrapEnabled} onChange={(event) => update("wrapEnabled", event.target.checked)} />Create full cover PDF</label>
           {form.wrapEnabled && <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-white/65 sm:col-span-2">Paper and printer<select value={form.wrapProfile} onChange={(event) => update("wrapProfile", event.target.value as FormState["wrapProfile"])} className={fieldClass}><option value="kdp-white">KDP · black ink, white paper</option><option value="kdp-cream">KDP · black ink, cream paper</option><option value="kdp-standard-color">KDP · standard color</option><option value="kdp-premium-color">KDP · premium color</option><option value="custom">Other printer · use its paperback template</option></select></label>
             {form.wrapProfile === "custom" && <><label className="text-sm text-white/65">Template spine width (in)<input type="number" min={0.01} max={3} step={0.0001} value={form.spineWidth} onChange={(event) => update("spineWidth", Number(event.target.value))} className={fieldClass} /></label><label className="text-sm text-white/65">Template page count<input type="number" min={1} max={2000} value={form.templatePages || ""} onChange={(event) => update("templatePages", Number(event.target.value))} className={fieldClass} /></label></>}
+            <div className="sm:col-span-2">
+              <label className="text-sm text-white/65">ISBN barcode<select value={form.wrapBarcode ?? ""} onChange={event => update("wrapBarcode", (event.target.value || undefined) as FormState["wrapBarcode"])} aria-describedby="print-barcode-help" className={fieldClass}><option value="">Printer adds the barcode</option><option value="kdp">Include KDP barcode</option><option value="lulu">Include Lulu barcode</option></select></label>
+              <p id="print-barcode-help" className="mt-2 text-xs text-white/50">For B&amp;N Press, choose Printer adds the barcode. For Lulu, use the template for the cover you plan to upload.</p>
+            </div>
             <label className="text-sm text-white/65 sm:col-span-2">Back cover text<textarea rows={6} maxLength={3000} value={form.backText} onChange={(event) => update("backText", event.target.value)} className={fieldClass} placeholder="Introduce the book and give readers a reason to open it." /></label>
             <label className="text-sm text-white/65 sm:col-span-2">Spine text (optional)<input maxLength={200} value={form.spineText} onChange={(event) => update("spineText", event.target.value)} className={fieldClass} placeholder="Book title · Author" /></label>
             <label className="text-sm text-white/65">Back and spine background<input type="color" value={form.wrapBackground} onChange={(event) => update("wrapBackground", event.target.value)} className={`${fieldClass} h-11 p-1`} /></label>

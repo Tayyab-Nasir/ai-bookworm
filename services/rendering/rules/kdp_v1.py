@@ -4,7 +4,7 @@ from io import BytesIO
 
 from PIL import Image
 
-from preflight import Finding, Rule
+from preflight import Finding, Rule, _meta
 from kdp_print import kdp_page_count, kdp_page_range
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
@@ -80,7 +80,7 @@ def check_kdp_package(ctx):
 
 def check_kdp_isbn(ctx):
     edition = ctx.get("edition") or {}
-    if edition.get("kind") == "print" and not (ctx["book"].get("metadata", {}).get("isbn13")):
+    if edition.get("kind") == "print" and not _meta(ctx).get("isbn13"):
         return [Finding(code="KDP-PRINT-ISBN",
                         message="Choose a free KDP ISBN or add your own ISBN during print title setup",
                         location="book.metadata.isbn13")]

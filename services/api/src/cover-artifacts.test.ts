@@ -36,6 +36,19 @@ test("full cover transport requires PDF format, signature, checksum and selected
   assert.equal(editionConfigSchema.safeParse({ kind: "print", cover: { asset_id: COVER }, wrap_cover: { enabled: true, profile: "custom" } }).success, false);
 });
 
+test("print barcodes require an assigned edition ISBN and the correct full cover settings", () => {
+  const setup = { kind: "print", cover: { asset_id: COVER }, wrap_cover: { enabled: true, barcode: "kdp" } };
+  const saved = editionConfigSchema.parse({ ...setup, isbn13: "978-0-000-00001-9" });
+  assert.equal(saved.kind === "print" && saved.isbn13, "9780000000019");
+  for (const isbn13 of [null, undefined, "9780000000010", "9790000000001", "１２３４５６７８９０１２３"]) {
+    assert.equal(editionConfigSchema.safeParse({ ...setup, isbn13 }).success, false);
+  }
+  assert.equal(editionConfigSchema.safeParse({ ...setup, isbn13: "9780000000019", wrap_cover: { ...setup.wrap_cover, barcode: "lulu" } }).success, false);
+  const optedOut = editionConfigSchema.parse({ kind: "print", isbn13: null });
+  assert.equal(optedOut.kind === "print" && optedOut.isbn13, null);
+  assert.equal(Object.hasOwn(editionConfigSchema.parse({ kind: "print" }), "isbn13"), false);
+});
+
 test("confirmed private cover PDF is packaged with its exact name and bytes", async () => {
   const artifacts = [
     { assetId: BOOK, role: "rendered_print", type: "rendered_book", filename: "book.pdf" },

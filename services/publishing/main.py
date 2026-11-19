@@ -17,7 +17,7 @@ from editions import parse_edition  # noqa: E402
 from epub_renderer import render_epub  # noqa: E402
 from manuscript import image_print_placement  # noqa: E402
 from preflight import Finding  # noqa: E402
-from publication_metadata import effective_publication_metadata  # noqa: E402
+from publication_metadata import edition_publication_metadata  # noqa: E402
 from rules import load_ruleset  # noqa: E402
 
 app = FastAPI(title="bookworm-publishing")
@@ -91,8 +91,7 @@ def _publication_edition(req: ValidateRequest):
     try:
         adapter = get_adapter(req.channel)
         edition = parse_edition(req.editionConfig)
-        effective_publication_metadata(req.bookModel.get("metadata", {}),
-                                       edition.metadata_overrides if edition.kind == "ebook" else None)
+        edition_publication_metadata(req.bookModel.get("metadata", {}), req.editionConfig)
     except (KeyError, ValueError) as e:
         raise HTTPException(422, str(e)) from e
     return adapter, edition

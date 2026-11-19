@@ -9,6 +9,8 @@ from io import BytesIO
 
 from PIL import Image
 from pypdf import PdfReader
+from reportlab.graphics import renderPDF
+from reportlab.graphics.barcode import createBarcodeDrawing
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.colors import CMYKColor
 from reportlab.lib.utils import ImageReader
@@ -21,7 +23,7 @@ from rtl_text import requires_bidi_layout
 from kdp_print import kdp_page_count, kdp_page_range
 from print_fonts import _missing
 
-VERSION = "paperback-cover-1.1.0"
+VERSION = "paperback-cover-1.2.0"
 BLEED = 0.125
 FACTORS = {"kdp-white": 0.002252, "kdp-cream": 0.0025,
            "kdp-standard-color": 0.002252, "kdp-premium-color": 0.002347}
@@ -79,7 +81,8 @@ def render_wrap_cover(front: bytes, interior: bytes, edition: PrintEdition) -> t
         "back-cover", fontName="BookwormVera", fontSize=11, leading=15,
         textColor=CMYKColor(*_cmyk(config.text_color))))
     back_width = (tw - 0.8) * 72
-    available_height = (th - 2.3) * 72
+    barcode_width, barcode_height = (2.5, 1.7) if config.barcode == "lulu" else (2, 1.2)
+    available_height = (th - barcode_height - 1.1) * 72
     _, back_height = back.wrap(back_width, available_height)
     if back_height > available_height:
         raise ValueError("back cover text does not fit above the reserved barcode area; shorten it")
@@ -108,9 +111,22 @@ def render_wrap_cover(front: bytes, interior: bytes, edition: PrintEdition) -> t
         canvas.setFont("BookwormVera", spine_size)
         canvas.drawCentredString(0, -spine_size * 0.3, config.spine_text)
         canvas.restoreState()
-    # Printer supplies the ISBN barcode. This is a blank reserved area, not a barcode.
+    # Leave the printer's placement area blank unless this edition supplies an ISBN barcode.
+    barcode_x = (BLEED + tw - barcode_width - 0.25) * 72
+    barcode_y = (BLEED + 0.25) * 72
     canvas.setFillColorCMYK(0, 0, 0, 0)
-    canvas.rect((BLEED + tw - 2.25) * 72, (BLEED + 0.25) * 72, 2 * 72, 1.2 * 72, stroke=0, fill=1)
+    canvas.rect(barcode_x, barcode_y, barcode_width * 72, barcode_height * 72, stroke=0, fill=1)
+    if config.barcode:
+        black = CMYKColor(0, 0, 0, 1)
+        # ReportLab's drawing spans 113 modules including quiet zones. Lulu's
+        # larger white box leaves a further quarter inch on each side.
+        lulu_dimensions = {"barWidth": 2 * 72 / 113} if config.barcode == "lulu" else {}
+        barcode = createBarcodeDrawing("EAN13", value=edition.isbn13[:12], fontName="BookwormVera",
+            fontSize=9, barHeight=(1.2 if config.barcode == "lulu" else 1) * 72,
+            barFillColor=black, textColor=black, **lulu_dimensions)
+        renderPDF.draw(barcode, canvas, barcode_x + (barcode_width * 72 - barcode.width) / 2,
+                       barcode_y + (barcode_height * 72 - barcode.height) / 2)
+        canvas.setSubject(f"ISBN-13 {edition.isbn13} ({config.barcode})")
     canvas.showPage()
     canvas.save()
     data = output.getvalue()
@@ -128,6 +144,11 @@ def validate_wrap_pdf(cover: bytes, interior: bytes, edition: PrintEdition) -> N
             raise ValueError("cover dimensions do not match the rendered interior and saved spine settings")
         if any(abs(float(a) - float(b)) > 0.01 for a, b in zip(page.cropbox, page.mediabox)):
             raise ValueError("cover crop box must preserve the full cover and bleed")
+        if edition.wrap_cover.barcode:
+            isbn = edition.isbn13
+            expected = f"ISBN-13 {isbn} ({edition.wrap_cover.barcode})"
+            if reader.metadata.get("/Subject") != expected or page.extract_text().split()[-3:] != [isbn[0], isbn[1:7], isbn[7:]]:
+                raise ValueError("cover ISBN barcode does not match this saved print edition; render again")
     except ValueError:
         raise
     except Exception as error:

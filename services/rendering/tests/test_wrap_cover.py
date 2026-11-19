@@ -60,6 +60,35 @@ def test_wrap_dimensions_fonts_color_text_and_checksum():
     validate_wrap_pdf(pdf, interior(), config)
 
 
+@pytest.mark.parametrize("channel", ["kdp", "lulu"])
+def test_assigned_isbn_barcode_has_the_expected_modules_in_the_printed_cover(channel):
+    import pypdfium2 as pdfium
+
+    config = edition(profile="custom", expected_page_count=100).model_dump()
+    config["isbn13"] = "978-0-000-00000-2"
+    config["wrap_cover"]["barcode"] = channel
+    edition_config = PrintEdition.model_validate(config)
+    pages = interior()
+    pdf, checksum = render_wrap_cover(artwork(), pages, edition_config)
+    assert render_wrap_cover(artwork(), pages, edition_config) == (pdf, checksum)
+    validate_wrap_pdf(pdf, pages, edition_config)
+
+    # Sample the EAN-13 modules at print scale using an independent PDF renderer.
+    box_width, box_height = (2.5, 1.7) if channel == "lulu" else (2, 1.2)
+    module = (144 / 113) if channel == "lulu" else (0.33 * 72 / 25.4)
+    left = (0.125 + 6 - box_width - 0.25) * 72
+    first_bar = left + (box_width * 72 - 113 * module) / 2 + 9 * module
+    bottom = (0.125 + 0.25) * 72
+    with pdfium.PdfDocument(pdf) as document:
+        proof = document[0].render(scale=4).to_pil().convert("L")
+    y = round(proof.height - (bottom + box_height * 36) * 4)
+    bits = "".join("1" if proof.getpixel((round((first_bar + (i + 0.5) * module) * 4), y)) < 128 else "0"
+                   for i in range(95))
+    expected = "101" "0111011" "0001001" "0100111" "0001101" "0100111" "0001101" "01010" + "1110010" * 5 + "1101100" "101"
+    assert bits == expected
+    assert proof.getpixel((round((left + 1) * 4), y)) > 245  # White quiet area, inside the trim.
+
+
 def test_page_count_controls_spine_and_custom_template_cannot_go_stale():
     assert wrap_geometry(edition(profile="kdp-white"), 100)[2] == pytest.approx(0.2252)
     assert wrap_geometry(edition(profile="kdp-premium-color"), 200)[2] == pytest.approx(0.4694)

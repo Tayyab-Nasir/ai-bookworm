@@ -34,7 +34,7 @@ from print_images import full_bleed_issues
 from print_fonts import code_font, page_number_font, print_font_issues
 from print_layout import NUMBER_SIZE_PT, NUMBER_TRIM_INSET_IN, number_metrics, print_layout_issues
 
-RENDERER_VERSION = "pdf-1.19.0"
+RENDERER_VERSION = "pdf-1.20.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
@@ -153,7 +153,7 @@ def render_pdf(book: dict, edition: PrintEdition,
         raise ValueError(layout_issues[0]["message"])
     if print_requires_unsupported_rtl_typography(edition, book.get("metadata") or {}):
         raise ValueError("RTL print PDF requires an embedded shaping-capable font; the base-font renderer cannot produce it safely")
-    font_issues = print_font_issues(book, edition.model_dump())
+    font_issues = print_font_issues(book, edition.model_dump(exclude={"isbn13"} if "isbn13" not in edition.model_fields_set else None))
     if font_issues:
         raise ValueError(font_issues[0]["message"])
     image_issues = full_bleed_issues(book, edition, image_bytes or {})
@@ -178,6 +178,8 @@ def render_pdf(book: dict, edition: PrintEdition,
         creator=f"bookworm-renderer {RENDERER_VERSION}",
         initialFontName=page_number_font(typo.body_font, typo.heading_font),
     )
+    if edition.isbn13:
+        doc.subject = f"ISBN-13 {edition.isbn13}"
     page_w, page_h = pagesize
     doc.toc_chapters = {}
     doc.toc_stacked = False
@@ -244,11 +246,15 @@ def render_pdf(book: dict, edition: PrintEdition,
     for key in ("subtitle", "author"):
         if book["metadata"].get(key):
             story.append(Paragraph(escape(book["metadata"][key]), front_style))
-    if edition.front_matter.copyright_notice.strip() or edition.front_matter.publisher.strip():
+    isbn = edition.isbn13 if "isbn13" in edition.model_fields_set else book["metadata"].get("isbn13")
+    if edition.isbn13 or edition.front_matter.copyright_notice.strip() or edition.front_matter.publisher.strip():
         story.append(PageBreak())
-        for text in (edition.front_matter.copyright_notice, edition.front_matter.publisher,
-                     f"ISBN: {book['metadata']['isbn13']}" if book["metadata"].get("isbn13") else ""):
-            if text.strip():
+        isbn_line = f"ISBN: {isbn}" if isbn else ""
+        notice = (edition.front_matter.copyright_notice, edition.front_matter.publisher)
+        copyright_text = (isbn_line, book["metadata"].get("title"), book["metadata"].get("subtitle"),
+                          book["metadata"].get("author"), *notice) if edition.isbn13 else (*notice, isbn_line)
+        for text in copyright_text:
+            if text and text.strip():
                 story.append(Paragraph(escape(text).replace("\n", "<br/>"), front_style))
     if edition.include_table_of_contents:
         def contents_number(page):

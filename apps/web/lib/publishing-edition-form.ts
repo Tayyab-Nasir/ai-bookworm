@@ -25,6 +25,7 @@ export interface FormState {
   qrPosition: "bottom-left" | "bottom-right"; qrSize: number;
   voice: AudiobookVoice; narrationInstructions: string; narrationSpeed: number;
   wrapEnabled: boolean; wrapProfile: "kdp-white" | "kdp-cream" | "kdp-standard-color" | "kdp-premium-color" | "custom";
+  printIsbn?: string; wrapBarcode?: "kdp" | "lulu";
   spineWidth: number; templatePages: number; backText: string; spineText: string; wrapBackground: string; wrapTextColor: string;
   copyrightNotice: string; publisher: string; ebookTitlePage: boolean; printContents: boolean;
 }
@@ -77,7 +78,7 @@ export const DEFAULT_FORM: FormState = {
   subtitleOnCover: true, authorOnCover: true, textColor: "#ffffff", overlay: 0.28,
   qrEnabled: false, qrUrl: "", qrLabel: "", qrPosition: "bottom-right", qrSize: 180,
   voice: "marin", narrationInstructions: "Narrate naturally with clear chapter pacing and faithful pronunciation.", narrationSpeed: 1,
-  wrapEnabled: false, wrapProfile: "kdp-white", spineWidth: 0.25, templatePages: 0,
+  wrapEnabled: false, wrapProfile: "kdp-white", printIsbn: "", spineWidth: 0.25, templatePages: 0,
   backText: "", spineText: "", wrapBackground: "#182528", wrapTextColor: "#ffffff",
   copyrightNotice: "", publisher: "", ebookTitlePage: false, printContents: false,
 };
@@ -154,6 +155,8 @@ export function formFromEdition(edition: Edition, fallbackLanguage = "en"): Form
     narrationInstructions: typeof config.instructions === "string" ? config.instructions : DEFAULT_FORM.narrationInstructions,
     narrationSpeed: number(config.speed, 1),
     wrapEnabled: wrap.enabled === true,
+    printIsbn: typeof config.isbn13 === "string" ? config.isbn13 : config.isbn13 === null ? "" : undefined,
+    wrapBarcode: wrap.barcode === "kdp" || wrap.barcode === "lulu" ? wrap.barcode : undefined,
     wrapProfile: ["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"].includes(String(wrap.profile)) ? wrap.profile as FormState["wrapProfile"] : "kdp-white",
     spineWidth: number(wrap.spine_width_in, 0.25), templatePages: number(wrap.expected_page_count, 0),
     backText: typeof wrap.back_text === "string" ? wrap.back_text : "", spineText: typeof wrap.spine_text === "string" ? wrap.spine_text : "",
@@ -193,9 +196,11 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
   return {
     kind: "print", schema_version: "1.1.0", text_direction: form.textDirection, ...layout, bleed_in: form.bleed, bleed_edges: form.bleedEdges,
     include_table_of_contents: form.printContents,
+    ...(form.printIsbn !== undefined ? { isbn13: form.printIsbn.replace(/[ -]/gu, "") || null } : {}),
     front_matter,
     page_numbering: { style: form.numbering, start_at: form.startAt, position: form.numberPosition }, cover,
     wrap_cover: { enabled: form.wrapEnabled, profile: form.wrapProfile, spine_width_in: form.spineWidth,
+      ...(form.wrapEnabled && form.wrapBarcode ? { barcode: form.wrapBarcode } : {}),
       expected_page_count: form.templatePages || null, back_text: form.backText, spine_text: form.spineText,
       background_color: form.wrapBackground, text_color: form.wrapTextColor },
   };

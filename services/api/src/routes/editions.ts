@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { BookMetadataSchema } from "@bookworm/book-model";
+import { BookMetadataSchema, Isbn13Schema } from "@bookworm/book-model";
 import { AppError } from "../errors.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "../lib/authoring.js";
 import { logActivity } from "../lib/activity.js";
@@ -93,6 +93,7 @@ const fixedLayoutSchema = z.object({
 const printSchema = z.object({
   include_table_of_contents: z.boolean().default(false),
   kind: z.literal("print"),
+  isbn13: Isbn13Schema.nullable().optional(),
   schema_version: z.enum(["1.0.0", "1.1.0"]).default("1.1.0"),
   text_direction: z.enum(["auto", "ltr", "rtl"]).default("auto"),
   trim_size: z.enum(["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"]).default("6x9"),
@@ -109,6 +110,7 @@ const printSchema = z.object({
   cover: coverSchema,
   wrap_cover: z.object({
     enabled: z.boolean().default(false),
+    barcode: z.enum(["kdp", "lulu"]).optional(),
     profile: z.enum(["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"]).default("kdp-white"),
     spine_width_in: z.number().min(0.01).max(3).default(0.25),
     expected_page_count: z.number().int().min(1).max(2000).nullable().default(null),
@@ -134,6 +136,14 @@ export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, pr
   if (config.kind === "print" && config.wrap_cover.enabled) {
     if (!config.cover.asset_id) ctx.addIssue({ code: "custom", path: ["cover", "asset_id"], message: "Choose front cover artwork for a full paperback cover." });
     if (config.wrap_cover.profile === "custom" && !config.wrap_cover.expected_page_count) ctx.addIssue({ code: "custom", path: ["wrap_cover", "expected_page_count"], message: "Enter the printer template's page count." });
+  }
+  if (config.kind === "print" && config.wrap_cover.barcode) {
+    if (!config.wrap_cover.enabled || !config.isbn13) {
+      ctx.addIssue({ code: "custom", path: ["wrap_cover", "barcode"], message: "Enable the full cover and enter this print edition's ISBN-13 for a barcode." });
+    }
+    if (config.wrap_cover.barcode === "lulu" && config.wrap_cover.profile !== "custom") {
+      ctx.addIssue({ code: "custom", path: ["wrap_cover", "profile"], message: "Use the matching Lulu template with a Lulu barcode." });
+    }
   }
 });
 

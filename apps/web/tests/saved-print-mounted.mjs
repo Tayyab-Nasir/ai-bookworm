@@ -257,6 +257,42 @@ test("late plan access cannot overwrite the next book workspace", async () => {
   } finally { await page.close(); }
 });
 
+test("studio validates and saves a print edition ISBN before another proof can be used", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.isbnSaves = [];
+      window.bookwormApi.updateEdition = async (id, body, actor) => {
+        window.isbnSaves.push({ id, body, actor });
+        return { id, book_id: window.ids.book, type: "print", language: body.language,
+          edition_metadata_json: body.config, updated_at: "2026-11-19T10:00:00.000Z", status: "draft" };
+      };
+    });
+    await open(page);
+    const field = page.getByRole("textbox", { name: "Print ISBN-13", exact: true });
+    const save = page.getByRole("button", { name: "Save edition", exact: true });
+    await field.fill("9780000000010");
+    await save.click();
+    await expect(page.getByRole("alert")).toContainText("Enter a valid ISBN-13");
+    assert.equal(await page.evaluate(() => window.isbnSaves.length), 0);
+    await field.fill("978-0-000-00001-9");
+    await save.click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    await expect(field).toHaveValue("9780000000019");
+    await expect(page.getByText(/Package source · Saved print PDF/)).toHaveCount(0);
+    const saved = await page.evaluate(() => window.isbnSaves);
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].body.config.isbn13, "9780000000019");
+    assert.equal(saved[0].actor, ids.asset);
+    await page.getByRole("checkbox", { name: "Create full cover PDF", exact: true }).check();
+    await page.getByRole("combobox", { name: "ISBN barcode", exact: true }).selectOption("lulu");
+    await save.click();
+    await expect(page.getByRole("alert")).toContainText("Use the matching Lulu template");
+    assert.equal(await page.evaluate(() => window.isbnSaves.length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("actual Studio requires preflight for the opened print interior and its cover", async () => {
   const { page, errors } = await fixture({ parent: true });
   try {

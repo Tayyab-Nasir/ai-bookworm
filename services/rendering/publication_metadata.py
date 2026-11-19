@@ -1,4 +1,4 @@
-"""Effective edition metadata shared by EPUB, preflight and export metadata."""
+"""Effective edition metadata shared by rendering, preflight and export."""
 import re
 from datetime import date
 
@@ -15,6 +15,26 @@ def publication_date(value: object) -> str | None:
     except ValueError as error:
         raise ValueError(message) from error
     return value
+
+
+def print_isbn13(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and len(value) <= 32:
+        digits = value.replace(" ", "").replace("-", "")
+        if re.fullmatch(r"(?:978[0-9]|979[1-9])[0-9]{9}", digits):
+            if sum(int(digit) * (1 if index % 2 == 0 else 3) for index, digit in enumerate(digits)) % 10 == 0:
+                return digits
+    raise ValueError("Enter a valid ISBN-13 assigned to this print edition.")
+
+
+def edition_publication_metadata(metadata: dict, config: dict) -> dict:
+    overrides = None
+    if config.get("kind") == "ebook":
+        overrides = config.get("metadata_overrides")
+    elif config.get("kind") == "print" and "isbn13" in config:
+        overrides = {"isbn13": print_isbn13(config["isbn13"])}
+    return effective_publication_metadata(metadata, overrides)
 
 
 def effective_publication_metadata(metadata: dict, overrides: dict | None = None) -> dict:

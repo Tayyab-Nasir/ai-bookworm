@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+export const Isbn13Schema = z.string().max(32).transform((value) => value.replace(/[ -]/gu, "")).refine((value) => {
+  return /^(978[0-9]|979[1-9])[0-9]{9}$/u.test(value)
+    && [...value].reduce((sum, digit, index) => sum + Number(digit) * (index % 2 === 0 ? 1 : 3), 0) % 10 === 0;
+}, "Enter a valid ISBN-13 assigned to this print edition.");
+
 export const NODE_TYPES = [
   "paragraph", "heading", "quote", "list", "listItem", "image",
   "caption", "pageBreak", "table", "footnote", "separator",

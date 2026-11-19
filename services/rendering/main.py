@@ -36,7 +36,7 @@ from rtl_text import cover_rtl_issues  # noqa: E402
 from wrap_cover import VERSION as WRAP_VERSION, render_wrap_cover  # noqa: E402
 from preflight import Finding  # noqa: E402
 from audio_assembly import assemble_audio_with_quality, encode_narration_pcm  # noqa: E402
-from publication_metadata import effective_publication_metadata  # noqa: E402
+from publication_metadata import edition_publication_metadata  # noqa: E402
 from epub_preview_transport import preview_epub_request  # noqa: E402
 from pdf_preview import preview_pdf_page, MAX_PDF_BYTES  # noqa: E402
 
@@ -283,8 +283,7 @@ async def preview_saved_epub(request: Request) -> Response:
 def render(req: RenderRequest) -> RenderResponse:
     try:
         edition = parse_edition(req.editionConfig)
-        metadata = effective_publication_metadata(req.bookModel.get("metadata", {}),
-                                                  edition.metadata_overrides if edition.kind == "ebook" else None)
+        metadata = edition_publication_metadata(req.bookModel.get("metadata", {}), req.editionConfig)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     if edition.kind == "print" and print_requires_unsupported_rtl_typography(edition, metadata):
@@ -296,7 +295,7 @@ def render(req: RenderRequest) -> RenderResponse:
     cover_issues = cover_rtl_issues(metadata, edition.model_dump())
     if cover_issues:
         raise HTTPException(422, cover_issues[0]["message"])
-    font_issues = print_font_issues(req.bookModel, edition.model_dump())
+    font_issues = print_font_issues(req.bookModel, req.editionConfig)
     if font_issues:
         raise HTTPException(422, font_issues[0]["message"])
     cover, cover_sha = _composed_cover(req, edition)
@@ -332,8 +331,7 @@ def render(req: RenderRequest) -> RenderResponse:
 def preflight(req: PreflightRequest) -> dict:
     try:
         edition = parse_edition(req.editionConfig)
-        metadata = effective_publication_metadata(req.bookModel.get("metadata", {}),
-                                                  edition.metadata_overrides if edition.kind == "ebook" else None)
+        metadata = edition_publication_metadata(req.bookModel.get("metadata", {}), req.editionConfig)
         ruleset = load_ruleset(req.channel)
     except (ValueError, KeyError) as e:
         raise HTTPException(422, str(e)) from e
@@ -345,7 +343,7 @@ def preflight(req: PreflightRequest) -> dict:
     )
     # Return actionable findings before a known-unsupported renderer can emit an
     # unreadable PDF or raster cover. Supplied base64 remains validated here.
-    if rtl_render_blocked or print_font_issues(req.bookModel, edition.model_dump()):
+    if rtl_render_blocked or print_font_issues(req.bookModel, req.editionConfig):
         ctx = {"book": req.bookModel, "edition": req.editionConfig,
                "artifact": None, "package_bytes": None, "channel": req.channel,
                "image_bytes": {}, "cover_bytes": _cover_bytes(req.coverBase64)}

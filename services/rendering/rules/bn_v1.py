@@ -1,5 +1,5 @@
 """Barnes & Noble Press rules verified against first-party help on 2026-09-18."""
-from preflight import Finding, Rule
+from preflight import Finding, Rule, _meta
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
@@ -13,7 +13,7 @@ INTERIOR_GUIDE_REF = "https://www2.nookassets.com/npassets-spb/pod/resources/int
 
 def check_bn_isbn(ctx):
     edition = ctx.get("edition") or {}
-    if edition.get("kind") == "print" and not ctx["book"].get("metadata", {}).get("isbn13"):
+    if edition.get("kind") == "print" and not _meta(ctx).get("isbn13"):
         return [Finding(code="BN-PRINT-ISBN",
                         message="Choose a free B&N Press ISBN or add a matching ISBN for this print edition",
                         location="book.metadata.isbn13")]
