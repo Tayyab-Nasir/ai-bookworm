@@ -80,6 +80,18 @@ test('an explicitly configured EPUBCheck JAR reaches only rendering and publishi
   }
 });
 
+test('an explicitly configured OCR language directory reaches only the document service', () => {
+  const tessdata = join(root, 'OCR language models', 'tessdata');
+  const plan = createProcessingPlan({ ...config(), TESSDATA_PREFIX: tessdata }, { TESSDATA_PREFIX: 'untrusted-system-value' });
+  assert.equal(plan.find(service => service.role === 'document').env.TESSDATA_PREFIX, tessdata);
+  assert.ok(plan.filter(service => service.role !== 'document').every(service => !('TESSDATA_PREFIX' in service.env)));
+  assert.ok(createProcessingPlan(config(), { TESSDATA_PREFIX: tessdata }).every(service => !('TESSDATA_PREFIX' in service.env)));
+  assert.ok(createProcessingPlan({ ...config(), TESSDATA_PREFIX: '' }, {}).every(service => !('TESSDATA_PREFIX' in service.env)));
+  for (const bad of ['relative/tessdata', ` ${tessdata}`, `${tessdata}\n`, `${tessdata}\0`, null, 42]) {
+    assert.throws(() => createProcessingPlan({ ...config(), TESSDATA_PREFIX: bad }, {}), /absolute directory path/);
+  }
+});
+
 test('a token cannot be missing, shared, whitespace-bearing, truncated or unbounded', () => {
   for (const value of [undefined, '', 'short', 'x'.repeat(31), 'x'.repeat(513),
     ` ${token(0)}`, `${token(0)}\n`, `${token(0)}\r\n`, `${token(0)}\0`, `${token(0)} secret`]) {
@@ -131,7 +143,8 @@ async function unusedPorts() {
 }
 
 function harness(ports, failAfterReady = false, nativePython = false, scannerMisses = 0) {
-  const plan = createProcessingPlan(config(), { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot }, root)
+  const settings = nativePython ? { ...config(), BOOKWORM_PYTHON: nativePython } : config();
+  const plan = createProcessingPlan(settings, { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot }, root)
     .filter(service => nativePython ? service.role === 'document' : ['document', 'scanning'].includes(service.role));
   for (let index = 0; index < plan.length; index++) {
     const service = plan[index];
@@ -244,12 +257,13 @@ for (const misses of [2, 3]) test(`scanner readiness loss for ${misses} probes $
   assert.equal(await closed(ports), true);
 });
 
+const windowsPython = process.env.BOOKWORM_PYTHON || join(root, '.venv/Scripts/python.exe');
 test('native Windows venv shutdown removes both the redirector and actual HTTP process', {
   timeout: 15_000,
-  skip: process.platform !== 'win32' || !existsSync(join(root, '.venv/Scripts/python.exe')),
+  skip: process.platform !== 'win32' || !existsSync(windowsPython),
 }, async t => {
   const ports = (await unusedPorts()).slice(0, 1);
-  const runtime = harness(ports, false, true);
+  const runtime = harness(ports, false, windowsPython);
   t.after(() => { runtime.child.stdin.end('stop\n'); });
   assert.equal((await runtime.ready).status, 'ready');
   assert.equal((await fetch(`http://127.0.0.1:${ports[0]}/health`)).status, 200);

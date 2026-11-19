@@ -53,6 +53,14 @@ that path only to rendering and publishing and checks that it is a file. If it
 is unset, invalid, or cannot run, those retailer checks remain unavailable and
 packaging fails closed. A launcher restart is required for configuration changes.
 
+For scanned PDF import, make Poppler's `pdftoppm` and Tesseract available on the
+launcher's `PATH`. Install `eng`, `spa`, `fra`, `deu` and `ara` for the five book
+languages. When your Tesseract package needs an explicit model path, set
+`TESSDATA_PREFIX` in the private processing configuration to the absolute
+directory containing the `.traineddata` files. The launcher checks that it is a
+directory and passes it only to the document service. Use a synthetic scanned
+PDF to verify text recovery after starting the services.
+
 Configure the API with the same private service URLs/tokens in its server-side
 environment. The document worker needs its corresponding server configuration
 too. Starting the HTTP fleet does not consume jobs. Inspect pending work and

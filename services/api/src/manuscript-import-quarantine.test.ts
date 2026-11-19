@@ -24,6 +24,7 @@ const STORAGE_PATH = `${WORKSPACE_ID}/manuscripts/${ASSET_ID}/source.txt`;
 const SOURCE_BYTES = Buffer.from("A clean manuscript source.", "utf8");
 const SOURCE_CHECKSUM = createHash("sha256").update(SOURCE_BYTES).digest("hex");
 const AUTH = { authorization: "Bearer good" };
+const PDF_OCR_ISSUES = ["busy", "incomplete", "unsupported_language", "unavailable", "limit"] as const;
 
 type ScanStatus = "pending" | "clean" | "infected" | "error";
 
@@ -42,7 +43,7 @@ interface FixtureOptions {
   role?: string;
   scanStatus?: ScanStatus;
   pdf?: boolean;
-  ocrIssue?: "busy" | "incomplete";
+  ocrIssue?: (typeof PDF_OCR_ISSUES)[number];
   checksum?: string;
   parsedNodes?: Array<Record<string, unknown>>;
   embeddedAssets?: Array<Record<string, unknown>>;
@@ -215,12 +216,13 @@ test("a clean PDF uses the book language and persists recognized text", async ()
   } finally { await ctx.close(); }
 });
 
-for (const ocrIssue of ["busy", "incomplete"] as const) test(`PDF OCR ${ocrIssue} cannot save a partial scan`, async () => {
+for (const ocrIssue of PDF_OCR_ISSUES) test(`PDF OCR ${ocrIssue} cannot save an unreadable scan`, async () => {
   const ctx = await fixture({ pdf: true, parsedNodes: [], ocrIssue });
   try {
     const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH,
       payload: { assetId: ASSET_ID } });
     assert.equal(response.statusCode, ocrIssue === "busy" ? 503 : 422, response.body);
+    if (ocrIssue !== "busy") assert.equal(response.json().error.code, "document_pdf_no_text");
     assert.equal(ctx.parserCalls.length, 1);
     assert.equal(ctx.rpcCalls.length, 0);
   } finally { await ctx.close(); }
