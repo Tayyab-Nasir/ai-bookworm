@@ -12,7 +12,7 @@ export const artworkSnapshotSchema = z.object({
   assets: z.array(z.object({
     assetId: z.string().uuid(), versionNumber: z.number().int().min(1).max(2147483647),
     storagePath: z.string().min(1).max(1024), checksum: z.string().regex(/^[a-f0-9]{64}$/u),
-    mimeType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
+    mimeType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"]),
     sizeBytes: z.number().int().min(1).max(25 * 1024 * 1024),
     requiresApproval: z.boolean(), approvalId: z.string().uuid().nullable(),
   }).strict().refine(asset => asset.requiresApproval === (asset.approvalId !== null))).max(100),
@@ -21,6 +21,8 @@ export const artworkSnapshotSchema = z.object({
   const used = new Set([...snapshot.illustrationAssetIds, ...(snapshot.coverAssetId ? [snapshot.coverAssetId] : [])]);
   return ids.size === snapshot.assets.length && new Set(snapshot.illustrationAssetIds).size === snapshot.illustrationAssetIds.length
     && ids.size === used.size && [...used].every(id => ids.has(id))
+    && snapshot.assets.every(asset => asset.mimeType !== "application/pdf"
+      || (asset.assetId === snapshot.coverAssetId && !snapshot.illustrationAssetIds.includes(asset.assetId)))
     && snapshot.assets.reduce((total, asset) => total + asset.sizeBytes, 0) <= 100 * 1024 * 1024;
 });
 export type ArtworkSnapshot = z.infer<typeof artworkSnapshotSchema>;
@@ -50,8 +52,9 @@ export function renderImagesFingerprint(images: {
 }
 
 export async function assertRenderImagesCurrent(sb: SupabaseClient, workspaceId: string,
-  illustrationIds: string[], coverId: string | null, references: readonly ImageReference[], expected: string) {
-  const images = await loadRenderImages(sb, workspaceId, illustrationIds, coverId, references);
+  illustrationIds: string[], coverId: string | null, references: readonly ImageReference[], expected: string,
+  sourcePdfVersion?: number) {
+  const images = await loadRenderImages(sb, workspaceId, illustrationIds, coverId, references, sourcePdfVersion);
   if (renderImagesFingerprint(images) !== expected) {
     throw new AppError(422, "Book artwork changed during this request. Render and run preflight again before exporting.");
   }
@@ -60,8 +63,12 @@ export async function assertRenderImagesCurrent(sb: SupabaseClient, workspaceId:
 /** Load only confirmed current bytes, never substitute a new revision for a placed one. */
 export async function loadRenderImages(
   sb: SupabaseClient, workspaceId: string, illustrationIds: string[], coverId: string | null,
-  references: readonly ImageReference[] = [],
+  references: readonly ImageReference[] = [], sourcePdfVersion?: number,
 ) {
+  if (sourcePdfVersion !== undefined && (!coverId || illustrationIds.includes(coverId)
+    || !Number.isSafeInteger(sourcePdfVersion) || sourcePdfVersion < 1 || sourcePdfVersion > 2147483647)) {
+    throw new AppError(422, "Choose the current PDF version for the full paperback cover.");
+  }
   const ids = [...new Set([...illustrationIds, ...(coverId ? [coverId] : [])])];
   if (ids.length > 100) throw new AppError(422, "A render can include at most 100 images.");
   const artworkSnapshot: ArtworkSnapshot = { schemaVersion: 1, coverAssetId: coverId,
@@ -87,10 +94,11 @@ export async function loadRenderImages(
   let totalBytes = 0;
   const encoded = new Map<string, string>();
   for (const asset of data.sort((a, b) => String(a.id).localeCompare(String(b.id)))) {
+    const pdfCover = asset.id === coverId && sourcePdfVersion !== undefined;
     if (asset.deleted_at || ["archived", "rejected"].includes(asset.status)) throw new AppError(422, "A render image is archived, rejected or unavailable.");
-    if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(asset.mime_type)
+    if (!(pdfCover ? asset.mime_type === "application/pdf" : ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(asset.mime_type))
       || typeof asset.checksum !== "string" || !/^[a-f0-9]{64}$/iu.test(asset.checksum)) {
-      throw new AppError(422, "All render images must be confirmed image assets.");
+      throw new AppError(422, pdfCover ? "Choose a confirmed paperback cover PDF." : "All render images must be confirmed image assets.");
     }
     const expectedSize = Number(asset.size_bytes);
     if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > 25 * 1024 * 1024) throw new AppError(422, "A render image exceeds the 25 MB limit.");
@@ -98,7 +106,7 @@ export async function loadRenderImages(
     if (totalBytes > 100 * 1024 * 1024) throw new AppError(422, "Render images exceed the 100 MB total limit.");
 
     const { data: version, error: versionError } = await sb.from("asset_versions")
-      .select("version_number,storage_path,checksum,mime_type,size_bytes,scan_status")
+      .select("version_number,storage_path,checksum,mime_type,size_bytes,scan_status,detected_mime_type")
       .eq("asset_id", asset.id).eq("storage_path", asset.storage_path).maybeSingle();
     if (versionError) throw new AppError(503, "Render image version could not be verified.");
     if (!version || !Number.isSafeInteger(version.version_number) || version.version_number < 1
@@ -107,6 +115,10 @@ export async function loadRenderImages(
       || version.mime_type !== asset.mime_type || Number(version.size_bytes) !== expectedSize
       || !["clean", "trusted_generated"].includes(String(version.scan_status))) {
       throw new AppError(422, "A render image is not a clean, confirmed current version.");
+    }
+    if (pdfCover && (version.version_number !== sourcePdfVersion || version.scan_status !== "clean"
+      || version.detected_mime_type !== "application/pdf")) {
+      throw new AppError(422, "The selected cover PDF version changed or could not be verified. Choose its current clean version.");
     }
     if (pins.has(asset.id) && pins.get(asset.id) !== version.version_number) {
       throw new AppError(422, "A placed illustration version has changed. Review and replace its manuscript placement before rendering.");

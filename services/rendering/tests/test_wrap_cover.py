@@ -1,5 +1,6 @@
 import base64
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -10,11 +11,12 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
+from reportlab.pdfgen.canvas import Canvas
 
 RENDERING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RENDERING))
 from editions import PrintEdition
-from wrap_cover import render_wrap_cover, validate_wrap_pdf, wrap_geometry
+from wrap_cover import UPLOADED_VERSION, prepare_wrap_cover, render_wrap_cover, validate_wrap_pdf, wrap_geometry
 from preflight import run_preflight
 from rules import load_ruleset
 
@@ -40,6 +42,44 @@ def artwork():
 def edition(**settings):
     return PrintEdition.model_validate({"kind": "print", "cover": {"asset_id": COVER_ID},
         "wrap_cover": {"enabled": True, "back_text": "A story about caf\u00e9s & friendship.", **settings}})
+
+
+def finished_cover(config, count):
+    output = io.BytesIO()
+    width, height, _ = wrap_geometry(config, count)
+    canvas = Canvas(output, pagesize=(width * 72, height * 72), invariant=1)
+    canvas.setTitle("Author's original cover")
+    canvas.setFillColorCMYK(0.3, 0, 0, 0.6)
+    canvas.rect(0, 0, width * 72, height * 72, stroke=0, fill=1)
+    canvas.showPage()
+    canvas.save()
+    return output.getvalue()
+
+
+def test_finished_cover_keeps_original_bytes_and_requires_current_page_count():
+    config = edition(source_pdf_version=2)
+    source = finished_cover(config, 100)
+    assert prepare_wrap_cover(source, interior(), config) == (source, hashlib.sha256(source).hexdigest())
+    with pytest.raises(ValueError, match="cover dimensions"):
+        prepare_wrap_cover(source, interior(110), config)
+    with pytest.raises(ValueError, match="readable paperback cover PDF"):
+        prepare_wrap_cover(artwork(), interior(), config)
+
+
+@pytest.mark.parametrize("change, message", [
+    (lambda writer: writer.add_attachment("proof-notes.txt", b"Fixture notes"), "without forms"),
+    (lambda writer: writer.encrypt("test-password"), "one unencrypted page"),
+    (lambda writer: writer.add_blank_page(432, 648), "one unencrypted page"),
+    (lambda writer: writer.pages[0].pop("/Contents"), "no print content"),
+])
+def test_finished_cover_requires_a_flattened_single_page(change, message):
+    config = edition(source_pdf_version=2)
+    writer = PdfWriter(clone_from=io.BytesIO(finished_cover(config, 100)))
+    change(writer)
+    output = io.BytesIO()
+    writer.write(output)
+    with pytest.raises(ValueError, match=message):
+        validate_wrap_pdf(output.getvalue(), interior(), config)
 
 
 def test_wrap_dimensions_fonts_color_text_and_checksum():
@@ -223,3 +263,28 @@ def test_render_service_returns_pdf_cover_and_preflight_returns_template_mismatc
         preflight = client.post("/preflight", headers={"x-service-token": "fixture-wrap-token"}, json=payload)
         assert preflight.status_code == 200, preflight.text
         assert "PRINT_WRAP_LAYOUT" in {f["code"] for f in preflight.json()["findings"]}
+
+
+def test_render_and_preflight_use_the_exact_uploaded_cover_pdf(monkeypatch):
+    from pdf_renderer import render_pdf
+
+    spec = importlib.util.spec_from_file_location("bookworm_uploaded_wrap_service", RENDERING / "main.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("RENDERING_SERVICE_TOKEN", "fixture-wrap-token")
+    print_pdf, _ = render_pdf(BOOK, PrintEdition())
+    pages = len(PdfReader(io.BytesIO(print_pdf)).pages)
+    config = edition(profile="custom", expected_page_count=pages, source_pdf_version=3)
+    cover = finished_cover(config, pages)
+    payload = {"bookModel": BOOK, "editionConfig": config.model_dump(), "coverBase64": base64.b64encode(cover).decode()}
+    headers = {"x-service-token": "fixture-wrap-token"}
+    with TestClient(module.app) as client:
+        rendered = client.post("/render", json=payload, headers=headers)
+        assert rendered.status_code == 200, rendered.text
+        assert rendered.json()["coverRendererVersion"] == UPLOADED_VERSION
+        assert base64.b64decode(rendered.json()["coverArtifactBase64"]) == cover
+        assert rendered.json()["coverSha256"] == hashlib.sha256(cover).hexdigest()
+        payload["editionConfig"]["wrap_cover"]["spine_width_in"] = 0.3
+        report = client.post("/preflight", json=payload, headers=headers)
+        assert report.status_code == 200, report.text
+        assert "PRINT_WRAP_LAYOUT" in {f["code"] for f in report.json()["findings"]}

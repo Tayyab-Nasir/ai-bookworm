@@ -1124,6 +1124,37 @@ def test_print_edition_isbn_is_bound_to_the_interior_cover_and_listing():
     assert any("cover ISBN barcode" in item["message"] for item in _PUBLISHING_MAIN.validate(swapped)["findings"])
 
 
+def test_kdp_package_retains_a_finished_cover_pdf():
+    from pypdf import PdfWriter
+    from reportlab.pdfgen.canvas import Canvas
+    from wrap_cover import wrap_geometry
+
+    config = {"kind": "print", "cover": {"asset_id": "77777777-7777-4777-8777-777777777777"},
+              "wrap_cover": {"enabled": True, "source_pdf_version": 3, "profile": "kdp-white"}}
+    writer = PdfWriter()
+    for _ in range(32):
+        writer.add_blank_page(432, 648)
+    interior = BytesIO()
+    writer.write(interior)
+    width, height, _ = wrap_geometry(parse_edition(config), 32)
+    cover = BytesIO()
+    canvas = Canvas(cover, pagesize=(width * 72, height * 72), invariant=1)
+    canvas.setFillColorCMYK(0.3, 0.1, 0, 0.5)
+    canvas.rect(0, 0, width * 72, height * 72, stroke=0, fill=1)
+    canvas.showPage()
+    canvas.save()
+    request = PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID,
+        artifactsBase64={name: base64.b64encode(stream.getvalue()).decode() for name, stream in
+                         {"book.pdf": interior, "cover.pdf": cover}.items()})
+    report = _PUBLISHING_MAIN.validate(request)
+    assert report["errors"] == 0, report["findings"]
+    assert any(item["code"] == "PRINT_UPLOADED_COVER_REVIEW" for item in report["findings"])
+    package = build_package(request)["packages"][0]
+    with zipfile.ZipFile(BytesIO(base64.b64decode(package["dataBase64"]))) as archive:
+        assert archive.read("cover.pdf") == cover.getvalue()
+        assert archive.read("book.pdf") == interior.getvalue()
+
+
 def test_saved_print_preflight_and_package_use_original_full_bleed_resolution():
     from PIL import Image
     from pypdf import PdfWriter

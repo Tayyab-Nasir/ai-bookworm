@@ -23,7 +23,7 @@ import { discardEditionTab, editionBase, parseEditionTab, readEditionTab, writeE
 import { beginEditionCreateFence, clearEditionCreateFence, readEditionCreateFence, type EditionCreateFence } from "../lib/edition-create-fence";
 import { packageDownloadDeadline, signedDownloadDeadline, downloadClock, downloadExpired, nextDownloadClockWait, type DownloadClock } from "../lib/publishing-request";
 
-import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, matchesCreatedEditionConfig, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
+import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, matchesCreatedEditionConfig, usesUploadedPrintCover, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
 export { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
@@ -299,6 +299,14 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     if (valid()) void readAudioHistory(editionId, false);
   };
   const coverAssets = useMemo(() => assets.filter((asset) => asset.mime_type.startsWith("image/") && asset.checksum !== "pending" && !asset.deleted_at), [assets]);
+  const coverPdfAssets = useMemo(() => assets.filter(asset => asset.mime_type === "application/pdf"
+    && asset.current_scan_status === "clean" && Number.isSafeInteger(asset.current_version_number)
+    && Number(asset.current_version_number) > 0 && asset.size_bytes > 0 && asset.size_bytes <= 25 * 1024 * 1024
+    && /^[a-f0-9]{64}$/iu.test(asset.checksum) && !asset.deleted_at && !["archived", "rejected"].includes(asset.status)
+    && (!asset.requires_approval || asset.status === "approved")), [assets]);
+  const uploadedCover = usesUploadedPrintCover(form);
+  const pdfSelection = form.wrapPdfAssetId && form.wrapPdfVersion ? `${form.wrapPdfAssetId}:${form.wrapPdfVersion}` : "";
+  const pdfSelectionAvailable = coverPdfAssets.some(asset => `${asset.id}:${asset.current_version_number}` === pdfSelection);
   const activePublishingJobs = useMemo(() => publishingJobs.filter((job) => !activeId || job.editionId === activeId), [publishingJobs, activeId]);
   const channelCompatible = form.kind !== "audiobook" && (channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind));
   const { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, renderBlocked } = resolveEditionRenderSafety(form, book, activeEdition?.edition_metadata_json);
@@ -478,11 +486,12 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     } catch (reason) { if (valid()) setTabError(reason instanceof Error ? reason.message : "The local copy could not be downloaded."); }
     finally { tabFlight.current = false; setTabBusy(false); }
   };
-  const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
+  const updateFields = (fields: Partial<FormState>) => {
     if (!handlerCurrent() || !editable || busy || tabFlight.current) return;
-    const next = { ...latestForm.current, [key]: value }; latestForm.current = next; formRevision.current++; liveDirty.current = true; recordTabCopy(next);
+    const next = { ...latestForm.current, ...fields }; latestForm.current = next; formRevision.current++; liveDirty.current = true; recordTabCopy(next);
     setForm(next); setDirty(true); setRendered(null); setPreflight(null); setNotice(null);
   };
+  const update = <K extends keyof FormState>(key: K, value: FormState[K]) => updateFields({ [key]: value });
 
   const selectEdition = (edition: Edition) => {
     if (!handlerCurrent() || busy || tabFlight.current || editionSaveFlight.current) return;
@@ -560,6 +569,10 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     const saveRevision = formRevision.current, submittedForm = latestForm.current;
     const config = toConfig(submittedForm, activeEdition?.edition_metadata_json);
     if (config.kind === "print") {
+      if (usesUploadedPrintCover(submittedForm) && !coverPdfAssets.some(asset => asset.id === submittedForm.wrapPdfAssetId
+        && asset.current_version_number === submittedForm.wrapPdfVersion)) {
+        setError("Choose a current scanned PDF from Assets for the full paperback cover."); return;
+      }
       if (config.isbn13 && !Isbn13Schema.safeParse(config.isbn13).success) {
         setError("Enter a valid ISBN-13 assigned to this print edition."); return;
       }
@@ -910,7 +923,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
             <label className="text-sm text-white/65">Copyright notice<textarea value={form.copyrightNotice} maxLength={3000} rows={5} onChange={(event) => update("copyrightNotice", event.target.value)} className={fieldClass} placeholder="Enter the exact notice and permissions text you want printed." /></label>
           </div>
         </section>}
-        {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="cover-settings">
+        {form.kind !== "audiobook" && !uploadedCover && <section className={cardClass} aria-labelledby="cover-settings">
           <h2 id="cover-settings" className="text-xl font-semibold">Cover composition</h2><p className="mt-1 text-sm text-white/45">Choose private artwork; title, author, overlay, and optional QR are composed during rendering.</p>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-white/65">Cover artwork<select value={form.coverAssetId} onChange={(event) => update("coverAssetId", event.target.value)} className={fieldClass}><option value="">No cover artwork</option>{coverAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
@@ -925,12 +938,29 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
 
         {form.kind === "print" && <section className={cardClass} aria-labelledby="paperback-cover-title">
           <h2 id="paperback-cover-title" className="text-xl font-semibold">Full paperback cover</h2>
-          <p className="mt-2 text-sm leading-relaxed text-white/50">Create one PDF with back cover, spine and front artwork. The spine follows your rendered page count. KDP profiles round an odd count up to the next even page.</p>
+          <p className="mt-2 text-sm leading-relaxed text-white/50">Use one PDF for the back, spine and front. The spine follows your rendered page count. KDP profiles round an odd count up to the next even page.</p>
           <label className="mt-5 inline-flex items-center gap-2 text-sm text-white/70"><input type="checkbox" checked={form.wrapEnabled} onChange={(event) => update("wrapEnabled", event.target.checked)} />Create full cover PDF</label>
           {form.wrapEnabled && <div className="mt-5 grid gap-4 sm:grid-cols-2">
+            <label className="text-sm text-white/65 sm:col-span-2">Cover source<select value={form.wrapSource ?? "composed"}
+              onChange={event => update("wrapSource", event.target.value === "uploaded" ? "uploaded" : undefined)} className={fieldClass}>
+              <option value="composed">Compose from front artwork</option><option value="uploaded">Use a finished PDF</option>
+            </select></label>
+            {uploadedCover && <div className="space-y-2 sm:col-span-2">
+              <label className="block text-sm text-white/65">Finished paperback cover PDF<select value={pdfSelection}
+                onChange={event => {
+                  const asset = coverPdfAssets.find(item => `${item.id}:${item.current_version_number}` === event.target.value);
+                  updateFields({ wrapPdfAssetId: asset?.id, wrapPdfVersion: asset?.current_version_number ?? undefined });
+                }} className={fieldClass}>
+                <option value="">Choose a scanned PDF</option>
+                {pdfSelection && !pdfSelectionAvailable && <option value={pdfSelection} disabled>Saved PDF version is unavailable</option>}
+                {coverPdfAssets.map(asset => <option key={asset.id} value={`${asset.id}:${asset.current_version_number}`}>{asset.name} · version {asset.current_version_number}</option>)}
+              </select></label>
+              <p className="text-xs leading-relaxed text-white/50">Choose a KDP or B&amp;N Press single-page template for your retailer package. Include any QR or barcode in your design. Bookworm checks the PDF against the finished interior and keeps the original file in your proof.</p>
+              {book && <Link href={`/assets?ws=${encodeURIComponent(book.workspace_id)}`} onClick={leave} className="inline-block py-2 text-sm underline">Upload cover PDF in Assets</Link>}
+            </div>}
             <label className="text-sm text-white/65 sm:col-span-2">Paper and printer<select value={form.wrapProfile} onChange={(event) => update("wrapProfile", event.target.value as FormState["wrapProfile"])} className={fieldClass}><option value="kdp-white">KDP · black ink, white paper</option><option value="kdp-cream">KDP · black ink, cream paper</option><option value="kdp-standard-color">KDP · standard color</option><option value="kdp-premium-color">KDP · premium color</option><option value="custom">Other printer · use its paperback template</option></select></label>
             {form.wrapProfile === "custom" && <><label className="text-sm text-white/65">Template spine width (in)<input type="number" min={0.01} max={3} step={0.0001} value={form.spineWidth} onChange={(event) => update("spineWidth", Number(event.target.value))} className={fieldClass} /></label><label className="text-sm text-white/65">Template page count<input type="number" min={1} max={2000} value={form.templatePages || ""} onChange={(event) => update("templatePages", Number(event.target.value))} className={fieldClass} /></label></>}
-            <div className="sm:col-span-2">
+            {!uploadedCover && <><div className="sm:col-span-2">
               <label className="text-sm text-white/65">ISBN barcode<select value={form.wrapBarcode ?? ""} onChange={event => update("wrapBarcode", (event.target.value || undefined) as FormState["wrapBarcode"])} aria-describedby="print-barcode-help" className={fieldClass}><option value="">Printer adds the barcode</option><option value="kdp">Include KDP barcode</option><option value="lulu">Include Lulu barcode</option></select></label>
               <p id="print-barcode-help" className="mt-2 text-xs text-white/50">For B&amp;N Press, choose Printer adds the barcode. For Lulu, use the template for the cover you plan to upload.</p>
             </div>
@@ -939,6 +969,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
             <label className="text-sm text-white/65">Back and spine background<input type="color" value={form.wrapBackground} onChange={(event) => update("wrapBackground", event.target.value)} className={`${fieldClass} h-11 p-1`} /></label>
             <label className="text-sm text-white/65">Back and spine text color<input type="color" value={form.wrapTextColor} onChange={(event) => update("wrapTextColor", event.target.value)} className={`${fieldClass} h-11 p-1`} /></label>
             <p className="text-xs leading-relaxed text-white/45 sm:col-span-2">Choose front artwork above, then save and render. KDP profiles calculate spine width automatically. Other printers require a matching template page count and spine width, with 0.125-inch outer bleed. Spine text must fit at 7 pt or larger. Review the PDF and your printer’s template before ordering a proof; hardcover and RTL covers need a separate workflow.</p>
+            </>}
           </div>}
         </section>}
 

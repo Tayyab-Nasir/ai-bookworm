@@ -14,6 +14,9 @@ def requires_bidi_layout(text: object) -> bool:
 
 def cover_rtl_issues(metadata: dict, edition: dict) -> list[dict[str, str]]:
     """Only inspect text that the current cover renderer will actually paint."""
+    wrap = edition.get("wrap_cover") or {}
+    if edition.get("kind") == "print" and wrap.get("source_pdf_version") is not None:
+        return []
     cover = edition.get("cover") or {}
     issues = []
     if cover.get("asset_id"):
@@ -24,7 +27,6 @@ def cover_rtl_issues(metadata: dict, edition: dict) -> list[dict[str, str]]:
         qr = cover.get("qr_code") or {}
         if qr.get("enabled") and qr.get("url") and requires_bidi_layout(qr.get("label")):
             issues.append({"location": "edition.cover.qr_code.label", "message": "QR label requires bidirectional shaping, which is not available."})
-    wrap = edition.get("wrap_cover") or {}
     if edition.get("kind") == "print" and wrap.get("enabled"):
         for key in ("back_text", "spine_text"):
             if requires_bidi_layout(wrap.get(key)):

@@ -179,5 +179,63 @@ begin
   update public.editions set edition_metadata_json='{"kind":"ebook","cover":{"asset_id":"f7300000-0000-4000-8000-000000000001"}}' where id='e7300000-0000-4000-8000-000000000001';
  end loop;
 end $$;
+-- A finished cover is an exact scanned source and remains the same PDF on completion.
+do $$
+declare
+  workspace constant uuid := 'c7300000-0000-4000-8000-000000000001';
+  book constant uuid := 'd7300000-0000-4000-8000-000000000001';
+  author constant uuid := 'a7300000-0000-4000-8000-000000000001';
+  edition constant uuid := 'e7300000-0000-4000-8000-000000000002';
+  pdf constant uuid := 'f7300000-0000-4000-8000-000000000003';
+  path text := format('workspaces/%s/assets/%s/v3/finished.pdf', workspace, pdf);
+  job uuid; output_id uuid; request jsonb; artifacts jsonb; mode text; failure text; failure_message text;
+begin
+  insert into public.assets(id,workspace_id,type,name,storage_path,mime_type,size_bytes,checksum,status,created_by)
+    values(pdf,workspace,'source_document','Finished paperback cover',path,'application/pdf',72,'pending','draft',author);
+  insert into public.asset_versions(asset_id,version_number,storage_path,checksum,mime_type,size_bytes,created_by)
+    values(pdf,3,path,'pending','application/pdf',72,author);
+  perform public.record_asset_scan_verdict(pdf,3,'clean',repeat('c',64),'application/pdf',72,'fixture-scanner','no-match');
+  insert into public.editions(id,book_id,type,language,edition_metadata_json)
+    values(edition,book,'print','en',jsonb_build_object('kind','print','cover',jsonb_build_object('asset_id',pdf),
+      'wrap_cover',jsonb_build_object('enabled',true,'source_pdf_version',3)));
+  foreach mode in array array['valid','stale version','changed output','illustration','unverified scan'] loop
+    job := gen_random_uuid(); output_id := gen_random_uuid(); failure := null;
+    select jsonb_build_object('action','render','editionUpdatedAt',e.updated_at,'bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
+      'artworkSnapshot',jsonb_build_object('schemaVersion',1,'coverAssetId',pdf,
+        'illustrationAssetIds',case when mode='illustration' then jsonb_build_array(pdf) else '[]'::jsonb end,
+        'assets',jsonb_build_array(jsonb_build_object('assetId',pdf,'versionNumber',case when mode='stale version' then 2 else 3 end,
+          'storagePath',path,'checksum',repeat('c',64),'mimeType','application/pdf','sizeBytes',72,'requiresApproval',false,'approvalId',null))))
+      into request from public.editions e where e.id=edition;
+    insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,idempotency_key,created_by)
+      values(job,book,edition,'render','running',request,job::text,author);
+    artifacts := jsonb_build_array(jsonb_build_object('assetId',job,'name','Interior','type','rendered_book','role','rendered_print',
+      'filename','book.pdf','storagePath',format('workspaces/%s/assets/%s/v1/book.pdf',workspace,job),
+      'mimeType','application/pdf','sizeBytes',72,'checksum',repeat('b',64)),
+      jsonb_build_object('assetId',output_id,'name','Cover','type','rendered_cover','role','rendered_cover',
+        'filename','cover.pdf','storagePath',format('workspaces/%s/assets/%s/v1/cover.pdf',workspace,output_id),
+        'mimeType','application/pdf','sizeBytes',72,'checksum',repeat(case when mode='changed output' then 'd' else 'c' end,64)));
+    if mode='unverified scan' then
+      -- A service-generated version has matching bytes but no uploaded scan verdict.
+      delete from public.asset_versions where asset_id=pdf and version_number=3;
+      insert into public.asset_versions(asset_id,version_number,storage_path,checksum,mime_type,size_bytes,created_by)
+        values(pdf,3,path,repeat('c',64),'application/pdf',72,author);
+    end if;
+    begin
+      perform public.complete_render_job(job,artifacts,'test','{"coverRendererVersion":"uploaded-paperback-cover-1.0.0"}');
+    exception when sqlstate '40001' or sqlstate '22023' then
+      get stacked diagnostics failure=returned_sqlstate, failure_message=message_text;
+    end;
+    if mode='valid' then
+      assert failure is null and (select status='succeeded' from public.publishing_jobs where id=job),
+        coalesce(failure_message,'clean PDF render failed');
+      assert (select checksum=repeat('c',64) from public.assets where id=output_id),'finished cover checksum changed';
+    else
+      assert failure is not distinct from (case when mode='unverified scan' then '40001' else '22023' end), mode;
+      assert (select status='running' from public.publishing_jobs where id=job);
+      assert not exists(select 1 from public.assets where id in (job,output_id));
+      assert not exists(select 1 from public.usage_events where publishing_job_id=job);
+    end if;
+  end loop;
+end $$;
 reset role;
 rollback;

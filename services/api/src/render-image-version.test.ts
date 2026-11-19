@@ -67,6 +67,27 @@ test("identical image bytes do not hide a revised cover or replacement approval"
   }
 });
 
+test("only the pinned, scan-confirmed PDF can be used as a full paperback cover", async () => {
+  const f = fixture();
+  f.asset.mime_type = f.version.mime_type = f.version.detected_mime_type = "application/pdf";
+  const result = await loadRenderImages(f.sb, workspace, [], assetId, [], 4);
+  assert.equal(result.coverBase64, bytes.toString("base64"));
+  assert.equal(result.artworkSnapshot.assets[0].mimeType, "application/pdf");
+  assert.equal(result.artworkSnapshot.assets[0].versionNumber, 4);
+  assert.equal(result.artworkSnapshot.assets[0].approvalId, approvalId);
+  assert.deepEqual(result.assetImagesBase64, {});
+  const expected = renderImagesFingerprint(result);
+  await assert.rejects(loadRenderImages(f.sb, workspace, [assetId], assetId, pin(), 4), /current PDF version/);
+  await assert.rejects(loadRenderImages(f.sb, workspace, [], assetId), /confirmed image assets/);
+  await assert.rejects(loadRenderImages(f.sb, workspace, [], assetId, [], 3), /PDF version changed/);
+  f.version.detected_mime_type = "image/png";
+  await assert.rejects(assertRenderImagesCurrent(f.sb, workspace, [], assetId, [], expected, 4), /could not be verified/);
+  f.version.detected_mime_type = "application/pdf";
+  f.version.scan_status = "trusted_generated";
+  await assert.rejects(loadRenderImages(f.sb, workspace, [], assetId, [], 4), /could not be verified/);
+  assert.deepEqual(f.downloads, [path]);
+});
+
 test("books without artwork still have an explicit empty completion snapshot", async () => {
   const f = fixture();
   const result = await loadRenderImages(f.sb, workspace, [], null);

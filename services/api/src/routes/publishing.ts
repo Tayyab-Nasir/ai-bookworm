@@ -2,14 +2,14 @@ import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { RETAILER_SUBMISSION_STATUSES, type RetailerSubmission } from "@bookworm/types";
-import { renderImagesFingerprint, assertRenderImagesCurrent, printProofImageInputs } from "../lib/render-images.js";
+import { artworkSnapshotSchema, renderImagesFingerprint, assertRenderImagesCurrent, printProofImageInputs } from "../lib/render-images.js";
 import { AppError } from "../errors.js";
 import { boundedServiceText } from "../lib/bounded-service-response.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "../lib/authoring.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import type { SupabaseClient } from "../lib/supabase.js";
-import { editionConfigSchema, loadRenderImages, withEditionLanguage, requiresEffectiveEbookCoverPolicy,
-  EFFECTIVE_EBOOK_COVER_POLICY, EFFECTIVE_EBOOK_COVER_RENDERER_VERSION } from "./editions.js";
+import { editionConfigSchema, loadRenderImages, withEditionLanguage, requiresEffectiveEbookCoverPolicy, uploadedCoverVersion,
+  EFFECTIVE_EBOOK_COVER_POLICY, EFFECTIVE_EBOOK_COVER_RENDERER_VERSION, UPLOADED_WRAP_RENDERER_VERSION } from "./editions.js";
 
 const channelSchema = z.enum(["export", "kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
 const retailerChannelSchema = z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
@@ -335,9 +335,23 @@ function assertPackageRequest(job: Record<string, unknown>, body: z.infer<typeof
 }
 
 export function assertSavedRenderedCoverPolicy(config: z.infer<typeof editionConfigSchema>, renderJob: Record<string, unknown> | null) {
-  if (!requiresEffectiveEbookCoverPolicy(config)) return;
+  const sourcePdfVersion = uploadedCoverVersion(config);
+  if (sourcePdfVersion === undefined && !requiresEffectiveEbookCoverPolicy(config)) return;
   const response = renderJobResponseSchema.safeParse(renderJob?.response_json);
   const covers = response.success ? response.data.artifacts.filter(artifact => artifact.role === "rendered_cover") : [];
+  if (config.kind === "print" && sourcePdfVersion !== undefined) {
+    const request = renderJob?.request_json as { artworkSnapshot?: unknown } | null;
+    const snapshot = artworkSnapshotSchema.safeParse(request?.artworkSnapshot);
+    const source = snapshot.success && snapshot.data.coverAssetId === config.cover.asset_id
+      ? snapshot.data.assets.find(asset => asset.assetId === config.cover.asset_id) : undefined;
+    if (!source || source.versionNumber !== sourcePdfVersion || source.mimeType !== "application/pdf"
+      || !response.success || response.data.usage.coverRendererVersion !== UPLOADED_WRAP_RENDERER_VERSION
+      || covers.length !== 1 || covers[0].type !== "rendered_cover" || covers[0].filename !== "cover.pdf"
+      || covers[0].mimeType !== "application/pdf" || covers[0].checksum !== source.checksum || covers[0].sizeBytes !== source.sizeBytes) {
+      throw new AppError(422, "The saved proof does not match the selected uploaded cover PDF. Render again before packaging.");
+    }
+    return;
+  }
   if (!response.success || response.data.usage.coverRendererVersion !== EFFECTIVE_EBOOK_COVER_RENDERER_VERSION
     || response.data.usage.coverMetadataPolicy !== EFFECTIVE_EBOOK_COVER_POLICY
     || covers.length !== 1 || covers[0].type !== "rendered_cover" || covers[0].filename !== "cover.png" || covers[0].mimeType !== "image/png") {
@@ -450,7 +464,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     const model = withEditionLanguage(await assembleBookModel(user, book), edition.language);
     const modelSha256 = bookModelFingerprint(model);
     const loadedImages = await loadRenderImages(service, book.workspace_id, model.assets.map((asset) => asset.id), config.cover.asset_id,
-      model.chapters.flatMap((chapter) => chapter.nodes));
+      model.chapters.flatMap((chapter) => chapter.nodes), uploadedCoverVersion(config));
     const { artworkSnapshot, ...images } = loadedImages;
     const imageSha256 = renderImagesFingerprint(loadedImages);
     const snapshot = { bookId: body.bookId, editionId: body.editionId, editionUpdatedAt: edition.updated_at,
@@ -519,7 +533,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       try { raw = JSON.parse(responseText); } catch { throw new AppError(503, "The validator returned an invalid response."); }
       const result = verifyPreflightReport(raw, body.channel, sources);
       await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
-        model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
+        model.chapters.flatMap(chapter => chapter.nodes), imageSha256, uploadedCoverVersion(config));
       if (savedRender) await checkRenderedPackageInputs(service, book.workspace_id, config.kind, savedRender, config, proof);
       const { data: completed, error: completeError } = await service.rpc("complete_preflight_job", {
         p_job_id: jobId,
@@ -604,7 +618,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     assertSourceJob(preflightJob, { ...earlySource, action: "validate", channel: body.channel });
     assertSavedRenderedCoverPolicy(config, renderJob);
     const images = await loadRenderImages(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
-      model.chapters.flatMap(chapter => chapter.nodes));
+      model.chapters.flatMap(chapter => chapter.nodes), uploadedCoverVersion(config));
     const { artworkSnapshot } = images;
     const imageSha256 = renderImagesFingerprint(images);
     const source = { bookId: body.bookId, editionId: body.editionId, editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256 };
@@ -682,7 +696,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       uploadedPaths.push(storagePath);
 
       await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
-        model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
+        model.chapters.flatMap(chapter => chapter.nodes), imageSha256, uploadedCoverVersion(config));
       completionAttempted = true;
       const { data: completed, error: completeError } = await service.rpc("complete_publishing_package_job", {
         p_job_id: jobId, p_artifact: artifact, p_rule_version: packaged.data.ruleVersion,

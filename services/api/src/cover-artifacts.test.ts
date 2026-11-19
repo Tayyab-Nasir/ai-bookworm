@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { decodeRenderedCover, editionConfigSchema, renderResponseSchema } from "./routes/editions.js";
+import { decodeRenderedCover, editionConfigSchema, renderResponseSchema, UPLOADED_WRAP_RENDERER_VERSION } from "./routes/editions.js";
 import { loadRenderedPackageInputs } from "./routes/publishing.js";
 
 const COVER = "ca000000-0000-4000-8000-000000000001";
@@ -66,6 +66,40 @@ test("confirmed private cover PDF is packaged with its exact name and bytes", as
   assert.equal(reads.length, 2);
   artifacts[1].filename = "cover.png";
   await assert.rejects(loadRenderedPackageInputs(sb, WORKSPACE, "print", job, config), /invalid format/);
+});
+
+test("a finished cover is pinned to the original PDF for rendering and packaging", async () => {
+  const input = { kind: "print", cover: { asset_id: COVER }, wrap_cover: { enabled: true, source_pdf_version: 3 } };
+  const selected = editionConfigSchema.parse(input);
+  const output = { ...rendered, coverRendererVersion: UPLOADED_WRAP_RENDERER_VERSION };
+  assert.deepEqual(decodeRenderedCover(selected, output, sha)?.bytes, bytes);
+  assert.throws(() => decodeRenderedCover(selected, output, "b".repeat(64)), /exact uploaded cover/);
+  assert.throws(() => decodeRenderedCover(selected, rendered, sha), /exact uploaded cover/);
+  assert.equal(editionConfigSchema.safeParse({ ...input, cover: { asset_id: COVER, qr_code: { enabled: true, url: "https://example.test" } } }).success, false);
+  assert.equal(editionConfigSchema.safeParse({ ...input, isbn13: "9780000000019", wrap_cover: { ...input.wrap_cover, barcode: "kdp" } }).success, false);
+
+  const artifacts = [
+    { assetId: BOOK, role: "rendered_print", type: "rendered_book", filename: "book.pdf" },
+    { assetId: "ca000000-0000-4000-8000-000000000004", role: "rendered_cover", type: "rendered_cover", filename: "cover.pdf" },
+  ].map(artifact => ({ ...artifact, storagePath: `workspaces/${WORKSPACE}/assets/${artifact.assetId}/v1/${artifact.filename}`,
+    name: artifact.filename, mimeType: "application/pdf", sizeBytes: bytes.length, checksum: sha }));
+  const snapshot = { schemaVersion: 1, coverAssetId: COVER, illustrationAssetIds: [], assets: [{
+    assetId: COVER, versionNumber: 3, storagePath: `workspaces/${WORKSPACE}/assets/${COVER}/v3/source.pdf`,
+    checksum: sha, mimeType: "application/pdf", sizeBytes: bytes.length, requiresApproval: false, approvalId: null,
+  }] };
+  const job = { request_json: { artworkSnapshot: snapshot }, response_json: { artifacts, rendererVersion: "fixture", usage: {
+    coverRendererVersion: UPLOADED_WRAP_RENDERER_VERSION,
+  } } };
+  let reads = 0;
+  const sb = { from: (table: string) => proofMetadata(artifacts, table), storage: { from: () => ({ download: async () => {
+    reads++; return { data: new Blob([bytes]), error: null };
+  } }) } } as never;
+  const packaged = await loadRenderedPackageInputs(sb, WORKSPACE, "print", job, selected);
+  assert.equal(packaged["cover.pdf"], bytes.toString("base64"));
+  assert.equal(reads, 2);
+  artifacts[1].checksum = "b".repeat(64);
+  await assert.rejects(loadRenderedPackageInputs(sb, WORKSPACE, "print", job, selected), /saved proof does not match/iu);
+  assert.equal(reads, 2);
 });
 
 const coverPolicy = "effective-ebook-metadata-v1";

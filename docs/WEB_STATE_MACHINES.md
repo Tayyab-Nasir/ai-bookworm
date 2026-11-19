@@ -71,7 +71,7 @@ resolve a write whose reply was lost.
 | Manual Book Bible and source search | Draft, saved/conflicting/unknown mutation, deleted/closed receipt; selected source and read result are bound to book and source version. | `apps/web/components/BookMemoryClient.tsx`, `apps/web/components/BookSearchPanel.tsx`, `services/api/src/routes/book-memory.ts`, `tests/security/manual-book-bible-recovery.test.sql` |
 | Asset upload, versions and review | Selected, allocated, uploaded, scanned/quarantined, versioned, reviewed/approved; removal and restore are separate actor/revision-bound operations with uncertain/closed outcomes. | `apps/web/components/AssetBrowser.tsx`, `apps/web/components/RemovedAssets.tsx`, `services/api/src/routes/assets.ts`, `services/api/src/routes/asset-lifecycle.ts`, `tests/security/asset-lifecycle-additive.test.sql` |
 | Saved edition and print proof | Edition draft, dirty, saved, conflict or uncertain create. A render can be absent, accepted, waiting, complete, failed or closed. Proof history and private-link expiry are distinct. Dirty settings invalidate an in-flight history read. | `apps/web/components/PublishingStudio.tsx`, `apps/web/components/SavedPrintLibrary.tsx`, `apps/web/components/SavedPdfProof.tsx`, `services/api/src/routes/render-requests.ts`, `services/api/src/routes/saved-print.ts`, `apps/web/tests/saved-print-mounted.mjs` |
-| Cover artwork, QR and proof | Artwork version chosen, review pending, approved for that exact version, or superseded. QR on/off and validation belong to the edition settings. A saved edition and a generated cover proof have distinct versions. | `apps/web/components/PublishingStudio.tsx`, `apps/web/lib/publishing-edition-form.ts`, `services/api/src/routes/collab.ts`, `services/api/src/routes/editions.ts`, `services/api/src/cover-artifacts.test.ts` |
+| Cover artwork, QR and proof | Composed artwork can be pending review, approved for its exact version, or superseded. A finished paperback PDF goes through private upload and scanning before selection. The edition pins its version. Rendering checks the page size against the interior and preserves the PDF bytes. QR and barcode settings apply to Bookworm composition. | `apps/web/components/PublishingStudio.tsx`, `apps/web/lib/publishing-edition-form.ts`, `services/api/src/routes/collab.ts`, `services/api/src/routes/editions.ts`, `services/api/src/cover-artifacts.test.ts`, `supabase/migrations/20261119193430_uploaded_paperback_cover.sql` |
 | EPUB, retailer package and downloads | A saved artifact, verified private link, expired link, preflight, export request and manual retailer handoff have different lifetimes. A saved preflight can report errors. Packaging requires a current eligible proof and a preflight with zero errors. Loading or renewing a link reads the existing output. | `apps/web/components/SavedEpubReader.tsx`, `apps/web/components/RetailerPackageRequest.tsx`, `apps/web/components/PrivateArtifactDownload.tsx`, `services/api/src/routes/reader.ts`, `services/api/src/routes/publishing.ts` |
 | Retailer submission status | An author can record the status seen in a retailer account for a completed package. The server saves against the last-read revision. A stale or unconfirmed save requires a fresh read before another edit. | `apps/web/components/RetailerSubmission.tsx`, `services/api/src/routes/publishing.ts`, `tests/security/retailer-submissions.test.sql` |
 | AI writer and images | Inputs, count or quote, explicit acceptance, dispatch, recovery, review and apply. Writer suggestions bind to a chapter revision. An image job can have a held, unsettled result. | `apps/web/components/AiAssistantPanel.tsx`, `apps/web/components/ImageQuoteStudio.tsx`, `services/api/src/routes/ai.ts`, `services/api/src/routes/ai-review-quotes.ts`, `services/api/src/routes/image-quotes.ts` |
@@ -169,6 +169,18 @@ resolve a write whose reply was lost.
   [KDP barcodes](https://kdp.amazon.com/en_US/help/topic/G5HDYGP4BXLX4RUW) ·
   [Lulu distribution requirements](https://help.lulu.com/en/support/solutions/articles/64000255462) ·
   [B&N Press ISBN guidance](https://help-press.barnesandnoble.com/hc/en-us/articles/5358254743963-ISBN-FAQs)
+- A finished paperback PDF can be selected from the workspace’s scanned Assets.
+  The print edition pins the source version. The renderer verifies a single,
+  unencrypted page with print content, expected page dimensions, and full bleed
+  bounds. Preflight also binds the saved proof to the selected cover checksum.
+  The uploaded PDF, saved `cover.pdf` and retailer ZIP entry share the same
+  bytes. KDP and B&N Press have separate templates. The retailer’s preview
+  remains the check for image quality, fonts, safe areas and barcode placement.
+  See `services/rendering/tests/test_wrap_cover.py`,
+  `tests/security/artwork-completion.test.sql` and
+  `tests/e2e/native-author-files-publishing.mjs`.
+  [KDP paperback cover guide](https://kdp.amazon.com/en_US/help/topic/G201953020) ·
+  [B&N Press full-cover template](https://help-press.barnesandnoble.com/hc/en-us/articles/5358927293211-Cover-Template-Tool-FAQs)
 - All EPUB and print package requests now require a verified render and cover
   when present. If eligibility changes while packaging, the API asks the author
   to choose a current proof or render again. Migration

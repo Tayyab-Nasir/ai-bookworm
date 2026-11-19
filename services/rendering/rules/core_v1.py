@@ -238,6 +238,14 @@ def check_print_wrap(ctx):
     return []
 
 
+def check_uploaded_cover_review(ctx):
+    edition = ctx.get("edition") or {}
+    if (edition.get("kind") == "print" and (edition.get("wrap_cover") or {}).get("source_pdf_version") is not None
+            and ctx.get("cover_pdf_bytes")):
+        return _find("PRINT_UPLOADED_COVER_REVIEW", "Review fonts, image resolution, safe areas and any barcode in the retailer’s print preview.", "cover.pdf")
+    return []
+
+
 def check_saved_print_isbn(ctx):
     edition = ctx.get("edition") or {}
     isbn = edition.get("isbn13")
@@ -343,6 +351,7 @@ RULESET = RuleSet(name="core", version=VERSION, rules=[
     Rule("CORE-FONT-003", "error", "fonts", "print font glyph coverage", check_print_glyphs),
     Rule("CORE-LAYOUT-001", "error", "channel", "print body and page-number space", check_print_layout),
     Rule("CORE-COVER-001", "error", "channel", "full paperback cover geometry", check_print_wrap),
+    Rule("CORE-COVER-003", "warning", "channel", "finished cover visual review", check_uploaded_cover_review),
     Rule("CORE-ISBN-001", "error", "metadata", "saved print ISBN", check_saved_print_isbn),
     Rule("CORE-A11Y-001", "error", "accessibility", "image alt text", check_alt_text),
     Rule("CORE-LINK-001", "error", "links", "link well-formedness", check_links),

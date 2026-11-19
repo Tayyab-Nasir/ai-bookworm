@@ -149,6 +149,7 @@ class PageNumbering(BaseModel):
 class WrapCover(BaseModel):
     enabled: bool = False
     barcode: Literal["kdp", "lulu"] | None = None
+    source_pdf_version: int | None = Field(default=None, strict=True, ge=1, le=2_147_483_647)
     profile: Literal["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"] = "kdp-white"
     spine_width_in: float = Field(default=0.25, ge=0.01, le=3)
     expected_page_count: int | None = Field(default=None, ge=1, le=2000)
@@ -176,9 +177,13 @@ class PrintEdition(BaseModel):
 
     @model_validator(mode="after")
     def _wrap_source(self):
+        if self.wrap_cover.source_pdf_version is not None and (
+            not self.wrap_cover.enabled or self.wrap_cover.barcode or self.cover.qr_code.enabled
+        ):
+            raise ValueError("An uploaded cover PDF requires a full cover with generated QR and barcode disabled.")
         if self.wrap_cover.enabled:
             if not self.cover.asset_id:
-                raise ValueError("full paperback cover requires front cover artwork")
+                raise ValueError("full paperback cover requires front cover artwork or an uploaded cover PDF")
             if self.wrap_cover.profile == "custom" and not self.wrap_cover.expected_page_count:
                 raise ValueError("custom spine width requires the template page count")
         if self.wrap_cover.barcode and (not self.wrap_cover.enabled or not self.isbn13):
@@ -215,6 +220,8 @@ def print_requires_unsupported_rtl_typography(edition: PrintEdition, metadata: d
 
 
 def cover_requires_unsupported_rtl_typography(edition: EbookEdition | PrintEdition, metadata: dict) -> bool:
+    if edition.kind == "print" and edition.wrap_cover.source_pdf_version is not None:
+        return False
     if not edition.cover.asset_id or not edition_requires_rtl_typography(edition, metadata):
         return False
     cover = edition.cover

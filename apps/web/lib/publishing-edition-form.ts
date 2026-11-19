@@ -26,6 +26,9 @@ export interface FormState {
   voice: AudiobookVoice; narrationInstructions: string; narrationSpeed: number;
   wrapEnabled: boolean; wrapProfile: "kdp-white" | "kdp-cream" | "kdp-standard-color" | "kdp-premium-color" | "custom";
   printIsbn?: string; wrapBarcode?: "kdp" | "lulu";
+  wrapSource?: "uploaded";
+  wrapPdfAssetId?: string;
+  wrapPdfVersion?: number;
   spineWidth: number; templatePages: number; backText: string; spineText: string; wrapBackground: string; wrapTextColor: string;
   copyrightNotice: string; publisher: string; ebookTitlePage: boolean; printContents: boolean;
 }
@@ -103,7 +106,7 @@ export function resolveEditionRenderSafety(form: FormState, book: Pick<Book, "ti
   const requiresShaping = form.kind !== "audiobook" && (resolveEditionTextDirection(metadata.language ?? "", "auto") === "rtl" || form.textDirection === "rtl");
   const paginated = form.kind === "print" || (form.kind === "ebook" && form.flow === "fixed");
   const rtlPrintUnsupported = paginated && requiresShaping;
-  const rtlCoverTextUnsupported = requiresShaping && Boolean(form.coverAssetId) && (
+  const rtlCoverTextUnsupported = requiresShaping && !usesUploadedPrintCover(form) && Boolean(form.coverAssetId) && (
     (form.titleOnCover && Boolean(metadata.title))
     || (form.subtitleOnCover && Boolean(metadata.subtitle))
     || (form.authorOnCover && Boolean(metadata.author))
@@ -122,6 +125,8 @@ export function formFromEdition(edition: Edition, fallbackLanguage = "en"): Form
   const page = object(config.page_numbering);
   const wrap = object(config.wrap_cover);
   const front = object(config.front_matter);
+  const pdfVersion = number(wrap.source_pdf_version, 0);
+  const uploaded = edition.type === "print" && wrap.enabled === true && Number.isSafeInteger(pdfVersion) && pdfVersion > 0;
   return {
     ...DEFAULT_FORM,
     copyrightNotice: typeof front.copyright_notice === "string" ? front.copyright_notice : "",
@@ -146,7 +151,9 @@ export function formFromEdition(edition: Edition, fallbackLanguage = "en"): Form
     numbering: page.style === "roman" || page.style === "none" ? page.style : "arabic",
     startAt: number(page.start_at, 1),
     numberPosition: page.position === "bottom-center" || page.position === "top-center" ? page.position : "bottom-outer",
-    coverAssetId: typeof cover.asset_id === "string" ? cover.asset_id : "",
+    coverAssetId: !uploaded && typeof cover.asset_id === "string" ? cover.asset_id : "",
+    ...(uploaded ? { wrapSource: "uploaded" as const, wrapPdfVersion: pdfVersion,
+      wrapPdfAssetId: typeof cover.asset_id === "string" ? cover.asset_id : undefined } : {}),
     titleOnCover: cover.title_on_cover !== false, subtitleOnCover: cover.subtitle_on_cover !== false, authorOnCover: cover.author_on_cover !== false,
     textColor: typeof cover.text_color === "string" ? cover.text_color : "#ffffff", overlay: number(cover.overlay_opacity, 0.28),
     qrEnabled: qr.enabled === true, qrUrl: typeof qr.url === "string" ? qr.url : "", qrLabel: typeof qr.label === "string" ? qr.label : "",
@@ -165,6 +172,10 @@ export function formFromEdition(edition: Edition, fallbackLanguage = "en"): Form
   };
 }
 
+export function usesUploadedPrintCover(form: FormState) {
+  return form.kind === "print" && form.wrapEnabled && form.wrapSource === "uploaded";
+}
+
 export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig {
   const saved = object(savedConfig);
   const front_matter = { copyright_notice: form.copyrightNotice, publisher: form.publisher };
@@ -176,11 +187,13 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
       leading: form.leading, paragraph_spacing_pt: form.paragraphSpacing, first_line_indent_in: form.firstLineIndent, text_align: form.textAlign,
     },
   };
+  const uploaded = usesUploadedPrintCover(form);
+  const qrEnabled = !uploaded && form.qrEnabled;
   const cover = {
-    asset_id: form.coverAssetId || null,
-    title_on_cover: form.titleOnCover, subtitle_on_cover: form.subtitleOnCover, author_on_cover: form.authorOnCover,
+    asset_id: (uploaded ? form.wrapPdfAssetId : form.coverAssetId) || null,
+    title_on_cover: !uploaded && form.titleOnCover, subtitle_on_cover: !uploaded && form.subtitleOnCover, author_on_cover: !uploaded && form.authorOnCover,
     text_color: form.textColor, overlay_opacity: form.overlay,
-    qr_code: { enabled: form.qrEnabled, url: form.qrEnabled ? form.qrUrl : null, label: form.qrLabel || null, position: form.qrPosition, size_px: form.qrSize },
+    qr_code: { enabled: qrEnabled, url: qrEnabled ? form.qrUrl : null, label: uploaded ? null : form.qrLabel || null, position: form.qrPosition, size_px: form.qrSize },
   };
   if (form.kind === "ebook") return {
     kind: "ebook", schema_version: "1.1.0", text_direction: form.textDirection, flow: form.flow, navigation: form.navigation, cover, front_matter,
@@ -200,8 +213,8 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
     front_matter,
     page_numbering: { style: form.numbering, start_at: form.startAt, position: form.numberPosition }, cover,
     wrap_cover: { enabled: form.wrapEnabled, profile: form.wrapProfile, spine_width_in: form.spineWidth,
-      ...(form.wrapEnabled && form.wrapBarcode ? { barcode: form.wrapBarcode } : {}),
-      expected_page_count: form.templatePages || null, back_text: form.backText, spine_text: form.spineText,
+      ...(uploaded ? { source_pdf_version: form.wrapPdfVersion } : form.wrapEnabled && form.wrapBarcode ? { barcode: form.wrapBarcode } : {}),
+      expected_page_count: form.templatePages || null, back_text: uploaded ? "" : form.backText, spine_text: uploaded ? "" : form.spineText,
       background_color: form.wrapBackground, text_color: form.wrapTextColor },
   };
 }

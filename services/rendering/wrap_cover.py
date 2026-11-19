@@ -6,6 +6,7 @@ Verified 2026-09-18. Custom geometry must come from the chosen printer's templat
 import hashlib
 from html import escape
 from io import BytesIO
+from math import isfinite
 
 from PIL import Image
 from pypdf import PdfReader
@@ -24,6 +25,7 @@ from kdp_print import kdp_page_count, kdp_page_range
 from print_fonts import _missing
 
 VERSION = "paperback-cover-1.2.0"
+UPLOADED_VERSION = "uploaded-paperback-cover-1.0.0"
 BLEED = 0.125
 FACTORS = {"kdp-white": 0.002252, "kdp-cream": 0.0025,
            "kdp-standard-color": 0.002252, "kdp-premium-color": 0.002347}
@@ -135,15 +137,33 @@ def render_wrap_cover(front: bytes, interior: bytes, edition: PrintEdition) -> t
 
 def validate_wrap_pdf(cover: bytes, interior: bytes, edition: PrintEdition) -> None:
     width, height, _ = wrap_geometry(edition, pdf_page_count(interior))
+    uploaded = edition.wrap_cover.source_pdf_version is not None
+    if uploaded and (not cover.startswith(b"%PDF-") or len(cover) > 25 * 1024 * 1024):
+        raise ValueError("upload a readable paperback cover PDF of up to 25 MB")
     try:
-        reader = PdfReader(BytesIO(cover))
+        reader = PdfReader(BytesIO(cover), strict=uploaded)
         if reader.is_encrypted or len(reader.pages) != 1:
             raise ValueError("cover must contain one unencrypted page")
         page = reader.pages[0]
-        if page.rotation or abs(float(page.mediabox.width) - width * 72) > 0.01 or abs(float(page.mediabox.height) - height * 72) > 0.01:
-            raise ValueError("cover dimensions do not match the rendered interior and saved spine settings")
-        if any(abs(float(a) - float(b)) > 0.01 for a, b in zip(page.cropbox, page.mediabox)):
+        # Accommodate normal PDF exporter rounding on external templates.
+        tolerance = 0.1 if uploaded else 0.01
+        unit = float(page.user_unit)
+        actual = [float(page.mediabox.width) * unit, float(page.mediabox.height) * unit]
+        if page.rotation or not all(isfinite(value) for value in actual) or any(
+            abs(value - expected * 72) > tolerance for value, expected in zip(actual, (width, height))
+        ):
+            raise ValueError(f"cover dimensions must be {width:.4f} × {height:.4f} inches for the rendered interior and saved spine settings")
+        if any(not isfinite(float(a)) or not isfinite(float(b)) or abs(float(a - b) * unit) > tolerance for a, b in zip(page.cropbox, page.mediabox)):
             raise ValueError("cover crop box must preserve the full cover and bleed")
+        if uploaded:
+            catalog = reader.root_object
+            names = catalog.get("/Names")
+            if (any(key in catalog for key in ("/OpenAction", "/AA", "/AcroForm", "/AF", "/Collection", "/OCProperties"))
+                or any(key in page for key in ("/AA", "/Annots", "/AF"))
+                or (names is not None and any(key in names.get_object() for key in ("/JavaScript", "/EmbeddedFiles")))):
+                raise ValueError("export a flattened print cover PDF without forms, layers, annotations, actions, or attachments")
+            if page.get_contents() is None:
+                raise ValueError("the uploaded cover page has no print content")
         if edition.wrap_cover.barcode:
             isbn = edition.isbn13
             expected = f"ISBN-13 {isbn} ({edition.wrap_cover.barcode})"
@@ -153,3 +173,10 @@ def validate_wrap_pdf(cover: bytes, interior: bytes, edition: PrintEdition) -> N
         raise
     except Exception as error:
         raise ValueError("cover must be a readable single-page PDF") from error
+
+
+def prepare_wrap_cover(cover: bytes, interior: bytes, edition: PrintEdition) -> tuple[bytes, str]:
+    if edition.wrap_cover.source_pdf_version is None:
+        return render_wrap_cover(cover, interior, edition)
+    validate_wrap_pdf(cover, interior, edition)
+    return cover, hashlib.sha256(cover).hexdigest()

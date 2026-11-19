@@ -33,7 +33,7 @@ from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
 from print_fonts import print_font_issues  # noqa: E402
 from rtl_text import cover_rtl_issues  # noqa: E402
-from wrap_cover import VERSION as WRAP_VERSION, render_wrap_cover  # noqa: E402
+from wrap_cover import VERSION as WRAP_VERSION, UPLOADED_VERSION, prepare_wrap_cover  # noqa: E402
 from preflight import Finding  # noqa: E402
 from audio_assembly import assemble_audio_with_quality, encode_narration_pcm  # noqa: E402
 from publication_metadata import edition_publication_metadata  # noqa: E402
@@ -151,7 +151,7 @@ def _cover_bytes(value: str | None) -> bytes | None:
     except (ValueError, TypeError) as error:
         raise HTTPException(422, "coverBase64 is not valid base64") from error
     if not data or len(data) > 25 * 1024 * 1024:
-        raise HTTPException(422, "cover image must be between 1 byte and 25 MB")
+        raise HTTPException(422, "cover file must be between 1 byte and 25 MB")
     return data
 
 
@@ -214,7 +214,7 @@ def encode_narration(req: NarrationEncodingRequest):
         "x-bookworm-narration-encoding": json.dumps(profile, separators=(",", ":")), "cache-control": "no-store"})
 
 
-def _composed_cover(req, edition) -> tuple[bytes | None, str | None]:
+def _prepare_cover(req, edition) -> tuple[bytes | None, str | None]:
     source = _cover_bytes(req.coverBase64)
     if edition.cover.asset_id and source is None:
         raise HTTPException(422, "the configured cover asset bytes are required")
@@ -226,6 +226,8 @@ def _composed_cover(req, edition) -> tuple[bytes | None, str | None]:
         UUID(edition.cover.asset_id)
     except (ValueError, TypeError) as error:
         raise HTTPException(422, "cover asset id must be a UUID") from error
+    if edition.kind == "print" and edition.wrap_cover.source_pdf_version is not None:
+        return source, None
     try:
         return compose_front_cover(source, req.bookModel, edition)
     except ValueError as error:
@@ -298,7 +300,7 @@ def render(req: RenderRequest) -> RenderResponse:
     font_issues = print_font_issues(req.bookModel, req.editionConfig)
     if font_issues:
         raise HTTPException(422, font_issues[0]["message"])
-    cover, cover_sha = _composed_cover(req, edition)
+    cover, cover_sha = _prepare_cover(req, edition)
     illustrations = _illustrations(req, edition)
     cover_output = base64.b64encode(cover).decode() if cover else None
     if edition.kind == "ebook":
@@ -314,16 +316,18 @@ def render(req: RenderRequest) -> RenderResponse:
         blob, sha = render_pdf(req.bookModel, edition, illustrations)
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
+    cover_version = COVER_RENDERER_VERSION
     if edition.wrap_cover.enabled:
         try:
-            cover, cover_sha = render_wrap_cover(cover, blob, edition)
+            cover, cover_sha = prepare_wrap_cover(cover, blob, edition)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         cover_output = base64.b64encode(cover).decode()
+        cover_version = UPLOADED_VERSION if edition.wrap_cover.source_pdf_version is not None else WRAP_VERSION
     return RenderResponse(format="pdf", artifactBase64=base64.b64encode(blob).decode(),
                           sha256=sha, rendererVersion=PDF_RENDERER_VERSION,
                           coverArtifactBase64=cover_output, coverSha256=cover_sha,
-                          coverRendererVersion=(WRAP_VERSION if edition.wrap_cover.enabled else COVER_RENDERER_VERSION) if cover else None,
+                          coverRendererVersion=cover_version if cover else None,
                           coverFormat=("pdf" if edition.wrap_cover.enabled else "png") if cover else None)
 
 
@@ -355,11 +359,12 @@ def preflight(req: PreflightRequest) -> dict:
             "warnings": sum(1 for f in findings if f.severity == "warning"),
             "findings": [f.to_dict() for f in findings],
         }
-    cover, _ = _composed_cover(req, edition)
+    cover, _ = _prepare_cover(req, edition)
+    cover_image = None if edition.kind == "print" and edition.wrap_cover.source_pdf_version is not None else cover
     illustrations = _illustrations(req, edition)
     initial_ctx = {"book": req.bookModel, "edition": req.editionConfig,
                    "artifact": None, "package_bytes": None, "channel": req.channel,
-                   "image_bytes": illustrations, "cover_bytes": cover}
+                   "image_bytes": illustrations, "cover_bytes": cover_image}
     initial_findings = run_preflight(initial_ctx, ruleset)
     if any(f.code.startswith("PRINT_FULL_BLEED_") or f.rule_id == "CORE-LAYOUT-001" for f in initial_findings):
         return {
@@ -379,13 +384,13 @@ def preflight(req: PreflightRequest) -> dict:
             raise HTTPException(422, str(error)) from error
         if edition.kind == "print" and edition.wrap_cover.enabled:
             try:
-                cover_pdf, _ = render_wrap_cover(cover, artifact, edition)
+                cover_pdf, _ = prepare_wrap_cover(cover, artifact, edition)
             except ValueError as error:
                 wrap_error = str(error)
     ctx = {"book": req.bookModel, "edition": req.editionConfig,
            "artifact": artifact if edition.kind == "ebook" else None,
            "package_bytes": artifact,
-           "channel": req.channel, "image_bytes": illustrations, "cover_bytes": cover,
+           "channel": req.channel, "image_bytes": illustrations, "cover_bytes": cover_image,
            "cover_pdf_bytes": cover_pdf}
     findings = run_preflight(ctx, ruleset)
     if wrap_error:

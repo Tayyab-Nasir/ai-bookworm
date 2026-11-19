@@ -55,3 +55,14 @@ test("edition recovery preserves optional ISBN fields and still reads legacy cop
     assert.throws(() => parseEditionTab(JSON.stringify(saved), scope), /invalid/);
   }
 });
+
+test("tab recovery preserves the exact uploaded cover version and rejects partial references", () => {
+  const print = { ...edition, type: "print", edition_metadata_json: { kind: "print" } } as Edition;
+  const form = { ...DEFAULT_FORM, kind: "print" as const, wrapEnabled: true, wrapSource: "uploaded" as const,
+    wrapPdfAssetId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", wrapPdfVersion: 4 };
+  const raw = writeEditionTab(memory(), scope, print, form, null);
+  assert.deepEqual(parseEditionTab(raw, scope).form, form);
+  for (const version of [undefined, 0, 1.5, 2147483648]) {
+    assert.throws(() => writeEditionTab(memory(), scope, print, { ...form, wrapPdfVersion: version }, null), /invalid cover PDF version/);
+  }
+});

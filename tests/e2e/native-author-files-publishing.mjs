@@ -193,6 +193,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
   };
   const history = page.getByRole('region', { name: 'Retailer export packages', exact: true });
   const packages = [];
+  let finishedCover;
   try {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(publishUrl);
@@ -214,6 +215,16 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
       const render = await nativeBrowserJson(rendered);
       assert.equal(render.status, 'succeeded');
       await expect(page.getByText('Private render completed.', { exact: true })).toBeVisible();
+      if (edition.kind === 'print' && edition.channels.includes('barnesnoble')) {
+        const cover = render.artifacts.find(artifact => artifact.role === 'rendered_cover');
+        assert.equal(cover.asset.mime_type, 'application/pdf');
+        const readPrivateFile = localFetch(new Set([new URL(service.supabaseUrl).origin]));
+        const response = await readPrivateFile(cover.download.url);
+        assert.equal(response.status, 200);
+        const bytes = Buffer.from(await response.arrayBuffer());
+        assert.equal(createHash('sha256').update(bytes).digest('hex'), cover.asset.checksum);
+        finishedCover = { bytes, checksum: cover.asset.checksum, workspaceId: cover.asset.workspace_id, edition };
+      }
       let sourceEpub, sourcePrint;
       if (edition.kind === 'ebook') {
         const originalCount = requests.filter(path => path.endsWith(`/editions/${edition.id}/render`)).length;
@@ -337,15 +348,84 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     await page.setViewportSize({ width: 1280, height: 900 });
     await screenshot('retailer-history-desktop');
     assert.equal(requests.length, mutations, 'History recovery must not render, validate or package again');
+
+    assert.ok(finishedCover, 'A matching paperback template is required for the uploaded-cover journey');
+    onStage('retailer browser finished cover PDF upload and clean scan');
+    await page.goto(`${origin}/assets?ws=${finishedCover.workspaceId}`);
+    const pickingFile = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: 'Upload asset', exact: true }).click();
+    const chooser = await pickingFile;
+    const filename = 'native-finished-paperback-cover.pdf';
+    await chooser.setFiles({ name: filename, mimeType: 'application/pdf', buffer: finishedCover.bytes });
+    await expect(page.getByText(`${filename} passed integrity checks and malware screening.`, { exact: true })).toBeVisible();
+    const { assets } = await api('GET', `/assets?workspaceId=${finishedCover.workspaceId}`);
+    const source = assets.find(asset => asset.name === filename);
+    assert.equal(source.current_scan_status, 'clean');
+    assert.equal(source.current_version_number, 1);
+    assert.equal(source.checksum, finishedCover.checksum);
+
+    onStage('retailer browser saves and renders uploaded paperback cover');
+    await page.goto(publishUrl);
+    const print = finishedCover.edition;
+    await select(print);
+    await page.getByRole('combobox', { name: 'Cover source', exact: true }).selectOption('uploaded');
+    const pdf = page.getByRole('combobox', { name: 'Finished paperback cover PDF', exact: true });
+    await pdf.selectOption(`${source.id}:1`);
+    const [savedEdition] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/editions/${print.id}`) && response.request().method() === 'PATCH'),
+      page.getByRole('button', { name: 'Save edition', exact: true }).click(),
+    ]);
+    assert.equal(savedEdition.status(), 200);
+    const settings = (await nativeBrowserJson(savedEdition)).edition_metadata_json;
+    assert.equal(settings.cover.asset_id, source.id);
+    assert.equal(settings.wrap_cover.source_pdf_version, 1);
+    assert.equal(settings.cover.qr_code.enabled, false);
+    const [renderReply] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/editions/${print.id}/render`) && response.request().method() === 'POST', { timeout: 90_000 }),
+      page.getByRole('button', { name: 'Render PDF', exact: true }).click(),
+    ]);
+    assert.equal(renderReply.status(), 201);
+    const uploadedRender = await nativeBrowserJson(renderReply);
+    assert.equal(uploadedRender.artifacts.find(artifact => artifact.role === 'rendered_cover').asset.checksum, finishedCover.checksum);
+    const interior = uploadedRender.artifacts.find(artifact => artifact.role === 'rendered_print').asset.checksum;
+
+    onStage('retailer browser packages the uploaded cover from the saved proof');
+    await page.reload();
+    await select(print);
+    await expect(pdf).toHaveValue(`${source.id}:1`);
+    const proof = page.getByRole('region', { name: 'Saved print proofs', exact: true }).getByRole('listitem')
+      .filter({ hasText: interior.slice(0, 16) }).first();
+    await proof.getByRole('button', { name: 'Open saved print', exact: true }).click();
+    await page.getByRole('combobox', { name: 'Preflight target', exact: true }).selectOption('barnesnoble');
+    const [preflightReply] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publishing/validate') && response.request().method() === 'POST', { timeout: 90_000 }),
+      page.getByRole('button', { name: 'Run preflight', exact: true }).click(),
+    ]);
+    assert.equal(preflightReply.status(), 201);
+    const uploadedPreflight = await nativeBrowserJson(preflightReply);
+    assert.equal(uploadedPreflight.errors, 0);
+    assert.deepEqual(uploadedPreflight.sourcePrint, { jobId: uploadedRender.jobId, sha256: interior, coverSha256: finishedCover.checksum });
+    const [packageReply] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/publishing/jobs') && response.request().method() === 'POST', { timeout: 90_000 }),
+      history.getByRole('button', { name: 'Create retailer package', exact: true }).click(),
+    ]);
+    assert.equal(packageReply.status(), 201);
+    const uploadedPackage = await nativeBrowserJson(packageReply);
+    assert.equal(uploadedPackage.sourceRenderJobId, uploadedRender.jobId);
+    const archiveBytes = await download(page, history.getByRole('listitem').first().getByRole('button', { name: 'Download private ZIP', exact: true }), uploadedPackage.package.asset.checksum);
+    const archive = inspectNativePackage(archiveBytes);
+    assert.equal(archive.files['cover.pdf'].sha256, finishedCover.checksum);
+    assert.equal(archive.files['book.pdf'].sha256, interior);
+    await screenshot('retailer-uploaded-paperback-cover');
     await expect(page.getByRole('main').getByRole('alert')).toHaveCount(0);
     const usage = await service.from('usage_events').select('meter,quantity');
-    assert.equal(usage.error, null); assert.equal(usage.data.length, 26);
-    for (const [meter, count] of [['rendering', 12], ['publishing', 14]]) assert.equal(usage.data.filter(row => row.meter === meter).length, count);
+    assert.equal(usage.error, null); assert.equal(usage.data.length, 28);
+    for (const [meter, count] of [['rendering', 13], ['publishing', 15]]) assert.equal(usage.data.filter(row => row.meter === meter).length, count);
     assert.ok(usage.data.every(row => Number(row.quantity) === 1));
     for (const table of ['ai_jobs', 'credit_ledger']) {
       const result = await service.from(table).select('id');
       assert.equal(result.error, null); assert.deepEqual(result.data, []);
     }
-    console.log('PASS native browser seven packages, read-only history recovery, unavailable/restored ZIP, exact usage and zero AI or credit charges');
+    console.log('PASS native browser eight packages, exact uploaded cover, read-only recovery, restored ZIP and zero AI or credit charges');
   } finally { page.off('request', observe); }
 }

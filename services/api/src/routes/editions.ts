@@ -111,6 +111,7 @@ const printSchema = z.object({
   wrap_cover: z.object({
     enabled: z.boolean().default(false),
     barcode: z.enum(["kdp", "lulu"]).optional(),
+    source_pdf_version: z.number().int().min(1).max(2147483647).optional(),
     profile: z.enum(["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"]).default("kdp-white"),
     spine_width_in: z.number().min(0.01).max(3).default(0.25),
     expected_page_count: z.number().int().min(1).max(2000).nullable().default(null),
@@ -134,7 +135,7 @@ export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, pr
     ctx.addIssue({ code: "custom", path: ["metadata_overrides", "publicationDate"], message: "Enter a valid YYYY-MM-DD publication date." });
   }
   if (config.kind === "print" && config.wrap_cover.enabled) {
-    if (!config.cover.asset_id) ctx.addIssue({ code: "custom", path: ["cover", "asset_id"], message: "Choose front cover artwork for a full paperback cover." });
+    if (!config.cover.asset_id) ctx.addIssue({ code: "custom", path: ["cover", "asset_id"], message: "Choose front cover artwork or a finished PDF for the full paperback cover." });
     if (config.wrap_cover.profile === "custom" && !config.wrap_cover.expected_page_count) ctx.addIssue({ code: "custom", path: ["wrap_cover", "expected_page_count"], message: "Enter the printer template's page count." });
   }
   if (config.kind === "print" && config.wrap_cover.barcode) {
@@ -145,7 +146,15 @@ export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, pr
       ctx.addIssue({ code: "custom", path: ["wrap_cover", "profile"], message: "Use the matching Lulu template with a Lulu barcode." });
     }
   }
+  if (config.kind === "print" && config.wrap_cover.source_pdf_version !== undefined
+    && (!config.wrap_cover.enabled || config.wrap_cover.barcode || config.cover.qr_code.enabled)) {
+    ctx.addIssue({ code: "custom", path: ["wrap_cover", "source_pdf_version"], message: "An uploaded cover PDF requires a full cover with generated QR and barcode disabled." });
+  }
 });
+
+export function uploadedCoverVersion(config: z.infer<typeof editionConfigSchema>) {
+  return config.kind === "print" ? config.wrap_cover.source_pdf_version : undefined;
+}
 
 export function withEditionLanguage<T extends { metadata: { language: string } }>(model: T, language: unknown): T {
   const editionLanguage = typeof language === "string" ? language.trim() : "";
@@ -179,6 +188,7 @@ export const renderResponseSchema = z.object({
 
 export const EFFECTIVE_EBOOK_COVER_POLICY = "effective-ebook-metadata-v1";
 export const EFFECTIVE_EBOOK_COVER_RENDERER_VERSION = "cover-1.4.0";
+export const UPLOADED_WRAP_RENDERER_VERSION = "uploaded-paperback-cover-1.0.0";
 
 export function requiresEffectiveEbookCoverPolicy(config: z.infer<typeof editionConfigSchema>) {
   if (config.kind !== "ebook" || !config.cover.asset_id) return false;
@@ -192,7 +202,8 @@ export function requiresEffectiveEbookCoverPolicy(config: z.infer<typeof edition
     || (Object.hasOwn(config.metadata_overrides, "language") && overlays.some(([enabled]) => enabled));
 }
 
-export function decodeRenderedCover(config: z.infer<typeof editionConfigSchema>, rendered: z.infer<typeof renderResponseSchema>) {
+export function decodeRenderedCover(config: z.infer<typeof editionConfigSchema>, rendered: z.infer<typeof renderResponseSchema>,
+  uploadedChecksum?: string) {
   const expected = config.kind === "print" && config.wrap_cover.enabled ? "pdf" : "png";
   if (Boolean(rendered.coverArtifactBase64) !== Boolean(rendered.coverSha256)) throw new AppError(503, "The renderer returned incomplete cover output.");
   if (!rendered.coverArtifactBase64 || !rendered.coverSha256) {
@@ -200,6 +211,10 @@ export function decodeRenderedCover(config: z.infer<typeof editionConfigSchema>,
     return null;
   }
   if ((rendered.coverFormat ?? "png") !== expected) throw new AppError(503, "The renderer returned the wrong cover format.");
+  if (uploadedCoverVersion(config) !== undefined && (!uploadedChecksum || rendered.coverSha256.toLowerCase() !== uploadedChecksum
+    || rendered.coverRendererVersion !== UPLOADED_WRAP_RENDERER_VERSION)) {
+    throw new AppError(503, "The renderer did not confirm the exact uploaded cover PDF.");
+  }
   const affected = requiresEffectiveEbookCoverPolicy(config);
   if (affected && rendered.coverRendererVersion !== EFFECTIVE_EBOOK_COVER_RENDERER_VERSION) {
     throw new AppError(503, "The renderer does not support this edition's cover metadata. Update the renderer, then render again with a new request key.",
@@ -271,23 +286,29 @@ async function requireCurrentArtworkApproval(
     status: string;
     requires_approval?: boolean;
   },
+  sourcePdfVersion?: number,
 ) {
-  if (asset.requires_approval !== true) return;
-  if (asset.status !== "approved") {
+  if (asset.requires_approval !== true && sourcePdfVersion === undefined) return;
+  if (asset.requires_approval === true && asset.status !== "approved") {
     throw new AppError(422, "Artwork must be approved for its exact current version before rendering.");
   }
 
   const { data: version, error: versionError } = await sb.from("asset_versions")
-    .select("version_number,storage_path,checksum,mime_type,size_bytes,scan_status")
+    .select("version_number,storage_path,checksum,mime_type,size_bytes,scan_status,detected_mime_type")
     .eq("asset_id", asset.id).eq("storage_path", asset.storage_path).maybeSingle();
   if (versionError) throw new AppError(503, "Artwork version approval could not be verified.");
   const versionNumber = Number(version?.version_number);
   if (!version || !Number.isSafeInteger(versionNumber) || versionNumber < 1
-    || version.checksum.toLowerCase() !== asset.checksum.toLowerCase()
+    || typeof version.checksum !== "string" || version.checksum.toLowerCase() !== asset.checksum.toLowerCase()
     || version.mime_type !== asset.mime_type || Number(version.size_bytes) !== Number(asset.size_bytes)
     || !["clean", "trusted_generated"].includes(String(version.scan_status))) {
     throw new AppError(422, "Artwork must be a clean, current image version before rendering.");
   }
+  if (sourcePdfVersion !== undefined && (versionNumber !== sourcePdfVersion || version.scan_status !== "clean"
+    || version.detected_mime_type !== "application/pdf")) {
+    throw new AppError(422, "Choose the current clean version of the uploaded cover PDF.");
+  }
+  if (asset.requires_approval !== true) return;
 
   const { data: approval, error: approvalError } = await sb.from("approvals")
     .select("id")
@@ -302,12 +323,19 @@ async function validateCover(sb: SupabaseClient, workspaceId: string, config: z.
   if (config.kind === "audiobook") return;
   const assetId = config.cover.asset_id;
   if (!assetId) return;
+  const sourcePdfVersion = uploadedCoverVersion(config);
   const { data, error } = await sb.from("assets").select("id,storage_path,mime_type,size_bytes,checksum,status,requires_approval,deleted_at")
     .eq("id", assetId).eq("workspace_id", workspaceId).maybeSingle();
-  if (error || !data || data.deleted_at || data.checksum === "pending" || !String(data.mime_type).startsWith("image/")) {
-    throw new AppError(422, "Choose a confirmed image from this workspace for the cover.");
+  if (error || !data || data.deleted_at || data.checksum === "pending"
+    || (sourcePdfVersion === undefined ? !String(data.mime_type).startsWith("image/") : (
+      data.mime_type !== "application/pdf" || !/^[a-f0-9]{64}$/iu.test(data.checksum)
+      || !Number.isSafeInteger(Number(data.size_bytes)) || Number(data.size_bytes) < 1 || Number(data.size_bytes) > 25 * 1024 * 1024
+      || ["archived", "rejected"].includes(data.status)
+    ))) {
+    throw new AppError(422, sourcePdfVersion === undefined ? "Choose a confirmed image from this workspace for the cover."
+      : "Choose a confirmed cover PDF of up to 25 MB from this workspace.");
   }
-  await requireCurrentArtworkApproval(sb, data);
+  await requireCurrentArtworkApproval(sb, data, sourcePdfVersion);
 }
 
 export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
@@ -409,6 +437,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       model.assets.map((asset) => asset.id),
       config.cover.asset_id,
       model.chapters.flatMap((chapter) => chapter.nodes),
+      uploadedCoverVersion(config),
     );
     const { artworkSnapshot, ...images } = loadedImages;
     const imageSha256 = renderImagesFingerprint(loadedImages);
@@ -462,6 +491,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
       });
       const responseText = await boundedServiceText(response, 220_000_000, "The renderer response exceeded the supported size.");
       if (response.status === 422) {
+        if (uploadedCoverVersion(config) !== undefined) throw new AppError(422, "The print edition or uploaded cover could not be rendered. Run preflight for details.");
         throw new AppError(422, "This saved edition needs a supported typography configuration. Run preflight to review the required changes.");
       }
       if (!response.ok) throw new AppError(503, "The renderer could not complete this edition.");
@@ -495,7 +525,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
         sizeBytes: primary.length,
         checksum: rendered.sha256.toLowerCase(),
       });
-      const decodedCover = decodeRenderedCover(config, rendered);
+      const decodedCover = decodeRenderedCover(config, rendered, artworkSnapshot.assets.find(asset => asset.assetId === config.cover.asset_id)?.checksum);
       if (decodedCover) {
         const cover = decodedCover.bytes;
         const coverId = randomUUID();
@@ -525,7 +555,7 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
         ...decodedCover?.usage,
       };
       await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
-        model.chapters.flatMap(chapter => chapter.nodes), imageSha256);
+        model.chapters.flatMap(chapter => chapter.nodes), imageSha256, uploadedCoverVersion(config));
       completionAttempted = true;
       const { data: completed, error: completeError } = await service.rpc("complete_render_job", {
         p_job_id: jobId,
