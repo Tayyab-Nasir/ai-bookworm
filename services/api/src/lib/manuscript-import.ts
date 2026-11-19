@@ -52,15 +52,25 @@ export async function executeManuscriptImport(input: {
     try {
       response = await fetcher(`${serviceUrl.replace(/\/$/, "")}/parse`, {
         method: "POST", headers: { "content-type": "application/json", "x-service-token": serviceToken },
-        body: JSON.stringify({ assetId: asset.id, format, contentBase64: bytes.toString("base64"), title: book.title }),
+        body: JSON.stringify({ assetId: asset.id, format, contentBase64: bytes.toString("base64"), title: book.title,
+          ...(format === "pdf" ? { language: book.language } : {}) }),
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000), redirect: "error",
       });
     } catch { throw new AppError(503, "Document parser is unavailable. Your original is preserved; no chapters were imported."); }
     if (!response.ok) throw new AppError(response.status === 422 ? 422 : 503, "Document parser could not import this manuscript. Verify its format; the original remains intact.");
-    const parsed = z.object({ bookModel: BookModelSchema, embeddedAssets: embeddedImagesSchema.default([]), report: z.object({ warnings: z.array(z.string()).default([]), confidence: z.string().optional() }).passthrough() }).safeParse(await readDocumentResponse(response));
+    const parsed = z.object({ bookModel: BookModelSchema, embeddedAssets: embeddedImagesSchema.default([]), report: z.object({
+      warnings: z.array(z.string()).default([]), confidence: z.string().optional(),
+      ocrIssue: z.enum(["unsupported_language", "unavailable", "limit", "busy", "incomplete"]).optional(),
+    }).passthrough() }).safeParse(await readDocumentResponse(response));
     if (!parsed.success) throw new AppError(503, "Document parser returned an invalid document; no chapters were imported");
     const chapters = parsed.data.bookModel.chapters;
-    if (!chapters.some((c) => bookNodesPlainText(c.nodes).trim())) throw new AppError(422, "No readable manuscript text found. Scanned PDFs need OCR before import.");
+    if (format === "pdf" && parsed.data.report.ocrIssue === "busy") {
+      throw new AppError(503, "Scan recognition is busy. Your original PDF is preserved for another attempt.");
+    }
+    if (!chapters.some(c => bookNodesPlainText(c.nodes).trim())) {
+      if (format === "pdf") throw new AppError(422, "No readable PDF text was recovered. Use a searchable PDF or a smaller scan in a supported language.", undefined, "document_pdf_no_text");
+      throw new AppError(422, "No readable manuscript text found.");
+    }
     const warnings = [...parsed.data.report.warnings];
     if (parsed.data.embeddedAssets.length) {
       return importManuscriptImages({ service: service, scanner: scanner,

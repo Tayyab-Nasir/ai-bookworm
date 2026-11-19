@@ -1,6 +1,7 @@
 /** Real API/SDK calls against the runner-owned native services; no injected fakes. */
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { localFetch, localOrigin, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
 
 requireNativeAuthorRunner();
@@ -165,7 +166,30 @@ try {
     const replay = await request(alice.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 202);
     assert.equal(replay.job.id, created.job.id);
     await request(bob.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 404);
-    await waitFor(created.job.id); return created;
+    await waitFor(created.job.id);
+
+    const scanAuthor = await author('Native scan author');
+    const scanBook = await request(scanAuthor.token, 'POST', '/books', {
+      workspaceId: scanAuthor.workspace.id, requestId: randomUUID(), title: 'Scanned harbor manuscript', authorName: 'Synthetic author', language: 'en',
+    }, 201);
+    const scanBytes = await readFile(new URL('../fixtures/books/scanned_manuscript.pdf', import.meta.url));
+    const scan = await upload(scanAuthor, 'harbor-scan.pdf', 'application/pdf', scanBytes);
+    await request(scanAuthor.token, 'POST', `/books/${scanBook.id}/import-jobs`, { assetId: scan.assetId }, 409);
+    assert.equal((await confirm(scanAuthor, scan)).scanStatus, 'clean');
+    const scanJob = await request(scanAuthor.token, 'POST', `/books/${scanBook.id}/import-jobs`, { assetId: scan.assetId }, 202);
+    await waitFor(scanJob.job.id);
+    const { import: scanReceipt } = await request(scanAuthor.token, 'GET', `/books/${scanBook.id}/imports/${scan.assetId}`);
+    assert.equal(scanReceipt.report.confidence, 'low');
+    assert.ok(scanReceipt.report.warnings.some(warning => warning.includes('OCR recovered text from PDF pages: 1.')));
+    assert.equal(scanReceipt.chapters.length, 1);
+    assert.deepEqual(scanReceipt.assetIds, []);
+    const scanChapter = await request(scanAuthor.token, 'GET', `/chapters/${scanReceipt.chapters[0].id}/document`);
+    assert.equal(scanChapter.document.version, 1);
+    assert.match(bookNodesPlainText(scanChapter.document.nodes), /The harbor lantern guided the crew safely home/);
+    assert.deepEqual(await request(scanAuthor.token, 'POST', `/books/${scanBook.id}/import`, { assetId: scan.assetId }), scanReceipt);
+    await download(scanAuthor, scan);
+    console.log('PASS native scanned PDF: quarantine, local OCR, saved editable text and byte-exact original');
+    return created;
   });
   assert.equal((await runOneDocumentJob(service)).status, 'idle');
   const recovered = await request(alice.token, 'GET', `/books/${book.id}/imports/${docx.assetId}`);

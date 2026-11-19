@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { AppError } from "./errors.js";
 import { runOneDocumentJob } from "./lib/document-worker.js";
 
 const job = {
@@ -20,7 +21,7 @@ function fixture(options: { completionError?: boolean; recovered?: "running" | "
       if (name === "claim_manuscript_import") return { data: [job], error: null };
       if (name === "complete_leased_manuscript_import") return options.completionError
         ? { data: null, error: { message: "lost reply" } } : { data: { chapters: [] }, error: null };
-      if (name === "fail_manuscript_import") return { data: { ...job, status: "queued" }, error: null };
+      if (name === "fail_manuscript_import") return { data: { ...job, status: args.p_retryable ? "queued" : "failed" }, error: null };
       return { data: true, error: null };
     },
     from: () => {
@@ -54,6 +55,18 @@ test("retryable worker failures are persisted without leaking error text", async
   const failure = f.calls.find((call) => call.name === "fail_manuscript_import");
   assert.equal(failure?.args.p_error_code, "document_dependency_unavailable");
   assert.doesNotMatch(JSON.stringify(f.calls), /secret provider detail/);
+});
+
+test("an unreadable scanned PDF records a useful failure without retrying automatically", async () => {
+  const f = fixture();
+  const result = await runOneDocumentJob(f.sb, { execute: async () => {
+    throw new AppError(422, "Internal OCR result", undefined, "document_pdf_no_text");
+  } });
+  assert.equal(result.status, "failed");
+  const failure = f.calls.find(call => call.name === "fail_manuscript_import");
+  assert.equal(failure?.args.p_error_code, "document_pdf_no_text");
+  assert.equal(failure?.args.p_retryable, false);
+  assert.doesNotMatch(JSON.stringify(f.calls), /Internal OCR result/);
 });
 
 test("lost completion reply recovers succeeded state and never records failure", async () => {

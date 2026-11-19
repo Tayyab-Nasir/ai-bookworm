@@ -431,7 +431,7 @@ export default function BookSetupClient() {
             {mode === "import" && (!checkpoint?.source || checkpoint.source.uploaded === false) && !checkpoint?.completed && (
               <label className="mt-5 block rounded-2xl border border-dashed border-white/[0.18] bg-black/20 p-5 transition hover:border-white/[0.32]">
                 <span className="text-sm font-medium text-white">Source manuscript</span>
-                <span className="mt-1 block text-[13px] leading-5 text-[#909090]">{checkpoint?.source?.uploaded === false ? "If the original upload did not finish, choose the same file to resume. Bookworm will first check whether it already arrived." : "TXT, DOCX, EPUB and text-based PDF, up to 20 MB. Scanned PDFs need OCR first. Uploads remain quarantined until screening passes."}</span>
+                <span className="mt-1 block text-[13px] leading-5 text-[#909090]">{checkpoint?.source?.uploaded === false ? "If the original upload did not finish, choose the same file to resume. Bookworm will first check whether it already arrived." : "TXT, DOCX, EPUB and PDF up to 20 MB. Bookworm can recover text from supported scans. Review it against the original. Uploads remain quarantined until screening passes."}</span>
                 <input type="file" disabled={!ready || saving} accept=".txt,.docx,.pdf,.epub,text/plain,application/pdf,application/epub+zip,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setSourceFile(event.target.files?.[0] ?? null)} className="mt-4 block w-full text-sm text-[#bdbdbd] file:mr-4 file:rounded-full file:border-0 file:bg-white file:px-3 file:py-2 file:text-xs file:font-semibold file:text-black hover:file:bg-[#dedede]" />
                 {sourceFile && <span className="mt-3 block text-sm text-[#d6d6d6]">Selected: {sourceFile.name} · {(sourceFile.size / 1024 / 1024).toFixed(1)} MB</span>}
               </label>
@@ -467,7 +467,9 @@ export default function BookSetupClient() {
             {checkpoint?.source?.uploaded !== false && checkpoint?.source && !checkpoint.completed && <p className="mt-5 text-sm leading-6 text-[#bdbdbd]">Your original upload is saved. Import uses this existing book and source. Background processing requires the document worker to be running.</p>}
             {importJob && !checkpoint?.completed && <div role="status" className="mt-5 rounded-xl border border-white/15 px-4 py-3 text-sm leading-6 text-[#bdbdbd]">
               <p className="font-medium text-white">Import {importJob.status} · Attempt {importJob.attempts} of 5</p>
-              <p>{importJob.status === "failed" ? "Import stopped. Your original is preserved. Check the source or service configuration, then retry."
+              <p>{importJob.status === "failed" ? (importJob.error_code === "document_pdf_no_text"
+                ? "No readable PDF text was recovered. Your original is preserved. Use a searchable PDF or a smaller scan in a supported language."
+                : "Import stopped. Your original is preserved. Check the source or service configuration, then retry.")
                 : importJob.status === "queued" ? "Waiting for a worker or scheduled retry. You can leave this page; processing does not depend on this tab."
                   : "Checking and importing your manuscript. Chapters and images will appear together when finished."}</p>
               {importJob.error_code && <p className="mt-2 break-words">Reference: {importJob.error_code}</p>}

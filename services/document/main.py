@@ -35,6 +35,7 @@ class ParseRequest(BaseModel):
     storagePath: str | None = None
     contentBase64: str | None = Field(default=None, max_length=((MAX_FILE_BYTES + 2) // 3) * 4)
     title: str = "Untitled"
+    language: str = Field(default="en", min_length=2, max_length=40)
 
     @model_validator(mode="after")
     def one_source(self):
@@ -75,6 +76,8 @@ def parse(req: ParseRequest) -> dict:
             data = p.read_bytes()
         embedded_assets: list[dict] = []
         options = {"embedded_assets": embedded_assets} if req.format in ("docx", "epub") else {}
+        if req.format == "pdf":
+            options["language"] = req.language
         book, report = PARSERS[req.format](data, title=req.title, **options)
     except ParseError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e

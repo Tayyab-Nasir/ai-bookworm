@@ -41,6 +41,8 @@ interface RpcCall {
 interface FixtureOptions {
   role?: string;
   scanStatus?: ScanStatus;
+  pdf?: boolean;
+  ocrIssue?: "busy" | "incomplete";
   checksum?: string;
   parsedNodes?: Array<Record<string, unknown>>;
   embeddedAssets?: Array<Record<string, unknown>>;
@@ -95,7 +97,7 @@ async function fixture(options: FixtureOptions = {}) {
         workspace_id: WORKSPACE_ID,
         title: "Imported book",
         author_name: "Author",
-        language: "en",
+        language: options.pdf ? "es-ES" : "en",
       },
       error: null,
     },
@@ -104,7 +106,7 @@ async function fixture(options: FixtureOptions = {}) {
       data: {
         id: ASSET_ID,
         workspace_id: WORKSPACE_ID,
-        name: "source.txt",
+        name: options.pdf ? "source.pdf" : "source.txt",
         storage_path: STORAGE_PATH,
         size_bytes: SOURCE_BYTES.byteLength,
         checksum,
@@ -165,7 +167,8 @@ async function fixture(options: FixtureOptions = {}) {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     parserCalls.push({ url: String(input), init });
-    return new Response(JSON.stringify({ ...parserDocument(options.parsedNodes), embeddedAssets: options.embeddedAssets ?? [] }), {
+    const result = parserDocument(options.parsedNodes);
+    return new Response(JSON.stringify({ ...result, report: { ...result.report, ocrIssue: options.ocrIssue }, embeddedAssets: options.embeddedAssets ?? [] }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
@@ -198,6 +201,30 @@ async function fixture(options: FixtureOptions = {}) {
     },
   };
 }
+
+test("a clean PDF uses the book language and persists recognized text", async () => {
+  const ctx = await fixture({ pdf: true });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH,
+      payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, 200, response.body);
+    const payload = JSON.parse(String(ctx.parserCalls[0]?.init?.body));
+    assert.equal(payload.format, "pdf");
+    assert.equal(payload.language, "es-ES");
+    assert.ok(ctx.rpcCalls.some(call => call.name === "complete_manuscript_import"));
+  } finally { await ctx.close(); }
+});
+
+for (const ocrIssue of ["busy", "incomplete"] as const) test(`PDF OCR ${ocrIssue} cannot save a partial scan`, async () => {
+  const ctx = await fixture({ pdf: true, parsedNodes: [], ocrIssue });
+  try {
+    const response = await ctx.app.inject({ method: "POST", url: `/v1/books/${BOOK_ID}/import`, headers: AUTH,
+      payload: { assetId: ASSET_ID } });
+    assert.equal(response.statusCode, ocrIssue === "busy" ? 503 : 422, response.body);
+    assert.equal(ctx.parserCalls.length, 1);
+    assert.equal(ctx.rpcCalls.length, 0);
+  } finally { await ctx.close(); }
+});
 
 test("a clean current source version reaches the parser and persists imported chapters", async () => {
   const ctx = await fixture();

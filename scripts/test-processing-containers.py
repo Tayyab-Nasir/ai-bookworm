@@ -92,6 +92,17 @@ def main():
             "contentBase64": docx})
         table_node = imported["bookModel"]["chapters"][0]["nodes"][0]
         assert table_node["attributes"]["tableHeaderRows"] == 1
+        models = docker("exec", container, "tesseract", "--list-langs").splitlines()
+        assert {"eng", "spa", "fra", "deu", "ara"} <= set(models)
+        scanned = Path(__file__).resolve().parents[1] / "tests/fixtures/books/scanned_manuscript.pdf"
+        recognition = check_json(container, "/parse", {"assetId": "scan-fixture", "format": "pdf", "language": "en",
+            "contentBase64": base64.b64encode(scanned.read_bytes()).decode()})
+        assert recognition["report"]["confidence"] == "low"
+        assert any("OCR recovered text from PDF pages: 1." in warning for warning in recognition["report"]["warnings"])
+        text = " ".join(node.get("text", "") for node in recognition["bookModel"]["chapters"][0]["nodes"])
+        assert "The harbor lantern guided the crew safely home" in text
+        assert not recognition["embeddedAssets"]
+        print("PASS document: local OCR recovered editable text from an image-only PDF", flush=True)
         return table_node
     imported_header_table = run_service("document", True, parse)
     book = json.loads((Path(__file__).resolve().parents[1] / "tests/fixtures/books/valid_book.json").read_text())

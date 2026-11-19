@@ -35,7 +35,7 @@ export async function withAutomaticNativeImport(action) {
       waiting.delete(jobId); assert.equal(outcome.status, 'succeeded', 'Persistent consumer did not complete the exact queued import');
       assert.equal(outcome.jobId, jobId); return outcome;
     });
-    console.log('PASS native persistent document consumer completed the real queued DOCX import without manual job invocation');
+    console.log('PASS native persistent document consumer completed the real queued imports without manual job invocation');
     return result;
   } finally {
     stop.abort(); await bounded(consumer, 20_000);

@@ -62,8 +62,9 @@ export async function runOneDocumentJob(sb: SupabaseClient, options: {
     if (state.data.status === "succeeded") return { status: "succeeded", jobId: job.id };
     if (abort.signal.aborted || state.data.status !== "running" || state.data.lease_token !== job.lease_token) return { status: "lease_lost", jobId: job.id };
     const retryable = !(error instanceof AppError) || error.status >= 500;
+    const sourceCode = error instanceof AppError && error.code === "document_pdf_no_text" ? error.code : "document_source_rejected";
     const failed = await sb.rpc("fail_manuscript_import", { p_job_id: job.id, p_lease_token: job.lease_token,
-      p_error_code: retryable ? "document_dependency_unavailable" : "document_source_rejected", p_retryable: retryable });
+      p_error_code: retryable ? "document_dependency_unavailable" : sourceCode, p_retryable: retryable });
     if (failed.error?.code === "40001") return { status: "lease_lost", jobId: job.id };
     if (failed.error || !row(failed.data)) throw new Error("document_failure_persistence_failed");
     return { status: row(failed.data).status === "queued" ? "queued" : "failed", jobId: job.id };

@@ -1,4 +1,4 @@
-"""PDF extraction quality is checked page-by-page without claiming OCR."""
+"""PDF extraction and scan recognition retain page order and review evidence."""
 import base64
 import importlib.util
 import io
@@ -26,14 +26,17 @@ def mixed_pdf():
     return output.getvalue()
 
 
-def test_sparse_page_is_reported_even_when_document_average_is_high():
+def test_sparse_page_is_reported_even_when_document_average_is_high(monkeypatch):
+    monkeypatch.setattr(pdf_parser, "recover_pdf_scan", lambda *args: ({}, "unavailable"))
     book, report = pdf_parser.parse_pdf(mixed_pdf(), title="Synthetic")
     assert report["confidence"] == "low"
-    assert any("sparse or blank extracted text: 2." in warning and "OCR was not performed" in warning for warning in report["warnings"])
+    assert report["ocrIssue"] == "unavailable"
+    assert any("sparse or blank extracted text: 2." in warning for warning in report["warnings"])
     assert sum(node["type"] == "pageBreak" for node in book["chapters"][0]["nodes"]) == 2
 
 
-def test_many_sparse_pages_are_summarized_without_a_large_report():
+def test_many_sparse_pages_are_summarized_without_a_large_report(monkeypatch):
+    monkeypatch.setattr(pdf_parser, "recover_pdf_scan", lambda *args: ({}, "unavailable"))
     writer = PdfWriter()
     for _ in range(25):
         writer.add_blank_page(width=72, height=72)
@@ -43,6 +46,31 @@ def test_many_sparse_pages_are_summarized_without_a_large_report():
     sparse = next(warning for warning in report["warnings"] if "sparse or blank" in warning)
     assert "1, 2, 3" in sparse and "20, and 5 more" in sparse
     assert len(sparse) < 300
+
+
+def test_recognition_fills_only_missing_pages_and_keeps_page_order(monkeypatch):
+    def recover(_source, pages, language, _deadline):
+        assert pages == [2]
+        assert language == "es-ES"
+        return {2: "El faro guiaba a los navegantes.\n\nLa carta esperaba en la mesa."}, None
+    monkeypatch.setattr(pdf_parser, "recover_pdf_scan", recover)
+    book, report = pdf_parser.parse_pdf(mixed_pdf(), language="es-ES")
+    nodes = book["chapters"][0]["nodes"]
+    assert [node["type"] for node in nodes] == ["paragraph", "pageBreak", "paragraph", "paragraph", "pageBreak", "paragraph"]
+    assert nodes[0]["text"].startswith("This first page")
+    assert nodes[2]["text"] == "El faro guiaba a los navegantes."
+    assert nodes[5]["text"].startswith("This third page")
+    assert report["confidence"] == "low" and report["pageCount"] == 3
+    assert any("OCR recovered text from PDF pages: 2." in warning for warning in report["warnings"])
+
+
+def test_interrupted_scan_without_text_layer_does_not_save_a_partial_manuscript(monkeypatch):
+    scan = SERVICE.parents[1] / "tests" / "fixtures" / "books" / "scanned_manuscript.pdf"
+    monkeypatch.setattr(pdf_parser, "recover_pdf_scan", lambda *args: ({1: "Partially recovered text"}, "incomplete"))
+    book, report = pdf_parser.parse_pdf(scan.read_bytes())
+    assert not book["chapters"][0]["nodes"]
+    assert report["ocrIssue"] == "incomplete"
+    assert "No readable text was recovered from the PDF." in report["warnings"]
 
 
 def test_valid_supplementary_unicode_is_not_misclassified_as_garbled(monkeypatch):
