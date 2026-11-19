@@ -1,0 +1,91 @@
+{
+  "projectRef": "cyhqtwndadlyzpeatxws",
+  "reviewedAt": "2026-11-19T20:33:10Z",
+  "applicationCandidate": "a372c9335aadd0c03d684a5b52ddfdee812d4767",
+  "nativeAuthorWorkflow": {
+    "runId": 44605616778,
+    "conclusion": "success"
+  },
+  "migrationHistory": {
+    "before": 116,
+    "after": 119,
+    "priorEntriesPreserved": true,
+    "localSourceFiles": 138,
+    "mappedByName": 119,
+    "missingFromHistory": 19,
+    "sourceOrderMismatch": true
+  },
+  "applied": [
+    {
+      "name": "publishing_render_proof_completion",
+      "sourceFile": "supabase/migrations/20261118194054_publishing_render_proof_completion.sql",
+      "sourceSha256": "e03c46e052361fc7ae606d479d2d711cbbbb38f1013f094874d91b6542da1f4b",
+      "hostedVersion": "20261119203034",
+      "recordedSqlSha256": "22d6976b9003e4aaf977ab89eeb836ba32fd3f9c2efee3be4c99d59c70a579aa",
+      "transactionRollbackVerified": true
+    },
+    {
+      "name": "saved_print_preflight_binding",
+      "sourceFile": "supabase/migrations/20261119172907_saved_print_preflight_binding.sql",
+      "sourceSha256": "5273dd5b396134861f15308310d2ccf4b96477c4a6f009baa6cac6027e56dbe7",
+      "hostedVersion": "20261119203106",
+      "recordedSqlSha256": "ed6dee70dc2eaa1ca5fea389fc6dadb9250b89f1ba3d65c05605cb73b862da2e",
+      "transactionRollbackVerified": true
+    },
+    {
+      "name": "uploaded_paperback_cover",
+      "sourceFile": "supabase/migrations/20261119193430_uploaded_paperback_cover.sql",
+      "sourceSha256": "bdd0033192c40d40dd9471f255d72234210a2c25d00c72fc5ea82b34f4635cdf",
+      "hostedVersion": "20261119203119",
+      "recordedSqlSha256": "1738f240c64f625a366563f5a082ff9dee8df9b2c1a3e971221c02ae3039a7d8",
+      "transactionRollbackVerified": true
+    }
+  ],
+  "recovery": {
+    "scope": "publishing job rows and prior guard definitions",
+    "encryptedLocalJobRows": 4,
+    "typedRestoreMatchedLive": true,
+    "rowsMatchedBeforeAndAfter": true,
+    "rehearsedSchemaReversal": true,
+    "rehearsedActiveJobRefusal": true,
+    "hostedHistoryFilesReplayed": 116
+  },
+  "verification": {
+    "rowLevelSecurityEnabled": true,
+    "existingPolicyCount": 1,
+    "enabledGuardTriggers": 2,
+    "installedGuards": [
+      {
+        "name": "guard_publishing_artwork_completion",
+        "bodyMd5": "7980527454831d4638d29e7de4cb693e",
+        "securityInvoker": true,
+        "anonExecute": false,
+        "authenticatedExecute": false,
+        "serviceExecute": false
+      },
+      {
+        "name": "guard_publishing_render_proof_completion",
+        "bodyMd5": "c8534a8a376d522eb7913eacd523a7b9",
+        "securityInvoker": true,
+        "anonExecute": false,
+        "authenticatedExecute": false,
+        "serviceExecute": false
+      }
+    ],
+    "serviceOnlyCompletionRpcs": true,
+    "securityAdvisorRelatedNotices": 0,
+    "rehearsedSqlAssertions": [
+      "artwork-completion.test.sql",
+      "saved-print-preflight-binding.test.sql",
+      "preflight-workflow.test.sql",
+      "retailer-submissions.test.sql"
+    ]
+  },
+  "runtime": {
+    "activeLocalRelease": "5ea3281fdf453667601b9b7fc1d3c3def3a7f28d",
+    "activeLocalSmokeChecks": 22,
+    "candidateOffPortSmokeChecks": 17,
+    "hostedSignedInAcceptance": "pending"
+  },
+  "scope": "Each migration acquires a bounded publishing-jobs write lock and verifies the encrypted row snapshot before installing its guard."
+}
