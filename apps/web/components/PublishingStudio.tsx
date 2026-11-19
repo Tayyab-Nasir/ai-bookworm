@@ -10,6 +10,7 @@ import NarrationQuoteStudio from "./NarrationQuoteStudio";
 import SavedEpubReader from "./SavedEpubReader";
 import SavedPrintLibrary from "./SavedPrintLibrary";
 import SavedPdfProof from "./SavedPdfProof";
+import { matchesPrintPreflight, printPreflightSource } from "../lib/saved-print";
 import PrivateArtifactDownload from "./PrivateArtifactDownload";
 import PrivateCoverPreview from "./PrivateCoverPreview";
 import { renderLinksDeadline } from "../lib/pdf-proof";
@@ -192,7 +193,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const [savedPackageProof, setSavedPackageProof] = useState<{ source: SavedEpubSource; actor: string; revision: number; view: number } | null>(null);
   const audioHistoryEpoch = useRef(0), audioProjectEpoch = useRef(0);
   const audioMutation = useRef<object | null>(null), audioManualRead = useRef<object | null>(null);
-  const adoptPrint = useCallback((result: RenderedEditionResult, expiresAt: number) => { setRendered({ ...result, expiresAt }); setPreflight(null); setNotice("Saved print proof opened. Run fresh preflight before creating a package."); }, []);
+  const adoptPrint = useCallback((result: RenderedEditionResult, expiresAt: number) => { setRendered({ ...result, expiresAt }); setPreflight(null); setNotice("Saved print proof opened. Choose a retailer and run preflight on this proof."); }, []);
   const invalidatePrint = useCallback((jobId: string) => { setRendered(current => current?.jobId === jobId ? null : current); setPreflight(null); }, []);
 
   const activeEdition = editions.find((edition) => edition.id === activeId) ?? null;
@@ -205,6 +206,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     && savedPackageProof.view === viewEpoch.current && savedPackageProof.revision === formRevision.current
     && savedPackageProof.source.bookId === bookId && savedPackageProof.source.editionId === activeId ? savedPackageProof.source : null;
   const savedEpubRef = useRef(savedEpub); savedEpubRef.current = savedEpub;
+  const savedPrint = currentIdentity && !dirty && form.kind === "print" ? printPreflightSource(rendered) : undefined;
   const packageRenderId = savedEpub?.jobId ?? rendered?.jobId;
   useEffect(() => {
     setRenderRecoveryReady(false); setRenderPointer(null);
@@ -684,16 +686,25 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     const valid = captureView(); if (!valid()) return;
     const edition = activeId, target = channel, proof = renderedRef.current, savedProof = savedEpubRef.current;
     const sourceEpub = savedProof && target !== "export" ? { jobId: savedProof.jobId, sha256: savedProof.sha256 } : undefined;
+    const requirePrintProof = form.kind === "print" && target !== "export" && proof !== null;
+    const sourcePrint = requirePrintProof ? printPreflightSource(proof) : undefined;
+    if (requirePrintProof && !sourcePrint) {
+      setPreflight(null); setError("The selected print proof could not be verified. Open it again or render a new PDF.");
+      return;
+    }
     const sameRequest = () => valid() && currentEdition.current === edition && currentChannel.current === target
       && renderedRef.current === proof && savedEpubRef.current === savedProof && !liveDirty.current;
     setBusy("preflight"); setError(null); setNotice(null); setPreflight(null);
     try {
       const result = await api.runPreflight({ bookId, editionId: edition, channel: target, idempotencyKey: crypto.randomUUID(),
-        ...(sourceEpub ? { sourceEpub } : {}) });
+        ...(sourceEpub ? { sourceEpub } : {}), ...(sourcePrint ? { sourcePrint } : {}) });
       if (sameRequest()) {
         if (result.requestedChannel !== target) throw new Error("Preflight returned a different target. Please run it again.");
         if (sourceEpub && (result.sourceEpub?.jobId !== sourceEpub.jobId || result.sourceEpub.sha256 !== sourceEpub.sha256)) {
           throw new Error("Preflight did not confirm this saved EPUB. Check the selected proof and try again.");
+        }
+        if (sourcePrint && !matchesPrintPreflight(sourcePrint, result.sourcePrint)) {
+          throw new Error("Preflight did not confirm this saved print interior and cover. Check the selected proof and try again.");
         }
         setPreflight(result);
       }
@@ -974,6 +985,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
           <RetailerPackageRequest key={bookId} bookId={bookId} canEdit={editable} disabled={Boolean(busy) && busy !== "package"}
             request={activeId && !dirty && channel !== "export" && channelCompatible && packageRenderId && preflight && preflight.requestedChannel === channel && preflight.errors === 0
               && (!savedEpub || (preflight.sourceEpub?.jobId === savedEpub.jobId && preflight.sourceEpub.sha256 === savedEpub.sha256))
+              && (form.kind !== "print" || (savedPrint && matchesPrintPreflight(savedPrint, preflight.sourcePrint)))
               ? { bookId, editionId: activeId, channel, renderJobId: packageRenderId, preflightJobId: preflight.jobId } : null}
             onBusy={working => { setBusy(working ? "package" : null); if (working) setNotice(null); }}
             onJob={(job, startedAt) => {
@@ -985,6 +997,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
           <p className="mt-3 text-xs leading-relaxed text-white/50">New packages include metadata.json with your saved listing text and README.txt with manual handoff steps. These are for your review, not an automatic retailer import. Older packages remain unchanged.</p>
           {channel === "export" && <p className="mt-4 text-sm text-white/55">Choose a retailer above to create its versioned package. Universal exports are the rendered EPUB/PDF files shown in the render section.</p>}
           {savedEpub && <p className="mt-4 text-sm text-white/65">Package source · Saved EPUB · <span className="font-mono">{savedEpub.sha256.slice(0, 12)}</span></p>}
+          {savedPrint && <p className="mt-4 text-sm text-white/65">Package source · Saved print PDF · <span className="font-mono">{savedPrint.sha256.slice(0, 12)}</span></p>}
           {channel !== "export" && (!packageRenderId || !preflight) && <p className="mt-4 text-sm text-white/55">{packageRenderId ? "Run retailer preflight for the selected file." : form.kind === "ebook" ? "Select a saved EPUB in the proof desk or render this edition, then run retailer preflight." : "Open or render a saved print proof, then run retailer preflight."}</p>}
           {preflight?.errors ? <p className="mt-4 text-sm text-red-100">Resolve every preflight error, save, render, and validate again before packaging.</p> : null}
 

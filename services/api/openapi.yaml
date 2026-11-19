@@ -2496,7 +2496,7 @@ paths:
       tags: [v1]
       operationId: runPreflight
       summary: Run deterministic preflight validation
-      description: A saved EPUB source selects the exact stored bytes for retailer preflight and binds the report to that render for packaging.
+      description: A saved EPUB or print source selects the exact stored bytes for retailer preflight and binds the report to that render for packaging.
       requestBody:
         required: true
         content:
@@ -2505,12 +2505,14 @@ paths:
               type: object
               additionalProperties: false
               required: [bookId, editionId, channel, idempotencyKey]
+              not: { required: [sourceEpub, sourcePrint] }
               properties:
                 bookId: { type: string, format: uuid }
                 editionId: { type: string, format: uuid }
                 channel: { type: string, enum: [export, kdp, apple, barnesnoble, lulu, googleplay] }
                 idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
                 sourceEpub: { $ref: "#/components/schemas/SavedEpubPreflightSource" }
+                sourcePrint: { $ref: "#/components/schemas/SavedPrintPreflightSource" }
       responses:
         "201":
           description: Preflight report
@@ -5173,9 +5175,19 @@ components:
       properties:
         jobId: { type: string, format: uuid }
         sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+    SavedPrintPreflightSource:
+      type: object
+      description: The verified saved PDF interior and paired cover for a retailer that accepts print. The saved manuscript, artwork and edition must still match the render.
+      additionalProperties: false
+      required: [jobId, sha256, coverSha256]
+      properties:
+        jobId: { type: string, format: uuid }
+        sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+        coverSha256: { type: [string, 'null'], pattern: '^[a-f0-9]{64}$', description: SHA-256 of the paired cover or null when the render has no cover. }
     PreflightResult:
       type: object
       required: [jobId, ruleVersion, channel, requestedChannel, errors, warnings, findings]
+      not: { required: [sourceEpub, sourcePrint] }
       properties:
         jobId: { type: string, format: uuid }
         ruleVersion: { type: string }
@@ -5185,6 +5197,7 @@ components:
         warnings: { type: integer, minimum: 0 }
         findings: { type: array, items: { type: object } }
         sourceEpub: { $ref: "#/components/schemas/SavedEpubPreflightSource" }
+        sourcePrint: { $ref: "#/components/schemas/SavedPrintPreflightSource" }
     PublishingPackageJob:
       type: object
       required: [id, requestId, bookId, editionId, channel, status, createdAt, sourceRenderJobId, sourcePreflightJobId, failureCode, submissionMode, package]

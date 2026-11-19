@@ -210,7 +210,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
       const render = await nativeBrowserJson(rendered);
       assert.equal(render.status, 'succeeded');
       await expect(page.getByText('Private render completed.', { exact: true })).toBeVisible();
-      let sourceEpub;
+      let sourceEpub, sourcePrint;
       if (edition.kind === 'ebook') {
         const originalCount = requests.filter(path => path.endsWith(`/editions/${edition.id}/render`)).length;
         sourceEpub = { jobId: render.jobId, sha256: render.artifacts.find(artifact => artifact.role === 'rendered_ebook').asset.checksum };
@@ -222,6 +222,16 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         await desk.getByRole('button', { name: 'Use this EPUB for packaging', exact: true }).click();
         await expect(history.getByText(/Package source · Saved EPUB/)).toContainText(sourceEpub.sha256.slice(0, 12));
         assert.equal(requests.filter(path => path.endsWith(`/editions/${edition.id}/render`)).length, originalCount);
+      } else {
+        sourcePrint = { jobId: render.jobId, sha256: render.artifacts.find(artifact => artifact.role === 'rendered_print').asset.checksum,
+          coverSha256: render.artifacts.find(artifact => artifact.role === 'rendered_cover')?.asset.checksum ?? null };
+        onStage('retailer browser reopens a saved print proof after reload');
+        await page.reload();
+        await select(edition);
+        const savedRow = page.getByRole('region', { name: 'Saved print proofs', exact: true }).getByRole('listitem')
+          .filter({ hasText: sourcePrint.sha256.slice(0, 16) }).first();
+        await savedRow.getByRole('button', { name: 'Open saved print', exact: true }).click();
+        await expect(history.getByText(/Package source · Saved print PDF/)).toContainText(sourcePrint.sha256.slice(0, 12));
       }
       for (const channel of edition.channels) {
         onStage(`retailer browser ${channel} ${edition.kind} preflight and package creation`);
@@ -234,6 +244,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         const preflight = await nativeBrowserJson(validated);
         assert.equal(preflight.errors, 0); assert.equal(preflight.requestedChannel, channel);
         assert.deepEqual(preflight.sourceEpub, sourceEpub);
+        assert.deepEqual(preflight.sourcePrint, sourcePrint);
         const loseReply = packages.length === 6;
         if (loseReply) await page.evaluate(discardNextPackageReply);
         const [created] = await Promise.all([

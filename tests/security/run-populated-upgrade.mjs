@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 136 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 137 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -25,6 +25,7 @@ const renderClosure = '20261104110000_render_close_request.sql';
 const retailerSubmissions = '20261118013037_retailer_submissions.sql';
 const confirmationInvoker = '20261118165738_data_rights_confirmation_invoker.sql';
 const renderProofCompletion = '20261118194054_publishing_render_proof_completion.sql';
+const savedPrintPreflight = '20261119172907_saved_print_preflight_binding.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -142,7 +143,7 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 136, 'This reviewed rehearsal pins the 45 -> 136 target; review before extending');
+  assert.equal(names.length, 137, 'This reviewed rehearsal pins the 45 -> 137 target; review before extending');
   assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
   assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
@@ -165,7 +166,7 @@ try {
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
-  assert.deepEqual(names.slice(-4), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion]);
+  assert.deepEqual(names.slice(-5), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight]);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
@@ -227,7 +228,7 @@ try {
       intakeProbe={ticketId,requestId,ticket,request};
     }
     let renderProbe = null;
-    if (migration.name === renderClosure || migration.name === renderProofCompletion) {
+    if ([renderClosure, renderProofCompletion, savedPrintPreflight].includes(migration.name)) {
       const tenant = fixture.tenants[0], edition = randomUUID(), running = randomUUID(), succeeded = randomUUID();
       await db.query("insert into public.editions(id,book_id,type,language) values($1,$2,'ebook','en')", [edition, tenant.book]);
       for (const [id, status] of [[running, 'running'], [succeeded, 'succeeded']]) {
@@ -263,6 +264,7 @@ try {
       assert.deepEqual(after, before, 'Publishing upgrade preserves existing running and succeeded renders');
       const suites = migration.name === renderClosure ? ['render-close-request.test.sql']
         : ['publishing-package-workflow.test.sql', 'google-play-ebook-export.test.sql'];
+      if (migration.name === savedPrintPreflight) suites.push('saved-print-preflight-binding.test.sql');
       for (const file of suites) await db.exec(await readFile(join(root, 'tests/security', file), 'utf8'));
       await db.query('delete from public.publishing_jobs where id=any($1::uuid[])', [[running, succeeded]]);
       await db.query('delete from public.editions where id=$1', [edition]);

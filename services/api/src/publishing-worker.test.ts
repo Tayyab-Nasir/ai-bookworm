@@ -179,10 +179,11 @@ for (const scenario of ["stale", "permission", "invalid", "lease", "unknown", "c
   });
 }
 
-async function savedCoverWorkerFixture(selectedCover = false, language = "en") {
-  const config = editionConfigSchema.parse({ kind: "ebook", cover: { asset_id: selectedCover ? IMAGE : null },
-    metadata_overrides: selectedCover ? { title: "" } : {} });
+async function savedCoverWorkerFixture(selectedCover = false, language = "en", kind: "ebook" | "print" = "ebook") {
+  const config = editionConfigSchema.parse({ kind, cover: { asset_id: selectedCover ? IMAGE : null },
+    ...(kind === "ebook" && selectedCover ? { metadata_overrides: { title: "" } } : {}) });
   const epub = Buffer.from("PK\u0003\u0004saved-worker-epub");
+  const pdf = Buffer.from("%PDF-1.7\nsaved-worker-print");
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 11]);
   const digest = (value: Buffer) => createHash("sha256").update(value).digest("hex");
   const imagePath = `workspaces/${WORKSPACE}/assets/${IMAGE}/v1/art.png`;
@@ -191,7 +192,7 @@ async function savedCoverWorkerFixture(selectedCover = false, language = "en") {
     books: [{ id: BOOK, workspace_id: WORKSPACE, title: "Worker Book", author_name: "Author", language: "en", created_by: USER }],
     workspace_members: [{ workspace_id: WORKSPACE, user_id: USER, role: "editor", status: "active" }],
     workspaces: [{ id: WORKSPACE, organization_id: ORG }],
-    editions: [{ id: EDITION, book_id: BOOK, type: "ebook", language, edition_metadata_json: config, updated_at: UPDATED }],
+    editions: [{ id: EDITION, book_id: BOOK, type: kind, language, edition_metadata_json: config, updated_at: UPDATED }],
     subscriptions: [{ id: ORG, organization_id: ORG, plan_id: ORG, status: "active" }],
     plans: [{ id: ORG, name: "fixture", entitlements_json: { publishing_channels: ["kdp"] } }],
     chapters: [], document_versions: [], book_metadata: [], style_guides: [], book_bible_items: [],
@@ -205,7 +206,10 @@ async function savedCoverWorkerFixture(selectedCover = false, language = "en") {
   const images = await loadRenderImages(sb, WORKSPACE, [], selectedCover ? IMAGE : null);
   const request = { editionUpdatedAt: UPDATED, bookModelSha256: bookModelFingerprint(model),
     imageSha256: renderImagesFingerprint(images), artworkSnapshot: images.artworkSnapshot };
-  const artifacts = [{ bytes: epub, role: "rendered_ebook", type: "rendered_book", mimeType: "application/epub+zip", filename: "book.epub" },
+  const primary = kind === "ebook"
+    ? { bytes: epub, role: "rendered_ebook", type: "rendered_book", mimeType: "application/epub+zip", filename: "book.epub" }
+    : { bytes: pdf, role: "rendered_print", type: "rendered_book", mimeType: "application/pdf", filename: "book.pdf" };
+  const artifacts = [primary,
     ...(selectedCover ? [{ bytes: png, role: "rendered_cover", type: "rendered_cover", mimeType: "image/png", filename: "cover.png" }] : [])]
     .map(({ bytes: value, ...artifact }) => {
       const assetId = crypto.randomUUID();
@@ -224,7 +228,7 @@ async function savedCoverWorkerFixture(selectedCover = false, language = "en") {
   const job = { id: JOB, book_id: BOOK, edition_id: EDITION, created_by: USER, channel: "render", lease_token: LEASE,
     request_json: { ...request, action: "render" as const, sourceRenderJobId, sourcePreflightJobId } };
   reads.length = 0;
-  return { sb, tables, uploads, reads, objects, renderJob, job, epub, png, digest };
+  return { sb, tables, uploads, reads, objects, renderJob, job, epub, pdf, png, digest };
 }
 
 test("publishing worker fingerprints and dispatches the saved edition language for every action", async () => {
@@ -265,12 +269,36 @@ test("publishing worker rejects unsupported saved cover policy before private re
 
 test("leased packaging refuses a saved EPUB preflight bound to a different render", async () => {
   const fixture = await savedCoverWorkerFixture(false);
+  const request = fixture.tables.publishing_jobs[1].request_json as Row;
   const preflight = fixture.tables.publishing_jobs[1].response_json as Row;
-  preflight.sourceEpub = { jobId: crypto.randomUUID(), sha256: fixture.digest(fixture.epub) };
+  request.sourceEpub = preflight.sourceEpub = { jobId: crypto.randomUUID(), sha256: fixture.digest(fixture.epub) };
   const job = { ...fixture.job, channel: "kdp", request_json: { ...fixture.job.request_json, action: "export_package" as const } };
   await assert.rejects(buildPublishingOutput(fixture.sb, job, async () => assert.fail("different render must not be packaged"),
     new AbortController().signal, []), /same saved EPUB/iu);
   assert.deepEqual(fixture.reads, []);
+  assert.deepEqual(fixture.uploads, []);
+});
+
+test("a leased saved print preflight retries the same verified interior and cover", async () => {
+  const fixture = await savedCoverWorkerFixture(true, "en", "print");
+  const sourcePrint = { jobId: fixture.renderJob.id, sha256: fixture.digest(fixture.pdf), coverSha256: fixture.digest(fixture.png) };
+  const claim = { ...fixture.job, channel: "kdp", request_json: { ...fixture.job.request_json, action: "validate", sourcePrint } };
+  const sb = Object.assign({}, fixture.sb as object, { rpc: async (name: string, payload: Row) => {
+    if (name === "claim_publishing_job") return { data: claim, error: null };
+    assert.equal(name, "complete_leased_publishing_job");
+    assert.equal(payload.p_lease_token, LEASE);
+    assert.deepEqual((payload.p_result as Row).sourcePrint, sourcePrint);
+    return { data: { status: "succeeded" }, error: null };
+  } }) as never;
+  const outcome = await runOnePublishingJob(sb, { fetcher: async (url, init) => {
+    assert.ok(String(url).endsWith("/v1/publishing/validate"));
+    assert.deepEqual(JSON.parse(String(init?.body)).artifactsBase64, {
+      "book.pdf": fixture.pdf.toString("base64"), "cover.png": fixture.png.toString("base64"),
+    });
+    return Response.json({ channel: "kdp", ruleVersion: "fixture-1", errors: 0, warnings: 0, findings: [],
+      artifactSha256: sourcePrint.sha256, coverSha256: sourcePrint.coverSha256 });
+  } });
+  assert.deepEqual(outcome, { status: "succeeded", jobId: JOB });
   assert.deepEqual(fixture.uploads, []);
 });
 

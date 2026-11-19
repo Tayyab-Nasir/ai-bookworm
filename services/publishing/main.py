@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 from adapters import _assert_saved_epub_metadata, get_adapter, publishing_metadata  # noqa: E402
 from editions import parse_edition  # noqa: E402
 from epub_renderer import render_epub  # noqa: E402
+from manuscript import image_print_placement  # noqa: E402
 from preflight import Finding  # noqa: E402
 from publication_metadata import effective_publication_metadata  # noqa: E402
 from rules import load_ruleset  # noqa: E402
@@ -26,6 +27,7 @@ class ValidateRequest(BaseModel):
     editionConfig: dict
     bookModel: dict
     artifactsBase64: dict[str, str] | None = None
+    assetImagesBase64: dict[str, str] = Field(default_factory=dict)
 
 
 class PackageRequest(ValidateRequest):
@@ -60,11 +62,9 @@ def channels() -> dict:
 def validate(req: ValidateRequest) -> dict:
     adapter, edition = _publication_edition(req)
     if req.artifactsBase64 is not None:
-        if edition.kind != "ebook":
-            raise HTTPException(422, "Exact saved validation requires an EPUB edition")
         ctx, artifacts = _saved_artifact_context(req, edition, adapter)
         result = adapter.validate(ctx)
-        if result["errors"] == 0:
+        if edition.kind == "ebook" and result["errors"] == 0:
             try:
                 listing = publishing_metadata(req.bookModel, req.editionConfig)
                 _assert_saved_epub_metadata(artifacts["book.epub"], listing["metadata"])
@@ -73,7 +73,11 @@ def validate(req: ValidateRequest) -> dict:
                 result["findings"].append(Finding(code="SAVED_EPUB_METADATA", message=str(error),
                     location="book.epub/metadata", category="metadata", rule_id="CORE-META-SAVED",
                     rule_version=result["ruleVersion"]).to_dict())
-        return {**result, "artifactSha256": hashlib.sha256(artifacts["book.epub"]).hexdigest()}
+        result["artifactSha256"] = hashlib.sha256(ctx["package_bytes"]).hexdigest()
+        if edition.kind == "print":
+            cover = artifacts.get("cover.pdf") or artifacts.get("cover.png")
+            result["coverSha256"] = hashlib.sha256(cover).hexdigest() if cover else None
+        return result
 
     artifact = None
     if edition.kind == "ebook":
@@ -94,8 +98,36 @@ def _publication_edition(req: ValidateRequest):
     return adapter, edition
 
 
+def _print_proof_images(req: ValidateRequest) -> dict[str, bytes]:
+    if not req.assetImagesBase64:
+        return {}
+    full_bleed = {
+        node["assetId"] for chapter in req.bookModel.get("chapters", []) for node in chapter.get("nodes", [])
+        if node.get("type") == "image" and image_print_placement(node) == "fullBleed" and isinstance(node.get("assetId"), str)
+    }
+    if len(req.assetImagesBase64) > 100 or not full_bleed.issuperset(req.assetImagesBase64):
+        raise HTTPException(422, "invalid full-bleed illustration map")
+    images = {}
+    total = 0
+    max_image_size = 25 * 1024 * 1024
+    for asset_id, encoded in req.assetImagesBase64.items():
+        if len(encoded) > ((max_image_size + 2) // 3) * 4:
+            raise HTTPException(422, "full-bleed illustration exceeds the supported size")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, "full-bleed illustrations must be valid base64") from error
+        total += len(data)
+        if not data or len(data) > max_image_size or total > 100 * 1024 * 1024:
+            raise HTTPException(422, "full-bleed illustrations exceed the supported size")
+        images[asset_id] = data
+    return images
+
+
 def _saved_artifact_context(req: ValidateRequest, edition, adapter) -> tuple[dict, dict[str, bytes]]:
     """Use the same bounded artifact intake for preflight and for the ZIP."""
+    if edition.kind not in {"ebook", "print"}:
+        raise HTTPException(422, "Saved artifacts require an EPUB or print edition")
     expected_format = "epub" if edition.kind == "ebook" else "pdf"
     if expected_format not in adapter.capabilities().formats:
         raise HTTPException(422, f"{req.channel} does not accept {expected_format} editions")
@@ -133,7 +165,7 @@ def _saved_artifact_context(req: ValidateRequest, edition, adapter) -> tuple[dic
         "artifact": primary if expected_format == "epub" else None,
         "package_bytes": primary,
         "channel": req.channel,
-        "image_bytes": {},
+        "image_bytes": _print_proof_images(req) if edition.kind == "print" else {},
         "cover_bytes": artifacts.get("cover.png"),
         "cover_pdf_bytes": artifacts.get("cover.pdf"),
     }

@@ -4,12 +4,12 @@ import { AppError } from "../errors.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "./authoring.js";
 import { currentEntitlements } from "./entitlements.js";
 import type { SupabaseClient } from "./supabase.js";
-import { artworkSnapshotSchema, renderImagesFingerprint, assertRenderImagesCurrent } from "./render-images.js";
+import { artworkSnapshotSchema, renderImagesFingerprint, assertRenderImagesCurrent, printProofImageInputs } from "./render-images.js";
 import { decodeArtifact, decodeRenderedCover, editionConfigSchema, loadRenderImages, renderResponseSchema, withEditionLanguage } from "../routes/editions.js";
 import {
   assertSourceJob, assertSavedRenderedCoverPolicy, checkRenderedPackageInputs, decodePackage, loadRenderedPackageInputs, packageServiceResponseSchema,
   PACKAGE_RENDER_PROOF_CHANGE,
-  preflightResponseSchema, storedPreflightResponseSchema,
+  preflightResponseSchema, readPackagePreflight, readSavedPreflightRender, savedPreflightSourcesSchema, verifyPreflightReport,
 } from "../routes/publishing.js";
 
 export const publishingActions = ["render", "validate", "export_package"] as const;
@@ -22,7 +22,7 @@ const jobSchema = z.object({
     bookModelSha256: z.string().regex(/^[a-f0-9]{64}$/u),
     imageSha256: z.string().regex(/^[a-f0-9]{64}$/u), artworkSnapshot: artworkSnapshotSchema,
     sourceRenderJobId: z.string().uuid().optional(), sourcePreflightJobId: z.string().uuid().optional(),
-  }),
+  }).passthrough(),
 }).passthrough();
 type Job = z.infer<typeof jobSchema>;
 const BUCKET = "book-assets";
@@ -148,30 +148,47 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
     artifacts.push(artifact);
     return artifact;
   }
+  const source = { bookId: job.book_id, editionId: job.edition_id,
+    editionUpdatedAt: job.request_json.editionUpdatedAt, bookModelSha256: job.request_json.bookModelSha256, imageSha256 };
   if (job.request_json.action === "export_package") {
     const { render, preflight } = sourceJobs!;
-    const source = { bookId: job.book_id, editionId: job.edition_id,
-      editionUpdatedAt: job.request_json.editionUpdatedAt, bookModelSha256: job.request_json.bookModelSha256, imageSha256 };
     assertSourceJob(render, { ...source, action: "render", channel: "render" });
     assertSourceJob(preflight, { ...source, action: "validate", channel: job.channel });
-    const validation = storedPreflightResponseSchema.safeParse(preflight.response_json);
-    if (!validation.success || validation.data.errors !== 0 || validation.data.requestedChannel !== job.channel) {
-      throw new WorkerFailure("worker_preflight_failed", false);
-    }
-    const artifactsBase64 = await loadRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, validation.data.sourceEpub);
+    const validation = readPackagePreflight(preflight, job.channel);
+    if (!validation) throw new WorkerFailure("worker_preflight_failed", false);
+    const proof = validation.sourcePrint ?? validation.sourceEpub;
+    const artifactsBase64 = await loadRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, proof);
     const raw = await serviceRequest(fetcher, "PUBLISHING", "/v1/publishing/package",
-      { channel: job.channel, editionConfig: config, bookModel: model, artifactsBase64 }, 280_000_000, signal);
+      { channel: job.channel, editionConfig: config, bookModel: model, artifactsBase64,
+        ...printProofImageInputs(config.kind, model.chapters, images.assetImagesBase64),
+      }, 280_000_000, signal);
     const parsed = packageServiceResponseSchema.safeParse(raw);
     if (!parsed.success || parsed.data.channel !== job.channel || parsed.data.packages[0].path !== `${job.channel}-export.zip`) {
       throw new WorkerFailure("worker_invalid_response", true);
     }
     const pkg = parsed.data.packages[0];
     await recheckImages();
-    await checkRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, validation.data.sourceEpub);
+    await checkRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, proof);
     const artifact = await upload(decodePackage(pkg.dataBase64, pkg.sha256), pkg.path, "publishing_package", "publishing_package", "application/zip", pkg.sha256);
     return { artifact, ruleVersion: parsed.data.ruleVersion, imageSha256 };
   }
   if (job.request_json.action === "validate") {
+    const sources = savedPreflightSourcesSchema.safeParse(job.request_json);
+    if (!sources.success) throw new WorkerFailure("worker_invalid_input", false);
+    const proof = sources.data.sourcePrint ?? sources.data.sourceEpub;
+    if (proof) {
+      if (job.channel === "export") throw new WorkerFailure("worker_invalid_channel", false);
+      const render = await readSavedPreflightRender(sb, source, proof);
+      const artifactsBase64 = await loadRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, proof);
+      const raw = await serviceRequest(fetcher, "PUBLISHING", "/v1/publishing/validate", {
+        channel: job.channel, editionConfig: config, bookModel: model, artifactsBase64,
+        ...printProofImageInputs(config.kind, model.chapters, images.assetImagesBase64),
+      }, 2_000_000, signal);
+      const report = verifyPreflightReport(raw, job.channel, sources.data);
+      await recheckImages();
+      await checkRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, proof);
+      return { ...report, imageSha256 };
+    }
     const raw = await serviceRequest(fetcher, "RENDERING", "/preflight", {
       editionConfig: config, bookModel: model, channel: job.channel === "export" ? null : job.channel, includeArtifact: true, ...images,
     }, 2_000_000, signal);

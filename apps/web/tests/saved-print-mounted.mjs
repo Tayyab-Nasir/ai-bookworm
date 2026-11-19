@@ -165,7 +165,7 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
       },
       runPreflight: async body => { window.requests.push({ method: "POST", action: "preflight", body });
         if (window.holdPreflight) await new Promise(resolve => { window.releasePreflight = resolve; });
-        return { jobId: ids.otherJob, requestedChannel: window.preflightChannel ?? body.channel, channel: body.channel, ruleVersion: "fixture-print-rules", errors: 0, warnings: 0, findings: [] }; },
+        return { jobId: ids.otherJob, requestedChannel: window.preflightChannel ?? body.channel, channel: body.channel, ruleVersion: "fixture-print-rules", errors: 0, warnings: 0, findings: [], sourcePrint: body.sourcePrint }; },
       renderEdition: async () => { window.requests.push({ method: "POST", action: "render" }); throw new Error("Unexpected rendering request"); },
       createPublishingJob: async () => { window.requests.push({ method: "POST", action: "package" }); throw new Error("Unexpected package request"); },
     };
@@ -253,6 +253,37 @@ test("late plan access cannot overwrite the next book workspace", async () => {
     await expect(access).toContainText("The selected retailer package is included in the current plan.");
     await page.evaluate(() => window.releaseOldPlan());
     await expect(access).toContainText("The selected retailer package is included in the current plan.");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio requires preflight for the opened print interior and its cover", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page);
+    const packageButton = page.getByRole("button", { name: "Create retailer package", exact: true });
+    const validate = page.getByRole("button", { name: "Run preflight", exact: true });
+    await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await expect(page.getByText(/Package source · Saved print PDF/)).toContainText(primaryDigest.slice(0, 12));
+    await expect(packageButton).toBeDisabled();
+    await page.evaluate(() => {
+      const original = window.bookwormApi.runPreflight;
+      window.bookwormApi.runPreflight = async body => {
+        const report = await original(body);
+        return window.badCover ? { ...report, sourcePrint: { ...body.sourcePrint, coverSha256: null } } : report;
+      };
+      window.badCover = true;
+    });
+    await validate.click();
+    await expect(page.getByRole("alert")).toContainText("Preflight did not confirm this saved print interior and cover.");
+    await expect(packageButton).toBeDisabled();
+    await page.evaluate(() => { window.badCover = false; });
+    await validate.click();
+    await expect(packageButton).toBeEnabled();
+    const writes = await page.evaluate(() => window.requests.filter(row => row.method === "POST"));
+    assert.deepEqual(writes.map(row => [row.action, row.body.sourcePrint]), Array(2).fill(["preflight", {
+      jobId: ids.job, sha256: primaryDigest, coverSha256: coverDigest,
+    }]));
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

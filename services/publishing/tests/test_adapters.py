@@ -1055,6 +1055,10 @@ def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geom
     cover, _ = render_wrap_cover(image.getvalue(), interior, parse_edition(config))
     artifacts = {"book.pdf": base64.b64encode(interior).decode(), "cover.pdf": base64.b64encode(cover).decode()}
     request = PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts)
+    report = _PUBLISHING_MAIN.validate(request)
+    assert report["errors"] == 0, [(f["code"], f["message"]) for f in report["findings"]]
+    assert report["artifactSha256"] == hashlib.sha256(interior).hexdigest()
+    assert report["coverSha256"] == hashlib.sha256(cover).hexdigest()
     result = build_package(request)
     assert build_package(request) == result
     with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
@@ -1062,11 +1066,56 @@ def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geom
         assert archive.read("cover.pdf") == cover
         assert set(json.loads(archive.read("manifest.json"))["files"]) == {"book.pdf", "cover.pdf", "metadata.json", "preflight.json", "README.txt"}
     config["wrap_cover"]["profile"] = "kdp-white"
+    report = _PUBLISHING_MAIN.validate(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts))
+    assert report["errors"] > 0 and report["coverSha256"] == hashlib.sha256(cover).hexdigest()
     with pytest.raises(Exception, match="no longer pass"):
         build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts))
     with pytest.raises(Exception, match="no longer pass"):
         build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID,
                                      artifactsBase64={"book.pdf": artifacts["book.pdf"]}))
+
+
+def test_saved_print_preflight_and_package_use_original_full_bleed_resolution():
+    from PIL import Image
+    from pypdf import PdfWriter
+    from wrap_cover import render_wrap_cover
+
+    image_id = "77777777-7777-4777-8777-777777777777"
+    book = copy.deepcopy(VALID)
+    book["assets"].append({"id": image_id, "altText": "A lighthouse"})
+    book["chapters"][0]["nodes"].append({"id": "full-bleed", "type": "image", "assetId": image_id,
+        "attributes": {"printPlacement": "fullBleed"}})
+    config = {"kind": "print", "bleed_in": 0.125, "bleed_edges": "outer", "cover": {"asset_id": image_id},
+              "wrap_cover": {"enabled": True, "profile": "kdp-cream"}}
+    writer = PdfWriter()
+    for _ in range(24):
+        writer.add_blank_page(441, 666)
+    interior = BytesIO()
+    writer.write(interior)
+    artifacts = {"book.pdf": base64.b64encode(interior.getvalue()).decode()}
+    images = {}
+    for width, height in [(1800, 2700), (1838, 2775)]:
+        image = BytesIO()
+        Image.new("RGB", (width, height), "#204050").save(image, "PNG")
+        images[width] = {image_id: base64.b64encode(image.getvalue()).decode()}
+    cover, _ = render_wrap_cover(image.getvalue(), interior.getvalue(), parse_edition(config))
+    artifacts["cover.pdf"] = base64.b64encode(cover).decode()
+    request = PackageRequest(channel="kdp", editionConfig=config, bookModel=book, artifactsBase64=artifacts,
+                             assetImagesBase64=images[1838])
+    report = _PUBLISHING_MAIN.validate(request)
+    assert report["errors"] == 0, [(f["code"], f["message"]) for f in report["findings"]]
+    assert report["coverSha256"] == hashlib.sha256(cover).hexdigest()
+    coverless = request.model_copy(update={"artifactsBase64": {"book.pdf": artifacts["book.pdf"]}})
+    assert _PUBLISHING_MAIN.validate(coverless)["coverSha256"] is None
+    package = build_package(request)
+    with zipfile.ZipFile(BytesIO(base64.b64decode(package["packages"][0]["dataBase64"]))) as archive:
+        assert archive.read("book.pdf") == interior.getvalue()
+    for illustration_bytes, code in [({}, "PRINT_FULL_BLEED_IMAGE_MISSING"), (images[1800], "PRINT_FULL_BLEED_RESOLUTION")]:
+        invalid = request.model_copy(update={"assetImagesBase64": illustration_bytes})
+        report = _PUBLISHING_MAIN.validate(invalid)
+        assert any(f["code"] == code and f["severity"] == "error" for f in report["findings"]), report
+        with pytest.raises(Exception, match="no longer pass"):
+            build_package(invalid)
 
 
 def test_odd_book_renders_preflights_and_packages_without_manual_blank_page(monkeypatch):

@@ -149,11 +149,19 @@ resolve a write whose reply was lost.
   keep their existing storage and entitlement checks. See
   `services/api/src/rendering-api.test.ts`, `services/publishing/tests/test_adapters.py`,
   and `tests/e2e/native-author-files-publishing.mjs`.
+- Opening a saved print proof selects its PDF interior and paired cover for the
+  next retailer preflight. The report records the render ID and both checksums,
+  including an explicit null when there was no cover. Packaging is enabled only
+  after a zero-error report for that selection. The API and worker check the
+  same stored bytes and use the current approved full-bleed illustrations for
+  resolution checks. Universal export keeps its existing preflight.
 - All EPUB and print package requests now require a verified render and cover
   when present. If eligibility changes while packaging, the API asks the author
   to choose a current proof or render again. Migration
-  `20261118194054_publishing_render_proof_completion.sql` also fences concurrent
-  proof changes at completion of a package or exact EPUB preflight. Existing
+  `20261118194054_publishing_render_proof_completion.sql` fences concurrent
+  proof changes at completion of a package or exact EPUB preflight. Migration
+  `20261119172907_saved_print_preflight_binding.sql` extends the same guard to
+  selected print proofs. Existing
   completed packages are recovered from their own receipts. The schema guard
   is staged with its matching API and worker changes for coordinated rollout.
 - Kindle ebook packages include an RGB `cover.jpg` derived from the saved

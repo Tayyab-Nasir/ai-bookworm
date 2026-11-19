@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { BookModel } from "@bookworm/book-model";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 import type { SupabaseClient } from "./supabase.js";
@@ -23,6 +24,15 @@ export const artworkSnapshotSchema = z.object({
     && snapshot.assets.reduce((total, asset) => total + asset.sizeBytes, 0) <= 100 * 1024 * 1024;
 });
 export type ArtworkSnapshot = z.infer<typeof artworkSnapshotSchema>;
+
+/** The print preflight needs original dimensions for full-bleed placements. */
+export function printProofImageInputs(kind: "ebook" | "print", chapters: BookModel["chapters"], images: Record<string, string>) {
+  if (kind !== "print") return {};
+  const ids = new Set(chapters.flatMap(chapter => chapter.nodes).flatMap(node =>
+    node.type === "image" && node.assetId && node.attributes?.printPlacement === "fullBleed" ? [node.assetId] : []));
+  const inputs = Object.entries(images).filter(([id]) => ids.has(id));
+  return inputs.length ? { assetImagesBase64: Object.fromEntries(inputs) } : {};
+}
 
 /** Bind proofs to verified bytes AND the exact version/review identity. */
 export function renderImagesFingerprint(images: {

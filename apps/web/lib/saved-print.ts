@@ -1,10 +1,25 @@
-import type { RenderedEditionResult, SavedPrintRender } from "@bookworm/api-client";
+import type { RenderedEditionResult, SavedPrintPreflightSource, SavedPrintRender } from "@bookworm/api-client";
 import { validateReaderDownload } from "./epub-reader";
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
 const digest = /^[a-f0-9]{64}$/u;
 const fail = (): never => { throw new Error("The saved print proof could not be verified. Refresh its history and try again."); };
 const integer = (value: unknown, max: number) => Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= max;
+
+export function printPreflightSource(render: RenderedEditionResult | null): SavedPrintPreflightSource | undefined {
+  if (render?.status !== "succeeded" || !uuid.test(render.jobId) || !Array.isArray(render.artifacts)) return;
+  const primary = render.artifacts.filter(artifact => artifact.role === "rendered_print");
+  const covers = render.artifacts.filter(artifact => artifact.role === "rendered_cover");
+  if (primary.length !== 1 || covers.length > 1 || primary.length + covers.length !== render.artifacts.length) return;
+  const sha256 = primary[0].asset.checksum;
+  const coverSha256 = covers[0]?.asset.checksum ?? null;
+  if (!digest.test(sha256) || (covers.length && (coverSha256 === null || !digest.test(coverSha256)))) return;
+  return { jobId: render.jobId, sha256, coverSha256 };
+}
+
+export function matchesPrintPreflight(expected: SavedPrintPreflightSource, received: SavedPrintPreflightSource | undefined) {
+  return received?.jobId === expected.jobId && received.sha256 === expected.sha256 && received.coverSha256 === expected.coverSha256;
+}
 
 export function validatePrintHistory(value: unknown, bookId: string, editionId: string): SavedPrintRender[] {
   const renders = (value as { renders?: unknown } | null)?.renders;

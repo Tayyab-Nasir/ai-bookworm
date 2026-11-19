@@ -640,6 +640,73 @@ test("saved EPUB preflight verifies the stored bytes and binds packaging to the 
   } finally { await app.close(); }
 });
 
+test("saved print preflight binds the exact interior and cover to the retailer package", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  Object.assign(store.tables.editions[0], { type: "print", edition_metadata_json: {
+    kind: "print", cover: { asset_id: COVER }, wrap_cover: { enabled: true },
+  } });
+  const validated: Record<string, string>[] = [], packages: unknown[] = [];
+  let renders = 0;
+  let coverDigest: "correct" | "wrong" | "missing" = "correct";
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: async (url) => {
+      assert.match(String(url), /\/render$/u, "saved preflight must not regenerate a print proof");
+      const interior = Buffer.from(`%PDF-1.4 interior ${++renders}`), cover = Buffer.from(`%PDF-1.4 cover ${renders}`);
+      return Response.json({ format: "pdf", artifactBase64: interior.toString("base64"), sha256: sha(interior), rendererVersion: "print-test",
+        coverFormat: "pdf", coverArtifactBase64: cover.toString("base64"), coverSha256: sha(cover), coverRendererVersion: "wrap-test" });
+    },
+    publishingFetch: async (url, init) => {
+      if (!String(url).endsWith("/v1/publishing/validate")) return successfulPackager(packages)(url, init);
+      const { artifactsBase64 } = JSON.parse(String(init?.body));
+      validated.push(artifactsBase64);
+      return Response.json({ channel: "kdp", ruleVersion: "core-test+kdp-test", errors: 0, warnings: 0, findings: [],
+        artifactSha256: sha(Buffer.from(artifactsBase64["book.pdf"], "base64")),
+        ...(coverDigest === "missing" ? {} : { coverSha256: coverDigest === "wrong" ? "0".repeat(64)
+          : sha(Buffer.from(artifactsBase64["cover.pdf"], "base64")) }),
+      });
+    },
+  });
+  const request = (path: string, payload: object) => app.inject({ method: "POST", url: `/v1/${path}`, headers: auth, payload });
+  const render = async () => {
+    const result = await request(`editions/${EDITION}/render`, { idempotencyKey: crypto.randomUUID() });
+    assert.equal(result.statusCode, 201, result.body); return result.json();
+  };
+  try {
+    const saved = await render(), other = await render();
+    const interior = saved.artifacts.find((entry: { role: string }) => entry.role === "rendered_print").asset;
+    const cover = saved.artifacts.find((entry: { role: string }) => entry.role === "rendered_cover").asset;
+    const sourcePrint = { jobId: saved.jobId, sha256: interior.checksum, coverSha256: cover.checksum };
+    const intent = { bookId: BOOK, editionId: EDITION, channel: "kdp", sourcePrint, idempotencyKey: crypto.randomUUID() };
+    const wrongCover = await request("publishing/validate", { ...intent, sourcePrint: { ...sourcePrint, coverSha256: null } });
+    assert.equal(wrongCover.statusCode, 409, wrongCover.body);
+    assert.equal(validated.length, 0);
+    const result = await request("publishing/validate", intent);
+    assert.equal(result.statusCode, 201, result.body);
+    assert.deepEqual(result.json().sourcePrint, sourcePrint);
+    assert.deepEqual(Buffer.from(validated[0]["book.pdf"], "base64"), store.objects.get(interior.storage_path));
+    assert.deepEqual(Buffer.from(validated[0]["cover.pdf"], "base64"), store.objects.get(cover.storage_path));
+    assert.equal(renders, 2);
+    const next = other.artifacts.find((entry: { role: string }) => entry.role === "rendered_print").asset;
+    const nextCover = other.artifacts.find((entry: { role: string }) => entry.role === "rendered_cover").asset;
+    const rebound = await request("publishing/validate", { ...intent,
+      sourcePrint: { jobId: other.jobId, sha256: next.checksum, coverSha256: nextCover.checksum } });
+    assert.equal(rebound.statusCode, 409, rebound.body);
+    assert.equal(validated.length, 1);
+    const exportIntent = { bookId: BOOK, editionId: EDITION, channel: "kdp", preflightJobId: result.json().jobId, idempotencyKey: crypto.randomUUID() };
+    const mismatched = await request("publishing/jobs", { ...exportIntent, renderJobId: other.jobId });
+    assert.equal(mismatched.statusCode, 422, mismatched.body);
+    assert.equal(packages.length, 0);
+    const created = await request("publishing/jobs", { ...exportIntent, renderJobId: saved.jobId });
+    assert.equal(created.statusCode, 201, created.body);
+    assert.equal(created.json().sourceRenderJobId, saved.jobId);
+    for (const mode of ["wrong", "missing"] as const) {
+      coverDigest = mode;
+      const unverified = await request("publishing/validate", { ...intent, idempotencyKey: crypto.randomUUID() });
+      assert.equal(unverified.statusCode, 503, unverified.body);
+    }
+  } finally { await app.close(); }
+});
+
 test("preflight rejects a validator response for another channel", async () => {
   const store = baseStore();
   const app = await buildApp(() => fakeSupabase(store), { renderFetch: async () => new Response(JSON.stringify({
