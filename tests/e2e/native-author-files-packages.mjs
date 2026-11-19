@@ -11,16 +11,23 @@ export function inspectNativePackage(bytes) {
   // Reuse Python's ZIP reader; do not add a package dependency or extract files.
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('../../scripts/run-python.mjs', import.meta.url)), '-I', '-c', `
 import hashlib, io, json, sys, zipfile
+from PIL import Image
 with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as archive:
  infos = archive.infolist()
- assert len(infos) == len({item.filename for item in infos}) <= 6
+ assert len(infos) == len({item.filename for item in infos}) <= 7
  assert sum(item.file_size for item in infos) < 25000000
  assert all('/' not in item.filename and '\\\\' not in item.filename for item in infos)
  files = {item.filename: archive.read(item) for item in infos}
+ cover = None
+ if 'cover.jpg' in files:
+  with Image.open(io.BytesIO(files['cover.jpg']), formats=['JPEG']) as image:
+   image.load()
+   cover = {'size': image.size, 'dpi': image.info.get('dpi'), 'mode': image.mode}
  print(json.dumps({
   'files': {name: {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data)} for name, data in files.items()},
   'manifest': json.loads(files['manifest.json']), 'metadata': json.loads(files['metadata.json']),
-  'preflight': json.loads(files['preflight.json']), 'readme': files['README.txt'].decode('utf-8')
+  'preflight': json.loads(files['preflight.json']), 'readme': files['README.txt'].decode('utf-8'),
+  'marketingCover': cover
  }))
 `], { input: bytes, env: childEnvironment(), timeout: 30_000, maxBuffer: 1_000_000 });
   assert.equal(result.status, 0, 'Private retailer ZIP could not be inspected with the standard ZIP reader');
@@ -141,7 +148,14 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
       const bytes = Buffer.from(await downloaded.arrayBuffer());
       assert.equal(bytes.length, Number(artifact.asset.size_bytes)); assert.equal(hash(bytes), artifact.asset.checksum);
       const archive = inspectNativePackage(bytes);
-      assert.deepEqual(Object.keys(archive.files).sort(), [...Object.keys(sourceFiles), 'README.txt', 'metadata.json', 'preflight.json', 'manifest.json'].sort());
+      const files = [...Object.keys(sourceFiles), 'README.txt', 'metadata.json', 'preflight.json', 'manifest.json'];
+      if (config.kind === 'ebook' && channel === 'kdp') {
+        files.push('cover.jpg');
+        assert.deepEqual(archive.marketingCover, { size: [1600, 2400], dpi: [300, 300], mode: 'RGB' });
+        assert.ok(archive.files['cover.jpg'].size < 50_000_000);
+        assert.match(archive.readme, /Upload book\.epub and cover\.jpg/);
+      }
+      assert.deepEqual(Object.keys(archive.files).sort(), files.sort());
       for (const [filename, source] of Object.entries(sourceFiles)) {
         assert.equal(archive.files[filename].sha256, source.checksum, 'Package replaced the saved render or cover');
         assert.equal(archive.files[filename].size, Number(source.size_bytes));

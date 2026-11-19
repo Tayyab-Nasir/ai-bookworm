@@ -16,6 +16,7 @@ from xml.etree import ElementTree as ET
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
+from rules.kdp_v1 import KDP_MARKETING_COVER_BYTES, open_kdp_ebook_cover  # noqa: E402
 from publication_metadata import effective_publication_metadata  # noqa: E402
 
 
@@ -183,6 +184,12 @@ class ExportAdapter:
                      "metadata.json contains the saved listing text for manual entry, not a retailer import schema.\n"
                      "Review description, keywords and categories against the current retailer form.\n"
                      "preflight.json contains the validation findings and their locations for this snapshot; review all warnings before uploading.\n"
+                     + (("Upload book.epub and cover.jpg in Kindle eBook Content. Keep cover.png as your saved Bookworm proof.\n"
+                         if "cover.jpg" in artifacts else
+                         "Upload book.epub and prepare a cover in KDP Cover Creator or supply your own JPEG or TIFF.\n")
+                        if self.CHANNEL == "kdp" and (ctx.get("edition") or {}).get("kind") == "ebook" else "")
+                     + ("Answer KDP's disclosure questions if your book includes AI-generated text, artwork or translations.\n"
+                        if self.CHANNEL == "kdp" else "")
                      + ("For Google Play Books, upload book.epub in an existing single-book Partner Center Content tab; this generic filename is not for bulk upload.\n"
                         "Run EpubCheck and review Google's processing result, pricing, territories and Review tab before you click Publish.\n"
                         if self.CHANNEL == "googleplay" else "")
@@ -234,6 +241,23 @@ class KdpAdapter(ExportAdapter):
     _CAPS = ChannelCapabilities(formats=("epub", "pdf"), can_submit=False,
                                 can_check_status=False,
                                 required_metadata=("title", "author", "language", "description"))
+
+    def build_package(self, ctx: dict, artifacts: dict[str, bytes]) -> list[PackageArtifact]:
+        if (ctx.get("edition") or {}).get("kind") != "ebook":
+            return super().build_package(ctx, artifacts)
+        if "cover.jpg" in artifacts:
+            raise ValueError("The Kindle upload cover must be generated from the saved PNG proof.")
+        proof = artifacts.get("cover.png")
+        epub = artifacts.get("book.epub")
+        ctx = {**ctx, "artifact": epub, "package_bytes": epub, "cover_bytes": proof}
+        if proof is not None:
+            encoded = BytesIO()
+            with open_kdp_ebook_cover(proof) as cover:
+                cover.save(encoded, "JPEG", quality=95, subsampling=0, optimize=True, dpi=(300, 300))
+            if encoded.tell() >= KDP_MARKETING_COVER_BYTES:
+                raise ValueError("The KDP JPEG must be smaller than 50 MB. Render with simpler cover artwork and try again.")
+            artifacts = {**artifacts, "cover.jpg": encoded.getvalue()}
+        return super().build_package(ctx, artifacts)
 
 
 class EpubCheckedExportAdapter(ExportAdapter):

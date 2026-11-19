@@ -451,11 +451,15 @@ test("actual Studio distinguishes unavailable package history and restores its l
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(history.getByText("ready", { exact: true })).toBeVisible();
     await expect(history.getByRole("button", { name: "Download private ZIP" })).toBeVisible();
+    const bookshelf = history.getByRole("link", { name: "KDP Bookshelf", exact: true });
+    await expect(bookshelf).toHaveAttribute("href", "https://kdp.amazon.com/en_US/bookshelf");
+    await expect(bookshelf).toHaveAttribute("target", "_blank");
     await page.evaluate(() => { window.packageJobs[0].package = null; });
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(history.getByText("unavailable", { exact: true })).toBeVisible();
     await expect(history.getByText("ready", { exact: true })).toHaveCount(0);
     await expect(history.getByRole("button", { name: "Download private ZIP" })).toHaveCount(0);
+    await expect(bookshelf).toHaveCount(0);
     await expect(history.getByText(/This job is saved in history, but its file is currently unavailable/)).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
     await history.scrollIntoViewIfNeeded();

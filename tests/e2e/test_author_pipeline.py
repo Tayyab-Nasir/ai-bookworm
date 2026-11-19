@@ -239,9 +239,9 @@ def test_one_docx_book_reaches_reviewed_canon_artwork_and_native_packages(monkey
     for channel in channels:
         preflight = _client("rendering").post("/preflight", headers=headers, json={**request, "channel": channel})
         assert preflight.status_code == 200 and preflight.json()["errors"] == 0, preflight.text
-        artifacts = {f"book.{extension}": result["artifactBase64"]}
-        if kind == "print":
-            artifacts["cover.pdf"] = result["coverArtifactBase64"]
+        cover_filename = "cover.pdf" if kind == "print" else "cover.png"
+        artifacts = {f"book.{extension}": result["artifactBase64"],
+                     cover_filename: result["coverArtifactBase64"]}
         payload = {"bookModel": model, "editionConfig": edition, "channel": channel, "artifactsBase64": artifacts}
         exported = _client("publishing").post("/v1/publishing/package", headers=headers, json=payload)
         assert exported.status_code == 200, exported.text
@@ -253,8 +253,15 @@ def test_one_docx_book_reaches_reviewed_canon_artwork_and_native_packages(monkey
             assert json.loads(archive.read("metadata.json"))["metadata"]["description"] == metadata["description"]
             assert json.loads(archive.read("manifest.json"))["channel"] == channel
             assert "NOT been submitted" in archive.read("README.txt").decode()
-            if kind == "print":
-                assert archive.read("cover.pdf") == cover_artifact
+            assert archive.read(cover_filename) == cover_artifact
+            if channel == "kdp" and kind == "ebook":
+                with Image.open(BytesIO(archive.read("cover.jpg"))) as upload_cover:
+                    assert (upload_cover.format, upload_cover.mode, upload_cover.size) == ("JPEG", "RGB", composed.size)
+                    upload_qr = upload_cover.crop((right - size, bottom - size, right, bottom)).convert("L")
+                    assert upload_qr.point(lambda value: 255 if value >= 128 else 0).tobytes() == qr_pixels.convert("L").tobytes()
+                assert "Upload book.epub and cover.jpg" in archive.read("README.txt").decode()
+            else:
+                assert "cover.jpg" not in archive.namelist()
         replay = _client("publishing").post("/v1/publishing/package", headers=headers, json=payload)
         assert replay.json()["packages"][0]["sha256"] == package["sha256"]
         (artifact_directory / f"{channel}.zip").write_bytes(blob)

@@ -156,6 +156,14 @@ resolve a write whose reply was lost.
   proof changes at completion of a package or exact EPUB preflight. Existing
   completed packages are recovered from their own receipts. The schema guard
   is staged with its matching API and worker changes for coordinated rollout.
+- Kindle ebook packages include an RGB `cover.jpg` derived from the saved
+  `cover.png` proof. The ZIP keeps the original EPUB and PNG, checksums all
+  files, and names the files to upload in `README.txt`. Preflight rejects an
+  unreadable or unusable supplied proof and offers the author's own cover or
+  KDP Cover Creator when a cover is absent. The KDP package row links to the
+  author's Bookshelf after a successful export. Rendering and publishing share
+  ruleset `kdp-1.5.0` for this change.
+  [KDP cover specifications](https://kdp.amazon.com/en_US/help/topic/G200645690)
 - Editors can check removal history using the existing schema. The read confirms
   the file's current removed state. A lost removal reply remains unconfirmed.
   Restore is gated on verified asset-recovery readiness and uses a new,

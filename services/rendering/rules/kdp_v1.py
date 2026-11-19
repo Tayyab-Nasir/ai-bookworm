@@ -1,16 +1,64 @@
-"""KDP channel rules verified against first-party KDP help on 2026-09-18."""
+"""KDP channel rules verified against first-party KDP help."""
+from contextlib import contextmanager
+from io import BytesIO
+
+from PIL import Image
+
 from preflight import Finding, Rule
 from kdp_print import kdp_page_count, kdp_page_range
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "kdp-1.4.0"
+VERSION = "kdp-1.5.0"
 EFFECTIVE_DATE = "2026-09-18"
 SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G202145060"
 ISBN_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201834170"
 
 KDP_MAX_MANUSCRIPT_BYTES = 650 * 1024 * 1024
 GEOMETRY_SOURCE = "https://kdp.amazon.com/en_US/help/topic/GVBQ3CMEQW3W2VL6"
+EBOOK_COVER_SOURCE = "https://kdp.amazon.com/en_US/help/topic/G200645690"
+KDP_MARKETING_COVER_BYTES = 50_000_000
+MAX_COVER_PIXELS = 40_000_000
+
+
+@contextmanager
+def open_kdp_ebook_cover(blob: bytes):
+    """Decode the saved, composed PNG proof without changing its artwork."""
+    try:
+        with Image.open(BytesIO(blob), formats=["PNG"]) as cover:
+            width, height = cover.size
+            if not 625 <= width <= 10_000 or not 1000 <= height <= 10_000:
+                raise ValueError("KDP needs an ebook cover between 625 × 1000 and 10,000 × 10,000 pixels. Render the cover again.")
+            if width * height > MAX_COVER_PIXELS:
+                raise ValueError("The saved cover exceeds Bookworm's image decoding limit. Render the cover again.")
+            if cover.mode != "RGB" or "transparency" in cover.info or cover.n_frames != 1:
+                raise ValueError("The saved cover needs to be a single opaque RGB image. Render the cover again.")
+            cover.load()
+            yield cover
+    except (OSError, SyntaxError, Image.DecompressionBombError) as error:
+        raise ValueError("The saved cover PNG cannot be decoded. Render the cover again.") from error
+
+
+def check_kdp_ebook_cover_missing(ctx):
+    if (ctx.get("edition") or {}).get("kind") == "ebook" and ctx.get("cover_bytes") is None:
+        return [Finding(code="KDP-EBOOK-COVER-MISSING",
+                        message="Add a saved cover to include a JPEG in the ZIP, or create a cover in KDP Cover Creator before publishing.",
+                        location="edition.cover")]
+    return []
+
+
+def check_kdp_ebook_cover(ctx):
+    cover = ctx.get("cover_bytes")
+    if (ctx.get("edition") or {}).get("kind") != "ebook" or cover is None:
+        return []
+    try:
+        with open_kdp_ebook_cover(cover):
+            pass
+    except ValueError as error:
+        return [Finding(code="KDP-EBOOK-COVER-INVALID", message=str(error),
+                        location="edition.cover")]
+    return []
+
 
 def check_kdp_bleed(ctx):
     edition = ctx.get("edition") or {}
@@ -114,6 +162,10 @@ def check_kdp_rounded_count(ctx):
 RULESET = make_ruleset("kdp", VERSION, metadata_rules(
     "kdp", "KDP", ["title", "author", "language", "description"],
     EFFECTIVE_DATE, SOURCE_REF) + [
+    Rule("KDP-EBOOK-001", "warning", "channel", "KDP ebook marketing cover choice", check_kdp_ebook_cover_missing,
+         channels=("kdp",), effective_date="2026-11-19", source_ref=EBOOK_COVER_SOURCE),
+    Rule("KDP-EBOOK-002", "error", "channel", "KDP ebook marketing cover input", check_kdp_ebook_cover,
+         channels=("kdp",), effective_date="2026-11-19", source_ref=EBOOK_COVER_SOURCE),
     Rule("KDP-PKG-001", "error", "channel", "KDP package size", check_kdp_package,
          channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=SOURCE_REF),
     Rule("KDP-PRINT-001", "warning", "channel", "KDP print ISBN choice", check_kdp_isbn,

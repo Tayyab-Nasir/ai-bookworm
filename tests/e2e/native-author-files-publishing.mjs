@@ -268,10 +268,20 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         onStage(`retailer browser ${channel} ${edition.kind} exact private ZIP download`);
         const row = history.getByRole('listitem').first();
         await expect(row.getByText('ready', { exact: true })).toBeVisible();
+        if (channel === 'kdp') {
+          const portal = row.getByRole('link', { name: 'KDP Bookshelf', exact: true });
+          assert.equal(await portal.getAttribute('href'), 'https://kdp.amazon.com/en_US/bookshelf');
+          assert.equal(await portal.getAttribute('target'), '_blank');
+        }
         const bytes = await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), job.package.asset.checksum);
         assert.equal(page.url(), publishUrl, 'ZIP download replaced the author interface');
         const archive = inspectNativePackage(bytes);
         assert.equal(archive.manifest.channel, channel); assert.equal(archive.preflight.errors, 0);
+        if (channel === 'kdp' && edition.kind === 'ebook') {
+          assert.deepEqual(archive.marketingCover, { size: [1600, 2400], dpi: [300, 300], mode: 'RGB' });
+          assert.equal(archive.manifest.files['cover.jpg'], archive.files['cover.jpg'].sha256);
+          assert.match(archive.readme, /Upload book\.epub and cover\.jpg/);
+        }
         for (const { role, asset } of render.artifacts) {
           const name = role === 'rendered_cover' ? (edition.kind === 'ebook' ? 'cover.png' : 'cover.pdf')
             : edition.kind === 'ebook' ? 'book.epub' : 'book.pdf';

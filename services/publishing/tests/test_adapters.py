@@ -52,11 +52,12 @@ def test_all_channels_registered():
 
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
-    assert result["ruleVersion"] == "core-1.0.14+kdp-1.4.0"
+    assert result["ruleVersion"] == "core-1.0.14+kdp-1.5.0"
     ids = {f["rule_id"] for f in result["findings"]}
     assert not result["findings"] or all(
         rid.startswith(("CORE-", "KDP-")) for rid in ids)
     assert result["errors"] == 0  # valid fixture has all KDP-required metadata
+    assert any(f["code"] == "KDP-EBOOK-COVER-MISSING" and f["severity"] == "warning" for f in result["findings"])
 
 
 def test_kdp_validate_flags_missing_description():
@@ -67,6 +68,53 @@ def test_kdp_validate_flags_missing_description():
     result = get_adapter("kdp").validate(ctx)
     assert result["errors"] >= 1
     assert any(f["rule_id"] == "KDP-META-001" for f in result["findings"])
+
+
+def test_kdp_ebook_package_preserves_proofs_and_includes_a_marketing_jpeg():
+    from PIL import Image
+
+    edition = {"kind": "ebook", "cover": {"asset_id": "marketing-cover"}}
+    artwork = BytesIO()
+    Image.new("RGB", (1600, 2400), "#29486a").save(artwork, "PNG")
+    cover = artwork.getvalue()
+    epub, _ = render_epub(VALID, parse_edition(edition), cover)
+    request = PackageRequest(channel="kdp", editionConfig=edition, bookModel=VALID,
+        artifactsBase64={name: base64.b64encode(blob).decode() for name, blob in
+                         {"book.epub": epub, "cover.png": cover}.items()})
+    package = build_package(request)["packages"][0]
+    assert package == build_package(request)["packages"][0]
+    with zipfile.ZipFile(BytesIO(base64.b64decode(package["dataBase64"]))) as archive:
+        assert archive.read("book.epub") == epub
+        assert archive.read("cover.png") == cover
+        jpeg = archive.read("cover.jpg")
+        with Image.open(BytesIO(jpeg)) as image:
+            assert (image.format, image.mode, image.size) == ("JPEG", "RGB", (1600, 2400))
+            assert image.info["dpi"] == (300, 300)
+            image.load()
+        assert len(jpeg) < 50_000_000
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["files"]["cover.jpg"] == hashlib.sha256(jpeg).hexdigest()
+        assert "Upload book.epub and cover.jpg" in archive.read("README.txt").decode()
+
+
+@pytest.mark.parametrize("case", ["undersized", "corrupt"])
+def test_kdp_ebook_preflight_and_package_reject_an_unusable_cover(case):
+    from PIL import Image
+
+    edition = {"kind": "ebook", "cover": {"asset_id": "marketing-cover"}}
+    artwork = BytesIO()
+    Image.new("RGB", (624, 1000), "#29486a").save(artwork, "PNG")
+    cover = artwork.getvalue() if case == "undersized" else b"\x89PNG\r\n\x1a\n"
+    valid_epub, _ = render_epub(VALID, parse_edition(EBOOK))
+    request = PackageRequest(channel="kdp", editionConfig=edition, bookModel=VALID,
+        artifactsBase64={name: base64.b64encode(blob).decode() for name, blob in
+                         {"book.epub": valid_epub, "cover.png": cover}.items()})
+    report = _PUBLISHING_MAIN.validate(request)
+    assert any(finding["code"] == "KDP-EBOOK-COVER-INVALID" and finding["severity"] == "error"
+               for finding in report["findings"])
+    with pytest.raises(_PUBLISHING_MAIN.HTTPException) as error:
+        build_package(request)
+    assert error.value.status_code == 422
 
 
 def test_saved_epub_preflight_uses_the_exact_artifact_and_checks_its_listing(monkeypatch):
@@ -492,7 +540,7 @@ def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
                              artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
     first = build_package(request)
     second = build_package(request)
-    assert first["ruleVersion"] == "core-1.0.14+kdp-1.4.0"
+    assert first["ruleVersion"] == "core-1.0.14+kdp-1.5.0"
     assert first["packages"][0]["sha256"] == second["packages"][0]["sha256"]
     package = base64.b64decode(first["packages"][0]["dataBase64"])
     with zipfile.ZipFile(BytesIO(package)) as archive:
