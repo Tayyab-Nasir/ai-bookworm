@@ -7,7 +7,8 @@ import type { SupabaseClient } from "./supabase.js";
 import { artworkSnapshotSchema, renderImagesFingerprint, assertRenderImagesCurrent } from "./render-images.js";
 import { decodeArtifact, decodeRenderedCover, editionConfigSchema, loadRenderImages, renderResponseSchema, withEditionLanguage } from "../routes/editions.js";
 import {
-  assertSourceJob, assertSavedRenderedCoverPolicy, decodePackage, loadRenderedPackageInputs, packageServiceResponseSchema,
+  assertSourceJob, assertSavedRenderedCoverPolicy, checkRenderedPackageInputs, decodePackage, loadRenderedPackageInputs, packageServiceResponseSchema,
+  PACKAGE_RENDER_PROOF_CHANGE,
   preflightResponseSchema, storedPreflightResponseSchema,
 } from "../routes/publishing.js";
 
@@ -166,6 +167,7 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
     }
     const pkg = parsed.data.packages[0];
     await recheckImages();
+    await checkRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, validation.data.sourceEpub);
     const artifact = await upload(decodePackage(pkg.dataBase64, pkg.sha256), pkg.path, "publishing_package", "publishing_package", "application/zip", pkg.sha256);
     return { artifact, ruleVersion: parsed.data.ruleVersion, imageSha256 };
   }
@@ -242,7 +244,7 @@ export async function runOnePublishingJob(sb: SupabaseClient, options: {
       // lease fencing. Never expose or classify using arbitrary SQL messages.
       if (completed.error?.code === "42501") throw new WorkerFailure("worker_permission_changed", false);
       if (completed.error?.code === "22023") throw new WorkerFailure("worker_invalid_input", false);
-      if (completed.error?.code === "40001" && completed.error.details === "bookworm_publishing_snapshot_changed") {
+      if (completed.error?.code === "40001" && ["bookworm_publishing_snapshot_changed", PACKAGE_RENDER_PROOF_CHANGE].includes(completed.error.details ?? "")) {
         throw new WorkerFailure("worker_inputs_changed", false);
       }
       throw new WorkerFailure(completed.error?.code === "40001" ? "worker_lease_lost" : "worker_completion_failed", true);

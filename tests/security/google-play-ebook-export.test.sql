@@ -16,12 +16,13 @@ insert into public.books(id,workspace_id,title,author_name,created_by) values
 insert into public.editions(id,book_id,type,language,updated_at) values
   ('4b000000-0000-4000-8000-000000000001','3b000000-0000-4000-8000-000000000001','ebook','en','2026-09-24T00:00:00Z');
 insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,response_json,idempotency_key,created_by,started_at,completed_at) values
-  ('5b000000-0000-4000-8000-000000000001','3b000000-0000-4000-8000-000000000001','4b000000-0000-4000-8000-000000000001','render','succeeded',
+  ('5b000000-0000-4000-8000-000000000001','3b000000-0000-4000-8000-000000000001','4b000000-0000-4000-8000-000000000001','render','running',
    jsonb_build_object('action','render','editionUpdatedAt','2026-09-24T00:00:00Z','bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
     'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),
-   '{"artifacts":[],"rendererVersion":"test","usage":{}}','google-render','ab000000-0000-4000-8000-000000000001',now(),now()),
+   null,'google-render','ab000000-0000-4000-8000-000000000001',now(),null),
   ('5b000000-0000-4000-8000-000000000002','3b000000-0000-4000-8000-000000000001','4b000000-0000-4000-8000-000000000001','googleplay','running',
    jsonb_build_object('action','validate','editionUpdatedAt','2026-09-24T00:00:00Z','bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
+    'sourceEpub',jsonb_build_object('jobId','5b000000-0000-4000-8000-000000000001','sha256',repeat('c',64)),
     'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),null,'google-preflight','ab000000-0000-4000-8000-000000000001',now(),null),
   ('5b000000-0000-4000-8000-000000000003','3b000000-0000-4000-8000-000000000001','4b000000-0000-4000-8000-000000000001','googleplay','running',
    jsonb_build_object('action','export_package','editionUpdatedAt','2026-09-24T00:00:00Z','bookModelSha256',repeat('a',64),
@@ -42,8 +43,13 @@ end $$;
 reset role;
 
 set local role service_role;
+select public.complete_render_job('5b000000-0000-4000-8000-000000000001',jsonb_build_array(jsonb_build_object(
+  'assetId','6b000000-0000-4000-8000-000000000002','name','Saved EPUB','type','rendered_book','role','rendered_ebook',
+  'filename','book.epub','storagePath','workspaces/2b000000-0000-4000-8000-000000000001/assets/6b000000-0000-4000-8000-000000000002/v1/book.epub',
+  'mimeType','application/epub+zip','sizeBytes',256,'checksum',repeat('c',64))), 'test', '{}');
 select public.complete_preflight_job('5b000000-0000-4000-8000-000000000002',
-  '{"ruleVersion":"core+google-play","channel":"googleplay","requestedChannel":"googleplay","errors":0,"warnings":0,"findings":[]}'::jsonb);
+  '{"ruleVersion":"core+google-play","channel":"googleplay","requestedChannel":"googleplay","errors":0,"warnings":0,"findings":[]}'::jsonb
+  || jsonb_build_object('sourceEpub',jsonb_build_object('jobId','5b000000-0000-4000-8000-000000000001','sha256',repeat('c',64))));
 do $$
 declare v_result public.publishing_jobs;
 begin

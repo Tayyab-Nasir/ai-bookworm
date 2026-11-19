@@ -211,8 +211,9 @@ async function savedCoverWorkerFixture(selectedCover = false, language = "en") {
       const assetId = crypto.randomUUID();
       const storagePath = `workspaces/${WORKSPACE}/assets/${assetId}/v1/${artifact.filename}`;
       objects.set(storagePath, value);
-      tables.assets.push({ id: assetId, workspace_id: WORKSPACE, storage_path: storagePath, mime_type: artifact.mimeType,
-        size_bytes: value.length, checksum: digest(value), deleted_at: null });
+      const metadata = { storage_path: storagePath, mime_type: artifact.mimeType, size_bytes: value.length, checksum: digest(value) };
+      tables.assets.push({ id: assetId, workspace_id: WORKSPACE, type: artifact.type, status: "draft", deleted_at: null, ...metadata });
+      tables.asset_versions.push({ asset_id: assetId, version_number: 1, scan_status: "trusted_generated", ...metadata });
       return { ...artifact, assetId, storagePath, name: artifact.filename, sizeBytes: value.length, checksum: digest(value) };
     });
   const sourceRenderJobId = crypto.randomUUID(), sourcePreflightJobId = crypto.randomUUID();

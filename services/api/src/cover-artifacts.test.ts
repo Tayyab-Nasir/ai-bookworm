@@ -13,6 +13,15 @@ const config = editionConfigSchema.parse({ kind: "print", cover: { asset_id: COV
 const rendered = renderResponseSchema.parse({ format: "pdf", artifactBase64: bytes.toString("base64"), sha256: sha,
   rendererVersion: "fixture", coverArtifactBase64: bytes.toString("base64"), coverSha256: sha, coverFormat: "pdf" });
 
+function proofMetadata(artifacts: { assetId: string; type: string; storagePath: string; mimeType: string; sizeBytes: number; checksum: string }[], table: string) {
+  const rows = artifacts.map(artifact => ({ id: artifact.assetId, asset_id: artifact.assetId, type: artifact.type,
+    status: "draft", version_number: 1, scan_status: "trusted_generated", storage_path: artifact.storagePath,
+    mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes, checksum: artifact.checksum }));
+  assert.ok(["assets", "asset_versions"].includes(table));
+  const builder = { select: () => builder, eq: () => builder, is: () => builder, in: async () => ({ data: rows, error: null }) };
+  return builder;
+}
+
 test("full cover transport requires PDF format, signature, checksum and selected artwork", () => {
   const cover = decodeRenderedCover(config, rendered)!;
   assert.equal(cover.filename, "cover.pdf");
@@ -33,12 +42,8 @@ test("confirmed private cover PDF is packaged with its exact name and bytes", as
     { assetId: COVER, role: "rendered_cover", type: "rendered_cover", filename: "cover.pdf" },
   ].map((artifact) => ({ ...artifact, storagePath: `workspaces/${WORKSPACE}/assets/${artifact.assetId}/v1/${artifact.filename}`,
     name: artifact.filename, mimeType: "application/pdf", sizeBytes: bytes.length, checksum: sha }));
-  const assets = artifacts.map((artifact) => ({ id: artifact.assetId, storage_path: artifact.storagePath,
-    mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes, checksum: sha }));
   const reads: string[] = [];
-  const builder = { select: () => builder, eq: () => builder, is: () => builder,
-    in: async () => ({ data: assets, error: null }) };
-  const sb = { from: () => builder, storage: { from: () => ({ download: async (path: string) => {
+  const sb = { from: (table: string) => proofMetadata(artifacts, table), storage: { from: () => ({ download: async (path: string) => {
     reads.push(path); return { data: new Blob([bytes]), error: null };
   } }) } } as never;
   const job = { response_json: { artifacts, rendererVersion: "fixture", usage: {} } };
@@ -61,12 +66,8 @@ function ebookPackageFixture(selectedCover = true) {
     ...(selectedCover ? [{ assetId: COVER, role: "rendered_cover", type: "rendered_cover", filename: "cover.png", mimeType: "image/png", bytes: png }] : [])]
     .map(({ bytes: value, ...artifact }) => ({ ...artifact, storagePath: `workspaces/${WORKSPACE}/assets/${artifact.assetId}/v1/${artifact.filename}`,
       name: artifact.filename, sizeBytes: value.length, checksum: checksum(value) }));
-  const assets = artifacts.map(artifact => ({ id: artifact.assetId, storage_path: artifact.storagePath,
-    mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes, checksum: artifact.checksum }));
   const reads: string[] = [];
-  const builder = { select: () => builder, eq: () => builder, is: () => builder,
-    in: async () => ({ data: assets, error: null }) };
-  const sb = { from: () => { reads.push("assets"); return builder; }, storage: { from: () => ({ download: async (path: string) => {
+  const sb = { from: (table: string) => { reads.push(table); return proofMetadata(artifacts, table); }, storage: { from: () => ({ download: async (path: string) => {
     reads.push(path); return { data: new Blob([path.endsWith("cover.png") ? png : epub]), error: null };
   } }) } } as never;
   return { sb, reads, job: { response_json: { artifacts, rendererVersion: "epub-fixture", usage: {} as Record<string, unknown> } } };

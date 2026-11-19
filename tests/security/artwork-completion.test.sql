@@ -47,11 +47,15 @@ begin
  request := request || p_override;
  if p_action='export_package' then
   insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,response_json,idempotency_key,created_by)
-   values(r,'d7300000-0000-4000-8000-000000000001','e7300000-0000-4000-8000-000000000001','render','succeeded',
+   values(r,'d7300000-0000-4000-8000-000000000001','e7300000-0000-4000-8000-000000000001','render','running',
     request || jsonb_build_object('action','render','imageSha256',case when p_bad_proof then repeat('c',64) else repeat('b',64) end),
-    '{"artifacts":[]}',r::text,'a7300000-0000-4000-8000-000000000001'),
+    null,r::text,'a7300000-0000-4000-8000-000000000001'),
    (p,'d7300000-0000-4000-8000-000000000001','e7300000-0000-4000-8000-000000000001','kdp','succeeded',
     request || '{"action":"validate"}', '{"requestedChannel":"kdp","errors":0}',p::text,'a7300000-0000-4000-8000-000000000001');
+  perform public.complete_render_job(r,jsonb_build_array(jsonb_build_object(
+    'assetId',r,'name','Saved EPUB','type','rendered_book','role','rendered_ebook','filename','book.epub',
+    'storagePath',format('workspaces/c7300000-0000-4000-8000-000000000001/assets/%s/v1/book.epub',r),
+    'mimeType','application/epub+zip','sizeBytes',256,'checksum',repeat('c',64))), 'test', '{}');
   request := request || jsonb_build_object('sourceRenderJobId',r,'sourcePreflightJobId',p);
  end if;
  insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,idempotency_key,created_by,lease_token,lease_expires_at)

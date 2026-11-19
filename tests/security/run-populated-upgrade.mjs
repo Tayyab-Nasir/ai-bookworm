@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 135 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 136 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -24,6 +24,7 @@ const assetGuard = '20261103100000_asset_client_delete_guard.sql';
 const renderClosure = '20261104110000_render_close_request.sql';
 const retailerSubmissions = '20261118013037_retailer_submissions.sql';
 const confirmationInvoker = '20261118165738_data_rights_confirmation_invoker.sql';
+const renderProofCompletion = '20261118194054_publishing_render_proof_completion.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -141,7 +142,7 @@ async function expectedCustomerGuard(migration, fixture, historical, signature, 
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 135, 'This reviewed rehearsal pins the 45 -> 135 target; review before extending');
+  assert.equal(names.length, 136, 'This reviewed rehearsal pins the 45 -> 136 target; review before extending');
   assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
   assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
@@ -164,7 +165,7 @@ try {
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
-  assert.deepEqual(names.slice(-3), [renderClosure, retailerSubmissions, confirmationInvoker]);
+  assert.deepEqual(names.slice(-4), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion]);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
@@ -226,7 +227,7 @@ try {
       intakeProbe={ticketId,requestId,ticket,request};
     }
     let renderProbe = null;
-    if (migration.name === renderClosure) {
+    if (migration.name === renderClosure || migration.name === renderProofCompletion) {
       const tenant = fixture.tenants[0], edition = randomUUID(), running = randomUUID(), succeeded = randomUUID();
       await db.query("insert into public.editions(id,book_id,type,language) values($1,$2,'ebook','en')", [edition, tenant.book]);
       for (const [id, status] of [[running, 'running'], [succeeded, 'succeeded']]) {
@@ -259,11 +260,13 @@ try {
     if (renderProbe) {
       const { edition, running, succeeded, before } = renderProbe;
       const after = (await db.query('select to_jsonb(j) as value from public.publishing_jobs j where id=any($1::uuid[]) order by id', [[running, succeeded]])).rows.map(row => row.value);
-      assert.deepEqual(after, before, 'Render closure upgrade preserves existing running and succeeded jobs');
-      await db.exec(await readFile(join(root,'tests/security/render-close-request.test.sql'),'utf8'));
+      assert.deepEqual(after, before, 'Publishing upgrade preserves existing running and succeeded renders');
+      const suites = migration.name === renderClosure ? ['render-close-request.test.sql']
+        : ['publishing-package-workflow.test.sql', 'google-play-ebook-export.test.sql'];
+      for (const file of suites) await db.exec(await readFile(join(root, 'tests/security', file), 'utf8'));
       await db.query('delete from public.publishing_jobs where id=any($1::uuid[])', [[running, succeeded]]);
       await db.query('delete from public.editions where id=$1', [edition]);
-      console.log('PASS populated render closure upgrade: existing jobs intact and authenticated closure assertions passed');
+      console.log(`PASS populated publishing upgrade ${migration.name}: existing jobs intact; ${suites.join(', ')}`);
     }
     if (audioProbe) {
       step = 'populated audio export after privacy upgrade';

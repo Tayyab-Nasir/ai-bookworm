@@ -57,11 +57,15 @@ export async function artworkCompletionRaces({ sql, session, until, database }) 
       ...(action === 'export_package' ? { sourceRenderJobId: render, sourcePreflightJobId: preflight } : {}) };
     let proofs = '';
     if (action === 'export_package') {
+      const renderArtifact = { assetId: render, name: 'Native input proof', type: 'rendered_book', role: 'rendered_ebook',
+        filename: 'book.epub', storagePath: `workspaces/${workspace}/assets/${render}/v1/book.epub`,
+        mimeType: 'application/epub+zip', sizeBytes: 256, checksum: 'c'.repeat(64) };
       proofs = `insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,response_json,idempotency_key,created_by) values
-        ('${render}','${book}','${edition}','render','succeeded','${JSON.stringify({ ...request, action: 'render' })}',
-         '{"artifacts":[]}','${render}','${author}'),
+        ('${render}','${book}','${edition}','render','running','${JSON.stringify({ ...request, action: 'render' })}',
+         null,'${render}','${author}'),
         ('${preflight}','${book}','${edition}','kdp','succeeded','${JSON.stringify({ ...request, action: 'validate' })}',
-         '{"requestedChannel":"kdp","errors":0}','${preflight}','${author}');`;
+         '{"requestedChannel":"kdp","errors":0}','${preflight}','${author}');
+        select status from public.complete_render_job('${render}','${JSON.stringify([renderArtifact])}','native-test','{}');`;
     }
     await sql(`${service} ${proofs}
       insert into public.publishing_jobs(id,book_id,edition_id,channel,status,request_json,idempotency_key,created_by,lease_token,lease_expires_at)
@@ -80,7 +84,7 @@ export async function artworkCompletionRaces({ sql, session, until, database }) 
       : action === 'render' ? `${service} select status from public.complete_render_job('${id}','${JSON.stringify([artifact])}','native-test','{}');`
         : action === 'validate' ? `${service} select status from public.complete_preflight_job('${id}','${JSON.stringify(result)}');`
           : `${service} select status from public.complete_publishing_package_job('${id}','${JSON.stringify(artifact)}','native-test','${render}','${preflight}');`;
-    return { id, complete, action };
+    return { id, complete, action, render };
   }
   async function checkState(j, succeeded) {
     const actual = JSON.parse(await sql(`select json_build_object('status',status,
@@ -97,12 +101,17 @@ export async function artworkCompletionRaces({ sql, session, until, database }) 
     const j = await job(action, leased);
     const completionFirst = mode.startsWith('completion');
     const rollback = mode.endsWith('rollback');
+    const change = mutation === 'render_archive'
+      ? `${service} update public.assets set status='archived' where id='${j.render}';`
+      : mutation === 'render_version_deletion'
+        ? `${service} delete from public.asset_versions where asset_id='${j.render}' and version_number=1;`
+        : mutations[mutation];
     const held = session(database, `artwork_holder_${randomUUID().replaceAll('-', '')}`);
-    held.child.stdin.write(`begin; ${completionFirst ? j.complete : mutations[mutation]} select 'BOOKWORM_READY';\n`);
+    held.child.stdin.write(`begin; ${completionFirst ? j.complete : change} select 'BOOKWORM_READY';\n`);
     await until(() => { assert.equal(held.ended, false, held.stderr); return held.stdout.includes('BOOKWORM_READY'); }, 'Artwork holder not ready');
     const name = `artwork_wait_${randomUUID().replaceAll('-', '')}`;
     const contender = session(database, name);
-    contender.child.stdin.end(`begin; ${completionFirst ? mutations[mutation] : j.complete} commit;`);
+    contender.child.stdin.end(`begin; ${completionFirst ? change : j.complete} commit;`);
     await until(async () => {
       assert.equal(contender.ended, false, `Artwork contender did not wait: ${contender.stderr}`);
       return await sql(`select count(*) from pg_stat_activity where application_name='${name}' and wait_event_type='Lock';`) === '1';
@@ -112,7 +121,8 @@ export async function artworkCompletionRaces({ sql, session, until, database }) 
     const result = await contender.done;
     const succeeded = completionFirst ? !rollback : rollback;
     const rejection = mutation === 'permission' ? /42501.*creator can no longer edit book/s
-      : mutation === 'edition' ? /(?:40001|22023).*edition changed/s : /40001.*publishing artwork/s;
+      : mutation === 'edition' ? /(?:40001|22023).*edition changed/s
+        : mutation.startsWith('render_') ? /40001.*bookworm_publishing_render_proof_changed/s : /40001.*publishing artwork/s;
     if (!completionFirst && !rollback) {
       assert.notEqual(result.code, 0); assert.match(result.stderr, rejection);
     } else assert.equal(result.code, 0, result.stderr);
@@ -131,7 +141,9 @@ export async function artworkCompletionRaces({ sql, session, until, database }) 
     for (const leased of [false, true]) {
       // All direct guards; leased entry points exercise review, permission and
       // edition locks across completion-first and rollback schedules too.
-      for (const mutation of leased ? ['review', 'permission', 'edition'] : Object.keys(mutations)) {
+      const scenarios = leased ? ['review', 'permission', 'edition'] : Object.keys(mutations);
+      if (action === 'export_package') scenarios.push('render_archive', 'render_version_deletion');
+      for (const mutation of scenarios) {
         for (const mode of ['mutation-first', 'mutation-rollback', 'completion-first', 'completion-rollback']) {
           await race(action, leased, mutation, mode);
         }

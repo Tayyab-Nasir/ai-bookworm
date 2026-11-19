@@ -14,15 +14,15 @@ insert into public.workspace_members(workspace_id,user_id,role) values
 insert into public.books(id,workspace_id,title,author_name,created_by) values
   ('39000000-0000-4000-8000-000000000001','29000000-0000-4000-8000-000000000001','Packaged Book','Author','a9000000-0000-0000-0000-000000000001');
 insert into public.editions(id,book_id,type,language,updated_at) values
-  ('49000000-0000-4000-8000-000000000001','39000000-0000-4000-8000-000000000001','ebook','en','2026-09-04T00:00:00Z');
+  ('49000000-0000-4000-8000-000000000001','39000000-0000-4000-8000-000000000001','print','en','2026-09-04T00:00:00Z');
 
 insert into public.publishing_jobs(
   id,book_id,edition_id,channel,status,request_json,response_json,idempotency_key,created_by,started_at,completed_at
 ) values
-  ('59000000-0000-4000-8000-000000000001','39000000-0000-4000-8000-000000000001','49000000-0000-4000-8000-000000000001','render','succeeded',
+  ('59000000-0000-4000-8000-000000000001','39000000-0000-4000-8000-000000000001','49000000-0000-4000-8000-000000000001','render','running',
    jsonb_build_object('action','render','editionUpdatedAt','2026-09-04T00:00:00Z','bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
     'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),
-   '{"artifacts":[],"rendererVersion":"test","usage":{}}','package-render','a9000000-0000-0000-0000-000000000001',now(),now()),
+   null,'package-render','a9000000-0000-0000-0000-000000000001',now(),null),
   ('59000000-0000-4000-8000-000000000002','39000000-0000-4000-8000-000000000001','49000000-0000-4000-8000-000000000001','kdp','succeeded',
    jsonb_build_object('action','validate','editionUpdatedAt','2026-09-04T00:00:00Z','bookModelSha256',repeat('a',64),'imageSha256',repeat('b',64),
     'artworkSnapshot','{"schemaVersion":1,"coverAssetId":null,"illustrationAssetIds":[],"assets":[]}'::jsonb),
@@ -52,6 +52,8 @@ begin
     'authenticated can complete publishing packages';
   assert has_function_privilege('service_role', 'public.complete_publishing_package_job(uuid,jsonb,text,uuid,uuid)', 'execute'),
     'service role cannot complete publishing packages';
+  assert not has_function_privilege('authenticated', 'private.guard_publishing_render_proof_completion()', 'execute'),
+    'authenticated can directly invoke the render proof guard';
 end $$;
 
 set local role authenticated;
@@ -69,6 +71,11 @@ end $$;
 reset role;
 
 set local role service_role;
+set local request.jwt.claims = '{"role":"service_role"}';
+select public.complete_render_job('59000000-0000-4000-8000-000000000001',jsonb_build_array(jsonb_build_object(
+  'assetId','69000000-0000-4000-8000-000000000003','name','Saved print interior','type','rendered_book','role','rendered_print',
+  'filename','book.pdf','storagePath','workspaces/29000000-0000-4000-8000-000000000001/assets/69000000-0000-4000-8000-000000000003/v1/book.pdf',
+  'mimeType','application/pdf','sizeBytes',256,'checksum',repeat('c',64))), 'test', '{}');
 do $$
 declare
   artifact jsonb := jsonb_build_object(
@@ -82,7 +89,23 @@ declare
   asset_count integer;
   usage_count integer;
   activity_count integer;
+  failure_detail text;
 begin
+  update public.assets set status='archived' where id='69000000-0000-4000-8000-000000000003';
+  begin
+    perform public.complete_publishing_package_job(
+      '59000000-0000-4000-8000-000000000003',artifact,'core-1+kdp-1',
+      '59000000-0000-4000-8000-000000000001','59000000-0000-4000-8000-000000000002');
+    assert false, 'archived render completed a package';
+  exception when serialization_failure then
+    get stacked diagnostics failure_detail = PG_EXCEPTION_DETAIL;
+    assert failure_detail='bookworm_publishing_render_proof_changed','wrong package refusal reason';
+  end;
+  assert not exists(select 1 from public.assets where id='69000000-0000-4000-8000-000000000001'), 'refusal left a package asset';
+  assert not exists(select 1 from public.usage_events where publishing_job_id='59000000-0000-4000-8000-000000000003'), 'refusal charged publishing usage';
+  assert (select status='running' from public.publishing_jobs where id='59000000-0000-4000-8000-000000000003'), 'refusal changed the pending job';
+  update public.assets set status='draft' where id='69000000-0000-4000-8000-000000000003';
+
   select * into result from public.complete_publishing_package_job(
     '59000000-0000-4000-8000-000000000003',artifact,' core-1+kdp-1 ',
     '59000000-0000-4000-8000-000000000001','59000000-0000-4000-8000-000000000002');

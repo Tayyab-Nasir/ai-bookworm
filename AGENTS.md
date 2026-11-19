@@ -10,6 +10,10 @@ shared task board. Treat saved completion claims as unverified until checked.
 Do not copy secrets, overwrite other agents' memory, or infer authority for
 live deployment, migrations, payments, or publishing from handoff notes.
 
+For workflow changes, start at `docs/WEB_STATE_MACHINES.md`. Check the current
+transition owner and recovery path before editing. Update the inventory and
+the relevant regression checks when either changes.
+
 ## graphify
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.

@@ -141,9 +141,10 @@ async function failPreflightJob(sb: ReturnType<FastifyInstance["supabaseFactory"
 }
 
 async function failPackageJob(sb: SupabaseClient, jobId: string, message: string) {
-  await sb.from("publishing_jobs").update({
+  const { data, error } = await sb.from("publishing_jobs").update({
     status: "failed", response_json: { error: message.slice(0, 500) }, completed_at: new Date().toISOString(),
-  }).eq("id", jobId).in("status", ["queued", "running"]);
+  }).eq("id", jobId).in("status", ["queued", "running"]).select("id").maybeSingle();
+  return !error && data?.id === jobId;
 }
 
 function requestJson(job: Record<string, unknown>) {
@@ -165,7 +166,11 @@ export function assertSourceJob(
   }
 }
 
-export async function loadRenderedPackageInputs(
+export const PACKAGE_RENDER_PROOF_CHANGE = "bookworm_publishing_render_proof_changed";
+const unavailableRenderProof = () => new AppError(422,
+  "A saved render or cover is no longer verified for packaging. Choose a current proof or render again.", undefined, "package_render_proof_changed");
+
+export async function checkRenderedPackageInputs(
   sb: SupabaseClient,
   workspaceId: string,
   kind: "ebook" | "print",
@@ -188,14 +193,14 @@ export async function loadRenderedPackageInputs(
   if (primary.length !== 1 || covers.length > 1 || response.data.artifacts.some((artifact) => ![primaryRole, "rendered_cover"].includes(artifact.role))) {
     throw new AppError(422, "The selected render artifacts do not match this edition. Render it again.");
   }
-  if (primary[0].mimeType !== primaryMime || primary[0].filename !== primaryName) {
+  if (primary[0].type !== "rendered_book" || primary[0].mimeType !== primaryMime || primary[0].filename !== primaryName) {
     throw new AppError(422, "The selected render format does not match this edition.");
   }
   if (sourceEpub && primary[0].checksum.toLowerCase() !== sourceEpub.sha256) {
     throw new AppError(409, "The saved EPUB does not match the selected checksum. Refresh the proof desk.");
   }
   for (const cover of covers) {
-    if (!((cover.filename === "cover.png" && cover.mimeType === "image/png")
+    if (cover.type !== "rendered_cover" || !((cover.filename === "cover.png" && cover.mimeType === "image/png")
       || (kind === "print" && cover.filename === "cover.pdf" && cover.mimeType === "application/pdf"))) {
       throw new AppError(422, "The selected cover has an invalid format. Render this edition again.");
     }
@@ -203,36 +208,34 @@ export async function loadRenderedPackageInputs(
 
   const descriptors = [...primary, ...covers];
   const ids = descriptors.map((artifact) => artifact.assetId);
-  const { data: assets, error } = await sb.from("assets")
-    .select("*").eq("workspace_id", workspaceId).is("deleted_at", null).in("id", ids);
-  if (error || !assets || assets.length !== ids.length) {
-    throw new AppError(422, "A selected render artifact is missing from private storage.");
-  }
-  // Reopening a saved proof follows the same version eligibility as its reader.
-  // Legacy requests may refer to renders created before scan receipts existed.
-  const versions = sourceEpub ? await sb.from("asset_versions")
-    .select("asset_id,version_number,storage_path,checksum,mime_type,size_bytes,scan_status")
-    .eq("version_number", 1).in("asset_id", ids) : null;
-  if (versions?.error) throw new AppError(503, "The saved proof's verification status could not be checked.");
+  const [assets, versions] = await Promise.all([
+    sb.from("assets").select("*").eq("workspace_id", workspaceId).is("deleted_at", null).in("id", ids),
+    sb.from("asset_versions").select("asset_id,version_number,storage_path,checksum,mime_type,size_bytes,scan_status")
+      .eq("version_number", 1).in("asset_id", ids),
+  ]);
+  if (assets.error || versions.error) throw new AppError(503, "The saved proof's verification status could not be checked.");
 
   for (const descriptor of descriptors) {
-    const asset = assets.find((candidate) => candidate.id === descriptor.assetId);
+    const asset = assets.data?.find(candidate => candidate.id === descriptor.assetId);
+    const version = versions.data?.find(row => row.asset_id === descriptor.assetId);
+    const path = `workspaces/${workspaceId}/assets/${descriptor.assetId}/v1/${descriptor.filename}`;
     const matches = (row: Record<string, unknown> | undefined) => row?.storage_path === descriptor.storagePath
       && row.mime_type === descriptor.mimeType && Number(row.size_bytes) === descriptor.sizeBytes
       && String(row.checksum).toLowerCase() === descriptor.checksum.toLowerCase();
-    if (!matches(asset)) {
-      throw new AppError(422, "A selected render artifact no longer matches its confirmed version.");
-    }
-    if (versions) {
-      const version = versions.data?.find(row => row.asset_id === descriptor.assetId);
-      const path = `workspaces/${workspaceId}/assets/${descriptor.assetId}/v1/${descriptor.filename}`;
-      if (descriptor.storagePath !== path || asset?.type !== descriptor.type || !["draft", "in_review", "approved"].includes(String(asset?.status))
-        || !matches(version) || version?.version_number !== 1 || !["clean", "trusted_generated"].includes(String(version?.scan_status))) {
-        throw new AppError(422, "The saved EPUB or cover is no longer verified for packaging. Choose a current proof.");
-      }
+    if (descriptor.storagePath !== path || !matches(asset) || asset?.type !== descriptor.type
+      || !["draft", "in_review", "approved"].includes(String(asset?.status))
+      || !matches(version) || version?.version_number !== 1 || !["clean", "trusted_generated"].includes(String(version?.scan_status))) {
+      throw unavailableRenderProof();
     }
   }
+  return descriptors;
+}
 
+export async function loadRenderedPackageInputs(
+  sb: SupabaseClient, workspaceId: string, kind: "ebook" | "print", renderJob: Record<string, unknown>,
+  config: z.infer<typeof editionConfigSchema>, sourceEpub?: z.infer<typeof sourceEpubSchema>,
+) {
+  const descriptors = await checkRenderedPackageInputs(sb, workspaceId, kind, renderJob, config, sourceEpub);
   const encoded: Record<string, string> = {};
   let total = 0;
   for (const descriptor of descriptors) {
@@ -249,7 +252,7 @@ export async function loadRenderedPackageInputs(
     if (!bytes.subarray(0, signature.length).equals(signature)) {
       throw new AppError(422, "A selected render artifact has the wrong file format.");
     }
-    encoded[descriptor.role === "rendered_cover" ? descriptor.filename : primaryName] = bytes.toString("base64");
+    encoded[descriptor.filename] = bytes.toString("base64");
   }
   return encoded;
 }
@@ -480,6 +483,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
         if (!recoveryError && recovered?.status === "succeeded") completedJob = recovered;
         else {
           await failPreflightJob(service, jobId);
+          if (completeError?.code === "40001" && completeError.details === PACKAGE_RENDER_PROOF_CHANGE) throw unavailableRenderProof();
           if (completeError?.code === "PGRST202" || completeError?.code === "42883") {
             throw new AppError(503, "The preflight workflow migration is not installed.");
           }
@@ -612,6 +616,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
         throw new AppError(503, "The publishing package service returned a package for the wrong channel.");
       }
       const bytes = decodePackage(servicePackage.dataBase64, servicePackage.sha256);
+      await checkRenderedPackageInputs(service, book.workspace_id, config.kind, renderJob!, config, storedPreflight.data.sourceEpub);
       const assetId = randomUUID();
       const storagePath = `workspaces/${book.workspace_id}/assets/${assetId}/v1/${servicePackage.path}`;
       const artifact = {
@@ -636,6 +641,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       if (completeError || !completedJob) {
         const { data: recovered, error: recoveryError } = await service.from("publishing_jobs").select("*").eq("id", jobId).maybeSingle();
         if (!recoveryError && recovered?.status === "succeeded") completedJob = recovered;
+        else if (completeError?.code === "40001" && completeError.details === PACKAGE_RENDER_PROOF_CHANGE) throw unavailableRenderProof();
         else {
           throw new AppError(503, "Package completion is unconfirmed. Output files are retained; avoid starting another package until its status is resolved.");
         }
@@ -644,11 +650,14 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       reply.header("cache-control", "private, no-store");
       return reply.status(201).send(await hydratePackageJob(service, book.workspace_id, completedJob));
     } catch (error) {
-      if (!completionPersisted && !completionAttempted) {
-        // Retain private objects after dispatch until reconciliation can prove
-        // no concurrent or delayed completion references them.
-        if (uploadedPaths.length) await service.storage.from(BUCKET).remove(uploadedPaths);
-        await failPackageJob(service, jobId, "package_failed");
+      const refusedProof = error instanceof AppError && error.code === "package_render_proof_changed";
+      if (!completionPersisted && (!completionAttempted || refusedProof)) {
+        const fenced = await failPackageJob(service, jobId, refusedProof ? "package_render_proof_changed" : "package_failed").catch(() => false);
+        // After dispatch the failure transition must win before removing objects.
+        if ((!completionAttempted || fenced) && uploadedPaths.length) {
+          try { await service.storage.from(BUCKET).remove(uploadedPaths); } catch { /* Private orphan recovery is separate. */ }
+        }
+        if (refusedProof && fenced) throw error;
       }
       if (completionAttempted && !completionPersisted) {
         throw new AppError(503, "Package completion is unconfirmed. Output files are retained; avoid starting another package until its status is resolved.");

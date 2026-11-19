@@ -716,6 +716,98 @@ test("editor creates a durable private retailer package and can list, read, and 
   await app.close();
 });
 
+test("unbound package preflight cannot use a quarantined render or an unavailable cover", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const downloads: string[] = [], packages: unknown[] = []; store.downloads = downloads;
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(packages),
+  });
+  try {
+    const sources = await createReadySources(app);
+    const receipt = store.tables.publishing_jobs.find(row => row.id === sources.renderJobId)!.response_json as { artifacts: Row[] };
+    const [interior, cover] = receipt.artifacts;
+    const version = store.tables.asset_versions.find(row => row.asset_id === interior.assetId)!;
+    const coverAsset = store.tables.assets.find(row => row.id === cover.assetId)!;
+    const payload = { ...sources, bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: crypto.randomUUID() };
+    const request = () => app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+    downloads.length = 0;
+    version.scan_status = "infected";
+    assert.equal((await request()).statusCode, 422);
+    version.scan_status = "trusted_generated";
+    coverAsset.status = "archived";
+    assert.equal((await request()).statusCode, 422);
+    assert.equal(downloads.includes(String(interior.storagePath)), false);
+    assert.equal(packages.length, 0);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+    coverAsset.status = "draft";
+    const created = await request();
+    assert.equal(created.statusCode, 201, created.body);
+  } finally { await app.close(); }
+});
+
+test("package refuses a proof removed during packaging before saving or charging", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const packageBytes = successfulPackager([]);
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([]),
+    publishingFetch: async (input, init) => {
+      const proof = store.tables.assets.find(row => row.type === "rendered_book")!;
+      proof.deleted_at = new Date().toISOString();
+      return packageBytes(input, init);
+    },
+  });
+  try {
+    const sources = await createReadySources(app);
+    const before = store.objects.size;
+    const response = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: {
+      bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID(),
+    } });
+    assert.equal(response.statusCode, 422, response.body);
+    assert.match(response.body, /choose a current proof or render again/i);
+    assert.equal(store.objects.size, before);
+    assert.equal(store.tables.publishing_jobs.at(-1)?.status, "failed");
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+  } finally { await app.close(); }
+});
+
+test("package proof refusal cleans up its ZIP only after failure is confirmed", async (t) => {
+  for (const confirmFailure of [true, false]) {
+    await t.test(confirmFailure ? "confirmed failure" : "lost failure acknowledgement", async () => {
+      const store = baseStore(); enableRetailerPackages(store);
+      const app = await buildApp(() => fakeSupabase(store), {
+        renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager([]),
+      });
+      try {
+        const sources = await createReadySources(app);
+        const before = store.objects.size;
+        let refusedPath: string | undefined;
+        store.completionHook = async (_name, args) => {
+          refusedPath = String((args.p_artifact as Row).storagePath);
+          assert.ok(store.objects.has(refusedPath));
+          if (!confirmFailure) store.queryErrors = { publishing_jobs: { code: "08006" } };
+          return { data: null, error: { code: "40001", details: "bookworm_publishing_render_proof_changed" } };
+        };
+        const response = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: {
+          bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID(),
+        } });
+        assert.equal(response.statusCode, confirmFailure ? 422 : 503, response.body);
+        assert.ok(refusedPath);
+        assert.equal(store.objects.has(refusedPath), !confirmFailure);
+        assert.equal(store.objects.size, before + Number(!confirmFailure));
+        assert.equal(store.tables.assets.some(row => row.type === "publishing_package"), false);
+        assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+        if (confirmFailure) {
+          const job = store.tables.publishing_jobs.at(-1)!;
+          assert.equal(job.status, "failed");
+          assert.deepEqual(job.response_json, { error: "package_render_proof_changed" });
+        } else {
+          assert.match(response.body, /completion is unconfirmed/i);
+        }
+      } finally { await app.close(); }
+    });
+  }
+});
+
 test("package request recovery survives changed sources and plan loss without a second export", async () => {
   const store = baseStore(); enableRetailerPackages(store);
   const sent: unknown[] = [];
