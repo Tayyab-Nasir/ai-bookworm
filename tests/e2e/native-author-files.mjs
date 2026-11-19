@@ -174,9 +174,12 @@ try {
     }, 201);
     const scanBytes = await readFile(new URL('../fixtures/books/scanned_manuscript.pdf', import.meta.url));
     const scan = await upload(scanAuthor, 'harbor-scan.pdf', 'application/pdf', scanBytes);
-    await request(scanAuthor.token, 'POST', `/books/${scanBook.id}/import-jobs`, { assetId: scan.assetId }, 409);
+    await quarantined(scanAuthor, scan);
+    const scanJobsPath = `/books/${scanBook.id}/import-jobs`;
+    await request(scanAuthor.token, 'POST', scanJobsPath, { assetId: scan.assetId }, 422);
+    assert.deepEqual((await request(scanAuthor.token, 'GET', scanJobsPath)).jobs, []);
     assert.equal((await confirm(scanAuthor, scan)).scanStatus, 'clean');
-    const scanJob = await request(scanAuthor.token, 'POST', `/books/${scanBook.id}/import-jobs`, { assetId: scan.assetId }, 202);
+    const scanJob = await request(scanAuthor.token, 'POST', scanJobsPath, { assetId: scan.assetId }, 202);
     await waitFor(scanJob.job.id);
     const { import: scanReceipt } = await request(scanAuthor.token, 'GET', `/books/${scanBook.id}/imports/${scan.assetId}`);
     assert.equal(scanReceipt.report.confidence, 'low');
