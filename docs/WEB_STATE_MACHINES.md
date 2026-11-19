@@ -141,6 +141,12 @@ resolve a write whose reply was lost.
 - Hosted render closure and retailer status are installed. [The rollout evidence](evidence/supabase-publishing-rollout-2026-11-18.json)
   records the migration and access checks. Signed-in hosted UI acceptance is
   pending. Retailer status records what the author reports about the submission.
+- Supabase now enforces the exact saved publishing proof and uploaded paperback
+  cover checks on completion. The [publishing rollout receipt](evidence/supabase-publishing-proof-rollout-2026-11-19.json)
+  links source hashes to the hosted migration versions. The [audiobook export
+  receipt](evidence/supabase-audiobook-export-privacy-2026-11-19.json) records the
+  member-visible fields and worker access. Signed-in verification for the
+  current application candidate ran against disposable native services.
 - Saved EPUB proofs can be selected for packaging after reopening Publishing
   Studio. Retailer preflight checks the stored EPUB and cover through the
   private publishing service. It requires the saved render to match the

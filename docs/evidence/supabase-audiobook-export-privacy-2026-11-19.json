@@ -1,0 +1,85 @@
+{
+  "projectRef": "cyhqtwndadlyzpeatxws",
+  "reviewedAt": "2026-11-19T20:39:39Z",
+  "compatibleLocalApi": "5ea3281fdf453667601b9b7fc1d3c3def3a7f28d",
+  "compatibleApplicationCandidate": "a372c9335aadd0c03d684a5b52ddfdee812d4767",
+  "applied": {
+    "name": "audiobook_export_column_privacy",
+    "sourceFile": "supabase/migrations/20261029120000_audiobook_export_column_privacy.sql",
+    "sourceSha256": "9536a10bac5d70d0f94646380e81200d452691c344d35b695be2799563780246",
+    "hostedVersion": "20261119203740",
+    "recordedSqlSha256": "a9c5847e5cccc50ea7bc5d5e96d6af9081eca8ed0fc13f172c1169b6da04cba9"
+  },
+  "migrationHistory": {
+    "before": 119,
+    "after": 120,
+    "priorEntriesPreserved": true
+  },
+  "rehearsal": {
+    "hostedNamesReplayed": 119,
+    "modeledObservedServiceRoleFunctionGrants": true,
+    "forcedTransactionRollbackVerified": true,
+    "exactSchemaAndGrantReversalVerified": true,
+    "encryptedOriginalSchemaAndGrantCopy": true,
+    "sqlAssertionFile": "tests/security/audiobook-export-column-privacy.test.sql",
+    "apiAndAudioTransportTestsPassed": 25
+  },
+  "verification": {
+    "existingJobRowsBefore": 0,
+    "existingJobRowsAfter": 0,
+    "rowLevelSecurityEnabled": true,
+    "memberPolicyPreserved": true,
+    "authenticatedColumns": [
+      "book_id",
+      "completed_at",
+      "created_at",
+      "edition_id",
+      "error_code",
+      "id",
+      "output_size_bytes",
+      "progress_chapters",
+      "progress_total",
+      "status",
+      "total_duration_seconds",
+      "workspace_id"
+    ],
+    "authenticatedWholeTableSelect": false,
+    "anonymousAccessibleColumns": 0,
+    "serviceRoleTableSelect": true,
+    "publicJobRpcs": [
+      {
+        "anon": false,
+        "auth": true,
+        "body": "8c72b96f79af926f1717280656a6b24e",
+        "name": "cancel_audiobook_google_play_export",
+        "service": false
+      },
+      {
+        "anon": false,
+        "auth": true,
+        "body": "548625f7e849f6fc934b27940bede443",
+        "name": "get_audiobook_google_play_export",
+        "service": false
+      },
+      {
+        "anon": false,
+        "auth": true,
+        "body": "7862ddd3eb3ebf7b37d3b8c4e17ce0a5",
+        "name": "queue_audiobook_google_play_export",
+        "service": false
+      }
+    ],
+    "unavailableDirectPrivateHelpers": 3,
+    "anonymousDataApiStatus": 401,
+    "serviceDataApiStatus": 200,
+    "postgrestRefreshRequested": true,
+    "advisorWarnings": [
+      {
+        "name": "authenticated_security_definer_function_executable",
+        "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable",
+        "level": "WARN"
+      }
+    ]
+  },
+  "rolloutBoundary": "The running API already uses the allowlisted projection. Signed-in hosted audiobook generation and archive delivery remain pending."
+}
