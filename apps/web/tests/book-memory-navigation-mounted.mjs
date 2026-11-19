@@ -130,8 +130,18 @@ test("header navigation protects metadata during an in-flight save and releases 
     await page.getByRole("link", { name: "Dashboard", exact: true }).click();
     assert.equal(page.url(), "http://127.0.0.1/books/11111111-1111-4111-8111-111111111111/memory");
     await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Unsaved publishing description");
-    await page.evaluate(() => window.releaseMetadataSave());
+    await page.evaluate(() => {
+      const observer = new MutationObserver(() => {
+        const saved = Array.from(document.querySelectorAll('[role="status"]')).some(node => node.textContent === "Publishing metadata saved.");
+        if (!saved) return;
+        window.guardReleasedAtReceipt = window.dispatchEvent(new Event("beforeunload", { cancelable: true }));
+        observer.disconnect();
+      });
+      observer.observe(document.getElementById("root"), { childList: true, subtree: true });
+      window.releaseMetadataSave();
+    });
     await expect(page.getByRole("status").filter({ hasText: "Publishing metadata saved." })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.guardReleasedAtReceipt), true);
     await page.getByRole("link", { name: "Dashboard", exact: true }).click();
     assert.equal(page.url(), "http://127.0.0.1/dashboard?ws=workspace");
     assert.equal(await page.evaluate(() => window.prompts.length), 1);

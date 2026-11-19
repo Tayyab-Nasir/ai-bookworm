@@ -234,7 +234,11 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     stage = 'publishing metadata saved notice';
     await expect(page.getByText('Publishing metadata saved.', { exact: true })).toBeVisible();
     stage = 'publishing metadata page reload';
-    await page.reload();
+    const clean = await page.evaluate(() => window.dispatchEvent(new Event('beforeunload', { cancelable: true })));
+    assert.equal(clean, true, 'A confirmed metadata save must release the unsaved-changes guard');
+    const reloaded = await page.reload({ waitUntil: 'domcontentloaded' });
+    assert.equal(reloaded?.status(), 200);
+    await expect(page.getByText('Publishing metadata saved.', { exact: true })).toHaveCount(0);
     stage = 'publishing metadata description after reload';
     await expect(metadata.getByRole('textbox', { name: 'Book description', exact: true })).toHaveValue('An author-reviewed harbor adventure.');
     stage = 'publishing metadata keywords after reload';

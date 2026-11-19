@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import type { Book, BookBibleItem, BookMetadata } from "@bookworm/types";
 import BookSearchPanel from "./BookSearchPanel";
 import BibleSourcePassage from "./BibleSourcePassage";
@@ -568,7 +568,8 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     return () => { window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onFocus); };
   }, [bookId]);
 
-  useEffect(() => {
+  // Release the navigation guard in the same commit that confirms the save.
+  useLayoutEffect(() => {
     if (!dirty) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
     const guardNavigation = (event: globalThis.MouseEvent) => {
