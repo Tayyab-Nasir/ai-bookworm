@@ -10,6 +10,13 @@ const card = "rounded-3xl border border-white/10 bg-white/[0.035] p-6 sm:p-8";
 const field = "mt-2 block w-full rounded-xl border border-white/10 bg-black/60 px-3 py-3 text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-300";
 const button = "inline-flex min-h-11 items-center justify-center rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-violet-100 focus-visible:ring-2 focus-visible:ring-violet-300 disabled:cursor-not-allowed disabled:opacity-45";
 
+type ReferenceSelection = { assetId: string; checksum: string; bookId?: string };
+type BookBibleReference = { checksum: string; names: string[] };
+type ReferenceLookup = { bookId: string; isCurrent: () => boolean } & (
+  | { status: "loading" | "unavailable" }
+  | { status: "ready"; references: Map<string, BookBibleReference> }
+);
+
 function checkCheckpoint(storageKey: string, legacyKey: string, expected: string | null) {
   if (sessionStorage.getItem(legacyKey) !== null || sessionStorage.getItem(storageKey) !== expected) {
     throw new Error("The image recovery checkpoint changed. Recover the latest request before continuing.");
@@ -42,9 +49,12 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
   const [purchaseAvailable, setPurchaseAvailable] = useState(false);
   const [modelId, setModelId] = useState("");
   const [bookId, setBookId] = useState("");
+  const currentBookId = useRef("");
   const [kind, setKind] = useState<"illustration" | "cover">("illustration");
   const [prompt, setPrompt] = useState("");
-  const [references, setReferences] = useState<string[]>([]);
+  const [selections, setSelections] = useState<ReferenceSelection[]>([]);
+  const [lookup, setLookup] = useState<ReferenceLookup | null>(null);
+  const lookupVersion = useRef(0);
   const [quote, setQuote] = useState<SavedImageQuote | null>(null);
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [savedQuoteId, setSavedQuoteId] = useState("");
@@ -119,7 +129,7 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
     finally { if (valid() && version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
   };
   const createQuote = async () => {
-    if (!entryCurrent() || !canEdit || !storeConsent || !modelId || prompt.trim().length < 10 || busy || requestInFlight.current || recoveryBlocked || idempotencyKey || quote) return;
+    if (!entryCurrent() || currentBookId.current !== bookId || !canEdit || !storeConsent || !modelId || prompt.trim().length < 10 || busy || requestInFlight.current || recoveryBlocked || idempotencyKey || quote || !referencesReady) return;
     const version = requestVersion.current;
     const valid = scope.begin();
     requestInFlight.current = true;
@@ -177,14 +187,77 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
       if (sessionStorage.getItem(storageKey) !== null) throw new Error("The image recovery record could not be cleared.");
     }
     catch { setRecoveryBlocked(true); setMessage("The original image request needs recovery. No new image request was sent."); return; }
-    setQuote(null); setIdempotencyKey(""); setSavedQuoteId(""); setPrompt(""); setReferences([]); setRecoveredRequest(false); setRecoveryBlocked(false);
+    setQuote(null); setIdempotencyKey(""); setSavedQuoteId(""); setPrompt(""); setSelections([]); setRecoveredRequest(false); setRecoveryBlocked(false);
     setStoreConsent(false); setGenerateConsent(false); setMessage("");
   };
   const option = models.find(item => item.id === modelId);
-  const imageAssets = assets.filter(asset => asset.mime_type === "image/png" && asset.checksum !== "pending" && asset.size_bytes <= 5 * 1024 * 1024 && !asset.deleted_at);
+  const referenceLimit = Math.min(3, option?.maxReferenceImages ?? 0);
+  const imageAssets = assets.filter(asset => asset.workspace_id === workspaceId && !asset.deleted_at && asset.mime_type === "image/png"
+    && /^[a-f0-9]{64}$/.test(asset.checksum) && asset.size_bytes > 0 && asset.size_bytes <= 5 * 1024 * 1024
+    && (asset.current_scan_status === undefined || asset.current_scan_status === "clean" || asset.current_scan_status === "trusted_generated"));
+  const references = selections.map(selection => selection.assetId);
+  const unavailableReferences = selections.filter(selection => !imageAssets.some(asset => asset.id === selection.assetId && asset.checksum === selection.checksum));
+  const referencesReady = unavailableReferences.length === 0 && references.length <= referenceLimit;
+  const visibleLookup = lookup?.bookId === bookId && lookup.isCurrent() ? lookup : null;
+  const bookBibleNames = (asset: Asset) => {
+    const link = visibleLookup?.status === "ready" ? visibleLookup.references.get(asset.id) : undefined;
+    return link?.checksum === asset.checksum ? link.names : [];
+  };
+  const visibleImages = visibleLookup?.status === "ready"
+    ? imageAssets.filter(asset => bookBibleNames(asset).length > 0 || references.includes(asset.id))
+    : imageAssets;
   const activeJob = quote?.job;
   const formLocked = recoveryBlocked || isImageQuoteFormLocked({ canEdit, busy, hasRequestKey: Boolean(idempotencyKey), hasSavedQuote: Boolean(quote) });
   const acceptAllowed = !recoveryBlocked && canAcceptImageQuote({ canEdit, busy, purchaseAvailable, generateConsent, acceptanceUncertain, quote: quote?.quote ?? null, hasJob: Boolean(activeJob) });
+
+  const showLibrary = () => {
+    lookupVersion.current++;
+    setLookup(null);
+  };
+  const selectBook = (next: string) => {
+    if (!entryCurrent() || formLocked || requestInFlight.current || currentBookId.current !== bookId || next === bookId) return;
+    showLibrary();
+    currentBookId.current = next;
+    setBookId(next);
+    setSelections(current => current.filter(selection => !selection.bookId));
+  };
+  const loadBookBibleReferences = async () => {
+    if (!entryCurrent() || formLocked || requestInFlight.current || !bookId || currentBookId.current !== bookId
+      || !books.some(book => book.id === bookId && book.workspace_id === workspaceId)) return;
+    const ticket = ++lookupVersion.current;
+    const isCurrent = () => ticket === lookupVersion.current && currentBookId.current === bookId && entryCurrent();
+    const request = { bookId, isCurrent };
+    setLookup({ ...request, status: "loading" });
+    try {
+      const memory = await api.getBookMemory(bookId);
+      if (!isCurrent()) return;
+      if (memory.book.id !== bookId || memory.book.workspace_id !== workspaceId) throw new Error("Book context changed.");
+      const references = new Map<string, BookBibleReference>();
+      for (const asset of memory.imageAssets) {
+        if (asset.mime_type === "image/png") references.set(asset.id, { checksum: asset.checksum, names: [] });
+      }
+      for (const item of memory.items) {
+        const ids = item.attributes_json?.imageAssetIds;
+        if (item.book_id !== bookId || typeof item.name !== "string" || !Array.isArray(ids)) continue;
+        for (const id of ids) {
+          const reference = typeof id === "string" ? references.get(id) : undefined;
+          if (reference && !reference.names.includes(item.name)) reference.names.push(item.name);
+        }
+      }
+      setLookup({ ...request, status: "ready", references });
+    } catch {
+      if (isCurrent()) setLookup({ ...request, status: "unavailable" });
+    }
+  };
+  const selectReference = (asset: Asset, checked: boolean) => {
+    if (!entryCurrent() || formLocked || requestInFlight.current || currentBookId.current !== bookId || (visibleLookup && !visibleLookup.isCurrent())) return;
+    const fromBookBible = bookBibleNames(asset).length > 0;
+    setSelections(current => {
+      if (!checked) return current.filter(selection => selection.assetId !== asset.id);
+      if (current.length >= referenceLimit || current.some(selection => selection.assetId === asset.id)) return current;
+      return [...current, { assetId: asset.id, checksum: asset.checksum, ...(fromBookBible ? { bookId } : {}) }];
+    });
+  };
 
   return <section className={card} aria-labelledby="image-quote-title">
     <div className="flex flex-wrap items-start justify-between gap-4">
@@ -197,15 +270,40 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
     {recoveredRequest && <p className="mt-5 text-sm leading-6 text-white/60" role="status">Recovered saved request. Its private brief and references remain in the server quote; this browser does not retain their text. Acceptance uses that saved request and the model and maximum credits below.</p>}
     {!recoveredRequest && <fieldset disabled={formLocked} className="mt-6 grid gap-4 md:grid-cols-2">
       <label className="text-sm text-white/70">Artwork type<select className={field} value={kind} onChange={event => setKind(event.target.value as typeof kind)}><option value="illustration">Interior illustration</option><option value="cover">Cover artwork</option></select></label>
-      <label className="text-sm text-white/70">Book context<select className={field} value={bookId} onChange={event => setBookId(event.target.value)}><option value="">No book context</option>{books.map(book => <option key={book.id} value={book.id}>{book.title}</option>)}</select></label>
+      <label className="text-sm text-white/70">Book context<select className={field} value={bookId} onChange={event => selectBook(event.target.value)}><option value="">No book context</option>{books.map(book => <option key={book.id} value={book.id}>{book.title}</option>)}</select></label>
       <label className="text-sm text-white/70 md:col-span-2">Approved model and format<select className={field} value={modelId} onChange={event => setModelId(event.target.value)}>{models.map(model => <option key={model.id} value={model.id}>{model.label} · {model.size} · {model.quality}</option>)}</select></label>
       <label className="text-sm text-white/70 md:col-span-2">Describe the scene, characters, mood and visual style<textarea className={`${field} min-h-28 resize-y`} minLength={10} maxLength={8000} value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="A rain-soaked market at dusk, seen through the eyes of…" /></label>
-      <fieldset className="md:col-span-2"><legend className="text-sm text-white/70">Optional clean PNG references</legend><p className="mt-1 text-xs text-white/45">Selected reference bytes and your brief are sent to the configured image provider after acceptance. The server rechecks ownership, scan state and file integrity.</p>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">{imageAssets.map(asset => <label key={asset.id} className="flex items-center gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm text-white/70"><input type="checkbox" checked={references.includes(asset.id)} disabled={!references.includes(asset.id) && references.length >= Math.min(3, option?.maxReferenceImages ?? 0)} onChange={event => setReferences(items => event.target.checked ? [...items, asset.id] : items.filter(item => item !== asset.id))} />{asset.name}</label>)}</div>
+      <fieldset className="min-w-0 md:col-span-2"><legend className="text-sm text-white/70">Optional clean PNG references</legend><p className="mt-1 text-xs text-white/45">Selected reference bytes and your brief are sent to the configured image provider after acceptance. The server rechecks ownership, scan state and file integrity.</p>
+        {bookId && <div className="mt-2 flex flex-wrap items-center gap-x-4">
+          {visibleLookup?.status !== "ready" && <button className="min-h-11 text-sm underline underline-offset-4 disabled:opacity-45" type="button" disabled={visibleLookup?.status === "loading"} onClick={() => void loadBookBibleReferences()}>
+            {visibleLookup?.status === "unavailable" ? "Retry Book Bible references" : "Show Book Bible references"}
+          </button>}
+          {visibleLookup && <button className="min-h-11 text-sm underline underline-offset-4" type="button" onClick={showLibrary}>Show workspace images</button>}
+        </div>}
+        {visibleLookup?.status === "loading" && <p className="text-sm text-white/60" role="status">Checking Book Bible references…</p>}
+        {visibleLookup?.status === "unavailable" && <p className="text-sm text-amber-100" role="status">Book Bible references are unavailable. You can still select workspace images.</p>}
+        {visibleLookup?.status === "ready" && <p className="text-sm text-white/60" role="status">
+          {visibleImages.some(asset => bookBibleNames(asset).length > 0) ? "Select PNGs linked to this book. Those selections are cleared when you change books." : "No linked PNGs are available for this book."}
+        </p>}
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">{visibleImages.map(asset => {
+          const names = bookBibleNames(asset);
+          const selected = references.includes(asset.id);
+          return <label key={asset.id} className="flex min-w-0 items-start gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm text-white/70">
+            <input className="mt-0.5" type="checkbox" checked={selected} disabled={!selected && references.length >= referenceLimit} onChange={event => selectReference(asset, event.target.checked)} />
+            <span className="min-w-0 break-words">{asset.name}{names.length > 0 && <span className="mt-1 block text-xs text-violet-200/75">Book Bible · {names.join(", ")}</span>}</span>
+          </label>;
+        })}</div>
+        {unavailableReferences.length > 0 && <div className="mt-2 text-sm text-amber-100">
+          <p role="status">A selected image changed or is unavailable. Remove it before preparing a quote.</p>
+          <button type="button" className="min-h-11 underline" onClick={() => {
+            if (entryCurrent() && !formLocked && !requestInFlight.current) setSelections(current => current.filter(selection => !unavailableReferences.includes(selection)));
+          }}>Remove unavailable references</button>
+        </div>}
+        {references.length > referenceLimit && <p className="mt-2 text-sm text-amber-100" role="status">Choose up to {referenceLimit} references for this model.</p>}
       </fieldset>
     </fieldset>}
     {!quote && (idempotencyKey || savedQuoteId || recoveryBlocked) ? <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-white/10 pt-5"><button type="button" className={button} disabled={busy} onClick={() => void refresh()}>{busy ? "Recovering status…" : "Recover same quote request"}</button><p className="text-sm text-white/55">Recovery only reads the original offer and generation status. It never saves a new quote or starts generation.</p></div>
-      : !quote && <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-white/10 pt-5"><label className="flex max-w-xl items-start gap-3 text-sm leading-5 text-white/60"><input type="checkbox" checked={storeConsent} disabled={!canEdit || busy} onChange={event => setStoreConsent(event.target.checked)} /><span>Save this private prompt and selected source references in the quote so I can recover the same offer later.</span></label><button type="button" className={button} disabled={!canEdit || busy || !storeConsent || !modelId || prompt.trim().length < 10} onClick={() => void createQuote()}>{busy ? "Preparing quote…" : "Prepare image quote"}</button></div>}
+      : !quote && <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-white/10 pt-5"><label className="flex max-w-xl items-start gap-3 text-sm leading-5 text-white/60"><input type="checkbox" checked={storeConsent} disabled={!canEdit || busy} onChange={event => setStoreConsent(event.target.checked)} /><span>Save this private prompt and selected source references in the quote so I can recover the same offer later.</span></label><button type="button" className={button} disabled={!canEdit || busy || !storeConsent || !modelId || prompt.trim().length < 10 || !referencesReady} onClick={() => void createQuote()}>{busy ? "Preparing quote…" : "Prepare image quote"}</button></div>}
     {quote && <div className="mt-6 rounded-2xl border border-violet-200/20 bg-violet-200/[0.04] p-5" aria-live="polite">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs uppercase tracking-[0.14em] text-violet-100/60">Maximum credit hold</p><p className="mt-1 text-3xl tabular-nums text-white">{Number(quote.quote.reservedCredits).toLocaleString()} <span className="text-sm text-white/55">credits</span></p><p className="mt-2 text-xs text-white/50">{quote.quote.model} · {quote.quote.size} · {quote.quote.quality} · expires {new Date(quote.quote.expiresAt).toLocaleString()}</p></div><button className="min-h-10 rounded-full border border-white/15 px-4 text-sm text-white/75 hover:bg-white/5" disabled={busy} onClick={() => void refresh()} type="button">Refresh status</button></div>
       <p className="mt-3 text-sm leading-6 text-white/60">This is the maximum hold for the saved request. Final usage is reconciled from provider token measurements. Unsupported measurements remain under review. Your image stays a private draft until you use it in a book.</p>

@@ -978,6 +978,11 @@ export function createClient(opts: ClientOptions) {
       call<{ books: Book[] }>("GET", `/v1/books?workspaceId=${encodeURIComponent(workspaceId)}`),
     createBook: (body: CreateBookRequest, expectedActor?: string) => call<Book>("POST", "/v1/books", body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     getBook: (bookId: string, expectedActor?: string, signal?: AbortSignal) => call<{ book: Book; role: string }>("GET", `/v1/books/${bookId}`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}, signal),
+    getBookMemory: (bookId: string) => call<{
+      book: Pick<Book, "id" | "workspace_id">;
+      items: Pick<BookBibleItem, "book_id" | "name" | "attributes_json">[];
+      imageAssets: Pick<Asset, "id" | "mime_type" | "checksum">[];
+    }>("GET", `/v1/books/${encodeURIComponent(bookId)}/memory`, undefined, true),
     getBookOverview: (bookId: string) => call<unknown>("GET", `/v1/books/${encodeURIComponent(bookId)}/overview`)
       .then(value => parseBookOverview(value, bookId)),
     updateBook: (bookId: string, body: Partial<Omit<CreateBookRequest, "workspaceId" | "requestId" | "subtitle" | "genre">> & { subtitle?: string | null; genre?: string | null; expectedUpdatedAt: string }) =>

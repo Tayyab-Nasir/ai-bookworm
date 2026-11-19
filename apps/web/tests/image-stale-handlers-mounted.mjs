@@ -220,9 +220,9 @@ test("quote handler retained across workspace A-B-A cannot create a checkpoint",
     await prompt(page).fill("Workspace A private illustration prompt"); await consent(page).check();
     await retainClick(page, "Prepare image quote");
     await page.getByRole("combobox",{name:"Workspace"}).selectOption(B);
-    await expect(page.getByRole("button",{name:/Other studio draft\.pdf/})).toBeVisible();
+    await expect(page.getByRole("button",{name:/^Other studio draft\.pdf/})).toBeVisible();
     await page.getByRole("combobox",{name:"Workspace"}).selectOption(A);
-    await expect(page.getByRole("button",{name:/My draft\.pdf/})).toBeVisible();
+    await expect(page.getByRole("button",{name:/^My draft\.pdf/})).toBeVisible();
     await page.evaluate(() => window.retainedClick()); await page.waitForTimeout(250);
     assert.equal(await page.evaluate(A => sessionStorage.getItem(`bookworm.image-quote.v2:${A}:${A}`), A), null);
     assert.equal(await page.evaluate(() => window.calls.filter(call=>call.operation==="quote").length),0);

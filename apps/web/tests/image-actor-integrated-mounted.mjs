@@ -40,7 +40,13 @@ test.after(async () => { await browser.close(); console.log(JSON.stringify({ ass
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
 const ASSET = "33333333-3333-4333-8333-333333333333";
-async function fixture(width = 1280, admin = false) {
+const FIRST_BOOK = "44444444-4444-4444-8444-444444444444";
+const SECOND_BOOK = "55555555-5555-4555-8555-555555555555";
+const PORTRAIT = "66666666-6666-4666-8666-666666666666";
+const WORKSPACE_IMAGE = "77777777-7777-4777-8777-777777777777";
+const SETTING = "88888888-8888-4888-8888-888888888888";
+const STALE_IMAGE = "99999999-9999-4999-8999-999999999999";
+async function fixture(width = 1280, admin = false, withBookBible = false) {
   const page = await browser.newPage({ viewport: { width, height: 900 } }); page.setDefaultTimeout(6000);
   const signedRequests = [];
   await page.context().route("**/*", route => {
@@ -55,7 +61,7 @@ async function fixture(width = 1280, admin = false) {
     @font-face {font-family:BookwormInstrument;src:url(data:font/ttf;base64,${instrument});font-style:italic;font-weight:400;font-display:swap}
     :root {--font-inter:Arial,sans-serif;--font-instrument-serif:BookwormInstrument,serif}
     body {font-family:var(--font-inter);color:white}` });
-  await page.evaluate(({ A, B, ASSET, admin }) => {
+  await page.evaluate(({ A, B, ASSET, admin, withBookBible, FIRST_BOOK, SECOND_BOOK, PORTRAIT, WORKSPACE_IMAGE, SETTING, STALE_IMAGE }) => {
     window.actor = A; window.calls = []; window.revision = 0; window.gates = {}; window.scanStatus = "clean";
     window.defer = name => new Promise((resolve, reject) => { window.gates[name] = { resolve, reject }; });
     window.file = workspace => ({ id: ASSET, workspace_id: workspace, folder_id: null, name: workspace === A ? (window.revision ? "My revised draft.pdf" : "My draft.pdf") : "Other studio draft.pdf",
@@ -65,6 +71,19 @@ async function fixture(width = 1280, admin = false) {
       detected_mime_type: "application/pdf", created_at: "2026-10-13T00:00:00Z" }] });
     window.signed = workspace => ({ url: `https://storage.example/storage/v1/object/sign/book-assets/${window.file(workspace).storage_path}?token=fixture-token`, expiresIn: 300 });
     window.selected = A;
+    const image = (id, name) => ({ id, workspace_id: A, folder_id: null, name, type: "illustration",
+      mime_type: "image/png", checksum: "b".repeat(64), status: "draft", size_bytes: 1024,
+      storage_path: `workspaces/${A}/assets/${id}/v1/${name}`, current_version_number: 1, current_scan_status: "clean" });
+    const images = [image(PORTRAIT, "Mira portrait.png"), image(WORKSPACE_IMAGE, "Color study.png"),
+      image(SETTING, "Library setting.png"), image(STALE_IMAGE, "Superseded sketch.png")];
+    const books = [{ id: FIRST_BOOK, workspace_id: A, title: "Harbor Letters" },
+      { id: SECOND_BOOK, workspace_id: A, title: "Library at Dusk" }];
+    window.bookMemory = (bookId, name) => {
+      const first = bookId === FIRST_BOOK;
+      return { book: { id: bookId, workspace_id: A },
+        items: [{ book_id: bookId, name: name ?? (first ? "Mira" : "West library"), attributes_json: { imageAssetIds: first ? [PORTRAIT, STALE_IMAGE] : [SETTING] } }],
+        imageAssets: images.map(asset => ({ ...asset, checksum: asset.id === STALE_IMAGE ? "a".repeat(64) : asset.checksum })) };
+    };
     window.fetch = async path => {
       if (path === "/api/auth/session") return Response.json({ user: { id: window.actor, email: "author@example.test" } });
       if (path === "/api/auth/logout") return Response.json({ signedOut: true });
@@ -72,13 +91,21 @@ async function fixture(width = 1280, admin = false) {
     };
     window.api = {
       adminAccess: async () => ({ admin }), claimReferral: async () => ({ claimed: true }),
-      listImageQuoteModels: async () => ({ models: [{id:'synthetic',label:'Test image',size:'1024',quality:'standard',maxReferenceImages:0}], purchaseAvailable:true }),
+      listImageQuoteModels: async () => ({ models: [{id:'synthetic',label:'Test image',size:'1024',quality:'standard',maxReferenceImages:withBookBible ? 2 : 0}], purchaseAvailable:true }),
       createImageQuote: async (workspace, body) => { window.calls.push({operation:'quote',actor:window.actor,workspace,body}); return new Promise(()=>{}); },
       listWorkspaces: async () => ({ workspaces: [{ id: A, name: "Author studio" }, { id: B, name: "Other studio" }] }),
       getAssetAccess: async workspace => { window.calls.push({ operation: "access", workspace }); return { canEdit: true }; },
       listFolders: async workspace => { window.calls.push({ operation: "folders", workspace }); return { folders: [] }; },
-      listBooks: async workspace => { window.calls.push({ operation: "books", workspace }); return { books: [] }; },
-      listAssets: async workspace => { window.calls.push({ operation: "assets", workspace }); window.selected = workspace; return { assets: [window.file(workspace)] }; },
+      listBooks: async workspace => { window.calls.push({ operation: "books", workspace }); return { books: withBookBible && workspace === A ? books : [] }; },
+      listAssets: async workspace => {
+        window.calls.push({ operation: "assets", workspace }); window.selected = workspace;
+        const artwork = withBookBible && workspace === A ? images.map(asset => asset.id === PORTRAIT && window.portraitChanged ? { ...asset, checksum: "c".repeat(64) } : asset) : [];
+        return { assets: [window.file(workspace), ...artwork] };
+      },
+      getBookMemory: async bookId => {
+        window.calls.push({ operation: "book-memory", bookId, actor: window.actor });
+        return window.memoryOverride ? window.memoryOverride(bookId) : window.bookMemory(bookId);
+      },
       listImageGenerationJobs: async workspace => { window.calls.push({ operation: "images", workspace }); return { jobs: [] }; },
       listAssetVersions: async () => window.versionHistory(window.selected), getAssetUsage: async () => ({ links: [] }),
       getAssetDownloadUrl: async (asset, version) => {
@@ -87,7 +114,7 @@ async function fixture(width = 1280, admin = false) {
         return window.signed(window.selected);
       },
     };
-  }, { A, B, ASSET, admin });
+  }, { A, B, ASSET, admin, withBookBible, FIRST_BOOK, SECOND_BOOK, PORTRAIT, WORKSPACE_IMAGE, SETTING, STALE_IMAGE });
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
   await page.evaluate(() => window.renderAssets());
   await expect(page.getByRole("button", { name: "Refresh library", exact: true })).toBeEnabled();
@@ -104,6 +131,92 @@ async function openFile(page, name = /^My draft\.pdf/) {
 
 const prompt = p => p.getByLabel('Describe the scene, characters, mood and visual style');
 const consent = p => p.getByLabel(/Save this private prompt/);
+test("Image Studio uses explicitly selected Book Bible PNGs and preserves the workspace selection", async () => {
+  const { page } = await fixture(390, false, true);
+  const references = page.getByRole("group", { name: "Optional clean PNG references", exact: true });
+  try {
+    await page.getByLabel("Book context").selectOption(FIRST_BOOK);
+    await references.getByRole("checkbox", { name: "Color study.png", exact: true }).check();
+    assert.equal(await page.evaluate(() => window.calls.some(call => call.operation === "book-memory")), false);
+    await references.getByRole("button", { name: "Show Book Bible references", exact: true }).click();
+    const portrait = references.getByRole("checkbox", { name: /Mira portrait\.png.*Book Bible · Mira/ });
+    await expect(portrait).toBeVisible();
+    await expect(portrait).not.toBeChecked();
+    await expect(references.getByRole("checkbox", { name: "Superseded sketch.png", exact: true })).toHaveCount(0);
+    await expect(references.getByRole("checkbox", { name: "Color study.png", exact: true })).toBeChecked();
+    await portrait.check();
+    await page.getByLabel("Book context").selectOption(SECOND_BOOK);
+    await expect(references.getByRole("checkbox", { name: "Mira portrait.png", exact: true })).not.toBeChecked();
+    await expect(references.getByRole("checkbox", { name: "Color study.png", exact: true })).toBeChecked();
+    await references.getByRole("button", { name: "Show Book Bible references", exact: true }).click();
+    await references.getByRole("checkbox", { name: /Library setting\.png.*Book Bible · West library/ }).check();
+    await expect(references.getByRole("checkbox", { name: /Mira portrait/ })).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.calls.some(call => call.operation === "quote")), false);
+    await prompt(page).fill("Draw the library with the two selected references.");
+    await consent(page).check();
+    await page.getByRole("button", { name: "Prepare image quote", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.calls.filter(call => call.operation === "quote").length)).toBe(1);
+    const body = await page.evaluate(() => window.calls.find(call => call.operation === "quote").body);
+    assert.equal(body.bookId, SECOND_BOOK);
+    assert.deepEqual(body.referenceAssetIds, [WORKSPACE_IMAGE, SETTING]);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+  } finally { await page.close(); }
+});
+
+test("an earlier Book Bible lookup cannot replace current results after switching books twice", async () => {
+  const { page } = await fixture(1280, false, true);
+  const references = page.getByRole("group", { name: "Optional clean PNG references", exact: true });
+  try {
+    await page.evaluate(() => {
+      window.memoryOverride = () => window.defer("old-visual-references");
+    });
+    await page.getByLabel("Book context").selectOption(FIRST_BOOK);
+    await references.getByRole("button", { name: "Show Book Bible references", exact: true }).click();
+    await page.waitForFunction(() => Boolean(window.gates["old-visual-references"]));
+    await page.getByLabel("Book context").selectOption(SECOND_BOOK);
+    await page.getByLabel("Book context").selectOption(FIRST_BOOK);
+    await page.evaluate(() => {
+      window.memoryOverride = id => window.bookMemory(id, "Current character");
+    });
+    await references.getByRole("button", { name: "Show Book Bible references", exact: true }).click();
+    await expect(references.getByText("Book Bible · Current character", { exact: true })).toBeVisible();
+    await page.evaluate(async id => {
+      window.gates["old-visual-references"].resolve(window.bookMemory(id, "Previous character"));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }, FIRST_BOOK);
+    await expect(references.getByText("Book Bible · Current character", { exact: true })).toBeVisible();
+    await expect(references.getByText("Book Bible · Previous character", { exact: true })).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.calls.some(call => call.operation === "quote")), false);
+  } finally { await page.close(); }
+});
+
+test("Book Bible reference lookup can retry and a changed selection needs review before quoting", async () => {
+  const { page } = await fixture(1280, false, true);
+  const references = page.getByRole("group", { name: "Optional clean PNG references", exact: true });
+  const prepare = page.getByRole("button", { name: "Prepare image quote", exact: true });
+  try {
+    await page.getByLabel("Book context").selectOption(FIRST_BOOK);
+    await page.evaluate(() => { window.memoryOverride = () => Promise.reject(new Error("Timed out")); });
+    await references.getByRole("button", { name: "Show Book Bible references", exact: true }).click();
+    await expect(references.getByRole("status")).toHaveText(/Book Bible references are unavailable/);
+    await expect(references.getByRole("checkbox", { name: "Color study.png", exact: true })).toBeEnabled();
+    await page.evaluate(() => { window.memoryOverride = null; });
+    await references.getByRole("button", { name: "Retry Book Bible references", exact: true }).click();
+    await references.getByRole("checkbox", { name: /Mira portrait\.png.*Book Bible · Mira/ }).check();
+    await prompt(page).fill("Draw a portrait after reviewing the references.");
+    await consent(page).check();
+    await expect(prepare).toBeEnabled();
+
+    await page.evaluate(() => { window.portraitChanged = true; });
+    await page.getByRole("button", { name: "Refresh library", exact: true }).click();
+    await expect(references.getByText(/A selected image changed or is unavailable/)).toBeVisible();
+    await expect(prepare).toBeDisabled();
+    assert.equal(await page.evaluate(() => window.calls.some(call => call.operation === "quote")), false);
+    await references.getByRole("button", { name: "Remove unavailable references", exact: true }).click();
+    await expect(prepare).toBeEnabled();
+  } finally { await page.close(); }
+});
+
 test('account switch removes previous image prompt and consent', async () => {const {page}=await fixture();try{
  await expect(page.getByRole('option',{name:/Test image/})).toHaveCount(1);await prompt(page).fill('Account A private illustration prompt');await consent(page).check();
  await page.evaluate(id=>{window.actor=id;window.dispatchEvent(new Event('focus'))},B);
