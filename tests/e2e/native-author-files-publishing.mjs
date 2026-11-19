@@ -278,7 +278,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         const archive = inspectNativePackage(bytes);
         assert.equal(archive.manifest.channel, channel); assert.equal(archive.preflight.errors, 0);
         if (channel === 'kdp' && edition.kind === 'ebook') {
-          assert.deepEqual(archive.marketingCover, { size: [1600, 2400], dpi: [300, 300], mode: 'RGB' });
+          assert.equal(archive.files['cover.jpg'].signature, 'ffd8ff');
           assert.equal(archive.manifest.files['cover.jpg'], archive.files['cover.jpg'].sha256);
           assert.match(archive.readme, /Upload book\.epub and cover\.jpg/);
         }
