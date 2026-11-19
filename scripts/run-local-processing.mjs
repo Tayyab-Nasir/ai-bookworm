@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const roles = Object.freeze({ document: 8001, rendering: 8002, publishing: 8003, scanning: 8004 });
+export const READINESS_FAILURE_LIMIT = 3;
 const osKeys = new Set(['PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'TEMP', 'TMP',
   'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'PATHEXT', 'COMSPEC', 'PROGRAMFILES',
   'PROGRAMFILES(X86)', 'PROGRAMDATA']);
@@ -103,7 +104,7 @@ export async function healthy(service) {
   } catch { return false; }
 }
 
-export async function runProcessing(plan) {
+export async function runProcessing(plan, { healthIntervalMs = 10_000 } = {}) {
   await prerequisites(plan);
   for (const service of plan) await portAvailable(service.port);
   const children = [];
@@ -157,10 +158,15 @@ export async function runProcessing(plan) {
     if (ready && !stopping) console.log(JSON.stringify({ status: 'ready', loopbackOnly: true,
       services: plan.map(({ role, port }) => ({ role, port })),
       providerKeysPassed: false, supabaseKeysPassed: false, workersStarted: false }));
-    // Observe real process/HTTP health. A failure stops the owned fleet; no hidden respawn.
+    // ClamAV can temporarily lose readiness during a signature reload. Actual
+    // child exits still stop the fleet immediately through the process handler.
+    let readinessFailures = 0;
     while (!stopping) {
-      await Promise.race([done, delay(10_000, undefined, { ref: false })]);
-      if (!stopping && !(await Promise.all(plan.map(healthy))).every(Boolean)) {
+      await Promise.race([done, delay(healthIntervalMs, undefined, { ref: false })]);
+      if (stopping) break;
+      const allReady = (await Promise.all(plan.map(healthy))).every(Boolean);
+      readinessFailures = allReady ? 0 : readinessFailures + 1;
+      if (!stopping && readinessFailures >= READINESS_FAILURE_LIMIT) {
         console.error('A private processing service is no longer ready. The local fleet has stopped.'); stop(true);
       }
     }

@@ -130,7 +130,7 @@ async function unusedPorts() {
   return ports;
 }
 
-function harness(ports, failAfterReady = false, nativePython = false) {
+function harness(ports, failAfterReady = false, nativePython = false, scannerMisses = 0) {
   const plan = createProcessingPlan(config(), { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot }, root)
     .filter(service => nativePython ? service.role === 'document' : ['document', 'scanning'].includes(service.role));
   for (let index = 0; index < plan.length; index++) {
@@ -144,12 +144,20 @@ function harness(ports, failAfterReady = false, nativePython = false) {
       ? { status: 'ready', engine: { name: 'ClamAV', databaseVersion: 'synthetic-test-only' } }
       : { status: 'ok' };
     const fixture = `const http=require('node:http');console.error('never-echo-private-parser-error');
-      http.createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(${JSON.stringify(JSON.stringify(body))});}).listen(${service.port},'127.0.0.1');
+      let missing=0, failures=0, recovered=false;
+      http.createServer((req,res)=>{
+        res.setHeader('content-type','application/json');
+        if (${service.role === 'scanning'} && req.url==='/fixture-outage') { missing=${scannerMisses}; res.end('{}'); return; }
+        if (req.url==='/fixture-probes') { res.end(JSON.stringify({failures,recovered})); return; }
+        if (missing>0) { missing--; failures++; res.statusCode=503; res.end('{}'); return; }
+        if (failures) recovered=true;
+        res.end(${JSON.stringify(JSON.stringify(body))});
+      }).listen(${service.port},'127.0.0.1');
       ${failAfterReady && index === 0 ? 'setTimeout(()=>process.exit(7),4000);' : ''}`;
     service.args = ['-e', fixture];
   }
   const source = `import {runProcessing} from ${JSON.stringify(new URL('../scripts/run-local-processing.mjs', import.meta.url).href)};
-    await runProcessing(${JSON.stringify(plan)});`;
+    await runProcessing(${JSON.stringify(plan)}, ${scannerMisses ? '{ healthIntervalMs: 120 }' : '{}'});`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', source], {
     cwd: root, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
     windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
@@ -206,6 +214,34 @@ test('unexpected child exit fails closed and stops its owned siblings without ex
   assert.equal(await closed(ports), true, 'Failed local fleet left an owned sibling running.');
   assert.match(runtime.diagnostics(), /document exited unexpectedly \(7\)/);
   assert.doesNotMatch(runtime.diagnostics(), /never-echo-private|synthetic-000/);
+});
+
+for (const misses of [2, 3]) test(`scanner readiness loss for ${misses} probes ${misses === 2 ? 'recovers' : 'stops the fleet'}`, {
+  timeout: 12_000,
+}, async t => {
+  const ports = await unusedPorts();
+  const runtime = harness(ports, false, false, misses);
+  t.after(() => { runtime.child.stdin.end('stop\n'); });
+  assert.equal((await runtime.ready).status, 'ready');
+  const scanner = `http://127.0.0.1:${ports[1]}`;
+  await (await fetch(scanner + '/fixture-outage')).body.cancel();
+  if (misses === 2) {
+    let observed;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      observed = await (await fetch(scanner + '/fixture-probes')).json();
+      if (observed.recovered) break;
+      await delay(40);
+    }
+    assert.deepEqual(observed, { failures: 2, recovered: true });
+    assert.equal((await fetch(`http://127.0.0.1:${ports[0]}/health`)).status, 200);
+    runtime.child.stdin.write('stop\n');
+    assert.equal(await runtime.exited, 0);
+    assert.doesNotMatch(runtime.diagnostics(), /no longer ready/);
+  } else {
+    assert.equal(await runtime.exited, 1);
+    assert.match(runtime.diagnostics(), /no longer ready/);
+  }
+  assert.equal(await closed(ports), true);
 });
 
 test('native Windows venv shutdown removes both the redirector and actual HTTP process', {

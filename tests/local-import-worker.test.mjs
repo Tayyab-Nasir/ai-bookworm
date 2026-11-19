@@ -147,8 +147,26 @@ test('lost dependency readiness stops the owned consumer without an automatic re
     spawnWorker: () => spawnFixture(plan, 'idle', child => children.push(child)),
   })), /Local import worker stopped/);
   assert.equal(children.length, 1); assert.equal(children[0].exitCode, 0);
+  assert.equal(probes, plan.dependencies.length * 4);
   assert(events.some(event => event.event === 'document_dependencies_unavailable'));
   assert(!events.some(event => event.event === 'document_worker_forced_stop'));
+});
+
+test('short scanner readiness loss keeps the same manuscript import consumer', async () => {
+  const plan = createImportWorkerPlan(config()), controller = new AbortController(), events = [];
+  let scannerProbes = 0;
+  await wait(runImportWorker(plan, { signal: controller.signal, healthIntervalMs: 20, shutdownGraceMs: 2000,
+    healthy: async service => {
+      if (service.role !== 'scanning') return true;
+      scannerProbes++;
+      if (scannerProbes === 5) controller.abort();
+      return scannerProbes !== 2 && scannerProbes !== 3;
+    },
+    log: event => events.push(event), spawnWorker: () => spawnFixture(plan, 'idle'),
+  }));
+  assert.equal(scannerProbes, 5);
+  assert.equal(events.filter(event => event.event === 'document_worker_started').length, 1);
+  assert(!events.some(event => event.event === 'document_dependencies_unavailable'));
 });
 
 test('an unresponsive owned child is force-stopped only after the shutdown deadline', async () => {

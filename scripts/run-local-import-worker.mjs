@@ -4,7 +4,7 @@ import { access } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readProcessingConfig, healthy } from './run-local-processing.mjs';
+import { readProcessingConfig, healthy, READINESS_FAILURE_LIMIT } from './run-local-processing.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const osKeys = new Set(['PATH', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'TEMP', 'TMP',
@@ -69,13 +69,18 @@ export async function runImportWorker(plan, options = {}) {
     if (stopped) return;
     if (!(await Promise.all(plan.dependencies.map(ready))).every(Boolean)) throw new Error('Private import services are not ready.');
     let checking = false;
+    let readinessFailures = 0;
     checkTimer = setInterval(async () => {
       if (stopped || checking) return;
       checking = true;
-      try { if (!(await Promise.all(plan.dependencies.map(ready))).every(Boolean) && !stopped) {
-        failed = true; log({ event: 'document_dependencies_unavailable' }); stop();
-      } } catch { if (!stopped) { failed = true; log({ event: 'document_dependencies_unavailable' }); stop(); } }
+      let allReady = false;
+      try { allReady = (await Promise.all(plan.dependencies.map(ready))).every(Boolean); }
+      catch { /* An unsuccessful probe counts toward the same readiness limit. */ }
       finally { checking = false; }
+      readinessFailures = allReady ? 0 : readinessFailures + 1;
+      if (!stopped && readinessFailures >= READINESS_FAILURE_LIMIT) {
+        failed = true; log({ event: 'document_dependencies_unavailable' }); stop();
+      }
     }, options.healthIntervalMs ?? 10_000); checkTimer.unref();
     while (!stopped) {
       const now = Date.now(); while (starts[0] < now - 60_000) starts.shift();
