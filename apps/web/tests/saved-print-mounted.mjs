@@ -525,6 +525,13 @@ test("actual Studio requires preflight for the opened print interior and its cov
     await page.getByRole("button", { name: "Copy description", exact: true }).click();
     await expect(page.getByText("Description copied.", { exact: true })).toBeVisible();
     assert.equal(await page.evaluate(() => window.copiedDescription), "The first line.\nUne deuxième ligne.");
+    for (const [label, value] of [["title", "Harbor Letters"], ["author", "An author"], ["ISBN-13", "9780306406157"]]) {
+      await page.getByRole("button", { name: `Copy ${label}`, exact: true }).click();
+      await expect.poll(() => page.evaluate(() => window.copiedDescription)).toBe(value);
+    }
+    await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error("Clipboard denied"); }; });
+    await page.getByRole("button", { name: "Copy title", exact: true }).click();
+    await expect(page.getByText("Select the title to copy it.", { exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Edit book listing", exact: true })).toHaveAttribute("href", `/books/${ids.book}/memory#publishing-metadata`);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
     await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("barnesnoble");
