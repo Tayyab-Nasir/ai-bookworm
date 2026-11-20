@@ -131,7 +131,10 @@ function fakeSupabase(store: Store, failTable?: string) {
         insert(value: Row) { operation = "insert"; payload = value; return this; },
         update(value: Row) { operation = "update"; payload = value; return this; },
         delete() { operation = "delete"; return this; },
-        async maybeSingle() { const value = run(); return { ...value, data: value.data?.[0] ?? null }; },
+        async maybeSingle() {
+          if (failTable === `throw:${table}`) throw new Error("deliberate transport failure");
+          const value = run(); return { ...value, data: value.data?.[0] ?? null };
+        },
         async single() { return this.maybeSingle(); },
         then(resolve: (value: unknown) => unknown) { return Promise.resolve(run()).then(resolve); },
       };
@@ -206,6 +209,109 @@ test("Book Bible evidence reads the exact pinned passage and identifies historic
   assert.equal(historical.json().text, SOURCE_TEXT);
   assert.equal(historical.json().isCurrentVersion, false);
   assert.equal(store.book_bible_items?.length ?? 0, 0);
+});
+
+test("Book Bible candidate evidence opens its verified reading batch without changing canon or usage", async (t) => {
+  const store = initialStore("viewer");
+  const jobId = randomUUID(), quoteId = randomUUID();
+  const before = "Earlier context. ".repeat(1800) + "😀";
+  const excerpt = "Elara carries the silver compass through the harbor.";
+  const text = before + excerpt + " Later context.".repeat(2000);
+  const ref = { chapterId: CHAPTER, documentVersionId: VERSION, nodeId: "n1", textHash: createHash("sha256").update(text).digest("hex") };
+  const reading = { fingerprint: "b".repeat(64), pageIndex: 1 };
+  const versions = [{ chapterId: CHAPTER, documentVersionId: VERSION, version: 7 }];
+  const generationRequest = { jobId, workspaceId: WORKSPACE, bookId: BOOK, agentType: "bookbible",
+    input: { userInstruction: "PRIVATE-INSTRUCTION-NOT-FOR-THE-READER", chapters: { [CHAPTER]: { id: CHAPTER, documentVersionId: VERSION, nodes: [{ id: "n1", textHash: ref.textHash,
+      text: excerpt, excerptStart: before.length, excerptEnd: before.length + excerpt.length, fullTextLength: text.length }] } } } };
+  store.document_versions[0].version_number = 7;
+  store.document_versions[0].content_json = { nodes: [{ id: "n1", type: "paragraph", text }] };
+  store.ai_jobs = [{ id: jobId, book_id: BOOK, workspace_id: WORKSPACE, created_by: USER, agent_type: "bookbible",
+    billing_mode: "quoted", status: "succeeded", output_ref: { candidates: [{ sourceRefs: [ref] }] },
+    input_ref: { bookBibleQuoteRequestId: quoteId, sourceSha256: "c".repeat(64), generationRequestSha256: "d".repeat(64),
+      generationRequest, chapterVersions: versions, reading, contextSources: [ref] } }];
+  store.book_bible_token_quote_requests = [{ id: quoteId, user_id: USER, workspace_id: WORKSPACE, book_id: BOOK,
+    generation_job_id: jobId, accepted_job_id: jobId, status: "ready", source_sha256: "c".repeat(64),
+    generation_request_sha256: "d".repeat(64), source_versions_json: { versions, reading }, generation_request_json: generationRequest }];
+  const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/bible/evidence`;
+  const response = await app.inject({ method: "POST", url, headers: auth, payload: { ...ref, jobId } });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.headers["cache-control"], "private, no-store");
+  assert.equal(response.json().startOffset, before.length);
+  assert.deepEqual(response.json().batchRange, { startOffset: before.length, endOffset: before.length + excerpt.length });
+  assert.ok(response.json().text.startsWith(excerpt));
+  assert.doesNotMatch(response.body, /PRIVATE-INSTRUCTION-NOT-FOR-THE-READER/u);
+  const beginning = await app.inject({ method: "POST", url, headers: auth, payload: { ...ref, jobId, offset: 0 } });
+  assert.equal(beginning.statusCode, 200, beginning.body);
+  assert.equal(beginning.json().startOffset, 0);
+  assert.deepEqual(beginning.json().batchRange, response.json().batchRange);
+  assert.equal(store.book_bible_items?.length ?? 0, 0);
+  assert.equal(store.usage_events?.length ?? 0, 0);
+
+  const originalJob = structuredClone(store.ai_jobs[0]);
+  const originalQuote = structuredClone(store.book_bible_token_quote_requests[0]);
+  const corruptions: ((job: any, quote: any) => void)[] = [
+    (_job, quote) => { quote.generation_request_sha256 = "e".repeat(64); },
+    (_job, quote) => { quote.user_id = randomUUID(); },
+    (job) => { job.input_ref.contextSources = []; },
+    (job) => { job.input_ref.reading.pageIndex = 0; },
+    (_job, quote) => { quote.generation_request_json.input.chapters[CHAPTER].nodes[0].text = "not the saved text"; },
+    (job, quote) => {
+      for (const saved of [job.input_ref.generationRequest, quote.generation_request_json]) {
+        const node = saved.input.chapters[CHAPTER].nodes[0];
+        node.excerptStart = before.length - 1; // Inside the emoji's surrogate pair.
+        node.text = text.slice(node.excerptStart, node.excerptEnd);
+      }
+    },
+    (job, quote) => {
+      for (const saved of [job.input_ref.generationRequest, quote.generation_request_json]) {
+        const nodes = saved.input.chapters[CHAPTER].nodes;
+        nodes.push(structuredClone(nodes[0]));
+      }
+    },
+  ];
+  for (const corrupt of corruptions) {
+    store.ai_jobs[0] = structuredClone(originalJob);
+    store.book_bible_token_quote_requests[0] = structuredClone(originalQuote);
+    corrupt(store.ai_jobs[0], store.book_bible_token_quote_requests[0]);
+    const unavailable = await app.inject({ method: "POST", url, headers: auth, payload: { ...ref, jobId } });
+    assert.equal(unavailable.statusCode, 200, unavailable.body);
+    assert.equal(unavailable.json().batchRange, null);
+    assert.equal(unavailable.json().startOffset, 0);
+  }
+  store.ai_jobs[0] = structuredClone(originalJob);
+  store.book_bible_token_quote_requests[0] = structuredClone(originalQuote);
+  store.ai_jobs[0].output_ref = { candidates: [{ sourceRefs: [{ ...ref, nodeId: "other" }] }] };
+  const wrongCandidate = await app.inject({ method: "POST", url, headers: auth, payload: { ...ref, jobId } });
+  assert.equal(wrongCandidate.statusCode, 404, wrongCandidate.body);
+  assert.equal(wrongCandidate.body.includes(excerpt), false);
+  for (const change of [
+    { book_id: OTHER_BOOK }, { workspace_id: randomUUID() }, { status: "running" }, { agent_type: "writer" },
+  ]) {
+    store.ai_jobs[0] = { ...structuredClone(originalJob), ...change };
+    const foreignJob = await app.inject({ method: "POST", url, headers: auth, payload: { ...ref, jobId } });
+    assert.equal(foreignJob.statusCode, 404, foreignJob.body);
+    assert.equal(foreignJob.body.includes(excerpt), false);
+  }
+  store.ai_jobs[0] = structuredClone(originalJob);
+  const unavailableQuoteApp = await appWith(store, "book_bible_token_quote_requests");
+  t.after(() => unavailableQuoteApp.close());
+  const unavailableQuote = await unavailableQuoteApp.inject({ method: "POST", url, headers: auth, payload: { ...ref, jobId } });
+  assert.equal(unavailableQuote.statusCode, 200, unavailableQuote.body);
+  assert.equal(unavailableQuote.json().batchRange, null);
+  assert.equal(unavailableQuote.json().startOffset, 0);
+  const interruptedQuoteApp = await appWith(store, "throw:book_bible_token_quote_requests");
+  t.after(() => interruptedQuoteApp.close());
+  const interruptedQuote = await interruptedQuoteApp.inject({ method: "POST", url, headers: auth, payload: { ...ref, jobId } });
+  assert.equal(interruptedQuote.statusCode, 200, interruptedQuote.body);
+  assert.equal(interruptedQuote.json().batchRange, null);
+  store.ai_jobs[0] = { ...structuredClone(originalJob), billing_mode: "operational", input_ref: {} };
+  const legacy = await app.inject({ method: "POST", url, headers: auth, payload: { ...ref, jobId } });
+  assert.equal(legacy.statusCode, 200, legacy.body);
+  assert.equal(legacy.json().batchRange, null);
+  store.ai_jobs[0] = structuredClone(originalJob);
+  store.workspace_members = [];
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: { ...ref, jobId } })).statusCode, 403);
 });
 
 test("Book Bible evidence paginates full saved Unicode text and rejects invalid positions", async (t) => {

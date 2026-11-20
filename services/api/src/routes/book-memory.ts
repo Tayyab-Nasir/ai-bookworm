@@ -8,6 +8,7 @@ import { requireWorkspaceEditor, requireWorkspaceMember } from "../lib/authorize
 import type { SupabaseClient } from "../lib/supabase.js";
 import { searchBookContext, searchSchema } from "../lib/retrieval.js";
 import { readSearchEvidence, searchEvidenceSchema } from "../lib/search-evidence.js";
+import { bibleEvidenceCitation, jobCitesBibleEvidence, verifiedBibleBatchRange } from "../lib/bible-batch-evidence.js";
 
 const id = z.string().uuid();
 const timestamp = z.string().datetime({ offset: true });
@@ -146,11 +147,21 @@ function updatedTimestamp(previous: string) {
 }
 
 export function bookMemoryRoutes(app: FastifyInstance) {
-  app.post("/books/:bookId/bible/evidence", async (req, reply) => {
-    const body = parse(z.object({ chapterId: id, documentVersionId: id,
-      nodeId: z.string().min(1).max(200), textHash: z.string().regex(/^[a-f0-9]{64}$/u),
-      offset: z.number().int().min(0).max(100000000).default(0) }).strict(), req.body);
-    const { sb, bookId } = await scopedBook(app, req);
+  app.post("/books/:bookId/bible/evidence", { onSend: privateMutationResponse }, async (req, reply) => {
+    const body = parse(bibleEvidenceCitation.extend({ jobId: id.optional(),
+      offset: z.number().int().min(0).max(100000000).optional() }).strict(), req.body);
+    const { sb, book, bookId } = await scopedBook(app, req);
+    const citation = { chapterId: body.chapterId, documentVersionId: body.documentVersionId,
+      nodeId: body.nodeId, textHash: body.textHash };
+    let job: Record<string, unknown> | null = null;
+    if (body.jobId) {
+      const result = await sb.from("ai_jobs").select("id,book_id,workspace_id,created_by,agent_type,billing_mode,status,input_ref,output_ref")
+        .eq("id", body.jobId).eq("book_id", bookId).eq("workspace_id", book.workspace_id)
+        .eq("agent_type", "bookbible").eq("status", "succeeded").maybeSingle();
+      if (result.error) throw new AppError(503, "Could not verify the saved Book Bible candidate. Try again.");
+      if (!result.data || !jobCitesBibleEvidence(result.data, citation)) throw new AppError(404, "Saved Book Bible citation not found.");
+      job = result.data;
+    }
     const { data: chapter, error: chapterError } = await sb.from("chapters")
       .select("id,title,current_document_version_id").eq("id", body.chapterId).eq("book_id", bookId).maybeSingle();
     if (chapterError) throw new AppError(500, "Could not load the source chapter.");
@@ -164,7 +175,21 @@ export function bookMemoryRoutes(app: FastifyInstance) {
     if (createHash("sha256").update(node.text).digest("hex") !== body.textHash) {
       throw new AppError(409, "This citation does not match the saved passage. Reload the candidate before using it.");
     }
-    const startOffset = body.offset;
+    let batchRange: { startOffset: number; endOffset: number } | null = null;
+    const input = job?.input_ref as { bookBibleQuoteRequestId?: unknown } | undefined;
+    const quoteId = id.safeParse(input?.bookBibleQuoteRequestId);
+    if (job?.billing_mode === "quoted" && quoteId.success) {
+      // Only read the private quote after the user's RLS-scoped job and citation
+      // were checked. An unavailable snapshot never changes the source citation.
+      try {
+        const quote = await app.supabaseFactory().from("book_bible_token_quote_requests")
+          .select("id,user_id,workspace_id,book_id,generation_job_id,accepted_job_id,status,source_sha256,generation_request_sha256,source_versions_json,generation_request_json")
+          .eq("id", quoteId.data).eq("book_id", bookId).eq("workspace_id", book.workspace_id)
+          .eq("generation_job_id", body.jobId).eq("accepted_job_id", body.jobId).maybeSingle();
+        if (!quote.error && quote.data) batchRange = verifiedBibleBatchRange(job, quote.data, citation, node.text);
+      } catch { /* The independently verified saved passage is still readable. */ }
+    }
+    const startOffset = body.offset ?? batchRange?.startOffset ?? 0;
     if (startOffset > node.text.length || (startOffset > 0 && /[\uDC00-\uDFFF]/u.test(node.text.charAt(startOffset))
       && /[\uD800-\uDBFF]/u.test(node.text.charAt(startOffset - 1)))) {
       throw new AppError(422, "Choose a valid position in this saved passage.");
@@ -177,7 +202,8 @@ export function bookMemoryRoutes(app: FastifyInstance) {
       isCurrentVersion: chapter.current_document_version_id === version.id,
       text: node.text.slice(startOffset, endOffset), truncated: endOffset < node.text.length,
       startOffset, endOffset, totalLength: node.text.length,
-      nextOffset: endOffset < node.text.length ? endOffset : null };
+      nextOffset: endOffset < node.text.length ? endOffset : null,
+      ...(body.jobId ? { batchRange } : {}) };
   });
   app.post("/books/:bookId/search/evidence", { onSend: privateMutationResponse }, async (req) => {
     const body = parse(searchEvidenceSchema, req.body);

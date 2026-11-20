@@ -5,6 +5,23 @@ facts. Their optional `sourceRefs` can point to a chapter or to a node in a
 saved chapter version. The API checks every cited chapter belongs to the book
 and every supplied version belongs to that chapter.
 
+Candidate review can open the exact portion selected for a quoted AI reading
+batch. The API first checks current book membership and the caller-visible,
+completed candidate and citation. It then compares the saved job with its
+accepted immutable quote snapshot and checks the excerpt against the full
+hash-verified historical node. Only matching UTF-16 boundaries are highlighted.
+The rest of the passage remains available. An unavailable or legacy snapshot
+opens the passage without a highlight and offers a read-only recheck. The
+highlight identifies selected source context; it does not prove the candidate is
+true. Before provider dispatch, the AI service removes selected control characters
+and manuscript delimiter strings, so the highlight is not a byte-for-byte record
+of the final provider prompt.
+The lookup does not send manuscript text to an AI provider, spend credits or
+save canon. The browser binds the reader to account, book, job and citation.
+Run `npm run test:bible-evidence` for the mounted reader and its real Fastify
+route with synthetic identity and database fixtures. These checks require the
+configured browser and do not establish hosted database or provider behavior.
+
 For node-level citations, the API now reads the saved document version and
 requires the node to exist in it. If no version ID was supplied, it resolves
 and stores the chapter's current saved version at the time of approval. It

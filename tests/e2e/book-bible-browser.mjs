@@ -98,16 +98,18 @@ try {
     evidenceReads++;
     const request = route.request().postDataJSON();
     const later = 'She checked the compass again before leaving the harbor.';
-    assert.deepEqual(request, { ...citation, offset: request.offset });
-    assert.ok([0, text.length].includes(request.offset));
+    assert.deepEqual(request, { ...citation, jobId: job.id, ...(request.offset === undefined ? {} : { offset: request.offset }) });
+    const offset = request.offset ?? 0;
+    assert.ok([0, text.length].includes(offset));
     if (evidenceReads === 1 || evidenceReads === 3) {
       await route.fulfill({ status: 503, json: { error: { message: 'Saved passage temporarily unavailable.' } } });
       return;
     }
     await route.fulfill({ json: { chapterTitle: 'Arrival', versionNumber: 1, isCurrentVersion: false,
-      text: request.offset === 0 ? text : later, truncated: request.offset === 0,
-      startOffset: request.offset, endOffset: request.offset === 0 ? text.length : text.length + later.length,
-      totalLength: text.length + later.length, nextOffset: request.offset === 0 ? text.length : null } });
+      text: offset === 0 ? text : later, truncated: offset === 0,
+      startOffset: offset, endOffset: offset === 0 ? text.length : text.length + later.length,
+      totalLength: text.length + later.length, nextOffset: offset === 0 ? text.length : null,
+      batchRange: { startOffset: 0, endOffset: 31 } } });
   });
   await page.goto(`http://127.0.0.1:4398/books/${bookId}/memory`);
   await page.getByLabel('Email').fill('author@example.test');
@@ -141,6 +143,8 @@ try {
   await expect(page.locator('blockquote')).toHaveCount(0);
   await page.getByRole('button', { name: 'Read source passage' }).click();
   await expect(page.locator('blockquote')).toHaveText(text);
+  await expect(page.locator('blockquote mark')).toHaveText(text.slice(0, 31));
+  await expect(page.getByText(/citation does not verify the candidate/)).toBeVisible();
   await expect(page.getByText(/an earlier version; the chapter has changed/)).toBeVisible();
   await page.getByRole('button', { name: 'Hide source passage' }).click();
   await page.getByRole('button', { name: 'Read source passage' }).click();

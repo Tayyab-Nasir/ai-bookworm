@@ -1700,7 +1700,7 @@ paths:
       tags: [v1]
       operationId: readBookBibleSourcePassage
       summary: Read a hash-verified saved manuscript passage for candidate review
-      description: Requires book membership, checks chapter/version ownership and full-node text hash, and returns private no-store text with current-version status. Does not start generation or save an entry.
+      description: Requires book membership, checks chapter/version ownership and full-node text hash, and returns private no-store text with current-version status. An optional candidate job is checked against the caller-visible succeeded job and its cited sources. A batch range is returned only when the job, accepted immutable quote snapshot, and saved node agree. It identifies text selected for that request, not whether a candidate is true or every original character reached the provider. Does not start generation, charge credits, or save an entry.
       parameters:
         - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -1716,14 +1716,16 @@ paths:
                 documentVersionId: { type: string, format: uuid }
                 nodeId: { type: string, minLength: 1, maxLength: 200 }
                 textHash: { type: string, pattern: '^[a-f0-9]{64}$' }
-                offset: { type: integer, minimum: 0, maximum: 100000000, default: 0, description: UTF-16 text position; must not split a Unicode code point }
+                jobId: { type: string, format: uuid, description: Optional succeeded Book Bible candidate job whose saved reading range should be checked }
+                offset: { type: integer, minimum: 0, maximum: 100000000, description: UTF-16 text position; must not split a Unicode code point. If omitted, starts at the verified batch or at zero. }
       responses:
-        "200": { description: Verified passage section capped at 24000 UTF-16 units without splitting code points; startOffset, endOffset, totalLength, nextOffset (null at end), truncation and current-version flags }
+        "200": { description: Verified passage section capped at 24000 UTF-16 units without splitting code points; startOffset, endOffset, totalLength, nextOffset (null at end), truncation and current-version flags. For a job request batchRange is the verified startOffset and endOffset, or null when unavailable. }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/bible/drafts:
     get:
       tags: [v1]
