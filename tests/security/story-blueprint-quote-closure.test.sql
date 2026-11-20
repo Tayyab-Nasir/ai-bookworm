@@ -18,6 +18,8 @@ do $$ begin
   assert not has_table_privilege('authenticated','public.story_blueprint_quote_identities','select');
   assert not has_table_privilege('service_role','public.story_blueprint_quote_identities','update');
   assert not has_table_privilege('service_role','public.story_blueprint_quote_identities','delete');
+  assert to_regclass('public.story_blueprint_quote_identities_book') is not null;
+  assert to_regclass('public.story_blueprint_quote_proposals_author_book_created') is not null;
 end $$;
 
 set local role service_role;

@@ -14,6 +14,9 @@ revoke all on public.story_blueprint_quote_identities from public, anon, authent
 grant select, insert on public.story_blueprint_quote_identities to service_role;
 create index story_blueprint_quote_identities_closed_author_book_created
   on public.story_blueprint_quote_identities(user_id, book_id, created_at) where kind = 'closed';
+create index story_blueprint_quote_identities_book on public.story_blueprint_quote_identities(book_id);
+create index story_blueprint_quote_proposals_author_book_created
+  on public.story_blueprint_quote_proposals(user_id, book_id, created_at desc, id desc);
 
 create function public.guard_closed_story_blueprint_quote() returns trigger
 language plpgsql security invoker set search_path = public, pg_temp as $$
