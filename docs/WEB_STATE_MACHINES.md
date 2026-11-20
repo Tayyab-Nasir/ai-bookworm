@@ -245,6 +245,18 @@ the allowlist without starting a worker.
   [KDP barcodes](https://kdp.amazon.com/en_US/help/topic/G5HDYGP4BXLX4RUW) ·
   [Lulu distribution requirements](https://help.lulu.com/en/support/solutions/articles/64000255462) ·
   [B&N Press ISBN guidance](https://help-press.barnesandnoble.com/hc/en-us/articles/5358254743963-ISBN-FAQs)
+- B&N Press ebook preflight and package creation both validate the saved EPUB
+  under ruleset barnesnoble-1.3.0. A file of 20,000,000 bytes or more, a failed
+  EPUBCheck, or an unavailable validator blocks packaging. A preliminary
+  preflight asks the author to select the saved file. EPUBCheck warnings remain
+  visible in the preflight report and ZIP. The handoff explains manual upload
+  and the retailer's generative AI questions. See the
+  [formatting guidance](https://help-press.barnesandnoble.com/hc/en-us/articles/46990297345691-B-N-Press-ePub-Formatting-Guide-for-eBooks),
+  [file size limit](https://help-press.barnesandnoble.com/hc/en-us/articles/31534821208859-Maximum-File-Size)
+  and [AI disclosure](https://help-press.barnesandnoble.com/hc/en-us/articles/28267750176923-Use-of-Generative-AI-in-Your-Project).
+  Exact proof and package coverage lives in
+  [adapter tests](../services/publishing/tests/test_adapters.py) and
+  [native author acceptance](../tests/e2e/native-author-files-publishing.mjs).
 - A finished paperback PDF can be selected from the workspace’s scanned Assets.
   The print edition pins the source version. The renderer verifies a single,
   unencrypted page with print content, expected page dimensions, and full bleed

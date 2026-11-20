@@ -267,6 +267,10 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         assert.equal(preflight.errors, 0); assert.equal(preflight.requestedChannel, channel);
         assert.deepEqual(preflight.sourceEpub, sourceEpub);
         assert.deepEqual(preflight.sourcePrint, sourcePrint);
+        if (channel === 'barnesnoble' && edition.kind === 'ebook') {
+          assert.match(preflight.ruleVersion, /\+barnesnoble-1\.3\.0$/);
+          assert.ok(!preflight.findings.some(item => item.code === 'BN-EPUBCHECK-NO-ARTIFACT'));
+        }
         const review = history.getByText('Review retailer listing', { exact: true });
         await review.click();
         await expect(history.locator('details dd').filter({ hasText: preflight.listing.metadata.title }).first()).toBeVisible();
@@ -317,6 +321,11 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
           assert.equal(archive.files['cover.jpg'].signature, 'ffd8ff');
           assert.equal(archive.manifest.files['cover.jpg'], archive.files['cover.jpg'].sha256);
           assert.match(archive.readme, /Upload book\.epub and cover\.jpg/);
+        }
+        if (channel === 'barnesnoble' && edition.kind === 'ebook') {
+          assert.equal(archive.manifest.ruleVersion, preflight.ruleVersion);
+          assert.match(archive.readme, /upload book\.epub in your eBook project/);
+          assert.match(archive.readme, /B&N Press generative AI questions/);
         }
         for (const { role, asset } of render.artifacts) {
           const name = role === 'rendered_cover' ? (edition.kind === 'ebook' ? 'cover.png' : 'cover.pdf')

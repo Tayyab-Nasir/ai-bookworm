@@ -207,6 +207,10 @@ class ExportAdapter:
                         "Review your Apple Books agreement, publisher, original publication date, subject categories, permanent Vendor ID, rights, pricing and territories in Apple's account.\n"
                         "Apple requires cover art before release; a pre-order may have different requirements.\n"
                         if self.CHANNEL == "apple" else "")
+                     + ("For B&N Press, upload book.epub in your eBook project. Review the final cover and processed preview in B&N Press.\n"
+                        if self.CHANNEL == "barnesnoble" and (ctx.get("edition") or {}).get("kind") == "ebook" else "")
+                     + ("Answer the B&N Press generative AI questions for any use in this project, including text, artwork or translation.\n"
+                        if self.CHANNEL == "barnesnoble" else "")
                      + lulu_readme
                      + "Confirm rights, ISBN entitlement, territories, pricing and required AI-content disclosures yourself.\n"
                      "Inspect the retailer preview or physical proof before approving publication.\n"
@@ -298,8 +302,9 @@ class AppleBooksAdapter(EpubCheckedExportAdapter):
                                                    "categories"))
 
 
-class BarnesNobleAdapter(ExportAdapter):
+class BarnesNobleAdapter(EpubCheckedExportAdapter):
     CHANNEL = "barnesnoble"
+    EPUBCHECK_CACHE = "_bn_epubcheck_result"
     _CAPS = ChannelCapabilities(formats=("epub", "pdf"), can_submit=False,
                                 can_check_status=False,
                                 required_metadata=("title", "author", "language"))

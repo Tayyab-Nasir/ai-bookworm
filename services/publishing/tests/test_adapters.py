@@ -50,6 +50,69 @@ def test_all_channels_registered():
         get_adapter("smashwords")
 
 
+@pytest.mark.parametrize("status", ["valid", "invalid", "unavailable"])
+def test_bn_preflight_and_package_check_their_exact_epub(monkeypatch, status):
+    from epubcheck_runner import EpubCheckResult
+    import rules.bn_v1 as bn_rules
+
+    ctx = {**_ctx(), "channel": "barnesnoble"}
+    epub = ctx["artifact"]
+    calls = []
+
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult(status, errors=int(status == "invalid"), warnings=int(status == "valid"))
+
+    monkeypatch.setattr(bn_rules, "run_epubcheck", check)
+    adapter = get_adapter("barnesnoble")
+    report = adapter.validate({**ctx, "_bn_epubcheck_result": EpubCheckResult("valid")})
+    assert report["ruleVersion"].endswith("+barnesnoble-1.3.0")
+    if status == "valid":
+        result = adapter.build_package({**ctx, "artifact": b"stale proof"}, {"book.epub": epub})[0]
+        with zipfile.ZipFile(BytesIO(result.data)) as archive:
+            assert archive.read("book.epub") == epub
+            assert json.loads(archive.read("preflight.json")) == {"schemaVersion": "1.0", **report}
+            assert "Answer the B&N Press generative AI questions" in archive.read("README.txt").decode()
+        assert any(item["code"] == "BN-EPUBCHECK-WARNING" and item["severity"] == "warning"
+                   for item in report["findings"])
+    else:
+        code = "BN-EPUBCHECK-ERROR" if status == "invalid" else "BN-EPUBCHECK-UNAVAILABLE"
+        assert any(item["code"] == code and item["severity"] == "error" for item in report["findings"])
+        with pytest.raises(ValueError, match="unresolved validation errors"):
+            adapter.build_package({**ctx, "artifact": b"stale proof"}, {"book.epub": epub})
+    assert calls == [epub, epub]
+
+
+def test_bn_applies_strict_epub_size_limit_and_skips_preliminary_and_print_checks(monkeypatch):
+    from epubcheck_runner import EpubCheckResult
+    import rules.bn_v1 as bn_rules
+
+    adapter = get_adapter("barnesnoble")
+    ctx = {**_ctx(), "channel": "barnesnoble"}
+    epub = ctx["artifact"]
+    assert bn_rules.EPUB_LIMIT_BYTES == 20_000_000
+    calls = []
+
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult("valid")
+
+    monkeypatch.setattr(bn_rules, "run_epubcheck", check)
+    monkeypatch.setattr(bn_rules, "EPUB_LIMIT_BYTES", len(epub) + 1)
+    assert adapter.validate(ctx)["errors"] == 0
+    monkeypatch.setattr(bn_rules, "EPUB_LIMIT_BYTES", len(epub))
+    oversize = adapter.validate(ctx)
+    assert any(item["code"] == "BN-EPUB-SIZE" and item["severity"] == "error" for item in oversize["findings"])
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        adapter.build_package(ctx, {"book.epub": epub})
+    preliminary = adapter.validate({**ctx, "artifact": None})
+    assert any(item["code"] == "BN-EPUBCHECK-NO-ARTIFACT" and item["severity"] == "warning"
+               for item in preliminary["findings"])
+    print_report = adapter.validate({**ctx, "edition": {"kind": "print"}, "artifact": None})
+    assert not any(item["code"].startswith("BN-EPUB") for item in print_report["findings"])
+    assert calls == [epub]
+
+
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
     assert result["ruleVersion"] == "core-1.0.17+kdp-1.6.0"

@@ -71,6 +71,7 @@ def run_preflight(ctx: dict, ruleset: RuleSet) -> list[Finding]:
     ctx.pop("_epub_readable", None)
     ctx.pop("_apple_epubcheck_result", None)
     ctx.pop("_google_epubcheck_result", None)
+    ctx.pop("_bn_epubcheck_result", None)
     out: list[Finding] = []
     for rule in sorted(ruleset.rules, key=lambda r: r.id):
         for f in rule.check(ctx):
