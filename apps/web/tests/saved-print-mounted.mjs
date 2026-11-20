@@ -167,7 +167,8 @@ async function fixture({ parent = false, width = 1280, disabled = false, audio =
       },
       runPreflight: async body => { window.requests.push({ method: "POST", action: "preflight", body });
         if (window.holdPreflight) await new Promise(resolve => { window.releasePreflight = resolve; });
-        return { jobId: ids.otherJob, requestedChannel: window.preflightChannel ?? body.channel, channel: body.channel, ruleVersion: "fixture-print-rules", errors: 0, warnings: 0, findings: [], sourcePrint: body.sourcePrint }; },
+        const findings = window.preflightFindings ?? [];
+        return { jobId: ids.otherJob, requestedChannel: window.preflightChannel ?? body.channel, channel: body.channel, ruleVersion: "fixture-print-rules", errors: 0, warnings: findings.length, findings, sourcePrint: body.sourcePrint }; },
       renderEdition: async () => { window.requests.push({ method: "POST", action: "render" }); throw new Error("Unexpected rendering request"); },
       createPublishingJob: async () => { window.requests.push({ method: "POST", action: "package" }); throw new Error("Unexpected package request"); },
     };
@@ -1275,12 +1276,24 @@ test("preflight is labeled and locked to its target; switching targets clears th
     await open(page);
     const target = page.getByLabel("Preflight target");
     await target.selectOption("kdp");
-    await page.evaluate(() => { window.holdPreflight = true; });
+    await page.evaluate(() => {
+      window.holdPreflight = true;
+      window.preflightFindings = [
+        { rule_id: "A", severity: "warning", location: "book.metadata.description", message: "Shorten the description." },
+        { rule_id: "B", severity: "warning", location: "edition.wrap_cover.barcode", message: "Review the barcode." },
+        { rule_id: "C", severity: "warning", location: "interior.pages", message: "Review the page count." },
+        { rule_id: "D", severity: "warning", location: "https://example.invalid", message: "Unmapped finding." },
+      ];
+    });
     await page.getByRole("button", { name: "Run preflight", exact: true }).click();
     await page.waitForFunction(() => typeof window.releasePreflight === "function");
     await expect(target).toBeDisabled();
     await page.evaluate(() => window.releasePreflight());
     await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Edit listing metadata" })).toHaveAttribute("href", `/books/${ids.book}/memory#publishing-metadata`);
+    await expect(page.getByRole("link", { name: "Review paperback cover" })).toHaveAttribute("href", "#paperback-cover-title");
+    await expect(page.getByRole("link", { name: "Review edition settings" })).toHaveAttribute("href", "#edition-settings");
+    await expect(page.getByRole("listitem").filter({ hasText: "Unmapped finding." }).getByRole("link")).toHaveCount(0);
     await target.selectOption("lulu");
     await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled();

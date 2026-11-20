@@ -948,7 +948,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
 
       <div className="min-w-0 space-y-6">
         <section className={cardClass} aria-labelledby="edition-settings">
-          <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 id="edition-settings" className="text-xl font-semibold">Edition settings</h2><p className="mt-1 text-sm text-white/45">Changes are saved before rendering or validation.</p></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 id="edition-settings" className="scroll-mt-24 text-xl font-semibold">Edition settings</h2><p className="mt-1 text-sm text-white/45">Changes are saved before rendering or validation.</p></div>
             <button type="button" onClick={() => void save()} disabled={!editable || Boolean(busy) || (!dirty && Boolean(activeId)) || (!activeId && (!editionRiskChecked || Boolean(editionRiskStorageError) || uncertainEditionCreates.current.has(editionRiskKey)))} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "save" ? "Saving…" : "Save edition"}</button>
           </div>
           {editionRiskStorageError && <p role="alert" className="mt-3 text-sm text-amber-100">{editionRiskStorageError} New editions cannot be saved until this tab can verify the warning. Existing editions remain available.</p>}
@@ -1022,7 +1022,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
           </div>
         </section>}
         {form.kind !== "audiobook" && !uploadedCover && <section className={cardClass} aria-labelledby="cover-settings">
-          <h2 id="cover-settings" className="text-xl font-semibold">Cover composition</h2><p className="mt-1 text-sm text-white/45">Choose private artwork; title, author, overlay, and optional QR are composed during rendering.</p>
+          <h2 id="cover-settings" className="scroll-mt-24 text-xl font-semibold">Cover composition</h2><p className="mt-1 text-sm text-white/45">Choose private artwork; title, author, overlay, and optional QR are composed during rendering.</p>
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-white/65">Cover artwork<select value={form.coverAssetId} onChange={(event) => update("coverAssetId", event.target.value)} className={fieldClass}><option value="">No cover artwork</option>{coverAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}</select></label>
             <label className="text-sm text-white/65">Text color<input type="color" value={form.textColor} onChange={(event) => update("textColor", event.target.value)} className={`${fieldClass} h-11 p-1`} /></label>
@@ -1051,7 +1051,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
         </section>}
 
         {form.kind === "print" && <section className={cardClass} aria-labelledby="paperback-cover-title">
-          <h2 id="paperback-cover-title" className="text-xl font-semibold">Full paperback cover</h2>
+          <h2 id="paperback-cover-title" className="scroll-mt-24 text-xl font-semibold">Full paperback cover</h2>
           <p className="mt-2 text-sm leading-relaxed text-white/50">Use one PDF for the back, spine and front. The spine follows your rendered page count. KDP profiles round an odd count up to the next even page.</p>
           {rightToLeftPrint && <p className="mt-2 text-sm leading-relaxed text-white/65">For Lulu Print or Bookstore, render an interior proof first. Use 0.125 in bleed on all four edges and round an odd proof count up by one when you choose the cover template. Place the front on the left. <a href="https://www.lulu.com/pricing" target="_blank" rel="noreferrer" className="underline underline-offset-4">Open Lulu’s cover template calculator</a></p>}
           <label className="mt-5 inline-flex items-center gap-2 text-sm text-white/70"><input type="checkbox" checked={form.wrapEnabled} onChange={(event) => update("wrapEnabled", event.target.checked)} />Create full cover PDF</label>
@@ -1140,7 +1140,23 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
           {!channelCompatible && <p className="mt-3 text-sm text-amber-200">{channel === "lulu" ? "Lulu packages require a print PDF edition." : channel === "googleplay" ? "Google Play Books packages require an EPUB edition with an embedded front cover." : channel === "apple" ? "Apple Books packages require an EPUB edition." : "Choose an edition supported by this retailer."}</p>}
           {channel === "googleplay" && channelCompatible && <p className="mt-3 text-xs leading-5 text-white/45">Single-title Partner Center handoff only. Run EpubCheck and inspect Google’s processed preview, pricing, territories, and Review tab before publishing. This does not submit the book.</p>}
           {channel === "barnesnoble" && form.kind === "ebook" && <p className="mt-3 text-xs leading-5 text-white/55">B&amp;N Press requires an EPUB smaller than 20 MB. Preflight runs EPUBCheck on the saved file. Review the processed preview in B&amp;N Press before submitting.</p>}
-          {preflight && <div className="mt-5"><p className="mb-3 text-sm font-medium text-white/75">Preflight results · {CHANNEL_LABELS[preflight.requestedChannel]}</p><div className="flex flex-wrap gap-3 text-sm"><span className={`rounded-full px-3 py-1 ${preflight.errors ? "bg-red-400/15 text-red-100" : "bg-emerald-400/15 text-emerald-100"}`}>{preflight.errors} errors</span><span className="rounded-full bg-amber-300/10 px-3 py-1 text-amber-100">{preflight.warnings} warnings</span><span className="px-2 py-1 text-white/40">Rules {preflight.ruleVersion}</span></div>{preflight.findings.length ? <ul className="mt-4 space-y-2">{preflight.findings.map((finding, index) => <li key={`${finding.rule_id}:${finding.location}:${index}`} className="rounded-xl border border-white/10 p-3 text-sm"><span className="font-medium uppercase text-white/60">{finding.severity}</span> · {finding.message}<span className="mt-1 block text-xs text-white/35">{finding.rule_id}{finding.location ? ` · ${finding.location}` : ""}</span></li>)}</ul> : <p className="mt-4 text-sm text-emerald-200">No preflight findings for this target.</p>}</div>}
+          {preflight && <div className="mt-5"><p className="mb-3 text-sm font-medium text-white/75">Preflight results · {CHANNEL_LABELS[preflight.requestedChannel]}</p><div className="flex flex-wrap gap-3 text-sm"><span className={`rounded-full px-3 py-1 ${preflight.errors ? "bg-red-400/15 text-red-100" : "bg-emerald-400/15 text-emerald-100"}`}>{preflight.errors} errors</span><span className="rounded-full bg-amber-300/10 px-3 py-1 text-amber-100">{preflight.warnings} warnings</span><span className="px-2 py-1 text-white/40">Rules {preflight.ruleVersion}</span></div>{preflight.findings.length ? <ul className="mt-4 space-y-2">{preflight.findings.map((finding, index) => {
+            const location = finding.location ?? "";
+            const metadata = location.startsWith("book.metadata.");
+            const paperback = form.kind === "print" && (location.startsWith("edition.wrap_cover") || (uploadedCover && location === "edition.cover"));
+            const cover = location.startsWith("edition.cover");
+            const edition = location.startsWith("edition.") || location === "interior" || location.startsWith("interior.");
+            return <li key={`${finding.rule_id}:${location}:${index}`} className="rounded-xl border border-white/10 p-3 text-sm">
+              <span className="font-medium uppercase text-white/60">{finding.severity}</span> · {finding.message}
+              <span className="mt-1 block text-xs text-white/35">{finding.rule_id}{location ? ` · ${location}` : ""}</span>
+              {editable && (metadata
+                ? <Link href={`/books/${bookId}/memory#publishing-metadata`} className="inline-flex min-h-11 items-center text-violet-200 underline underline-offset-4">Edit listing metadata</Link>
+                : paperback ? <a href="#paperback-cover-title" className="inline-flex min-h-11 items-center text-violet-200 underline underline-offset-4">Review paperback cover</a>
+                : cover ? <a href="#cover-settings" className="inline-flex min-h-11 items-center text-violet-200 underline underline-offset-4">Review cover composition</a>
+                : edition ? <a href="#edition-settings" className="inline-flex min-h-11 items-center text-violet-200 underline underline-offset-4">Review edition settings</a>
+                : null)}
+            </li>;
+          })}</ul> : <p className="mt-4 text-sm text-emerald-200">No preflight findings for this target.</p>}</div>}
         </section>}
 
         {currentIdentity && activeId && form.kind === "ebook" && <SavedEpubReader key={`${linkOwner}:${bookId}:${activeId}`} actor={linkOwner} workspaceId={book?.workspace_id ?? ""} bookId={bookId} editionId={activeId} dirty={dirty} refreshKey={readerRefreshKey}
