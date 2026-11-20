@@ -65,6 +65,14 @@ updates, wait for SelfCheck/reload and verify `/ready` plus a harmless scan.
 Do not raise the age limit, change asset verdicts or disable quarantine to clear
 an outage. Failed scans must remain unavailable to downstream rendering/AI.
 
+For a native Windows engine outside Compose, set `TZ=UTC` on the **clamd and
+FreshClam processes themselves**. Setting it only on the Python scanner does not
+change clamd's timezone-free `VERSION` timestamp; a local-time timestamp can
+otherwise appear to be in the future and correctly fail readiness. Wait for the
+loopback engine to answer `PING` before starting dependent services, then check
+the scanner's `/ready` response. A `PONG` alone does not prove signature
+freshness. Keep the clock and freshness checks enabled during recovery.
+
 ## Acceptance
 
 `scripts/test-scanner-compose.py` uses this exact topology with a disposable
