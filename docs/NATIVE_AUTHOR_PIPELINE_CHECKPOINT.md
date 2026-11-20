@@ -27,6 +27,8 @@ This is a local integration checkpoint, not full-product or hosted acceptance.
 Install the existing workspace/service dependencies and Java, then point
 `EPUBCHECK_JAR` at the reviewed EPUBCheck 5.4.0 distribution's `epubcheck.jar`.
 No OpenAI key or hosted credentials are needed for these tests.
+`npm run verify` checks the validator on a synthetic EPUB before running
+the longer suites.
 
 ```text
 npm test -w @bookworm/book-model
