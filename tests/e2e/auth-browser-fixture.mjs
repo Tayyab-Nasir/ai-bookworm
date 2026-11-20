@@ -8,10 +8,12 @@ import { createHash, randomUUID } from 'node:crypto';
 const user = { id: '11111111-1111-4111-8111-111111111111', aud: 'authenticated', role: 'authenticated', email: 'author@example.test', app_metadata: {}, user_metadata: { display_name: 'Fixture author' }, created_at: '2026-01-01T00:00:00Z' };
 const tokens = new Set();
 const workspaces = [];
+const workspaceCreations = new Map();
 const setupBooks = [];
 const setupUploads = new Map();
 const safeFilename = name => (name.split(/[\\/]/).pop() ?? 'file').replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '_').slice(0, 128) || 'file';
-const setupCounts = { books: 0, assets: 0, allocationRequests: 0, uploads: 0, confirmations: 0, imports: 0, reportReads: 0, jobReads: 0, jobRetries: 0 };
+const setupCounts = { workspaces: 0, books: 0, assets: 0, allocationRequests: 0, uploads: 0, confirmations: 0, imports: 0, reportReads: 0, jobReads: 0, jobRetries: 0 };
+let lostWorkspaceReply = false;
 const setupReceipts = new Map();
 const setupJobs = new Map();
 const draftChapters = new Map();
@@ -294,6 +296,25 @@ const server = createServer(async (req, res) => {
     request.status = 'cancelled'; return json(200, { request });
   }
   if (url.pathname === '/v1/workspaces' && req.method === 'GET') return json(200, { workspaces });
+  if (url.pathname === '/v1/workspaces/onboarding' && req.method === 'POST') {
+    const key = `${user.id}:${body.operationId}`;
+    if (typeof body.operationId !== 'string' || !/^[a-f0-9-]{36}$/i.test(body.operationId)) return json(422, { error: { message: 'Invalid operation' } });
+    const prior = workspaceCreations.get(key);
+    if (prior && (prior.status !== 'created' || prior.name !== body.name)) return json(409, { error: { message: 'Workspace request conflict' } });
+    const workspace = prior?.workspace ?? { id: randomUUID(), organization_id: randomUUID(), name: body.name, slug: 'fixture-workspace', created_by: user.id, created_at: new Date().toISOString() };
+    if (!prior) { workspaces.push(workspace); setupCounts.workspaces++; workspaceCreations.set(key, { status: 'created', name: body.name, workspace }); }
+    if (process.env.FIXTURE_LOST_WORKSPACE_REPLY === 'true' && !lostWorkspaceReply) {
+      lostWorkspaceReply = true;
+      return json(503, { error: { message: 'Fixture lost workspace reply after saving' } });
+    }
+    return json(201, { viewerId: user.id, operationId: body.operationId, workspace });
+  }
+  if (['/v1/workspaces/onboarding/check', '/v1/workspaces/onboarding/close'].includes(url.pathname) && req.method === 'POST') {
+    const key = `${user.id}:${body.operationId}`;
+    let prior = workspaceCreations.get(key);
+    if (!prior && url.pathname.endsWith('/close')) { prior = { status: 'closed' }; workspaceCreations.set(key, prior); }
+    return json(200, { viewerId: user.id, receipt: { operationId: body.operationId, status: prior?.status ?? 'not_found', workspaceId: prior?.workspace?.id ?? null } });
+  }
   if (url.pathname === '/v1/workspaces' && req.method === 'POST') {
     const workspace = { id: randomUUID(), organization_id: randomUUID(), name: body.name, slug: 'fixture-workspace', created_by: user.id, created_at: new Date().toISOString() };
     workspaces.push(workspace); return json(201, workspace);

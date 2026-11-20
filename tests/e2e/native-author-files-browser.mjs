@@ -140,11 +140,28 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
 
     stage = 'workspace onboarding and dashboard';
     await page.locator('#workspaceName').fill('Native browser workspace');
-    const [workspaceResponse] = await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/workspaces') && r.request().method() === 'POST'),
+    let createdWorkspace;
+    const onboardingRoute = '**/api/backend/v1/workspaces/onboarding';
+    await page.route(onboardingRoute, async route => {
+      const accepted = await route.fetch();
+      assert.equal(accepted.status(), 201);
+      createdWorkspace = await accepted.json();
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'Synthetic lost reply' } }) });
+    });
+    const [workspaceResponse] = await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/workspaces/onboarding') && r.request().method() === 'POST'),
       page.getByRole('button', { name: 'Create workspace', exact: true }).click()]);
-    assert.equal(workspaceResponse.status(), 201);
-    const workspace = await workspaceResponse.json();
+    assert.equal(workspaceResponse.status(), 503);
+    await page.unroute(onboardingRoute);
+    assert.equal(createdWorkspace.viewerId, user.id);
+    assert.match(createdWorkspace.operationId, /^[a-f0-9-]{36}$/i);
+    const workspace = createdWorkspace.workspace;
+    assert.equal(workspace.created_by, user.id);
+    await expect(page.getByRole('region', { name: 'Check workspace creation' })).toBeVisible();
+    assert.equal(await page.evaluate(() => Object.values(sessionStorage).some(value => value.includes('Native browser workspace'))), false);
+    await page.reload();
+    await page.getByRole('button', { name: 'Check request status', exact: true }).click();
     await expect(page.getByRole('combobox', { name: 'Workspace', exact: true })).toHaveValue(workspace.id);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith('bookworm:workspace-creation:'))), false);
     await expect(page.getByRole('region', { name: 'Workspace summary', exact: true })).toBeVisible();
     await expect(page.getByRole('main').getByRole('alert')).toHaveCount(0);
     await screenshot('dashboard-desktop');
