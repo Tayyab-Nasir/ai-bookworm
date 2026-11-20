@@ -347,7 +347,7 @@ begin
           dispatch_started_at = greatest(clock_timestamp(), notice.queued_at)
       from candidate
       where notice.package_job_id = candidate.package_job_id
-      returning notice.package_job_id, notice.dispatch_id, candidate.email;
+      returning notice.package_job_id, notice.dispatch_id, candidate.email::text;
 end;
 $$;
 
