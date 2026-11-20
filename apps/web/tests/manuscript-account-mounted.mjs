@@ -20,7 +20,11 @@ test('switching account during book creation stops the manuscript upload and kee
  await expect(page.getByRole('button',{name:'Create book',exact:true})).toBeEnabled();
  await page.getByRole('button',{name:'Import manuscript',exact:true}).click();
  await page.getByPlaceholder('The title on the cover').fill('My private book');
+ const language = page.getByRole('combobox', { name: 'Manuscript language' });
+ await page.locator('input[type=file]').setInputFiles({name:'story.PDF',mimeType:'application/pdf',buffer:Buffer.from('PDF fixture')});
+ await expect(language).toHaveAccessibleDescription(/choose the language printed on the page/);
  await page.locator('input[type=file]').setInputFiles({name:'story.txt',mimeType:'text/plain',buffer:Buffer.from('my manuscript')});
+ await expect(language).toHaveAccessibleDescription('');
  await page.getByRole('button',{name:'Create and import',exact:true}).click();
  await page.waitForFunction(()=>typeof window.releaseCreate==='function');
  await page.evaluate(()=>{window.actor='33333333-3333-4333-8333-333333333333';window.releaseCreate();});

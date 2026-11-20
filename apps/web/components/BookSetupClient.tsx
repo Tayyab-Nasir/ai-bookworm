@@ -364,6 +364,7 @@ export default function BookSetupClient() {
     } finally { setSaving(false); busy.current = false; }
   };
 
+  const showPdfLanguageHint = mode === "import" && sourceFile && /\.pdf$/i.test(sourceFile.name) && !checkpoint?.source;
   return (
     <>
     {accountHidden && <main className="mx-auto max-w-3xl p-8 text-white">
@@ -418,7 +419,7 @@ export default function BookSetupClient() {
               </label>
               <label>
                 <span className="mb-2 block text-[11px] font-medium uppercase tracking-[0.14em] text-[#8a8a8a]">Manuscript language</span>
-                <select value={language} onChange={(event) => setLanguage(event.target.value)} className="h-12 w-full rounded-xl border border-white/[0.1] bg-black/20 px-4 text-[15px] text-white outline-none transition focus:border-white/35">
+                <select value={language} aria-describedby={showPdfLanguageHint ? "pdf-language-hint" : undefined} onChange={(event) => setLanguage(event.target.value)} className="h-12 w-full rounded-xl border border-white/[0.1] bg-black/20 px-4 text-[15px] text-white outline-none transition focus:border-white/35">
                   <option value="en">English</option>
                   <option value="es">Spanish</option>
                   <option value="fr">French</option>
@@ -426,6 +427,7 @@ export default function BookSetupClient() {
                   <option value="ar">Arabic</option>
                 </select>
               </label>
+              {showPdfLanguageHint && <p id="pdf-language-hint" className="text-sm leading-6 text-[#bdbdbd] sm:col-span-2">For scanned PDF pages, choose the language printed on the page so Bookworm can use it for text recognition. Review recovered text against your original.</p>}
             </fieldset>
 
             {mode === "import" && (!checkpoint?.source || checkpoint.source.uploaded === false) && !checkpoint?.completed && (

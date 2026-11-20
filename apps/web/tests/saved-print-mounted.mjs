@@ -1261,11 +1261,15 @@ test("actual Publishing Studio keeps an opened render through preflight and remo
     await page.getByRole("combobox", { name: /^Preflight target/ }).selectOption("kdp");
     await page.evaluate(() => { window.holdPreflight = true; }); await page.getByRole("button", { name: "Run preflight", exact: true }).click();
     await page.waitForFunction(() => typeof window.releasePreflight === "function");
+    const preflightStatus = page.getByRole("status", { name: "Preflight status" });
+    await expect(preflightStatus).toHaveText("Checking preflight…");
     assert.equal(await page.getByRole("button", { name: "Download private file", exact: true }).count(), 2);
     await page.evaluate(() => window.releasePreflight()); await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeEnabled();
+    await expect(preflightStatus).toHaveText(/Preflight complete for Amazon KDP\. Errors: 0\. Warnings: \d+\./);
     assert.equal(await page.evaluate(() => window.requests.filter(request => request.method === "POST").map(request => request.action)).then(actions => actions.join(",")), "preflight");
     await page.screenshot({ path: resolve(artifacts, "saved-print-studio-desktop.png"), fullPage: true });
     await page.getByLabel("Language", { exact: true }).fill("fr");
+    await expect(preflightStatus).toBeEmpty();
     await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled(); assert.deepEqual(errors, []);
   } finally { await page.close(); }
