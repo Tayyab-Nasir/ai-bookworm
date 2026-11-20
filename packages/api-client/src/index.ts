@@ -314,6 +314,9 @@ export interface StoryBlueprintQuote {
   status: "ready" | "expired" | "accepted";
 }
 
+export interface StoryBlueprintQuoteHistoryEntry extends StoryBlueprintQuote { createdAt: string }
+export interface StoryBlueprintQuoteHistoryCursor { createdAt: string; id: string }
+
 /** A private, saved request awaiting exact provider token counting. */
 export interface StoryBlueprintQuoteRequest {
   id: string;
@@ -1046,14 +1049,26 @@ export function createClient(opts: ClientOptions) {
       call<{ catalogVersion: string; models: StoryBlueprintModelChoice[] }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/models`),
     requestStoryBlueprintQuote: (bookId: string, body: { modelId: string; idempotencyKey: string; allowProviderTokenCounting: true }) =>
       call<StoryBlueprintQuotePreparation>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quotes`, body),
+    recoverStoryBlueprintQuoteRequest: (bookId: string, idempotencyKey: string) =>
+      call<{ request: StoryBlueprintQuoteRequest | null; proposal: StoryBlueprintQuote | null }>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quote-requests/recover`, { idempotencyKey }, false),
+    closeStoryBlueprintQuoteRequest: (bookId: string, idempotencyKey: string) =>
+      call<{ state: "closed"; request: null; proposal: null } | ({ state: "exists" } & StoryBlueprintQuotePreparation)>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quote-requests/close`, { idempotencyKey }, false),
     getStoryBlueprintQuoteRequest: (bookId: string, requestId: string) =>
       call<StoryBlueprintQuotePreparation>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quote-requests/${encodeURIComponent(requestId)}`),
     getStoryBlueprintQuote: (bookId: string, proposalId: string) =>
       call<{ proposal: StoryBlueprintQuote }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quotes/${encodeURIComponent(proposalId)}`),
     acceptStoryBlueprintQuote: (bookId: string, proposalId: string, expectedCredits: number) =>
       call<{ jobId: string; status: "queued" | "running" | "succeeded" | "failed" }>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quotes/${encodeURIComponent(proposalId)}/accept`, { expectedCredits }),
+    resolveStoryBlueprintQuote: (bookId: string, proposalId: string) =>
+      call<{ state: "open" | "unusable" | "accepted" }>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/quotes/${encodeURIComponent(proposalId)}/resolve`, {}, false),
     getStoryBlueprintProposal: (bookId: string, proposalId: string) =>
       call<StoryBlueprintProposalResult>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/proposals/${encodeURIComponent(proposalId)}`),
+    listStoryBlueprintProposals: (bookId: string, cursor?: StoryBlueprintQuoteHistoryCursor) => {
+      const query = new URLSearchParams();
+      if (cursor) { query.set("beforeCreatedAt", cursor.createdAt); query.set("beforeId", cursor.id); }
+      const suffix = query.toString();
+      return call<{ proposals: StoryBlueprintQuoteHistoryEntry[]; nextCursor: StoryBlueprintQuoteHistoryCursor | null }>("GET", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/proposals${suffix ? `?${suffix}` : ""}`);
+    },
     applyStoryBlueprintProposal: (bookId: string, proposalId: string, expectedRevision: number) =>
       call<{ applied: true; revision: number }>("POST", `/v1/books/${encodeURIComponent(bookId)}/story-blueprint/proposals/${encodeURIComponent(proposalId)}/apply`, { expectedRevision }),
     listChapters: (bookId: string, expectedActor?: string, signal?: AbortSignal) => call<{ chapters: Chapter[] }>("GET", `/v1/books/${bookId}/chapters`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}, signal),

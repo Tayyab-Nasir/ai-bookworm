@@ -5,9 +5,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { ApiClientError, type StoryBlueprint, type StoryBlueprintPlanItem, type StoryBlueprintStory } from "@bookworm/api-client";
 import { apiClient } from "./api";
 import StoryBlueprintProposalPanel from "./StoryBlueprintProposalPanel";
+import { readBrowserSession } from "../lib/browser-session";
 
 type StoryBlueprintResult = { blueprint: StoryBlueprint | null; role: string };
 type StoryBlueprintDraft = Pick<StoryBlueprint, "story" | "chapterPlan">;
+type VerifiedBlueprint = { actor: string; version: number; result: StoryBlueprintResult };
+export type StoryBlueprintGuard = <T>(action: () => Promise<T>) => Promise<T>;
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
 const PAID_PROPOSAL_ROLES = new Set(["owner", "admin", "editor", "writer"]);
@@ -114,11 +117,97 @@ function validationError(draft: StoryBlueprintDraft) {
 }
 
 export default function StoryBlueprintClient({ bookId }: { bookId: string }) {
-  const api = apiClient();
-  const [blueprint, setBlueprint] = useState<StoryBlueprint | null>(null);
-  const [draft, setDraft] = useState<StoryBlueprintDraft>(() => cloneDraft(null));
-  const [role, setRole] = useState("viewer");
-  const [loading, setLoading] = useState(true);
+  const scope = useRef<{ actor: string | null; version: number; ready: boolean; mounted: boolean }>({ actor: null, version: 0, ready: false, mounted: false });
+  const [verification, setVerification] = useState<VerifiedBlueprint | null>(null);
+  const [access, setAccess] = useState<"checking" | "ready" | "unavailable">("checking");
+
+  const invalidate = useCallback(() => {
+    scope.current.version += 1;
+    scope.current.ready = false;
+    if (scope.current.mounted) setAccess("unavailable");
+  }, []);
+
+  const verify = useCallback(async () => {
+    const version = ++scope.current.version;
+    scope.current.ready = false;
+    if (!scope.current.mounted) return;
+    setAccess("checking");
+    try {
+      const session = await readBrowserSession(scope.current.actor ?? undefined);
+      if (version !== scope.current.version || !scope.current.mounted) return;
+      scope.current.actor ??= session.id;
+      const result = await apiClient(session.id).getStoryBlueprint(bookId, session.id);
+      await readBrowserSession(session.id);
+      if (version !== scope.current.version || !scope.current.mounted) return;
+      scope.current.ready = true;
+      setVerification({ actor: session.id, version, result });
+      setAccess("ready");
+    } catch {
+      if (version === scope.current.version && scope.current.mounted) setAccess("unavailable");
+    }
+  }, [bookId]);
+
+  useEffect(() => {
+    scope.current.mounted = true;
+    void verify();
+    const focus = () => { if (document.visibilityState === "visible") void verify(); };
+    const visibility = () => {
+      if (document.visibilityState === "visible") void verify();
+      else invalidate();
+    };
+    window.addEventListener("focus", focus);
+    document.addEventListener("visibilitychange", visibility);
+    return () => { scope.current.mounted = false; scope.current.ready = false; scope.current.version += 1; window.removeEventListener("focus", focus); document.removeEventListener("visibilitychange", visibility); };
+  }, [invalidate, verify]);
+
+  const guard = useCallback<StoryBlueprintGuard>(async (action) => {
+    const { actor, version, ready } = scope.current;
+    const current = () => scope.current.mounted && scope.current.ready && scope.current.actor === actor && scope.current.version === version;
+    if (!actor || !ready) throw new Error("Verify your account and book access before continuing.");
+    try { await readBrowserSession(actor); }
+    catch { if (current()) invalidate(); throw new Error("Your account could not be verified. No request was sent."); }
+    if (!current()) throw new Error("Your account or book access changed. No request was sent.");
+    let result: Awaited<ReturnType<typeof action>>;
+    try { result = await action(); }
+    catch (reason) {
+      if (current() && reason instanceof ApiClientError && (reason.status === 401 || reason.status === 403)) invalidate();
+      if (current() && reason instanceof ApiClientError && reason.status === 404) {
+        // A missing quote is not necessarily a missing book. Recheck book
+        // membership before deciding whether the retained draft can be shown.
+        try {
+          const result = await apiClient(actor).getStoryBlueprint(bookId, actor);
+          await readBrowserSession(actor);
+          if (current()) {
+            scope.current.version += 1;
+            setVerification({ actor, version: scope.current.version, result });
+          }
+        }
+        catch { if (current()) invalidate(); }
+      }
+      throw reason;
+    }
+    try { await readBrowserSession(actor); }
+    catch { if (current()) invalidate(); throw new Error("The request may have completed. Verify your original account and check its saved status."); }
+    if (!current()) throw new Error("The request may have completed. Verify your original account and check its saved status.");
+    return result;
+  }, [bookId, invalidate]);
+
+  return <>
+    {access !== "ready" && <main className="mx-auto max-w-4xl px-4 py-12 text-white" role="status" aria-live="polite">
+      <h1 className="text-2xl font-medium">Story blueprint</h1>
+      <p className="mt-3 text-sm text-white/65">{access === "checking" ? "Verifying your account and book access…" : "Your account or book access could not be verified. Sign back in to the account that opened this page and retry. Any unsaved work remains on this page."}</p>
+      {access === "unavailable" && <button type="button" className={`${secondary} mt-5`} onClick={() => void verify()}>Retry verification</button>}
+    </main>}
+    {verification && <div hidden={access !== "ready"}><StoryBlueprintWorkspace bookId={bookId} verification={verification} guard={guard} available={access === "ready"} /></div>}
+  </>;
+}
+
+function StoryBlueprintWorkspace({ bookId, verification, guard, available }: { bookId: string; verification: VerifiedBlueprint; guard: StoryBlueprintGuard; available: boolean }) {
+  const api = apiClient(verification.actor);
+  const [blueprint, setBlueprint] = useState<StoryBlueprint | null>(verification.result.blueprint);
+  const [draft, setDraft] = useState<StoryBlueprintDraft>(() => cloneDraft(verification.result.blueprint));
+  const [role, setRole] = useState(verification.result.role);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [materializing, setMaterializing] = useState<string | null>(null);
   const [unconfirmedMaterialization, setUnconfirmedMaterialization] = useState<string | null>(null);
@@ -129,8 +218,8 @@ export default function StoryBlueprintClient({ bookId }: { bookId: string }) {
 
   const savedDraft = useMemo(() => cloneDraft(blueprint), [blueprint]);
   const dirty = serializedDraft(draft) !== serializedDraft(savedDraft);
-  const editable = EDIT_ROLES.has(role);
-  const paidProposalEditable = PAID_PROPOSAL_ROLES.has(role);
+  const editable = EDIT_ROLES.has(role) && EDIT_ROLES.has(verification.result.role);
+  const paidProposalEditable = PAID_PROPOSAL_ROLES.has(role) && PAID_PROPOSAL_ROLES.has(verification.result.role);
   const busy = loading || saving || materializing !== null;
   const materialized = useMemo(() => new Map((blueprint?.materializations ?? []).map((item) => [item.planItemId, item.chapterId])), [blueprint]);
 
@@ -147,7 +236,7 @@ export default function StoryBlueprintClient({ bookId }: { bookId: string }) {
     setLoading(true);
     setError(null);
     try {
-      const result = await api.getStoryBlueprint(bookId);
+      const result = await guard(() => api.getStoryBlueprint(bookId));
       if (sequence !== loadSequence.current) return;
       applyResult(result);
     } catch (reason) {
@@ -155,12 +244,22 @@ export default function StoryBlueprintClient({ bookId }: { bookId: string }) {
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [api, applyResult, bookId]);
+  }, [api, applyResult, bookId, guard]);
 
+  const verifiedVersion = useRef(verification.version);
   useEffect(() => {
-    void load();
-    return () => { loadSequence.current += 1; };
-  }, [load]);
+    if (verifiedVersion.current === verification.version) return;
+    verifiedVersion.current = verification.version;
+    setRole(verification.result.role);
+    if ((verification.result.blueprint?.revision ?? 0) !== (blueprint?.revision ?? 0) && dirty) {
+      setConflict(true);
+      setError("The saved blueprint changed while this page was away. Your unsaved edits remain here; reload before saving.");
+    } else if (!dirty) {
+      applyResult(verification.result);
+    }
+  }, [applyResult, blueprint, dirty, verification]);
+
+  useEffect(() => () => { loadSequence.current += 1; }, []);
 
   useEffect(() => {
     if (!dirty) return;
@@ -230,11 +329,11 @@ export default function StoryBlueprintClient({ bookId }: { bookId: string }) {
     setError(null);
     setNotice(null);
     try {
-      const result = await api.saveStoryBlueprint(bookId, {
+      const result = await guard(() => api.saveStoryBlueprint(bookId, {
         expectedRevision: blueprint?.revision ?? 0,
         story: nextDraft.story,
         chapterPlan: nextDraft.chapterPlan,
-      });
+      }));
       applyResult(result);
       setNotice(`Story blueprint saved · revision ${result.blueprint?.revision ?? 1}.`);
     } catch (reason) {
@@ -255,10 +354,10 @@ export default function StoryBlueprintClient({ bookId }: { bookId: string }) {
     setError(null);
     setNotice(null);
     try {
-      const result = await api.materializeStoryBlueprintChapter(bookId, item.id, {
+      const result = await guard(() => api.materializeStoryBlueprintChapter(bookId, item.id, {
         expectedRevision: blueprint.revision,
         idempotencyKey: storyBlueprintMaterializationKey(bookId, item.id),
-      });
+      }));
       setBlueprint((current) => current ? {
         ...current,
         materializations: [...current.materializations.filter((entry) => entry.planItemId !== item.id), { planItemId: item.id, chapterId: result.chapter.id }],
@@ -363,6 +462,9 @@ export default function StoryBlueprintClient({ bookId }: { bookId: string }) {
     </form>
     <StoryBlueprintProposalPanel
       bookId={bookId}
+      actor={verification.actor}
+      guard={guard}
+      available={available}
       blueprint={blueprint}
       editable={paidProposalEditable}
       blocked={busy || conflict || dirty}

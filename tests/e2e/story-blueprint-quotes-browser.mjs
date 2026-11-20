@@ -48,6 +48,10 @@ try {
     const json = (body, status = 200) => route.fulfill({ status, json: body, headers: { 'cache-control': 'private, no-store' } });
     if (path === `/books/${bookId}/story-blueprint` && request.method() === 'GET') return json({ blueprint, role: 'owner' });
     if (path === `/books/${bookId}/story-blueprint/models`) return json({ catalogVersion: 'synthetic-v1', models: [{ id: 'fixture-model', label: 'Synthetic test model', model: 'synthetic-model' }] });
+    if (path === `/books/${bookId}/story-blueprint/proposals` && request.method() === 'GET') return json({ proposals: [{
+      id: proposalId, requestId, sourceRevision: 3, model: 'synthetic-model', reservedCredits: 42,
+      expiresAt: '2099-01-01T00:00:00.000Z', acceptedJobId: null, status: 'ready', createdAt: '2026-09-23T00:00:00.000Z',
+    }], nextCursor: null });
     if (path === `/books/${bookId}/story-blueprint/chapters/cccccccc-cccc-4ccc-8ccc-cccccccccccc/materialize` && request.method() === 'POST') {
       materializeRequests++;
       const body = request.postDataJSON();
@@ -177,8 +181,13 @@ try {
   await expect(page.getByText(/42\s+credits maximum hold/u)).toBeVisible();
   assert.equal(quotePosts, 1, 'reload/status recovery must not create a second count request');
   assert.equal(generationRequests, 0, 'preparing a quote must never generate or accept a proposal');
+  await page.getByRole('button', { name: 'View saved proposals' }).click();
+  await expect(page.getByRole('button', { name: 'Currently open' })).toBeDisabled();
+  assert.equal(quotePosts, 1, 'reading proposal history must never start another count');
+  if (process.env.BROWSER_TEST_SCREENSHOT) await page.screenshot({ path: process.env.BROWSER_TEST_SCREENSHOT, fullPage: true });
 
   await page.setViewportSize({ width: 390, height: 844 });
+  if (process.env.BROWSER_TEST_MOBILE_SCREENSHOT) await page.screenshot({ path: process.env.BROWSER_TEST_MOBILE_SCREENSHOT, fullPage: true });
   await page.getByRole('button', { name: 'Create empty manuscript chapter' }).click();
   await expect(page.getByText(/Created an empty manuscript chapter for “The First Tide”/u)).toBeVisible();
   assert.equal(materializeRequests, 1, 'the saved plan creates one empty manuscript chapter with its stable request key');

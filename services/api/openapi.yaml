@@ -2034,6 +2034,62 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/quote-requests/recover:
+    post:
+      tags: [v1]
+      operationId: recoverStoryBlueprintQuoteRequest
+      summary: Read the caller's original quote request by its recovery key
+      description: >-
+        Read-only and scoped to current book membership and the original author.
+        No provider call, quote creation, or credit hold occurs. A missing request
+        does not prove that a delayed original POST cannot still arrive.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoryBlueprintQuoteRecoveryRequest" }
+      responses:
+        "200":
+          description: Safe original request and optional quote, or both null if not visible yet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintQuoteRecoveryResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/quote-requests/close:
+    post:
+      tags: [v1]
+      operationId: closeStoryBlueprintQuoteRequest
+      summary: Fence an unqueued original quote request or recover an existing request
+      description: >-
+        Idempotently closes only an absent request identity. A delayed creation
+        using the same author, book, and key is rejected. If the request already
+        exists, returns its current safe state and does not cancel it. Requires
+        the additive quote-closure database migration and active book membership.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoryBlueprintQuoteRecoveryRequest" }
+      responses:
+        "200":
+          description: Closed identity or safe status of the existing original request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintQuoteClosureResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/story-blueprint/quote-requests/{requestId}:
     get:
       tags: [v1]
@@ -2106,6 +2162,62 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/quotes/{proposalId}/resolve:
+    post:
+      tags: [v1]
+      operationId: resolveStoryBlueprintQuote
+      summary: Resolve an earlier quote against any concurrent acceptance
+      description: >-
+        Requires book membership and quote ownership. Locks the original
+        proposal in the same order as acceptance and returns accepted, open,
+        or unusable. Unusable means its expiry or saved source prevents any
+        later acceptance. No credits, provider calls, or book edits occur.
+        Requires the additive quote-closure database migration.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false, maxProperties: 0 }
+      responses:
+        "200":
+          description: Original quote state after its acceptance lock is resolved
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: false, required: [state], properties: { state: { type: string, enum: [open, unusable, accepted] } } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/story-blueprint/proposals:
+    get:
+      tags: [v1]
+      operationId: listStoryBlueprintProposals
+      summary: List the caller's saved Story Blueprint proposals
+      description: >-
+        Requires book membership and returns only the caller's safe quote
+        metadata, newest first. Source snapshots, provider receipts and review
+        candidates remain private. Use both cursor fields for the next page.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+        - { name: beforeCreatedAt, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: beforeId, in: query, required: false, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Private, cursor-paginated proposal metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StoryBlueprintQuoteHistoryResponse" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/story-blueprint/proposals/{proposalId}:
@@ -5604,6 +5716,75 @@ components:
           oneOf:
             - { $ref: "#/components/schemas/StoryBlueprintQuote" }
             - { type: "null" }
+    StoryBlueprintQuoteRecoveryRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey]
+      properties:
+        idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
+    StoryBlueprintQuoteHistoryResponse:
+      type: object
+      additionalProperties: false
+      required: [proposals, nextCursor]
+      properties:
+        proposals:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, requestId, sourceRevision, model, reservedCredits, expiresAt, acceptedJobId, status, createdAt]
+            properties:
+              id: { type: string, format: uuid }
+              requestId: { type: string, format: uuid }
+              sourceRevision: { type: integer, minimum: 1 }
+              model: { type: string }
+              reservedCredits: { type: integer, minimum: 1, maximum: 2147483647 }
+              expiresAt: { type: string, format: date-time }
+              acceptedJobId: { type: [string, "null"], format: uuid }
+              status: { type: string, enum: [ready, expired, accepted] }
+              createdAt: { type: string, format: date-time }
+        nextCursor:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [id, createdAt]
+              properties:
+                id: { type: string, format: uuid }
+                createdAt: { type: string, format: date-time }
+            - { type: "null" }
+    StoryBlueprintQuoteRecoveryResponse:
+      type: object
+      additionalProperties: false
+      required: [request, proposal]
+      properties:
+        request:
+          oneOf:
+            - { $ref: "#/components/schemas/StoryBlueprintQuoteRequest" }
+            - { type: "null" }
+        proposal:
+          oneOf:
+            - { $ref: "#/components/schemas/StoryBlueprintQuote" }
+            - { type: "null" }
+    StoryBlueprintQuoteClosureResponse:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [state, request, proposal]
+          properties:
+            state: { const: closed }
+            request: { type: "null" }
+            proposal: { type: "null" }
+        - type: object
+          additionalProperties: false
+          required: [state, request, proposal]
+          properties:
+            state: { const: exists }
+            request: { $ref: "#/components/schemas/StoryBlueprintQuoteRequest" }
+            proposal:
+              oneOf:
+                - { $ref: "#/components/schemas/StoryBlueprintQuote" }
+                - { type: "null" }
     StoryBlueprintQuoteResponse:
       type: object
       additionalProperties: false

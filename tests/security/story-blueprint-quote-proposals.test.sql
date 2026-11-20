@@ -57,6 +57,8 @@ begin
   assert not has_function_privilege('authenticated',
     'public.accept_story_blueprint_quote(uuid,uuid,integer)', 'execute'), 'authenticated can accept quote RPC';
   assert not has_function_privilege('authenticated',
+    'public.resolve_story_blueprint_quote(uuid,uuid)', 'execute'), 'authenticated can resolve a quote directly';
+  assert not has_function_privilege('authenticated',
     'public.claim_quoted_story_blueprint_job(integer)', 'execute'), 'authenticated can claim quote job RPC';
   assert not has_function_privilege('authenticated',
     'public.complete_quoted_story_blueprint_generation(uuid,uuid)', 'execute'), 'authenticated can complete quote job RPC';
@@ -226,6 +228,12 @@ begin
   );
   assert v_replay_proposal.id = v_proposal.id and v_proposal.reserved_credits = 5,
     'quote proposal did not replay exactly';
+  assert public.resolve_story_blueprint_quote(v_proposal.id, v_ids.owner_id) = '{"state":"open"}'::jsonb;
+  begin
+    perform public.resolve_story_blueprint_quote(v_proposal.id, v_ids.outsider_id);
+    assert false, 'another author resolved a private quote';
+  exception when insufficient_privilege then null;
+  end;
   assert (select status from public.story_blueprint_quote_requests where id = v_request.id) = 'ready'
     and not exists(select 1 from public.story_blueprint_quote_requests
       where id = v_request.id and (lease_token is not null or lease_expires_at is not null)),
@@ -285,6 +293,7 @@ begin
     v_expired_request.generation_job_id, v_expired_quote, 5,
     clock_timestamp() - interval '10 minutes', clock_timestamp() - interval '5 minutes'
   );
+  assert public.resolve_story_blueprint_quote(v_expired_proposal, v_ids.owner_id) = '{"state":"unusable"}'::jsonb;
   begin
     perform public.accept_story_blueprint_quote(v_expired_proposal, v_ids.owner_id, 5);
     assert false, 'expired proposal accepted';
@@ -330,6 +339,7 @@ declare
 begin
   select * into strict v_ids from story_blueprint_quote_ids;
   select * into strict v_first from public.story_blueprint_quote_proposals where id = v_ids.proposal_one_id;
+  assert public.resolve_story_blueprint_quote(v_first.id, v_ids.owner_id) = '{"state":"unusable"}'::jsonb;
   begin
     perform public.accept_story_blueprint_quote(v_first.id, v_ids.owner_id, 5);
     assert false, 'stale source quote accepted';
@@ -384,6 +394,7 @@ begin
   insert into public.credit_ledger(user_id, workspace_id, source, amount, balance_after)
     values(v_ids.owner_id, v_ids.workspace_id, 'purchase', 5, 0);
   select * into strict v_job from public.accept_story_blueprint_quote(v_proposal.id, v_ids.owner_id, 5);
+  assert public.resolve_story_blueprint_quote(v_proposal.id, v_ids.owner_id) = '{"state":"accepted"}'::jsonb;
   assert v_job.id = v_proposal.generation_job_id and v_job.agent_type = 'story_blueprint'
     and v_job.billing_mode = 'quoted' and v_job.status = 'queued', 'acceptance did not create quoted job';
   assert v_job.input_ref ?& array['proposalId', 'requestId', 'blueprintId', 'sourceRevision', 'sourceSha256', 'generationRequestSha256']

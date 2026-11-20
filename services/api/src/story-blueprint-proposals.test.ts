@@ -45,10 +45,10 @@ function createFake(role = "writer") {
   const request = {
     id: REQUEST, user_id: USER, workspace_id: WORKSPACE, book_id: BOOK, blueprint_id: BLUEPRINT, source_revision: 3,
     source_snapshot_json: { details: story, chapterPlan: plan }, book_snapshot_json: { title: "The Clockmaker's Orchard", author: "Author", language: "en" },
-    source_sha256: "a".repeat(64), catalog_json: {}, generation_job_id: JOB, status: "queued",
+    source_sha256: "a".repeat(64), catalog_json: {}, generation_job_id: JOB, status: "queued", idempotency_key: "blueprint-quote-one",
   };
-  const state: { request: Record<string, unknown>; proposal: Record<string, unknown> | null; funded: string; jobStatus: string; saved: Record<string, unknown> | null; materialized: Record<string, unknown>[] } = {
-    request, proposal: null, funded: "held", jobStatus: "running", saved: null, materialized: [],
+  const state: { request: Record<string, unknown>; proposal: Record<string, unknown> | null; history: Record<string, unknown>[]; funded: string; jobStatus: string; saved: Record<string, unknown> | null; materialized: Record<string, unknown>[]; closeError: string | null; resolveState: string } = {
+    request, proposal: null, history: [], funded: "held", jobStatus: "running", saved: null, materialized: [], closeError: null, resolveState: "open",
   };
   const user = {
     auth: { getUser: async (token: string) => ({ data: { user: token === "good" ? { id: USER } : null }, error: null }) },
@@ -81,21 +81,38 @@ function createFake(role = "writer") {
   };
   const service = {
     from(table: string) {
-      const query: { select: () => typeof query; eq: () => typeof query; maybeSingle: () => Promise<unknown> } = {
-        select: () => query, eq: () => query,
+      const filters: Record<string, unknown> = {};
+      let limit = 51, before: { createdAt: string; id: string } | null = null;
+      const query: { select: () => typeof query; eq: (key: string, value: unknown) => typeof query; order: () => typeof query; limit: (value: number) => typeof query; or: (value: string) => typeof query; maybeSingle: () => Promise<unknown>; then: (resolve: (value: unknown) => unknown) => Promise<unknown> } = {
+        select: () => query, eq: (key, value) => { filters[key] = value; return query; }, order: () => query,
+        limit: (value) => { limit = value; return query; },
+        or: (value) => { const match = /^created_at\.lt\.([^,]+),and\(created_at\.eq\.[^,]+,id\.lt\.([^)]+)\)$/.exec(value); if (match) before = { createdAt: match[1], id: match[2] }; return query; },
         maybeSingle: async () => {
-          if (table === "story_blueprint_quote_proposals") return { data: state.proposal, error: null };
-          if (table === "story_blueprint_quote_requests") return { data: state.request, error: null };
+          if (table === "story_blueprint_quote_proposals" || table === "story_blueprint_quote_requests") {
+            const row = table === "story_blueprint_quote_proposals" ? state.proposal : state.request;
+            return { data: row && Object.entries(filters).every(([key, value]) => row[key] === value) ? row : null, error: null };
+          }
           if (table === "story_blueprint_generation_results") return { data: state.proposal ? { candidate_json: candidate } : null, error: null };
           if (table === "funded_usage_quotes") return { data: { status: state.funded }, error: null };
           if (table === "ai_jobs") return { data: { status: state.jobStatus }, error: null };
           return { data: null, error: { message: `unexpected service table ${table}` } };
+        },
+        then: async (resolve) => {
+          if (table !== "story_blueprint_quote_proposals") return resolve({ data: null, error: { message: "unexpected list" } });
+          const rows = state.history.filter(row => Object.entries(filters).every(([key, value]) => row[key] === value))
+            .filter(row => !before || String(row.created_at) < before.createdAt || (row.created_at === before.createdAt && String(row.id) < before.id))
+            .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)) || String(b.id).localeCompare(String(a.id))).slice(0, limit);
+          return resolve({ data: rows, error: null });
         },
       };
       return query;
     },
     rpc: async (name: string, args: Record<string, unknown>) => {
       calls.push({ name, args });
+      if (name === "close_story_blueprint_quote_request" && state.closeError) return { data: null, error: { code: state.closeError } };
+      if (name === "close_story_blueprint_quote_request") return { data: args.p_idempotency_key === state.request.idempotency_key
+        ? { state: "exists", requestId: state.request.id } : { state: "closed" }, error: null };
+      if (name === "resolve_story_blueprint_quote") return { data: { state: state.resolveState }, error: null };
       if (name === "request_story_blueprint_quote") return { data: { ...state.request, catalog_json: args.p_catalog_json }, error: null };
       if (name === "create_story_blueprint_quote_proposal") {
         const usage = args.p_usage_quote as Record<string, unknown>;
@@ -153,13 +170,112 @@ test("proposal quote is explicitly consented, queued, and does not return source
 });
 
 test("queued Story Blueprint quote recovery returns only a safe request projection", async (t) => {
-  const { app } = await appWith();
+  const { app, state } = await appWith();
   t.after(() => app.close());
   const response = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/story-blueprint/quote-requests/${REQUEST}`, headers: auth });
   assert.equal(response.statusCode, 200, response.body);
   assert.equal(response.headers["cache-control"], "private, no-store");
   assert.deepEqual(response.json(), { request: { id: REQUEST, status: "queued" }, proposal: null });
   assert.equal(response.body.includes("source_snapshot_json"), false);
+  state.proposal = { request_id: REQUEST, user_id: "b1000000-0000-4000-8000-000000000099" };
+  const invalid = await app.inject({ method: "GET", url: `/v1/books/${BOOK}/story-blueprint/quote-requests/${REQUEST}`, headers: auth });
+  assert.equal(invalid.statusCode, 503, "a malformed or foreign proposal must not be projected to this author");
+});
+
+test("original quote identity recovers only this author's request without starting work", async (t) => {
+  const { app, state, calls } = await appWith();
+  t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/story-blueprint/quote-requests/recover`;
+  const recover = (idempotencyKey: string, headers: Record<string, string> = auth) => app.inject({ method: "POST", url, headers, payload: { idempotencyKey } });
+  const found = await recover("blueprint-quote-one");
+  assert.equal(found.statusCode, 200, found.body);
+  assert.equal(found.headers["cache-control"], "private, no-store");
+  assert.deepEqual(found.json(), { request: { id: REQUEST, status: "queued" }, proposal: null });
+  assert.doesNotMatch(found.body, /Keep the conflict intimate|source_snapshot_json|idempotency_key/);
+  assert.deepEqual((await recover("a-different-key")).json(), { request: null, proposal: null });
+  state.request.user_id = "b1000000-0000-4000-8000-000000000099";
+  assert.deepEqual((await recover("blueprint-quote-one")).json(), { request: null, proposal: null });
+  const changed = await recover("blueprint-quote-one", { ...auth, "x-bookworm-actor": "b1000000-0000-4000-8000-000000000099" });
+  assert.equal(changed.statusCode, 409);
+  assert.equal(calls.length, 0, "recovery must never queue a count, place a hold, or generate output");
+});
+
+test("closing an absent original identity fences it, while an existing request remains recoverable", async (t) => {
+  const { app, calls, state } = await appWith();
+  t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/story-blueprint/quote-requests/close`;
+  const close = (idempotencyKey: string) => app.inject({ method: "POST", url, headers: auth, payload: { idempotencyKey } });
+  const absent = await close("never-queued-key");
+  assert.equal(absent.statusCode, 200, absent.body);
+  assert.equal(absent.headers["cache-control"], "private, no-store");
+  assert.deepEqual(absent.json(), { state: "closed", request: null, proposal: null });
+  const existing = await close("blueprint-quote-one");
+  assert.equal(existing.statusCode, 200, existing.body);
+  assert.deepEqual(existing.json(), { state: "exists", request: { id: REQUEST, status: "queued" }, proposal: null });
+  state.closeError = "40001";
+  assert.equal((await close("unconfirmed-race-key")).statusCode, 409);
+  state.closeError = "PGRST202";
+  const unavailable = await close("not-migrated-yet");
+  assert.equal(unavailable.statusCode, 503);
+  assert.match(unavailable.body, /Could not confirm whether this quote request was closed/);
+  assert.ok(calls.every(call => call.name === "close_story_blueprint_quote_request"));
+});
+
+test("quote resolution reports only the original owner's locked status and rejects malformed outcomes", async (t) => {
+  const { app, state, calls } = await appWith();
+  t.after(() => app.close());
+  state.proposal = { id: PROPOSAL, request_id: REQUEST, user_id: USER, workspace_id: WORKSPACE, book_id: BOOK,
+    blueprint_id: BLUEPRINT, source_revision: 3, source_sha256: "a".repeat(64), generation_request_sha256: INPUT_HASH,
+    generation_job_id: JOB, usage_quote_json: {}, reserved_credits: 5,
+    expires_at: "2099-01-01T00:00:00.000Z", accepted_at: null, accepted_job_id: null };
+  const url = `/v1/books/${BOOK}/story-blueprint/quotes/${PROPOSAL}/resolve`;
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: { source: "must not be accepted" } })).statusCode, 422);
+  for (const expected of ["open", "unusable", "accepted"]) {
+    state.resolveState = expected;
+    const response = await app.inject({ method: "POST", url, headers: auth, payload: {} });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.headers["cache-control"], "private, no-store");
+    assert.deepEqual(response.json(), { state: expected });
+  }
+  state.resolveState = "unknown";
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: {} })).statusCode, 503);
+  state.proposal.user_id = "b1000000-0000-4000-8000-000000000099";
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: {} })).statusCode, 404);
+  assert.ok(calls.every(call => call.name === "resolve_story_blueprint_quote"));
+});
+
+test("proposal history is author-scoped, private, and paginates without source snapshots", async (t) => {
+  const { app, state } = await appWith();
+  t.after(() => app.close());
+  const snapshot = storyBlueprintCatalogSnapshot(catalogRaw, { modelId: "story", now: new Date().toISOString() });
+  const usage = quoteStoryBlueprintUsage(snapshot, { scope: { jobId: JOB, workspaceId: WORKSPACE, userId: USER, inputSha256: INPUT_HASH }, countedInputTokens: 120, now: new Date().toISOString() });
+  const base = { request_id: REQUEST, user_id: USER, workspace_id: WORKSPACE, book_id: BOOK, blueprint_id: BLUEPRINT,
+    source_revision: 3, source_snapshot_json: { details: story, chapterPlan: plan }, source_sha256: "a".repeat(64),
+    generation_request_sha256: INPUT_HASH, generation_job_id: JOB, usage_quote_json: usage,
+    reserved_credits: Number(usage.reservedCredits), expires_at: usage.expiresAt, accepted_at: null, accepted_job_id: null };
+  const olderId = "b1000000-0000-4000-8000-000000000008";
+  const tiedId = "b1000000-0000-4000-8000-000000000006";
+  state.history = [
+    { ...base, id: PROPOSAL, created_at: "2026-10-01T00:00:00.000Z" },
+    { ...base, id: tiedId, created_at: "2026-10-01T00:00:00.000Z" },
+    { ...base, id: olderId, created_at: "2026-09-01T00:00:00.000Z" },
+    { ...base, id: "b1000000-0000-4000-8000-000000000009", user_id: "b1000000-0000-4000-8000-000000000099", created_at: "2026-11-01T00:00:00.000Z" },
+  ];
+  const url = `/v1/books/${BOOK}/story-blueprint/proposals`;
+  const first = await app.inject({ method: "GET", url: `${url}?limit=1`, headers: auth });
+  assert.equal(first.statusCode, 200, first.body);
+  assert.equal(first.headers["cache-control"], "private, no-store");
+  assert.equal(first.json().proposals[0].id, PROPOSAL);
+  assert.deepEqual(first.json().nextCursor, { createdAt: "2026-10-01T00:00:00.000Z", id: PROPOSAL });
+  assert.doesNotMatch(first.body, /source_snapshot_json|Keep the conflict intimate|usage_quote_json/);
+  const second = await app.inject({ method: "GET", url: `${url}?limit=1&beforeCreatedAt=${encodeURIComponent(first.json().nextCursor.createdAt)}&beforeId=${PROPOSAL}`, headers: auth });
+  assert.equal(second.statusCode, 200, second.body);
+  assert.equal(second.json().proposals[0].id, tiedId);
+  const third = await app.inject({ method: "GET", url: `${url}?limit=1&beforeCreatedAt=${encodeURIComponent(second.json().nextCursor.createdAt)}&beforeId=${tiedId}`, headers: auth });
+  assert.equal(third.statusCode, 200, third.body);
+  assert.equal(third.json().proposals[0].id, olderId);
+  assert.equal(third.json().nextCursor, null);
+  assert.equal((await app.inject({ method: "GET", url: `${url}?beforeId=${PROPOSAL}`, headers: auth })).statusCode, 422);
 });
 
 test("proposal output is hidden until settled and apply uses original source revision only", async (t) => {
@@ -183,6 +299,11 @@ test("proposal output is hidden until settled and apply uses original source rev
   const review = (await app.inject({ method: "GET", url: resultUrl, headers: auth })).json();
   assert.deepEqual(review.candidate, null);
   assert.equal(review.reviewStatus, "requires_review");
+  state.funded = "held";
+  state.jobStatus = "failed";
+  assert.equal((await app.inject({ method: "GET", url: resultUrl, headers: auth })).json().reviewStatus, "requires_review", "a failed job with an unresolved hold cannot be dismissed");
+  state.funded = "cancelled";
+  assert.equal((await app.inject({ method: "GET", url: resultUrl, headers: auth })).json().reviewStatus, "failed");
   state.funded = "settled";
   state.jobStatus = "succeeded";
   const ready = await app.inject({ method: "GET", url: resultUrl, headers: auth });

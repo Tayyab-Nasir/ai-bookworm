@@ -20,6 +20,16 @@ const proposalRequestBody = z.object({
 }).strict();
 const acceptanceBody = z.object({ expectedCredits: z.number().int().positive().max(2147483647) }).strict();
 const applyBody = z.object({ expectedRevision: z.number().int().min(1) }).strict();
+const recoveryBody = z.object({ idempotencyKey: z.string().trim().min(8).max(200) }).strict();
+const closureResult = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("closed") }).strict(),
+  z.object({ state: z.literal("exists"), requestId: id }).strict(),
+]);
+const historyQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  beforeCreatedAt: z.string().datetime({ offset: true }).optional(),
+  beforeId: id.optional(),
+}).strict().refine(value => Boolean(value.beforeCreatedAt) === Boolean(value.beforeId));
 const requestSchema = z.object({
   id, user_id: id, workspace_id: id, book_id: id, blueprint_id: id, source_revision: z.number().int().min(1),
   source_snapshot_json: z.unknown(), source_sha256: z.string().regex(/^[a-f0-9]{64}$/), catalog_json: z.unknown(),
@@ -94,6 +104,16 @@ async function proposalForRequest(service: SupabaseClient, requestId: string) {
   return data;
 }
 
+async function safeProposalForRequest(service: SupabaseClient, requestId: string, userId: string, bookId: string) {
+  const proposal = await proposalForRequest(service, requestId);
+  if (!proposal) return null;
+  const parsed = proposalSchema.safeParse(proposal);
+  if (!parsed.success || parsed.data.request_id !== requestId || parsed.data.user_id !== userId || parsed.data.book_id !== bookId) {
+    throw new AppError(503, "The saved Story Blueprint quote could not be verified.");
+  }
+  return safeProposal(parsed.data);
+}
+
 async function quoteRequestForUser(service: SupabaseClient, requestId: string, userId: string, bookId: string) {
   const { data, error } = await service.from("story_blueprint_quote_requests").select("*")
     .eq("id", requestId).eq("user_id", userId).eq("book_id", bookId).maybeSingle();
@@ -122,7 +142,7 @@ async function proposalReviewStatus(service: SupabaseClient, acceptedJobId: stri
   const billing = (fundedResult.data as { status?: unknown } | null)?.status;
   const job = (jobResult.data as { status?: unknown } | null)?.status;
   if (billing === "requires_review") return "requires_review";
-  if (job === "failed") return "failed";
+  if (job === "failed") return billing === "settled" || billing === "cancelled" ? "failed" : "requires_review";
   // A settled receipt alone is not public review output. The completion RPC
   // must also clear the lease and mark the private-candidate job succeeded.
   return billing === "settled" && job === "succeeded" ? "ready" : "pending";
@@ -146,6 +166,52 @@ export function storyBlueprintProposalRoutes(app: FastifyInstance) {
     return availableStoryBlueprintModels(process.env.STORY_BLUEPRINT_PRICING_CATALOG_JSON, new Date().toISOString());
   });
 
+  // An absent row is not a cancellation: an earlier request may still arrive.
+  // This read never creates a quote or contacts the provider.
+  app.post("/books/:bookId/story-blueprint/quote-requests/recover", async (req, reply) => {
+    const body = parse(recoveryBody, req.body, "Use the original Story Blueprint quote request key.");
+    const { bookId } = await scopedBook(app, req);
+    const service = app.supabaseFactory();
+    const { data, error } = await service.from("story_blueprint_quote_requests").select("*")
+      .eq("user_id", req.userId).eq("book_id", bookId).eq("idempotency_key", body.idempotencyKey).maybeSingle();
+    if (error) throw new AppError(503, "Could not recover this Story Blueprint quote request.");
+    reply.header("cache-control", "private, no-store");
+    if (!data) return { request: null, proposal: null };
+    const request = requestSchema.safeParse(data);
+    if (!request.success || request.data.user_id !== req.userId || request.data.book_id !== bookId
+      || request.data.idempotency_key !== body.idempotencyKey) {
+      throw new AppError(503, "The saved Story Blueprint quote request could not be verified.");
+    }
+    return { request: safeQuoteRequest(request.data), proposal: await safeProposalForRequest(service, request.data.id, req.userId, bookId) };
+  });
+
+  app.post("/books/:bookId/story-blueprint/quote-requests/close", async (req, reply) => {
+    const body = parse(recoveryBody, req.body, "Use the original Story Blueprint quote request key.");
+    const { bookId } = await scopedBook(app, req);
+    const service = app.supabaseFactory();
+    const closed = await service.rpc("close_story_blueprint_quote_request", {
+      p_book_id: bookId, p_user_id: req.userId, p_idempotency_key: body.idempotencyKey,
+    });
+    if (closed.error) {
+      if (closed.error.code === "42501") throw new AppError(403, "Active book access is required to recover this request.");
+      if (closed.error.code === "P0002") throw new AppError(404, "Book not found.");
+      if (closed.error.code === "54000") throw new AppError(429, "Too many quote recovery closures. Try again later.");
+      if (["23505", "40001", "40P01"].includes(closed.error.code ?? "")) throw new AppError(409, "The quote identity changed. Refresh its status before retrying closure.");
+      if (closed.error.code === "22023") throw new AppError(422, "The original quote identity is invalid.");
+      throw new AppError(503, "Could not confirm whether this quote request was closed. Refresh or retry the original closure.");
+    }
+    const result = closureResult.safeParse(one(closed.data));
+    if (!result.success) throw new AppError(503, "Could not confirm whether this Story Blueprint request was closed.");
+    reply.header("cache-control", "private, no-store");
+    if (result.data.state === "closed") return { state: "closed", request: null, proposal: null };
+    const request = await quoteRequestForUser(service, result.data.requestId, req.userId, bookId);
+    if (request.id !== result.data.requestId || request.user_id !== req.userId || request.book_id !== bookId
+      || request.idempotency_key !== body.idempotencyKey) {
+      throw new AppError(503, "The saved Story Blueprint quote request could not be verified.");
+    }
+    return { state: "exists", request: safeQuoteRequest(request), proposal: await safeProposalForRequest(service, request.id, req.userId, bookId) };
+  });
+
   app.post("/books/:bookId/story-blueprint/quotes", async (req, reply) => {
     const body = parse(proposalRequestBody, req.body, "Choose a model and consent to provider token counting.");
     const { bookId } = await scopedBook(app, req, true);
@@ -160,10 +226,10 @@ export function storyBlueprintProposalRoutes(app: FastifyInstance) {
     if (!quoteRequest.success || quoteRequest.data.user_id !== req.userId || quoteRequest.data.book_id !== bookId) {
       throw new AppError(503, "Story Blueprint quote storage returned an invalid request.");
     }
-    const existing = await proposalForRequest(service, quoteRequest.data.id);
+    const existing = await safeProposalForRequest(service, quoteRequest.data.id, req.userId, bookId);
     reply.header("cache-control", "private, no-store");
     if (existing) {
-      return { request: safeQuoteRequest(quoteRequest.data), proposal: safeProposal(existing) };
+      return { request: safeQuoteRequest(quoteRequest.data), proposal: existing };
     }
     return reply.status(202).send({ request: safeQuoteRequest(quoteRequest.data), proposal: null });
   });
@@ -174,8 +240,8 @@ export function storyBlueprintProposalRoutes(app: FastifyInstance) {
     reply.header("cache-control", "private, no-store");
     const service = app.supabaseFactory();
     const quoteRequest = await quoteRequestForUser(service, requestId, req.userId, bookId);
-    const proposal = await proposalForRequest(service, quoteRequest.id);
-    return { request: safeQuoteRequest(quoteRequest), proposal: proposal ? safeProposal(proposal) : null };
+    const proposal = await safeProposalForRequest(service, quoteRequest.id, req.userId, bookId);
+    return { request: safeQuoteRequest(quoteRequest), proposal };
   });
 
   app.get("/books/:bookId/story-blueprint/quotes/:proposalId", async (req, reply) => {
@@ -201,6 +267,49 @@ export function storyBlueprintProposalRoutes(app: FastifyInstance) {
     }
     reply.header("cache-control", "private, no-store");
     return reply.status(202).send({ jobId: job.id, status: job.status });
+  });
+
+  app.post("/books/:bookId/story-blueprint/quotes/:proposalId/resolve", async (req, reply) => {
+    parse(z.object({}).strict(), req.body ?? {}, "No additional quote data is accepted.");
+    const proposalId = parse(id, (req.params as { proposalId: string }).proposalId, "Valid Story Blueprint quote ID required.");
+    const { bookId } = await scopedBook(app, req);
+    const service = app.supabaseFactory();
+    await proposalForUser(service, proposalId, req.userId, bookId);
+    const resolved = await service.rpc("resolve_story_blueprint_quote", { p_proposal_id: proposalId, p_user_id: req.userId });
+    if (resolved.error) {
+      if (resolved.error.code === "42501") throw new AppError(403, "Active book access is required to recover this quote.");
+      if (resolved.error.code === "P0002") throw new AppError(404, "Story Blueprint quote not found.");
+      if (["40001", "40P01"].includes(resolved.error.code ?? "")) throw new AppError(409, "The quote is changing. Refresh its status before retrying.");
+      throw new AppError(503, "Could not confirm the previous quote. Refresh or retry its original status.");
+    }
+    const state = z.object({ state: z.enum(["open", "unusable", "accepted"]) }).strict().safeParse(one(resolved.data));
+    if (!state.success) throw new AppError(503, "The previous quote status could not be verified.");
+    reply.header("cache-control", "private, no-store");
+    return state.data;
+  });
+
+  app.get("/books/:bookId/story-blueprint/proposals", async (req, reply) => {
+    const query = parse(historyQuery, req.query, "Use a valid Story Blueprint proposal history cursor.");
+    const { bookId } = await scopedBook(app, req);
+    let read = app.supabaseFactory().from("story_blueprint_quote_proposals").select("*")
+      .eq("user_id", req.userId).eq("book_id", bookId)
+      .order("created_at", { ascending: false }).order("id", { ascending: false }).limit(query.limit + 1);
+    if (query.beforeCreatedAt && query.beforeId) {
+      read = read.or(`created_at.lt.${query.beforeCreatedAt},and(created_at.eq.${query.beforeCreatedAt},id.lt.${query.beforeId})`);
+    }
+    const { data, error } = await read;
+    if (error) throw new AppError(503, "Could not load saved Story Blueprint proposals.");
+    const rows = z.array(proposalSchema.extend({ created_at: z.string().datetime({ offset: true }) })).safeParse(data);
+    if (!rows.success || rows.data.some(row => row.user_id !== req.userId || row.book_id !== bookId)) {
+      throw new AppError(503, "Saved Story Blueprint proposals could not be verified.");
+    }
+    const page = rows.data.slice(0, query.limit);
+    const last = page.at(-1);
+    reply.header("cache-control", "private, no-store");
+    return {
+      proposals: page.map(row => ({ ...safeProposal(row), createdAt: row.created_at })),
+      nextCursor: rows.data.length > query.limit && last ? { createdAt: last.created_at, id: last.id } : null,
+    };
   });
 
   app.get("/books/:bookId/story-blueprint/proposals/:proposalId", async (req, reply) => {

@@ -23,6 +23,7 @@ import { chapterRestoreLedgerRaces } from './native-chapter-restore-ledger.mjs';
 import { renderCloseRaces } from './native-render-close.mjs';
 import { workspaceCreationReceiptRaces } from './native-workspace-creation-receipts.mjs';
 import { invitationRecoveryRaces } from './native-invitation-recovery.mjs';
+import { storyBlueprintQuoteClosureRaces } from './native-story-blueprint-quote-closure.mjs';
 import { verifyAudiobookSegmentationFixtures } from './audiobook-segmentation-lifecycle.mjs';
 import { verifyNarrationQuoteFixtures, verifyNarrationChapterQuoteFixtures } from './narration-quote-lifecycle.mjs';
 import { verifyNarrationFundedFixtures } from './narration-funded-lifecycle.mjs';
@@ -627,6 +628,7 @@ try {
   await manualBookBibleRecoveryRaces({ sql, session, until, database });
   await workspaceCreationReceiptRaces({ sql, session, until, database });
   await invitationRecoveryRaces({ sql, session, until, database });
+  await storyBlueprintQuoteClosureRaces({ sql, session, until, database });
   await customerAiNativeComposition({ sql });
   await customerAiCompletionRaces({ sql, session, until, database });
   await customerAiPreparationRaces({ sql, session, until, database });

@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 141 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 142 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -30,6 +30,7 @@ const uploadedPaperbackCover = '20261119193430_uploaded_paperback_cover.sql';
 const aiConnectionConflictCode = '20261120022619_ai_connection_conflict_code.sql';
 const workspaceCreationReceipts = '20261120024556_workspace_creation_receipts.sql';
 const invitationRecovery = '20261120050328_invitation_acceptance_recovery.sql';
+const blueprintQuoteClosure = '20261120110000_story_blueprint_quote_closure.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -219,7 +220,7 @@ async function expectedInvitationRecoveryGuard(migration, fixture, historical, d
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 141, 'This reviewed rehearsal pins the 45 -> 141 target; review before extending');
+  assert.equal(names.length, 142, 'This reviewed rehearsal pins the 45 -> 142 target; review before extending');
   assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
   assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
@@ -242,7 +243,7 @@ try {
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
-  assert.deepEqual(names.slice(-9), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery]);
+  assert.deepEqual(names.slice(-10), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure]);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
@@ -559,6 +560,13 @@ try {
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Restore ledger tests roll back without changing historical data');
   assert.equal((await db.query('select count(*)::int as n from public.chapter_restore_operations')).rows[0].n, 0, 'No historical restore receipts invented');
   console.log('PASS populated upgrade restore ledger: identity, replay, close, conflict, asset checks and rollback');
+  step = 'Story Blueprint quote closure after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/story-blueprint-quote-closure.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Quote closure probes roll back without changing historical data');
+  assert.equal((await db.query('select count(*)::int as n from public.story_blueprint_quote_identities')).rows[0].n, 0);
+  await db.exec(await readFile(join(root, 'tests/security/story-blueprint-quote-proposals.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Quote acceptance resolution rolls back without changing historical data');
+  console.log('PASS populated upgrade Story Blueprint quote closure and historical rollback');
   step = 'existing synthetic paid quote lifecycle helpers on upgraded schema';
   await verifyPaidQuoteFixtures(async statement => {
     const results = await db.exec(statement);
