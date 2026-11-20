@@ -108,7 +108,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/RemovedAssets")) return { default: "RemovedAssets" };
     if (name.endsWith("/asset-lifecycle-operation")) return { beginAssetOperation: (_s: any, input: any, uuid: () => string) => ({...input, operationId: uuid()}), clearConfirmedAssetOperation: () => {}, readAssetOperation: () => null };
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
-    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "SavedPdfProof", "RetailerPackageRequest", "RetailerListingReview", "RetailerSubmission", "PrivateArtifactDownload", "PrivateCoverPreview"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
+    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "SavedPdfProof", "RetailerPackageRequest", "RetailerListingReview", "ManagedPublishingConsent", "RetailerSubmission", "PrivateArtifactDownload", "PrivateCoverPreview"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
     if (name.endsWith("/pdf-proof")) return { renderLinksDeadline };
     if (name.endsWith("/publishing-request")) return { ...publishingRequests, downloadClock: api.fixtureDownloadClock ?? publishingRequests.downloadClock };
     if (name.endsWith("/render-request")) return renderRequests;
@@ -131,7 +131,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
   };
   const source = readFileSync(resolve(path), "utf8") + (options.inner ? `\nexport { ${options.inner} as auditInner };` : "");
   let key = 0;
-  vm.runInNewContext(compile(source), { exports, require, window, sessionStorage: {}, performance, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, URL, URLSearchParams, crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++key).padStart(12, "0")}` }, navigator: { clipboard: { writeText: api.copyInvitation ?? (async () => {}) } }, fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user", displayName: "Fixture author" } }) }) }, { filename: path });
+  vm.runInNewContext(compile(source), { exports, require, process: { env: {} }, window, sessionStorage: {}, performance, document: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} }, URL, URLSearchParams, crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++key).padStart(12, "0")}` }, navigator: { clipboard: { writeText: api.copyInvitation ?? (async () => {}) } }, fetch: async () => ({ ok: true, json: async () => ({ user: { id: "fixture-user", displayName: "Fixture author" } }) }) }, { filename: path });
   const fixtureScope = { actor: A, current: () => true, begin: () => () => true, checked: async (work: () => Promise<unknown>) => work() };
   const render = () => { stateCursor = 0; refCursor = 0; memoCursor = 0; effectCursor = 0; effects.length = 0; callbacks.length = 0; return (options.inner ? exports.auditInner : exports.default)(options.props ?? (options.inner === "AssetsPageInner" ? { scope: fixtureScope, active: true, revision: {}, retry: async () => {} } : {})); };
   return { render, states, refs, effects, callbacks, values, window, assigned, setProps(value: object) { options.props = value; } };
