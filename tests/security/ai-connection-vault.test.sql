@@ -28,11 +28,11 @@ begin
  begin
   perform public.mutate_ai_connection(u,'openai',c,null,op,'save','9876','test',n,ciphertext,t);
   assert false,'same operation replay replaced key';
- exception when serialization_failure then null; end;
+ exception when sqlstate 'PT409' then null; end;
  begin
   perform public.mutate_ai_connection(u,'openai',c,null,gen_random_uuid(),'save','9876','test',n,ciphertext,t);
   assert false,'concurrent create replaced existing connection';
- exception when serialization_failure then null; end;
+ exception when sqlstate 'PT409' then null; end;
  r:=public.recover_ai_connection_operation(u,'openai',c,null,op,'save',false);
  assert r->>'status'='saved' and (r->>'revision')::integer=1 and not r ? 'ciphertext';
  r:=public.recover_ai_connection_operation(u,'openai',c,null,op,'save',true);
@@ -40,11 +40,11 @@ begin
  begin
   perform public.recover_ai_connection_operation(u,'anthropic',c,null,op,'save',true);
   assert false,'changed intent reused receipt';
- exception when serialization_failure then null; end;
+ exception when sqlstate 'PT409' then null; end;
  begin
   perform public.mutate_ai_connection('ac240000-0000-4000-8000-000000000002','openai',c,null,gen_random_uuid(),'save','9876','test',n,ciphertext,t);
   assert false,'foreign owner reused connection id';
- exception when serialization_failure then null; end;
+ exception when sqlstate 'PT409' then null; end;
  begin
   perform public.mutate_ai_connection(u,'openai',c,1,gen_random_uuid(),'save','9876','test','invalid',ciphertext,t);
   assert false,'bad envelope accepted';
@@ -55,7 +55,7 @@ begin
  begin
   perform public.mutate_ai_connection(u,'openai',c,1,gen_random_uuid(),'revoke');
   assert false,'stale revocation removed newer key';
- exception when serialization_failure then null; end;
+ exception when sqlstate 'PT409' then null; end;
  op:=gen_random_uuid();
  r:=public.recover_ai_connection_operation(u,'openai',c,2,op,'save',false);
  assert r->>'status'='not_found','read-only recovery created a record';
@@ -64,7 +64,7 @@ begin
  begin
   perform public.mutate_ai_connection(u,'openai',c,2,op,'save','late','test',n,ciphertext,t);
   assert false,'late save resurrected closed operation';
- exception when serialization_failure then null; end;
+ exception when sqlstate 'PT409' then null; end;
  v:=public.mutate_ai_connection(u,'openai',c,2,gen_random_uuid(),'revoke');
  assert v.status='revoked' and v.revision=3 and v.key_suffix is null;
  v:=public.mutate_ai_connection(u,'openai',c,3,gen_random_uuid(),'save','back','next',n,ciphertext,t);

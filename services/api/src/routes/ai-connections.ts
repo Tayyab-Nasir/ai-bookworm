@@ -35,7 +35,7 @@ function metadata(value: unknown, owner: string) {
 }
 function dbError(error: { code?: string } | null): void {
   if (!error) return;
-  if (["40001", "23505"].includes(error.code ?? "")) throw new AppError(409, "This connection changed. Reload its saved status before trying again.");
+  if (["40001", "23505", "PT409"].includes(error.code ?? "")) throw new AppError(409, "This connection changed. Reload its saved status before trying again.");
   if (error.code === "P0429") throw new AppError(429, "Too many connection changes. Wait a minute, then reload.");
   throw new AppError(503, "AI key storage is unavailable. Any submitted change is unconfirmed; reload saved status.");
 }

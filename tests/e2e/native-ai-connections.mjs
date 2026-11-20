@@ -32,8 +32,10 @@ export async function runNativeAiConnections({page,setup,service,webOrigin,apiOr
   const auth=await foreign.auth.signUp({email:`${randomUUID()}@bookworm.local.test`,password:`Bwk-${randomUUID()}!`});assert(!auth.error&&auth.data.session);
   const foreignRows=await foreign.from('ai_connections').select('*');assert(!foreignRows.error);assert.deepEqual(foreignRows.data,[]);
   const direct=await foreign.rpc('mutate_ai_connection',{p_owner_id:userId,p_provider:'openai',p_connection_id:connection.id,p_expected_revision:1,p_operation_id:randomUUID(),p_action:'revoke'});assert(direct.error);
-  const foreignResponse=await fetch(`${apiOrigin}/v1/account/ai-connections/openai`,{method:'DELETE',headers:{authorization:`Bearer ${auth.data.session.access_token}`,'x-bookworm-actor':auth.data.user.id,'content-type':'application/json'},body:JSON.stringify({connectionId:connection.id,expectedRevision:1,operationId:randomUUID()})});
-  assert.equal(foreignResponse.status,409);await foreignResponse.body.cancel();await foreign.auth.signOut();
+  const foreignResponse=await fetch(`${apiOrigin}/v1/account/ai-connections/openai`,{method:'DELETE',signal:AbortSignal.timeout(10_000),headers:{authorization:`Bearer ${auth.data.session.access_token}`,'x-bookworm-actor':auth.data.user.id,'content-type':'application/json'},body:JSON.stringify({connectionId:connection.id,expectedRevision:1,operationId:randomUUID()})});
+  assert.equal(foreignResponse.status,409);await foreignResponse.body.cancel();
+  const foreignCollision=await fetch(`${apiOrigin}/v1/account/ai-connections/openai`,{method:'PUT',signal:AbortSignal.timeout(10_000),headers:{authorization:`Bearer ${auth.data.session.access_token}`,'x-bookworm-actor':auth.data.user.id,'content-type':'application/json'},body:JSON.stringify({connectionId:connection.id,expectedRevision:null,operationId:randomUUID(),apiKey:synthetic})});
+  assert.equal(foreignCollision.status,409);await foreignCollision.body.cancel();await foreign.auth.signOut();
   const concurrent=await page.evaluate(async({actor,id,key})=>{
    const responses=await Promise.all([1,2].map(()=>fetch('/api/backend/v1/account/ai-connections/openai',{method:'PUT',headers:{'content-type':'application/json','x-bookworm-actor':actor},body:JSON.stringify({connectionId:id,expectedRevision:1,operationId:crypto.randomUUID(),apiKey:key})})));
    for(const response of responses)await response.body.cancel();return responses.map(response=>response.status).sort();

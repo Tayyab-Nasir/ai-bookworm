@@ -85,7 +85,7 @@ test("missing encryption refuses saves but metadata and removal remain available
   } finally { await f.app.close(); }
 });
 test("errors and malformed confirmations are neutral, conflicts and rate limits retain their status", async () => {
-  for (const [options, status] of [[{ fail: true }, 503], [{ error: { code: "40001" } }, 409], [{ error: { code: "P0429" } }, 429], [{ error: { code: "PGRST202" } }, 503], [{ rpcData: { ...row, owner_id: foreign } }, 503], [{ rpcData: { ...row, revision: 2 } }, 503]] as const) {
+  for (const [options, status] of [[{ fail: true }, 503], [{ error: { code: "40001" } }, 409], [{ error: { code: "PT409" } }, 409], [{ error: { code: "P0429" } }, 429], [{ error: { code: "PGRST202" } }, 503], [{ rpcData: { ...row, owner_id: foreign } }, 503], [{ rpcData: { ...row, revision: 2 } }, 503]] as const) {
     const f = await fixture(options); try { const response = await f.send("PUT", input, owner, "/openai"); assert.equal(response.statusCode, status); assert(!response.body.includes(key)); assert(!f.logs.join("").includes(key)); } finally { await f.app.close(); }
   }
 });
