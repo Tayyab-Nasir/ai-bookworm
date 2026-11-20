@@ -87,7 +87,7 @@ async function verifyManagedPublishing(request, service, author, alice, bob, pac
       assert.deepEqual(body.to, [alice.email]);
       assert.ok(!options.body.includes(primary.id) && !options.body.includes(listingUrl));
     } catch {
-      console.error(`FAIL native managed publication notification: ${stage}`);
+      console.error(`Native managed publication notification failed at ${stage}`);
       throw new Error('Native managed publication notification verification failed.');
     }
     console.log('PASS native managed publication notification verified recipient, exact dispatch settlement and no resend');
