@@ -97,7 +97,13 @@ project host/user, verifies TLS, uses read-only transactions, excludes credentia
 from process arguments/logs, and stores archives outside the repository/vault
 with restricted Windows permissions. It will export database and password-free
 role definitions, read every archive entry, and write a metadata-only receipt.
-**An export and a restore drill have not yet occurred.**
+**A hosted export and restore drill still need verification.**
+
+`npm run test:db:upgrade` now restores a disposable PGlite snapshot into a
+separate instance. It compares historical row digests and reruns tenant
+isolation and upgrade guard checks after restore. This covers database
+fixtures, including Storage metadata. Hosted PostgreSQL backup recovery,
+Storage object bytes, and production RPO/RTO require a separate drill.
 
 Next: after the connection is configured, complete the backup and restore
 readiness check, refresh hosted history/activity, apply the 64 pinned files in

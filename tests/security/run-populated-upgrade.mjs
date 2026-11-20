@@ -595,7 +595,19 @@ try {
   });
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Reused paid lifecycle fixtures roll back without changing historical rows');
   console.log(`PASS populated upgrade: 45 historical migrations + committed rows + ${migrations.length - 45} upgrades + guarded aborts + reused synthetic paid lifecycle helpers.`);
-  console.log('NOT PROVEN: hosted history/drift, real backup/restore, native concurrency, GoTrue/PostgREST/Storage HTTP, provider receipts, worker drain or production rollout authority.');
+  step = 'isolated database snapshot restore';
+  const snapshot = await db.dumpDataDir();
+  const restored = new PGlite({ loadDataDir: snapshot, extensions: { citext, pgcrypto } });
+  try {
+    assert.deepEqual(await captureHistoricalState(restored, fixture), historical, 'Restored historical rows match the pre-upgrade fixture');
+    await verifyHistoricalIsolation(restored, fixture);
+    await verifyUpgradeGates(restored, fixture);
+    assert.deepEqual(await captureHistoricalState(restored, fixture), historical, 'Restored policy checks leave the snapshot data intact');
+  } finally {
+    await restored.close();
+  }
+  console.log('PASS isolated PGlite snapshot restore: historical rows, tenant isolation and upgrade guards');
+  console.log('NOT PROVEN: hosted history/drift, hosted PostgreSQL or Storage object restore, native concurrency, GoTrue/PostgREST/Storage HTTP, provider receipts, worker drain or production rollout authority.');
 } catch (error) {
   // Never print SQL, function definitions, row contents or raw database error detail.
   const location = error.code === 'ERR_ASSERTION' ? error.stack?.split('\n').find(line => line.includes('/tests/security/'))?.trim() : null;
