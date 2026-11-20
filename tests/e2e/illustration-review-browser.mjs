@@ -13,6 +13,8 @@ const workspaceId = '33333333-3333-4333-8333-333333333333';
 const bookId = '88888888-8888-4888-8888-888888888888';
 const chapterId = '44444444-4444-4444-8444-444444444444';
 const assetId = '55555555-5555-4555-8555-555555555555';
+const artworkPath = (version) => `workspaces/${workspaceId}/assets/${assetId}/v${version}/harbor.png`;
+const artworkPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 const authorId = '11111111-1111-4111-8111-111111111111';
 const reviewerId = '22222222-2222-4222-8222-222222222222';
 const users = new Map([
@@ -23,7 +25,7 @@ const users = new Map([
 const book = { id: bookId, workspace_id: workspaceId, title: 'Harbor browser journey', subtitle: null,
   author_name: 'Fixture author', language: 'en', genre: 'Fantasy', status: 'draft', updated_at: '2026-09-28T00:00:00.000Z' };
 const asset = { id: assetId, workspace_id: workspaceId, type: 'illustration', name: 'Harbor lantern illustration',
-  mime_type: 'image/png', storage_path: `${workspaceId}/${assetId}.png`, checksum: 'a'.repeat(64), size_bytes: 68,
+  mime_type: 'image/png', storage_path: artworkPath(3), checksum: 'a'.repeat(64), size_bytes: artworkPng.length,
   status: 'draft', deleted_at: null, requires_approval: true, current_version_number: 3, current_scan_status: 'clean' };
 const members = [
   { workspace_id: workspaceId, user_id: authorId, role: 'editor', status: 'active' },
@@ -56,25 +58,30 @@ async function reply(route, status, value) {
 async function installFixtureRoutes(page, sessionUserId, pageErrors) {
   page.on('pageerror', (error) => pageErrors.push(error.message));
   page.on('dialog', (dialog) => dialog.dismiss());
-  await page.route('**/api/auth/session', (route) => reply(route, 200, { user: users.get(sessionUserId) ?? null }));
+  await page.route('**/api/auth/session', (route) => reply(route, 200, { user: users.get(sessionUserId) ?? null, storageOrigin: fixtureOrigin }));
+  await page.route(`${fixtureOrigin}/storage/v1/object/sign/book-assets/**`, (route) =>
+    route.fulfill({ contentType: 'image/png', body: artworkPng }));
   await page.route('**/api/backend/v1/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname.replace('/api/backend', '');
     const method = request.method();
     if (method === 'GET' && path === `/v1/assets/${assetId}/download-url`) {
-      downloadVersions.push(url.searchParams.get('versionNumber'));
-      return route.continue();
+      const version = url.searchParams.get('versionNumber');
+      downloadVersions.push(version);
+      return reply(route, 200, { url: `${fixtureOrigin}/storage/v1/object/sign/book-assets/${artworkPath(version)}?token=fixture-artwork`, expiresIn: 60 });
     }
     if (method === 'GET' && path === '/v1/workspaces') {
       return reply(route, 200, { workspaces: [{ id: workspaceId, name: 'Harbor project', organization_id: 'org-fixture', created_by: authorId }] });
     }
     if (method === 'GET' && path === `/v1/workspaces/${workspaceId}/members`) return reply(route, 200, { members, profiles });
     if (method === 'GET' && path === '/v1/activity') return reply(route, 200, { events: [] });
+    if (method === 'GET' && path === '/v1/tasks') return reply(route, 200, { tasks: [] });
     if (method === 'GET' && path === '/v1/books') return reply(route, 200, { books: [book] });
     if (method === 'GET' && path === '/v1/assets') return reply(route, 200, { assets: [{ ...asset }] });
     if (method === 'GET' && path === '/v1/approvals') return reply(route, 200, { approvals: approvals.map((item) => ({ ...item })) });
     if (method === 'POST' && path === '/v1/approvals') {
+      assert.equal(request.headers()['x-bookworm-actor'], sessionUserId);
       const body = request.postDataJSON();
       createBodies.push(body);
       let approval = approvals.find((item) => item.request_key === body.idempotencyKey);
@@ -89,6 +96,7 @@ async function installFixtureRoutes(page, sessionUserId, pageErrors) {
     }
     const decision = path.match(/^\/v1\/approvals\/([^/]+)\/(approve|reject)$/u);
     if (method === 'POST' && decision) {
+      assert.equal(request.headers()['x-bookworm-actor'], sessionUserId);
       const [, approvalId, action] = decision;
       const body = request.postDataJSON();
       decisionBodies.push({ approvalId, action, body, actorId: sessionUserId });
@@ -132,7 +140,13 @@ try {
   await authorPage.getByLabel('Email').fill('author@example.test');
   await authorPage.getByLabel('Password', { exact: true }).fill('fixture-password');
   await authorPage.getByRole('button', { name: /sign in/i }).click();
-  await authorPage.locator('#workspace, #workspaceName').first().waitFor();
+  await authorPage.waitForURL(`${origin}/dashboard`);
+  await authorPage.goto(`${origin}/tasks?ws=${workspaceId}`);
+  await authorPage.getByRole('region', { name: 'Task board' }).waitFor();
+  await authorPage.getByLabel('Task title', { exact: true }).waitFor();
+  await authorPage.goto(`${origin}/team?ws=${workspaceId}`);
+  await authorPage.getByRole('heading', { name: 'Members', exact: true }).waitFor();
+  await authorPage.getByText('Only workspace owners and admins can invite or change roles.', { exact: true }).waitFor();
   await authorPage.goto(`${origin}/approvals?ws=${workspaceId}`);
   const artwork = authorPage.getByLabel('Artwork', { exact: true });
   await artwork.waitFor();
@@ -172,6 +186,7 @@ try {
   assert.equal(rejectCalls[0].actorId, reviewerId);
 
   asset.current_version_number = 4;
+  asset.storage_path = artworkPath(4);
   asset.status = 'draft';
   await authorPage.reload();
   await authorPage.getByLabel('Artwork', { exact: true }).selectOption(assetId);
