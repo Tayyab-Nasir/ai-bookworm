@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import { loadBook } from "../lib/authoring.js";
 import { jobSummary } from "../lib/job-summary.js";
+import type { SupabaseClient } from "../lib/supabase.js";
 
 const unavailable = () => new AppError(503, "The saved book overview is temporarily unavailable. No book changes were made.");
 const number = z.number().int().nonnegative().safe();
@@ -25,6 +26,21 @@ function exactCount(result: { error: unknown; count: number | null }) {
   return result.count!;
 }
 
+async function managedPublications(sb: SupabaseClient, bookId: string, workspaceId: string) {
+  const { data, error } = await sb.from("managed_publishing_requests")
+    .select("package_job_id,workspace_id,confirmed_at,job:publishing_jobs!inner(id,book_id,channel)")
+    .eq("workspace_id", workspaceId).eq("job.book_id", bookId).not("confirmed_at", "is", null)
+    .order("confirmed_at", { ascending: false }).order("package_job_id").limit(8);
+  const parsed = z.array(z.object({
+    package_job_id: z.string().uuid(), workspace_id: z.literal(workspaceId), confirmed_at: z.string().datetime({ offset: true }),
+    job: z.object({ id: z.string().uuid(), book_id: z.literal(bookId), channel: z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]) }),
+  })).max(8).safeParse(data);
+  if (error || !parsed.success || parsed.data.some(row => row.package_job_id !== row.job.id)) throw unavailable();
+  return { status: "ready" as const, rows: parsed.data.map(row => ({
+    jobId: row.package_job_id, channel: row.job.channel, confirmedAt: row.confirmed_at,
+  })) };
+}
+
 /** One user-scoped, read-only projection. No provider, Storage link or service-role access. */
 export function bookOverviewRoutes(app: FastifyInstance) {
   app.get("/books/:bookId/overview", async (req, reply) => {
@@ -37,7 +53,7 @@ export function bookOverviewRoutes(app: FastifyInstance) {
     const bookFields = checked(z.object({ id: z.literal(bookId), workspace_id: z.string().uuid(), title: z.string().min(1).max(500),
       subtitle: z.string().max(500).nullable(), author_name: z.string().min(1).max(300), language: z.string().min(1).max(40),
       genre: z.string().max(200).nullable(), status: z.string().min(1).max(40), updated_at: z.string().datetime({ offset: true }) }), book);
-    const [space, chapters, bible, metadata, editions, imports, ai, publishing, audiobookExports, renders, packages] = await Promise.all([
+    const [space, chapters, bible, metadata, editions, imports, ai, publishing, audiobookExports, renders, packages, publications] = await Promise.all([
       sb.from("workspaces").select("id,name").eq("id", bookFields.workspace_id).maybeSingle(),
       sb.from("chapters").select("id,book_id,title,order_index,current_document_version_id").eq("book_id", bookId).order("order_index").limit(501),
       sb.from("book_bible_items").select("id", { count: "exact", head: true }).eq("book_id", bookId),
@@ -49,6 +65,9 @@ export function bookOverviewRoutes(app: FastifyInstance) {
       sb.from("audiobook_google_play_export_jobs").select("id,book_id,status,created_at,completed_at").eq("book_id", bookId).eq("workspace_id", bookFields.workspace_id).order("created_at", { ascending: false }).limit(4),
       sb.from("publishing_jobs").select("id", { count: "exact", head: true }).eq("book_id", bookId).eq("status", "succeeded").contains("request_json", { action: "render" }),
       sb.from("publishing_jobs").select("id", { count: "exact", head: true }).eq("book_id", bookId).eq("status", "succeeded").contains("request_json", { action: "export_package" }),
+      process.env.MANAGED_PUBLISHING_ENABLED === "true" && (role === "owner" || role === "admin")
+        ? managedPublications(sb, bookId, bookFields.workspace_id).catch(() => ({ status: "unavailable" as const }))
+        : undefined,
     ]);
     if ([space, chapters, metadata, editions, imports, ai, publishing, audiobookExports].some(r => r.error)) throw unavailable();
     const workspace = checked(z.object({ id: z.literal(bookFields.workspace_id), name: z.string().min(1).max(200) }), space.data);
@@ -96,6 +115,7 @@ export function bookOverviewRoutes(app: FastifyInstance) {
           coverArtworkChosen: z.string().uuid().safeParse(cover?.asset_id).success };
       }),
       history: { renders: exactCount(renders), packages: exactCount(packages) }, jobs,
+      ...(publications ? { managedPublications: publications } : {}),
     };
   });
 }

@@ -153,7 +153,12 @@ test("managed publishing authorizes, writes and recovers the exact package conse
   const send = (method: "GET" | "PUT", expectedActor: string | null = actor, payload?: object) =>
     app.inject({ method, url: `/v1/publishing/jobs/${job}/managed-request`, payload,
       headers: { authorization: "Bearer fixture", ...(expectedActor ? { "x-bookworm-actor": expectedActor } : {}) } });
+  const previousEnabled = process.env.MANAGED_PUBLISHING_ENABLED;
   try {
+    process.env.MANAGED_PUBLISHING_ENABLED = "false";
+    assert.equal((await send("PUT", actor, { packageSha256: sha })).statusCode, 404);
+    assert.deepEqual(writes, []);
+    process.env.MANAGED_PUBLISHING_ENABLED = "true";
     assert.equal((await send("PUT", null, { packageSha256: sha })).statusCode, 422);
     assert.equal((await send("PUT", workspace, { packageSha256: sha })).statusCode, 409);
     role = "editor";
@@ -172,13 +177,17 @@ test("managed publishing authorizes, writes and recovers the exact package conse
     assert.deepEqual(writes, [{ p_job_id: job, p_sha256: sha }]);
     assert.deepEqual((await send("GET")).json(), saved.json());
     assert.equal(writes.length, 1);
+    process.env.MANAGED_PUBLISHING_ENABLED = "false";
     const withdrawn = await send("PUT", actor, { packageSha256: sha, withdraw: true });
     assert.equal(withdrawn.statusCode, 200);
     assert.equal(withdrawn.json().request.withdrawnAt, "2026-11-20T18:10:00+00:00");
     assert.deepEqual((await send("GET")).json(), withdrawn.json());
+    process.env.MANAGED_PUBLISHING_ENABLED = "true";
     returned = { ...receipt, package_sha256: "b".repeat(64) };
     assert.equal((await send("PUT", actor, { packageSha256: sha })).statusCode, 503);
   } finally {
+    if (previousEnabled === undefined) delete process.env.MANAGED_PUBLISHING_ENABLED;
+    else process.env.MANAGED_PUBLISHING_ENABLED = previousEnabled;
     await app.close();
   }
 });

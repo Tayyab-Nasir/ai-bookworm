@@ -52,7 +52,8 @@ function fake(data: Record<string, Row[]>, options: { error?: string; missingCou
       };
       const query = {
         select(columns: string, opts?: { count?: string; head?: boolean }) { read.columns = columns; counted = opts?.count === "exact"; head = opts?.head === true; return query; },
-        eq(k: string, value: unknown) { filters.push(r => r[k] === value); return query; },
+        eq(k: string, value: unknown) { filters.push(r => k === "job.book_id" ? (r.job as Row)?.book_id === value : r[k] === value); return query; },
+        not(k: string, op: string, value: unknown) { assert.equal(op, "is"); filters.push(r => r[k] !== value); return query; },
         in(k: string, values: unknown[]) { filters.push(r => values.includes(r[k])); return query; },
         contains(k: string, value: Row) { filters.push(r => Object.entries(value).every(([key, item]) => (r[k] as Row)?.[key] === item)); return query; },
         order(k: string, options?: { ascending?: boolean }) { order = k; ascending = options?.ascending ?? true; return query; },
@@ -85,6 +86,33 @@ test("book overview returns current saved pointers, scoped history and safe read
   assert.doesNotMatch(response.body, /private-payload|request_json|input_ref|content_json|error_code|storage_path|signedUrl|service_role/);
   assert(tokens.length > 0 && tokens.every(t => t === "good"), "Only caller-scoped clients may be created");
   assert(reads.filter(r => r.table === "document_versions").every(r => r.columns === "id,chapter_id,version_number,word_count,created_at"));
+});
+
+test("confirmed managed publications are book and workspace scoped and do not change the book status", async () => {
+  const prior = process.env.MANAGED_PUBLISHING_ENABLED;
+  process.env.MANAGED_PUBLISHING_ENABLED = "true";
+  try {
+    const rows = tables();
+    rows.managed_publishing_requests = [
+      { package_job_id: id(19), workspace_id: WORKSPACE, confirmed_at: now, job: { id: id(19), book_id: BOOK, channel: "kdp" } },
+      { package_job_id: id(21), workspace_id: WORKSPACE, confirmed_at: now, job: { id: id(21), book_id: OTHER, channel: "kdp" } },
+      { package_job_id: id(22), workspace_id: OTHER, confirmed_at: now, job: { id: id(22), book_id: BOOK, channel: "kdp" } },
+      { package_job_id: id(23), workspace_id: WORKSPACE, confirmed_at: null, job: { id: id(23), book_id: BOOK, channel: "kdp" } },
+    ];
+    const { response } = await request(rows);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().book.status, "draft");
+    assert.deepEqual(response.json().managedPublications, { status: "ready", rows: [{ jobId: id(19), channel: "kdp", confirmedAt: now }] });
+    const unavailable = await request(rows, { error: "managed_publishing_requests" });
+    assert.deepEqual(unavailable.response.json().managedPublications, { status: "unavailable" });
+    rows.workspace_members[0].role = "viewer";
+    const viewer = await request(rows);
+    assert.equal(viewer.response.json().managedPublications, undefined);
+    assert.ok(!viewer.reads.some(read => read.table === "managed_publishing_requests"));
+  } finally {
+    if (prior === undefined) delete process.env.MANAGED_PUBLISHING_ENABLED;
+    else process.env.MANAGED_PUBLISHING_ENABLED = prior;
+  }
 });
 test("book desk includes only this book's audiobook exports and routes actual Bible and planning agents correctly", async () => {
   const rows = tables();

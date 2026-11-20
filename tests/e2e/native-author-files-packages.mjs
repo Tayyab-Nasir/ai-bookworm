@@ -49,6 +49,10 @@ async function verifyManagedPublishing(request, service, author, alice, bob, pac
     assert.deepEqual(await request(bob.token, 'PUT', confirmation, body, 200, operator), confirmed);
     await request(bob.token, 'GET', zip(primary), undefined, 404, operator);
     assert.equal((await request(alice.token, 'GET', authorRequest(primary), undefined, 200, owner)).request.listingUrl, listingUrl);
+    const overview = await request(alice.token, 'GET', `/books/${primary.intent.bookId}/overview`, undefined, 200, owner);
+    assert.deepEqual(overview.managedPublications, { status: 'ready', rows: [{
+      jobId: primary.id, channel: 'kdp', confirmedAt: confirmed.confirmation.confirmedAt,
+    }] });
     await request(bob.token, 'PUT', claim(withdrawn), consent(withdrawn), 200, operator);
     const revoked = await request(alice.token, 'PUT', authorRequest(withdrawn), { ...consent(withdrawn), withdraw: true }, 200, owner);
     assert.ok(revoked.request.withdrawnAt);

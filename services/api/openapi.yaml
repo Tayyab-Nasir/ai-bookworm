@@ -6309,6 +6309,30 @@ components:
       additionalProperties: false
       required: [viewerId, observedAt, book, workspace, manuscript, chapters, bibleItems, listing, editionsTotal, editions, history, jobs]
       properties:
+        managedPublications:
+          description: Recent operator-confirmed packages for an authorized workspace owner or admin.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: { const: unavailable }
+            - type: object
+              additionalProperties: false
+              required: [status, rows]
+              properties:
+                status: { const: ready }
+                rows:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [jobId, channel, confirmedAt]
+                    properties:
+                      jobId: { type: string, format: uuid }
+                      channel: { enum: [kdp, apple, barnesnoble, lulu, googleplay] }
+                      confirmedAt: { type: string, format: date-time }
         viewerId: { type: string, format: uuid }
         observedAt: { type: string, format: date-time }
         book:

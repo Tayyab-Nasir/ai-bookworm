@@ -57,6 +57,23 @@ test('book desk shows saved facts and exact scoped links without commercial comp
     await screenshot(page,'book-desk-desktop');
   }finally{await page.close();}
 });
+test('managed publishing overview links to the exact package and shows history outages separately',async()=>{
+  const page=await fixture('normal',320);
+  try {
+    await ready(page);
+    const refresh=page.getByRole('button',{name:'Refresh book desk',exact:true});
+    await page.evaluate(({book,job})=>{window.fixtureData[book].managedPublications={status:'ready',
+      rows:[{jobId:job,channel:'kdp',confirmedAt:'2026-11-20T19:00:00Z'}]};},{book:A,job:id(95)});
+    await refresh.click();
+    const listings=page.getByRole('region',{name:'Confirmed retailer listings'});
+    await expect(listings.getByRole('link',{name:/Amazon KDP/})).toHaveAttribute('href',`/books/${A}/publish?packageJob=${id(95)}`);
+    await page.evaluate(book=>{window.fixtureData[book].managedPublications={status:'unavailable'};},A);
+    await refresh.click();
+    await expect(listings.getByText('Managed publishing history is temporarily unavailable.')).toBeVisible();
+    await expect(listings.getByRole('link')).toHaveCount(0);
+    await ready(page);
+  } finally {await page.close();}
+});
 test('mobile book desk preserves content, readable links and keyboard focus at 320px',async()=>{
   const page=await fixture('normal',320);try{await ready(page);await screenshot(page,'book-desk-mobile-320');
     const button=page.getByRole('button',{name:'Refresh book desk',exact:true});await button.focus();await expect(button).toBeFocused();

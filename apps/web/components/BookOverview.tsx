@@ -94,6 +94,19 @@ export default function BookOverview({ bookId }: { bookId: string }) {
         <Link href={`/assets?ws=${encodeURIComponent(overview.workspace.id)}`}>Workspace artwork</Link><Link href={`${root}/publish`}>Layout & publishing</Link><Link href={`${root}/translate`}>Translation</Link>
       </nav>
 
+      {overview.managedPublications && <section aria-labelledby="managed-listings-title" className={styles.panel}>
+        <div className={styles.panelHeading}><h2 id="managed-listings-title">Confirmed retailer listings</h2></div>
+        {overview.managedPublications.status === "unavailable" ? <p className={styles.note}>Managed publishing history is temporarily unavailable.</p>
+          : overview.managedPublications.rows.length === 0 ? <p className={styles.note}>No managed publications have been confirmed yet.</p>
+          : <ul className={styles.editions}>{overview.managedPublications.rows.map(item => <li key={item.jobId}>
+            <Link href={`${root}/publish?packageJob=${encodeURIComponent(item.jobId)}`}>
+              <span>{({ kdp: "Amazon KDP", apple: "Apple Books", barnesnoble: "Barnes & Noble Press", lulu: "Lulu", googleplay: "Google Play Books" } as Record<string, string>)[item.channel]}
+                <small>Operator confirmed · <time dateTime={item.confirmedAt}>{new Date(item.confirmedAt).toLocaleDateString()}</time></small>
+              </span><span aria-hidden="true">↗</span>
+            </Link>
+          </li>)}</ul>}
+      </section>}
+
       <div className={styles.workspace}>
         <section aria-labelledby="book-workflow-title" className={styles.workflow}>
           <div className={styles.sectionHeading}><p className={styles.eyebrow}>From draft to handoff</p><h2 id="book-workflow-title">Keep the whole book in view.</h2></div>

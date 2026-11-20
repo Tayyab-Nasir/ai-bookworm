@@ -11,6 +11,7 @@ export interface BookOverview {
   editionsTotal: number;
   editions: { id: string; kind: "ebook" | "print" | "audiobook"; status: string; updatedAt: string; coverArtworkChosen: boolean }[];
   history: { renders: number; packages: number };
+  managedPublications?: { status: "unavailable" } | { status: "ready"; rows: { jobId: string; channel: string; confirmedAt: string }[] };
   jobs: { id: string; kind: "import" | "ai" | "publishing" | "audiobook_export"; label: string; status: string; createdAt: string; completedAt: string | null; destination: "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview" | "retailer_package" }[];
 }
 
@@ -27,7 +28,8 @@ const unique = (rows: { id: string }[]) => new Set(rows.map(row => row.id)).size
 /** Refuse foreign/malformed scope before rendering links or operational counts. */
 export function parseBookOverview(value: unknown, bookId: string): BookOverview {
   const fail = () => { throw Error("The saved book overview could not be verified. Reload before continuing."); };
-  if (!object(value) || !keys(value, ["viewerId", "observedAt", "book", "workspace", "manuscript", "chapters", "bibleItems", "listing", "editionsTotal", "editions", "history", "jobs"])) return fail();
+  if (!object(value) || !keys(value, ["viewerId", "observedAt", "book", "workspace", "manuscript", "chapters", "bibleItems", "listing", "editionsTotal", "editions", "history", "jobs",
+    ...("managedPublications" in value ? ["managedPublications"] : [])])) return fail();
   const { book, workspace, manuscript, listing, history } = value;
   if (!id(bookId) || !id(value.viewerId) || !date(value.observedAt)
     || !object(book) || !keys(book, ["id", "workspaceId", "title", "subtitle", "authorName", "language", "genre", "status", "updatedAt"])
@@ -61,5 +63,16 @@ export function parseBookOverview(value: unknown, bookId: string): BookOverview 
     || !["editor", "memory", "publish", "translate", "plan", "assets", "overview", "retailer_package"].includes(String(j.destination)))) return fail();
   const jobs = value.jobs as BookOverview["jobs"];
   if (new Set(jobs.map(j => `${j.kind}:${j.id}`)).size !== jobs.length || jobs.some((j, i) => i > 0 && Date.parse(jobs[i - 1].createdAt) < Date.parse(j.createdAt))) return fail();
+  if ("managedPublications" in value) {
+    const publications = value.managedPublications;
+    if (!["owner", "admin"].includes(String(workspace.role)) || !object(publications)) return fail();
+    if (publications.status === "unavailable") {
+      if (!keys(publications, ["status"])) return fail();
+    } else if (publications.status !== "ready" || !keys(publications, ["status", "rows"])
+      || !Array.isArray(publications.rows) || publications.rows.length > 8 || publications.rows.some(entry => !object(entry)
+        || !keys(entry, ["jobId", "channel", "confirmedAt"]) || !id(entry.jobId) || !date(entry.confirmedAt)
+        || !["kdp", "apple", "barnesnoble", "lulu", "googleplay"].includes(String(entry.channel)))
+      || new Set(publications.rows.map(entry => entry.jobId)).size !== publications.rows.length) return fail();
+  }
   return value as unknown as BookOverview;
 }
