@@ -247,8 +247,26 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
   assert.equal(restoredPackage.package.asset.id, savedPackage.assetId);
   const restoredBytes = await fetch(restoredPackage.package.download.url);
   assert.equal(restoredBytes.status, 200);
-  assert.equal(hash(Buffer.from(await restoredBytes.arrayBuffer())), savedPackage.checksum);
+  const backupBytes = Buffer.from(await restoredBytes.arrayBuffer());
+  assert.equal(hash(backupBytes), savedPackage.checksum);
   console.log('PASS native deleted package denies new links and direct Storage access; exact saved ZIP restored without regeneration');
+
+  // The disposable runner owns this synthetic object. Remove the actual Storage
+  // bytes while leaving the application job and asset records intact.
+  const bucket = service.storage.from('book-assets');
+  data(await bucket.remove([savedPackage.path]), 'remove synthetic ZIP bytes');
+  assert.ok((await bucket.download(savedPackage.path)).error, 'The original object must be absent before restoration');
+  data(await bucket.upload(savedPackage.path, backupBytes, {
+    contentType: 'application/zip', upsert: false,
+  }), 'restore synthetic ZIP bytes');
+  const restoredJob = await request(alice.token, 'GET', `/publishing/jobs/${savedPackage.id}`);
+  assert.equal(restoredJob.id, savedPackage.id);
+  assert.equal(restoredJob.package.asset.id, savedPackage.assetId);
+  const recoveredBlob = await fetch(restoredJob.package.download.url);
+  assert.equal(recoveredBlob.status, 200);
+  assert.equal(hash(Buffer.from(await recoveredBlob.arrayBuffer())), savedPackage.checksum);
+  assert.ok((await bob.client.storage.from('book-assets').download(savedPackage.path)).error);
+  console.log('PASS native Storage ZIP byte restore preserves saved job, checksum and tenant access');
 
   const closureIntent = { ...savedPackage.intent, idempotencyKey: randomUUID() };
   const missing = await request(alice.token, 'GET', `/publishing/requests/${closureIntent.idempotencyKey}?bookId=${book.id}`);
