@@ -99,7 +99,7 @@ can leave an earlier write unresolved.
 | Collaboration workspace access and action recovery | Checking account, loading workspace data, ready, unavailable or awaiting a review of the saved records. Reads and writes use the verified account. Account or workspace changes supersede old results. Confirmation survives a failed follow-up read. A lost reply to an ordinary write requires a fresh read before another action. | `apps/web/components/CollaborationCenter.tsx`, `apps/web/lib/browser-session.ts`, `apps/web/app/api/backend/[...path]/route.ts`, `apps/web/tests/workspace-context-components.test.ts`, `apps/web/tests/analytics-admin-mounted.mjs` |
 | Team roster and outgoing invitations | An active member has a role. Only owners and admins manage invitations and access. A successful creation supplies a link. A pending link can expire, be revoked or be accepted. Refresh reads the current roster and pending invitations. | `apps/web/components/CollaborationCenter.tsx`, `services/api/src/routes/team.ts`, `tests/security/collaboration-invitations.test.sql` |
 | Invitation acceptance | Link available, verifying intended account, acceptance pending, accepted, rejected or unconfirmed. Revalidation uses the account that opened the link. Reloaded workspace access is separate from proof of the original acceptance. | `apps/web/components/InvitationAcceptance.tsx`, `services/api/src/routes/team.ts`, `apps/web/tests/invitation-mounted.mjs` |
-| Community directory and membership | Checking account, verified list, join pending, joined or unconfirmed. Account changes withhold results and local membership indicators. | `apps/web/components/CommunityDirectory.tsx`, `services/api/src/routes/community.ts`, `apps/web/tests/community-directory-mounted.mjs` |
+| Community directory and membership | Checking account, verified directory and separately verified membership, join pending, active, inactive, unavailable or unconfirmed. Account changes withhold results. A complete actor-scoped membership read restores joined status after remount and updates it after an external change. A failed read leaves discussions visible while joining is unavailable. An empty read cannot prove an earlier request will not complete. | `apps/web/components/CommunityDirectory.tsx`, `services/api/src/routes/community.ts`, `services/api/src/community-membership.test.ts`, `apps/web/tests/community-directory-mounted.mjs` |
 | Referral attribution and claim | Code entered, claim pending, confirmed, rejected or unknown. An uncertain claim keeps the original account and code in the tab for an explicit retry. Reward approval and the resulting ledger entry are separate transitions. | `apps/web/components/ReferralCenter.tsx`, `services/api/src/routes/referrals.ts`, `apps/web/tests/referral-center-mounted.mjs`, `tests/security/referral-transactions.test.sql` |
 | Community discussion and moderation | A verified account owns the discussion view and drafts. Revalidation hides posts, replies and the moderation queue. Reactions toggle active or inactive. Reports can move from open to actioned or dismissed. A confirmed write can finish across a same-account refresh. An account change discards the prior view, draft and review. | `apps/web/app/community/[id]/page.tsx`, `services/api/src/routes/community.ts`, `apps/web/tests/community-discussion-mounted.mjs` |
 | Book comments | Threads accept replies and mentions. The existing comments API toggles open and resolved. The standalone comment thread is currently unmounted in the web editor. | `apps/web/components/CommentThread.tsx`, `services/api/src/routes/collab.ts`, `services/api/src/step9.test.ts` |
@@ -183,11 +183,16 @@ the allowlist without starting a worker.
   a durable accepted-invitation receipt. Referral reads and claims now bind to
   the verified actor; an uncertain claim retains the original code for an
   explicit retry in the same tab. This does not coordinate different tabs, and
-  hosted uniqueness has not been verified. Community discovery and join now
-  bind to a verified actor and hide prior results during revalidation. Its
-  locally remembered Joined state is not refreshed after external membership
-  revocation, and uncertain joins are not persisted across remounts or tabs.
-  These tests do not establish hosted authentication or data behavior.
+  hosted uniqueness has not been verified. Community discovery and join bind
+  to a verified actor and hide prior results during revalidation. Membership is
+  read from the database for that actor, including inactive public memberships;
+  an unavailable or incomplete read does not guess. A rolled-back hosted SQL
+  check verified the relevant table privileges and RLS with two synthetic
+  actors. The new API and an isolated signed-in production browser also passed
+  checks with disposable hosted accounts, including private-directory revocation
+  and cleanup. Public Joined/inactive badges were tested with a synthetic
+  browser boundary. Uncertain joins are still remembered only while the
+  directory is mounted; no receipt or close action fences an earlier join.
 - Chapters and editions originally have text status columns; edition API
   validation is not proof that every direct database writer enforces the same
   transitions. Inspect later migrations and live ACLs before adding constraints.

@@ -14,28 +14,47 @@ export default function CommunityDirectory() {
   const [notice, setNotice] = useState<string | null>(null);
   const [joining, setJoining] = useState<string | null>(null);
   const [joined, setJoined] = useState<Set<string>>(new Set());
+  const [inactive, setInactive] = useState<Set<string>>(new Set());
+  const [membershipVerified, setMembershipVerified] = useState(false);
   const actor = useRef<string | null>(null);
   const epoch = useRef(0);
   const mounted = useRef(false);
   const joiningRef = useRef(false);
-  const joinedByActor = useRef(new Map<string, Set<string>>());
   const uncertainByActor = useRef(new Map<string, Set<string>>());
 
   const refresh = useCallback(async () => {
     const ticket = ++epoch.current;
     const valid = () => mounted.current && epoch.current === ticket;
     actor.current = null;
-    setLoading(true); setError(null); setNotice(null); setCommunities([]); setJoined(new Set());
+    setLoading(true); setError(null); setNotice(null); setCommunities([]); setJoined(new Set()); setInactive(new Set()); setMembershipVerified(false);
     try {
       const session = await readBrowserSession();
       if (!valid()) return;
-      const result = await apiClient(session.id).listCommunities();
+      const client = apiClient(session.id);
+      const [directory, membership] = await Promise.allSettled([client.listCommunities(), client.listCommunityMemberships(AbortSignal.timeout(12_000))]);
       await readBrowserSession(session.id);
       if (!valid()) return;
+      if (directory.status === "rejected") throw directory.reason;
       actor.current = session.id;
-      setCommunities(result.communities);
-      setJoined(new Set(joinedByActor.current.get(session.id)));
-      if (uncertainByActor.current.get(session.id)?.size) setNotice("A previous join may have completed. Select Join again to check your membership.");
+      setCommunities(directory.value.communities);
+      if (membership.status === "rejected" || !membership.value || !Array.isArray(membership.value.memberships)
+          || membership.value.memberships.some(item => !item || typeof item.communityId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(item.communityId) || typeof item.active !== "boolean")
+          || new Set(membership.value.memberships.map(item => item.communityId)).size !== membership.value.memberships.length) {
+        setError("Community membership could not be verified. You can open discussions; refresh before joining.");
+        return;
+      }
+      const active = new Set(membership.value.memberships.filter(item => item.active).map(item => item.communityId));
+      setJoined(active);
+      setInactive(new Set(membership.value.memberships.filter(item => !item.active).map(item => item.communityId)));
+      setMembershipVerified(true);
+      const uncertain = uncertainByActor.current.get(session.id);
+      let resolved = false;
+      if (uncertain) {
+        for (const id of active) if (uncertain.delete(id)) resolved = true;
+        if (!uncertain.size) uncertainByActor.current.delete(session.id);
+      }
+      if (uncertainByActor.current.get(session.id)?.size) setNotice("A previous join may still complete. Refresh communities to check, or try joining again.");
+      else if (resolved) setNotice("Your community membership is active.");
     } catch (reason) {
       if (valid()) setError(reason instanceof Error ? reason.message : "Communities could not be loaded.");
     } finally { if (valid()) setLoading(false); }
@@ -52,7 +71,7 @@ export default function CommunityDirectory() {
 
   async function join(community: Community) {
     const owner = actor.current;
-    if (!owner || joiningRef.current) return;
+    if (!owner || joiningRef.current || !membershipVerified || inactive.has(community.id)) return;
     const ticket = epoch.current;
     const valid = () => mounted.current && actor.current === owner && epoch.current === ticket;
     joiningRef.current = true; setJoining(community.id); setError(null); setNotice(null);
@@ -70,19 +89,18 @@ export default function CommunityDirectory() {
       if (!valid()) return;
       uncertain.delete(community.id);
       if (!uncertain.size) uncertainByActor.current.delete(owner);
-      const next = new Set(joinedByActor.current.get(owner)); next.add(community.id);
-      joinedByActor.current.set(owner, next); setJoined(new Set(next));
+      setJoined(previous => new Set(previous).add(community.id));
       setNotice(result.alreadyMember ? `You already belong to ${community.name}.` : `You joined ${community.name}. Open the discussion to post or reply.`);
     } catch (reason) {
       if (!valid()) return;
       actor.current = null; epoch.current++;
-      setCommunities([]); setJoined(new Set());
+      setCommunities([]); setJoined(new Set()); setInactive(new Set()); setMembershipVerified(false);
       setError(sent ? "Your membership could not be confirmed. Refresh communities before trying again." : reason instanceof Error ? reason.message : "Could not verify your account.");
     } finally {
       joiningRef.current = false;
       if (mounted.current) {
         setJoining(null);
-        if (actor.current === owner && uncertainByActor.current.get(owner)?.size) setNotice("A previous join may have completed. Select Join again to check your membership.");
+        if (actor.current === owner && uncertainByActor.current.get(owner)?.size) setNotice("A previous join may still complete. Refresh communities to check, or try joining again.");
       }
     }
   }
@@ -111,8 +129,8 @@ export default function CommunityDirectory() {
         <p className="mt-3 flex-1 whitespace-pre-wrap break-words text-sm leading-6 text-white/55">{community.description || "A space for authors to connect and discuss their work."}</p>
         <div className="mt-6 flex flex-wrap items-center gap-3">
           <Link href={`/community/${encodeURIComponent(community.id)}`} className="rounded-full border border-white/20 px-4 py-2.5 text-sm">Open discussion</Link>
-          {community.visibility === "public" && <button type="button" disabled={joining !== null || joined.has(community.id)} onClick={() => void join(community)} className="rounded-full bg-white px-4 py-2.5 text-sm font-medium text-black disabled:opacity-50">
-            {joining === community.id ? "Joining…" : joined.has(community.id) ? "Joined" : "Join community"}
+          {community.visibility === "public" && <button type="button" disabled={joining !== null || !membershipVerified || joined.has(community.id) || inactive.has(community.id)} onClick={() => void join(community)} className="rounded-full bg-white px-4 py-2.5 text-sm font-medium text-black disabled:opacity-50">
+            {joining === community.id ? "Joining…" : !membershipVerified ? "Membership unavailable" : joined.has(community.id) ? "Joined" : inactive.has(community.id) ? "Membership inactive" : "Join community"}
           </button>}
         </div>
       </article>)}

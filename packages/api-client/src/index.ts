@@ -1344,6 +1344,7 @@ export function createClient(opts: ClientOptions) {
       callService<{ usage: unknown; entry: unknown }>("/v1/credits/deduct", body, serviceToken),
     // Step 12: community
     listCommunities: () => call<{ communities: Community[] }>("GET", "/v1/communities"),
+    listCommunityMemberships: (signal?: AbortSignal) => call<{ memberships: { communityId: string; active: boolean }[] }>("GET", "/v1/communities/memberships", undefined, false, {}, signal),
     createCommunity: (body: { name: string; slug: string; description?: string; visibility?: Community["visibility"] }) =>
       call<Community>("POST", "/v1/communities", body),
     joinCommunity: (communityId: string) =>
