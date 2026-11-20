@@ -86,7 +86,7 @@ export default function AuthorDashboard() {
     setBooks([]);
     setOverview(null);
     setVerifiedActor(null);
-    let checkingActor: string | undefined;
+    let checkingActor: string | undefined, pendingForActor: string | null = null;
     try {
       const account = await readBrowserSession();
       if (!current()) return;
@@ -94,6 +94,7 @@ export default function AuthorDashboard() {
       let pendingOperation: string | null = null, recoveryStorageError: string | null = null;
       try { pendingOperation = readPendingWorkspaceCreation(account.id); }
       catch (reason) { recoveryStorageError = reason instanceof Error ? reason.message : "Workspace recovery storage is unavailable."; }
+      pendingForActor = pendingOperation;
       const spaces = await api.listWorkspaces(account.id);
       if (!current()) return;
       // Keep unavailable explicit selections recoverable, but do not expose even
@@ -142,7 +143,17 @@ export default function AuthorDashboard() {
       // A failed dashboard read is independent of a confirmed workspace save.
       if (checkingActor && current()) {
         const stillSignedIn = await readBrowserSession(checkingActor).catch(() => null);
-        if (current()) setVerifiedActor(stillSignedIn?.id ?? null);
+        if (current()) {
+          setVerifiedActor(stillSignedIn?.id ?? null);
+          if (stillSignedIn && pendingForActor) {
+            const pending = pendingForActor;
+            setCreation(outcome => {
+              if (outcome?.actor === stillSignedIn.id && outcome.kind === "created") return outcome;
+              return { kind: "unconfirmed", actor: stillSignedIn.id, operationId: pending,
+                checked: outcome?.actor === stillSignedIn.id && outcome.kind === "unconfirmed" && outcome.operationId === pending && outcome.checked };
+            });
+          }
+        }
       }
       if (current()) {
         setError(reason instanceof Error ? reason.message : "Could not load your library.");

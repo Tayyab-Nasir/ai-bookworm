@@ -247,6 +247,34 @@ test("closing an unconfirmed workspace request is explicit and permits a new att
   } finally { await page.close(); }
 });
 
+test("a remounted pending request remains recoverable when the dashboard read fails", async () => {
+  const page = await fixture("dashboard", false, true);
+  try {
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeVisible();
+    await page.evaluate(() => {
+      window.created = false;
+      window.api.listWorkspaces = async () => ({ workspaces: window.created ? [{ id: window.ids.A, name: "Saved studio" }] : [] });
+      window.api.createOnboardingWorkspace = async (body, expected) => { window.calls.push({ body, expected }); window.created = true; throw new Error("reply lost"); };
+      window.api.getDashboardOverview = async () => { throw new Error("Dashboard unavailable"); };
+      window.api.recoverWorkspaceCreation = async operationId => ({ operationId, status: "created", workspaceId: window.ids.A });
+    });
+    await page.getByRole("button", { name: "Create workspace", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Check workspace creation" })).toBeVisible();
+    await page.evaluate(() => window.unmount());
+    await expect(page.getByRole("region", { name: "Check workspace creation" })).toHaveCount(0);
+    await page.evaluate(() => window.mount());
+    await expect(page.getByRole("alert")).toContainText("Dashboard unavailable");
+    await expect(page.getByRole("region", { name: "Check workspace creation" })).toBeVisible();
+    await page.getByRole("button", { name: "Check request status" }).click();
+    await expect(page.getByRole("status")).toContainText("Your workspace was created");
+    assert.deepEqual(await page.evaluate(() => Object.values(sessionStorage)), []);
+    await page.evaluate(() => { window.api.getDashboardOverview = async (_id, expected) => window.overview(expected); });
+    await page.getByRole("button", { name: "Try again", exact: true }).click();
+    await expect(heading(page, "A")).toBeVisible();
+    assert.equal((await page.evaluate(() => window.calls)).length, 1);
+  } finally { await page.close(); }
+});
+
 test("an account switch while checking a workspace receipt never exposes or clears the previous account's request", async () => {
   const page = await fixture("dashboard", false, true);
   try {

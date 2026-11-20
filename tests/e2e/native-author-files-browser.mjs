@@ -140,18 +140,24 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
 
     stage = 'workspace onboarding and dashboard';
     await page.locator('#workspaceName').fill('Native browser workspace');
-    let createdWorkspace;
+    let createdWorkspace, onboardingInterceptFailed = false;
     const onboardingRoute = '**/api/backend/v1/workspaces/onboarding';
     await page.route(onboardingRoute, async route => {
-      const accepted = await route.fetch();
-      assert.equal(accepted.status(), 201);
-      createdWorkspace = await accepted.json();
-      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'Synthetic lost reply' } }) });
+      try {
+        const accepted = await route.fetch();
+        assert.equal(accepted.status(), 201);
+        createdWorkspace = await accepted.json();
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'Synthetic lost reply' } }) });
+      } catch {
+        onboardingInterceptFailed = true;
+        await route.abort().catch(() => {});
+      }
     });
     const [workspaceResponse] = await Promise.all([page.waitForResponse(r => new URL(r.url()).pathname.endsWith('/workspaces/onboarding') && r.request().method() === 'POST'),
       page.getByRole('button', { name: 'Create workspace', exact: true }).click()]);
     assert.equal(workspaceResponse.status(), 503);
     await page.unroute(onboardingRoute);
+    assert.equal(onboardingInterceptFailed, false);
     assert.equal(createdWorkspace.viewerId, user.id);
     assert.match(createdWorkspace.operationId, /^[a-f0-9-]{36}$/i);
     const workspace = createdWorkspace.workspace;
@@ -161,6 +167,7 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await page.reload();
     await page.getByRole('button', { name: 'Check request status', exact: true }).click();
     await expect(page.getByRole('combobox', { name: 'Workspace', exact: true })).toHaveValue(workspace.id);
+    await expect(page.getByRole('region', { name: 'Check workspace creation' })).toHaveCount(0);
     assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith('bookworm:workspace-creation:'))), false);
     await expect(page.getByRole('region', { name: 'Workspace summary', exact: true })).toBeVisible();
     await expect(page.getByRole('main').getByRole('alert')).toHaveCount(0);
