@@ -2,7 +2,7 @@
 // ponytail: hand-written minimal client — will be replaced by a generated
 // client from services/api/openapi.yaml (e.g. openapi-typescript) later.
 import type { Workspace, Book, Chapter, AiJob, AiSuggestion, Folder, Asset, Task, Approval, WorkspaceMember, Edition, BookBibleItem as CanonicalBookBibleItem } from "@bookworm/types";
-import { RETAILER_SUBMISSION_STATUSES, type RetailerSubmission, type RetailerSubmissionStatus } from "@bookworm/types";
+import { RETAILER_SUBMISSION_STATUSES, type ManagedPublishingRequest, type RetailerSubmission, type RetailerSubmissionStatus } from "@bookworm/types";
 import type { BookMetadata, BookNode } from "@bookworm/book-model";
 import { parseBookOverview } from "@bookworm/api-client/book-overview";
 import { parseAiConnections, parseAiConnectionMutation, parseAiConnectionReceipt, type AiProvider, type AiConnectionMutation, type AiConnectionPending } from "@bookworm/api-client/ai-connections";
@@ -655,6 +655,24 @@ function parseRetailerSubmission(value: unknown, expectedJobId: string): Retaile
     throw new Error("The retailer submission status could not be verified.");
   }
   return { jobId, status, revision, updatedAt };
+}
+
+function parseManagedPublishingRequest(value: unknown, expectedJobId: string, expectedWorkspaceId: string): ManagedPublishingRequest | null {
+  const record = (value as { request?: Partial<ManagedPublishingRequest> | null } | null)?.request;
+  if (record === null) return null;
+  const { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, confirmedAt, listingUrl } = record ?? {};
+  if (jobId !== expectedJobId || workspaceId !== expectedWorkspaceId
+    || (requestedBy !== null && (typeof requestedBy !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestedBy)))
+    || typeof packageSha256 !== "string" || !/^[a-f0-9]{64}$/.test(packageSha256)
+    || typeof requestedAt !== "string" || !Number.isFinite(Date.parse(requestedAt))
+    || (withdrawnAt !== null && (typeof withdrawnAt !== "string" || !Number.isFinite(Date.parse(withdrawnAt))
+      || Date.parse(withdrawnAt) < Date.parse(requestedAt)))
+    || (confirmedAt !== null && (typeof confirmedAt !== "string" || !Number.isFinite(Date.parse(confirmedAt)) || withdrawnAt !== null))
+    || (listingUrl !== null && (typeof listingUrl !== "string" || listingUrl.length > 1024 || !/^https:\/\/[a-z0-9.]+\/[A-Za-z0-9/_~.%+?=-]+$/.test(listingUrl)))
+    || (confirmedAt === null) !== (listingUrl === null)) {
+    throw new Error("The managed publishing request could not be verified.");
+  }
+  return { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, confirmedAt, listingUrl };
 }
 
 export class ApiClientError extends Error {
@@ -1367,6 +1385,30 @@ export function createClient(opts: ClientOptions) {
         }
         return submission;
       }),
+    getManagedPublishingRequest: (jobId: string, workspaceId: string, expectedActorId: string) =>
+      call<unknown>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/managed-request`, undefined, false, {
+        "x-bookworm-actor": expectedActorId,
+      }).then(value => parseManagedPublishingRequest(value, jobId, workspaceId)),
+    requestManagedPublishing: (jobId: string, workspaceId: string, packageSha256: string, expectedActorId: string) =>
+      call<unknown>("PUT", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/managed-request`, { packageSha256 }, false, {
+        "x-bookworm-actor": expectedActorId,
+      }).then(value => {
+        const request = parseManagedPublishingRequest(value, jobId, workspaceId);
+        if (request?.requestedBy !== expectedActorId || request.packageSha256 !== packageSha256) {
+          throw new Error("The managed publishing request could not be verified.");
+        }
+        return request;
+      }),
+    withdrawManagedPublishing: (jobId: string, workspaceId: string, packageSha256: string, expectedActorId: string) =>
+      call<unknown>("PUT", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/managed-request`, { packageSha256, withdraw: true }, false, {
+        "x-bookworm-actor": expectedActorId,
+      }).then(value => {
+        const request = parseManagedPublishingRequest(value, jobId, workspaceId);
+        if (!request?.withdrawnAt || request.packageSha256 !== packageSha256) {
+          throw new Error("The managed publishing withdrawal could not be verified.");
+        }
+        return request;
+      }),
     getUsage: (organizationId: string) =>
       call<BillingUsageSummary>(
         "GET", `/v1/usage?organizationId=${encodeURIComponent(organizationId)}`),
@@ -1430,8 +1472,30 @@ export function createClient(opts: ClientOptions) {
     qualifyReferral: (referredUserId: string, serviceToken: string) =>
       callService<{ qualified: boolean; held?: boolean; rewarded?: boolean }>("/v1/referrals/qualify", { referredUserId }, serviceToken),
     // Step 14: admin console (403 for non-admins)
-    adminAccess: (expectedActorId?: string, signal?: AbortSignal) => call<{ admin: boolean; viewerId: string }>("GET", "/v1/admin/access", undefined, true,
+    adminAccess: (expectedActorId?: string, signal?: AbortSignal) => call<{ admin: boolean; viewerId: string; managedPublishing?: boolean }>("GET", "/v1/admin/access", undefined, true,
       expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}, signal),
+    adminManagedPublishingQueue: (offset: number, expectedActorId: string) =>
+      call<{ requests: { jobId: string; channel: string; title: string; packageSha256: string;
+        requestedAt: string; claimedAt: string | null; confirmedAt: string | null; listingUrl: string | null }[]; nextOffset: number | null }>(
+        "GET", `/v1/admin/managed-publishing?offset=${offset}`, undefined, false, { "x-bookworm-actor": expectedActorId }),
+    adminClaimManagedPublishing: (jobId: string, packageSha256: string, expectedActorId: string) =>
+      call<{ claim: { jobId: string; packageSha256: string; claimedAt: string } }>(
+        "PUT", `/v1/admin/managed-publishing/${encodeURIComponent(jobId)}/claim`, { packageSha256 }, false,
+        { "x-bookworm-actor": expectedActorId }).then(value => {
+          if (value?.claim?.jobId !== jobId || value.claim.packageSha256 !== packageSha256
+            || !Number.isFinite(Date.parse(value.claim.claimedAt))) throw new Error("The assignment could not be verified.");
+          return value.claim;
+        }),
+    adminConfirmManagedPublishing: (jobId: string, packageSha256: string, listingUrl: string, expectedActorId: string) =>
+      call<{ confirmation: { jobId: string; packageSha256: string; listingUrl: string; confirmedAt: string } }>(
+        "PUT", `/v1/admin/managed-publishing/${encodeURIComponent(jobId)}/confirmation`, { packageSha256, listingUrl }, false,
+        { "x-bookworm-actor": expectedActorId }).then(value => {
+          if (value?.confirmation?.jobId !== jobId || value.confirmation.packageSha256 !== packageSha256
+            || value.confirmation.listingUrl !== listingUrl || !Number.isFinite(Date.parse(value.confirmation.confirmedAt))) {
+            throw new Error("The publication confirmation could not be verified.");
+          }
+          return value.confirmation;
+        }),
     adminModerationReports: (filter: {
       status?: AdminModerationStatus | "all";
       entityType?: "post" | "comment";

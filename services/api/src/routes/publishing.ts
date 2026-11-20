@@ -42,6 +42,30 @@ function publishingServiceUrl() {
 }
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+const managedPublishingBodySchema = z.object({ packageSha256: sha256Schema, withdraw: z.literal(true).optional() }).strict();
+const managedPublishingRowSchema = z.object({
+  package_job_id: z.string().uuid(),
+  workspace_id: z.string().uuid(),
+  requested_by: z.string().uuid().nullable(),
+  package_sha256: sha256Schema,
+  requested_at: z.string().datetime({ offset: true }),
+  withdrawn_at: z.string().datetime({ offset: true }).nullable(),
+  confirmed_at: z.string().datetime({ offset: true }).nullable(),
+  listing_url: z.string().max(1024).regex(/^https:\/\/[a-z0-9.]+\/[A-Za-z0-9/_~.%+?=-]+$/).nullable(),
+});
+
+function managedPublishingResult(row: unknown, jobId: string, workspaceId: string) {
+  const parsed = managedPublishingRowSchema.safeParse(row);
+  if (!parsed.success || parsed.data.package_job_id !== jobId || parsed.data.workspace_id !== workspaceId) {
+    throw new AppError(503, "The managed publishing request could not be verified.");
+  }
+  const { requested_by: requestedBy, package_sha256: packageSha256, requested_at: requestedAt, withdrawn_at: withdrawnAt,
+    confirmed_at: confirmedAt, listing_url: listingUrl } = parsed.data;
+  if ((confirmedAt === null) !== (listingUrl === null) || (confirmedAt && withdrawnAt)) {
+    throw new AppError(503, "The managed publishing state could not be verified.");
+  }
+  return { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, confirmedAt, listingUrl };
+}
 const sourceEpubSchema = z.object({ jobId: z.string().uuid(), sha256: sha256Schema }).strict();
 const savedPreflightSourceFields = {
   sourceEpub: sourceEpubSchema.optional(),
@@ -825,18 +849,23 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     return hydratePackageJob(app.supabaseFactory(), book.workspace_id, job);
   });
 
+  async function loadCompletedPackage(user: SupabaseClient, jobId: string) {
+    const { data: job, error } = await user.from("publishing_jobs")
+      .select("id,book_id,channel,status,request_json").eq("id", jobId).maybeSingle();
+    if (error) throw new AppError(503, "The publishing package could not be verified.");
+    if (!job || job.id !== jobId || job.status !== "succeeded" || requestJson(job).action !== "export_package"
+      || !retailerChannelSchema.safeParse(job.channel).success) {
+      throw new AppError(404, "Completed retailer package not found.");
+    }
+    return job;
+  }
+
   app.get("/publishing/jobs/:jobId/submission", async (req, reply) => {
     const path = submissionJobIdSchema.safeParse(req.params);
     if (!path.success) throw new AppError(422, "Invalid publishing job id.");
     const { jobId } = path.data;
     const user = app.supabaseFactory(req.userToken);
-    const { data: job, error: jobError } = await user.from("publishing_jobs")
-      .select("id,book_id,channel,status,request_json").eq("id", jobId).maybeSingle();
-    if (jobError) throw new AppError(503, "The publishing package could not be verified.");
-    if (!job || job.id !== jobId || job.status !== "succeeded" || requestJson(job).action !== "export_package"
-      || !retailerChannelSchema.safeParse(job.channel).success) {
-      throw new AppError(404, "Completed retailer package not found.");
-    }
+    const job = await loadCompletedPackage(user, jobId);
     const { data, error } = await user.from("retailer_submissions")
       .select("publishing_job_id,status,revision,updated_at").eq("publishing_job_id", jobId).maybeSingle();
     if (error) throw new AppError(503, "Retailer submission status is unavailable.");
@@ -868,5 +897,47 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     }
     reply.header("cache-control", "private, no-store");
     return { submission };
+  });
+
+  app.route({
+    method: ["GET", "PUT"],
+    url: "/publishing/jobs/:jobId/managed-request",
+    handler: async (req, reply) => {
+      const path = submissionJobIdSchema.safeParse(req.params);
+      if (!path.success || req.headers["x-bookworm-actor"] !== req.userId) {
+        throw new AppError(422, "The package and original account are required.");
+      }
+      const { jobId } = path.data;
+      const user = app.supabaseFactory(req.userToken);
+      const job = await loadCompletedPackage(user, jobId);
+      const { book, role } = await loadBook(user, job.book_id, req.userId);
+      if (role !== "owner" && role !== "admin") throw new AppError(403, "Only a workspace owner or admin can manage this request.");
+
+      reply.header("cache-control", "private, no-store");
+      if (req.method === "GET") {
+        const { data, error } = await user.from("managed_publishing_requests")
+          .select("package_job_id,workspace_id,requested_by,package_sha256,requested_at,withdrawn_at,confirmed_at,listing_url").eq("package_job_id", jobId).maybeSingle();
+        if (error) throw new AppError(503, "The managed publishing request is unavailable.");
+        return { request: data === null ? null : managedPublishingResult(data, jobId, book.workspace_id) };
+      }
+
+      const body = managedPublishingBodySchema.safeParse(req.body);
+      if (!body.success) throw new AppError(422, "The reviewed package checksum is required.");
+      const { data, error } = await user.rpc(body.data.withdraw ? "withdraw_managed_publishing" : "request_managed_publishing", {
+        p_job_id: jobId,
+        p_sha256: body.data.packageSha256,
+      });
+      if (error?.code === "PT404") throw new AppError(404, "Completed retailer package not found.");
+      if (error?.code === "42501") throw new AppError(403, "This account cannot request managed publishing.");
+      if (error?.code === "PT409") throw new AppError(409, "The reviewed package or its saved request changed. Check the saved request.");
+      if (error) throw new AppError(503, "The managed publishing request is unavailable.");
+      const row = Array.isArray(data) && data.length === 1 ? data[0] : data;
+      const request = managedPublishingResult(row, jobId, book.workspace_id);
+      if (request.packageSha256 !== body.data.packageSha256
+        || (body.data.withdraw ? !request.withdrawnAt : request.requestedBy !== req.userId)) {
+        throw new AppError(503, "The managed publishing request could not be verified.");
+      }
+      return { request };
+    },
   });
 }

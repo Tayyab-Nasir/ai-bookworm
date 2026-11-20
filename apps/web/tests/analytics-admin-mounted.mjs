@@ -87,6 +87,110 @@ async function fixture({ width = 1280, styled = false } = {}) {
   return page;
 }
 
+test("managed publishing recovers an operator-confirmed listing after a lost response", async () => {
+  const page = await fixture({ width: 390 });
+  try {
+    await page.evaluate(() => {
+      const jobId = "33333333-3333-4333-8333-333333333333";
+      const packageSha256 = "a".repeat(64);
+      const requestedAt = "2026-11-20T18:00:00Z";
+      window.api.adminAccess = async () => ({ admin: true, viewerId: window.account, managedPublishing: true });
+      window.api.adminManagedPublishingQueue = async () => ({
+        requests: [{ jobId, packageSha256, requestedAt, claimedAt: requestedAt, channel: "kdp", title: "Harbor Letters",
+          confirmedAt: window.listing ? requestedAt : null, listingUrl: window.listing ?? null }], nextOffset: null,
+      });
+      window.api.adminConfirmManagedPublishing = async (...args) => {
+        window.calls.push(args);
+        window.listing = args[2];
+        throw new Error("Lost publication response");
+      };
+      window.renderAdmin();
+    });
+    await page.getByRole("button", { name: "managed publishing", exact: true }).click();
+    await page.getByText("Confirm publication", { exact: true }).click();
+    const listing = "https://www.amazon.com/dp/B000000001";
+    await page.getByRole("textbox", { name: "Retailer listing URL" }).fill(listing);
+    const save = page.getByRole("button", { name: "Save confirmation" });
+    await save.click();
+    assert.deepEqual(await page.evaluate(() => window.calls), []);
+    await page.getByRole("checkbox", { name: "I verified this listing in the retailer account." }).check();
+    await save.click();
+    await expect(page.getByRole("alert")).toContainText("Refresh to check");
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(page.getByText(/Publication confirmed/)).toBeVisible();
+    await expect(page.getByRole("link", { name: "Open retailer listing" })).toHaveAttribute("href", listing);
+    await expect(save).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Download private ZIP" })).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(() => window.calls), [
+      ["33333333-3333-4333-8333-333333333333", "a".repeat(64), listing, "11111111-1111-4111-8111-111111111111"],
+    ]);
+  } finally { await page.close(); }
+});
+
+test("managed publishing queue is capability-scoped and recovers a claim without writing again", async () => {
+  const page = await fixture({ width: 390 });
+  try {
+    await page.evaluate(() => {
+      const jobId = "33333333-3333-4333-8333-333333333333";
+      const packageSha256 = "a".repeat(64);
+      const requestedAt = "2026-11-20T18:00:00Z";
+      window.api.adminAccess = async () => ({ admin: true, viewerId: window.account, managedPublishing: window.operator === true });
+      window.api.adminManagedPublishingQueue = async (offset, actor) => {
+        if (offset !== 0 || actor !== window.account) throw new Error("Wrong queue scope");
+        return { requests: [{ jobId, packageSha256, requestedAt, claimedAt: window.claimed ? requestedAt : null, channel: "kdp", title: "Harbor Letters" }], nextOffset: null };
+      };
+      window.api.adminClaimManagedPublishing = async (...args) => {
+        window.calls.push(args);
+        window.claimed = true;
+        throw new Error("Lost claim response");
+      };
+      const sessionFetch = window.fetch;
+      window.downloads = [];
+      URL.createObjectURL = blob => { window.downloads.push(blob.size); return "blob:synthetic"; };
+      URL.revokeObjectURL = () => {};
+      HTMLAnchorElement.prototype.click = function () { window.downloads.push(this.download); };
+      window.fetch = async (path, options) => {
+        if (path !== `/api/backend/v1/admin/managed-publishing/${jobId}/package?checksum=${packageSha256}`) return sessionFetch(path, options);
+        if (options.headers["x-bookworm-actor"] !== "11111111-1111-4111-8111-111111111111") throw new Error("Wrong download actor");
+        if (window.holdDownload) await window.defer("managed-zip");
+        return new Response("PK-file", { headers: { "content-type": "application/zip", "content-length": "7",
+          "content-disposition": 'attachment; filename="kdp-export.zip"' } });
+      };
+      window.renderAdmin();
+    });
+    const tab = page.getByRole("button", { name: "managed publishing", exact: true });
+    const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+    await expect(refresh).toBeEnabled();
+    await expect(tab).toHaveCount(0);
+    await page.evaluate(() => { window.operator = true; });
+    await refresh.click();
+    await tab.click();
+    await expect(page.getByText("Harbor Letters", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "Claim request" }).click();
+    await expect(page.getByRole("alert")).toContainText("Refresh to check");
+    await expect(page.getByText("Harbor Letters", { exact: true })).toHaveCount(0);
+    await refresh.click();
+    await expect(page.getByText("Claimed by you")).toBeVisible();
+    assert.deepEqual(await page.evaluate(() => window.calls), [[
+      "33333333-3333-4333-8333-333333333333", "a".repeat(64), "11111111-1111-4111-8111-111111111111",
+    ]]);
+    const download = page.getByRole("button", { name: "Download private ZIP" });
+    await download.click();
+    await expect.poll(() => page.evaluate(() => window.downloads)).toEqual([7, "kdp-export.zip"]);
+    await page.evaluate(() => { window.holdDownload = true; });
+    await download.click();
+    await page.waitForFunction(() => window.gates["managed-zip"]);
+    await page.evaluate(() => {
+      window.account = "22222222-2222-4222-8222-222222222222";
+      window.operator = false;
+      window.gates["managed-zip"].resolve();
+    });
+    await expect(tab).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(() => window.downloads), [7, "kdp-export.zip"]);
+  } finally { await page.close(); }
+});
+
 async function mountCollaboration(page, { failRead = false, write = "confirmed" } = {}) {
   await page.evaluate(({ failRead, write }) => {
     const workspace = { id: "33333333-3333-4333-8333-333333333333", name: "Publishing team" };

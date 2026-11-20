@@ -24,6 +24,7 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     );
     const packageRequest = path[1] === "publishing" && (
       (path.length === 3 && path[2] === "jobs" && request.method === "POST")
+      || (path.length === 5 && path[2] === "jobs" && path[4] === "managed-request" && ["GET", "PUT"].includes(request.method))
       || (path.length === 4 && path[2] === "requests" && (request.method === "GET" || (path[3] === "close" && request.method === "POST")))
     );
     const manualSave = path[1] === "chapters" && (
@@ -41,7 +42,8 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       && ((path.length === 4 && request.method === "POST")
         || (path.length === 5 && path[4] === "order" && request.method === "PUT"));
     const aiConnection = path[1] === "account" && ["ai-connections", "customer-ai"].includes(path[2]);
-    const boundRequest = aiConnection || manualBible || packageRequest || manualSave || chapterTitle || chapterRestore || chapterStructure || request.headers.has("x-bookworm-actor");
+    const managedOperator = path[1] === "admin" && path[2] === "managed-publishing";
+    const boundRequest = aiConnection || manualBible || packageRequest || managedOperator || manualSave || chapterTitle || chapterRestore || chapterStructure || request.headers.has("x-bookworm-actor");
     const actor = boundRequest ? request.headers.get("x-bookworm-actor") : null;
     if (boundRequest && (!actor || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor))) {
       return auth.finish(authError(422, "The original account identity is required for this saved request."));
@@ -116,6 +118,14 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
       }
     }
     const audioArchive = /^attachment; filename="([A-Za-z0-9_-]{1,64}\.zip)"$/u.exec(upstream.headers.get("content-disposition") ?? "");
+    const managedZip = managedOperator && path.length === 5 && path[4] === "package" && mediaType === "application/zip"
+      && /^attachment; filename="(kdp|apple|barnesnoble|lulu|googleplay)-export\.zip"$/.test(upstream.headers.get("content-disposition") ?? "");
+    if (managedZip) {
+      response.headers.set("content-disposition", upstream.headers.get("content-disposition")!);
+      response.headers.set("x-content-type-options", "nosniff");
+      const contentLength = upstream.headers.get("content-length");
+      if (contentLength && /^\d{1,10}$/u.test(contentLength)) response.headers.set("content-length", contentLength);
+    }
     if (contentType.split(";", 1)[0].trim().toLowerCase() === "application/zip" && audioArchive
       && upstream.headers.get("x-bookworm-audio-disclosure") === "synthesized-voice-required") {
       response.headers.set("content-disposition", `attachment; filename="${audioArchive[1]}"`);

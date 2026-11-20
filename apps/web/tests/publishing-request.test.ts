@@ -35,6 +35,34 @@ test("retailer submission SDK sends the original actor and rejects mismatched re
   } finally { globalThis.fetch = before; }
 });
 
+test("managed publishing SDK preserves the actor and rejects a different workspace or package checksum", async () => {
+  const before = globalThis.fetch;
+  const sha = "a".repeat(64);
+  const request = { jobId: job.id, workspaceId: id(2), requestedBy: id(1), packageSha256: sha, requestedAt: "2026-10-18T00:00:00Z", withdrawnAt: null, confirmedAt: null, listingUrl: null };
+  let reply: unknown = { request };
+  let expectedBody: object = { packageSha256: sha };
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), `https://api.example.test/v1/publishing/jobs/${job.id}/managed-request`);
+    assert.equal(new Headers(options?.headers).get("x-bookworm-actor"), id(1));
+    if (options?.method === "PUT") assert.deepEqual(JSON.parse(String(options.body)), expectedBody);
+    return Response.json(reply);
+  };
+  try {
+    const api = createClient({ baseUrl: "https://api.example.test" });
+    assert.deepEqual(await api.requestManagedPublishing(job.id, id(2), sha, id(1)), request);
+    assert.deepEqual(await api.getManagedPublishingRequest(job.id, id(2), id(1)), request);
+    await assert.rejects(api.getManagedPublishingRequest(job.id, id(3), id(1)), /verified/);
+    reply = { request: { ...request, packageSha256: "b".repeat(64) } };
+    await assert.rejects(api.requestManagedPublishing(job.id, id(2), sha, id(1)), /verified/);
+    expectedBody = { packageSha256: sha, withdraw: true };
+    reply = { request };
+    await assert.rejects(api.withdrawManagedPublishing(job.id, id(2), sha, id(1)), /verified/);
+    const withdrawn = { ...request, withdrawnAt: "2026-10-18T00:01:00Z" };
+    reply = { request: withdrawn };
+    assert.deepEqual(await api.withdrawManagedPublishing(job.id, id(2), sha, id(1)), withdrawn);
+  } finally { globalThis.fetch = before; }
+});
+
 test("package pointer is strict, account/book scoped and never overwrites a different pending request", () => {
   const values = new Map<string, string>();
   const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };

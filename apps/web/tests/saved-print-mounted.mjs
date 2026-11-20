@@ -36,7 +36,7 @@ const bundles = await Promise.all([false, true].map(parent => build({ stdin: { c
   ? `import React from "react"; import { createRoot } from "react-dom/client";
      import Studio from "./apps/web/components/PublishingStudio"; import { ApiClientError } from "@bookworm/api-client";
      window.ApiClientError = ApiClientError; const root = createRoot(document.getElementById("root"));
-     window.showStudio = (bookId, packageJobId) => root.render(bookId ? React.createElement(Studio, {bookId, packageJobId}) : null);`
+     window.showStudio = (bookId, packageJobId, managedPublishingEnabled) => root.render(bookId ? React.createElement(Studio, {bookId, packageJobId, managedPublishingEnabled}) : null);`
   : `import React, { useCallback, useState } from "react"; import { createRoot } from "react-dom/client";
      import Library from "./apps/web/components/SavedPrintLibrary"; import { ApiClientError } from "@bookworm/api-client";
      window.ApiClientError = ApiClientError;
@@ -757,6 +757,86 @@ test("actual Studio distinguishes unavailable package history and restores its l
     await expect(history.getByText("ready", { exact: true })).toBeVisible();
     await expect(history.getByRole("button", { name: "Download private ZIP" })).toBeVisible();
     assert.equal(await page.evaluate(() => window.requests.some(request => request.method === "POST")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("author can open an operator-confirmed retailer listing from package history", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    const listing = "https://www.amazon.com/dp/B000000001";
+    await page.evaluate(listingUrl => {
+      const { job, book, edition, workspace, asset } = window.ids;
+      const requestedAt = "2026-10-18T00:00:00Z";
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{
+        id: job, bookId: book, editionId: edition, channel: "kdp", status: "succeeded", createdAt: requestedAt, package: null,
+      }] });
+      window.bookwormApi.getManagedPublishingRequest = async () => ({
+        jobId: job, workspaceId: workspace, packageSha256: "a".repeat(64), requestedBy: asset,
+        requestedAt, confirmedAt: "2026-10-18T00:01:00Z", listingUrl, withdrawnAt: null,
+      });
+      window.showStudio(book, undefined, true);
+    }, listing);
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await history.getByText("Managed publishing request", { exact: true }).click();
+    await expect(history.getByRole("status").filter({ hasText: "Operator confirmed publication" })).toBeVisible();
+    await expect(history.getByRole("link", { name: "Open retailer listing" })).toHaveAttribute("href", listing);
+    await expect(history.getByRole("button", { name: "Withdraw consent" })).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("managed publishing requires exact package consent and recovers a lost reply with a read", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const { job, book, edition, workspace, asset } = window.ids;
+      const checksum = "a".repeat(64);
+      const storagePath = `workspaces/${workspace}/assets/${asset}/v1/kdp-export.zip`;
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{
+        id: job, bookId: book, editionId: edition, channel: "kdp", status: "succeeded", createdAt: "2026-10-18T00:00:00Z",
+        package: window.consentPackageUnavailable ? null : { asset: { id: asset, workspace_id: workspace, storage_path: storagePath, size_bytes: 1024, checksum },
+          download: { url: window.results[job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 300 } },
+      }] });
+      window.consentWrites = [];
+      window.bookwormApi.getManagedPublishingRequest = async () => window.consentReceipt ?? null;
+      window.bookwormApi.requestManagedPublishing = async (jobId, workspaceId, packageSha256, requestedBy) => {
+        window.consentWrites.push({ jobId, workspaceId, packageSha256, requestedBy });
+        window.consentReceipt = { jobId, workspaceId, packageSha256, requestedBy, requestedAt: "2026-10-18T00:00:00Z", withdrawnAt: null, confirmedAt: null, listingUrl: null };
+        throw new Error("Fixture lost reply");
+      };
+      window.bookwormApi.withdrawManagedPublishing = async (jobId, workspaceId, packageSha256, requestedBy) => {
+        window.consentWithdrawals = [{ jobId, workspaceId, packageSha256, requestedBy }];
+        window.consentReceipt.withdrawnAt = "2026-10-18T00:01:00Z";
+        throw new Error("Fixture lost withdrawal reply");
+      };
+      window.showStudio(book, undefined, true);
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await history.getByText("Managed publishing request", { exact: true }).click();
+    const consent = history.locator("details").filter({ hasText: "Managed publishing request" });
+    const record = consent.getByRole("button", { name: "Record consent" });
+    await expect(record).toBeDisabled();
+    await consent.getByRole("checkbox").check();
+    await record.click();
+    await expect(consent.getByRole("alert")).toContainText("could not be confirmed");
+    await consent.getByRole("button", { name: "Check saved request" }).click();
+    await expect(consent.getByRole("status")).toContainText("Consent recorded");
+    assert.deepEqual(await page.evaluate(() => window.consentWrites), [{
+      jobId: ids.job, workspaceId: ids.workspace, packageSha256: "a".repeat(64), requestedBy: ids.asset,
+    }]);
+    await page.evaluate(() => { window.consentPackageUnavailable = true; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText("This job is saved in history, but its file is currently unavailable.", { exact: false })).toBeVisible();
+    await history.getByText("Managed publishing request", { exact: true }).click();
+    await consent.getByRole("button", { name: "Withdraw consent" }).click();
+    await expect(consent.getByRole("alert")).toContainText("could not be confirmed");
+    await consent.getByRole("button", { name: "Check saved request" }).click();
+    await expect(consent.getByRole("status")).toContainText("Consent withdrawn");
+    assert.deepEqual(await page.evaluate(() => window.consentWithdrawals), await page.evaluate(() => window.consentWrites));
+    await expect(record).toHaveCount(0);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

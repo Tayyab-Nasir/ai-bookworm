@@ -19,6 +19,7 @@ import { clearRenderPointer, persistRenderPointer, readRenderPointer, validateRe
 import RetailerPackageRequest from "./RetailerPackageRequest";
 import RetailerListingReview from "./RetailerListingReview";
 import RetailerSubmission from "./RetailerSubmission";
+import ManagedPublishingConsent from "./ManagedPublishingConsent";
 import { readBrowserSession } from "../lib/browser-session";
 import { discardEditionTab, editionBase, parseEditionTab, readEditionTab, writeEditionTab } from "../lib/edition-tab-recovery";
 import { beginEditionCreateFence, clearEditionCreateFence, readEditionCreateFence, type EditionCreateFence } from "../lib/edition-create-fence";
@@ -74,13 +75,13 @@ const cardClass = "rounded-2xl border border-white/10 bg-white/[0.035] p-5";
 type EditionRisk = { current: Map<string, EditionCreateFence> };
 type PublishingScope = { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> };
 function superseded() { const e = new Error("Account check superseded."); e.name = "PublishingScopeChanged"; return e; }
-export default function PublishingStudio({ bookId, packageJobId }: { bookId: string; packageJobId?: string }) {
+export default function PublishingStudio({ bookId, packageJobId, managedPublishingEnabled = false }: { bookId: string; packageJobId?: string; managedPublishingEnabled?: boolean }) {
   const latestBook = useRef(bookId); latestBook.current = bookId;
   const editionRisks = useRef(new Map<string, EditionCreateFence>());
   const isBookCurrent = useCallback(() => latestBook.current === bookId, [bookId]);
-  return <ScopedPublishingStudio key={bookId} bookId={bookId} packageJobId={packageJobId} isBookCurrent={isBookCurrent} editionRisks={editionRisks} />;
+  return <ScopedPublishingStudio key={bookId} bookId={bookId} packageJobId={packageJobId} isBookCurrent={isBookCurrent} editionRisks={editionRisks} managedPublishingEnabled={managedPublishingEnabled} />;
 }
-function ScopedPublishingStudio({ bookId, packageJobId, isBookCurrent, editionRisks }: { bookId: string; packageJobId?: string; isBookCurrent: () => boolean; editionRisks: EditionRisk }) {
+function ScopedPublishingStudio({ bookId, packageJobId, isBookCurrent, editionRisks, managedPublishingEnabled }: { bookId: string; packageJobId?: string; isBookCurrent: () => boolean; editionRisks: EditionRisk; managedPublishingEnabled: boolean }) {
   type Entry = { actor: string; scope: PublishingScope; access: {book:Book;role:string} };
   const [entries, setEntries] = useState<Entry[]>([]), [identity,setIdentity] = useState<Entry|null>(null);
   const [active,setActive]=useState(false), [checking,setChecking]=useState(true), [error,setError]=useState("");
@@ -119,11 +120,11 @@ function ScopedPublishingStudio({ bookId, packageJobId, isBookCurrent, editionRi
   },[check]);
   return <>
     {entries.map(entry => <PublishingWorkspace key={entry.actor} bookId={bookId} packageJobId={packageJobId} scope={entry.scope}
-      active={active && identity?.actor===entry.actor} verifiedAccess={entry.access} editionRisks={editionRisks} />)}
+      active={active && identity?.actor===entry.actor} verifiedAccess={entry.access} editionRisks={editionRisks} managedPublishingEnabled={managedPublishingEnabled} />)}
     {!active&&<section className="mx-auto max-w-7xl px-4 py-8 text-white"><h1 className="text-2xl">Publishing studio</h1>{checking?<p role="status">Checking your account…</p>:<p role="alert">{error} <button className="underline" onClick={()=>void check()}>Try again</button> <Link className="underline" href="/login">Sign in</Link></p>}</section>}
   </>;
 }
-function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAccess, editionRisks }: { bookId:string;packageJobId?:string;scope:PublishingScope;active:boolean;verifiedAccess:{book:Book;role:string};editionRisks:EditionRisk }) {
+function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAccess, editionRisks, managedPublishingEnabled }: { bookId:string;packageJobId?:string;scope:PublishingScope;active:boolean;verifiedAccess:{book:Book;role:string};editionRisks:EditionRisk;managedPublishingEnabled:boolean }) {
   const api = useMemo(() => {
     const scoped = apiClient(scope.actor);
     return new Proxy(scoped, { get(target, key, receiver) {
@@ -1217,6 +1218,14 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
                 isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId
                   && viewEpoch.current === linkEpoch && (publishingJobsRef.current.some(item => item.id === job.id) || linkedPackageRef.current === job)} />
             )}
+            {managedPublishingEnabled
+              && currentIdentity && (role === "owner" || role === "admin") && book && job.status === "succeeded"
+              && job.bookId === bookId && job.editionId === activeId && (
+                <ManagedPublishingConsent key={`${scope.actor}:${job.id}:${job.package?.asset.checksum ?? ""}`}
+                  api={api} actor={scope.actor} jobId={job.id} workspaceId={book.workspace_id} checksum={job.package?.asset.checksum ?? null}
+                  isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId
+                    && viewEpoch.current === linkEpoch && (publishingJobsRef.current.includes(job) || linkedPackageRef.current === job)} />
+              )}
           </li>)}</ul> : packageHistory.editionId === activeId && packageHistory.status === "ready" ? <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p> : null}
           {packageHistory.editionId === activeId && packageHistory.status === "ready" && packageHistory.nextCursor && (
             <button type="button" onClick={() => void refreshHistory(packageHistory.nextCursor ?? undefined)} disabled={Boolean(busy)}

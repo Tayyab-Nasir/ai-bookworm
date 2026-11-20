@@ -17,6 +17,16 @@ export interface RetailerSubmission {
   revision: string;
   updatedAt: string;
 }
+export interface ManagedPublishingRequest {
+  jobId: string;
+  workspaceId: string;
+  requestedBy: string | null;
+  packageSha256: string;
+  requestedAt: string;
+  withdrawnAt: string | null;
+  confirmedAt: string | null;
+  listingUrl: string | null;
+}
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type TaskStatus = "todo" | "in_progress" | "blocked" | "done" | "cancelled";
 

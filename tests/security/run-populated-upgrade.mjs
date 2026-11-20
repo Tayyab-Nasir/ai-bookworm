@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 143 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 144 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -221,7 +221,7 @@ async function expectedInvitationRecoveryGuard(migration, fixture, historical, d
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 143, 'This reviewed rehearsal pins the 45 -> 143 target; review before extending');
+  assert.equal(names.length, 144, 'This reviewed rehearsal pins the 45 -> 144 target; review before extending');
   assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
   assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
@@ -244,7 +244,7 @@ try {
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
-  assert.deepEqual(names.slice(-11), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure, communityJoinOperations]);
+  assert.deepEqual(names.slice(-12), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure, communityJoinOperations, '20261121090000_managed_publishing_requests.sql']);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };

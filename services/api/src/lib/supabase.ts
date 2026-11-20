@@ -6,7 +6,7 @@ export type { SupabaseClient };
 export type SupabaseFactory = (token?: string, fetcher?: typeof fetch) => SupabaseClient;
 
 /** Private worker transport: one bounded attempt, including streamed bodies. */
-export function boundedSupabaseFetch(shutdown: AbortSignal, fetcher: typeof fetch = fetch): typeof fetch {
+export function boundedSupabaseFetch(shutdown: AbortSignal, fetcher: typeof fetch = fetch, storageLimit = 12 * 1024 * 1024): typeof fetch {
   return async (input, init) => {
     const callerSignal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
     const signal = AbortSignal.any([shutdown, AbortSignal.timeout(60_000), ...(callerSignal ? [callerSignal] : [])]);
@@ -15,7 +15,7 @@ export function boundedSupabaseFetch(shutdown: AbortSignal, fetcher: typeof fetc
     if (signal.aborted) { await response.body?.cancel().catch(() => {}); signal.throwIfAborted(); }
     if (!response.body) return response;
     const url = new URL(input instanceof Request ? input.url : String(input));
-    const limit = (url.pathname.startsWith("/storage/v1/object/") ? 12 : 16) * 1024 * 1024;
+    const limit = url.pathname.startsWith("/storage/v1/object/") ? storageLimit : 16 * 1024 * 1024;
     if (Number(response.headers.get("content-length")) > limit) {
       await response.body.cancel().catch(() => {});
       throw new Error("Private service response exceeds the worker byte limit.");

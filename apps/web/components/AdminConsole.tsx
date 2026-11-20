@@ -6,14 +6,15 @@ import { ApiClientError } from "@bookworm/api-client";
 import { readBrowserSession } from "../lib/browser-session";
 import { apiClient } from "./api";
 
-const tabs = ["users", "jobs", "moderation", "flags", "support", "audit", "usage"] as const;
+const tabs = ["users", "jobs", "managed publishing", "moderation", "flags", "support", "audit", "usage"] as const;
 type Tab = typeof tabs[number];
 type Row = Record<string, unknown>;
 type TicketStatus = "open" | "pending" | "resolved" | "closed";
 type ModerationAction = "remove" | "dismiss";
 type AdminSnapshot =
   | { kind: "loading" | "denied" }
-  | { kind: "ready"; actor: string; query: string; version: number; rows: Row[]; documentHealth: Row | null }
+  | { kind: "ready"; actor: string; query: string; version: number; rows: Row[]; documentHealth: Row | null;
+      managedPublishing: boolean; managedNextOffset: number | null }
   | { kind: "unavailable"; actor: string | null; message: string };
 type AdminOutcome = { kind: "confirmed" | "rejected" | "unconfirmed"; actor: string; message: string };
 const ticketStatuses: TicketStatus[] = ["open", "pending", "resolved", "closed"];
@@ -84,8 +85,14 @@ export default function AdminConsole() {
         }
       }
       const api = apiClient(actor);
+      let managedNextOffset: number | null = null;
       const records = tab === "usage"
         ? api.adminUsageSummary(30).then(result => result.orgs as unknown as Row[])
+        : tab === "managed publishing"
+          ? api.adminManagedPublishingQueue(offset, actor).then(result => {
+            managedNextOffset = result.nextOffset === offset + 50 ? result.nextOffset : null;
+            return result.requests;
+          })
         : tab === "moderation"
           ? api.adminModerationReports({
             limit: 50, offset, status: reportStatus,
@@ -110,10 +117,16 @@ export default function AdminConsole() {
         return;
       }
       verifiedActor = actor;
+      if (tab === "managed publishing" && access.managedPublishing !== true) {
+        setTab("users");
+        setOffset(0);
+        return;
+      }
       if (result.status === "rejected") throw result.reason;
       if (queueHealth.status === "rejected") throw queueHealth.reason;
       if (!Array.isArray(result.value)) throw new Error("The service did not return the requested records.");
-      setSnapshot({ kind: "ready", actor, query, version: current, rows: result.value, documentHealth: queueHealth.value });
+      setSnapshot({ kind: "ready", actor, query, version: current, rows: result.value, documentHealth: queueHealth.value,
+        managedPublishing: access.managedPublishing === true, managedNextOffset });
     } catch (reason) {
       if (!isCurrent()) return;
       if (reason instanceof ApiClientError && reason.status === 403) {
@@ -177,6 +190,56 @@ export default function AdminConsole() {
     }
   }
 
+  async function downloadManagedPackage(row: Row) {
+    if (!ready || ready.version !== requestId.current || pendingAction.current || typeof row.claimedAt !== "string") return;
+    const { actor, version } = ready;
+    const jobId = value(row, "jobId"), checksum = value(row, "packageSha256"), channel = value(row, "channel");
+    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(jobId) || !/^[a-f0-9]{64}$/.test(checksum)
+      || !/^(kdp|apple|barnesnoble|lulu|googleplay)$/.test(channel)) return;
+    const operation = {};
+    pendingAction.current = operation;
+    const isCurrent = () => pendingAction.current === operation && requestId.current === version;
+    const filename = `${channel}-export.zip`;
+    setBusy(jobId);
+    setOutcome(null);
+    try {
+      await readBrowserSession(actor);
+      if (!isCurrent()) return;
+      const response = await fetch(`/api/backend/v1/admin/managed-publishing/${jobId}/package?checksum=${checksum}`, {
+        credentials: "same-origin", redirect: "error", cache: "no-store",
+        headers: { "x-bookworm-actor": actor }, signal: AbortSignal.timeout(120_000),
+      });
+      const size = Number(response.headers.get("content-length"));
+      if (!response.ok || response.headers.get("content-type") !== "application/zip"
+        || response.headers.get("content-disposition") !== `attachment; filename="${filename}"`
+        || !Number.isSafeInteger(size) || size < 1 || size > 200 * 1024 * 1024) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error("The assigned package could not be downloaded. Refresh to check its current status.");
+      }
+      const blob = await response.blob();
+      if (blob.size !== size) throw new Error("The package download was incomplete.");
+      await readBrowserSession(actor);
+      if (!isCurrent()) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      try { link.click(); } finally {
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (reason) {
+      if (isCurrent()) {
+        try { await readBrowserSession(actor); }
+        catch { if (isCurrent()) await load(); return; }
+        if (isCurrent()) setOutcome({ kind: "rejected", actor, message: reason instanceof Error ? reason.message : "Package download failed." });
+      }
+    } finally {
+      if (pendingAction.current === operation) { pendingAction.current = null; setBusy(null); }
+    }
+  }
+
   function changeTab(next: Tab) {
     if (pendingAction.current) return;
     setTab(next); setOffset(0); setStatus(""); setReportStatus("open"); setReportType("all");
@@ -197,7 +260,7 @@ export default function AdminConsole() {
     </div>
 
     <nav aria-label="Administration sections" className="mt-6 flex flex-wrap gap-2">
-      {tabs.map((item) => <button type="button" key={item} disabled={!!busy} onClick={() => changeTab(item)} aria-current={tab === item ? "page" : undefined} className={`rounded-full px-4 py-2.5 text-sm capitalize outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-40 ${tab === item ? "bg-white font-semibold text-black" : "border border-white/15 text-white/60 hover:text-white"}`}>{item === "flags" ? "Feature flags" : item}</button>)}
+      {tabs.filter(item => item !== "managed publishing" || ready?.managedPublishing || tab === item).map((item) => <button type="button" key={item} disabled={!!busy} onClick={() => changeTab(item)} aria-current={tab === item ? "page" : undefined} className={`rounded-full px-4 py-2.5 text-sm capitalize outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-40 ${tab === item ? "bg-white font-semibold text-black" : "border border-white/15 text-white/60 hover:text-white"}`}>{item === "flags" ? "Feature flags" : item}</button>)}
     </nav>
     {error && <p role="alert" className="mt-6 rounded-xl border border-red-400/20 bg-red-400/10 p-4 text-sm text-red-100">{error}</p>}
     {notice && <p role="status" className="mt-6 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{notice}</p>}
@@ -207,7 +270,7 @@ export default function AdminConsole() {
         <label className="text-xs text-white/50">Report status<select value={reportStatus} disabled={!!busy} onChange={(event) => { setReportStatus(event.target.value as typeof reportStatus); setOffset(0); setPendingModeration(null); }} className={input + " mt-2 block"}><option value="open">Open</option><option value="actioned">Actioned</option><option value="dismissed">Dismissed</option><option value="all">All reports</option></select></label>
         <label className="text-xs text-white/50">Content type<select value={reportType} disabled={!!busy} onChange={(event) => { setReportType(event.target.value as typeof reportType); setOffset(0); setPendingModeration(null); }} className={input + " mt-2 block"}><option value="all">Posts and comments</option><option value="post">Posts</option><option value="comment">Comments</option></select></label>
       </div>}
-      <div><h2 className="text-xl font-medium capitalize">{tab === "flags" ? "Feature flags" : tab === "usage" ? "Usage by organization" : tab === "moderation" ? "Community report review" : tab}</h2><p className="mt-1 text-xs text-white/40">{tab === "usage" ? "Last 30 days · up to 10,000 usage events · top 50 organizations" : tab === "flags" ? "Changes apply only to the selected scope and are recorded in the audit log." : tab === "moderation" ? "Platform-wide post and comment reports · soft removal preserves an auditable record." : "50 records per page · newest first"}</p></div>
+      <div><h2 className="text-xl font-medium capitalize">{tab === "flags" ? "Feature flags" : tab === "usage" ? "Usage by organization" : tab === "moderation" ? "Community report review" : tab}</h2><p className="mt-1 text-xs text-white/40">{tab === "usage" ? "Last 30 days · up to 10,000 usage events · top 50 organizations" : tab === "flags" ? "Changes apply only to the selected scope and are recorded in the audit log." : tab === "moderation" ? "Platform-wide post and comment reports · soft removal preserves an auditable record." : tab === "managed publishing" ? "Active requests and your claims · oldest first" : "50 records per page · newest first"}</p></div>
       {tab === "users" && <form onSubmit={(event) => { event.preventDefault(); setOffset(0); setSearch(searchDraft.trim()); }} className="flex flex-wrap items-end gap-2">
         <label className="text-xs text-white/50">Find a user<input value={searchDraft} disabled={!!busy} onChange={(event) => setSearchDraft(event.target.value)} maxLength={200} placeholder="Display name or full user ID" className={`${input} mt-2 block w-64 max-w-full`} /></label><button disabled={!!busy} className={button}>Search</button>
       </form>}
@@ -225,11 +288,54 @@ export default function AdminConsole() {
     <section aria-label={`${tab} records`} aria-busy={loading} className="mt-5 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.025]">
       {loading ? <p role="status" className="p-12 text-center text-sm text-white/45">Loading {tab}…</p> : !rows.length ? <div className="p-12 text-center"><p className="text-base text-white/80">{!ready ? "Data unavailable" : tab === "moderation" ? "No reports match these filters" : "No matching records"}</p><p className="mt-2 text-sm text-white/40">{!ready ? "Use Refresh to check the latest records." : tab === "moderation" ? "The queue is clear for this filter. Check another status or content type." : "Records will appear here when there is activity. Adjust filters or check another page."}</p></div> : <div className="divide-y divide-white/10">
         {rows.map((row, index) => {
-          const id = value(row, "id", String(index));
+          const id = tab === "managed publishing" ? value(row, "jobId") : value(row, "id", String(index));
           const stamp = date(row.created_at);
+          const listingUrl = value(row, "listingUrl", "");
           const target = row.target && typeof row.target === "object" ? row.target as Row : null;
           const pendingAction = pendingModeration?.reportId === id ? pendingModeration.action : null;
           return <article key={id} className="p-5 sm:p-6">
+            {tab === "managed publishing" && <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0"><h3 className="break-words font-medium">{value(row, "title")}</h3>
+                <p className="mt-2 text-xs text-white/60">{value(row, "channel")} · Requested {date(row.requestedAt)}</p>
+                <p className="mt-2 break-all font-mono text-xs text-white/45">SHA-256 {value(row, "packageSha256")}</p></div>
+              {typeof row.confirmedAt === "string" ? <div className="space-y-2 text-sm">
+                <p className="text-emerald-100">Publication confirmed · {date(row.confirmedAt)}</p>
+                {/^https:\/\/[a-z0-9.]+\/[A-Za-z0-9/_~.%+?=-]+$/.test(listingUrl) && <a href={listingUrl} target="_blank"
+                  rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline">Open retailer listing</a>}
+              </div> : typeof row.claimedAt === "string" ? <div className="w-full max-w-md space-y-2">
+                <p className="text-sm text-emerald-100">Claimed by you</p>
+                <button type="button" disabled={!!busy || !ready} className={button} onClick={() => void downloadManagedPackage(row)}>
+                  {busy === id ? "Verifying ZIP…" : "Download private ZIP"}
+                </button>
+                <details className="mt-2 rounded-xl border border-white/15 p-3">
+                  <summary className="cursor-pointer py-2 text-sm">Confirm publication</summary>
+                  <form className="mt-2 space-y-3" onSubmit={event => {
+                    event.preventDefault();
+                    if (!ready || busy) return;
+                    const form = new FormData(event.currentTarget);
+                    const url = String(form.get("listingUrl") ?? "").trim();
+                    if (form.get("verified") !== "on") return;
+                    void update(id, async api => {
+                      await readBrowserSession(ready.actor);
+                      await api.adminConfirmManagedPublishing(id, value(row, "packageSha256"), url, ready.actor);
+                      await readBrowserSession(ready.actor);
+                    }, "Publication confirmation saved.");
+                  }}>
+                    <label className="block text-sm">Retailer listing URL
+                      <input name="listingUrl" type="url" pattern="https://.*" required maxLength={1024} disabled={!!busy}
+                        placeholder="https://…" className={`${input} mt-2 block w-full`} />
+                    </label>
+                    <label className="flex items-start gap-2 text-sm"><input name="verified" type="checkbox" required disabled={!!busy} />
+                      I verified this listing in the retailer account.</label>
+                    <button type="submit" disabled={!!busy || !ready} className={button}>Save confirmation</button>
+                  </form>
+                </details>
+              </div>
+                : <button type="button" disabled={!!busy || !ready} className={button}
+                  onClick={() => ready && void update(id, api => api.adminClaimManagedPublishing(id, value(row, "packageSha256"), ready.actor), "Publishing request claimed.")}>
+                  {busy === id ? "Claiming…" : "Claim request"}
+                </button>}
+            </div>}
             {tab === "moderation" && <div className="space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div><p className="text-xs uppercase tracking-[0.14em] text-white/40">{value(row, "entity_type", "community")} report · {value(target ?? {}, "communityName", "Community unavailable")}</p><h3 className="mt-2 text-lg font-medium">{target?.type === "post" ? value(target, "title", "Untitled post") : target?.type === "comment" ? value(target, "parentTitle", "Comment report") : "Reported content unavailable"}</h3><p className="mt-2 text-xs text-white/40">{stamp} · {value(row, "status")}{row.resolution_action ? " · " + value(row, "resolution_action") : ""}</p></div>
@@ -332,6 +438,6 @@ export default function AdminConsole() {
         })}
       </div>}
     </section>
-    {tab !== "flags" && tab !== "usage" && <div className="mt-5 flex items-center justify-between gap-3"><button type="button" disabled={offset === 0 || loading || !!busy} onClick={() => setOffset((page) => Math.max(0, page - 50))} className={button}>Previous</button><p className="text-xs text-white/40">Page {Math.floor(offset / 50) + 1}</p><button type="button" disabled={rows.length < 50 || loading || !!busy} onClick={() => setOffset((page) => page + 50)} className={button}>Next</button></div>}
+    {tab !== "flags" && tab !== "usage" && <div className="mt-5 flex items-center justify-between gap-3"><button type="button" disabled={offset === 0 || loading || !!busy} onClick={() => setOffset((page) => Math.max(0, page - 50))} className={button}>Previous</button><p className="text-xs text-white/40">Page {Math.floor(offset / 50) + 1}</p><button type="button" disabled={(tab === "managed publishing" ? ready?.managedNextOffset == null : rows.length < 50) || loading || !!busy} onClick={() => setOffset((page) => page + 50)} className={button}>Next</button></div>}
   </main>;
 }

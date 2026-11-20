@@ -7,6 +7,58 @@ import { childEnvironment, requireNativeAuthorRunner } from './native-author-fil
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
+async function verifyManagedPublishing(request, author, alice, bob, packages) {
+  const [primary, withdrawn] = [packages.find(item => item.intent.channel === 'kdp'), packages.find(item => item.intent.channel !== 'kdp')];
+  assert.ok(primary && withdrawn);
+  const otherOperator = await author('Native second publishing operator');
+  const keys = ['MANAGED_PUBLISHING_ENABLED', 'ADMIN_USER_IDS', 'MANAGED_PUBLISHING_OPERATOR_IDS'];
+  const previous = keys.map(key => process.env[key]);
+  const owner = { 'x-bookworm-actor': alice.userId };
+  const operator = { 'x-bookworm-actor': bob.userId };
+  const peer = { 'x-bookworm-actor': otherOperator.userId };
+  const authorRequest = item => `/publishing/jobs/${item.id}/managed-request`;
+  const queue = '/admin/managed-publishing';
+  const zip = item => `${queue}/${item.id}/package?checksum=${item.checksum}`;
+  const claim = item => `${queue}/${item.id}/claim`;
+  const confirmation = `${queue}/${primary.id}/confirmation`;
+  const consent = item => ({ packageSha256: item.checksum });
+  const listingUrl = 'https://www.amazon.com/dp/B000000001';
+  try {
+    process.env.MANAGED_PUBLISHING_ENABLED = 'true';
+    process.env.ADMIN_USER_IDS = [alice.userId, bob.userId, otherOperator.userId].join(',');
+    process.env.MANAGED_PUBLISHING_OPERATOR_IDS = [bob.userId, otherOperator.userId].join(',');
+    await request(alice.token, 'GET', queue, undefined, 403, owner);
+    await request(bob.token, 'GET', authorRequest(primary), undefined, 404, operator);
+    await request(bob.token, 'GET', zip(primary), undefined, 404, operator);
+    const initial = await request(alice.token, 'PUT', authorRequest(primary), consent(primary), 200, owner);
+    await request(alice.token, 'PUT', authorRequest(withdrawn), consent(withdrawn), 200, owner);
+    assert.deepEqual((await request(bob.token, 'GET', queue, undefined, 200, operator)).requests.map(row => row.jobId).sort(),
+      [primary.id, withdrawn.id].sort());
+    assert.deepEqual(await request(alice.token, 'GET', authorRequest(primary), undefined, 200, owner), initial);
+    const assigned = await request(bob.token, 'PUT', claim(primary), consent(primary), 200, operator);
+    assert.deepEqual(await request(bob.token, 'PUT', claim(primary), consent(primary), 200, operator), assigned);
+    await request(otherOperator.token, 'PUT', claim(primary), consent(primary), 409, peer);
+    await request(otherOperator.token, 'GET', zip(primary), undefined, 404, peer);
+    const archive = await request(bob.token, 'GET', zip(primary), undefined, 200, operator);
+    assert.equal(archive.disposition, 'attachment; filename="kdp-export.zip"');
+    assert.equal(hash(archive.bytes), primary.checksum);
+    assert.equal(inspectNativePackage(archive.bytes).manifest.channel, 'kdp');
+    const body = { ...consent(primary), listingUrl };
+    await request(otherOperator.token, 'PUT', confirmation, body, 409, peer);
+    const confirmed = await request(bob.token, 'PUT', confirmation, body, 200, operator);
+    assert.deepEqual(await request(bob.token, 'PUT', confirmation, body, 200, operator), confirmed);
+    await request(bob.token, 'GET', zip(primary), undefined, 404, operator);
+    assert.equal((await request(alice.token, 'GET', authorRequest(primary), undefined, 200, owner)).request.listingUrl, listingUrl);
+    await request(bob.token, 'PUT', claim(withdrawn), consent(withdrawn), 200, operator);
+    const revoked = await request(alice.token, 'PUT', authorRequest(withdrawn), { ...consent(withdrawn), withdraw: true }, 200, owner);
+    assert.ok(revoked.request.withdrawnAt);
+    await request(bob.token, 'GET', zip(withdrawn), undefined, 404, operator);
+    console.log('PASS native managed publishing consent, assignment, byte-exact private ZIP, withdrawal and confirmation');
+  } finally {
+    keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+  }
+}
+
 export function inspectNativePackage(bytes) {
   // Reuse Python's ZIP reader; do not add a package dependency or extract files.
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('../../scripts/run-python.mjs', import.meta.url)), '-I', '-c', `
@@ -293,6 +345,7 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
     assert.equal(response.status, 200);
     assert.equal(hash(Buffer.from(await response.arrayBuffer())), saved.checksum);
   }
+  await verifyManagedPublishing(request, author, alice, bob, packages);
   const usage = data(await service.from('usage_events').select('meter,quantity'), 'retailer usage');
   assert.equal(usage.length, 15); // Four prior author renders, four retailer renders, seven packages.
   for (const [meter, count] of [['rendering', 8], ['publishing', 7]]) {

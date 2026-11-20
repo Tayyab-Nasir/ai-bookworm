@@ -1,8 +1,11 @@
-import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 import { logAdminAudit } from "../lib/admin.js";
 import { recoverHeldAiReviewReceipt } from "../lib/ai-review-worker.js";
+import { boundedSupabaseFetch } from "../lib/supabase.js";
 
 // All routes run behind plugins/admin.ts requireAdmin and use the
 // service-role client (bypasses RLS): admin-only by construction.
@@ -11,6 +14,37 @@ const pagination = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
+const publishingChecksum = z.string().regex(/^[a-f0-9]{64}$/);
+const publishingDate = z.string().datetime({ offset: true });
+const publishingListingUrl = z.string().max(1024).regex(/^https:\/\/[a-z0-9.]+\/[A-Za-z0-9/_~.%+?=-]+$/);
+const managedPackageMaxBytes = 200 * 1024 * 1024;
+const managedPackageDescriptor = z.object({
+  storage_path: z.string().regex(/^workspaces\/[a-f0-9-]{36}\/assets\/[a-f0-9-]{36}\/v1\/(kdp|apple|barnesnoble|lulu|googleplay)-export\.zip$/),
+  filename: z.string().regex(/^(kdp|apple|barnesnoble|lulu|googleplay)-export\.zip$/),
+  package_sha256: publishingChecksum,
+  size_bytes: z.number().int().min(1).max(managedPackageMaxBytes),
+});
+const publishingQueueEntry = z.object({
+  package_job_id: z.string().uuid(),
+  channel: z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]),
+  title: z.string().min(1).max(500),
+  package_sha256: publishingChecksum,
+  requested_at: publishingDate,
+  claimed_at: publishingDate.nullable(),
+  confirmed_at: publishingDate.nullable(),
+  listing_url: publishingListingUrl.nullable(),
+});
+
+function isPublishingOperator(userId: string) {
+  const operators = (process.env.MANAGED_PUBLISHING_OPERATOR_IDS ?? "").split(",").map(value => value.trim());
+  return process.env.MANAGED_PUBLISHING_ENABLED === "true" && operators.includes(userId);
+}
+
+function requirePublishingOperator(req: FastifyRequest) {
+  if (process.env.MANAGED_PUBLISHING_ENABLED !== "true") throw new AppError(404, "Managed publishing is unavailable.");
+  if (!isPublishingOperator(req.userId)) throw new AppError(403, "Publishing operator access is required.");
+  if (req.headers["x-bookworm-actor"] !== req.userId) throw new AppError(422, "The original operator account is required.");
+}
 const moderationReportRow = z.object({
   id: z.string().uuid(),
   entity_type: z.enum(["post", "comment"]),
@@ -35,10 +69,127 @@ const aiJobView = z.object({
 }).strip();
 
 export function adminRoutes(app: FastifyInstance) {
+  let managedDelivery: object | null = null;
   app.adminRoutes((a) => {
     a.get("/admin/access", async (req, reply) => {
       reply.header("cache-control", "private, no-store");
-      return { admin: true, viewerId: req.userId };
+      return { admin: true, viewerId: req.userId, ...(isPublishingOperator(req.userId) ? { managedPublishing: true } : {}) };
+    });
+    a.get("/admin/managed-publishing", async (req, reply) => {
+      requirePublishingOperator(req);
+      const page = pagination.extend({ limit: z.coerce.number().int().min(1).max(50).default(50),
+        offset: z.coerce.number().int().min(0).max(10_000).default(0) }).strict().safeParse(req.query);
+      if (!page.success) throw new AppError(422, "Invalid publishing queue page.");
+      const { limit, offset } = page.data;
+      const { data, error } = await app.supabaseFactory().rpc("list_managed_publishing_queue", {
+        p_operator: req.userId, p_limit: limit + 1, p_offset: offset,
+      });
+      const parsed = z.array(publishingQueueEntry).max(limit + 1).safeParse(data);
+      if (error || !parsed.success) throw new AppError(503, "The publishing queue could not be verified.");
+      reply.header("cache-control", "private, no-store");
+      return {
+        requests: parsed.data.slice(0, limit).map(row => ({ jobId: row.package_job_id, channel: row.channel, title: row.title,
+          packageSha256: row.package_sha256, requestedAt: row.requested_at, claimedAt: row.claimed_at,
+          confirmedAt: row.confirmed_at, listingUrl: row.listing_url })),
+        nextOffset: parsed.data.length > limit && offset + limit <= 10_000 ? offset + limit : null,
+      };
+    });
+    a.put("/admin/managed-publishing/:jobId/claim", async (req, reply) => {
+      requirePublishingOperator(req);
+      const path = z.object({ jobId: z.string().uuid().transform(value => value.toLowerCase()) }).safeParse(req.params);
+      const body = z.object({ packageSha256: publishingChecksum }).strict().safeParse(req.body);
+      if (!path.success || !body.success) throw new AppError(422, "The package and its checksum are required.");
+      const { jobId } = path.data;
+      const { packageSha256 } = body.data;
+      const { data, error } = await app.supabaseFactory().rpc("claim_managed_publishing", {
+        p_job_id: jobId, p_sha256: packageSha256, p_operator: req.userId,
+      });
+      if (error?.code === "PT409") throw new AppError(409, "This request is no longer available to claim. Refresh the queue.");
+      const receipt = publishingQueueEntry.pick({ package_job_id: true, package_sha256: true }).extend({
+        claimed_by: z.string().uuid(), claimed_at: publishingDate, withdrawn_at: z.null(),
+      }).safeParse(Array.isArray(data) && data.length === 1 ? data[0] : data);
+      if (error || !receipt.success || receipt.data.package_job_id !== jobId
+        || receipt.data.package_sha256 !== packageSha256 || receipt.data.claimed_by !== req.userId) {
+        throw new AppError(503, "The publishing assignment could not be confirmed.");
+      }
+      reply.header("cache-control", "private, no-store");
+      return { claim: { jobId, packageSha256, claimedAt: receipt.data.claimed_at } };
+    });
+    a.get("/admin/managed-publishing/:jobId/package", async (req, reply) => {
+      requirePublishingOperator(req);
+      const path = z.object({ jobId: z.string().uuid().transform(value => value.toLowerCase()) }).safeParse(req.params);
+      const query = z.object({ checksum: publishingChecksum }).strict().safeParse(req.query);
+      if (!path.success || !query.success) throw new AppError(422, "The package and its checksum are required.");
+      if (managedDelivery) throw new AppError(503, "Package delivery is busy. Try again shortly.");
+      const operation = {};
+      managedDelivery = operation;
+      const release = () => { if (managedDelivery === operation) managedDelivery = null; };
+      let streaming = false;
+      try {
+        const signal = AbortSignal.timeout(90_000);
+        const service = app.supabaseFactory(undefined, boundedSupabaseFetch(signal, fetch, managedPackageMaxBytes));
+        const read = async () => {
+          const { data, error } = await service.rpc("read_managed_publishing_package", {
+            p_job_id: path.data.jobId, p_operator: req.userId,
+          });
+          if (error) throw new AppError(503, "The private package could not be verified.");
+          const parsed = z.array(managedPackageDescriptor).max(1).safeParse(data);
+          if (!parsed.success) throw new AppError(503, "The private package could not be verified.");
+          const descriptor = parsed.data[0];
+          if (!descriptor || descriptor.package_sha256 !== query.data.checksum
+            || !descriptor.storage_path.endsWith("/" + descriptor.filename)) {
+            throw new AppError(404, "The claimed package is unavailable.");
+          }
+          return descriptor;
+        };
+        const descriptor = await read();
+        const { data, error } = await service.storage.from("book-assets").download(descriptor.storage_path);
+        if (error || !data || data.size !== descriptor.size_bytes) throw new AppError(409, "The stored package could not be verified.");
+        const sha = createHash("sha256");
+        for await (const chunk of data.stream() as unknown as AsyncIterable<Uint8Array>) {
+          signal.throwIfAborted();
+          sha.update(chunk);
+        }
+        if (sha.digest("hex") !== descriptor.package_sha256) throw new AppError(409, "The stored package could not be verified.");
+        if (JSON.stringify(await read()) !== JSON.stringify(descriptor)) throw new AppError(409, "The claimed package changed.");
+        signal.throwIfAborted();
+        requirePublishingOperator(req);
+        reply.header("cache-control", "private, no-store")
+          .header("content-disposition", `attachment; filename="${descriptor.filename}"`)
+          .header("content-length", String(descriptor.size_bytes))
+          .header("x-content-type-options", "nosniff").type("application/zip");
+        const stream = Readable.from(data.stream() as unknown as AsyncIterable<Uint8Array>);
+        reply.raw.once("finish", release);
+        reply.raw.once("close", () => { stream.destroy(); release(); });
+        const response = reply.send(stream);
+        streaming = true;
+        return response;
+      } finally {
+        if (!streaming) release();
+      }
+    });
+    a.put("/admin/managed-publishing/:jobId/confirmation", async (req, reply) => {
+      requirePublishingOperator(req);
+      const path = z.object({ jobId: z.string().uuid().transform(value => value.toLowerCase()) }).safeParse(req.params);
+      const body = z.object({ packageSha256: publishingChecksum, listingUrl: publishingListingUrl }).strict().safeParse(req.body);
+      if (!path.success || !body.success) throw new AppError(422, "The package checksum and retailer listing URL are required.");
+      const { jobId } = path.data;
+      const { packageSha256, listingUrl } = body.data;
+      const { data, error } = await app.supabaseFactory().rpc("confirm_managed_publishing", {
+        p_job_id: jobId, p_sha256: packageSha256, p_operator: req.userId, p_listing_url: listingUrl,
+      });
+      if (error?.code === "22023") throw new AppError(422, "Enter a public HTTPS listing URL for this retailer.");
+      if (error?.code === "PT404") throw new AppError(404, "Completed retailer package not found.");
+      if (error?.code === "PT409") throw new AppError(409, "The assignment or confirmation changed. Refresh the queue.");
+      const receipt = publishingQueueEntry.pick({ package_job_id: true, package_sha256: true }).extend({
+        claimed_by: z.string().uuid(), confirmed_at: publishingDate, listing_url: publishingListingUrl, withdrawn_at: z.null(),
+      }).safeParse(Array.isArray(data) && data.length === 1 ? data[0] : data);
+      if (error || !receipt.success || receipt.data.package_job_id !== jobId || receipt.data.package_sha256 !== packageSha256
+        || receipt.data.claimed_by !== req.userId || receipt.data.listing_url !== listingUrl) {
+        throw new AppError(503, "Publication confirmation could not be verified.");
+      }
+      reply.header("cache-control", "private, no-store");
+      return { confirmation: { jobId, packageSha256, listingUrl, confirmedAt: receipt.data.confirmed_at } };
     });
     // Platform-wide community reports. This route intentionally selects only
     // community data and omits reporter/author identifiers and private books.

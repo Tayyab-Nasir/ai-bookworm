@@ -853,7 +853,7 @@ paths:
           description: Platform administrator
           content:
             application/json:
-              schema: { type: object, required: [admin, viewerId], properties: { admin: { type: boolean, const: true }, viewerId: { type: string, format: uuid } } }
+              schema: { type: object, required: [admin, viewerId], properties: { admin: { type: boolean, const: true }, viewerId: { type: string, format: uuid }, managedPublishing: { type: boolean, const: true } } }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
@@ -2820,6 +2820,194 @@ paths:
                 additionalProperties: false
                 properties:
                   submission: { $ref: "#/components/schemas/RetailerSubmission" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/managed-publishing:
+    get:
+      tags: [v1]
+      operationId: listManagedPublishingQueue
+      summary: List active publishing requests available to the authorized operator
+      parameters:
+        - { name: X-Bookworm-Actor, in: header, required: true, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, maximum: 10000, default: 0 } }
+      responses:
+        "200":
+          description: Private queue page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [requests, nextOffset]
+                properties:
+                  requests:
+                    type: array
+                    items: { $ref: "#/components/schemas/ManagedPublishingQueueEntry" }
+                  nextOffset: { type: [integer, "null"] }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/managed-publishing/{jobId}/claim:
+    put:
+      tags: [v1]
+      operationId: claimManagedPublishingRequest
+      summary: Claim an active exact-package request as the authenticated operator
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: X-Bookworm-Actor, in: header, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [packageSha256]
+              properties:
+                packageSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+      responses:
+        "200":
+          description: Verified assignment
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [claim]
+                properties:
+                  claim:
+                    type: object
+                    required: [jobId, packageSha256, claimedAt]
+                    properties:
+                      jobId: { type: string, format: uuid }
+                      packageSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+                      claimedAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/managed-publishing/{jobId}/confirmation:
+    put:
+      tags: [v1]
+      operationId: confirmManagedPublishing
+      summary: Record the assigned operator’s confirmation of the exact package and listing
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: X-Bookworm-Actor, in: header, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [packageSha256, listingUrl]
+              properties:
+                packageSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+                listingUrl: { type: string, format: uri, maxLength: 1024 }
+      responses:
+        "200":
+          description: Saved or replayed verified publication confirmation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [confirmation]
+                properties:
+                  confirmation:
+                    type: object
+                    required: [jobId, packageSha256, listingUrl, confirmedAt]
+                    properties:
+                      jobId: { type: string, format: uuid }
+                      packageSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+                      listingUrl: { type: string, format: uri }
+                      confirmedAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/admin/managed-publishing/{jobId}/package:
+    get:
+      tags: [v1]
+      operationId: downloadManagedPublishingPackage
+      summary: Download the verified private ZIP while the operator’s assignment and consent are active
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: X-Bookworm-Actor, in: header, required: true, schema: { type: string, format: uuid } }
+        - { name: checksum, in: query, required: true, schema: { type: string, pattern: "^[a-f0-9]{64}$" } }
+      responses:
+        "200":
+          description: Exact package ZIP attachment
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/publishing/jobs/{jobId}/managed-request:
+    parameters:
+      - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: X-Bookworm-Actor, in: header, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [v1]
+      operationId: getManagedPublishingRequest
+      summary: Read the managed publishing consent receipt for a completed package
+      responses:
+        "200":
+          description: Current request or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+                properties:
+                  request:
+                    oneOf:
+                      - { $ref: "#/components/schemas/ManagedPublishingRequest" }
+                      - { type: "null" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    put:
+      tags: [v1]
+      operationId: requestManagedPublishing
+      summary: Record or withdraw consent for the exact reviewed private retailer package
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [packageSha256]
+              additionalProperties: false
+              properties:
+                packageSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+                withdraw: { type: boolean, const: true, description: Withdraw an existing receipt without deleting it. }
+      responses:
+        "200":
+          description: Saved or replayed consent receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+                properties:
+                  request: { $ref: "#/components/schemas/ManagedPublishingRequest" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -5449,6 +5637,31 @@ components:
         status: { $ref: "#/components/schemas/RetailerSubmissionStatus" }
         revision: { type: string, format: uuid }
         updatedAt: { type: string, format: date-time }
+    ManagedPublishingQueueEntry:
+      type: object
+      required: [jobId, channel, title, packageSha256, requestedAt, claimedAt, confirmedAt, listingUrl]
+      properties:
+        jobId: { type: string, format: uuid }
+        channel: { type: string, enum: [kdp, apple, barnesnoble, lulu, googleplay] }
+        title: { type: string, maxLength: 500 }
+        packageSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        requestedAt: { type: string, format: date-time }
+        claimedAt: { type: [string, "null"], format: date-time }
+        confirmedAt: { type: [string, "null"], format: date-time }
+        listingUrl: { type: [string, "null"], format: uri }
+    ManagedPublishingRequest:
+      type: object
+      required: [jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, confirmedAt, listingUrl]
+      additionalProperties: false
+      properties:
+        jobId: { type: string, format: uuid }
+        workspaceId: { type: string, format: uuid }
+        requestedBy: { type: [string, "null"], format: uuid }
+        packageSha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        requestedAt: { type: string, format: date-time }
+        withdrawnAt: { type: [string, "null"], format: date-time }
+        confirmedAt: { type: [string, "null"], format: date-time }
+        listingUrl: { type: [string, "null"], format: uri }
     SavedEpubPreflightSource:
       type: object
       description: A verified saved EPUB render selected for a retailer channel. The saved manuscript, artwork and edition must still match the render.

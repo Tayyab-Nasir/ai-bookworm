@@ -42,6 +42,10 @@ async function request(token, method, path, body, expected = 200, headers = {}) 
     headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type': 'application/json' } : {}), ...headers },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
+  if (response.ok && response.headers.get('content-type') === 'application/zip') {
+    assert.equal(response.status, expected, `${method} ${path}: unexpected ZIP response`);
+    return { bytes: Buffer.from(await response.arrayBuffer()), disposition: response.headers.get('content-disposition') };
+  }
   const result = await response.json();
   assert.equal(response.status, expected, `${method} ${path}: ${result.error?.message ?? 'unexpected response'}`);
   return result;
