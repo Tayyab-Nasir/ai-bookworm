@@ -336,7 +336,12 @@ test("dashboard unmount fences a pending workspace list before storage or overvi
 test("dashboard reads remain scoped when browser preference storage is blocked", async () => {
   const page = await fixture();
   try {
-    await page.evaluate(() => { Storage.prototype.getItem = () => { throw new Error("Storage blocked"); }; Storage.prototype.setItem = () => { throw new Error("Storage blocked"); }; window.renderDashboard(); });
+    await page.evaluate(() => {
+      const get = Storage.prototype.getItem, set = Storage.prototype.setItem;
+      Storage.prototype.getItem = function(key) { if (this === localStorage) throw new Error("Preference storage blocked"); return get.call(this, key); };
+      Storage.prototype.setItem = function(key, value) { if (this === localStorage) throw new Error("Preference storage blocked"); return set.call(this, key, value); };
+      window.renderDashboard();
+    });
     await expect(page.getByRole("heading", { name: "A book", exact: true })).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(0);
     assert.deepEqual(await page.evaluate(() => window.calls), []);
@@ -365,16 +370,17 @@ test("a late dashboard workspace-creation reply cannot load a workspace after un
   try {
     await page.evaluate(() => {
       window.api.listWorkspaces = async () => { window.reads.push("list"); return { workspaces: [] }; };
-      window.api.createWorkspace = body => { window.calls.push({ operation: "create-workspace", body }); return window.defer("create"); };
+      window.api.createOnboardingWorkspace = body => { window.calls.push({ operation: "create-workspace", body }); return window.defer("create"); };
       window.renderDashboard();
     });
     await page.getByRole("button", { name: "Create workspace", exact: true }).click();
     await page.waitForFunction(() => !!window.gates.create);
     await page.evaluate(() => window.clearComponent());
     await expect(page.locator("#root > *")).toHaveCount(0);
-    await page.evaluate(async () => { window.gates.create.resolve({ id: "new-workspace", name: "Created studio" }); await new Promise(resolve => setTimeout(resolve, 0)); });
+    await page.evaluate(async () => { window.gates.create.resolve({ workspace: { id: "new-workspace", name: "Created studio" } }); await new Promise(resolve => setTimeout(resolve, 0)); });
     assert.deepEqual(await page.evaluate(() => window.reads), ["list"]);
     assert.equal(await page.evaluate(() => localStorage.getItem("bookworm:workspaceId")), null);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:workspace-creation:"))), true);
     assert.equal((await page.evaluate(() => window.calls)).length, 1, "explicit creation occurs once; unmount is not cancellation");
   } finally { await page.close(); }
 });
@@ -402,17 +408,20 @@ test("workspace creation and its dashboard confirmation do not require preferenc
   const page = await fixture();
   try {
     await page.evaluate(() => {
-      Storage.prototype.getItem = () => { throw new Error("Storage blocked"); };
-      Storage.prototype.setItem = () => { throw new Error("Storage blocked"); };
+      const get = Storage.prototype.getItem, set = Storage.prototype.setItem;
+      Storage.prototype.getItem = function(key) { if (this === localStorage) throw new Error("Preference storage blocked"); return get.call(this, key); };
+      Storage.prototype.setItem = function(key, value) { if (this === localStorage) throw new Error("Preference storage blocked"); return set.call(this, key, value); };
       window.created = false;
       window.api.listWorkspaces = async () => ({ workspaces: window.created ? [{ id: "c", name: "New studio" }] : [] });
-      window.api.createWorkspace = async body => { window.calls.push({ operation: "create-workspace", body }); window.created = true; return { id: "c", name: "New studio" }; };
+      window.api.createOnboardingWorkspace = async body => { window.calls.push({ operation: "create-workspace", body }); window.created = true; return { workspace: { id: "c", name: "New studio" } }; };
       window.renderDashboard();
     });
     await page.getByRole("button", { name: "Create workspace", exact: true }).click();
     await expect(page.getByRole("heading", { name: "C book", exact: true })).toBeVisible();
     await expect(page.getByRole("alert")).toHaveCount(0);
-    assert.deepEqual(await page.evaluate(() => window.calls), [{ operation: "create-workspace", body: { name: "My publishing studio" } }]);
+    const calls = await page.evaluate(() => window.calls);
+    assert.equal(calls.length, 1); assert.equal(calls[0].operation, "create-workspace"); assert.equal(calls[0].body.name, "My publishing studio");
+    assert.match(calls[0].body.operationId, /^[a-f0-9-]{36}$/u);
   } finally { await page.close(); }
 });
 
