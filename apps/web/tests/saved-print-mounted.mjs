@@ -873,7 +873,7 @@ test("retailer submission status handles collapse, unavailable reads, lost repli
     });
     const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
-    const status = history.locator("details");
+    const status = history.locator("details").filter({ has: page.getByText("Retailer submission status", { exact: true }) });
     assert.equal(await page.evaluate(() => window.requests.some(row => row.action === "submission")), false);
     await status.getByText("Retailer submission status", { exact: true }).click();
     await expect(status.getByRole("alert")).toHaveText("Submission status could not be loaded.");
