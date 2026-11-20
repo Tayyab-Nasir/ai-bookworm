@@ -59,25 +59,37 @@ async function verifyManagedPublishing(request, service, author, alice, bob, pac
     await request(bob.token, 'GET', zip(withdrawn), undefined, 404, operator);
     console.log('PASS native managed publishing consent, assignment, byte-exact private ZIP, withdrawal and confirmation');
 
-    const { sendOnePublicationEmail } = await import('../../services/api/src/lib/publication-email.ts');
-    const verifiedAuthor = await service.auth.admin.getUserById(alice.userId);
-    assert.equal(verifiedAuthor.error, null);
-    assert.ok(verifiedAuthor.data.user.email_confirmed_at, 'Native requester must have a verified email');
-    const sender = { apiKey: 'test-only', from: 'bookworm@example.test' };
-    let sends = 0;
-    const syntheticProvider = async (url, options) => {
+    let stage = 'load sender';
+    try {
+      const { sendOnePublicationEmail } = await import('../../services/api/src/lib/publication-email.ts');
+      stage = 'resolve verified author';
+      const verifiedAuthor = await service.auth.admin.getUserById(alice.userId);
+      assert.equal(verifiedAuthor.error, null);
+      assert.ok(verifiedAuthor.data.user.email_confirmed_at);
+      const sender = { apiKey: 'test-only', from: 'bookworm@example.test' };
+      const submissions = [];
+      const syntheticProvider = async (url, options) => {
+        submissions.push({ url, options });
+        return Response.json({ id: 'synthetic-managed-publication-notice' });
+      };
+      stage = 'claim and settle dispatch';
+      assert.equal(await sendOnePublicationEmail(service, sender, syntheticProvider), 'accepted');
+      stage = 'verify replay is idle';
+      assert.equal(await sendOnePublicationEmail(service, sender, syntheticProvider), 'idle');
+      assert.equal(submissions.length, 1);
+      stage = 'verify dispatch idempotency';
+      const [{ url, options }] = submissions;
       assert.equal(url, 'https://api.resend.com/emails');
       assert.equal(options.redirect, 'error');
       assert.match(new Headers(options.headers).get('idempotency-key'), /^bookworm\/publication\/[a-f0-9-]{36}$/);
+      stage = 'verify recipient and privacy';
       const body = JSON.parse(options.body);
       assert.deepEqual(body.to, [alice.email]);
       assert.ok(!options.body.includes(primary.id) && !options.body.includes(listingUrl));
-      sends++;
-      return Response.json({ id: 'synthetic-managed-publication-notice' });
-    };
-    assert.equal(await sendOnePublicationEmail(service, sender, syntheticProvider), 'accepted');
-    assert.equal(await sendOnePublicationEmail(service, sender, syntheticProvider), 'idle');
-    assert.equal(sends, 1);
+    } catch {
+      console.error(`FAIL native managed publication notification: ${stage}`);
+      throw new Error('Native managed publication notification verification failed.');
+    }
     console.log('PASS native managed publication notification verified recipient, exact dispatch settlement and no resend');
   } finally {
     keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
