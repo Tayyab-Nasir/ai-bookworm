@@ -18,9 +18,10 @@ and manuscript delimiter strings, so the highlight is not a byte-for-byte record
 of the final provider prompt.
 The lookup does not send manuscript text to an AI provider, spend credits or
 save canon. The browser binds the reader to account, book, job and citation.
-Run `npm run test:bible-evidence` for the mounted reader and its real Fastify
-route with synthetic identity and database fixtures. These checks require the
-configured browser and do not establish hosted database or provider behavior.
+Run `npm run test:bible-evidence` for the mounted reader, candidate-history
+navigation and its real Fastify route with synthetic identity and database
+fixtures. These checks require the configured browser and do not establish
+hosted database or provider behavior.
 
 For node-level citations, the API now reads the saved document version and
 requires the node to exist in it. If no version ID was supplied, it resolves

@@ -24,7 +24,7 @@
     "typecheck:workers": "tsc -p workers/tsconfig.json --noEmit",
     "test:unit": "npm test -w @bookworm/book-model -w @bookworm/config -w @bookworm/validation -w @bookworm/api -w @bookworm/types --if-present",
     "test:web": "node --import tsx --test apps/web/tests/*.test.ts",
-    "test:bible-evidence": "node --import tsx --test apps/web/tests/bible-source-passage-mounted.mjs apps/web/tests/bible-source-passage-api-mounted.mjs",
+    "test:bible-evidence": "node --import tsx --test apps/web/tests/bible-source-passage-mounted.mjs apps/web/tests/bible-source-passage-api-mounted.mjs apps/web/tests/book-memory-navigation-mounted.mjs",
     "test:db": "node tests/security/run-local-postgres.mjs",
     "test:db:upgrade": "node tests/security/run-populated-upgrade.mjs",
     "test:db:crypto": "node tests/security/pgcrypto-digest-compatibility.mjs",

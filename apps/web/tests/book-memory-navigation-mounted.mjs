@@ -418,3 +418,53 @@ test("failed metadata save retains draft and warns that the outcome may be uncon
     await expect(page.getByRole("textbox", { name: "Book description", exact: true })).toHaveValue("Unsaved draft after lost reply");
   } finally { await page.close(); }
 });
+
+test("saved candidate history binds the source reader to its job across a late result", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => {
+      const next = window.fetch;
+      const a = "66666666-6666-4666-8666-666666666666", b = "77777777-7777-4777-8777-777777777777";
+      const sourceRef = { chapterId: "44444444-4444-4444-8444-444444444444", documentVersionId: "55555555-5555-4555-8555-555555555555", nodeId: "node-1", textHash: "a".repeat(64) };
+      const candidate = { suggestionKind: "book_bible_candidate", status: "pending", type: "character", name: "Elara", description: "A navigator.", attributes: {}, confidence: 0.8, sourceRefs: [sourceRef] };
+      const text = "Alpha beta and the rest of the source.";
+      window.evidenceJobs = []; window.holdFirstEvidence = true;
+      window.fetch = async (path, init) => {
+        if (String(path).endsWith("/bible/drafts")) return Response.json({ drafts: [
+          { id: a, createdAt: "2026-01-01T00:00:00Z", candidates: [candidate] },
+          { id: b, createdAt: "2026-01-02T00:00:00Z", candidates: [candidate] },
+        ], pending: [] });
+        if (String(path).endsWith("/bible/evidence")) {
+          const body = JSON.parse(init.body); window.evidenceJobs.push(body.jobId);
+          if (body.jobId === a && window.holdFirstEvidence) {
+            window.holdFirstEvidence = false;
+            await new Promise(resolve => { window.releaseFirstEvidence = resolve; });
+            window.firstEvidenceResolved = true;
+          }
+          const batchRange = body.jobId === a ? { startOffset: 0, endOffset: 5 } : { startOffset: 6, endOffset: 10 };
+          const startOffset = body.offset ?? batchRange.startOffset;
+          return Response.json({ chapterTitle: "Arrival", versionNumber: 3, isCurrentVersion: true,
+            text: text.slice(startOffset), startOffset, endOffset: text.length, totalLength: text.length,
+            truncated: false, nextOffset: null, batchRange });
+        }
+        return next(path, init);
+      };
+    });
+    await page.getByRole("button", { name: "Load saved candidate drafts · no credits" }).click();
+    const drafts = page.getByRole("button", { name: /1 candidate · Elara/ });
+    await expect(drafts).toHaveCount(2);
+    await drafts.nth(0).click();
+    await page.getByRole("button", { name: "Read source passage" }).click();
+    await page.waitForFunction(() => typeof window.releaseFirstEvidence === "function");
+    await drafts.nth(1).click();
+    await page.getByRole("button", { name: "Read source passage" }).click();
+    await expect(page.locator("mark")).toHaveText("beta");
+    await page.evaluate(() => window.releaseFirstEvidence());
+    await page.waitForFunction(() => window.firstEvidenceResolved === true);
+    await expect(page.locator("mark")).toHaveText("beta");
+    assert.deepEqual(await page.evaluate(() => window.evidenceJobs), [
+      "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777",
+    ]);
+    assert.equal(await page.evaluate(() => window.writes.length), 0);
+  } finally { await page.close(); }
+});
