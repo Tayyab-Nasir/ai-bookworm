@@ -827,7 +827,10 @@ test("managed publishing requires exact package consent and recovers a lost repl
     assert.deepEqual(await page.evaluate(() => window.consentWrites), [{
       jobId: ids.job, workspaceId: ids.workspace, packageSha256: "a".repeat(64), requestedBy: ids.asset,
     }]);
-    await page.evaluate(() => { window.consentPackageUnavailable = true; });
+    await page.evaluate(() => {
+      window.consentPackageUnavailable = true;
+      window.showStudio(window.ids.book, undefined, false);
+    });
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(history.getByText("This job is saved in history, but its file is currently unavailable.", { exact: false })).toBeVisible();
     await history.getByText("Managed publishing request", { exact: true }).click();

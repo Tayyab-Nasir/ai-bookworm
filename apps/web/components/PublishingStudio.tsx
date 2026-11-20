@@ -1218,11 +1218,11 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
                 isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId
                   && viewEpoch.current === linkEpoch && (publishingJobsRef.current.some(item => item.id === job.id) || linkedPackageRef.current === job)} />
             )}
-            {managedPublishingEnabled
-              && currentIdentity && (role === "owner" || role === "admin") && book && job.status === "succeeded"
+            {currentIdentity && (role === "owner" || role === "admin") && book && job.status === "succeeded"
               && job.bookId === bookId && job.editionId === activeId && (
                 <ManagedPublishingConsent key={`${scope.actor}:${job.id}:${job.package?.asset.checksum ?? ""}`}
                   api={api} actor={scope.actor} jobId={job.id} workspaceId={book.workspace_id} checksum={job.package?.asset.checksum ?? null}
+                  canRequest={managedPublishingEnabled}
                   isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId
                     && viewEpoch.current === linkEpoch && (publishingJobsRef.current.includes(job) || linkedPackageRef.current === job)} />
               )}

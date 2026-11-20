@@ -10,6 +10,7 @@ type Props = {
   workspaceId: string;
   actor: string;
   checksum: string | null;
+  canRequest: boolean;
   isCurrent: () => boolean;
 };
 
@@ -18,7 +19,7 @@ type State =
   | { phase: "saved"; receipt: ManagedPublishingRequest }
   | { phase: "unavailable"; message: string };
 
-export default function ManagedPublishingConsent({ api, jobId, workspaceId, actor, checksum, isCurrent }: Props) {
+export default function ManagedPublishingConsent({ api, jobId, workspaceId, actor, checksum, canRequest, isCurrent }: Props) {
   const [state, setState] = useState<State>({ phase: "loading" });
   const [consent, setConsent] = useState(false);
   const active = useRef(false);
@@ -29,7 +30,7 @@ export default function ManagedPublishingConsent({ api, jobId, workspaceId, acto
   }, []);
 
   async function update(action: "read" | "record" | "withdraw") {
-    if (pending.current || !isCurrent() || (action === "record" && (!consent || state.phase !== "ready" || !checksum))
+    if (pending.current || !isCurrent() || (action === "record" && (!canRequest || !consent || state.phase !== "ready" || !checksum))
       || (action === "withdraw" && (state.phase !== "saved" || state.receipt.withdrawnAt || state.receipt.confirmedAt))) return;
     const reviewedChecksum = action === "withdraw" && state.phase === "saved" ? state.receipt.packageSha256 : checksum;
     pending.current = true;
@@ -70,8 +71,9 @@ export default function ManagedPublishingConsent({ api, jobId, workspaceId, acto
       : <div className="space-y-2 text-sm"><p role="status" className="text-emerald-100">
         Consent recorded on <time dateTime={state.receipt.requestedAt}>{new Date(state.receipt.requestedAt).toLocaleString()}</time>. Retailer submission is a separate step.
       </p><button type="button" className="min-h-11 underline" onClick={() => void update("withdraw")}>Withdraw consent</button></div>)}
-    {state.phase === "ready" && !checksum && <p className="text-sm">This package is currently unavailable for a new request.</p>}
-    {state.phase === "ready" && checksum && <div className="space-y-2 text-sm">
+    {state.phase === "ready" && !canRequest && <p className="text-sm">New managed publishing requests are paused.</p>}
+    {state.phase === "ready" && canRequest && !checksum && <p className="text-sm">This package is currently unavailable for a new request.</p>}
+    {state.phase === "ready" && canRequest && checksum && <div className="space-y-2 text-sm">
       <label className="flex items-start gap-2"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} />
         I authorize Bookworm to use this exact package for managed publishing.</label>
       <button type="button" className="glass-ghost min-h-11 rounded-full px-4 disabled:opacity-40"
