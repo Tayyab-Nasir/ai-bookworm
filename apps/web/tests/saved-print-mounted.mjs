@@ -753,7 +753,7 @@ test("actual Studio distinguishes unavailable package history and restores its l
   } finally { await page.close(); }
 });
 
-test("retailer submission status handles unavailable reads, lost replies and stale edits", async () => {
+test("retailer submission status handles collapse, unavailable reads, lost replies and stale edits", async () => {
   const { page, errors } = await fixture({ parent: true, width: 390 });
   try {
     await page.evaluate(() => {
@@ -770,6 +770,7 @@ test("retailer submission status handles unavailable reads, lost replies and sta
       };
       window.bookwormApi.saveRetailerSubmission = async (jobId, body, actor) => {
         window.requests.push({ method: "PUT", action: "submission", jobId, actor, body });
+        if (window.holdSubmission) await new Promise(resolve => { window.releaseSubmission = resolve; });
         if (body.expectedRevision !== (window.submission?.revision ?? null)) {
           throw new window.ApiClientError(409, "conflict", "Status changed", "fixture");
         }
@@ -790,7 +791,18 @@ test("retailer submission status handles unavailable reads, lost replies and sta
     await status.getByRole("button", { name: "Check saved status" }).click();
     await expect(status.getByText("Author-reported status · No status recorded")).toBeVisible();
     await status.getByRole("combobox", { name: "Update status" }).selectOption("submitted");
+    await page.evaluate(() => { window.holdSubmission = true; });
     await status.getByRole("button", { name: "Save status" }).click();
+    await expect(status.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    await page.waitForFunction(() => typeof window.releaseSubmission === "function");
+    const readsBeforeCollapse = await page.evaluate(() => window.requests.filter(row => row.method === "GET" && row.action === "submission").length);
+    const summary = status.getByText("Retailer submission status", { exact: true });
+    await summary.click();
+    await expect(status.getByRole("combobox", { name: "Update status" })).toHaveCount(0);
+    await summary.click();
+    await expect(status.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.method === "GET" && row.action === "submission").length), readsBeforeCollapse);
+    await page.evaluate(() => { window.holdSubmission = false; window.releaseSubmission(); });
     await expect(status.getByText("Author-reported status · Submitted")).toBeVisible();
     await expect(status.getByRole("status")).toHaveText("Submission status saved.");
 
@@ -811,6 +823,13 @@ test("retailer submission status handles unavailable reads, lost replies and sta
     await expect(status.getByRole("alert")).toContainText("Someone changed the status.");
     await status.getByRole("button", { name: "Check saved status" }).click();
     await expect(status.getByText("Author-reported status · Published")).toBeVisible();
+    await summary.click();
+    await expect(status.getByRole("combobox", { name: "Update status" })).toHaveCount(0);
+    await page.evaluate(() => {
+      window.submission = { ...window.submission, status: "withdrawn", revision: window.ids.cover };
+    });
+    await summary.click();
+    await expect(status.getByText("Author-reported status · Withdrawn")).toBeVisible();
     const operations = await page.evaluate(() => window.requests.filter(row => row.action === "submission"));
     assert.ok(operations.every(row => row.jobId === ids.job && row.actor === ids.asset));
     assert.deepEqual(operations.filter(row => row.method === "PUT").map(row => row.body), [

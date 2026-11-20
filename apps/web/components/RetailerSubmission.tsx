@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { ApiClientError, type ApiClient } from "@bookworm/api-client";
 import { RETAILER_SUBMISSION_STATUSES, type RetailerSubmission as Submission, type RetailerSubmissionStatus } from "@bookworm/types";
 
@@ -32,7 +32,7 @@ type State =
       savedNow?: boolean;
     };
 
-function SubmissionForm({ api, actor, jobId, canEdit, isCurrent }: Props) {
+function SubmissionForm({ api, actor, jobId, canEdit, isCurrent, open }: Props & { open: boolean }) {
   const [state, setState] = useState<State>({ phase: "loading" });
   const generation = useRef(0);
   const saving = useRef(false);
@@ -54,10 +54,10 @@ function SubmissionForm({ api, actor, jobId, canEdit, isCurrent }: Props) {
       }
     }
   }, [api, actor, jobId]);
-  useEffect(() => {
-    void load();
-    return () => { generation.current++; };
-  }, [load]);
+  useLayoutEffect(() => () => { generation.current++; }, [load]);
+  useLayoutEffect(() => {
+    if (open) void load();
+  }, [load, open]);
 
   async function save() {
     if (!canEdit || !current.current() || saving.current || state.phase !== "ready"
@@ -85,6 +85,7 @@ function SubmissionForm({ api, actor, jobId, canEdit, isCurrent }: Props) {
     }
   }
 
+  if (!open) return null;
   if (state.phase === "loading") return <p role="status" className="text-sm text-white/60">Checking submission status…</p>;
   if (state.phase === "unavailable" || state.phase === "unconfirmed") {
     return <div className="space-y-2 text-sm">
@@ -125,6 +126,6 @@ export default function RetailerSubmission(props: Props) {
   return <details className="mt-3 border-t border-white/10"
     onToggle={event => setOpen(event.currentTarget.open)}>
     <summary className="min-h-11 cursor-pointer py-3 text-sm text-white/75">Retailer submission status</summary>
-    {open && <SubmissionForm {...props} />}
+    <SubmissionForm {...props} open={open} />
   </details>;
 }
