@@ -139,7 +139,7 @@ def main():
         assert hashlib.sha256(google_epub).hexdigest() == google["sha256"]
         preflight = check_json(container, "/preflight", {**google_request, "channel": "googleplay"})
         assert preflight["errors"] == 0, preflight["findings"]
-        assert preflight["ruleVersion"] == "core-1.0.16+google-play-1.2.0"
+        assert preflight["ruleVersion"] == "core-1.0.17+google-play-1.2.0"
         arabic = check_json(container, "/render", amiri_request)
         arabic_pdf = base64.b64decode(arabic["artifactBase64"], validate=True)
         assert arabic["rendererVersion"] == "pdf-1.21.0-amiri"

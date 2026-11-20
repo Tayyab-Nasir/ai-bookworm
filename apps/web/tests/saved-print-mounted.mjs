@@ -310,6 +310,70 @@ test("Arabic print typography enables a proof after saving and reopening the edi
   } finally { await page.close(); }
 });
 
+test("Lulu orientation confirmation follows the exact finished cover version", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const list = window.bookwormApi.listEditions;
+      const { ids } = window;
+      const covers = [3, 4].map((version, index) => ({ id: index === 0 ? ids.cover : ids.otherAsset,
+        workspace_id: ids.workspace, name: `Lulu template ${version}.pdf`, mime_type: "application/pdf",
+        size_bytes: 1000, checksum: "e".repeat(64), status: "approved", current_scan_status: "clean",
+        current_version_number: version, deleted_at: null }));
+      window.bookwormApi.listAssets = async () => ({ assets: covers });
+      window.luluCoverSaves = [];
+      window.bookwormApi.updateEdition = async (id, body, actor) => {
+        window.luluCoverSaves.push({ id, body, actor });
+        const { editions } = await list();
+        const edition = editions.find(item => item.id === id);
+        const revision = new Date(Date.parse(edition.updated_at) + 1000).toISOString();
+        Object.assign(edition, { language: body.language, edition_metadata_json: body.config, updated_at: revision });
+        return structuredClone(edition);
+      };
+      window.showStudio(null);
+    });
+    const direction = page.getByRole("combobox", { name: "Text direction", exact: true });
+    await expect(direction).toHaveCount(0);
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await page.getByRole("textbox", { name: "Language", exact: true }).fill("ar");
+    await direction.selectOption("rtl");
+    await page.getByRole("button", { name: "Use Amiri for Arabic print", exact: true }).click();
+    await page.getByRole("checkbox", { name: "Create full cover PDF", exact: true }).check();
+    await page.getByRole("combobox", { name: "Cover source", exact: true }).selectOption("uploaded");
+    const confirm = page.getByRole("checkbox", { name: "I used a Lulu template with the front cover on the left", exact: true });
+    const cover = page.getByRole("combobox", { name: "Finished paperback cover PDF", exact: true });
+    const save = page.getByRole("button", { name: "Save edition", exact: true });
+    await expect(confirm).toBeDisabled();
+    await cover.selectOption(`${ids.cover}:3`);
+    await confirm.check();
+    await expect(page.getByRole("combobox", { name: "Paper and printer", exact: true })).toHaveValue("custom");
+    await page.getByRole("spinbutton", { name: "Template page count", exact: true }).fill("34");
+    await save.click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    const [first] = await page.evaluate(() => window.luluCoverSaves);
+    assert.deepEqual([first.id, first.actor, first.body.config.cover.asset_id, first.body.config.text_direction],
+      [ids.edition, ids.asset, ids.cover, "rtl"]);
+    assert.equal(first.body.config.wrap_cover.source_pdf_version, 3);
+    assert.equal(first.body.config.wrap_cover.expected_page_count, 34);
+    assert.equal(first.body.config.wrap_cover.lulu_rtl, true);
+
+    await page.evaluate(() => window.showStudio(null));
+    await expect(confirm).toHaveCount(0);
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(cover).toHaveValue(`${ids.cover}:3`);
+    await expect(confirm).toBeChecked();
+    await cover.selectOption(`${ids.otherAsset}:4`);
+    await expect(confirm).not.toBeChecked();
+    await save.click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    const [, second] = await page.evaluate(() => window.luluCoverSaves);
+    assert.equal(second.body.config.cover.asset_id, ids.otherAsset);
+    assert.equal(second.body.config.wrap_cover.source_pdf_version, 4);
+    assert.equal(second.body.config.wrap_cover.lulu_rtl, undefined);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("studio validates and saves a print edition ISBN before another proof can be used", async () => {
   const { page, errors } = await fixture({ parent: true });
   try {

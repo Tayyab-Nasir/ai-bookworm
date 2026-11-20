@@ -323,7 +323,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const pdfSelectionAvailable = coverPdfAssets.some(asset => `${asset.id}:${asset.current_version_number}` === pdfSelection);
   const activePublishingJobs = useMemo(() => publishingJobs.filter((job) => !activeId || job.editionId === activeId), [publishingJobs, activeId]);
   const channelCompatible = form.kind !== "audiobook" && (channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind));
-  const { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, uploadedCoverRequired, renderBlocked } = resolveEditionRenderSafety(form, book, activeEdition?.edition_metadata_json);
+  const { paginated, rightToLeftPrint, rtlPrintUnsupported, rtlCoverTextUnsupported, uploadedCoverRequired, renderBlocked } = resolveEditionRenderSafety(form, book, activeEdition?.edition_metadata_json);
   const availableFonts = form.kind === "print" ? FONTS : FONTS.filter(font => !isAmiriFont(font));
 
   const load = useCallback(async () => {
@@ -503,7 +503,14 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   };
   const updateFields = (fields: Partial<FormState>) => {
     if (!handlerCurrent() || !editable || busy || tabFlight.current) return;
-    const next = { ...latestForm.current, ...fields }; latestForm.current = next; formRevision.current++; liveDirty.current = true; recordTabCopy(next);
+    const previous = latestForm.current;
+    const next = { ...previous, ...fields };
+    // The orientation confirmation belongs to this exact uploaded cover version.
+    if (next.luluRtlCover && (!usesUploadedPrintCover(next) || next.textDirection !== "rtl" || next.wrapProfile !== "custom"
+      || next.wrapPdfAssetId !== previous.wrapPdfAssetId || next.wrapPdfVersion !== previous.wrapPdfVersion)) {
+      next.luluRtlCover = undefined;
+    }
+    latestForm.current = next; formRevision.current++; liveDirty.current = true; recordTabCopy(next);
     setForm(next); setDirty(true); setRendered(null); setPreflight(null); setNotice(null);
   };
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => updateFields({ [key]: value });
@@ -981,6 +988,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
         {form.kind === "print" && <section className={cardClass} aria-labelledby="paperback-cover-title">
           <h2 id="paperback-cover-title" className="text-xl font-semibold">Full paperback cover</h2>
           <p className="mt-2 text-sm leading-relaxed text-white/50">Use one PDF for the back, spine and front. The spine follows your rendered page count. KDP profiles round an odd count up to the next even page.</p>
+          {rightToLeftPrint && <p className="mt-2 text-sm leading-relaxed text-white/65">For Lulu Print or Bookstore, render an interior proof first. Use 0.125 in bleed on all four edges and round an odd proof count up by one when you choose the cover template. Place the front on the left. <a href="https://www.lulu.com/pricing" target="_blank" rel="noreferrer" className="underline underline-offset-4">Open Lulu’s cover template calculator</a></p>}
           <label className="mt-5 inline-flex items-center gap-2 text-sm text-white/70"><input type="checkbox" checked={form.wrapEnabled} onChange={(event) => update("wrapEnabled", event.target.checked)} />Create full cover PDF</label>
           {form.wrapEnabled && <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <label className="text-sm text-white/65 sm:col-span-2">Cover source<select value={form.wrapSource ?? "composed"}
@@ -997,7 +1005,14 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
                 {pdfSelection && !pdfSelectionAvailable && <option value={pdfSelection} disabled>Saved PDF version is unavailable</option>}
                 {coverPdfAssets.map(asset => <option key={asset.id} value={`${asset.id}:${asset.current_version_number}`}>{asset.name} · version {asset.current_version_number}</option>)}
               </select></label>
-              <p className="text-xs leading-relaxed text-white/50">Choose a KDP or B&amp;N Press single-page template for your retailer package. Include any QR or barcode in your design. Bookworm checks the PDF against the finished interior and keeps the original file in your proof.</p>
+              <p className="text-xs leading-relaxed text-white/50">Choose the retailer’s single-page template. Include any QR or barcode in the design. Bookworm checks the PDF dimensions and keeps the original file in your proof.</p>
+              {rightToLeftPrint && <label className="flex items-start gap-2 py-2 text-sm text-white/70">
+                <input type="checkbox" className="mt-1" checked={form.luluRtlCover === true} disabled={!editable || Boolean(busy) || !pdfSelectionAvailable}
+                  onChange={event => updateFields(event.target.checked
+                    ? { luluRtlCover: true, textDirection: "rtl", wrapProfile: "custom" }
+                    : { luluRtlCover: undefined })} />
+                I used a Lulu template with the front cover on the left
+              </label>}
               {book && <Link href={`/assets?ws=${encodeURIComponent(book.workspace_id)}`} onClick={leave} className="inline-block py-2 text-sm underline">Upload cover PDF in Assets</Link>}
             </div>}
             <label className="text-sm text-white/65 sm:col-span-2">Paper and printer<select value={form.wrapProfile} onChange={(event) => update("wrapProfile", event.target.value as FormState["wrapProfile"])} className={fieldClass}><option value="kdp-white">KDP · black ink, white paper</option><option value="kdp-cream">KDP · black ink, cream paper</option><option value="kdp-standard-color">KDP · standard color</option><option value="kdp-premium-color">KDP · premium color</option><option value="custom">Other printer · use its paperback template</option></select></label>
@@ -1066,7 +1081,9 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
           onUseForPackaging={editable ? useSavedEpub : undefined} packageSourceJobId={savedEpub?.jobId} packagingDisabled={Boolean(busy || renderPointer)} />}
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="package-title">
-          <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="package-title" className="text-xl font-semibold">Retailer export packages</h2><p className="mt-1 max-w-2xl text-sm text-white/45">Create a private ZIP from the exact saved render after a zero-error retailer preflight. Download it and submit it in your retailer account. Record the status you see there in package history.</p></div>
+          <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="package-title" className="text-xl font-semibold">Retailer export packages</h2><p className="mt-1 max-w-2xl text-sm text-white/45">{channel === "lulu" && rightToLeftPrint
+            ? "The Lulu ZIP reverses the interior for upload and keeps the exact paired cover. Your saved proof stays in reading order. Review the result in Lulu before approving it."
+            : "Create a private ZIP from the exact saved render after a zero-error retailer preflight. Download it and submit it in your retailer account. Record the status you see there in package history."}</p></div>
           </div>
           <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4 text-sm" aria-label="Plan publishing access">
             {!planStatus || planStatus.status === "loading" ? <p role="status" className="text-white/60">Checking this workspace’s publishing access…</p>

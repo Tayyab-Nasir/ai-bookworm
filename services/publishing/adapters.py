@@ -16,7 +16,9 @@ from xml.etree import ElementTree as ET
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
+from rules._channel import check_print_pdf_geometry  # noqa: E402
 from rules.kdp_v1 import KDP_MARKETING_COVER_BYTES, open_kdp_ebook_cover  # noqa: E402
+from lulu_print import lulu_rtl_page_count, prepare_lulu_rtl_interior  # noqa: E402
 from publication_metadata import edition_publication_metadata, retailer_listing  # noqa: E402
 
 
@@ -155,6 +157,30 @@ class ExportAdapter:
             if "book.epub" not in artifacts:
                 raise ValueError("A saved book.epub is required. Render again before packaging.")
             _assert_saved_epub_metadata(artifacts["book.epub"], listing["metadata"])
+        lulu_layout = None
+        lulu_readme = ""
+        if self.CHANNEL == "lulu" and ((ctx.get("edition") or {}).get("wrap_cover") or {}).get("lulu_rtl") is True:
+            source = artifacts.get("book.pdf")
+            cover = artifacts.get("cover.pdf")
+            if not source or not cover or source != ctx.get("package_bytes") or cover != ctx.get("cover_pdf_bytes"):
+                raise ValueError("Lulu requires the verified reading-order interior and its paired cover PDF.")
+            upload, source_count = prepare_lulu_rtl_interior(source)
+            if check_print_pdf_geometry({**ctx, "package_bytes": upload}):
+                raise ValueError("The Lulu upload PDF did not preserve trim and bleed. Render again before packaging.")
+            if len(upload) + len(cover) > 175 * 1024 * 1024:
+                raise ValueError("The Lulu files exceed the 175 MB package limit.")
+            lulu_layout = {"sourcePdfSha256": hashlib.sha256(source).hexdigest(), "sourcePageCount": source_count,
+                           "uploadPageCount": lulu_rtl_page_count(source_count), "leadingBlankPage": bool(source_count % 2),
+                           "coverFrontPanel": "left"}
+            artifacts = {**artifacts, "book.pdf": upload}
+            lulu_readme = ("For Lulu Print or Bookstore, upload book.pdf and cover.pdf as provided. The interior is already in Lulu upload order.\n"
+                           "The front cover is on the left. Lulu may show the back cover as the project thumbnail.\n"
+                           "Global Distribution has separate language eligibility requirements.\n")
+            if lulu_layout["leadingBlankPage"]:
+                lulu_readme += "The first upload page is the binding blank at the reading end of the book.\n"
+        elif self.CHANNEL == "lulu":
+            lulu_readme = ("For Lulu Global Distribution, match the print ISBN in your Lulu listing, copyright page and cover barcode.\n"
+                           "Lulu uses separate bookstore and distribution cover templates. Check which template this cover matches and render the other cover with its own template.\n")
         files = {**artifacts,
                  "preflight.json": json.dumps({"schemaVersion": "1.0", **result},
                                               indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8"),
@@ -181,9 +207,7 @@ class ExportAdapter:
                         "Review your Apple Books agreement, publisher, original publication date, subject categories, permanent Vendor ID, rights, pricing and territories in Apple's account.\n"
                         "Apple requires cover art before release; a pre-order may have different requirements.\n"
                         if self.CHANNEL == "apple" else "")
-                     + ("For Lulu Global Distribution, match the print ISBN in your Lulu listing, copyright page and cover barcode.\n"
-                        "Lulu uses separate bookstore and distribution cover templates. Check which template this cover matches and render the other cover with its own template.\n"
-                        if self.CHANNEL == "lulu" else "")
+                     + lulu_readme
                      + "Confirm rights, ISBN entitlement, territories, pricing and required AI-content disclosures yourself.\n"
                      "Inspect the retailer preview or physical proof before approving publication.\n"
                      "manifest.json records checksums and the validation rule version; zero errors is not retailer approval.\n"
@@ -197,6 +221,8 @@ class ExportAdapter:
             "warnings": result["warnings"],
             "files": {},
         }
+        if lulu_layout:
+            manifest["luluRightToLeft"] = lulu_layout
         buf = BytesIO()
         names = sorted(files)
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:

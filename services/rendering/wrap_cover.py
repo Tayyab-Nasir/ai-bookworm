@@ -20,6 +20,7 @@ from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import Paragraph
 
 from editions import PrintEdition
+from lulu_print import lulu_rtl_page_count
 from rtl_text import requires_bidi_layout
 from kdp_print import kdp_page_count, kdp_page_range
 from print_fonts import _missing
@@ -49,7 +50,11 @@ def wrap_geometry(edition: PrintEdition, count: int) -> tuple[float, float, floa
     if not config.enabled:
         raise ValueError("enable full paperback cover before generating it")
     if config.profile == "custom":
-        if count != config.expected_page_count:
+        if config.lulu_rtl:
+            upload_count = lulu_rtl_page_count(count)
+            if upload_count != config.expected_page_count:
+                raise ValueError(f"The Lulu cover template must match the {upload_count}-page upload from this {count}-page proof; update the template and spine width.")
+        elif count != config.expected_page_count:
             raise ValueError(f"printer template expects {config.expected_page_count} pages but the rendered interior has {count}; update the template and spine width")
         spine = config.spine_width_in
     else:

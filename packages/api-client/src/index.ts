@@ -439,6 +439,7 @@ export type EditionConfig = {
     enabled?: boolean;
     barcode?: "kdp" | "lulu";
     source_pdf_version?: number;
+    lulu_rtl?: true;
     profile?: "kdp-white" | "kdp-cream" | "kdp-standard-color" | "kdp-premium-color" | "custom";
     spine_width_in?: number; expected_page_count?: number | null;
     back_text?: string; spine_text?: string; background_color?: string; text_color?: string;

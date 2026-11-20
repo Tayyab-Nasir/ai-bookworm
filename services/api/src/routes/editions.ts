@@ -115,6 +115,7 @@ const printSchema = z.object({
     enabled: z.boolean().default(false),
     barcode: z.enum(["kdp", "lulu"]).optional(),
     source_pdf_version: z.number().int().min(1).max(2147483647).optional(),
+    lulu_rtl: z.literal(true).optional(),
     profile: z.enum(["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"]).default("kdp-white"),
     spine_width_in: z.number().min(0.01).max(3).default(0.25),
     expected_page_count: z.number().int().min(1).max(2000).nullable().default(null),
@@ -152,6 +153,10 @@ export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, pr
   if (config.kind === "print" && config.wrap_cover.source_pdf_version !== undefined
     && (!config.wrap_cover.enabled || config.wrap_cover.barcode || config.cover.qr_code.enabled)) {
     ctx.addIssue({ code: "custom", path: ["wrap_cover", "source_pdf_version"], message: "An uploaded cover PDF requires a full cover with generated QR and barcode disabled." });
+  }
+  if (config.kind === "print" && config.wrap_cover.lulu_rtl
+    && (config.text_direction !== "rtl" || config.wrap_cover.source_pdf_version === undefined || config.wrap_cover.profile !== "custom")) {
+    ctx.addIssue({ code: "custom", path: ["wrap_cover", "lulu_rtl"], message: "A Lulu right-to-left cover requires right-to-left text and an uploaded Lulu template PDF." });
   }
 });
 

@@ -163,6 +163,7 @@ class WrapCover(BaseModel):
     enabled: bool = False
     barcode: Literal["kdp", "lulu"] | None = None
     source_pdf_version: int | None = Field(default=None, strict=True, ge=1, le=2_147_483_647)
+    lulu_rtl: Literal[True] | None = None
     profile: Literal["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"] = "kdp-white"
     spine_width_in: float = Field(default=0.25, ge=0.01, le=3)
     expected_page_count: int | None = Field(default=None, ge=1, le=2000)
@@ -170,6 +171,13 @@ class WrapCover(BaseModel):
     spine_text: str = Field(default="", max_length=200)
     background_color: str = Field(default="#182528", pattern=r"^#[0-9a-fA-F]{6}$")
     text_color: str = Field(default="#ffffff", pattern=r"^#[0-9a-fA-F]{6}$")
+
+    @field_validator("lulu_rtl", mode="before")
+    @classmethod
+    def _lulu_confirmation(cls, value):
+        if value is not None and value is not True:
+            raise ValueError("Use true to confirm the Lulu cover orientation.")
+        return value
 
 
 class PrintEdition(BaseModel):
@@ -203,6 +211,9 @@ class PrintEdition(BaseModel):
             raise ValueError("Enable the full cover and enter this print edition's ISBN-13 for a barcode.")
         if self.wrap_cover.barcode == "lulu" and self.wrap_cover.profile != "custom":
             raise ValueError("Use the matching Lulu template with a Lulu barcode.")
+        if self.wrap_cover.lulu_rtl and (self.text_direction != "rtl" or self.wrap_cover.source_pdf_version is None
+                                        or self.wrap_cover.profile != "custom"):
+            raise ValueError("A Lulu right-to-left cover requires right-to-left text and an uploaded Lulu template PDF.")
         return self
 
     @field_validator("isbn13", mode="before")

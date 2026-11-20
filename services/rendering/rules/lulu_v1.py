@@ -1,15 +1,17 @@
 """Lulu print rules verified against first-party help on 2026-09-18."""
 from editions import resolve_text_direction
+from lulu_print import lulu_rtl_page_count
 from preflight import Finding, Rule, _meta
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "lulu-1.5.0"
+VERSION = "lulu-1.6.0"
 EFFECTIVE_DATE = "2026-09-18"
 SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255584"
 PAGE_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255583"
 MARGIN_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255590-interior-formatting-the-basics"
 DISTRIBUTION_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255462"
+GLOBAL_DISTRIBUTION_SOURCE = "https://help.lulu.com/en/support/solutions/articles/64000255456-global-distribution-the-basics"
 
 
 def check_lulu_bleed(ctx):
@@ -25,7 +27,8 @@ def check_lulu_bleed(ctx):
 
 def check_lulu_barcode(ctx):
     edition = ctx.get("edition") or {}
-    if edition.get("kind") == "print" and (edition.get("wrap_cover") or {}).get("barcode") != "lulu":
+    wrap = edition.get("wrap_cover") or {}
+    if edition.get("kind") == "print" and not wrap.get("lulu_rtl") and wrap.get("barcode") != "lulu":
         return [Finding(code="LULU-DISTRIBUTION-BARCODE",
                         message="Lulu Global Distribution requires the assigned print ISBN in the copyright page and back-cover barcode. Choose the Lulu barcode when preparing your own distribution cover.",
                         location="edition.wrap_cover.barcode")]
@@ -34,9 +37,12 @@ def check_lulu_barcode(ctx):
 
 def check_lulu_page_count(ctx):
     count = print_pdf_page_count(ctx)
+    wrap = (ctx.get("edition") or {}).get("wrap_cover") or {}
+    if count is not None and wrap.get("lulu_rtl"):
+        count = lulu_rtl_page_count(count)
     if count is not None and not 32 <= count <= 800:
         return [Finding(code="LULU-PRINT-PAGE-COUNT",
-                        message=f"Lulu perfect-bound paperbacks require 32-800 pages; the rendered PDF has {count}",
+                        message=f"Lulu perfect-bound paperbacks require 32-800 pages. The upload would have {count}.",
                         location="interior.pages")]
     return []
 
@@ -74,9 +80,20 @@ def check_lulu_recommended_gutter(ctx):
 def check_lulu_binding(ctx):
     edition = ctx.get("edition") or {}
     if edition.get("kind") == "print" and resolve_text_direction(_meta(ctx).get("language"), edition.get("text_direction")) == "rtl":
-        return [Finding(code="LULU-RTL-PAGE-ORDER", location="edition.text_direction",
-                        message="Lulu requires the interior pages in reverse order and the front cover on the left. Download the reading-order proof to prepare Lulu's files.")]
+        if (edition.get("wrap_cover") or {}).get("lulu_rtl") is not True:
+            return [Finding(code="LULU-RTL-PAGE-ORDER", location="edition.wrap_cover",
+                            message="Upload a Lulu template PDF with the front cover on the left, confirm its orientation, then save and render again.")]
     return []
+
+
+def check_lulu_rtl_handoff(ctx):
+    if not ((ctx.get("edition") or {}).get("wrap_cover") or {}).get("lulu_rtl"):
+        return []
+    count = print_pdf_page_count(ctx)
+    padding = (f" The {lulu_rtl_page_count(count)}-page upload starts with one blank for binding." if count and count % 2 else "")
+    return [Finding(code="LULU-RTL-UPLOAD", location="book.pdf",
+                    message="The package reverses the interior for Lulu Print and Bookstore." + padding
+                    + " Global Distribution has separate language requirements.")]
 
 
 RULESET = make_ruleset("lulu", VERSION, metadata_rules(
@@ -96,4 +113,6 @@ RULESET = make_ruleset("lulu", VERSION, metadata_rules(
          channels=("lulu",), effective_date="2026-11-19", source_ref=DISTRIBUTION_SOURCE_REF),
     Rule("LULU-PRINT-007", "error", "channel", "Lulu right-to-left print file order", check_lulu_binding,
          channels=("lulu",), effective_date="2026-11-20", source_ref=MARGIN_SOURCE_REF),
+    Rule("LULU-PRINT-008", "warning", "channel", "Lulu right-to-left print handoff", check_lulu_rtl_handoff,
+         channels=("lulu",), effective_date="2026-11-20", source_ref=GLOBAL_DISTRIBUTION_SOURCE),
 ])

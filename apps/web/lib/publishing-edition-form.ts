@@ -35,6 +35,7 @@ export interface FormState {
   wrapSource?: "uploaded";
   wrapPdfAssetId?: string;
   wrapPdfVersion?: number;
+  luluRtlCover?: true;
   spineWidth: number; templatePages: number; backText: string; spineText: string; wrapBackground: string; wrapTextColor: string;
   copyrightNotice: string; publisher: string; ebookTitlePage: boolean; printContents: boolean;
 }
@@ -113,14 +114,14 @@ export function resolveEditionRenderSafety(form: FormState, book: Pick<Book, "ti
   const paginated = form.kind === "print" || (form.kind === "ebook" && form.flow === "fixed");
   const amiriPrint = form.kind === "print" && isAmiriFont(form.bodyFont) && isAmiriFont(form.headingFont);
   const rtlPrintUnsupported = paginated && requiresShaping && !amiriPrint;
-  const uploadedCoverRequired = form.kind === "print" && form.wrapEnabled && !usesUploadedPrintCover(form)
-    && resolveEditionTextDirection(metadata.language ?? "", form.textDirection) === "rtl";
+  const rightToLeftPrint = form.kind === "print" && resolveEditionTextDirection(metadata.language ?? "", form.textDirection) === "rtl";
+  const uploadedCoverRequired = rightToLeftPrint && form.wrapEnabled && !usesUploadedPrintCover(form);
   const rtlCoverTextUnsupported = requiresShaping && !usesUploadedPrintCover(form) && Boolean(form.coverAssetId) && (
     (form.titleOnCover && Boolean(metadata.title))
     || (form.subtitleOnCover && Boolean(metadata.subtitle))
     || (form.authorOnCover && Boolean(metadata.author))
   );
-  return { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, uploadedCoverRequired,
+  return { paginated, rightToLeftPrint, rtlPrintUnsupported, rtlCoverTextUnsupported, uploadedCoverRequired,
     renderBlocked: rtlPrintUnsupported || rtlCoverTextUnsupported || uploadedCoverRequired };
 }
 
@@ -164,6 +165,7 @@ export function formFromEdition(edition: Edition, fallbackLanguage = "en"): Form
     coverAssetId: !uploaded && typeof cover.asset_id === "string" ? cover.asset_id : "",
     ...(uploaded ? { wrapSource: "uploaded" as const, wrapPdfVersion: pdfVersion,
       wrapPdfAssetId: typeof cover.asset_id === "string" ? cover.asset_id : undefined } : {}),
+    ...(uploaded && wrap.lulu_rtl === true ? { luluRtlCover: true as const } : {}),
     titleOnCover: cover.title_on_cover !== false, subtitleOnCover: cover.subtitle_on_cover !== false, authorOnCover: cover.author_on_cover !== false,
     textColor: typeof cover.text_color === "string" ? cover.text_color : "#ffffff", overlay: number(cover.overlay_opacity, 0.28),
     qrEnabled: qr.enabled === true, qrUrl: typeof qr.url === "string" ? qr.url : "", qrLabel: typeof qr.label === "string" ? qr.label : "",
@@ -226,7 +228,8 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
     front_matter,
     page_numbering: { style: form.numbering, start_at: form.startAt, position: form.numberPosition }, cover,
     wrap_cover: { enabled: form.wrapEnabled, profile: form.wrapProfile, spine_width_in: form.spineWidth,
-      ...(uploaded ? { source_pdf_version: form.wrapPdfVersion } : form.wrapEnabled && form.wrapBarcode ? { barcode: form.wrapBarcode } : {}),
+      ...(uploaded ? { source_pdf_version: form.wrapPdfVersion, ...(form.luluRtlCover ? { lulu_rtl: true as const } : {}) }
+        : form.wrapEnabled && form.wrapBarcode ? { barcode: form.wrapBarcode } : {}),
       expected_page_count: form.templatePages || null, back_text: uploaded ? "" : form.backText, spine_text: uploaded ? "" : form.spineText,
       background_color: form.wrapBackground, text_color: form.wrapTextColor },
   };

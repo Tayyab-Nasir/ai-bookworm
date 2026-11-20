@@ -3,8 +3,8 @@ import { DEFAULT_FORM, FONTS, type FormState } from "./publishing-edition-form";
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const MAX_BYTES = 512 * 1024;
-const optionalFields = new Set(["printIsbn", "wrapBarcode", "wrapSource", "wrapPdfAssetId", "wrapPdfVersion"]);
-const formDefaults: Record<string, unknown> = { ...DEFAULT_FORM, wrapBarcode: "", wrapSource: "uploaded", wrapPdfAssetId: "", wrapPdfVersion: 0 };
+const optionalFields = new Set(["printIsbn", "wrapBarcode", "wrapSource", "wrapPdfAssetId", "wrapPdfVersion", "luluRtlCover"]);
+const formDefaults: Record<string, unknown> = { ...DEFAULT_FORM, wrapBarcode: "", wrapSource: "uploaded", wrapPdfAssetId: "", wrapPdfVersion: 0, luluRtlCover: true };
 const choices: Record<string, readonly string[]> = {
   kind: ["ebook", "print", "audiobook"], textDirection: ["auto", "ltr", "rtl"], flow: ["reflowable", "fixed"],
   navigation: ["toc", "toc+landmarks", "none"], trimSize: ["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"],
@@ -45,7 +45,9 @@ export function parseEditionTab(raw: string, scope: Scope): EditionTabCopy {
   })) throw new Error("The local edition copy is invalid.");
   if (Object.hasOwn(form, "wrapPdfAssetId") !== Object.hasOwn(form, "wrapPdfVersion")
     || (typeof form.wrapPdfAssetId === "string" && (!uuid.test(form.wrapPdfAssetId) || !Number.isSafeInteger(form.wrapPdfVersion)
-      || Number(form.wrapPdfVersion) < 1 || Number(form.wrapPdfVersion) > 2147483647))) {
+      || Number(form.wrapPdfVersion) < 1 || Number(form.wrapPdfVersion) > 2147483647))
+    || (Object.hasOwn(form, "luluRtlCover") && (form.luluRtlCover !== true || form.kind !== "print"
+      || form.wrapEnabled !== true || form.wrapSource !== "uploaded" || !form.wrapPdfAssetId || form.wrapProfile !== "custom" || form.textDirection !== "rtl"))) {
     throw new Error("The local edition copy has an invalid cover PDF version.");
   }
   if (Object.entries(choices).some(([key, values]) => Object.hasOwn(form, key) && !values.includes(form[key] as string))) {

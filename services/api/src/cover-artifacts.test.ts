@@ -102,6 +102,22 @@ test("a finished cover is pinned to the original PDF for rendering and packaging
   assert.equal(reads, 2);
 });
 
+test("Lulu orientation is accepted only for an uploaded right-to-left template", () => {
+  const wrap = { enabled: true, profile: "custom", source_pdf_version: 3, expected_page_count: 34, lulu_rtl: true };
+  const config = { kind: "print", text_direction: "rtl", cover: { asset_id: COVER }, wrap_cover: wrap };
+  const saved = editionConfigSchema.parse(config);
+  assert(saved.kind === "print");
+  assert.equal(saved.wrap_cover.lulu_rtl, true);
+  for (const invalid of [
+    { ...config, text_direction: "auto" },
+    { ...config, wrap_cover: { ...wrap, profile: "kdp-white" } },
+    { ...config, wrap_cover: { ...wrap, source_pdf_version: undefined } },
+    { ...config, wrap_cover: { ...wrap, enabled: false } },
+    { ...config, wrap_cover: { ...wrap, expected_page_count: null } },
+    { ...config, wrap_cover: { ...wrap, lulu_rtl: 1 } },
+  ]) assert.equal(editionConfigSchema.safeParse(invalid).success, false);
+});
+
 const coverPolicy = "effective-ebook-metadata-v1";
 const coverVersion = "cover-1.4.0";
 const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 7]);

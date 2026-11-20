@@ -19,7 +19,7 @@ from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.16"
+VERSION = "core-1.0.17"
 
 
 def _find(code, msg, loc=""):
@@ -220,6 +220,8 @@ def check_print_wrap(ctx):
     channel = ctx.get("channel")
     if not wrap.get("enabled"):
         return _find("PRINT_WRAP_REQUIRED", "Enable a full paperback cover (back, spine and front) before creating a retailer package", "edition.wrap_cover") if channel in {"kdp", "barnesnoble", "lulu"} else []
+    if wrap.get("lulu_rtl") and channel not in {None, "export", "lulu"}:
+        return _find("PRINT_WRAP_PROFILE", "Use the selected retailer's cover template. This PDF is saved for Lulu right-to-left print.", "edition.wrap_cover.lulu_rtl")
     if wrap.get("barcode") and channel not in {None, "export", wrap["barcode"]}:
         message = ("Choose Printer adds the barcode for B&N Press and render the cover again." if channel == "barnesnoble"
                    else "Choose a barcode for this retailer or let the printer add it, then render the cover again.")
@@ -282,6 +284,8 @@ def check_rtl_typography(ctx):
         out += _find("RTL_PRINT_FONT_UNSUPPORTED",
                      "RTL print PDF requires an embedded shaping-capable font; base PDF fonts are not safe for this script",
                      "edition.text_direction")
+    if edition.get("kind") == "print" and (edition.get("wrap_cover") or {}).get("source_pdf_version") is not None:
+        return out
     cover = edition.get("cover") or {}
     selected_text = cover.get("asset_id") and (
         (cover.get("title_on_cover", True) and metadata.get("title"))
