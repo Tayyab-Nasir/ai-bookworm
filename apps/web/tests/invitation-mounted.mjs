@@ -26,3 +26,87 @@ test('acceptance without current access never reveals a workspace link',async()=
 test('status after an account switch cannot publish the previous account workspace',async()=>{const p=await fixture();try{await p.evaluate(()=>{window.statusResult={viewerId:window.ids.a,state:'accepted',workspaceId:window.ids.ws,role:'editor'};window.holdStatus=true});await p.getByRole('button',{name:'Check invitation status'}).click();await p.waitForFunction(()=>typeof window.releaseStatus==='function');await p.evaluate(()=>{window.actor=window.ids.b;window.releaseStatus()});await p.getByRole('link',{name:'Sign in to continue'}).waitFor();assert.equal(await p.getByRole('link',{name:'Open the team workspace'}).count(),0);assert.equal(await p.evaluate(()=>localStorage.getItem('bookworm:workspaceId')),null)}finally{await p.close()}});
 test('an unconfirmed status does not claim that a delayed acceptance failed',async()=>{const p=await fixture();try{await p.evaluate(()=>window.fail=true);await p.getByRole('button',{name:'Accept and join workspace'}).click();await p.getByText(/may have been accepted/).waitFor();await p.getByRole('button',{name:'Check invitation status'}).click();await p.getByText(/An earlier request may still finish/).waitFor();assert.equal(await p.getByRole('button',{name:'Accept and join workspace'}).count(),0)}finally{await p.close()}});
 test('an unavailable status service leaves a fresh invitation usable',async()=>{const p=await fixture();try{await p.evaluate(()=>window.statusFail=true);await p.getByRole('button',{name:'Check invitation status'}).click();await p.getByText('Invitation status could not be checked. Try again.').waitFor();await p.getByRole('button',{name:'Accept and join workspace'}).click();await p.getByText('You joined the workspace as editor.').waitFor()}finally{await p.close()}});
+
+test('a same-page invitation link replaces the stored token before acceptance',async()=>{
+ const p=await fixture();try{
+  await p.evaluate(()=>{window.location.hash='token=synthetic-replacement-invitation'});
+  await p.waitForFunction(()=>window.location.hash===''&&sessionStorage.getItem('bookworm:invitationToken')==='synthetic-replacement-invitation');
+  await p.getByRole('button',{name:'Accept and join workspace'}).click();
+  await p.getByText('You joined the workspace as editor.').waitFor();
+  assert.deepEqual(await p.evaluate(()=>window.calls.map(call=>call.token)),['synthetic-replacement-invitation']);
+ }finally{await p.close()}
+});
+
+test('same-page replacement remains usable if tab storage is blocked',async()=>{
+ const p=await fixture();try{
+  await p.evaluate(()=>{const original=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(this===sessionStorage)throw Error('storage disabled');return original.call(this,k,v)};window.location.hash='token=synthetic-memory-only-invitation'});
+  await p.getByText(/browser could not retain the invitation/i).waitFor();
+  await p.getByRole('button',{name:'Accept and join workspace'}).click();
+  await p.getByText('You joined the workspace as editor.').waitFor();
+  assert.deepEqual(await p.evaluate(()=>window.calls.map(call=>call.token)),['synthetic-memory-only-invitation']);
+ }finally{await p.close()}
+});
+
+test('replacing a link while acceptance is pending preserves the new token',async()=>{
+ const p=await fixture();try{
+  await p.evaluate(()=>window.hold=true);
+  await p.getByRole('button',{name:'Accept and join workspace'}).click();
+  await p.waitForFunction(()=>typeof window.release==='function');
+  await p.evaluate(()=>{window.location.hash='token=synthetic-next-invitation'});
+  await p.waitForFunction(()=>window.location.hash===''&&sessionStorage.getItem('bookworm:invitationToken')==='synthetic-next-invitation');
+  await p.getByText(/previous invitation request may still finish/i).waitFor();
+  await p.evaluate(()=>{window.hold=false;window.release()});
+  await p.getByRole('button',{name:'Accept and join workspace'}).waitFor();
+  assert.equal(await p.evaluate(()=>localStorage.getItem('bookworm:workspaceId')),null);
+  assert.equal(await p.evaluate(()=>sessionStorage.getItem('bookworm:invitationToken')),'synthetic-next-invitation');
+  await p.getByRole('button',{name:'Accept and join workspace'}).click();
+  await p.getByText('You joined the workspace as editor.').waitFor();
+  assert.deepEqual(await p.evaluate(()=>window.calls.map(call=>call.token)),['synthetic-token-not-private','synthetic-next-invitation']);
+ }finally{await p.close()}
+});
+
+test('a late status for the previous link cannot confirm the replacement',async()=>{
+ const p=await fixture();try{
+  await p.evaluate(()=>{window.statusResult={viewerId:window.ids.a,state:'accepted',workspaceId:window.ids.ws,role:'editor'};window.holdStatus=true});
+  await p.getByRole('button',{name:'Check invitation status'}).click();
+  await p.waitForFunction(()=>typeof window.releaseStatus==='function');
+  await p.evaluate(()=>{window.statusResult={viewerId:window.ids.a,state:'not_confirmed'};window.location.hash='token=synthetic-replacement-invitation'});
+  await p.waitForFunction(()=>window.location.hash===''&&sessionStorage.getItem('bookworm:invitationToken')==='synthetic-replacement-invitation');
+  await p.evaluate(()=>window.releaseStatus());
+  await p.getByRole('button',{name:'Accept and join workspace'}).waitFor();
+  assert.equal(await p.getByRole('link',{name:'Open the team workspace'}).count(),0);
+  assert.equal(await p.evaluate(()=>localStorage.getItem('bookworm:workspaceId')),null);
+ }finally{await p.close()}
+});
+
+test('a replaced link retains a prior unconfirmed request warning through revalidation and success',async()=>{
+ const p=await fixture();try{
+  await p.evaluate(()=>window.fail=true);
+  await p.getByRole('button',{name:'Accept and join workspace'}).click();
+  await p.getByText(/may have been accepted/).waitFor();
+  await p.evaluate(()=>{window.fail=false;window.location.hash='token=synthetic-replacement-invitation'});
+  await p.waitForFunction(()=>window.location.hash===''&&sessionStorage.getItem('bookworm:invitationToken')==='synthetic-replacement-invitation');
+  await p.getByText(/previous invitation request may still finish/i).waitFor();
+  await p.evaluate(()=>window.dispatchEvent(new Event('focus')));
+  await p.getByRole('button',{name:'Accept and join workspace'}).waitFor();
+  await p.getByText(/previous invitation request may still finish/i).waitFor();
+  await p.getByRole('button',{name:'Accept and join workspace'}).click();
+  await p.getByText('You joined the workspace as editor.').waitFor();
+  await p.getByText(/previous invitation request may still finish/i).waitFor();
+  await p.getByRole('button',{name:'Dismiss previous invitation notice'}).click();
+  assert.equal(await p.getByText(/previous invitation request may still finish/i).count(),0);
+ }finally{await p.close()}
+});
+
+test('a previous invitation warning is hidden after switching accounts',async()=>{
+ const p=await fixture();try{
+  await p.evaluate(()=>window.fail=true);
+  await p.getByRole('button',{name:'Accept and join workspace'}).click();
+  await p.getByText(/may have been accepted/).waitFor();
+  await p.evaluate(()=>{window.fail=false;window.location.hash='token=synthetic-replacement-invitation'});
+  await p.getByText(/previous invitation request may still finish/i).waitFor();
+  await p.evaluate(()=>{window.actor=window.ids.b;window.dispatchEvent(new Event('focus'))});
+  await p.getByText('b@example.test').waitFor();
+  assert.equal(await p.getByText(/previous invitation request may still finish/i).count(),0);
+ }finally{await p.close()}
+});

@@ -8,6 +8,7 @@ import { apiClient } from "./api";
 
 type SessionUser = { id: string; email: string | null };
 type Accepted = { actor: string; workspaceId: string; role: string; recovered: boolean };
+type InvitationRequest = { actor: string; token: string };
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
 const roles = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer", "reviewer", "viewer"]);
 
@@ -21,10 +22,12 @@ export default function InvitationAcceptance() {
   const [uncertain, setUncertain] = useState(false);
   const [accepted, setAccepted] = useState<Accepted | null>(null);
   const [unavailableActor, setUnavailableActor] = useState<string | null>(null);
+  const [previousUnconfirmedActor, setPreviousUnconfirmedActor] = useState<string | null>(null);
   const epoch = useRef(0);
   const mounted = useRef(false);
   const inFlight = useRef(false);
-  const dispatched = useRef(false);
+  const dispatched = useRef<InvitationRequest | null>(null);
+  const uncertainRequest = useRef<InvitationRequest | null>(null);
   const tokenRef = useRef("");
 
   const confirmInvitation = useCallback((actor: string, requestToken: string, workspaceId: string, role: string, recovered: boolean) => {
@@ -33,12 +36,14 @@ export default function InvitationAcceptance() {
     try { window.localStorage.setItem("bookworm:workspaceId", workspaceId); } catch { /* selection can be made later */ }
     try { if (window.sessionStorage.getItem("bookworm:invitationToken") === requestToken) window.sessionStorage.removeItem("bookworm:invitationToken"); } catch { /* retain the confirmed result */ }
     tokenRef.current = ""; setToken(""); setAccepted({ actor, workspaceId, role, recovered });
-    setUnavailableActor(null); setUncertain(false); setError(null); setNotice(null);
+    uncertainRequest.current = null; setUnavailableActor(null); setUncertain(false); setError(null); setNotice(null);
   }, []);
 
   const checkSession = useCallback(async (manual = false) => {
     const ticket = ++epoch.current;
-    if (dispatched.current) setUncertain(true);
+    if (dispatched.current?.token === tokenRef.current) {
+      uncertainRequest.current = dispatched.current; setUncertain(true);
+    }
     setUser(null); setSessionChecked(false); setNotice(null);
     try {
       const next = await readBrowserSession();
@@ -52,7 +57,7 @@ export default function InvitationAcceptance() {
         if (result?.viewerId === next.id && result.state === "accepted" && uuid.test(result.workspaceId) && roles.has(result.role)) {
           confirmInvitation(next.id, requestToken, result.workspaceId, result.role, true);
         } else if (result?.viewerId === next.id && result.state === "accepted_unavailable") {
-          setUnavailableActor(next.id); setUncertain(false); setError(null);
+          uncertainRequest.current = null; setUnavailableActor(next.id); setUncertain(false); setError(null);
         } else if (result?.viewerId === next.id && result.state === "not_confirmed") {
           setUnavailableActor(null);
           if (manual) { setError(null); setNotice("No acceptance is confirmed yet. An earlier request may still finish; check again or contact the workspace owner."); }
@@ -77,11 +82,25 @@ export default function InvitationAcceptance() {
     if (fragmentToken) window.history.replaceState(null, "", "/team/accept");
     tokenRef.current = value; setToken(value);
     void checkSession();
+    const replaceInvitation = () => {
+      const incoming = new URLSearchParams(window.location.hash.slice(1)).get("token");
+      if (!incoming) return;
+      const previous = [dispatched.current, uncertainRequest.current].find(request => request && request.token !== incoming);
+      if (previous) setPreviousUnconfirmedActor(previous.actor);
+      ++epoch.current;
+      tokenRef.current = incoming; setToken(incoming); setAccepted(null); setUnavailableActor(null);
+      uncertainRequest.current = null; setUncertain(false); setError(null);
+      try { window.sessionStorage.setItem("bookworm:invitationToken", incoming); }
+      catch { setError("This browser could not retain the invitation. Keep the original invitation link available."); }
+      window.history.replaceState(null, "", "/team/accept");
+      void checkSession();
+    };
     const recheck = () => void checkSession();
     const visibility = () => { if (document.visibilityState === "visible") recheck(); };
+    window.addEventListener("hashchange", replaceInvitation);
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", visibility);
-    return () => { mounted.current = false; epoch.current++; window.removeEventListener("focus", recheck); document.removeEventListener("visibilitychange", visibility); };
+    return () => { mounted.current = false; epoch.current++; window.removeEventListener("hashchange", replaceInvitation); window.removeEventListener("focus", recheck); document.removeEventListener("visibilitychange", visibility); };
   }, [checkSession]);
 
   async function accept() {
@@ -93,7 +112,7 @@ export default function InvitationAcceptance() {
     try {
       await readBrowserSession(actor);
       if (!valid()) return;
-      sent = true; dispatched.current = true;
+      sent = true; dispatched.current = { actor, token: requestToken };
       const result = await apiClient(actor).acceptWorkspaceInvitation(requestToken);
       if (!valid()) return;
       await readBrowserSession(actor);
@@ -111,10 +130,11 @@ export default function InvitationAcceptance() {
           } catch {
             if (valid()) { setUser(null); setSessionChecked(true); setError("Your account changed. Recheck your account before continuing."); }
           }
-        } else setUncertain(true);
+        } else { uncertainRequest.current = { actor, token: requestToken }; setUncertain(true); }
       }
     } finally {
-      dispatched.current = false; inFlight.current = false;
+      if (dispatched.current?.token === requestToken && dispatched.current.actor === actor) dispatched.current = null;
+      inFlight.current = false;
       if (mounted.current) setBusy(false);
     }
   }
@@ -125,6 +145,7 @@ export default function InvitationAcceptance() {
     <section className="w-full rounded-3xl border border-white/10 bg-white/[0.035] p-7 sm:p-9">
       <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">AI Bookworm workspace</p>
       <h1 className="mt-3 text-3xl font-medium tracking-[-0.05em]">Accept invitation</h1>
+      {sessionChecked && user?.id === previousUnconfirmedActor && <div role="status" className="mt-5 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-100">A previous invitation request may still finish. Check that workspace separately. <Link href="/team" className="underline">Open workspaces</Link><button type="button" onClick={() => setPreviousUnconfirmedActor(null)} aria-label="Dismiss previous invitation notice" className="ml-3 underline">Dismiss</button></div>}
       {shown ? <div className="mt-7"><p className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{shown.recovered ? `Invitation accepted. Your current role is ${shown.role}.` : `You joined the workspace as ${shown.role}.`}</p><Link href={`/team?ws=${encodeURIComponent(shown.workspaceId)}`} className="glass-solid mt-5 inline-flex rounded-full px-5 py-2.5 text-sm font-semibold text-black">Open the team workspace</Link></div> : <>
         <p className="mt-4 text-sm leading-6 text-white/50">Sign in with the exact email address that received this invitation. The server verifies both the account and the expiring token before granting access.</p>
         {!sessionChecked && <p role="status" className="mt-6 text-sm text-white/60">Checking your account…</p>}
