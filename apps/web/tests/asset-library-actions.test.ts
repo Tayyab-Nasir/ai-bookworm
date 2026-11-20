@@ -95,7 +95,7 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
   vm.runInNewContext(compile(source), { exports, require: accountRequire, window, document, AbortSignal, URL, URLSearchParams, Date: Clock, Headers, fetch, sessionStorage: {}, crypto: {randomUUID: () => "00000000-0000-4000-8000-000000000001"} });
   const render = () => { stateIndex = 0; refIndex = 0; effects.length = 0; callbacks.length = 0; return account ? exports.AccountMenu() : exports.AssetsPageInner({ scope, active: true, revision: {}, retry: async () => {} }); };
   const initialize = async () => {
-    render(); effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+    render(); effects.find(fn => fn.toString().includes("actorApi.listWorkspaces"))!(); await settle();
     render(); await callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
     return render();
   };

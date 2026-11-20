@@ -104,14 +104,14 @@ function ScopedAssetsPage() {
 
 function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope; active: boolean; revision: object; retry: () => Promise<void> }) {
   const requestedWorkspaceId = useSearchParams().get("ws");
+  const actorApi = useMemo(() => createClient({ baseUrl: "/api/backend", expectedActor: scope.actor }), [scope.actor]);
   const api = useMemo(() => {
-    const client = createClient({ baseUrl: "/api/backend", expectedActor: scope.actor });
-    return new Proxy(client, { get(target, key, receiver) { const value = Reflect.get(target, key, receiver); return typeof value === "function" ? (...args: unknown[]) => {
+    return new Proxy(actorApi, { get(target, key, receiver) { const value = Reflect.get(target, key, receiver); return typeof value === "function" ? (...args: unknown[]) => {
       const version = scopeVersion.current, workspace = activeWorkspace.current;
       const current = () => version === scopeVersion.current && workspace === activeWorkspace.current;
       return scope.checked(() => { if (!current()) throw scopeChanged(); return value(...args); }).then(result => { if (!current()) throw scopeChanged(); return result; });
     } : value; } });
-  }, [scope]);
+  }, [actorApi, scope]);
   const [verified, setVerified] = useState(false);
   const [verificationError, setVerificationError] = useState(false);
   const [workspaceId, setWorkspaceId] = useState("");
@@ -240,18 +240,22 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     // Selecting an already validated workspace updates its URL. Repeating the
     // bootstrap reset for that same selection can fence its own in-flight reads.
     if (!active || (activeWorkspace.current && (!requestedWorkspaceId || activeWorkspace.current === requestedWorkspaceId))) return;
+    const sameAccount = scope.begin();
+    const current = () => live && sameAccount();
     resetWorkspaceScope("");
-    void api.listWorkspaces().then(({ workspaces: available }) => {
-      if (!live) return;
+    // The workspace list belongs to the account. Clearing the previous library
+    // advances its request generation while this selection is being verified.
+    void scope.checked(() => actorApi.listWorkspaces()).then(({ workspaces: available }) => {
+      if (!current()) return;
       setWorkspaces(available);
       const selected = resolveWorkspace(available, requestedWorkspaceId);
       resetWorkspaceScope(selected?.id ?? "");
       if (selected) rememberWorkspace(available, selected.id);
     }).catch((e: unknown) => {
-      if (live) setError(e instanceof Error ? e.message : "Could not load workspaces");
+      if (current()) setError(e instanceof Error ? e.message : "Could not load workspaces");
     });
     return () => { live = false; };
-  }, [api, requestedWorkspaceId, resetWorkspaceScope, active]);
+  }, [actorApi, requestedWorkspaceId, resetWorkspaceScope, active, scope]);
 
   const load = useCallback(async () => {
     if (!workspaceId || activeWorkspace.current !== workspaceId) return;

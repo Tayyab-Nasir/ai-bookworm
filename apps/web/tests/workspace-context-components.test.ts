@@ -144,7 +144,7 @@ function props(tree: any, type: string) { return nodes(tree).find(node => node.t
 test("Assets is blank before membership validation and restores B on bare navigation", async () => {
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }) }, { inner: "AssetsPageInner", remembered: B });
   h.render(); assert.equal(h.states[2], "");
-  h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+  h.effects.find(fn => fn.toString().includes("actorApi.listWorkspaces"))!(); await settle();
   assert.equal(h.states[2], B); assert.equal(h.values.get("bookworm:workspaceId"), B);
   const tree = h.render();
   assert.equal(props(tree, "AssetBrowser").permissions.edit, false, "data and access must align before mutations");
@@ -155,7 +155,7 @@ test("Assets is blank before membership validation and restores B on bare naviga
 
 test("Assets workspace-scoped sibling keys are unique, stable, and remount independently on selection change", async () => {
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }) }, { inner: "AssetsPageInner", remembered: B });
-  h.render(); h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+  h.render(); h.effects.find(fn => fn.toString().includes("actorApi.listWorkspaces"))!(); await settle();
   const identities = (tree: any, workspaceId: string) => {
     const siblings = nodes(tree).find(node => Array.isArray(node.props?.children)
       && node.props.children.some((child: any) => child?.type === "ImageQuoteStudio"))!.props.children;
@@ -179,7 +179,7 @@ test("Assets workspace-scoped sibling keys are unique, stable, and remount indep
 test("Assets rejects a foreign explicit ID without scoped reads", async () => {
   let scoped = 0;
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }), getAssetAccess: async () => { scoped++; }, listImageGenerationJobs: async () => { scoped++; } }, { inner: "AssetsPageInner", query: "?ws=foreign", remembered: B });
-  h.render(); for (const effect of h.effects) if (/api\.(listWorkspaces|getAssetAccess|listImageGenerationJobs)/.test(effect.toString())) effect();
+  h.render(); for (const effect of h.effects) if (/actorApi\.listWorkspaces|api\.(getAssetAccess|listImageGenerationJobs)/.test(effect.toString())) effect();
   await settle(); assert.equal(h.states[2], ""); assert.equal(scoped, 0);
   const tree = h.render(); assert(nodes(tree).some(node => node.props?.role === "alert"));
 });
@@ -188,7 +188,7 @@ test("late A asset/folder/book results cannot replace B, and stale callbacks mak
   const pending = new Map<string, ReturnType<typeof deferred<any>>>(); let calls = 0;
   const request = (kind: string, id: string) => { calls++; const d = deferred<any>(); pending.set(kind + id, d); return d.promise; };
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }), listFolders: (id: string) => request("folders", id), listAssets: (id: string) => request("assets", id), listBooks: (id: string) => request("books", id) }, { inner: "AssetsPageInner", remembered: A });
-  h.render(); h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+  h.render(); h.effects.find(fn => fn.toString().includes("actorApi.listWorkspaces"))!(); await settle();
   let tree = h.render(); const loadA = h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!; const old = loadA();
   props(tree, "select").onChange({ target: { value: B } }); tree = h.render();
   const fresh = h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
@@ -205,7 +205,7 @@ test("late A asset/folder/book results cannot replace B, and stale callbacks mak
 test("late asset detail and error responses cannot reopen another workspace", async () => {
   const detail = deferred<any>();
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }), listFolders: async () => ({ folders: [] }), listAssets: async (id: string) => ({ assets: [asset("asset-a", id)] }), listBooks: async () => ({ books: [] }), listAssetVersions: () => detail.promise, getAssetUsage: async () => ({ links: [] }), getAssetDownloadUrl: async () => ({ url: "fixture-private-preview" }) }, { inner: "AssetsPageInner", remembered: A });
-  h.render(); h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+  h.render(); h.effects.find(fn => fn.toString().includes("actorApi.listWorkspaces"))!(); await settle();
   h.render(); await h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
   let tree = h.render(); props(tree, "AssetBrowser").onOpen(asset("asset-a", A));
   tree = h.render(); assert(nodes(tree).some(node => node.props?.role === "dialog"));
@@ -217,7 +217,7 @@ test("late asset detail and error responses cannot reopen another workspace", as
 test("late detail results after closing the dialog are ignored", async () => {
   const detail = deferred<any>();
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }), listFolders: async () => ({ folders: [] }), listAssets: async (id: string) => ({ assets: [asset("asset-a", id)] }), listBooks: async () => ({ books: [] }), listAssetVersions: () => detail.promise, getAssetUsage: async () => ({ links: [] }), getAssetDownloadUrl: async () => ({ url: "fixture-private-preview" }) }, { inner: "AssetsPageInner", remembered: A });
-  h.render(); h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle(); h.render(); await h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
+  h.render(); h.effects.find(fn => fn.toString().includes("actorApi.listWorkspaces"))!(); await settle(); h.render(); await h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
   props(h.render(), "AssetBrowser").onOpen(asset("asset-a", A));
   const tree = h.render(); nodes(tree).find(node => node.props?.["aria-label"] === "Close asset details").props.onClick();
   detail.resolve({ versions: [{ id: "stale-version" }] }); await settle();
@@ -229,7 +229,7 @@ test("late detail results after closing the dialog are ignored", async () => {
 test("Assets requires matching data and access, and ignores old mutation callbacks", async () => {
   let writes = 0;
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }), getAssetAccess: async () => ({ canEdit: true }), listFolders: async () => ({ folders: [] }), listAssets: async (id: string) => ({ assets: [asset("asset-a", id)] }), listBooks: async () => ({ books: [] }), deleteAsset: async () => { writes++; } }, { inner: "AssetsPageInner", remembered: A });
-  h.render(); h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+  h.render(); h.effects.find(fn => fn.toString().includes("actorApi.listWorkspaces"))!(); await settle();
   h.render(); h.effects.find(fn => fn.toString().includes("api.getAssetAccess"))!(); await settle();
   assert.equal(props(h.render(), "AssetBrowser").permissions.edit, false, "access alone is insufficient");
   await h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
@@ -243,7 +243,7 @@ test("Assets requires matching data and access, and ignores old mutation callbac
 test("late failed library reads cannot overwrite B's successful view or error state", async () => {
   const oldFolders = deferred<any>();
   const h = harness("apps/web/app/assets/page.tsx", { listWorkspaces: async () => ({ workspaces: available }), listFolders: (id: string) => id === A ? oldFolders.promise : Promise.resolve({ folders: [] }), listAssets: async (id: string) => ({ assets: [asset(`asset-${id}`, id)] }), listBooks: async () => ({ books: [] }) }, { inner: "AssetsPageInner", remembered: A });
-  h.render(); h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+  h.render(); h.effects.find(fn => fn.toString().includes("actorApi.listWorkspaces"))!(); await settle();
   let tree = h.render(); const stale = h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
   props(tree, "select").onChange({ target: { value: B } }); h.render(); await h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
   oldFolders.reject(new Error("stale A failure")); await stale; tree = h.render();
@@ -856,7 +856,7 @@ async function assetPermissionHarness(getAssetAccess: (workspace: string) => Pro
     listAssets: async (workspace: string) => ({ assets: [asset(`asset-${workspace}`, workspace)] }),
     listBooks: async () => ({ books: [] }),
   }, { inner: "AssetsPageInner", remembered: A });
-  h.render(); h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+  h.render(); h.effects.find(fn => fn.toString().includes("actorApi.listWorkspaces"))!(); await settle();
   h.render(); await h.callbacks.find(fn => fn.toString().includes("api.listFolders"))!();
   return h;
 }

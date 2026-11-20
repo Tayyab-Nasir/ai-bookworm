@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 const origin = "http://127.0.0.1:4398";
 assert.equal((await fetch("http://127.0.0.1:4399/health").then(response => response.json())).fixture, true);
+const viewerId = "11111111-1111-4111-8111-111111111111";
 const a = "33333333-3333-4333-8333-333333333333";
 const b = "44444444-4444-4444-8444-444444444444";
 const foreign = "99999999-9999-4999-8999-999999999999";
@@ -33,12 +34,12 @@ async function installFixture(page) {
     reads.push({ path: url.pathname, workspaceId: id, organizationId: url.searchParams.get("organizationId"), method: request.method() });
     if (request.method() !== "GET") { unexpected.push(url.pathname); return route.fulfill({ status: 405, json: {} }); }
     if (id !== null) assert(state.availableWorkspaces.some(space => space.id === id), "An unavailable workspace reached a scoped transport");
-    if (url.pathname.endsWith("/admin/access")) return route.fulfill({ json: { admin: false } });
+    if (url.pathname.endsWith("/admin/access")) return route.fulfill({ json: { viewerId, admin: false } });
     if (url.pathname.endsWith("/workspaces")) return route.fulfill({ json: { workspaces: state.availableWorkspaces } });
     if (url.pathname.endsWith("/plans")) return route.fulfill({ json: { plans: [] } });
     const memberSpace = state.availableWorkspaces.find(space => url.pathname === `/api/backend/v1/workspaces/${space.id}/members`);
     if (memberSpace) return route.fulfill({ json: { members: [{ id: memberSpace.id, workspace_id: memberSpace.id,
-      user_id: "11111111-1111-4111-8111-111111111111", role: state.memberRole, status: "active" }], profiles: [] } });
+      user_id: viewerId, role: state.memberRole, status: "active" }], profiles: [] } });
     if (url.pathname.endsWith("/tasks")) return route.fulfill({ json: { tasks: [] } });
     if (url.pathname.endsWith("/activity")) return route.fulfill({ json: { events: [] } });
     if (url.pathname.endsWith("/approvals")) return route.fulfill({ json: { approvals: [] } });
@@ -49,7 +50,7 @@ async function installFixture(page) {
     }
     if (url.pathname.endsWith("/dashboard")) {
       assert(spaces.some(space => space.id === id));
-      return route.fulfill({ json: { workspace: { ...spaces.find(space => space.id === id), organizationId: spaces.find(space => space.id === id).organization_id, role: "owner" }, books: [],
+      return route.fulfill({ json: { viewerId, workspace: { ...spaces.find(space => space.id === id), organizationId: spaces.find(space => space.id === id).organization_id, role: "owner" }, books: [],
         summary: { activeBooks: 0, inProductionBooks: 0, publishedBooks: 0, assets: 1, visualAssets: 1, pendingJobs: 0, failedJobs: 0, readyPackages: 0 },
         usage, recentJobs: [], activity: [], sales } });
     }
@@ -93,9 +94,12 @@ async function signIn(page, path, remembered) {
 async function showLibrary(page, id) {
   // A wrapping label includes option text; use the browser's accessible name.
   await expect(page.getByRole("combobox", { name: "Workspace", exact: true })).toHaveValue(id);
-  await expect(page.getByRole("button", { name: new RegExp(assets[id].name.replaceAll(".", "\\.")) })).toBeVisible();
+  await expect(assetDetailsButton(page, id)).toBeVisible();
   await expect(page.getByRole("region", { name: "Illustrations and cover art", exact: true })).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Upload asset", exact: true })).toBeEnabled();
+}
+function assetDetailsButton(page, id) {
+  return page.getByRole("button", { name: new RegExp(`^${assets[id].name.replaceAll(".", "\\.")}`) });
 }
 async function renderSettled(page) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -126,23 +130,25 @@ try {
   await page.getByRole("combobox", { name: "Workspace", exact: true }).selectOption(b); await showLibrary(page, b);
 
   fixture.state.holdLibraryA = true;
+  await page.evaluate(() => window.history.pushState(null, "", window.location.href));
   await page.getByRole("combobox", { name: "Workspace", exact: true }).selectOption(a);
   await expect.poll(() => fixture.state.library.length).toBeGreaterThan(0);
-  await expect(page.getByRole("button", { name: "Upload asset", exact: true })).toBeDisabled();
-  await page.getByRole("combobox", { name: "Workspace", exact: true }).selectOption(b); await showLibrary(page, b);
+  await expect(page.getByRole("status").filter({ hasText: "Checking workspace access" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Upload asset", exact: true })).toHaveCount(0);
+  await page.goBack(); await showLibrary(page, b);
   fixture.state.holdLibraryA = false;
   const staleLibrary = page.waitForResponse(response => response.url().includes("/assets?") && new URL(response.url()).searchParams.get("workspaceId") === a);
   await Promise.all(fixture.state.library.splice(0).map(route => route.fulfill({ json: { assets: [assets[a]] } }))); await staleLibrary; await renderSettled(page);
   await showLibrary(page, b);
-  await expect(page.getByRole("button", { name: new RegExp(assets[a].name.replaceAll(".", "\\.")) })).toHaveCount(0);
+  await expect(assetDetailsButton(page, a)).toHaveCount(0);
 
   await page.getByRole("combobox", { name: "Workspace", exact: true }).selectOption(a); await showLibrary(page, a);
   fixture.state.holdDetailsA = true;
-  await page.getByRole("button", { name: new RegExp(assets[a].name.replaceAll(".", "\\.")) }).click();
+  await assetDetailsButton(page, a).click();
   await expect.poll(() => fixture.state.details.length).toBeGreaterThan(0);
   await page.keyboard.press("Escape");
   await page.getByRole("combobox", { name: "Workspace", exact: true }).selectOption(b); await showLibrary(page, b);
-  await page.getByRole("button", { name: new RegExp(assets[b].name.replaceAll(".", "\\.")) }).click();
+  await assetDetailsButton(page, b).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   const staleDetail = page.waitForResponse(response => response.url().includes(`/${assets[a].id}/versions`));
   await Promise.all(fixture.state.details.splice(0).map(route => route.fulfill({ json: { versions: [{ id: "stale-a-version", version_number: 2,
