@@ -35,6 +35,8 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install -r services/ai/requirements.txt
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify populated database snapshot restore
+        run: npm run test:db:upgrade
       - name: Verify asset cutover transaction and drift guards
         run: npm run test:asset-cutover
       - run: sudo apt-get update && sudo apt-get install -y postgresql-client
