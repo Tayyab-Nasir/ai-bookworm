@@ -18,6 +18,23 @@ create table public.managed_publishing_requests (
 alter table public.managed_publishing_requests enable row level security;
 revoke all on table public.managed_publishing_requests from public, anon, authenticated, service_role;
 grant select on table public.managed_publishing_requests to authenticated;
+
+-- One durable notification intent per confirmed package. The delivery worker
+-- will resolve the original requester's verified address when sending.
+create table private.managed_publication_notifications (
+  package_job_id uuid primary key references public.managed_publishing_requests(package_job_id) on delete cascade,
+  queued_at timestamptz not null,
+  status text not null default 'queued' check (status in ('queued', 'dispatching', 'accepted', 'unconfirmed', 'rejected')),
+  dispatch_id uuid,
+  dispatch_started_at timestamptz check (dispatch_started_at >= queued_at),
+  provider_receipt text,
+  check ((status = 'queued') = (dispatch_id is null)),
+  check ((dispatch_id is null) = (dispatch_started_at is null)),
+  check ((status = 'accepted') = (provider_receipt is not null))
+);
+alter table private.managed_publication_notifications enable row level security;
+revoke all on table private.managed_publication_notifications from public, anon, authenticated, service_role;
+
 create policy managed_publishing_requests_select on public.managed_publishing_requests
   for select to authenticated using (
     private.workspace_role(workspace_id) in ('owner', 'admin') and exists (
@@ -291,6 +308,8 @@ begin
     update public.managed_publishing_requests
       set confirmed_at = greatest(clock_timestamp(), v_request.claimed_at), listing_url = p_listing_url
       where package_job_id = p_job_id returning * into v_request;
+    insert into private.managed_publication_notifications (package_job_id, queued_at)
+      values (p_job_id, v_request.confirmed_at);
   end if;
   return v_request;
 end;
@@ -298,3 +317,61 @@ $$;
 
 revoke all on function public.confirm_managed_publishing(uuid,text,uuid,text) from public, anon, authenticated, service_role;
 grant execute on function public.confirm_managed_publishing(uuid,text,uuid,text) to service_role;
+
+-- A dispatch is never automatically reclaimed. A lost provider response or
+-- process exit must not result in a second email after the deduplication window.
+create function public.claim_managed_publication_notification()
+returns table (package_job_id uuid, dispatch_id uuid, recipient_email text)
+language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.role() is distinct from 'service_role' then
+    raise exception 'Notification worker authority required' using errcode = '42501';
+  end if;
+  return query
+    with candidate as (
+      select notice.package_job_id, account.email
+      from private.managed_publication_notifications notice
+      join public.managed_publishing_requests request on request.package_job_id = notice.package_job_id
+      join public.publishing_jobs job on job.id = request.package_job_id
+      join public.books book on book.id = job.book_id and book.workspace_id = request.workspace_id
+      join auth.users account on account.id = request.requested_by
+      join public.workspace_members member on member.user_id = account.id and member.workspace_id = request.workspace_id
+      where notice.status = 'queued' and request.confirmed_at is not null
+        and account.email_confirmed_at is not null and account.email is not null
+        and member.status = 'active' and member.role in ('owner', 'admin')
+      order by notice.queued_at, notice.package_job_id
+      limit 1 for update of notice skip locked
+    )
+    update private.managed_publication_notifications notice
+      set status = 'dispatching', dispatch_id = gen_random_uuid(),
+          dispatch_started_at = greatest(clock_timestamp(), notice.queued_at)
+      from candidate
+      where notice.package_job_id = candidate.package_job_id
+      returning notice.package_job_id, notice.dispatch_id, candidate.email;
+end;
+$$;
+
+create function public.settle_managed_publication_notification(p_job_id uuid, p_dispatch_id uuid, p_status text, p_receipt text)
+returns boolean
+language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.role() is distinct from 'service_role' then
+    raise exception 'Notification worker authority required' using errcode = '42501';
+  end if;
+  if p_status is null or p_status not in ('accepted', 'unconfirmed', 'rejected')
+    or (p_status = 'accepted' and (p_receipt is null or p_receipt !~ '^[A-Za-z0-9_-]{1,128}$'))
+    or (p_status <> 'accepted' and p_receipt is not null) then
+    raise exception 'Invalid notification outcome' using errcode = '22023';
+  end if;
+  update private.managed_publication_notifications notice
+    set status = p_status, provider_receipt = p_receipt
+    where notice.package_job_id = p_job_id and notice.dispatch_id = p_dispatch_id
+      and (notice.status = 'dispatching' or (notice.status = p_status and notice.provider_receipt is not distinct from p_receipt));
+  return found;
+end;
+$$;
+
+revoke all on function public.claim_managed_publication_notification() from public, anon, authenticated, service_role;
+revoke all on function public.settle_managed_publication_notification(uuid,uuid,text,text) from public, anon, authenticated, service_role;
+grant execute on function public.claim_managed_publication_notification() to service_role;
+grant execute on function public.settle_managed_publication_notification(uuid,uuid,text,text) to service_role;

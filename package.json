@@ -36,6 +36,7 @@
     "test:load": "npm exec tsx tests/load/load-smoke.mjs",
     "evals": "node scripts/run-python.mjs tests/ai-evals/evals/run_evals.py",
     "worker:publishing": "npm run worker:publishing -w @bookworm/api --",
+    "worker:publication-email": "node --import tsx workers/run.mjs publication-email",
     "worker:document": "npm run worker:document -w @bookworm/api --",
     "worker:ai": "npm run worker:ai -w @bookworm/api --",
     "worker:audiobook": "npm run worker:audiobook -w @bookworm/api --",

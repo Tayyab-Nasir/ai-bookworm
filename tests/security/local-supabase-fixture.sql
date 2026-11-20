@@ -6,7 +6,7 @@ create role service_role nologin bypassrls;
 create schema auth;
 create schema storage;
 
-create table auth.users (id uuid primary key, email text);
+create table auth.users (id uuid primary key, email text, email_confirmed_at timestamptz);
 create function auth.uid() returns uuid language sql stable as $$
   select coalesce(
     nullif(current_setting('request.jwt.claim.sub', true), ''),

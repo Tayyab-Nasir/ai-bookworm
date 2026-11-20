@@ -7,6 +7,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const roles = Object.freeze({
   document: ['workers/document/worker.ts'],
   publishing: ['workers/publishing/worker.ts'],
+  'publication-email': ['workers/publication-email/worker.ts'],
   ai: ['workers/ai/worker.ts'],
   audiobook: ['workers/audiobook/worker.ts'],
   'audiobook-export': ['workers/audiobook/google-play-export-worker.ts'],

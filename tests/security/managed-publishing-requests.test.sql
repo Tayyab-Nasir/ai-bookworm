@@ -41,6 +41,9 @@ begin
   assert not has_function_privilege('authenticated', 'public.list_managed_publishing_queue(uuid,integer,integer)', 'EXECUTE');
   assert not has_function_privilege('authenticated', 'public.read_managed_publishing_package(uuid,uuid)', 'EXECUTE');
   assert not has_function_privilege('authenticated', 'public.confirm_managed_publishing(uuid,text,uuid,text)', 'EXECUTE');
+  assert not has_table_privilege('authenticated', 'private.managed_publication_notifications', 'SELECT');
+  assert not has_table_privilege('service_role', 'private.managed_publication_notifications', 'INSERT');
+  assert not has_function_privilege('authenticated', 'public.claim_managed_publication_notification()', 'EXECUTE');
 end;
 $$;
 
@@ -179,6 +182,42 @@ begin
     assert false, 'A withdrawn request was claimed';
   exception when sqlstate 'PT409' then null;
   end;
+end;
+$$;
+reset role;
+do $$
+begin
+  assert (select count(*) from private.managed_publication_notifications) = 1;
+  assert exists (
+    select 1 from private.managed_publication_notifications notice
+    join public.managed_publishing_requests request on request.package_job_id = notice.package_job_id
+    where request.package_job_id = 'd7720000-0000-4000-8000-000000000012'
+      and request.confirmed_at = notice.queued_at
+  );
+end;
+$$;
+set local request.jwt.claims = '{"role":"service_role"}';
+set local role service_role;
+do $$
+begin
+  assert not exists (select 1 from public.claim_managed_publication_notification());
+end;
+$$;
+reset role;
+update auth.users set email_confirmed_at = now() where id = 'd7720000-0000-4000-8000-000000000001';
+set local role service_role;
+do $$
+declare
+  dispatch record;
+begin
+  select * into strict dispatch from public.claim_managed_publication_notification();
+  assert dispatch.recipient_email = 'managed-author@local.test';
+  assert dispatch.package_job_id = 'd7720000-0000-4000-8000-000000000012';
+  assert not exists (select 1 from public.claim_managed_publication_notification());
+  assert not public.settle_managed_publication_notification(dispatch.package_job_id, gen_random_uuid(), 'accepted', 'wrong');
+  assert public.settle_managed_publication_notification(dispatch.package_job_id, dispatch.dispatch_id, 'accepted', 'synthetic-message-id');
+  assert public.settle_managed_publication_notification(dispatch.package_job_id, dispatch.dispatch_id, 'accepted', 'synthetic-message-id');
+  assert not public.settle_managed_publication_notification(dispatch.package_job_id, dispatch.dispatch_id, 'unconfirmed', null);
 end;
 $$;
 rollback;
