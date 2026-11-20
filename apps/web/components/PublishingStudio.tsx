@@ -796,6 +796,31 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     finally { if (valid()) setBusy(null); }
   };
 
+  const renewPackage = async (job: TimedPackageJob) => {
+    const view = captureView();
+    const valid = () => view() && currentEdition.current === job.editionId && publishingJobsRef.current.includes(job);
+    if (busy || !valid()) return;
+    setBusy("history");
+    setError(null);
+    try {
+      const startedAt = downloadClock();
+      const saved = await api.getPublishingJob(job.id, scope.actor);
+      if (!valid()) return;
+      if (saved.id !== job.id || saved.bookId !== bookId || saved.editionId !== job.editionId
+        || saved.channel !== job.channel || saved.status !== "succeeded"
+        || (saved.package && (saved.package.asset.id !== job.package?.asset.id
+          || saved.package.asset.checksum !== job.package?.asset.checksum))) {
+        throw new Error("Private package could not be verified.");
+      }
+      setPublishingJobs(current => current.map(item => item === job ? timePackage(saved, startedAt) : item));
+      observePackageClock();
+    } catch {
+      if (valid()) setError("The private link could not be renewed. Check package access and try again.");
+    } finally {
+      if (view()) setBusy(null);
+    }
+  };
+
   const refreshAudiobooks = async () => {
     if (!activeId || busy) return;
     const editionId = activeId, valid = captureView(); if (!valid()) return;
@@ -1137,7 +1162,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
           {packageHistory.editionId === activeId && packageHistory.status === "unavailable" && <p role="status" className="mt-4 text-sm text-amber-100">Package history is unavailable. Refresh before relying on this list.</p>}
           {packageHistory.editionId === activeId && packageHistory.status === "ready" && activePublishingJobs.length ? <ul className="mt-4 space-y-3">{activePublishingJobs.map((job) => <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium capitalize">{job.channel === "barnesnoble" ? "Barnes & Noble" : job.channel === "googleplay" ? "Google Play Books" : job.channel} package</p><p className="mt-1 text-xs text-white/40">{new Date(job.createdAt).toLocaleString()} · {job.ruleVersion ?? "rules pending"}</p></div><span className={`rounded-full px-3 py-1 text-xs ${job.status === "succeeded" && job.package ? "bg-emerald-400/15 text-emerald-100" : job.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{job.status === "succeeded" ? (job.package ? "ready" : "unavailable") : job.status}</span></div>
-            {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <PrivateArtifactDownload actor={linkOwner} url={job.package.download.url} filename={`${job.channel}-export.zip`} expectedPath={packageStoragePath(book?.workspace_id, job)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && publishingJobsRef.current.includes(job)} isExpired={() => { const now = observePackageClock(); return clockFault.current || downloadExpired(job.downloadExpiresAt, now); }} onInvalid={(message, kind) => { if (kind === "expired") return; setPackageHistory({ editionId: activeId, status: "unavailable" }); setError(message); }} className="underline disabled:opacity-40">Download private ZIP</PrivateArtifactDownload> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified. Refresh package history to renew it."}</span>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
+            {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <PrivateArtifactDownload actor={linkOwner} url={job.package.download.url} filename={`${job.channel}-export.zip`} expectedPath={packageStoragePath(book?.workspace_id, job)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && publishingJobsRef.current.includes(job)} isExpired={() => { const now = observePackageClock(); return clockFault.current || downloadExpired(job.downloadExpiresAt, now); }} onInvalid={(message, kind) => { if (kind === "expired") return; setPackageHistory({ editionId: activeId, status: "unavailable" }); setError(message); }} className="underline disabled:opacity-40">Download private ZIP</PrivateArtifactDownload> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified."}</span>}{currentIdentity && !packageClockFault && downloadExpired(job.downloadExpiresAt, packageClock) && <button type="button" disabled={Boolean(busy)} onClick={() => void renewPackage(job)} className="min-h-11 underline disabled:opacity-40">Renew private link</button>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
             {currentIdentity && job.status === "succeeded" && job.package && CHANNEL_PORTALS[job.channel] && (
               <p className="mt-2 text-sm text-white/65">
                 Open <a href={CHANNEL_PORTALS[job.channel].href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">{CHANNEL_PORTALS[job.channel].label}</a> and follow the upload steps in the ZIP.

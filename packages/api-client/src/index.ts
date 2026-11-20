@@ -1350,7 +1350,9 @@ export function createClient(opts: ClientOptions) {
       }
       return call<{ jobs: PublishingPackageJob[]; nextCursor?: PublishingHistoryCursor | null }>("GET", `/v1/publishing/jobs?${qs}`, undefined, true, expectedActorId ? { "x-bookworm-actor": expectedActorId } : {});
     },
-    getPublishingJob: (jobId: string) => call<PublishingPackageJob>("GET", `/v1/publishing/jobs/${jobId}`),
+    getPublishingJob: (jobId: string, expectedActorId?: string) =>
+      call<PublishingPackageJob>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}`, undefined, false,
+        expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
     getRetailerSubmission: (jobId: string, expectedActorId: string) =>
       call<unknown>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/submission`, undefined, false, {
         "x-bookworm-actor": expectedActorId,

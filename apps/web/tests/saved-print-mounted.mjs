@@ -848,12 +848,16 @@ test("retailer download uses attachment, expires and refreshes without creating 
   const { page, errors } = await fixture({ parent: true });
   try {
     await page.evaluate(() => {
-      window.packageJobs = [{ id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
+      window.packageJobs = [{ id: window.ids.job, bookId: window.ids.book, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
         createdAt: "2026-10-13T12:00:00.000Z", ruleVersion: "test-rules", package: {
           asset: { id: window.ids.asset, workspace_id: window.ids.workspace, storage_path: `workspaces/${window.ids.workspace}/assets/${window.ids.asset}/v1/kdp-export.zip`, size_bytes: 1024, checksum: "a".repeat(64) },
           download: { url: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 1 },
         } }];
       window.bookwormApi.listPublishingJobs = async () => { window.requests.push({method: "GET", action: "packages"}); return {jobs: structuredClone(window.packageJobs)}; };
+      window.bookwormApi.getPublishingJob = async (jobId, actor) => {
+        window.requests.push({method: "GET", action: "renew-package", jobId, actor});
+        return structuredClone(window.packageJobs[0]);
+      };
     });
     const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -868,8 +872,12 @@ test("retailer download uses attachment, expires and refreshes without creating 
     await expect(link).toHaveCount(0, { timeout: 5000 });
     await expect(history.getByText(/Private link expired or could not be verified/)).toBeVisible();
     await page.evaluate(() => { window.packageJobs[0].package.download.expiresIn = 300; });
-    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const pageReads = await page.evaluate(() => window.requests.filter(row => row.action === "packages").length);
+    await history.getByRole("button", { name: "Renew private link" }).click();
     await expect(link).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "packages").length), pageReads);
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.action === "renew-package")),
+      [{method: "GET", action: "renew-package", jobId: ids.job, actor: ids.asset}]);
     // A suspended tab may not fire its timer before the user's click.
     await page.evaluate(() => { const now = Date.now; Date.now = () => now() + 301_000; });
     await link.click();
