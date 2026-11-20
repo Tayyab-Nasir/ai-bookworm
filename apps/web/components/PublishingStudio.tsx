@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState } from "react";
-import type { AudiobookGooglePlayExportJob, PrivateAudiobookProjectResult, AudiobookVoice, PreflightResult, PublishingPackageJob, RenderedEditionResult, RetailerChannel, SavedEpubSource } from "@bookworm/api-client";
+import type { AudiobookGooglePlayExportJob, PrivateAudiobookProjectResult, AudiobookVoice, PreflightResult, PublishingHistoryCursor, PublishingPackageJob, RenderedEditionResult, RetailerChannel, SavedEpubSource } from "@bookworm/api-client";
 import type { Asset, Book, Chapter, Edition } from "@bookworm/types";
 import { Isbn13Schema } from "@bookworm/book-model/schema";
 import { apiClient } from "./api";
@@ -159,7 +159,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const [tabCopy, setTabCopy] = useState<string | null>(null), [tabEnabled, setTabEnabled] = useState(false), [tabBusy, setTabBusy] = useState(false), [tabError, setTabError] = useState<string | null>(null);
   const tabRef = useRef<{ raw: string | null; edition: Edition | null }>({ raw: null, edition: null });
   const tabEnabledRef = useRef(false), tabFlight = useRef(false);
-  const [busy, setBusy] = useState<"load" | "save" | "render" | "print-proof" | "preflight" | "package" | "history" | "audiobook" | null>("load");
+  const [busy, setBusy] = useState<"load" | "save" | "render" | "print-proof" | "preflight" | "package" | "history" | "older-history" | "audiobook" | null>("load");
   const [channel, setChannel] = useState<Channel>("export");
   const currentChannel = useRef(channel); currentChannel.current = channel;
   const [rendered, setRendered] = useState<(RenderedEditionResult & { expiresAt?: number }) | null>(null);
@@ -171,7 +171,11 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [publishingJobs, setPublishingJobs] = useState<TimedPackageJob[]>([]);
   const publishingJobsRef = useRef(publishingJobs); publishingJobsRef.current = publishingJobs;
-  const [packageHistory, setPackageHistory] = useState<{ editionId: string | null; status: "loading" | "ready" | "unavailable" }>({ editionId: null, status: "loading" });
+  const [packageHistory, setPackageHistory] = useState<{
+    editionId: string | null;
+    status: "loading" | "ready" | "unavailable";
+    nextCursor?: PublishingHistoryCursor | null;
+  }>({ editionId: null, status: "loading" });
   const packageHistoryEpoch = useRef(0);
   const [packageClock, setPackageClock] = useState(downloadClock());
   const [packageClockFault, setPackageClockFault] = useState(false);
@@ -261,19 +265,30 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     const epoch = viewEpoch.current, ownerCurrent = scope.begin();
     return () => ownerCurrent() && currentBook.current === bookId && currentEdition.current === editionId && viewEpoch.current === epoch;
   };
-  const readPackageHistory = useCallback(async (editionId: string, owner: string) => {
+  const readPackageHistory = useCallback(async (editionId: string, owner: string, before?: PublishingHistoryCursor) => {
     const ticket = ++packageHistoryEpoch.current, view = viewEpoch.current, startedAt = downloadClock();
     const valid = () => currentBook.current === bookId && currentEdition.current === editionId
       && viewEpoch.current === view && loadedEditionOwner.current === owner && packageHistoryEpoch.current === ticket;
-    setPackageHistory({ editionId, status: "loading" });
+    if (!before) setPackageHistory({ editionId, status: "loading" });
     try {
       await readBrowserSession(owner);
-      const result = await api.listPublishingJobs(bookId, { editionId }, owner);
+      const result = await api.listPublishingJobs(bookId, { editionId, before }, owner);
       await readBrowserSession(owner);
+      if (!valid()) return;
       if (!Array.isArray(result?.jobs) || result.jobs.some(job => !job || job.editionId !== editionId || (job.bookId !== undefined && job.bookId !== bookId))) {
         throw new Error("The package history could not be verified for this edition.");
       }
-      if (valid()) { setPublishingJobs(result.jobs.map(job => timePackage(job, startedAt))); setPackageHistory({ editionId, status: "ready" }); observePackageClock(); }
+      const last = result.jobs.at(-1);
+      const nextCursor = result.nextCursor ?? null;
+      const visibleIds = before ? new Set(publishingJobsRef.current.map(job => job.id)) : null;
+      if ((nextCursor && (!last || nextCursor.id !== last.id || nextCursor.createdAt !== last.createdAt))
+        || (visibleIds && result.jobs.some(job => visibleIds.has(job.id)))) {
+        throw new Error("The package history page was not a valid continuation.");
+      }
+      const page = result.jobs.map(job => timePackage(job, startedAt));
+      setPublishingJobs(current => before ? [...current, ...page] : page);
+      setPackageHistory({ editionId, status: "ready", nextCursor });
+      observePackageClock();
     } catch {
       if (valid()) setPackageHistory({ editionId, status: "unavailable" });
     }
@@ -772,12 +787,12 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     finally { if (valid()) setBusy(null); }
   };
 
-  const refreshHistory = async () => {
+  const refreshHistory = async (before?: PublishingHistoryCursor) => {
     if (busy) return;
     const valid = captureView(), edition = activeId, owner = loadedEditionOwner.current;
     if (!valid() || !edition || !owner) return;
-    setBusy("history"); setError(null);
-    try { await readPackageHistory(edition, owner); }
+    setBusy(before ? "older-history" : "history"); setError(null);
+    try { await readPackageHistory(edition, owner, before); }
     finally { if (valid()) setBusy(null); }
   };
 
@@ -1134,6 +1149,12 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
                   && viewEpoch.current === linkEpoch && publishingJobsRef.current.some(item => item.id === job.id)} />
             )}
           </li>)}</ul> : packageHistory.editionId === activeId && packageHistory.status === "ready" ? <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p> : null}
+          {packageHistory.editionId === activeId && packageHistory.status === "ready" && packageHistory.nextCursor && (
+            <button type="button" onClick={() => void refreshHistory(packageHistory.nextCursor ?? undefined)} disabled={Boolean(busy)}
+              className="glass-ghost mt-4 min-h-11 rounded-full px-4 text-sm disabled:opacity-40">
+              {busy === "older-history" ? "Loading older packages…" : "Load older packages"}
+            </button>
+          )}
         </section>}
       </div>
     </fieldset>

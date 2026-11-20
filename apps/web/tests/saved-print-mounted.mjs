@@ -1899,6 +1899,54 @@ test('package history uses the selected edition and ignores a late previous edit
   } finally { await page.close(); }
 });
 
+test("older retailer packages remain reachable in the selected edition", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      window.pageReads = [];
+      window.bookwormApi.listPublishingJobs = async (bookId, filter, actor) => {
+        window.pageReads.push({ bookId, filter, actor });
+        const base = { bookId, editionId: filter.editionId, status: "succeeded", package: null };
+        const recent = { ...base, id: window.ids.job, channel: "kdp", createdAt: "2026-10-13T12:00:01Z" };
+        if (!filter.before) return { jobs: [recent], nextCursor: { id: recent.id, createdAt: recent.createdAt } };
+        if (window.repeatPage) return { jobs: [recent], nextCursor: { id: recent.id, createdAt: recent.createdAt } };
+        await new Promise(resolve => { window.releaseOlderPackages = resolve; });
+        return { jobs: [{ ...base, id: window.ids.otherJob, channel: "barnesnoble", createdAt: "2026-10-13T12:00:00Z" }], nextCursor: null };
+      };
+      window.bookwormApi.getRetailerSubmission = async (jobId, actor) => {
+        if (jobId !== window.ids.otherJob || actor !== window.ids.asset) throw new Error("Wrong submission scope");
+        return { jobId, status: "published", revision: window.ids.cover, updatedAt: "2026-10-13T12:20:00Z" };
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    const older = history.getByRole("button", { name: "Load older packages" });
+    const refresh = history.getByRole("button", { name: "Refresh", exact: true });
+    await refresh.click();
+    await older.click();
+    await page.waitForFunction(() => typeof window.releaseOlderPackages === "function");
+    await expect(history.getByRole("button", { name: "Loading older packages…" })).toBeDisabled();
+    await expect(history.getByText("kdp package", { exact: true })).toBeVisible();
+    await page.evaluate(() => window.releaseOlderPackages());
+    const row = history.getByRole("listitem").filter({ hasText: "Barnes & Noble package" });
+    await expect(row).toBeVisible();
+    await row.getByText("Retailer submission status", { exact: true }).click();
+    await expect(row.getByText("Author-reported status · Published")).toBeVisible();
+    await expect(older).toHaveCount(0);
+    const cursorCalls = await page.evaluate(() => window.pageReads.filter(call => call.filter.before));
+    assert.deepEqual(cursorCalls, [{ bookId: ids.book, actor: ids.asset,
+      filter: { editionId: ids.edition, before: { id: ids.job, createdAt: "2026-10-13T12:00:01Z" } } }]);
+
+    await refresh.click();
+    await expect(row).toHaveCount(0);
+    await page.evaluate(() => { window.repeatPage = true; });
+    await older.click();
+    await expect(history.getByText("Package history is unavailable. Refresh before relying on this list.")).toBeVisible();
+    await expect(history.getByRole("listitem")).toHaveCount(0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test('failed package history refresh withdraws previously signed links', async () => {
   const { page, errors } = await fixture({ parent: true });
   try {

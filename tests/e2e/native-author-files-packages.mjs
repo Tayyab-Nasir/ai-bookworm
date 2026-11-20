@@ -187,6 +187,25 @@ export async function runNativeRetailerPackages({ request, service, alice, bob, 
       console.log(`PASS native ${channel} ${config.kind} private ZIP, exact artifact/cover/manifest/listing, replay, history and tenant refusal`);
     }
   }
+  const ebookPackages = packages.filter(item => item.intent.editionId === packages[0].intent.editionId);
+  const historyQuery = new URLSearchParams({ bookId: book.id, editionId: packages[0].intent.editionId, limit: '1' });
+  const pagedIds = [];
+  for (let index = 0; index < ebookPackages.length; index++) {
+    const page = await request(alice.token, 'GET', `/publishing/jobs?${historyQuery}`);
+    assert.equal(page.jobs.length, 1);
+    pagedIds.push(page.jobs[0].id);
+    if (index === ebookPackages.length - 1) {
+      assert.equal(page.nextCursor, null);
+    } else {
+      assert.deepEqual(page.nextCursor, { id: page.jobs[0].id, createdAt: page.jobs[0].createdAt });
+      historyQuery.set('beforeCreatedAt', page.nextCursor.createdAt);
+      historyQuery.set('beforeId', page.nextCursor.id);
+      if (index === 0) await request(bob.token, 'GET', `/publishing/jobs?${historyQuery}`, undefined, 404);
+    }
+  }
+  assert.deepEqual(pagedIds.sort(), ebookPackages.map(item => item.id).sort());
+  console.log('PASS native private retailer package history cursor stays within its edition and tenant');
+
   const savedPackage = packages[0];
   const submissionPath = `/publishing/jobs/${savedPackage.id}/submission`;
   assert.deepEqual(await request(alice.token, "GET", submissionPath), { submission: null });

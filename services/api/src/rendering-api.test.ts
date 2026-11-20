@@ -56,6 +56,7 @@ function fakeSupabase(store: Store) {
       const filters: [string, unknown][] = [];
       const containsFilters: [string, Record<string, unknown>][] = [];
       const orders: {key:string; ascending:boolean}[] = [];
+      let before: { createdAt: string; id: string } | null = null;
       let limit: number | null = null;
       let descending = false;
       let pendingInsert: Row | null = null;
@@ -68,6 +69,11 @@ function fakeSupabase(store: Store) {
           return value !== null && typeof value === "object" && !Array.isArray(value)
             && Object.entries(expected).every(([field, expectedValue]) => (value as Row)[field] === expectedValue);
         }));
+        if (before) {
+          const { createdAt, id } = before;
+          result = result.filter(row => String(row.created_at) < createdAt
+            || (row.created_at === createdAt && String(row.id) < id));
+        }
         if (descending) result = [...result].reverse();
         if (orders.length > 1) result.sort((a,b) => {
           for (const order of orders) {
@@ -103,6 +109,12 @@ function fakeSupabase(store: Store) {
       builder.contains = (key: string, value: Record<string, unknown>) => { containsFilters.push([key, value]); return builder; };
       builder.is = (key: string, value: unknown) => { filters.push([key, value]); return builder; };
       builder.gte = () => builder;
+      builder.or = (expression: string) => {
+        const match = /^created_at\.lt\.([^,]+),and\(created_at\.eq\.([^,]+),id\.lt\.([^,]+)\)$/.exec(expression);
+        assert.ok(match && match[1] === match[2], "history uses the same timestamp for both cursor branches");
+        before = { createdAt: match[1], id: match[3] };
+        return builder;
+      };
       builder.order = (key: string, options?: { ascending?: boolean }) => { descending ||= options?.ascending === false; orders.push({key, ascending: options?.ascending !== false}); return builder; };
       builder.limit = (value: number) => { limit = value; return builder; };
       builder.insert = (row: Row) => { pendingInsert = row; return builder; };
@@ -1248,11 +1260,21 @@ test("package history filters action, edition and channel before limiting and ke
     const result=await app.inject({method:"GET",url,headers:auth});
     assert.equal(result.statusCode,200,result.body);
     assert.deepEqual(result.json().jobs.map((job:Row)=>job.id),[newer,old],"equal timestamps use stable id tiebreak");
+    assert.equal(result.json().nextCursor, null);
     assert.equal(result.json().jobs[0].requestId,`key-${newer}`);
     assert.equal(result.json().jobs[0].failureCode,"test_failure");
     assert.equal(result.headers["cache-control"],"private, no-store");
-    const one=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${BOOK}&editionId=${EDITION}&channel=kdp&limit=1`,headers:auth});
+    const pageUrl = `/v1/publishing/jobs?bookId=${BOOK}&editionId=${EDITION}&channel=kdp&limit=1`;
+    const one=await app.inject({method:"GET",url:pageUrl,headers:auth});
     assert.equal(one.statusCode,200,one.body);assert.deepEqual(one.json().jobs.map((job:Row)=>job.id),[newer]);
+    assert.deepEqual(one.json().nextCursor, { createdAt: sameTime, id: newer });
+    const cursor = new URLSearchParams({ beforeCreatedAt: sameTime, beforeId: newer });
+    const two = await app.inject({ method: "GET", url: `${pageUrl}&${cursor}`, headers: auth });
+    assert.equal(two.statusCode, 200, two.body);
+    assert.deepEqual(two.json().jobs.map((job: Row) => job.id), [old]);
+    assert.equal(two.json().nextCursor, null);
+    const incomplete = await app.inject({ method: "GET", url: `${pageUrl}&beforeId=${newer}`, headers: auth });
+    assert.equal(incomplete.statusCode, 422);
     const channelOnly=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${BOOK}&channel=kdp&limit=1`,headers:auth});
     assert.equal(channelOnly.statusCode,200,channelOnly.body);assert.equal(channelOnly.json().jobs[0].editionId,otherEdition);
     const unfiltered=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${BOOK}&limit=1`,headers:auth});

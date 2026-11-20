@@ -130,7 +130,9 @@ const listPackageJobsSchema = z.object({
   editionId: z.string().uuid().optional(),
   channel: retailerChannelSchema.optional(),
   limit: z.coerce.number().int().min(1).max(50).default(25),
-}).strict();
+  beforeCreatedAt: z.string().datetime({ offset: true }).optional(),
+  beforeId: z.string().uuid().optional(),
+}).strict().refine(query => Boolean(query.beforeCreatedAt) === Boolean(query.beforeId));
 
 const renderArtifactSchema = z.object({
   assetId: z.string().uuid(),
@@ -797,13 +799,18 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       .contains("request_json", { action: "export_package" });
     if (query.editionId) listing = listing.eq("edition_id", query.editionId);
     if (query.channel) listing = listing.eq("channel", query.channel);
+    if (query.beforeCreatedAt && query.beforeId) {
+      listing = listing.or(`created_at.lt.${query.beforeCreatedAt},and(created_at.eq.${query.beforeCreatedAt},id.lt.${query.beforeId})`);
+    }
     const { data, error } = await listing.order("created_at", { ascending: false })
-      .order("id", { ascending: false }).limit(query.limit);
+      .order("id", { ascending: false }).limit(query.limit + 1);
     if (error) throw new AppError(500, "Could not load publishing package history.");
-    const jobs = data ?? [];
+    const jobs = (data ?? []).slice(0, query.limit);
+    const last = jobs.at(-1);
+    const nextCursor = last && data && data.length > query.limit ? { createdAt: last.created_at, id: last.id } : null;
     const service = app.supabaseFactory();
     reply.header("cache-control", "private, no-store");
-    return { jobs: await Promise.all(jobs.map((job) => hydratePackageJob(service, book.workspace_id, job))) };
+    return { jobs: await Promise.all(jobs.map((job) => hydratePackageJob(service, book.workspace_id, job))), nextCursor };
   });
 
   app.get("/publishing/jobs/:jobId", async (req, reply) => {

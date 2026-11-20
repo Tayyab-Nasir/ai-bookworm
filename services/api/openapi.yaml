@@ -2648,11 +2648,14 @@ paths:
       tags: [v1]
       operationId: listPublishingJobs
       summary: List durable retailer export-package jobs for a book
+      description: Returns newest jobs first. To get older jobs use both parts of the returned nextCursor with the same book and filters.
       parameters:
         - { name: bookId, in: query, required: true, schema: { type: string, format: uuid } }
         - { name: editionId, in: query, schema: { type: string, format: uuid } }
         - { name: channel, in: query, schema: { $ref: "#/components/schemas/RetailerChannel" } }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 25 } }
+        - { name: beforeCreatedAt, in: query, schema: { type: string, format: date-time } }
+        - { name: beforeId, in: query, schema: { type: string, format: uuid } }
       responses:
         "200":
           description: Author-accessible package history with fresh private links for completed jobs
@@ -2660,9 +2663,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [jobs]
+                required: [jobs, nextCursor]
                 properties:
                   jobs: { type: array, items: { $ref: "#/components/schemas/PublishingPackageJob" } }
+                  nextCursor:
+                    type: [object, "null"]
+                    required: [createdAt, id]
+                    properties:
+                      createdAt: { type: string, format: date-time }
+                      id: { type: string, format: uuid }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
