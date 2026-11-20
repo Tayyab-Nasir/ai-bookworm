@@ -369,6 +369,21 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     assert.equal(requests.length, mutations, 'History recovery must not render, validate or package again');
 
     assert.ok(finishedCover, 'A matching paperback template is required for the uploaded-cover journey');
+    onStage('retailer browser follows exact package links from dashboard and book overview');
+    const linked = packages.at(-1);
+    const target = `/books/${retailer.bookId}/publish?packageJob=${linked.job.id}`;
+    for (const source of [`/dashboard?ws=${finishedCover.workspaceId}`, `/books/${retailer.bookId}/overview`]) {
+      await page.goto(origin + source);
+      await page.locator(`a[href="${target}"]`).click();
+      await expect(page).toHaveURL(origin + target);
+      await expect(page.getByRole('combobox', { name: 'Format', exact: true })).toHaveValue(linked.edition.kind);
+      const exact = history.getByRole('listitem').filter({ hasText: linked.job.package.asset.checksum.slice(0, 12) });
+      await expect(exact).toHaveCount(1);
+      await download(page, exact.getByRole('button', { name: 'Download private ZIP', exact: true }), linked.job.package.asset.checksum);
+    }
+    assert.equal(requests.length, mutations, 'Opening and downloading an exact activity link must not create work');
+    console.log('PASS native dashboard and book overview open exact retailer package ZIP without creating work');
+
     onStage('retailer browser finished cover PDF upload and clean scan');
     await page.goto(`${origin}/assets?ws=${finishedCover.workspaceId}`);
     const pickingFile = page.waitForEvent('filechooser');
