@@ -42,7 +42,8 @@ try {
   await page.getByRole('button', { name: 'Retry import', exact: true }).click();
   await page.getByRole('alert').filter({ hasText: 'Fixture lost scan response' }).waitFor();
   await page.getByRole('button', { name: 'Retry import', exact: true }).click();
-  await page.getByRole('status').filter({ hasText: /Import (queued|failed|running)/ }).first().waitFor();
+  // The submission reply can show queued before the first independent status read.
+  await page.getByRole('status').filter({ hasText: /Import failed/ }).waitFor();
   const resumed = await page.evaluate(() => JSON.parse(Object.entries(sessionStorage).find(([key]) => key.startsWith('bookworm:setup:'))[1]));
   assert.equal(resumed.bookId, saved.bookId);
   assert.equal(resumed.source.assetId, saved.source.assetId);
