@@ -926,10 +926,10 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       if (!body.data.withdraw && process.env.MANAGED_PUBLISHING_ENABLED !== "true") {
         throw new AppError(404, "Managed publishing is currently unavailable.");
       }
-      const { data, error } = await user.rpc(body.data.withdraw ? "withdraw_managed_publishing" : "request_managed_publishing", {
-        p_job_id: jobId,
-        p_sha256: body.data.packageSha256,
-      });
+      const consent = { p_job_id: jobId, p_sha256: body.data.packageSha256 };
+      const { data, error } = await (body.data.withdraw
+        ? user.rpc("withdraw_managed_publishing", consent)
+        : app.supabaseFactory().rpc("request_managed_publishing", { ...consent, p_actor: req.userId }));
       if (error?.code === "PT404") throw new AppError(404, "Completed retailer package not found.");
       if (error?.code === "42501") throw new AppError(403, "This account cannot request managed publishing.");
       if (error?.code === "PT409") throw new AppError(409, "The reviewed package or its saved request changed. Check the saved request.");

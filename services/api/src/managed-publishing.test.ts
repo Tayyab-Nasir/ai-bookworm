@@ -117,13 +117,13 @@ test("operator queue and claim require both allowlists and bind the claim to the
   }
 });
 
-test("managed publishing authorizes, writes and recovers the exact package consent with the user token", async () => {
+test("managed publishing authorizes, writes and recovers the exact package consent with a server-verified actor", async () => {
   let role = "owner";
   let stored: typeof receipt | null = null;
   let returned = receipt;
   const writes: unknown[] = [];
   const app = await buildApp(((token?: string) => {
-    assert.equal(token, "fixture");
+    assert.ok(token === undefined || token === "fixture");
     return {
       auth: { getUser: async () => ({ data: { user: { id: actor } }, error: null }) },
       from(table: string) {
@@ -143,6 +143,7 @@ test("managed publishing authorizes, writes and recovers the exact package conse
       },
       rpc: async (name: string, body: unknown) => {
         assert.ok(["request_managed_publishing", "withdraw_managed_publishing"].includes(name));
+        assert.equal(token, name === "request_managed_publishing" ? undefined : "fixture");
         writes.push(body);
         stored = name === "withdraw_managed_publishing"
           ? { ...returned, withdrawn_at: "2026-11-20T18:10:00+00:00" } : returned;
@@ -174,7 +175,7 @@ test("managed publishing authorizes, writes and recovers the exact package conse
     assert.equal(saved.headers["cache-control"], "private, no-store");
     assert.deepEqual(saved.json(), { request: { jobId: job, workspaceId: workspace, requestedBy: actor,
       packageSha256: sha, requestedAt: receipt.requested_at, withdrawnAt: null, confirmedAt: null, listingUrl: null } });
-    assert.deepEqual(writes, [{ p_job_id: job, p_sha256: sha }]);
+    assert.deepEqual(writes, [{ p_job_id: job, p_sha256: sha, p_actor: actor }]);
     assert.deepEqual((await send("GET")).json(), saved.json());
     assert.equal(writes.length, 1);
     process.env.MANAGED_PUBLISHING_ENABLED = "false";

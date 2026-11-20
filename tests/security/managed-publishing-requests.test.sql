@@ -32,9 +32,10 @@ begin
     select 'd7720000-0000-4000-8000-000000000012', job.book_id, job.edition_id, job.channel, job.status,
       job.request_json, job.response_json, 'managed-confirmation-package'
     from public.publishing_jobs job where job.id = 'd7720000-0000-4000-8000-000000000011';
-  assert not has_function_privilege('anon', 'public.request_managed_publishing(uuid,text)', 'EXECUTE');
-  assert not has_function_privilege('service_role', 'public.request_managed_publishing(uuid,text)', 'EXECUTE');
+  assert not has_function_privilege('anon', 'public.request_managed_publishing(uuid,text,uuid)', 'EXECUTE');
+  assert not has_function_privilege('authenticated', 'public.request_managed_publishing(uuid,text,uuid)', 'EXECUTE');
   assert not has_function_privilege('service_role', 'public.withdraw_managed_publishing(uuid,text)', 'EXECUTE');
+  assert not has_function_privilege('authenticated', 'private.request_managed_publishing_internal(uuid,text,boolean,uuid)', 'EXECUTE');
   assert not has_table_privilege('authenticated', 'public.managed_publishing_requests', 'INSERT');
   assert not has_table_privilege('service_role', 'public.managed_publishing_requests', 'SELECT');
   assert not has_function_privilege('authenticated', 'public.claim_managed_publishing(uuid,text,uuid)', 'EXECUTE');
@@ -50,21 +51,42 @@ $$;
 set local request.jwt.claims = '{"sub":"d7720000-0000-4000-8000-000000000001","role":"authenticated"}';
 set local role authenticated;
 do $$
+begin
+  perform public.request_managed_publishing('d7720000-0000-4000-8000-000000000011', repeat('a', 64), auth.uid());
+  assert false, 'Authenticated direct request bypassed the application';
+exception when insufficient_privilege then null;
+end;
+$$;
+
+reset role;
+set local request.jwt.claims = '{"role":"service_role"}';
+set local role service_role;
+do $$
 declare
   job uuid := 'd7720000-0000-4000-8000-000000000011';
   sha text := repeat('a', 64);
   first public.managed_publishing_requests;
 begin
   begin
-    perform public.request_managed_publishing(job, repeat('b', 64));
+    perform public.request_managed_publishing(job, repeat('b', 64), 'd7720000-0000-4000-8000-000000000001'::uuid);
     assert false, 'A different package hash was accepted';
   exception when sqlstate 'PT409' then null;
   end;
-  select * into strict first from public.request_managed_publishing(job, sha);
-  assert first.package_job_id = job and first.requested_by = auth.uid() and first.package_sha256 = sha;
-  assert (select row_to_json(r) from public.request_managed_publishing(job, sha) r)::text = row_to_json(first)::text;
+  select * into strict first from public.request_managed_publishing(job, sha, 'd7720000-0000-4000-8000-000000000001'::uuid);
+  assert first.package_job_id = job and first.requested_by = 'd7720000-0000-4000-8000-000000000001'::uuid and first.package_sha256 = sha;
+  assert (select row_to_json(r) from public.request_managed_publishing(job, sha, 'd7720000-0000-4000-8000-000000000001'::uuid) r)::text = row_to_json(first)::text;
   assert first.withdrawn_at is null;
-  perform public.request_managed_publishing('d7720000-0000-4000-8000-000000000012', sha);
+  begin
+    perform public.request_managed_publishing(job, sha, 'd7720000-0000-4000-8000-000000000002');
+    assert false, 'Service request accepted an editor as author';
+  exception when sqlstate 'PT404' then null;
+  end;
+  begin
+    perform public.request_managed_publishing(job, sha, 'd7720000-0000-4000-8000-000000000003');
+    assert false, 'Service request accepted an outsider as author';
+  exception when sqlstate 'PT404' then null;
+  end;
+  perform public.request_managed_publishing('d7720000-0000-4000-8000-000000000012', sha, 'd7720000-0000-4000-8000-000000000001'::uuid);
 end;
 $$;
 
@@ -136,7 +158,6 @@ begin
   select * into strict withdrawn from public.withdraw_managed_publishing(job, sha);
   assert withdrawn.withdrawn_at is not null and withdrawn.requested_at = first.requested_at;
   assert (select withdrawn_at from public.withdraw_managed_publishing(job, sha)) = withdrawn.withdrawn_at;
-  assert (select withdrawn_at from public.request_managed_publishing(job, sha)) = withdrawn.withdrawn_at;
   assert (select count(*) from public.managed_publishing_requests) = 2;
   assert (select listing_url from public.managed_publishing_requests where package_job_id = 'd7720000-0000-4000-8000-000000000012')
     = 'https://www.amazon.com/dp/B000000001';
@@ -148,22 +169,12 @@ begin
   perform set_config('request.jwt.claims','{"sub":"d7720000-0000-4000-8000-000000000002"}', true);
   assert not exists (select 1 from public.managed_publishing_requests);
   begin
-    perform public.request_managed_publishing(job, sha);
-    assert false, 'Editor requested publication';
-  exception when sqlstate 'PT404' then null;
-  end;
-  begin
     perform public.withdraw_managed_publishing(job, sha);
     assert false, 'Editor withdrew consent';
   exception when sqlstate 'PT404' then null;
   end;
   perform set_config('request.jwt.claims','{"sub":"d7720000-0000-4000-8000-000000000003"}', true);
   assert not exists (select 1 from public.managed_publishing_requests);
-  begin
-    perform public.request_managed_publishing(job, sha);
-    assert false, 'Outsider requested publication';
-  exception when sqlstate 'PT404' then null;
-  end;
 end;
 $$;
 

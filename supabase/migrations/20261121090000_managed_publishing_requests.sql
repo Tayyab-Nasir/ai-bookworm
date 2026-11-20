@@ -44,11 +44,10 @@ create policy managed_publishing_requests_select on public.managed_publishing_re
     )
   );
 
-create function private.request_managed_publishing_internal(p_job_id uuid, p_sha256 text, p_withdraw boolean)
+create function private.request_managed_publishing_internal(p_job_id uuid, p_sha256 text, p_withdraw boolean, v_actor uuid)
 returns public.managed_publishing_requests
 language plpgsql security definer set search_path = '' as $$
 declare
-  v_actor uuid := auth.uid();
   v_workspace uuid;
   v_request public.managed_publishing_requests;
 begin
@@ -125,23 +124,27 @@ begin
 end;
 $$;
 
-create function public.request_managed_publishing(p_job_id uuid, p_sha256 text)
+create function public.request_managed_publishing(p_job_id uuid, p_sha256 text, p_actor uuid)
 returns public.managed_publishing_requests
-language sql security invoker set search_path = '' as $$
-  select private.request_managed_publishing_internal(p_job_id, p_sha256, false);
+language plpgsql security definer set search_path = '' as $$
+begin
+  if auth.role() is distinct from 'service_role' then
+    raise exception 'Publishing service authority required' using errcode = '42501';
+  end if;
+  return private.request_managed_publishing_internal(p_job_id, p_sha256, false, p_actor);
+end;
 $$;
 
 create function public.withdraw_managed_publishing(p_job_id uuid, p_sha256 text)
 returns public.managed_publishing_requests
-language sql security invoker set search_path = '' as $$
-  select private.request_managed_publishing_internal(p_job_id, p_sha256, true);
+language sql security definer set search_path = '' as $$
+  select private.request_managed_publishing_internal(p_job_id, p_sha256, true, auth.uid());
 $$;
 
-revoke all on function private.request_managed_publishing_internal(uuid,text,boolean) from public, anon, authenticated, service_role;
-revoke all on function public.request_managed_publishing(uuid,text) from public, anon, authenticated, service_role;
+revoke all on function private.request_managed_publishing_internal(uuid,text,boolean,uuid) from public, anon, authenticated, service_role;
+revoke all on function public.request_managed_publishing(uuid,text,uuid) from public, anon, authenticated, service_role;
 revoke all on function public.withdraw_managed_publishing(uuid,text) from public, anon, authenticated, service_role;
-grant execute on function private.request_managed_publishing_internal(uuid,text,boolean) to authenticated;
-grant execute on function public.request_managed_publishing(uuid,text) to authenticated;
+grant execute on function public.request_managed_publishing(uuid,text,uuid) to service_role;
 grant execute on function public.withdraw_managed_publishing(uuid,text) to authenticated;
 
 -- Called only by a server that verifies and authorizes the individual operator.
