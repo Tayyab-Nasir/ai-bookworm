@@ -255,11 +255,11 @@ async function rejectedCollaboration() {
   const reads: string[] = [];
   const h = harness("apps/web/components/CollaborationCenter.tsx", {
     listWorkspaces: async () => ({ workspaces: [available[0]] }),
-    listMembers: async (workspace: string) => { reads.push(workspace); return { members: [{ user_id: "fixture-user", workspace_id: workspace, role: "owner", status: "active" }], profiles: [] }; },
+    listMembers: async (workspace: string) => { reads.push(workspace); return { members: [{ user_id: A, workspace_id: workspace, role: "owner", status: "active" }], profiles: [] }; },
     listTasks: async (workspace: string) => { reads.push(workspace); return { tasks: [] }; },
     listActivity: async (workspace: string) => { reads.push(workspace); return { events: [] }; },
   }, { query: "?ws=foreign", blockedStorage: true, props: { view: "tasks" } });
-  h.render(); h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
+  h.render(); await h.callbacks.find(fn => fn.toString().includes("api.listWorkspaces"))!();
   return { h, reads };
 }
 
@@ -349,18 +349,19 @@ async function deferredCollaboration(action: CollaborationAction) {
   const read = (workspace: string) => { reads.push(workspace); };
   const h = harness("apps/web/components/CollaborationCenter.tsx", {
     listWorkspaces: async () => ({ workspaces: available }),
-    listMembers: async (workspace: string) => { read(workspace); return { members: [{ user_id: "fixture-user", role: "owner", status: "active" }, { user_id: "fixture-reviewer", role: "reviewer", status: "active" }], profiles: [] }; },
+    listMembers: async (workspace: string) => { read(workspace); return { members: [{ user_id: A, role: "owner", status: "active" }, { user_id: "fixture-reviewer", role: "reviewer", status: "active" }], profiles: [] }; },
     listTasks: async (workspace: string) => { read(workspace); return { tasks: [] }; },
     listActivity: async (workspace: string) => { read(workspace); const pending = heldActivity; heldActivity = null; return pending ? pending.promise : { events: [] }; },
     listInvitations: async (workspace: string) => { read(workspace); return { invitations: [] }; },
     listBooks: async (workspace: string) => { read(workspace); return { books: [{ id: `${workspace}-book`, title: `Book ${workspace}` }] }; },
     listAssets: async (workspace: string) => { read(workspace); return { assets: [{ ...asset(`${workspace}-request`, workspace), status: "draft", requires_approval: true, current_version_number: 1, current_scan_status: "clean" }] }; },
-    listApprovals: async (workspace: string) => { read(workspace); return { approvals: [{ id: `${workspace}-approval`, entity_type: "asset", entity_id: `${workspace}-pending`, entity_version_number: 1, status: "pending", reviewer_id: "fixture-user", requested_by: "fixture-reviewer", created_at: "2026-01-01" }] }; },
+    listApprovals: async (workspace: string) => { read(workspace); return { approvals: [{ id: `${workspace}-approval`, entity_type: "asset", entity_id: `${workspace}-pending`, entity_version_number: 1, status: "pending", reviewer_id: A, requested_by: "fixture-reviewer", created_at: "2026-01-01" }] }; },
     createTask: create, createApproval: create, inviteMember: create, resolveApproval: create,
     copyInvitation: (value: string) => { const result = deferred<void>(); copies.push({ value, result }); return result.promise; },
   }, { query: `?ws=${A}`, props: { view } });
-  h.render(); h.effects.find(fn => fn.toString().includes("api.listWorkspaces"))!(); await settle();
-  h.render(); const cleanup = h.effects.find(fn => fn.toString().includes("void load()"))!(); await settle();
+  h.render(); const cleanupAccount = h.effects.find(fn => fn.toString().includes("void verifyAccount()"))!(); await settle();
+  h.render(); const cleanupRead = h.effects.find(fn => fn.toString().includes("void load()"))!(); await settle();
+  const cleanup = () => { cleanupAccount(); cleanupRead(); };
   const replace = async (boundary: "workspace" | "view") => {
     if (boundary === "workspace") props(h.render(), "select").onChange({ target: { value: B } });
     else h.setProps({ view: view === "tasks" ? "team" : "tasks" });
@@ -381,8 +382,8 @@ test("Collaboration invitation copy retains ordinary success and error notices",
   const { h, requests, copies, response } = await deferredCollaboration("invite");
   prepareCollaboration(h, "invite", A)(); requests[0].result.resolve(response); await settle();
   const copy = () => nodes(h.render()).find(node => node.type === "button" && node.props.children === "Copy link").props.onClick();
-  copy(); copies[0].result.resolve(); await settle(); assert.equal(h.states[15], "Invitation link copied.");
-  copy(); copies[1].result.reject(new Error("Synthetic clipboard failure")); await settle(); assert.equal(h.states[14], "Copy failed. Select and copy the link manually.");
+  copy(); copies[0].result.resolve(); await settle(); assert(nodes(h.render()).some(node => node.props?.role === "status" && node.props.children === "Invitation link copied."));
+  copy(); copies[1].result.reject(new Error("Synthetic clipboard failure")); await settle(); assert(nodes(h.render()).some(node => node.props?.role === "alert" && node.props.children === "Copy failed. Select and copy the link manually."));
 });
 test("Collaboration replacement during an accepted action's own reload ignores old reads and finalization", async () => {
   const { h, requests, reads, replace, holdNextActivity, response } = await deferredCollaboration("invite");
@@ -390,7 +391,7 @@ test("Collaboration replacement during an accepted action's own reload ignores o
   await replace("workspace"); prepareCollaboration(h, "invite", B)(); const before = snapshot(h); const count = reads.length;
   read.resolve({ events: [{ id: "synthetic-stale-a-activity", event_type: "old_action", actor_id: "fixture-user", created_at: "2026-01-01" }] }); await settle();
   assert.equal(snapshot(h), before); assert.equal(reads.length, count, "old team reload cannot continue with invitation reads after replacement");
-  requests[1].result.resolve(response); await settle(); assert.equal(h.states[13], null);
+  requests[1].result.resolve(response); await settle(); assert.equal(h.states[12], null);
 });
 for (const action of collaborationActions) {
   for (const boundary of ["workspace", "view", "unmount"] as const) for (const outcome of ["success", "error"] as const) {
@@ -409,24 +410,32 @@ for (const action of collaborationActions) {
     const { h, reads, requests, response } = await deferredCollaboration(action);
     const start = prepareCollaboration(h, action, A); start(); start(); assert.equal(requests.length, 1, "same-render duplicate dispatch is blocked");
     requests[0].result.reject(new Error("Synthetic current failure")); await settle();
-    assert(nodes(h.render()).some(node => node.props?.role === "alert")); assert.equal(h.states[13], null);
+    const failed = h.render();
+    assert(nodes(failed).some(node => node.props?.role === "alert")); assert.equal(h.states[12], null);
+    if (!action.startsWith("artwork-")) {
+      const refresh = nodes(failed).find(node => node.type === "button" && node.props.children === "Refresh workspace data");
+      assert(refresh);
+      start(); assert.equal(requests.length, 1, "an unknown outcome fences stale write controls until a read");
+      refresh.props.onClick(); await settle();
+      assert.equal(requests.length, 1, "recovery reads without repeating the write");
+    }
     prepareCollaboration(h, action, A)(); assert.equal(requests.length, 2);
     if (action === "artwork-request") assert.equal(requests[1].payload[0].idempotencyKey, requests[0].payload[0].idempotencyKey, "explicit uncertain retry preserves its saved request identity");
     if (action === "artwork-reject") assert.equal(requests[1].payload[2], requests[0].payload[2], "explicit uncertain retry preserves the saved rejection note");
     const beforeReads = reads.length; requests[1].result.resolve(response); await settle();
     assert(reads.length > beforeReads, "ordinary accepted current action reloads only its current workspace");
-    assert.equal(h.states[13], null, "the action adopts its own reload instead of leaving busy stuck");
+    assert.equal(h.states[12], null, "the action adopts its own reload instead of leaving busy stuck");
     assert(!nodes(h.render()).some(node => node.props?.role === "alert")); assert(nodes(h.render()).some(node => node.props?.role === "status"));
   });
   for (const outcome of ["success", "error"] as const) test(`Collaboration ${action} stale ${outcome} cannot unlock a newer B action`, async () => {
     const { h, reads, requests, replace, response } = await deferredCollaboration(action);
     prepareCollaboration(h, action, A)(); await replace("workspace");
-    assert.equal(h.states[13], null, "replacement releases only the old scope's action lock");
+    assert.equal(h.states[12], null, "replacement releases only the old scope's action lock");
     const current = prepareCollaboration(h, action, B); current(); current(); assert.equal(requests.length, 2);
     const before = snapshot(h); const count = reads.length;
     if (outcome === "success") requests[0].result.resolve(response); else requests[0].result.reject(new Error("Synthetic stale A failure"));
-    await settle(); assert.equal(snapshot(h), before); assert.equal(reads.length, count); assert.notEqual(h.states[13], null);
-    requests[1].result.resolve(response); await settle(); assert.equal(h.states[13], null);
+    await settle(); assert.equal(snapshot(h), before); assert.equal(reads.length, count); assert.notEqual(h.states[12], null);
+    requests[1].result.resolve(response); await settle(); assert.equal(h.states[12], null);
   });
 }
 
@@ -498,7 +507,7 @@ test("Analytics replacement during its own receipt reload cannot publish stale t
 const callers = [
   { path: "apps/web/components/AuthorDashboard.tsx", callback: true },
   { path: "apps/web/components/BillingCenter.tsx", callback: true },
-  { path: "apps/web/components/CollaborationCenter.tsx", props: { view: "tasks" } },
+  { path: "apps/web/components/CollaborationCenter.tsx", callback: true, props: { view: "tasks" } },
   { path: "apps/web/components/BookSetupClient.tsx" },
   { path: "apps/web/app/analytics/page.tsx", callback: true, inner: "AnalyticsPageInner" },
 ];

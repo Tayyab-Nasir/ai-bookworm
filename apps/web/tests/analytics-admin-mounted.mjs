@@ -16,16 +16,22 @@ const bundle = await build({
     import Admin from "./apps/web/components/AdminConsole.tsx";
     import Community from "./apps/web/app/community/[id]/page.tsx";
     import Dashboard from "./apps/web/components/AuthorDashboard.tsx";
+    import Collaboration from "./apps/web/components/CollaborationCenter.tsx";
     const root = createRoot(document.getElementById("root"));
     window.renderAnalytics = query => { window.query = query || ""; root.render(React.createElement(Analytics, { query })); };
     window.renderAdmin = () => root.render(React.createElement(Admin));
     window.renderCommunity = id => { window.communityId = id; root.render(React.createElement(Community)); };
     window.renderDashboard = strict => root.render(strict ? React.createElement(React.StrictMode, null, React.createElement(Dashboard)) : React.createElement(Dashboard));
+    window.renderCollaboration = () => root.render(React.createElement(React.StrictMode, null, React.createElement(Collaboration, { view: "tasks" })));
     window.clearComponent = () => root.render(null);`, resolveDir: process.cwd(), loader: "tsx" },
   bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
   plugins: [{ name: "local-view-fixtures", setup(builder) {
-    builder.onResolve({ filter: /(?:\/|^)(?:api|AuthorShell)$/ }, args => args.importer.replaceAll("\\", "/").startsWith(resolve("apps/web").replaceAll("\\", "/"))
-      ? { path: args.path.endsWith("AuthorShell") ? "shell" : "api", namespace: "fixture" } : undefined);
+    builder.onResolve({ filter: /(?:\/|^)(?:api|AuthorShell)$/ }, args => {
+      const importer = args.importer.replaceAll("\\", "/");
+      if (!importer.startsWith(resolve("apps/web").replaceAll("\\", "/"))) return;
+      if (args.path.endsWith("AuthorShell")) return { path: "shell", namespace: "fixture" };
+      if (!importer.endsWith("/CollaborationCenter.tsx")) return { path: "api", namespace: "fixture" };
+    });
     builder.onLoad({ filter: /^api$/, namespace: "fixture" }, () => ({
       contents: `import { createClient } from "@bookworm/api-client";
         export const apiClient = actor => window.useRealClient
@@ -80,6 +86,134 @@ async function fixture({ width = 1280, styled = false } = {}) {
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
   return page;
 }
+
+async function mountCollaboration(page, { failRead = false, write = "confirmed" } = {}) {
+  await page.evaluate(({ failRead, write }) => {
+    const workspace = { id: "33333333-3333-4333-8333-333333333333", name: "Publishing team" };
+    const tasks = new Map();
+    window.failCollaborationRead = failRead;
+    window.fetch = async (url, request = {}) => {
+      const { pathname } = new URL(url, location.origin);
+      const actor = window.account;
+      if (pathname === "/api/auth/session") {
+        if (window.holdCollaborationSession) {
+          window.holdCollaborationSession = false;
+          await window.defer("collaboration-session");
+        }
+        return Response.json({ user: actor ? { id: actor } : null });
+      }
+      const method = request.method || "GET";
+      const expected = new Headers(request.headers).get("x-bookworm-actor");
+      window.calls.push({ method, pathname, actor, expected });
+      const error = (status, code, message) => Response.json({ error: { code, message } }, { status });
+      if (expected !== actor) return error(409, "auth_error", "Your account changed.");
+      if (pathname === "/api/backend/v1/workspaces") return Response.json({ workspaces: [workspace] });
+      if (pathname === `/api/backend/v1/workspaces/${workspace.id}/members`) {
+        return Response.json({ members: [{ user_id: actor, role: "owner", status: "active" }], profiles: [] });
+      }
+      if (pathname === "/api/backend/v1/activity") return Response.json({ events: [] });
+      if (pathname === "/api/backend/v1/tasks" && method === "GET") {
+        if (window.failCollaborationRead) return error(503, "unavailable", "Tasks could not be refreshed.");
+        return Response.json({ tasks: tasks.get(actor) ?? [] });
+      }
+      if (pathname === "/api/backend/v1/tasks" && method === "POST") {
+        const { title } = JSON.parse(request.body);
+        const saved = tasks.get(actor) ?? [];
+        const task = { id: `task-${saved.length}`, title, status: "todo", priority: "medium", assignee_id: null };
+        tasks.set(actor, [...saved, task]);
+        if (write === "lost") throw new Error("Synthetic lost response after save");
+        if (write === "delayed") await window.defer("collaboration-write");
+        if (write === "refresh-fails") window.failCollaborationRead = true;
+        return Response.json(task, { status: 201 });
+      }
+      throw new Error(`Unexpected collaboration request ${method} ${pathname}`);
+    };
+    window.renderCollaboration();
+  }, { failRead, write });
+}
+
+test("collaboration shows a failed read with recovery instead of empty or permanent loading", async () => {
+  const page = await fixture({ width: 390, styled: true });
+  try {
+    await mountCollaboration(page, { failRead: true });
+    await expect(page.getByRole("alert")).toHaveText("Tasks could not be refreshed.");
+    await expect(page.getByText("Loading workspace collaboration data…")).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Task board" })).toHaveCount(0);
+    await page.screenshot({ path: resolve(artifacts, "collaboration-unavailable-mobile.png") });
+    await page.evaluate(() => { window.failCollaborationRead = false; });
+    await page.getByRole("button", { name: "Refresh workspace data" }).click();
+    await expect(page.getByRole("region", { name: "Task board" })).toBeVisible();
+    assert(await page.evaluate(() => window.calls.every(call => call.expected && call.expected === call.actor)));
+  } finally { await page.close(); }
+});
+
+for (const write of ["refresh-fails", "lost"]) test(`collaboration preserves the ${write} result and recovers with reads`, async () => {
+  const page = await fixture({ styled: write === "refresh-fails" });
+  try {
+    await mountCollaboration(page, { write });
+    await page.getByLabel("Task title").fill("Review the proof");
+    await page.getByRole("button", { name: "Create task" }).click();
+    const confirmed = page.getByText("Task created.", { exact: true });
+    const unconfirmed = page.getByText("The action may have completed. Review the saved records before trying again.", { exact: true });
+    if (write === "refresh-fails") {
+      await expect(confirmed).toBeVisible();
+      await expect(page.getByRole("alert")).toHaveText("Tasks could not be refreshed.");
+      await page.screenshot({ path: resolve(artifacts, "collaboration-confirmed-desktop.png") });
+    } else {
+      await expect(unconfirmed).toBeVisible();
+      await expect(confirmed).toHaveCount(0);
+    }
+    await expect(page.getByRole("button", { name: "Create task" })).toHaveCount(0);
+    await page.evaluate(() => { window.failCollaborationRead = false; });
+    await page.getByRole("button", { name: "Refresh workspace data" }).click();
+    await expect(page.getByRole("heading", { name: "Review the proof" })).toHaveCount(1);
+    await expect(write === "refresh-fails" ? confirmed : unconfirmed).toBeVisible();
+    const writes = await page.evaluate(() => window.calls.filter(call => call.method === "POST"));
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].expected, writes[0].actor);
+  } finally { await page.close(); }
+});
+
+test("collaboration blocks an old draft when the account changed before dispatch", async () => {
+  const page = await fixture();
+  try {
+    await mountCollaboration(page);
+    await page.getByLabel("Task title").fill("Original account draft");
+    await page.evaluate(() => { window.account = "22222222-2222-4222-8222-222222222222"; });
+    await page.getByRole("button", { name: "Create task" }).click();
+    await expect(page.getByLabel("Task title")).toHaveValue("");
+    await expect(page.getByText("Task created.", { exact: true })).toHaveCount(0);
+    const writes = await page.evaluate(() => window.calls.filter(call => call.method === "POST"));
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].expected, "11111111-1111-4111-8111-111111111111");
+    assert.notEqual(writes[0].actor, writes[0].expected);
+  } finally { await page.close(); }
+});
+
+test("collaboration hides a replacement account's old view and ignores its late write reply", async () => {
+  const page = await fixture();
+  try {
+    await mountCollaboration(page, { write: "delayed" });
+    await page.getByLabel("Task title").fill("Original account task");
+    await page.getByRole("button", { name: "Create task" }).click();
+    await page.waitForFunction(() => window.gates["collaboration-write"]);
+    await page.evaluate(() => {
+      window.account = "22222222-2222-4222-8222-222222222222";
+      window.holdCollaborationSession = true;
+      window.dispatchEvent(new Event("focus"));
+    });
+    await page.waitForFunction(() => window.gates["collaboration-session"]);
+    await expect(page.getByText("Checking workspace access…", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Task title")).toHaveCount(0);
+    await page.evaluate(() => window.gates["collaboration-session"].resolve());
+    await expect(page.getByLabel("Task title")).toHaveValue("");
+    await page.getByLabel("Task title").fill("Replacement account draft");
+    await page.evaluate(() => window.gates["collaboration-write"].resolve());
+    await expect(page.getByLabel("Task title")).toHaveValue("Replacement account draft");
+    await expect(page.getByText("Task created.", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Original account task" })).toHaveCount(0);
+  } finally { await page.close(); }
+});
 
 test("late sales success cannot mix an old workspace into the current ledger", async () => {
   const page = await fixture();
