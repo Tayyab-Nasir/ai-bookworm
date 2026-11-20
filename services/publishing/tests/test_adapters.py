@@ -133,7 +133,7 @@ def test_bn_package_endpoint_runs_epubcheck_once(monkeypatch):
 
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
-    assert result["ruleVersion"] == "core-1.0.17+kdp-1.7.0"
+    assert result["ruleVersion"] == "core-1.0.17+kdp-1.8.0"
     ids = {f["rule_id"] for f in result["findings"]}
     assert not result["findings"] or all(
         rid.startswith(("CORE-", "KDP-")) for rid in ids)
@@ -156,6 +156,18 @@ def test_kdp_listing_selection_warnings_preserve_saved_metadata(keyword_count, c
     assert {f["code"] for f in findings} == expected
     assert all(f["severity"] == "warning" for f in findings)
     assert book == before
+
+
+@pytest.mark.parametrize(("length", "warns"), [(4000, False), (4001, True)])
+def test_kdp_description_limit_counts_literal_markup(length, warns):
+    book = copy.deepcopy(VALID)
+    description = "<b>" + "a" * (length - 7) + "</b>"
+    book["metadata"]["description"] = description
+    result = get_adapter("kdp").validate({**_ctx(artifact=False), "book": book})
+    findings = [item for item in result["findings"] if item["code"] == "KDP-LISTING-DESCRIPTION-LENGTH"]
+    assert bool(findings) == warns
+    assert all(item["severity"] == "warning" and f"{length:,}" in item["message"] for item in findings)
+    assert book["metadata"]["description"] == description
 
 
 def test_kdp_validate_flags_missing_description():
@@ -638,7 +650,7 @@ def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
                              artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
     first = build_package(request)
     second = build_package(request)
-    assert first["ruleVersion"] == "core-1.0.17+kdp-1.7.0"
+    assert first["ruleVersion"] == "core-1.0.17+kdp-1.8.0"
     assert first["packages"][0]["sha256"] == second["packages"][0]["sha256"]
     package = base64.b64decode(first["packages"][0]["dataBase64"])
     with zipfile.ZipFile(BytesIO(package)) as archive:

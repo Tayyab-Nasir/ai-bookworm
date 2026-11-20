@@ -9,12 +9,21 @@ from kdp_print import kdp_page_count, kdp_page_range
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "kdp-1.7.0"
+VERSION = "kdp-1.8.0"
 EFFECTIVE_DATE = "2026-09-18"
 SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G202145060"
 ISBN_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201834170"
 KEYWORDS_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201743260"
 CATEGORIES_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G200652170"
+DESCRIPTION_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201189630"
+
+
+def check_kdp_description_length(ctx):
+    count = len(_meta(ctx).get("description") or "")
+    if count <= 4000:
+        return []
+    return [Finding(code="KDP-LISTING-DESCRIPTION-LENGTH", location="book.metadata.description",
+                    message=f"The saved description has {count:,} characters. Shorten it to 4,000 or fewer in KDP, including formatting tags.")]
 
 
 def check_kdp_keywords(ctx):
@@ -189,6 +198,8 @@ def check_kdp_rounded_count(ctx):
 RULESET = make_ruleset("kdp", VERSION, metadata_rules(
     "kdp", "KDP", ["title", "author", "language", "description"],
     EFFECTIVE_DATE, SOURCE_REF) + [
+    Rule("KDP-LISTING-DESCRIPTION-LENGTH", "warning", "channel", "KDP description length", check_kdp_description_length,
+         channels=("kdp",), effective_date="2026-11-20", source_ref=DESCRIPTION_SOURCE_REF),
     Rule("KDP-LISTING-KEYWORDS", "warning", "channel", "KDP keyword selection", check_kdp_keywords,
          channels=("kdp",), effective_date="2026-11-20", source_ref=KEYWORDS_SOURCE_REF),
     Rule("KDP-LISTING-CATEGORIES", "warning", "channel", "KDP category selection", check_kdp_categories,

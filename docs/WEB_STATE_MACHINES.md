@@ -295,7 +295,7 @@ the allowlist without starting a worker.
   ruleset `kdp-1.5.0` for this change.
   [KDP cover specifications](https://kdp.amazon.com/en_US/help/topic/G200645690)
 - KDP preflight warns when the saved listing has more than seven keywords
-  or three categories. The KDP handoff names the limits and leaves the full
+  or three categories, or when the description exceeds 4,000 characters with formatting tags counted. The KDP handoff names the limits and leaves the full
   saved listing available for other retailers.
   [Keywords](https://kdp.amazon.com/en_US/help/topic/G201743260) ·
   [Categories](https://kdp.amazon.com/en_US/help/topic/G200652170)

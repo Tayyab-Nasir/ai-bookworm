@@ -199,6 +199,7 @@ class ExportAdapter:
                         if self.CHANNEL == "kdp" and (ctx.get("edition") or {}).get("kind") == "ebook" else "")
                      + ("Answer KDP's disclosure questions if your book includes AI-generated text, artwork or translations.\n"
                         "Choose up to seven keywords or phrases and up to three categories for your primary marketplace and audience.\n"
+                        "Keep the KDP description at 4,000 characters or fewer, including any formatting tags.\n"
                         if self.CHANNEL == "kdp" else "")
                      + ("For Google Play Books, upload book.epub in an existing single-book Partner Center Content tab; this generic filename is not for bulk upload.\n"
                         "Run EpubCheck and review Google's processing result, pricing, territories and Review tab before you click Publish.\n"
