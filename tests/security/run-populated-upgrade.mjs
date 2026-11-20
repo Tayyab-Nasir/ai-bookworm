@@ -396,6 +396,10 @@ try {
       await db.exec(await readFile(join(root,'tests/security/asset-client-delete-guard.test.sql'),'utf8'));
       console.log('PASS populated asset deletion guard: client denial and service cleanup');
     }
+    if (migration.name === '20261121090000_managed_publishing_requests.sql') {
+      await db.exec(await readFile(join(root, 'tests/security/managed-publishing-requests.test.sql'), 'utf8'));
+      console.log('PASS populated managed publishing: consent, operator authority and verified notification settlement');
+    }
     if (renderProbe) {
       const { edition, running, succeeded, before } = renderProbe;
       const after = (await db.query('select to_jsonb(j) as value from public.publishing_jobs j where id=any($1::uuid[]) order by id', [[running, succeeded]])).rows.map(row => row.value);
