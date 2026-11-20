@@ -185,8 +185,10 @@ the allowlist without starting a worker.
   explicit retry in the same tab. This does not coordinate different tabs, and
   hosted uniqueness has not been verified. Community discovery and join bind
   to a verified actor and hide prior results during revalidation. Membership is
-  read from the database for that actor, including inactive public memberships;
-  an unavailable or incomplete read does not guess. A rolled-back hosted SQL
+  read in one database request for that actor, including inactive public
+  memberships; an unavailable or incomplete read does not guess. If the
+  response exceeds the server's row cap, joining stays unavailable until a
+  complete snapshot can be provided. A rolled-back hosted SQL
   check verified the relevant table privileges and RLS with two synthetic
   actors. The new API and an isolated signed-in production browser also passed
   checks with disposable hosted accounts, including private-directory revocation

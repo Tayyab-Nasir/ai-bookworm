@@ -11,7 +11,7 @@ const B = "22222222-2222-4222-8222-222222222222";
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 type Row = { community_id: string; user_id: string; status: string };
 
-async function fixture(rows: Row[], options: { pageCap?: number; error?: boolean; throwRead?: boolean; noCount?: boolean; changedCount?: boolean; countOverride?: number } = {}) {
+async function fixture(rows: Row[], options: { pageCap?: number; error?: boolean; throwRead?: boolean; noCount?: boolean; countOverride?: number } = {}) {
   const reads: { token: string | undefined; actor: unknown; from: number; to: number }[] = [];
   const factory = ((token?: string) => ({
     auth: { getUser: async () => ({ data: { user: { id: token === "a" ? A : B } }, error: null }) },
@@ -28,7 +28,7 @@ async function fixture(rows: Row[], options: { pageCap?: number; error?: boolean
           const filtered = rows.filter(row => row.user_id === actor).sort((a, b) => a.community_id.localeCompare(b.community_id));
           return { data: filtered.slice(from, Math.min(to + 1, from + (options.pageCap ?? 500))).map(({ community_id, status }) => ({ community_id, status })),
             error: options.error ? { message: "private upstream detail" } : null,
-            count: options.noCount ? null : options.countOverride ?? filtered.length + (options.changedCount && from > 0 ? 1 : 0) };
+            count: options.noCount ? null : options.countOverride ?? filtered.length };
         },
       };
       return query;
@@ -41,16 +41,16 @@ async function fixture(rows: Row[], options: { pageCap?: number; error?: boolean
   return { app, reads };
 }
 
-test("membership snapshot uses the caller token, scopes both actors and respects a smaller server page cap", async () => {
+test("membership snapshot uses one complete caller-scoped read for each actor", async () => {
   const rows: Row[] = Array.from({ length: 207 }, (_, n) => ({ community_id: id(n + 1), user_id: A, status: n === 5 ? "inactive" : "active" }));
   rows.push({ community_id: id(500), user_id: B, status: "active" });
-  const { app, reads } = await fixture(rows, { pageCap: 100 });
+  const { app, reads } = await fixture(rows);
   try {
     const a = await app.inject({ method: "GET", url: "/communities/memberships", headers: { authorization: "Bearer a", "x-bookworm-actor": A } });
     assert.equal(a.statusCode, 200); assert.equal(a.headers["cache-control"], "private, no-store");
     assert.equal(a.json().memberships.length, 207);
     assert.deepEqual(a.json().memberships[5], { communityId: id(6), active: false });
-    assert.deepEqual(reads.map(read => [read.token, read.actor, read.from]), [["a", A, 0], ["a", A, 100], ["a", A, 200]]);
+    assert.deepEqual(reads.map(read => [read.token, read.actor, read.from, read.to]), [["a", A, 0, 9999]]);
     const b = await app.inject({ method: "GET", url: "/communities/memberships", headers: { authorization: "Bearer b", "x-bookworm-actor": B } });
     assert.deepEqual(b.json(), { memberships: [{ communityId: id(500), active: true }] });
     const before = reads.length;
@@ -59,7 +59,7 @@ test("membership snapshot uses the caller token, scopes both actors and respects
   } finally { await app.close(); }
 });
 
-for (const [name, options] of [["database error", { error: true }], ["transport error", { throwRead: true }], ["missing count", { noCount: true }], ["oversized result", { countOverride: 10001 }], ["empty page", { pageCap: 0 }], ["changing count", { pageCap: 1, changedCount: true }]] as const) {
+for (const [name, options] of [["database error", { error: true }], ["transport error", { throwRead: true }], ["missing count", { noCount: true }], ["oversized result", { countOverride: 10001 }], ["empty page", { pageCap: 0 }], ["truncated response", { pageCap: 1 }]] as const) {
   test(`membership snapshot fails closed for ${name}`, async () => {
     const { app } = await fixture([{ community_id: id(1), user_id: A, status: "active" }, { community_id: id(2), user_id: A, status: "active" }], options);
     try {

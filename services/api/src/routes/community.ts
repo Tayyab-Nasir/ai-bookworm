@@ -96,39 +96,28 @@ export function communityRoutes(app: FastifyInstance) {
   app.get("/communities/memberships", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
     const sb = app.supabaseFactory(req.userToken, boundedSupabaseFetch(AbortSignal.timeout(10_000)));
-    const pageSize = 500;
     const maximum = 10_000;
-    const memberships: { communityId: string; active: boolean }[] = [];
-    const seen = new Set<string>();
-    let total: number | null = null;
-    do {
-      let result;
-      try {
-        result = await sb.from("community_members")
-          .select("community_id,status", { count: "exact" })
-          .eq("user_id", req.userId)
-          .order("community_id", { ascending: true })
-          .range(memberships.length, memberships.length + pageSize - 1);
-      } catch {
-        throw new AppError(503, "Community memberships could not be verified. Refresh to try again.");
-      }
-      const { data, error, count } = result;
-      if (error || typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > maximum || (total !== null && count !== total)) {
-        throw new AppError(503, "Community memberships could not be verified. Refresh to try again.");
-      }
-      total = count;
-      const parsed = z.array(z.object({ community_id: z.string().uuid(), status: z.string().min(1) })).safeParse(data);
-      if (!parsed.success || (memberships.length < total && parsed.data.length === 0)) {
-        throw new AppError(503, "Community memberships could not be verified. Refresh to try again.");
-      }
-      for (const row of parsed.data) {
-        if (seen.has(row.community_id)) throw new AppError(503, "Community memberships changed. Refresh to try again.");
-        seen.add(row.community_id);
-        memberships.push({ communityId: row.community_id, active: row.status === "active" });
-      }
-      if (memberships.length > total) throw new AppError(503, "Community memberships changed. Refresh to try again.");
-    } while (memberships.length < total);
-    return { memberships };
+    let result;
+    try {
+      // One request gives the rows and count from the same database snapshot.
+      // If PostgREST's row cap truncates it, fail rather than paging across
+      // changing membership states and accidentally omitting a row.
+      result = await sb.from("community_members")
+        .select("community_id,status", { count: "exact" })
+        .eq("user_id", req.userId)
+        .order("community_id", { ascending: true })
+        .range(0, maximum - 1);
+    } catch {
+      throw new AppError(503, "Community memberships could not be verified. Refresh to try again.");
+    }
+    const { data, error, count } = result;
+    const parsed = z.array(z.object({ community_id: z.string().uuid(), status: z.string().min(1) })).safeParse(data);
+    if (error || typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > maximum
+        || !parsed.success || parsed.data.length !== count
+        || new Set(parsed.data.map(row => row.community_id)).size !== count) {
+      throw new AppError(503, "Community memberships could not be verified. Refresh to try again.");
+    }
+    return { memberships: parsed.data.map(row => ({ communityId: row.community_id, active: row.status === "active" })) };
   });
 
   app.post("/communities", async (req, reply) => {
