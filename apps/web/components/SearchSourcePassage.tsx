@@ -6,12 +6,13 @@ import { parseSearchPassage } from "../lib/book-search";
 import { apiClient } from "./api";
 
 type ScopedRequest = <T>(path: string, method?: string, body?: unknown) => Promise<T>;
-export default function SearchSourcePassage(props: { bookId: string; citation: SearchPassageCitation; readRequest?: ScopedRequest }) {
+type Props = { bookId: string; citation: SearchPassageCitation; readRequest?: ScopedRequest; onInvalidated?: () => void };
+export default function SearchSourcePassage(props: Props) {
   const c = props.citation;
   return <SourceReader key={`${props.bookId}:${c.chapterId}:${c.documentVersionId}:${c.nodeId}:${c.chunkIndex}:${c.textHash}`} {...props} />;
 }
 
-function SourceReader({ bookId, citation, readRequest }: { bookId: string; citation: SearchPassageCitation; readRequest?: ScopedRequest }) {
+function SourceReader({ bookId, citation, readRequest, onInvalidated }: Props) {
   const regionId = useId();
   const [passage, setPassage] = useState<Passage | null>(null), [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null);
@@ -33,7 +34,13 @@ function SourceReader({ bookId, citation, readRequest }: { bookId: string; citat
       }
       setPassage(verified); setOpen(true);
     } catch (reason) {
-      if (current === generation.current) setError(reason instanceof Error ? reason.message : "The cited source could not be read.");
+      if (current === generation.current) {
+        const status = (reason as { status?: unknown } | null)?.status;
+        if (status === 401 || status === 403 || status === 404 || status === 409) {
+          setPassage(null); setOpen(false); onInvalidated?.();
+        }
+        setError(reason instanceof Error ? reason.message : "The cited source could not be read.");
+      }
     } finally { if (current === generation.current) { inFlight.current = false; setBusy(false); } }
   }
   const points = passage ? Array.from(passage.text) : [];

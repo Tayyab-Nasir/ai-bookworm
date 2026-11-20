@@ -19,6 +19,10 @@ active retrieval strategy. This is not semantic search or a LightRAG release.
   phrase/book change are ignored; duplicate source clicks are guarded.
 - Private/no-store response headers, bounded scrollable passages, keyboard
   access, responsive cards, retryable read errors and escaped text rendering.
+- A 401, 403, 404 or 409 during source reading clears the displayed search
+  excerpts and prompts a fresh access check/search. A temporary failure keeps
+  the last verified page available for retry. Mounted Chromium checks cover
+  both paths and the normal account/book change fences.
 - Typed client and OpenAPI contract added. No schema migration, provider call,
   credit reservation or customer purchase is required for source reading.
 

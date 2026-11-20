@@ -65,6 +65,7 @@ async function fixture(width = 1280) {
           nextOffset: endOffset < points.length ? endOffset : null, matchedStart: body.chunkIndex, matchedEnd: Math.min(points.length, body.chunkIndex + 1800) };
         if (window.sourceMode === "hold") return new Promise(resolve => { window.releaseSource = () => resolve(result); });
         if (window.sourceMode === "error") throw Error("Source unavailable. Retry reading the source.");
+        if (typeof window.sourceMode === "number") throw Object.assign(Error(window.sourceMode === 503 ? "Source temporarily unavailable." : "Source access changed."), { status: window.sourceMode });
         if (window.sourceMode === "wrong") return { ...result, bookId: "99999999-9999-4999-8999-999999999999" };
         if (window.sourceMode === "changed") return { ...result, versionNumber: 4 };
         return result;
@@ -171,6 +172,38 @@ test("inconsistent immutable version on pagination keeps the previous verified p
     const initial=await p.getByLabel("Cited source text",{exact:true}).innerText(); await p.evaluate(()=>{window.sourceMode="changed";});
     await p.getByRole("button",{name:"Next source section"}).click(); await p.getByRole("alert").filter({hasText:"changed unexpectedly"}).waitFor();
     assert.equal(await p.getByLabel("Cited source text",{exact:true}).innerText(),initial);
+  } finally { await p.close(); }
+});
+test("revoked access or an invalidated citation removes previously displayed private search results", async () => {
+  const p = await fixture(); try {
+    for (const status of [401, 403, 404, 409]) {
+      await p.evaluate(() => { window.sourceMode = "normal"; });
+      await search(p);
+      await p.getByRole("button", { name: "Read cited source", exact: true }).click();
+      await p.getByLabel("Cited source text", { exact: true }).waitFor();
+      await p.evaluate(value => { window.sourceMode = value; }, status);
+      await p.getByRole("button", { name: "Next source section" }).click();
+      await p.getByRole("alert").filter({ hasText: "Search results were cleared" }).waitFor();
+      assert.equal(await p.getByLabel("Cited source text", { exact: true }).count(), 0);
+      assert.equal(await p.getByLabel("Search excerpt", { exact: true }).count(), 0);
+    }
+  } finally { await p.close(); }
+});
+test("a temporary source failure retains the last verified page for retry", async () => {
+  const p = await fixture(); try {
+    await search(p);
+    await p.getByRole("button", { name: "Read cited source", exact: true }).click();
+    const source = p.getByLabel("Cited source text", { exact: true });
+    await source.waitFor();
+    const initial = await source.innerText();
+    await p.evaluate(() => { window.sourceMode = 503; });
+    await p.getByRole("button", { name: "Next source section" }).click();
+    await p.getByRole("alert").filter({ hasText: "Source temporarily unavailable." }).waitFor();
+    assert.equal(await source.innerText(), initial);
+    assert.equal(await p.getByLabel("Search excerpt", { exact: true }).count(), 2);
+    await p.evaluate(() => { window.sourceMode = "normal"; });
+    await p.getByRole("button", { name: "Next source section" }).click();
+    await p.waitForFunction(() => document.querySelector('[aria-label="Cited source text"]')?.textContent === Array.from(window.sourceText).slice(6000).join(""));
   } finally { await p.close(); }
 });
 test("manuscript-like HTML is text, never an executable browser node", async () => {

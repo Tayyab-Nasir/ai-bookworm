@@ -24,6 +24,11 @@ function SearchPanel({ bookId, onOpenBibleEntry, readRequest }: { bookId: string
     ++generation.current;
     setQuery(value); setResults([]); setSearched(false); setError(null); setBusy(false);
   }
+  function invalidateSources() {
+    ++generation.current;
+    setResults([]); setSearched(false); setBusy(false);
+    setError("Search results were cleared because access or a saved citation changed. Check your access and search again.");
+  }
   async function search(event: FormEvent) {
     event.preventDefault();
     if (!query.trim()) return;
@@ -53,7 +58,7 @@ function SearchPanel({ bookId, onOpenBibleEntry, readRequest }: { bookId: string
       <p className="text-[10px] uppercase tracking-widest text-[#999]">{result.source_type === "bible" ? "Book Bible" : "Saved manuscript"}</p>
       <h3 className="mt-2 break-words font-medium">{result.title}</h3>
       <blockquote tabIndex={0} aria-label="Search excerpt" className="mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words border-l border-white/20 pl-3 text-sm leading-6 text-[#ccc] outline-none focus-visible:ring-2 focus-visible:ring-white/50">{result.excerpt}</blockquote>
-      {searchCitation(result) && <SearchSourcePassage bookId={bookId} citation={searchCitation(result)!} readRequest={readRequest} />}
+      {searchCitation(result) && <SearchSourcePassage bookId={bookId} citation={searchCitation(result)!} readRequest={readRequest} onInvalidated={invalidateSources} />}
       {result.source_type === "manuscript" && result.chapter_id && <Link href={`/books/${encodeURIComponent(bookId)}?chapter=${encodeURIComponent(result.chapter_id)}`} className="mt-3 inline-flex min-h-10 items-center text-sm font-medium text-white underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-white">Open current chapter →</Link>}
       {result.source_type === "bible" && result.bible_item_id && onOpenBibleEntry && <button type="button" onClick={() => onOpenBibleEntry(result.bible_item_id!)} className="mt-3 block min-h-10 text-sm font-medium text-white underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-white">Open Book Bible entry →</button>}
       <details className="mt-3 text-xs text-[#999]"><summary className="cursor-pointer rounded outline-none focus-visible:ring-2 focus-visible:ring-white">Source citation</summary><dl className="mt-2 space-y-1 break-all">
