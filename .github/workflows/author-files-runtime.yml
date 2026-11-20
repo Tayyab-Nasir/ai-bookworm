@@ -60,7 +60,8 @@ jobs:
       - name: Verify community directory and discussion account isolation in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium
-        run: node --test --test-timeout=15000 apps/web/tests/community-directory-mounted.mjs apps/web/tests/community-discussion-mounted.mjs
+        # Node applies this timeout to each test file, including all its browser cases.
+        run: node --test --test-timeout=60000 apps/web/tests/community-directory-mounted.mjs apps/web/tests/community-discussion-mounted.mjs
       - name: Verify removal history and file recovery in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium
