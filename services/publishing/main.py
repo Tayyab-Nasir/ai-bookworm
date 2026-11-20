@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 
-from adapters import _assert_saved_epub_metadata, get_adapter, publishing_metadata  # noqa: E402
+from adapters import EpubCheckedExportAdapter, _assert_saved_epub_metadata, get_adapter, publishing_metadata  # noqa: E402
 from editions import parse_edition  # noqa: E402
 from epub_renderer import render_epub  # noqa: E402
 from manuscript import image_print_placement  # noqa: E402
@@ -187,7 +187,8 @@ def build_package(req: PackageRequest) -> dict:
     ctx, artifacts = _saved_artifact_context(req, edition, adapter)
     # EPUB-checked channels validate inside build_package against ZIP-bound bytes.
     # Running it here as well doubles the potentially long EPUBCheck process.
-    validation = None if req.channel in {"apple", "googleplay"} else adapter.validate(ctx)
+    checks_packaged_epub = edition.kind == "ebook" and isinstance(adapter, EpubCheckedExportAdapter)
+    validation = None if checks_packaged_epub else adapter.validate(ctx)
     if validation is not None and validation["errors"]:
         raise HTTPException(422, "The saved artifacts no longer pass channel validation. Review findings. Render again before packaging.")
     try:

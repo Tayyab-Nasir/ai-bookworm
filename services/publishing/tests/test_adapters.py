@@ -113,6 +113,24 @@ def test_bn_applies_strict_epub_size_limit_and_skips_preliminary_and_print_check
     assert calls == [epub]
 
 
+def test_bn_package_endpoint_runs_epubcheck_once(monkeypatch):
+    from epubcheck_runner import EpubCheckResult
+    import rules.bn_v1 as bn_rules
+
+    epub = _ctx()["artifact"]
+    calls = []
+
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult("valid")
+
+    monkeypatch.setattr(bn_rules, "run_epubcheck", check)
+    result = build_package(PackageRequest(channel="barnesnoble", editionConfig=EBOOK, bookModel=VALID,
+        artifactsBase64={"book.epub": base64.b64encode(epub).decode()}))
+    assert result["errors"] == 0
+    assert calls == [epub]
+
+
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
     assert result["ruleVersion"] == "core-1.0.17+kdp-1.6.0"
