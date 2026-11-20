@@ -48,6 +48,30 @@ def test_duplicate_contract_keys_are_not_silently_overwritten():
         load_contract("post:\n  responses: {200: first}\n  responses: {200: second}\n")
 
 
+def test_community_join_contract_distinguishes_recovery_from_a_fenced_close():
+    document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
+    root = "/v1/communities/{id}/join-operations"
+    for suffix, response in (("", "CommunityJoinTerminalOutcome"), ("/recover", "CommunityJoinRecoveryOutcome"), ("/close", "CommunityJoinTerminalOutcome")):
+        operation = document["paths"][root + suffix]["post"]
+        assert operation["requestBody"]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/CommunityJoinOperationRequest"}
+        assert operation["responses"]["200"] == {"$ref": "#/components/responses/" + response}
+        assert document["components"]["responses"][response]["headers"]["Cache-Control"]["schema"]["const"] == "private, no-store"
+        assert {"401", "409", "422", "503"} <= operation["responses"].keys()
+    request = Draft202012Validator({**document, "$ref": "#/components/schemas/CommunityJoinOperationRequest"}, format_checker=FormatChecker())
+    operation_id = "f4100000-0000-4000-8000-000000000101"
+    assert not list(request.iter_errors({"operationId": operation_id}))
+    for invalid in ({}, {"operationId": "bad"}, {"operationId": operation_id, "userId": operation_id}):
+        assert list(request.iter_errors(invalid))
+    terminal = Draft202012Validator({**document, "$ref": "#/components/schemas/CommunityJoinTerminalOutcome"})
+    recovery = Draft202012Validator({**document, "$ref": "#/components/schemas/CommunityJoinRecoveryOutcome"})
+    for valid in ({"state": "joined", "role": "member", "alreadyMember": False}, {"state": "rejected", "reason": "inactive"}, {"state": "closed"}):
+        assert not list(terminal.iter_errors(valid))
+        assert not list(recovery.iter_errors(valid))
+    assert list(terminal.iter_errors({"state": "not_seen"}))
+    assert not list(recovery.iter_errors({"state": "not_seen"}))
+    assert list(recovery.iter_errors({"state": "joined", "role": "member"}))
+
+
 def test_saved_pdf_pages_are_exact_bounded_private_reads_not_render_or_purchase_requests():
     document = load_contract((ROOT / "services/api/openapi.yaml").read_text(encoding="utf-8"))
     operation = document["paths"]["/v1/editions/{editionId}/print-renders/{jobId}/pages/{pageNumber}"]["get"]

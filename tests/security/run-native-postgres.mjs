@@ -24,6 +24,7 @@ import { renderCloseRaces } from './native-render-close.mjs';
 import { workspaceCreationReceiptRaces } from './native-workspace-creation-receipts.mjs';
 import { invitationRecoveryRaces } from './native-invitation-recovery.mjs';
 import { storyBlueprintQuoteClosureRaces } from './native-story-blueprint-quote-closure.mjs';
+import { communityJoinOperationRaces } from './native-community-join-operations.mjs';
 import { verifyAudiobookSegmentationFixtures } from './audiobook-segmentation-lifecycle.mjs';
 import { verifyNarrationQuoteFixtures, verifyNarrationChapterQuoteFixtures } from './narration-quote-lifecycle.mjs';
 import { verifyNarrationFundedFixtures } from './narration-funded-lifecycle.mjs';
@@ -629,6 +630,7 @@ try {
   await workspaceCreationReceiptRaces({ sql, session, until, database });
   await invitationRecoveryRaces({ sql, session, until, database });
   await storyBlueprintQuoteClosureRaces({ sql, session, until, database });
+  await communityJoinOperationRaces({ sql, session, until, database });
   await customerAiNativeComposition({ sql });
   await customerAiCompletionRaces({ sql, session, until, database });
   await customerAiPreparationRaces({ sql, session, until, database });

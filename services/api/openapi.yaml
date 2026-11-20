@@ -3789,6 +3789,87 @@ paths:
         "201": { description: Created, content: { application/json: { schema: { type: object } } } }
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /v1/communities/memberships:
+    get:
+      tags: [v1]
+      operationId: listCommunityMemberships
+      summary: Read the caller's complete current community membership snapshot
+      responses:
+        "200":
+          description: Current active and inactive memberships
+          headers: { Cache-Control: { schema: { type: string, const: 'private, no-store' } } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [memberships]
+                properties:
+                  memberships:
+                    type: array
+                    maxItems: 10000
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [communityId, active]
+                      properties:
+                        communityId: { type: string, format: uuid }
+                        active: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/communities/{id}/join-operations:
+    post:
+      tags: [v1]
+      operationId: requestCommunityJoin
+      summary: Join with a caller-scoped, recoverable operation identity
+      description: A joined receipt records this operation, not current membership. Read the membership snapshot for current access.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CommunityJoinOperationRequest" } } }
+      responses:
+        "200": { $ref: "#/components/responses/CommunityJoinTerminalOutcome" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/communities/{id}/join-operations/recover:
+    post:
+      tags: [v1]
+      operationId: recoverCommunityJoin
+      summary: Read the caller's original join receipt
+      description: not_seen is an observation and does not stop a request that is still in flight.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CommunityJoinOperationRequest" } } }
+      responses:
+        "200": { $ref: "#/components/responses/CommunityJoinRecoveryOutcome" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /v1/communities/{id}/join-operations/close:
+    post:
+      tags: [v1]
+      operationId: closeCommunityJoin
+      summary: Recover the original result or fence a join that has not arrived
+      description: Closing does not remove an existing membership; a late request with this identity cannot create one.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CommunityJoinOperationRequest" } } }
+      responses:
+        "200": { $ref: "#/components/responses/CommunityJoinTerminalOutcome" }
+        "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/communities/{id}/join:
     post:
       tags: [v1]
@@ -5093,6 +5174,40 @@ components:
             quoteId: { type: string, format: uuid }
             accepted: { type: boolean, const: false }
             project: { type: "null" }
+    CommunityJoinOperationRequest:
+      type: object
+      additionalProperties: false
+      required: [operationId]
+      properties:
+        operationId: { type: string, format: uuid }
+    CommunityJoinTerminalOutcome:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [state, role, alreadyMember]
+          properties:
+            state: { const: joined }
+            role: { type: string, minLength: 1, maxLength: 100 }
+            alreadyMember: { type: boolean }
+        - type: object
+          additionalProperties: false
+          required: [state, reason]
+          properties:
+            state: { const: rejected }
+            reason: { enum: [not_found, not_open, inactive] }
+        - type: object
+          additionalProperties: false
+          required: [state]
+          properties:
+            state: { const: closed }
+    CommunityJoinRecoveryOutcome:
+      oneOf:
+        - { $ref: "#/components/schemas/CommunityJoinTerminalOutcome" }
+        - type: object
+          additionalProperties: false
+          required: [state]
+          properties:
+            state: { const: not_seen }
     CommunityModerationReport:
       type: object
       additionalProperties: false
@@ -6092,6 +6207,14 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
   responses:
+    CommunityJoinTerminalOutcome:
+      description: The caller's completed join, rejection or closed request
+      headers: { Cache-Control: { schema: { type: string, const: 'private, no-store' } } }
+      content: { application/json: { schema: { $ref: "#/components/schemas/CommunityJoinTerminalOutcome" } } }
+    CommunityJoinRecoveryOutcome:
+      description: The caller's completed outcome or a request not yet observed
+      headers: { Cache-Control: { schema: { type: string, const: 'private, no-store' } } }
+      content: { application/json: { schema: { $ref: "#/components/schemas/CommunityJoinRecoveryOutcome" } } }
     AiConnectionMutation:
       description: Masked metadata for the confirmed revision and operation
       content:

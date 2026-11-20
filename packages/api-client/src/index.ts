@@ -798,6 +798,13 @@ export interface Community {
   created_at: string;
 }
 
+/** A joined receipt describes the original operation; refresh membership for its current status. */
+export type CommunityJoinOutcome =
+  | { state: "joined"; role: string; alreadyMember: boolean }
+  | { state: "rejected"; reason: "not_found" | "not_open" | "inactive" }
+  | { state: "closed" }
+  | { state: "not_seen" };
+
 export interface CommunityPost {
   id: string;
   community_id: string;
@@ -1370,6 +1377,12 @@ export function createClient(opts: ClientOptions) {
       call<Community>("POST", "/v1/communities", body),
     joinCommunity: (communityId: string) =>
       call<{ communityId: string; role: string; alreadyMember?: boolean }>("POST", `/v1/communities/${communityId}/join`),
+    requestCommunityJoin: (communityId: string, operationId: string) =>
+      call<CommunityJoinOutcome>("POST", `/v1/communities/${encodeURIComponent(communityId)}/join-operations`, { operationId }, false),
+    recoverCommunityJoin: (communityId: string, operationId: string) =>
+      call<CommunityJoinOutcome>("POST", `/v1/communities/${encodeURIComponent(communityId)}/join-operations/recover`, { operationId }, false),
+    closeCommunityJoin: (communityId: string, operationId: string) =>
+      call<CommunityJoinOutcome>("POST", `/v1/communities/${encodeURIComponent(communityId)}/join-operations/close`, { operationId }, false),
     listCommunityPosts: (communityId: string) =>
       call<{ posts: CommunityPost[]; role: string | null }>("GET", `/v1/communities/${communityId}/posts`),
     createCommunityPost: (communityId: string, body: { title?: string; body: string }) =>

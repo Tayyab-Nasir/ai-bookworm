@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 142 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 143 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -31,6 +31,7 @@ const aiConnectionConflictCode = '20261120022619_ai_connection_conflict_code.sql
 const workspaceCreationReceipts = '20261120024556_workspace_creation_receipts.sql';
 const invitationRecovery = '20261120050328_invitation_acceptance_recovery.sql';
 const blueprintQuoteClosure = '20261120110000_story_blueprint_quote_closure.sql';
+const communityJoinOperations = '20261120122447_community_join_operation_receipts.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -220,7 +221,7 @@ async function expectedInvitationRecoveryGuard(migration, fixture, historical, d
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 142, 'This reviewed rehearsal pins the 45 -> 142 target; review before extending');
+  assert.equal(names.length, 143, 'This reviewed rehearsal pins the 45 -> 143 target; review before extending');
   assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
   assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
@@ -243,7 +244,7 @@ try {
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
-  assert.deepEqual(names.slice(-10), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure]);
+  assert.deepEqual(names.slice(-11), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure, communityJoinOperations]);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
@@ -342,7 +343,23 @@ try {
       assert.equal(before.length, 2, 'Synthetic running and succeeded render jobs exist before upgrade');
       renderProbe = { edition, running, succeeded, before };
     }
+    let communityProbe = null;
+    if (migration.name === communityJoinOperations) {
+      const community = randomUUID(), owner = fixture.tenants[0].user, other = fixture.tenants[1].user;
+      await db.query("insert into public.communities(id,owner_user_id,name,slug,visibility) values($1,$2,'Historical community',$3,'public')", [community, owner, `historical-${community}`]);
+      await db.query("insert into public.community_members(community_id,user_id,role,status) values($1,$2,'owner','active'),($1,$3,'member','inactive')", [community, owner, other]);
+      const before = (await db.query('select to_jsonb(m) as value from public.community_members m where community_id=$1 order by user_id', [community])).rows;
+      const communityBefore = (await db.query('select to_jsonb(c) as value from public.communities c where id=$1', [community])).rows[0].value;
+      communityProbe = { community, before, communityBefore };
+    }
     await migrate(migration, 'upgrade');
+    if (communityProbe) {
+      assert.deepEqual((await db.query('select to_jsonb(m) as value from public.community_members m where community_id=$1 order by user_id', [communityProbe.community])).rows, communityProbe.before,
+        'Existing active and inactive community memberships survived unchanged');
+      assert.deepEqual((await db.query('select to_jsonb(c) as value from public.communities c where id=$1', [communityProbe.community])).rows[0].value, communityProbe.communityBefore);
+      await db.exec(await readFile(join(root, 'tests/security/community-join-operations.test.sql'), 'utf8'));
+      console.log('PASS populated community upgrade: existing visibility and memberships preserved; join receipts verified');
+    }
     if (invitationProbe) {
       const saved = async () => (await db.query('select to_jsonb(i) as value from public.workspace_invitations i where id=any($1::uuid[]) order by id', [invitationProbe.ids])).rows;
       assert.deepEqual(await saved(), invitationProbe.before, 'Existing invitation rows survived the upgrade unchanged');

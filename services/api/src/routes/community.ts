@@ -25,6 +25,41 @@ const reportSchema = z.object({
   reason: z.string().trim().min(1).max(1000),
 }).strict();
 
+const communityJoinIdentity = z.object({ operationId: z.string().uuid() }).strict();
+const communityJoinOutcome = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("joined"), role: z.string().min(1).max(100), alreadyMember: z.boolean() }).strict(),
+  z.object({ state: z.literal("rejected"), reason: z.enum(["not_found", "not_open", "inactive"]) }).strict(),
+  z.object({ state: z.literal("closed") }).strict(),
+  z.object({ state: z.literal("not_seen") }).strict(),
+]);
+
+async function communityJoinOperation(
+  app: FastifyInstance,
+  name: "request_community_join" | "read_community_join_operation" | "close_community_join_operation",
+  communityId: string,
+  userId: string,
+  operationId: string | null,
+) {
+  const svc = app.supabaseFactory(undefined, boundedSupabaseFetch(AbortSignal.timeout(10_000)));
+  let result;
+  try {
+    result = await svc.rpc(name, { p_community_id: communityId, p_user_id: userId, p_operation_id: operationId });
+  } catch {
+    throw new AppError(503, "The community join could not be confirmed. Check the original request before retrying.");
+  }
+  if (result.error) {
+    if (result.error.code === "23505") throw new AppError(409, "This join request belongs to another community.");
+    if (result.error.code === "54000") throw new AppError(429, "Too many community join requests. Try again later.");
+    if (result.error.code === "22P02") throw new AppError(404, "community not found");
+    throw new AppError(503, "The community join could not be confirmed. Check the original request before retrying.");
+  }
+  const parsed = communityJoinOutcome.safeParse(result.data);
+  if (!parsed.success || (name !== "read_community_join_operation" && parsed.data.state === "not_seen")) {
+    throw new AppError(503, "The community join could not be confirmed. Check the original request before retrying.");
+  }
+  return parsed.data;
+}
+
 // ponytail: in-memory fixed-window rate limits — per-instance, reset on
 // restart. Ceiling: multi-instance deploys under-count. Upgrade path: Redis
 // INCR + EXPIRE (REDIS_URL already in env) when running >1 API instance.
@@ -137,22 +172,36 @@ export function communityRoutes(app: FastifyInstance) {
     return reply.status(201).send(data);
   });
 
-  // Public communities are open-join. Private/unlisted need an owner/moderator
-  // to add the member — ponytail: no invites table; owner adds by userId,
-  // add an invitation flow when email infra lands.
+  // Legacy callers keep their existing response shape. Visibility and the
+  // insert are now checked under one database transaction.
   app.post("/communities/:id/join", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const svc = app.supabaseFactory();
-    const community = await getCommunity(svc, id);
-    const existing = await memberRole(svc, id, req.userId);
-    if (existing) return { communityId: id, role: existing, alreadyMember: true };
-    if (community.visibility !== "public") throw new AppError(403, "community is not open to join");
-    const { error } = await svc
-      .from("community_members")
-      .insert({ community_id: id, user_id: req.userId, role: "member", status: "active" });
-    if (error) throw new AppError(500, error.message);
-    return reply.status(201).send({ communityId: id, role: "member" });
+    const outcome = await communityJoinOperation(app, "request_community_join", id, req.userId, null);
+    if (outcome.state === "rejected") {
+      if (outcome.reason === "not_found") throw new AppError(404, "community not found");
+      throw new AppError(403, outcome.reason === "inactive" ? "community membership is inactive" : "community is not open to join");
+    }
+    if (outcome.state !== "joined") throw new AppError(503, "The community join could not be confirmed.");
+    return reply.status(outcome.alreadyMember ? 200 : 201).send({
+      communityId: id, role: outcome.role, ...(outcome.alreadyMember ? { alreadyMember: true } : {}),
+    });
   });
+
+  // A receipt is scoped to the verified caller. An absent receipt is only an
+  // observation; explicit closure is the operation that fences a late join.
+  for (const [path, name] of [
+    ["/communities/:id/join-operations", "request_community_join"],
+    ["/communities/:id/join-operations/recover", "read_community_join_operation"],
+    ["/communities/:id/join-operations/close", "close_community_join_operation"],
+  ] as const) {
+    app.post(path, async (req, reply) => {
+      reply.header("cache-control", "private, no-store");
+      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const identity = communityJoinIdentity.safeParse(req.body);
+      if (!id.success || !identity.success) throw new AppError(422, "A community and original join request are required.");
+      return communityJoinOperation(app, name, id.data, req.userId, identity.data.operationId);
+    });
+  }
 
   // Owner/moderator adds a member (private-community invite path).
   app.post("/communities/:id/members", async (req, reply) => {

@@ -30,6 +30,18 @@ const TOKENS: Record<string, string> = { good: "user-1", other: "user-2", admin:
 function fakeSupabase(store: Store, token?: string) {
   const client = {
     rpc: async (name: string, params: Row) => {
+      if (name === "request_community_join" && !store.rpc) {
+        const community = store.tables.communities?.find(row => row.id === params.p_community_id);
+        if (!community) return { data: { state: "rejected", reason: "not_found" }, error: null };
+        const rows = (store.tables.community_members ??= []);
+        const member = rows.find(row => row.community_id === params.p_community_id && row.user_id === params.p_user_id);
+        if (member) return { data: member.status === "active"
+          ? { state: "joined", role: member.role, alreadyMember: true }
+          : { state: "rejected", reason: "inactive" }, error: null };
+        if (community.visibility !== "public") return { data: { state: "rejected", reason: "not_open" }, error: null };
+        rows.push({ community_id: params.p_community_id, user_id: params.p_user_id, role: "member", status: "active" });
+        return { data: { state: "joined", role: "member", alreadyMember: false }, error: null };
+      }
       if (name === "community_moderation_queue" && !store.rpc) {
         const communityIds = store.tables.community_members?.filter(row => row.user_id === TOKENS[token ?? ""]
           && row.status === "active" && ["owner","moderator"].includes(String(row.role))).map(row => row.community_id) ?? [];
