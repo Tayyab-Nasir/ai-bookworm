@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 139 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 140 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -28,6 +28,7 @@ const renderProofCompletion = '20261118194054_publishing_render_proof_completion
 const savedPrintPreflight = '20261119172907_saved_print_preflight_binding.sql';
 const uploadedPaperbackCover = '20261119193430_uploaded_paperback_cover.sql';
 const aiConnectionConflictCode = '20261120022619_ai_connection_conflict_code.sql';
+const workspaceCreationReceipts = '20261120024556_workspace_creation_receipts.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -170,10 +171,31 @@ async function expectedAiConnectionConflictGuard(migration, fixture, historical,
   console.log(`PASS AI connection conflict definition drift and rollback ${signature}`);
 }
 
+async function expectedWorkspaceCreationGuard(migration, fixture, historical, drift) {
+  step = `expected workspace onboarding ${drift} guard`;
+  const signature = 'public.create_workspace_with_owner(text,text,text)';
+  await db.exec('begin;');
+  try {
+    const original = (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition;
+    if (drift === 'body') {
+      const altered = original.replace('v_name text := btrim(p_name);', 'v_name text := btrim(p_name); -- synthetic drift');
+      assert.notEqual(altered, original);
+      await db.exec(altered);
+    } else await db.exec(`grant execute on function ${signature} to anon;`);
+    await db.exec('savepoint workspace_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001'
+      && error.message === 'Workspace onboarding requires the reviewed legacy function and privileges');
+    await db.exec('rollback to savepoint workspace_guard;');
+    assert.equal((await db.query("select to_regclass('bookworm_private.workspace_creation_receipts') as target")).rows[0].target, null);
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS workspace onboarding ${drift} drift and rollback`);
+}
+
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 139, 'This reviewed rehearsal pins the 45 -> 139 target; review before extending');
+  assert.equal(names.length, 140, 'This reviewed rehearsal pins the 45 -> 140 target; review before extending');
   assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
   assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
@@ -196,7 +218,7 @@ try {
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
-  assert.deepEqual(names.slice(-7), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode]);
+  assert.deepEqual(names.slice(-8), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts]);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
@@ -217,6 +239,9 @@ try {
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Pre-upgrade authorization probes are non-mutating');
   console.log(`PASS committed baseline: two tenants, four profiles, historical versions, rich nodes, memberships, quarantined/trusted assets, ledger balances and uncertain Stripe receipts; ${Object.keys(historical).length} preserved relation projections`);
   for (const migration of migrations.slice(45)) {
+    if (migration.name === workspaceCreationReceipts) {
+      for (const drift of ['body', 'privileges']) await expectedWorkspaceCreationGuard(migration, fixture, historical, drift);
+    }
     if (migration.name === aiConnectionConflictCode) {
       for (const signature of ['public.mutate_ai_connection(uuid,text,uuid,integer,uuid,text,text,text,text,text,text)', 'public.recover_ai_connection_operation(uuid,text,uuid,integer,uuid,text,boolean)']) {
         await expectedAiConnectionConflictGuard(migration, fixture, historical, signature);
@@ -484,7 +509,7 @@ try {
       : typeof value === 'boolean' ? value ? 't' : 'f' : String(value);
   });
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Reused paid lifecycle fixtures roll back without changing historical rows');
-  console.log(`PASS populated upgrade: 45 historical migrations + committed rows + ${migrations.length - 45} upgrades + nine guarded aborts + reused synthetic paid lifecycle helpers.`);
+  console.log(`PASS populated upgrade: 45 historical migrations + committed rows + ${migrations.length - 45} upgrades + eleven guarded aborts + reused synthetic paid lifecycle helpers.`);
   console.log('NOT PROVEN: hosted history/drift, real backup/restore, native concurrency, GoTrue/PostgREST/Storage HTTP, provider receipts, worker drain or production rollout authority.');
 } catch (error) {
   // Never print SQL, function definitions, row contents or raw database error detail.

@@ -891,6 +891,32 @@ export type ChapterRestoreStatus = {
   chapterId: string; targetVersionId: string; operationId: string; expectedVersion: number;
 } & ({ status: "not_found" } | { status: "saved"; version: number; versionId: string; document: ChapterDocument });
 
+export type WorkspaceCreationReceipt = { operationId: string } & (
+  | { status: "created"; workspaceId: string }
+  | { status: "not_found" | "pending" | "closed"; workspaceId: null }
+);
+const workspaceCreationUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
+function workspaceCreationObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Workspace request could not be verified.");
+  return value as Record<string, unknown>;
+}
+function workspaceCreationResult(value: unknown, actor: string, operationId: string) {
+  const result = workspaceCreationObject(value), workspace = workspaceCreationObject(result.workspace);
+  if (!workspaceCreationUuid.test(actor) || !workspaceCreationUuid.test(operationId) || result.viewerId !== actor || result.operationId !== operationId
+    || typeof workspace.id !== "string" || !workspaceCreationUuid.test(workspace.id) || workspace.created_by !== actor) {
+    throw new Error("Workspace creation could not be confirmed. Check the original request.");
+  }
+  return { viewerId: actor, operationId, workspace: workspace as unknown as Workspace };
+}
+function workspaceCreationStatus(value: unknown, actor: string, operationId: string, close: boolean): WorkspaceCreationReceipt {
+  const result = workspaceCreationObject(value), receipt = workspaceCreationObject(result.receipt);
+  if (!workspaceCreationUuid.test(actor) || !workspaceCreationUuid.test(operationId) || result.viewerId !== actor || receipt.operationId !== operationId
+    || !["not_found", "pending", "created", "closed"].includes(String(receipt.status))
+    || (receipt.status === "created" ? typeof receipt.workspaceId !== "string" || !workspaceCreationUuid.test(receipt.workspaceId) : receipt.workspaceId !== null)
+    || (close && receipt.status === "not_found")) throw new Error("Workspace request status could not be verified.");
+  return receipt as WorkspaceCreationReceipt;
+}
+
 function accountResult<T extends { viewerId?: string }>(value: T, expectedActor?: string): T {
   if (expectedActor) {
     const result = value as T & { requests?: unknown; tickets?: unknown; request?: unknown; ticket?: unknown };
@@ -967,6 +993,12 @@ export function createClient(opts: ClientOptions) {
         .then(value => parseAiConnectionMutation(value, expectedActor, provider, body, "revoke")),
     listWorkspaces: (expectedActorId?: string) => call<{ workspaces: Workspace[] }>("GET", "/v1/workspaces", undefined, true,
       expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
+    createOnboardingWorkspace: (body: { name: string; operationId: string }, expectedActor: string, signal?: AbortSignal) =>
+      call<unknown>("POST", "/v1/workspaces/onboarding", body, false, { "x-bookworm-actor": expectedActor }, signal)
+        .then(value => workspaceCreationResult(value, expectedActor, body.operationId)),
+    recoverWorkspaceCreation: (operationId: string, expectedActor: string, close = false, signal?: AbortSignal) =>
+      call<unknown>("POST", `/v1/workspaces/onboarding/${close ? "close" : "check"}`, { operationId }, false, { "x-bookworm-actor": expectedActor }, signal)
+        .then(value => workspaceCreationStatus(value, expectedActor, operationId, close)),
     getDashboardOverview: (workspaceId: string, expectedActorId?: string) =>
       call<DashboardOverview>("GET", `/v1/dashboard?workspaceId=${encodeURIComponent(workspaceId)}`, undefined, true,
         expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),

@@ -71,6 +71,8 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
   const helperExports = {};
   const compile = (source: string) => ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   vm.runInNewContext(compile(readFileSync(resolve("apps/web/lib/workspace-selection.ts"), "utf8")), { exports: helperExports, window, URL });
+  const workspaceCreationRecovery = {};
+  vm.runInNewContext(compile(readFileSync(resolve("apps/web/lib/workspace-creation-recovery.ts"), "utf8")), { exports: workspaceCreationRecovery, sessionStorage: window.sessionStorage });
   const pure = (file: string) => { const exports = {}; vm.runInNewContext(compile(readFileSync(resolve(file), "utf8")), { exports }); return exports; };
   const artwork = pure("apps/web/lib/approved-artwork.ts"); const csv = pure("apps/web/lib/sales-csv.ts");
   const browserSession = {};
@@ -92,6 +94,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name === "next/link") return { default: "Link" };
     if (name === "next/navigation") return { useSearchParams: () => new URLSearchParams(window.location.search), useRouter: () => ({ push() {} }), usePathname: () => new URL(window.location.href).pathname };
     if (name.endsWith("/workspace-selection")) return helperExports;
+    if (name.endsWith("/workspace-creation-recovery")) return workspaceCreationRecovery;
     if (name.endsWith("/book-route-id")) return pure("apps/web/lib/book-route-id.ts");
     if (name.endsWith("/job-link")) return { jobLink };
     if (name.endsWith("/api")) return { apiClient: () => api };

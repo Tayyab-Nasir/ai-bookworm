@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { ApiClientError, type DashboardOverview, type DashboardRecentJob } from "@bookworm/api-client";
+import { type DashboardOverview, type DashboardRecentJob } from "@bookworm/api-client";
 import type { Book, Workspace } from "@bookworm/types";
 import { apiClient } from "./api";
 import { AuthorHeader } from "./AuthorShell";
 import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../lib/workspace-selection";
 import { jobLink } from "../lib/job-link";
 import { readBrowserSession } from "../lib/browser-session";
+import { clearPendingWorkspaceCreation, readPendingWorkspaceCreation, savePendingWorkspaceCreation } from "../lib/workspace-creation-recovery";
 
 function statusLabel(status: Book["status"]) {
   return status.replace("_", " ");
@@ -47,7 +48,7 @@ export function activityLabel(eventType: string) {
 
 type WorkspaceCreation =
   | { kind: "created"; actor: string; workspaceId: string }
-  | { kind: "unconfirmed"; actor: string; checked: boolean };
+  | { kind: "unconfirmed"; actor: string; operationId: string; checked: boolean };
 
 export default function AuthorDashboard() {
   const api = apiClient();
@@ -90,6 +91,9 @@ export default function AuthorDashboard() {
       const account = await readBrowserSession();
       if (!current()) return;
       checkingActor = account.id;
+      let pendingOperation: string | null = null, recoveryStorageError: string | null = null;
+      try { pendingOperation = readPendingWorkspaceCreation(account.id); }
+      catch (reason) { recoveryStorageError = reason instanceof Error ? reason.message : "Workspace recovery storage is unavailable."; }
       const spaces = await api.listWorkspaces(account.id);
       if (!current()) return;
       // Keep unavailable explicit selections recoverable, but do not expose even
@@ -111,11 +115,11 @@ export default function AuthorDashboard() {
       setVerifiedActor(account.id);
       setWorkspaces(spaces.workspaces);
       setCreation((outcome) => {
-        if (!outcome || outcome.actor !== account.id) return null;
-        if (outcome.kind === "created") return selected?.id === outcome.workspaceId ? null : outcome;
-        if (selected) return null;
-        // Only a read begun for this outcome can establish a checked empty list.
-        return recovery === outcome && !selectionError ? { ...outcome, checked: true } : outcome;
+        if (outcome?.actor === account.id && outcome.kind === "created") return selected?.id === outcome.workspaceId ? null : outcome;
+        if (recoveryStorageError) return outcome?.actor === account.id ? outcome : null;
+        if (!pendingOperation) return null;
+        return { kind: "unconfirmed", actor: account.id, operationId: pendingOperation,
+          checked: outcome?.actor === account.id && outcome.kind === "unconfirmed" && outcome.operationId === pendingOperation && outcome.checked };
       });
       if (selectionError) throw selectionError;
       loadedAccount.current = account.id;
@@ -123,6 +127,7 @@ export default function AuthorDashboard() {
       formAccount.current = account.id;
       if (!selected) {
         requestedWorkspace.current = null;
+        if (recoveryStorageError) setError(recoveryStorageError);
         return;
       }
 
@@ -131,7 +136,7 @@ export default function AuthorDashboard() {
       setWorkspace(selected);
       setBooks(result!.books);
       setOverview(result);
-      setError(null);
+      setError(recoveryStorageError);
       rememberWorkspace(spaces.workspaces, selected.id);
     } catch (reason) {
       // A failed dashboard read is independent of a confirmed workspace save.
@@ -150,7 +155,7 @@ export default function AuthorDashboard() {
   async function createWorkspace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const actor = verifiedActor;
-    if (!actor || loadedAccount.current !== actor || createFlight.current || creation?.actor === actor) return;
+    if (!actor || error || loadedAccount.current !== actor || createFlight.current || creation?.actor === actor) return;
     const flight = {};
     createFlight.current = flight;
     setCreating(true); setError(null);
@@ -162,21 +167,55 @@ export default function AuthorDashboard() {
     try {
       await readBrowserSession(actor);
       if (!current()) return;
+      const operationId = crypto.randomUUID();
+      savePendingWorkspaceCreation(actor, operationId);
+      setCreation({ kind: "unconfirmed", actor, operationId, checked: false });
       dispatched = true;
-      const created = await api.createWorkspace({ name }, actor);
+      const created = await api.createOnboardingWorkspace({ name, operationId }, actor, AbortSignal.timeout(15_000));
       if (!ownsFlight()) return;
-      if (typeof created?.id !== "string" || !created.id) throw new Error("Workspace creation did not return an ID.");
-      const outcome: WorkspaceCreation = { kind: "created", actor, workspaceId: created.id };
+      const outcome: WorkspaceCreation = { kind: "created", actor, workspaceId: created.workspace.id };
       setCreation(outcome);
+      clearPendingWorkspaceCreation(actor, operationId);
       await load(undefined, outcome);
     } catch (reason) {
       if (!ownsFlight()) return;
-      const rejected = reason instanceof ApiClientError && ([401, 403, 422].includes(reason.status)
-        || (reason.status === 409 && reason.code === "auth_error"));
-      if (dispatched && !rejected) setCreation({ kind: "unconfirmed", actor, checked: false });
-      else if (current()) setError(reason instanceof Error ? reason.message : "Workspace creation failed. Reload before trying again.");
+      if (!dispatched && current()) setError(reason instanceof Error ? reason.message : "Workspace creation failed. Reload before trying again.");
     }
     finally {
+      if (createFlight.current === flight) {
+        createFlight.current = null;
+        if (mounted.current) setCreating(false);
+      }
+    }
+  }
+
+  async function recoverCreation(close: boolean) {
+    const outcome = creation, actor = verifiedActor;
+    if (!actor || outcome?.kind !== "unconfirmed" || outcome.actor !== actor || loading || createFlight.current) return;
+    const flight = {}, request = currentLoad.current;
+    createFlight.current = flight; setCreating(true); setError(null);
+    const current = () => mounted.current && createFlight.current === flight && currentLoad.current === request;
+    try {
+      await readBrowserSession(actor);
+      if (!current()) return;
+      const receipt = await api.recoverWorkspaceCreation(outcome.operationId, actor, close, AbortSignal.timeout(15_000));
+      await readBrowserSession(actor);
+      if (!current()) return;
+      if (receipt.status === "created") {
+        const confirmed: WorkspaceCreation = { kind: "created", actor, workspaceId: receipt.workspaceId };
+        setCreation(confirmed);
+        clearPendingWorkspaceCreation(actor, outcome.operationId);
+        await load(undefined, confirmed);
+      } else if (receipt.status === "closed") {
+        clearPendingWorkspaceCreation(actor, outcome.operationId);
+        setCreation(null);
+        await load();
+      } else {
+        setCreation({ ...outcome, checked: true });
+      }
+    } catch {
+      if (current()) setError("Workspace request status is unavailable. Check again before starting another request.");
+    } finally {
       if (createFlight.current === flight) {
         createFlight.current = null;
         if (mounted.current) setCreating(false);
@@ -199,7 +238,7 @@ export default function AuthorDashboard() {
   }, [load]);
 
   const visibleCreation = !loading && creation?.actor === verifiedActor ? creation : null;
-  const checkCreation = !workspace && visibleCreation?.kind === "unconfirmed" ? visibleCreation : null;
+  const checkCreation = visibleCreation?.kind === "unconfirmed" ? visibleCreation : null;
   const reload = () => void load(undefined, visibleCreation ?? undefined);
   const createHref = workspace?.id ? `/books/new?ws=${encodeURIComponent(workspace.id)}` : "/books/new";
   const usageMeters = [
@@ -256,12 +295,15 @@ export default function AuthorDashboard() {
 
       {checkCreation && <section aria-labelledby="check-workspace-creation" className="mt-8 rounded-2xl border border-white/15 bg-white/[0.035] p-6">
         <h2 id="check-workspace-creation" className="text-2xl tracking-tight">Check workspace creation</h2>
-        <p role="status" className="mt-2 text-sm leading-6 text-[#ccc]">{checkCreation.checked && !error
-          ? "No workspace is visible yet. The earlier request may still finish. Check again or return to setup to start a new attempt."
-          : "We could not confirm whether your workspace was created. Check your saved workspaces before starting another attempt."}</p>
+        <p role="status" className="mt-2 text-sm leading-6 text-[#ccc]">{creating
+          ? "Your workspace request is being checked. Please wait."
+          : checkCreation.checked && !error
+          ? "The request is not confirmed yet and may still finish. Check again or close it before starting another request."
+          : "We could not confirm whether your workspace was created. Check this request before starting another."}</p>
+        <p className="mt-2 text-sm leading-6 text-[#aaa]">Closing stops this request if it has not finished. If it already created a workspace, we will open it instead.</p>
         <div className="mt-4 flex flex-wrap gap-3">
-          <button type="button" onClick={reload} className="glass-solid min-h-11 rounded-full px-5 text-sm font-semibold text-black">Check saved workspaces</button>
-          {checkCreation.checked && !error && <button type="button" onClick={() => setCreation(null)} className="glass-ghost min-h-11 rounded-full px-5 text-sm font-medium text-white">Return to setup</button>}
+          <button type="button" disabled={creating} onClick={() => void recoverCreation(false)} className="glass-solid min-h-11 rounded-full px-5 text-sm font-semibold text-black disabled:opacity-50">Check request status</button>
+          <button type="button" disabled={creating} onClick={() => void recoverCreation(true)} className="glass-ghost min-h-11 rounded-full px-5 text-sm font-medium text-white disabled:opacity-50">Close unconfirmed request</button>
         </div>
       </section>}
 

@@ -48,7 +48,8 @@ async function fixture(mode = "dashboard", strict = false, empty = false) {
       listWorkspaces: async expected => { window.reads.push({ method: "list", expected }); return { workspaces: empty ? [] : [{ id: A, name: "Shared studio" }] }; },
       getDashboardOverview: async (_workspace, expected) => { window.reads.push({ method: "overview", expected }); return window.overview(expected); },
       adminAccess: async expected => { window.reads.push({ method: "admin", expected }); if (expected !== A) throw window.denied(); return { admin: true, viewerId: expected }; },
-      createWorkspace: async (body, expected) => { window.calls.push({ method: "create", body, expected }); return { id: A }; },
+      createOnboardingWorkspace: async (body, expected) => { window.calls.push({ method: "create", body, expected }); return { viewerId: expected, operationId: body.operationId, workspace: { id: A, created_by: expected } }; },
+      recoverWorkspaceCreation: async (operationId, expected, close) => { window.reads.push({ method: close ? "close" : "check", expected, operationId }); return { operationId, status: close ? "closed" : "not_found", workspaceId: null }; },
     };
   }, { A, B, empty });
   await page.addScriptTag({ content: bundle.outputFiles[0].text });
@@ -133,14 +134,16 @@ test("workspace form keeps its same-account draft, resets it for another account
   try {
     await page.getByLabel("Workspace name", { exact: true }).fill("Unsaved studio name");
     await focus(page); await expect(page.getByLabel("Workspace name", { exact: true })).toHaveValue("Unsaved studio name");
-    await page.evaluate(() => { window.api.createWorkspace = (body, expected) => { window.calls.push({ body, expected }); return window.defer("create"); }; });
+    await page.evaluate(() => { window.api.createOnboardingWorkspace = (body, expected) => { window.calls.push({ body, expected }); return window.defer("create"); }; });
     // Duplicate synchronous submissions must not get distinct idempotency keys.
     await page.locator("form").evaluate(form => { form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     await page.waitForFunction(() => !!window.gates.create);
-    assert.deepEqual(await page.evaluate(() => window.calls), [{ body: { name: "Unsaved studio name" }, expected: A }]);
+    const calls = await page.evaluate(() => window.calls);
+    assert.equal(calls.length, 1); assert.equal(calls[0].body.name, "Unsaved studio name"); assert.equal(calls[0].expected, A);
+    assert.match(calls[0].body.operationId, /^[a-f0-9-]{36}$/u);
     await page.evaluate(() => { window.actor = window.ids.B; window.dispatchEvent(new Event("focus")); });
     await expect(page.getByLabel("Workspace name", { exact: true })).toHaveValue("My publishing studio");
-    await page.evaluate(() => window.gates.create.resolve({ id: "33333333-3333-4333-8333-333333333333" }));
+    await page.evaluate(() => window.gates.create.resolve({ workspace: { id: "33333333-3333-4333-8333-333333333333" } }));
     await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeEnabled();
     assert.equal(await page.evaluate(() => new URL(location.href).searchParams.has("ws")), false);
     assert.equal(await page.evaluate(() => window.calls.length), 1);
@@ -165,20 +168,20 @@ test("a same-account focus read that raced creation rechecks the library before 
     await page.evaluate(() => {
       window.created = false;
       window.api.listWorkspaces = async () => ({ workspaces: window.created ? [{ id: window.ids.A, name: "Created studio" }] : [] });
-      window.api.createWorkspace = (body, expected) => { window.calls.push({ body, expected }); return window.defer("create"); };
+      window.api.createOnboardingWorkspace = (body, expected) => { window.calls.push({ body, expected }); return window.defer("create"); };
     });
     await page.getByRole("button", { name: "Create workspace", exact: true }).click();
     await page.waitForFunction(() => !!window.gates.create);
     await focus(page);
-    await expect(page.getByRole("button", { name: "Creating…", exact: true })).toBeDisabled();
-    await page.evaluate(() => { window.created = true; window.gates.create.resolve({ id: window.ids.A }); });
+    await expect(page.getByRole("button", { name: "Check request status", exact: true })).toBeDisabled();
+    await page.evaluate(() => { window.created = true; window.gates.create.resolve({ workspace: { id: window.ids.A } }); });
     await expect(heading(page, "A")).toBeVisible();
     await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toHaveCount(0);
     assert.equal(await page.evaluate(() => window.calls.length), 1);
   } finally { await page.close(); }
 });
 
-test("an unconfirmed workspace creation stays unresolved after an empty check and can recover without another write", async () => {
+test("an unconfirmed workspace creation survives remount and recovers its exact receipt without another write", async () => {
   const page = await fixture("dashboard", false, true);
   try {
     await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeVisible();
@@ -189,30 +192,102 @@ test("an unconfirmed workspace creation stays unresolved after an empty check an
         if (window.readUnavailable) throw new Error("Workspace list unavailable");
         return { workspaces: window.created ? [{ id: window.ids.A, name: "Saved studio" }] : [] };
       };
-      window.api.createWorkspace = async (body, expected) => {
+      window.api.createOnboardingWorkspace = async (body, expected) => {
         window.calls.push({ body, expected });
         throw new TypeError("Connection lost before reply");
       };
+      window.api.recoverWorkspaceCreation = async (operationId, expected, close) => {
+        window.reads.push({ method: close ? "close" : "check", expected, operationId });
+        if (window.readUnavailable) throw new Error("Receipt unavailable");
+        return { operationId, status: window.created ? "created" : "not_found", workspaceId: window.created ? window.ids.A : null };
+      };
     });
     await page.getByRole("button", { name: "Create workspace", exact: true }).click();
-    const recovery = page.getByRole("region", { name: "Check workspace creation" });
+    let recovery = page.getByRole("region", { name: "Check workspace creation" });
     await expect(recovery).toContainText("could not confirm whether your workspace was created");
-    await expect(recovery.getByRole("button", { name: "Return to setup" })).toHaveCount(0);
-    await recovery.getByRole("button", { name: "Check saved workspaces" }).click();
-    await expect(recovery).toContainText("No workspace is visible yet");
+    const saved = await page.evaluate(() => Object.values(sessionStorage));
+    assert.equal(saved.length, 1); assert.match(saved[0], /^[a-f0-9-]{36}$/u); assert(!saved[0].includes("My publishing studio"));
+    await page.evaluate(() => window.unmount()); await expect(recovery).toHaveCount(0);
+    await page.evaluate(() => window.mount());
+    recovery = page.getByRole("region", { name: "Check workspace creation" });
+    await expect(recovery).toBeVisible();
+    await recovery.getByRole("button", { name: "Check request status" }).click();
+    await expect(recovery).toContainText("request is not confirmed yet");
     await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toHaveCount(0);
     await expect(page.getByRole("link", { name: "Add a book", exact: true })).toHaveCount(0);
     await page.evaluate(() => { window.readUnavailable = true; });
-    await recovery.getByRole("button", { name: "Check saved workspaces" }).click();
-    await expect(page.getByRole("alert")).toContainText("Workspace list unavailable");
-    await expect(recovery.getByRole("button", { name: "Return to setup" })).toHaveCount(0);
+    await recovery.getByRole("button", { name: "Check request status" }).click();
+    await expect(page.getByRole("alert")).toContainText("status is unavailable");
     await page.evaluate(() => { window.created = true; window.readUnavailable = false; });
-    await recovery.getByRole("button", { name: "Check saved workspaces" }).click();
+    await recovery.getByRole("button", { name: "Check request status" }).click();
     await expect(heading(page, "A")).toBeVisible();
     await expect(page.getByRole("link", { name: "Add a book", exact: true })).toHaveAttribute("href", `/books/new?ws=${A}`);
     await expect(recovery).toHaveCount(0);
-    assert.deepEqual(await page.evaluate(() => window.calls), [{ body: { name: "My publishing studio" }, expected: A }]);
+    assert.equal((await page.evaluate(() => window.calls)).length, 1);
+    assert.deepEqual(await page.evaluate(() => Object.values(sessionStorage)), []);
     assert((await page.evaluate(() => window.reads.filter(read => read.method === "list"))).every(read => read.expected === A));
+  } finally { await page.close(); }
+});
+
+test("closing an unconfirmed workspace request is explicit and permits a new attempt only after confirmation", async () => {
+  const page = await fixture("dashboard", false, true);
+  try {
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeVisible();
+    await page.evaluate(() => { window.api.createOnboardingWorkspace = async (body, expected) => { window.calls.push({ body, expected }); throw new Error("reply lost"); }; });
+    await page.getByRole("button", { name: "Create workspace", exact: true }).click();
+    const recovery = page.getByRole("region", { name: "Check workspace creation" });
+    await expect(recovery).toBeVisible();
+    await recovery.getByRole("button", { name: "Close unconfirmed request" }).click();
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeEnabled();
+    assert.equal((await page.evaluate(() => window.calls)).length, 1);
+    const close = await page.evaluate(() => window.reads.find(read => read.method === "close"));
+    const original = await page.evaluate(() => window.calls[0].body.operationId);
+    assert.deepEqual(close, { method: "close", expected: A, operationId: original });
+    assert.deepEqual(await page.evaluate(() => Object.values(sessionStorage)), []);
+  } finally { await page.close(); }
+});
+
+test("an account switch while checking a workspace receipt never exposes or clears the previous account's request", async () => {
+  const page = await fixture("dashboard", false, true);
+  try {
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeVisible();
+    await page.evaluate(() => {
+      window.api.createOnboardingWorkspace = async (body, expected) => { window.calls.push({ body, expected }); throw new Error("reply lost"); };
+      window.api.recoverWorkspaceCreation = () => window.defer("receipt");
+    });
+    await page.getByRole("button", { name: "Create workspace", exact: true }).click();
+    await page.getByRole("button", { name: "Check request status" }).click();
+    await page.waitForFunction(() => !!window.gates.receipt);
+    await page.evaluate(() => { window.actor = window.ids.B; window.dispatchEvent(new Event("focus")); });
+    await expect(page.getByRole("button", { name: "Creating…", exact: true })).toBeDisabled();
+    await page.evaluate(() => window.gates.receipt.resolve({ status: "created", workspaceId: window.ids.A }));
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeEnabled();
+    await expect(page.getByText("Your workspace was created", { exact: false })).toHaveCount(0);
+    await page.evaluate(() => { window.actor = window.ids.A; window.dispatchEvent(new Event("focus")); });
+    await expect(page.getByRole("region", { name: "Check workspace creation" })).toBeVisible();
+    assert.equal((await page.evaluate(() => window.calls)).length, 1);
+  } finally { await page.close(); }
+});
+
+test("workspace creation does not dispatch if the recovery pointer cannot be stored", async () => {
+  const page = await fixture("dashboard", false, true);
+  try {
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeVisible();
+    await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("Storage blocked"); }; });
+    await page.getByRole("button", { name: "Create workspace", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("No workspace was submitted");
+    assert.deepEqual(await page.evaluate(() => window.calls), []);
+  } finally { await page.close(); }
+});
+
+test("unavailable recovery storage does not hide an existing verified workspace", async () => {
+  const page = await fixture();
+  try {
+    await expect(heading(page, "A")).toBeVisible();
+    await page.evaluate(() => { Storage.prototype.getItem = () => { throw new Error("Storage blocked"); }; window.dispatchEvent(new Event("focus")); });
+    await expect(page.getByRole("alert")).toContainText("Workspace recovery storage is unavailable");
+    await expect(heading(page, "A")).toBeVisible();
+    assert.deepEqual(await page.evaluate(() => window.calls), []);
   } finally { await page.close(); }
 });
 
@@ -223,10 +298,10 @@ test("a confirmed workspace creation survives an unavailable dashboard and stays
     await page.evaluate(() => {
       window.created = false;
       window.api.listWorkspaces = async expected => ({ workspaces: window.created && expected === window.ids.A ? [{ id: window.ids.A, name: "Saved studio" }] : [] });
-      window.api.createWorkspace = async (body, expected) => {
+      window.api.createOnboardingWorkspace = async (body, expected) => {
         window.calls.push({ body, expected });
         window.created = true;
-        return { id: window.ids.A };
+        return { workspace: { id: window.ids.A } };
       };
       window.api.getDashboardOverview = async () => { throw new Error("Dashboard is temporarily unavailable"); };
     });
