@@ -54,6 +54,8 @@ test("pipeline links use saved scope, exact AI review IDs, and existing studios 
   for (const destination of ["memory", "publish", "translate", "plan", "overview"] as const) assert.equal(jobLink({ id, bookId, kind: "ai", destination }, workspace), `/books/${bookId}/${destination}`);
   assert.equal(jobLink({ id, bookId: null, kind: "ai", destination: "assets" }, workspace), `/assets?ws=${workspace}`);
   assert.equal(jobLink({ id, bookId, kind: "audiobook_export", destination: "publish" }, workspace), `/books/${bookId}/publish`);
+  assert.equal(jobLink({ id, bookId, kind: "publishing", destination: "retailer_package" }, workspace), `/books/${bookId}/publish?packageJob=${id}`);
+  assert.equal(jobLink({ id, bookId, kind: "ai", destination: "retailer_package" }, workspace), null);
   assert.equal(jobLink({ id, bookId: null, kind: "publishing", destination: "publish" }, workspace), null);
   for (const bad of ["https://other.invalid", "../foreign", "", "<script>"]) {
     assert.equal(jobLink({ id: bad, bookId, kind: "ai", destination: "editor" }, workspace), null);

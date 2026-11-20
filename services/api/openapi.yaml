@@ -3627,7 +3627,7 @@ paths:
                       properties:
                         id: { type: string, format: uuid }
                         kind: { type: string, enum: [import, ai, publishing, audiobook_export] }
-                        destination: { type: string, enum: [editor, memory, publish, translate, plan, assets, overview] }
+                        destination: { type: string, enum: [editor, memory, publish, translate, plan, assets, overview, retailer_package] }
                         label: { type: string }
                         status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
                         bookId: { type: [string, "null"], format: uuid }
@@ -6187,7 +6187,7 @@ components:
               status: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
               createdAt: { type: string, format: date-time }
               completedAt: { type: [string, 'null'], format: date-time }
-              destination: { type: string, enum: [editor, memory, publish, translate] }
+              destination: { type: string, enum: [editor, memory, publish, translate, retailer_package] }
     Book:
       type: object
       required: [id, workspace_id, title, author_name, language, status, created_by, created_at, updated_at]

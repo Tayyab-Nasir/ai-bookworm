@@ -1,5 +1,5 @@
 export type JobKind = "import" | "ai" | "publishing" | "audiobook_export";
-export type JobDestination = "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview";
+export type JobDestination = "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview" | "retailer_package";
 
 const agents: Record<string, readonly [string, JobDestination]> = {
   writer: ["AI writing", "editor"], proofreader: ["Proofreading", "editor"], copyeditor: ["Copy editing", "editor"],
@@ -12,7 +12,10 @@ const agents: Record<string, readonly [string, JobDestination]> = {
 /** Labels and destinations are allowlisted; never derive them from private job payloads or errors. */
 export function jobSummary(kind: JobKind, row: { agent_type?: string; action?: string | null }) {
   const agent = row.agent_type ?? "", action = row.action ?? "";
-  const actions: Record<string, string> = { render: "Edition render", validate: "Channel preflight", preflight: "Channel preflight", export_package: "Retailer package" };
+  if (kind === "publishing" && action === "export_package") {
+    return { label: "Retailer package", destination: "retailer_package" as const };
+  }
+  const actions: Record<string, string> = { render: "Edition render", validate: "Channel preflight", preflight: "Channel preflight" };
   const [label, destination]: readonly [string, JobDestination] = kind === "import" ? ["Manuscript import", "editor"]
     : kind === "audiobook_export" ? ["Google Play audiobook package", "publish"]
       : kind === "ai" ? Object.hasOwn(agents, agent) ? agents[agent] : ["AI task", "overview"]

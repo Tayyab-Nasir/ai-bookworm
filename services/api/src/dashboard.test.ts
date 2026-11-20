@@ -220,6 +220,7 @@ test("shared job labels cover the actual worker agent names without inventing a 
   assert.deepEqual(jobSummary("ai", { agent_type: "story_blueprint" }), { label: "Story Blueprint proposal", destination: "plan" });
   assert.deepEqual(jobSummary("ai", { agent_type: "unknown-private-value" }), { label: "AI task", destination: "overview" });
   assert.deepEqual(jobSummary("publishing", { action: "unknown-private-value" }), { label: "Publishing task", destination: "publish" });
+  assert.deepEqual(jobSummary("publishing", { action: "export_package" }), { label: "Retailer package", destination: "retailer_package" });
   for (const key of ["__proto__", "constructor", "toString"]) {
     assert.deepEqual(jobSummary("ai", { agent_type: key }), { label: "AI task", destination: "overview" });
     assert.deepEqual(jobSummary("publishing", { action: key }), { label: "Publishing task", destination: "publish" });

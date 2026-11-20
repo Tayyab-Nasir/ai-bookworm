@@ -74,13 +74,13 @@ const cardClass = "rounded-2xl border border-white/10 bg-white/[0.035] p-5";
 type EditionRisk = { current: Map<string, EditionCreateFence> };
 type PublishingScope = { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> };
 function superseded() { const e = new Error("Account check superseded."); e.name = "PublishingScopeChanged"; return e; }
-export default function PublishingStudio({ bookId }: { bookId: string }) {
+export default function PublishingStudio({ bookId, packageJobId }: { bookId: string; packageJobId?: string }) {
   const latestBook = useRef(bookId); latestBook.current = bookId;
   const editionRisks = useRef(new Map<string, EditionCreateFence>());
   const isBookCurrent = useCallback(() => latestBook.current === bookId, [bookId]);
-  return <ScopedPublishingStudio key={bookId} bookId={bookId} isBookCurrent={isBookCurrent} editionRisks={editionRisks} />;
+  return <ScopedPublishingStudio key={bookId} bookId={bookId} packageJobId={packageJobId} isBookCurrent={isBookCurrent} editionRisks={editionRisks} />;
 }
-function ScopedPublishingStudio({ bookId, isBookCurrent, editionRisks }: { bookId: string; isBookCurrent: () => boolean; editionRisks: EditionRisk }) {
+function ScopedPublishingStudio({ bookId, packageJobId, isBookCurrent, editionRisks }: { bookId: string; packageJobId?: string; isBookCurrent: () => boolean; editionRisks: EditionRisk }) {
   type Entry = { actor: string; scope: PublishingScope; access: {book:Book;role:string} };
   const [entries, setEntries] = useState<Entry[]>([]), [identity,setIdentity] = useState<Entry|null>(null);
   const [active,setActive]=useState(false), [checking,setChecking]=useState(true), [error,setError]=useState("");
@@ -118,12 +118,12 @@ function ScopedPublishingStudio({ bookId, isBookCurrent, editionRisks }: { bookI
     return()=>{mounted.current=false;epoch.current={};activeRef.current=false;window.removeEventListener("focus",focus);document.removeEventListener("visibilitychange",visibility);};
   },[check]);
   return <>
-    {entries.map(entry => <PublishingWorkspace key={entry.actor} bookId={bookId} scope={entry.scope}
+    {entries.map(entry => <PublishingWorkspace key={entry.actor} bookId={bookId} packageJobId={packageJobId} scope={entry.scope}
       active={active && identity?.actor===entry.actor} verifiedAccess={entry.access} editionRisks={editionRisks} />)}
     {!active&&<section className="mx-auto max-w-7xl px-4 py-8 text-white"><h1 className="text-2xl">Publishing studio</h1>{checking?<p role="status">Checking your account…</p>:<p role="alert">{error} <button className="underline" onClick={()=>void check()}>Try again</button> <Link className="underline" href="/login">Sign in</Link></p>}</section>}
   </>;
 }
-function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRisks }: { bookId:string;scope:PublishingScope;active:boolean;verifiedAccess:{book:Book;role:string};editionRisks:EditionRisk }) {
+function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAccess, editionRisks }: { bookId:string;packageJobId?:string;scope:PublishingScope;active:boolean;verifiedAccess:{book:Book;role:string};editionRisks:EditionRisk }) {
   const api = useMemo(() => {
     const scoped = apiClient(scope.actor);
     return new Proxy(scoped, { get(target, key, receiver) {
@@ -171,6 +171,8 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [publishingJobs, setPublishingJobs] = useState<TimedPackageJob[]>([]);
   const publishingJobsRef = useRef(publishingJobs); publishingJobsRef.current = publishingJobs;
+  const [linkedPackage, setLinkedPackage] = useState<TimedPackageJob | null>(null);
+  const linkedPackageRef = useRef(linkedPackage); linkedPackageRef.current = linkedPackage;
   const [packageHistory, setPackageHistory] = useState<{
     editionId: string | null;
     status: "loading" | "ready" | "unavailable";
@@ -336,7 +338,11 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const uploadedCover = usesUploadedPrintCover(form);
   const pdfSelection = form.wrapPdfAssetId && form.wrapPdfVersion ? `${form.wrapPdfAssetId}:${form.wrapPdfVersion}` : "";
   const pdfSelectionAvailable = coverPdfAssets.some(asset => `${asset.id}:${asset.current_version_number}` === pdfSelection);
-  const activePublishingJobs = useMemo(() => publishingJobs.filter((job) => !activeId || job.editionId === activeId), [publishingJobs, activeId]);
+  const activePublishingJobs = useMemo(() => {
+    const jobs = publishingJobs.filter(job => job.editionId === activeId);
+    return linkedPackage?.editionId === activeId && !jobs.some(job => job.id === linkedPackage.id)
+      ? [linkedPackage, ...jobs] : jobs;
+  }, [publishingJobs, activeId, linkedPackage]);
   const channelCompatible = form.kind !== "audiobook" && (channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind));
   const { paginated, rightToLeftPrint, rtlPrintUnsupported, rtlCoverTextUnsupported, uploadedCoverRequired, renderBlocked } = resolveEditionRenderSafety(form, book, activeEdition?.edition_metadata_json);
   const availableFonts = form.kind === "print" ? FONTS : FONTS.filter(font => !isAmiriFont(font));
@@ -348,7 +354,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     const valid = () => ownerCurrent() && viewEpoch.current === version && currentBook.current === bookId;
     editionRiskFlight.current = null; editionSaveFlight.current = null; loadedEditionOwner.current = null; setEditionSessionHidden(false); setVerifyingEditionSession(false); setVerifyingEditionRisk(false); setEditionRiskConsent(false); setEditionRiskChecked(false); setEditionRiskStorageError(null);
     setBusy("load");
-    setBook(null); setRole("viewer"); setEditions([]); setAssets([]); setChapters([]); setPublishingJobs([]);
+    setBook(null); setRole("viewer"); setEditions([]); setAssets([]); setChapters([]); setPublishingJobs([]); setLinkedPackage(null);
     currentEdition.current = null; setActiveId(null); setForm(DEFAULT_FORM); setDirty(false); setError(null);
     setAudiobookProjects([]); setGooglePlayExports([]); setNarrationChapterId("");
     setRendered(null); setPreflight(null); setNotice(null); exportRequestKey.current = null;
@@ -377,11 +383,27 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
       catch { setTabError("The local edition copy could not be read. Contact support; clearing site data can remove unconfirmed request warnings."); }
       setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setChapters(chapterResult.chapters);
       setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
-      if (editionResult.editions[0]) {
-        currentEdition.current = editionResult.editions[0].id;
-        setActiveId(editionResult.editions[0].id); setForm(formFromEdition(editionResult.editions[0], identity.book.language));
-        if (editionResult.editions[0].type === "audiobook") {
-          await Promise.all([readAudioProjects(editionResult.editions[0].id, true), readAudioHistory(editionResult.editions[0].id, true)]);
+      let selected = editionResult.editions[0];
+      if (packageJobId) {
+        try {
+          const startedAt = downloadClock();
+          const job = await api.getPublishingJob(packageJobId, owner);
+          if (!valid()) return;
+          const edition = editionResult.editions.find(value => value.id === job.editionId);
+          if (job.id !== packageJobId || job.bookId !== bookId || !edition) throw new Error("Wrong retailer package");
+          selected = edition;
+          setLinkedPackage(timePackage(job, startedAt));
+          observePackageClock();
+        } catch {
+          if (!valid()) return;
+          setError("The linked retailer package is unavailable for this book.");
+        }
+      }
+      if (selected) {
+        currentEdition.current = selected.id;
+        setActiveId(selected.id); setForm(formFromEdition(selected, identity.book.language));
+        if (selected.type === "audiobook") {
+          await Promise.all([readAudioProjects(selected.id, true), readAudioHistory(selected.id, true)]);
           if (!valid()) return;
         } else { setAudiobookProjects([]); setGooglePlayExports([]); }
       }
@@ -389,7 +411,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
       setDirty(false);
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Could not load publishing settings."); }
     finally { if (valid()) setBusy(null); }
-  }, [api, bookId, scope]);
+  }, [api, bookId, packageJobId, scope]);
 
   useLayoutEffect(() => {
     const invalidate = () => { ++viewEpoch.current; audioHistoryEpoch.current++; audioProjectEpoch.current++; setAudiobookProjects([]); setGooglePlayExports([]); setPublishingJobs([]); setRendered(null); setPreflight(null); setNotice(null); };
@@ -798,7 +820,8 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
 
   const renewPackage = async (job: TimedPackageJob) => {
     const view = captureView();
-    const valid = () => view() && currentEdition.current === job.editionId && publishingJobsRef.current.includes(job);
+    const valid = () => view() && currentEdition.current === job.editionId
+      && (publishingJobsRef.current.includes(job) || linkedPackageRef.current === job);
     if (busy || !valid()) return;
     setBusy("history");
     setError(null);
@@ -812,7 +835,9 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
           || saved.package.asset.checksum !== job.package?.asset.checksum))) {
         throw new Error("Private package could not be verified.");
       }
-      setPublishingJobs(current => current.map(item => item === job ? timePackage(saved, startedAt) : item));
+      const renewed = timePackage(saved, startedAt);
+      setPublishingJobs(current => current.map(item => item === job ? renewed : item));
+      setLinkedPackage(current => current?.id === job.id ? renewed : current);
       observePackageClock();
     } catch {
       if (valid()) setError("The private link could not be renewed. Check package access and try again.");
@@ -1162,7 +1187,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
           {packageHistory.editionId === activeId && packageHistory.status === "unavailable" && <p role="status" className="mt-4 text-sm text-amber-100">Package history is unavailable. Refresh before relying on this list.</p>}
           {packageHistory.editionId === activeId && packageHistory.status === "ready" && activePublishingJobs.length ? <ul className="mt-4 space-y-3">{activePublishingJobs.map((job) => <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium capitalize">{job.channel === "barnesnoble" ? "Barnes & Noble" : job.channel === "googleplay" ? "Google Play Books" : job.channel} package</p><p className="mt-1 text-xs text-white/40">{new Date(job.createdAt).toLocaleString()} · {job.ruleVersion ?? "rules pending"}</p></div><span className={`rounded-full px-3 py-1 text-xs ${job.status === "succeeded" && job.package ? "bg-emerald-400/15 text-emerald-100" : job.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{job.status === "succeeded" ? (job.package ? "ready" : "unavailable") : job.status}</span></div>
-            {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <PrivateArtifactDownload actor={linkOwner} url={job.package.download.url} filename={`${job.channel}-export.zip`} expectedPath={packageStoragePath(book?.workspace_id, job)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && publishingJobsRef.current.includes(job)} isExpired={() => { const now = observePackageClock(); return clockFault.current || downloadExpired(job.downloadExpiresAt, now); }} onInvalid={(message, kind) => { if (kind === "expired") return; setPackageHistory({ editionId: activeId, status: "unavailable" }); setError(message); }} className="underline disabled:opacity-40">Download private ZIP</PrivateArtifactDownload> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified."}</span>}{currentIdentity && !packageClockFault && downloadExpired(job.downloadExpiresAt, packageClock) && <button type="button" disabled={Boolean(busy)} onClick={() => void renewPackage(job)} className="min-h-11 underline disabled:opacity-40">Renew private link</button>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
+            {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <PrivateArtifactDownload actor={linkOwner} url={job.package.download.url} filename={`${job.channel}-export.zip`} expectedPath={packageStoragePath(book?.workspace_id, job)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && (publishingJobsRef.current.includes(job) || linkedPackageRef.current === job)} isExpired={() => { const now = observePackageClock(); return clockFault.current || downloadExpired(job.downloadExpiresAt, now); }} onInvalid={(message, kind) => { if (kind === "expired") return; setPackageHistory({ editionId: activeId, status: "unavailable" }); setError(message); }} className="underline disabled:opacity-40">Download private ZIP</PrivateArtifactDownload> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified."}</span>}{currentIdentity && !packageClockFault && downloadExpired(job.downloadExpiresAt, packageClock) && <button type="button" disabled={Boolean(busy)} onClick={() => void renewPackage(job)} className="min-h-11 underline disabled:opacity-40">Renew private link</button>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
             {currentIdentity && job.status === "succeeded" && job.package && CHANNEL_PORTALS[job.channel] && (
               <p className="mt-2 text-sm text-white/65">
                 Open <a href={CHANNEL_PORTALS[job.channel].href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">{CHANNEL_PORTALS[job.channel].label}</a> and follow the upload steps in the ZIP.
@@ -1171,7 +1196,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
             {currentIdentity && job.status === "succeeded" && job.bookId === bookId && job.editionId === activeId && (
               <RetailerSubmission api={api} actor={scope.actor} jobId={job.id} canEdit={editable}
                 isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId
-                  && viewEpoch.current === linkEpoch && publishingJobsRef.current.some(item => item.id === job.id)} />
+                  && viewEpoch.current === linkEpoch && (publishingJobsRef.current.some(item => item.id === job.id) || linkedPackageRef.current === job)} />
             )}
           </li>)}</ul> : packageHistory.editionId === activeId && packageHistory.status === "ready" ? <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p> : null}
           {packageHistory.editionId === activeId && packageHistory.status === "ready" && packageHistory.nextCursor && (

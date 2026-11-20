@@ -730,7 +730,7 @@ export interface EpubResourceResult { source: SavedEpubSource; resource: EpubRea
 export interface DashboardRecentJob {
   id: string;
   kind: "import" | "ai" | "publishing" | "audiobook_export";
-  destination: "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview";
+  destination: "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview" | "retailer_package";
   label: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
   bookId: string | null;

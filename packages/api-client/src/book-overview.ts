@@ -11,7 +11,7 @@ export interface BookOverview {
   editionsTotal: number;
   editions: { id: string; kind: "ebook" | "print" | "audiobook"; status: string; updatedAt: string; coverArtworkChosen: boolean }[];
   history: { renders: number; packages: number };
-  jobs: { id: string; kind: "import" | "ai" | "publishing" | "audiobook_export"; label: string; status: string; createdAt: string; completedAt: string | null; destination: "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview" }[];
+  jobs: { id: string; kind: "import" | "ai" | "publishing" | "audiobook_export"; label: string; status: string; createdAt: string; completedAt: string | null; destination: "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview" | "retailer_package" }[];
 }
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
@@ -58,7 +58,7 @@ export function parseBookOverview(value: unknown, bookId: string): BookOverview 
     || !["import", "ai", "publishing", "audiobook_export"].includes(String(j.kind)) || !text(j.label, 80)
     || !["queued", "running", "succeeded", "failed", "cancelled"].includes(String(j.status))
     || !date(j.createdAt) || j.completedAt !== null && !date(j.completedAt)
-    || !["editor", "memory", "publish", "translate", "plan", "assets", "overview"].includes(String(j.destination)))) return fail();
+    || !["editor", "memory", "publish", "translate", "plan", "assets", "overview", "retailer_package"].includes(String(j.destination)))) return fail();
   const jobs = value.jobs as BookOverview["jobs"];
   if (new Set(jobs.map(j => `${j.kind}:${j.id}`)).size !== jobs.length || jobs.some((j, i) => i > 0 && Date.parse(jobs[i - 1].createdAt) < Date.parse(j.createdAt))) return fail();
   return value as unknown as BookOverview;

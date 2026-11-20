@@ -36,7 +36,7 @@ const bundles = await Promise.all([false, true].map(parent => build({ stdin: { c
   ? `import React from "react"; import { createRoot } from "react-dom/client";
      import Studio from "./apps/web/components/PublishingStudio"; import { ApiClientError } from "@bookworm/api-client";
      window.ApiClientError = ApiClientError; const root = createRoot(document.getElementById("root"));
-     window.showStudio = bookId => root.render(bookId ? React.createElement(Studio, {bookId}) : null);`
+     window.showStudio = (bookId, packageJobId) => root.render(bookId ? React.createElement(Studio, {bookId, packageJobId}) : null);`
   : `import React, { useCallback, useState } from "react"; import { createRoot } from "react-dom/client";
      import Library from "./apps/web/components/SavedPrintLibrary"; import { ApiClientError } from "@bookworm/api-client";
      window.ApiClientError = ApiClientError;
@@ -1903,6 +1903,29 @@ test('package history uses the selected edition and ignores a late previous edit
     const calls = await page.evaluate(() => window.packageReads);
     assert.deepEqual(calls.slice(-2).map(call => call.filter.editionId), [ids.otherEdition, ids.edition]);
     assert(calls.every(call => call.bookId === ids.book && call.actor === ids.asset));
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a retailer package link selects its edition and exposes the exact job outside the first page", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.getPublishingJob = async (jobId, actor) => {
+        window.requests.push({ method: "GET", action: "linked-package", jobId, actor });
+        return { id: jobId, bookId: jobId === window.ids.job ? window.ids.otherAsset : window.ids.book, editionId: window.ids.otherEdition,
+          channel: "barnesnoble", status: "succeeded", package: null, createdAt: "2026-10-13T12:00:00Z" };
+      };
+      window.showStudio(window.ids.book, window.ids.otherJob);
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await expect(history.getByText("Barnes & Noble package", { exact: true })).toBeVisible();
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.action === "linked-package")),
+      [{ method: "GET", action: "linked-package", jobId: ids.otherJob, actor: ids.asset }]);
+    await page.evaluate(() => window.showStudio(window.ids.book, window.ids.job));
+    await expect(page.getByText("The linked retailer package is unavailable for this book.")).toBeVisible();
+    await expect(history.getByText("Barnes & Noble package", { exact: true })).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.requests.some(row => row.method === "POST")), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
