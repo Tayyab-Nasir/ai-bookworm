@@ -294,6 +294,11 @@ the allowlist without starting a worker.
   author's Bookshelf after a successful export. Rendering and publishing share
   ruleset `kdp-1.5.0` for this change.
   [KDP cover specifications](https://kdp.amazon.com/en_US/help/topic/G200645690)
+- KDP preflight warns when the saved listing has more than seven keywords
+  or three categories. The KDP handoff names the limits and leaves the full
+  saved listing available for other retailers.
+  [Keywords](https://kdp.amazon.com/en_US/help/topic/G201743260) ·
+  [Categories](https://kdp.amazon.com/en_US/help/topic/G200652170)
 - Editors can check removal history using the existing schema. The read confirms
   the file's current removed state. A lost removal reply remains unconfirmed.
   Restore is gated on verified asset-recovery readiness and uses a new,

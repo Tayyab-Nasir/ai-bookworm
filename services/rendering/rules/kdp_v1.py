@@ -9,10 +9,26 @@ from kdp_print import kdp_page_count, kdp_page_range
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "kdp-1.6.0"
+VERSION = "kdp-1.7.0"
 EFFECTIVE_DATE = "2026-09-18"
 SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G202145060"
 ISBN_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201834170"
+KEYWORDS_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201743260"
+CATEGORIES_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G200652170"
+
+
+def check_kdp_keywords(ctx):
+    if len(_meta(ctx).get("keywords") or []) <= 7:
+        return []
+    return [Finding(code="KDP-LISTING-KEYWORDS", location="book.metadata.keywords",
+                    message="Choose up to seven of the saved keywords or phrases in KDP.")]
+
+
+def check_kdp_categories(ctx):
+    if len(_meta(ctx).get("categories") or []) <= 3:
+        return []
+    return [Finding(code="KDP-LISTING-CATEGORIES", location="book.metadata.categories",
+                    message="Choose up to three categories for your audience and marketplace in KDP.")]
 
 KDP_MAX_MANUSCRIPT_BYTES = 650 * 1024 * 1024
 GEOMETRY_SOURCE = "https://kdp.amazon.com/en_US/help/topic/GVBQ3CMEQW3W2VL6"
@@ -173,6 +189,10 @@ def check_kdp_rounded_count(ctx):
 RULESET = make_ruleset("kdp", VERSION, metadata_rules(
     "kdp", "KDP", ["title", "author", "language", "description"],
     EFFECTIVE_DATE, SOURCE_REF) + [
+    Rule("KDP-LISTING-KEYWORDS", "warning", "channel", "KDP keyword selection", check_kdp_keywords,
+         channels=("kdp",), effective_date="2026-11-20", source_ref=KEYWORDS_SOURCE_REF),
+    Rule("KDP-LISTING-CATEGORIES", "warning", "channel", "KDP category selection", check_kdp_categories,
+         channels=("kdp",), effective_date="2026-11-20", source_ref=CATEGORIES_SOURCE_REF),
     Rule("KDP-EBOOK-001", "warning", "channel", "KDP ebook marketing cover choice", check_kdp_ebook_cover_missing,
          channels=("kdp",), effective_date="2026-11-19", source_ref=EBOOK_COVER_SOURCE),
     Rule("KDP-EBOOK-002", "error", "channel", "KDP ebook marketing cover input", check_kdp_ebook_cover,

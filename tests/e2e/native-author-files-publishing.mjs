@@ -321,6 +321,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
           assert.equal(archive.files['cover.jpg'].signature, 'ffd8ff');
           assert.equal(archive.manifest.files['cover.jpg'], archive.files['cover.jpg'].sha256);
           assert.match(archive.readme, /Upload book\.epub and cover\.jpg/);
+          assert.match(archive.readme, /up to seven keywords or phrases and up to three categories/);
         }
         if (channel === 'barnesnoble' && edition.kind === 'ebook') {
           assert.equal(archive.manifest.ruleVersion, preflight.ruleVersion);
