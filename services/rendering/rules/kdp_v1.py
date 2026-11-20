@@ -9,7 +9,7 @@ from kdp_print import kdp_page_count, kdp_page_range
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "kdp-1.5.0"
+VERSION = "kdp-1.6.0"
 EFFECTIVE_DATE = "2026-09-18"
 SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G202145060"
 ISBN_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201834170"
@@ -17,6 +17,7 @@ ISBN_SOURCE_REF = "https://kdp.amazon.com/en_US/help/topic/G201834170"
 KDP_MAX_MANUSCRIPT_BYTES = 650 * 1024 * 1024
 GEOMETRY_SOURCE = "https://kdp.amazon.com/en_US/help/topic/GVBQ3CMEQW3W2VL6"
 EBOOK_COVER_SOURCE = "https://kdp.amazon.com/en_US/help/topic/G200645690"
+LANGUAGE_SOURCE = "https://kdp.amazon.com/en_US/help/topic/G200673300"
 KDP_MARKETING_COVER_BYTES = 50_000_000
 MAX_COVER_PIXELS = 40_000_000
 
@@ -66,6 +67,16 @@ def check_kdp_bleed(ctx):
         bleed = edition.get("bleed_in", 0)
         if bleed and (bleed != 0.125 or edition.get("bleed_edges", "all") != "outer"):
             return [Finding(code="KDP-PRINT-BLEED", message="KDP interior bleed must be 0.125in on top, bottom and outer edge only; select outer-edge bleed and render again", location="edition.bleed_edges")]
+    return []
+
+
+def check_kdp_print_language(ctx):
+    if (ctx.get("edition") or {}).get("kind") != "print":
+        return []
+    language = str(_meta(ctx).get("language") or "").lower().replace("_", "-").split("-")[0]
+    if language in {"ar", "fa"}:
+        return [Finding(code="KDP-PRINT-LANGUAGE", location="book.metadata.language",
+                        message="KDP accepts Arabic and Persian in ebooks. Create a reflowable EPUB for KDP or download the print proof for another printer.")]
     return []
 
 
@@ -182,4 +193,6 @@ RULESET = make_ruleset("kdp", VERSION, metadata_rules(
          channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),
     Rule("KDP-PRINT-007", "warning", "channel", "KDP stock profile selection", check_kdp_profile_known,
          channels=("kdp",), effective_date=EFFECTIVE_DATE, source_ref=GEOMETRY_SOURCE),
+    Rule("KDP-PRINT-008", "error", "channel", "KDP Arabic and Persian format", check_kdp_print_language,
+         channels=("kdp",), effective_date="2026-11-20", source_ref=LANGUAGE_SOURCE),
 ])

@@ -70,7 +70,9 @@ const marginsSchema = z.object({
   outer: z.number().min(0.25).max(2).default(0.5),
 }).strict().default({});
 
-const fontSchema = z.enum(["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold"]);
+const amiriFonts = ["BookwormAmiri", "BookwormAmiri-Bold"] as const;
+const fontSchema = z.enum(["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold", ...amiriFonts]);
+const isAmiriFont = (font: string) => amiriFonts.some(candidate => candidate === font);
 const typographySchema = z.object({
   body_font: fontSchema.default("Times-Roman"),
   body_size_pt: z.number().min(7).max(24).default(11),
@@ -82,13 +84,14 @@ const typographySchema = z.object({
   text_align: z.enum(["left", "justify"]).default("justify"),
 }).strict().superRefine((value, ctx) => {
   if (value.leading < value.body_size_pt) ctx.addIssue({ code: "custom", path: ["leading"], message: "Line spacing must be at least the body font size." });
+  if (isAmiriFont(value.body_font) !== isAmiriFont(value.heading_font)) ctx.addIssue({ code: "custom", path: ["heading_font"], message: "Choose Amiri for both the body and the headings." });
 }).default({});
 
 const fixedLayoutSchema = z.object({
   trim_size: z.enum(["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"]).default("6x9"),
   margins: marginsSchema,
   typography: typographySchema.default({ body_font: "BookwormVera", heading_font: "BookwormVera-Bold" }),
-}).strict();
+}).strict().refine(value => !isAmiriFont(value.typography.body_font), { path: ["typography"], message: "Choose a different font for fixed-layout EPUB. Amiri is available for print PDF." });
 
 const printSchema = z.object({
   include_table_of_contents: z.boolean().default(false),

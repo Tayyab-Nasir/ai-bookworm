@@ -11,11 +11,12 @@ from reportlab.lib.fonts import ps2tt, tt2ps
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
+from editions import AMIRI_FONTS
 from manuscript import inline_runs, table_rows
-from rtl_text import requires_bidi_layout
+from rtl_text import has_direction_controls, requires_bidi_layout
 
 BASE_FONTS = {"Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"}
-EMBEDDED_FONTS = {"BookwormVera", "BookwormVera-Bold"}
+EMBEDDED_FONTS = {"BookwormVera", "BookwormVera-Bold"} | AMIRI_FONTS
 _FONT_DIR = Path(reportlab.__file__).resolve().parent / "fonts"
 for _name, _file in (
     ("BookwormVera", "Vera.ttf"), ("BookwormVera-Bold", "VeraBd.ttf"),
@@ -34,14 +35,21 @@ for _name, _file in (
 pdfmetrics.registerFontFamily("BookwormDejaVuSansMono", normal="BookwormDejaVuSansMono",
     bold="BookwormDejaVuSansMono-Bold", italic="BookwormDejaVuSansMono-Italic",
     boldItalic="BookwormDejaVuSansMono-BoldItalic")
+for _name, _tone in (("BookwormAmiri", "Regular"), ("BookwormAmiri-Bold", "Bold"),
+                     ("BookwormAmiri-Italic", "Italic"), ("BookwormAmiri-BoldItalic", "BoldItalic")):
+    pdfmetrics.registerFont(TTFont(_name, str(Path(__file__).resolve().parent / "fonts" / f"Amiri-{_tone}.ttf")))
+pdfmetrics.registerFontFamily("BookwormAmiri", normal="BookwormAmiri", bold="BookwormAmiri-Bold",
+                              italic="BookwormAmiri-Italic", boldItalic="BookwormAmiri-BoldItalic")
 
 
 def code_font(base: str) -> str:
-    """Vera editions use actual embedded monospace; legacy choices stay Courier."""
+    """Embedded editions use actual embedded monospace; legacy choices stay Courier."""
     return "BookwormDejaVuSansMono" if base in EMBEDDED_FONTS else "Courier"
 
 
 def page_number_font(body: str, heading: str) -> str:
+    if {body, heading} <= AMIRI_FONTS:
+        return "BookwormAmiri"
     return "BookwormVera" if {body, heading} <= EMBEDDED_FONTS else "Helvetica"
 
 
@@ -84,10 +92,14 @@ def print_font_issues(book: dict, edition: dict) -> list[dict[str, str]]:
     heading = typography.get("heading_font", "Helvetica-Bold")
     if body not in BASE_FONTS | EMBEDDED_FONTS or heading not in BASE_FONTS | EMBEDDED_FONTS:
         return []  # Invalid font names are handled by config validation/preflight.
+    shaping = {body, heading} <= AMIRI_FONTS
     issues = []
 
     def check(text, font, location):
-        if requires_bidi_layout(text):
+        if shaping and has_direction_controls(text):
+            issues.append({"code": "PRINT_DIRECTION_CONTROL_UNSUPPORTED", "location": location,
+                           "message": "Print direction controls need review. Remove them or use reflowable EPUB."})
+        elif not shaping and requires_bidi_layout(text):
             issues.append({"code": "RTL_TEXT_UNSUPPORTED", "location": location, "message": "Text requires bidirectional shaping, which is not available for print or fixed-layout EPUB."})
         if "\u2011" in (text or ""):
             issues.append({"code": "PRINT_NONBREAKING_HYPHEN_UNSUPPORTED", "location": location,

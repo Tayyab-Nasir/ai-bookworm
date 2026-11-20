@@ -193,6 +193,25 @@ test("explicit LTR direction does not waive RTL shaping safety", () => {
   }
 });
 
+test("an Amiri print edition saves its paired fonts and retains cover and fixed EPUB checks", () => {
+  const form = { ...DEFAULT_FORM, kind: "print", language: "ar", bodyFont: "BookwormAmiri", headingFont: "BookwormAmiri-Bold" } as const;
+  const saved = toConfig(form);
+  assert.equal(saved.kind, "print");
+  if (saved.kind !== "print") throw new Error("wrong edition");
+  assert.equal(saved.typography?.body_font, "BookwormAmiri");
+  assert.equal(saved.typography?.heading_font, "BookwormAmiri-Bold");
+  assert.equal(resolveEditionRenderSafety(form, coverBook).renderBlocked, false);
+  assert.equal(resolveEditionRenderSafety({ ...form, coverAssetId: "generated-front" }, coverBook).rtlCoverTextUnsupported, true);
+  assert.equal(resolveEditionRenderSafety({ ...form, wrapEnabled: true, coverAssetId: "generated-front", titleOnCover: false, subtitleOnCover: false, authorOnCover: false }, coverBook).uploadedCoverRequired, true);
+  const uploaded = { ...form, wrapEnabled: true, wrapSource: "uploaded", wrapPdfAssetId: "uploaded-full", wrapPdfVersion: 1 } as const;
+  assert.equal(resolveEditionRenderSafety(uploaded, coverBook).renderBlocked, false);
+  const fixed = { ...form, kind: "ebook", flow: "fixed" } as const;
+  assert.equal(resolveEditionRenderSafety(fixed, coverBook).renderBlocked, true);
+  const fixedConfig = toConfig(fixed);
+  assert.equal(fixedConfig.kind, "ebook");
+  if (fixedConfig.kind === "ebook") assert.equal(fixedConfig.fixed_layout?.typography?.body_font, "BookwormVera");
+});
+
 test("saved empty ebook overrides clear enabled cover text and survive saving", () => {
   const config = { kind: "ebook", metadata_overrides: { title: "", subtitle: "", author: "", language: "ar", publisher: "Harbor Press" } };
   const saved = toConfig({ ...coverForm, language: "ar" }, config);

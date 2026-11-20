@@ -24,7 +24,7 @@ import { discardEditionTab, editionBase, parseEditionTab, readEditionTab, writeE
 import { beginEditionCreateFence, clearEditionCreateFence, readEditionCreateFence, type EditionCreateFence } from "../lib/edition-create-fence";
 import { packageDownloadDeadline, signedDownloadDeadline, downloadClock, downloadExpired, nextDownloadClockWait, type DownloadClock } from "../lib/publishing-request";
 
-import { FONTS, fontLabel, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, matchesCreatedEditionConfig, usesUploadedPrintCover, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
+import { FONTS, fontLabel, isAmiriFont, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, matchesCreatedEditionConfig, usesUploadedPrintCover, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
 export { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
 
 const EDIT_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
@@ -323,7 +323,8 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
   const pdfSelectionAvailable = coverPdfAssets.some(asset => `${asset.id}:${asset.current_version_number}` === pdfSelection);
   const activePublishingJobs = useMemo(() => publishingJobs.filter((job) => !activeId || job.editionId === activeId), [publishingJobs, activeId]);
   const channelCompatible = form.kind !== "audiobook" && (channel === "export" || CHANNEL_FORMATS[channel].includes(form.kind));
-  const { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, renderBlocked } = resolveEditionRenderSafety(form, book, activeEdition?.edition_metadata_json);
+  const { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, uploadedCoverRequired, renderBlocked } = resolveEditionRenderSafety(form, book, activeEdition?.edition_metadata_json);
+  const availableFonts = form.kind === "print" ? FONTS : FONTS.filter(font => !isAmiriFont(font));
 
   const load = useCallback(async () => {
     formRevision.current++; liveDirty.current = false; tabEnabledRef.current = false; setTabEnabled(false); setTabCopy(null); setTabError(null); tabRef.current = { raw: null, edition: null };
@@ -506,6 +507,19 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
     setForm(next); setDirty(true); setRendered(null); setPreflight(null); setNotice(null);
   };
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => updateFields({ [key]: value });
+  const selectFont = (key: "bodyFont" | "headingFont", font: FormState["bodyFont"]) => {
+    const other = key === "bodyFont" ? "headingFont" : "bodyFont";
+    const amiri = isAmiriFont(font);
+    if (amiri === isAmiriFont(latestForm.current[other])) { update(key, font); return; }
+    const companion = amiri ? (other === "bodyFont" ? "BookwormAmiri" : "BookwormAmiri-Bold") : DEFAULT_FORM[other];
+    updateFields({ [key]: font, [other]: companion });
+  };
+  const selectFormat = (kind: Kind) => {
+    const current = latestForm.current;
+    if (kind !== "print" && isAmiriFont(current.bodyFont)) {
+      updateFields({ kind, bodyFont: DEFAULT_FORM.bodyFont, headingFont: DEFAULT_FORM.headingFont });
+    } else update("kind", kind);
+  };
 
   const selectEdition = (edition: Edition) => {
     if (!handlerCurrent() || busy || tabFlight.current || editionSaveFlight.current) return;
@@ -874,7 +888,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
             <button type="button" disabled={!editable || Boolean(busy) || verifyingEditionRisk || !acceptDuplicateRisk} onClick={() => void acknowledgeEditionRisk()} className="mt-3 rounded-lg border border-amber-200/40 px-3 py-2 underline disabled:opacity-40">Allow another create despite duplicate risk</button>
           </div>}
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
-            <label className="text-sm text-white/65">Format<select value={form.kind} onChange={(event) => update("kind", event.target.value as Kind)} disabled={Boolean(activeId)} className={fieldClass}><option value="ebook">EPUB ebook</option><option value="print">Print PDF</option><option value="audiobook">AI-narrated audiobook</option></select></label>
+            <label className="text-sm text-white/65">Format<select value={form.kind} onChange={(event) => selectFormat(event.target.value as Kind)} disabled={Boolean(activeId)} className={fieldClass}><option value="ebook">EPUB ebook</option><option value="print">Print PDF</option><option value="audiobook">AI-narrated audiobook</option></select></label>
             <label className="text-sm text-white/65">Language<input value={form.language} onChange={(event) => update("language", event.target.value)} maxLength={35} className={fieldClass} /></label>
             {form.kind !== "audiobook" && <label className="text-sm text-white/65">Text direction<select value={form.textDirection} onChange={(event) => update("textDirection", event.target.value as FormState["textDirection"])} className={fieldClass}><option value="auto">Auto from effective language</option><option value="ltr">Left to right</option><option value="rtl">Right to left</option></select></label>}
             {form.kind === "ebook" && <>
@@ -897,9 +911,9 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
               {form.kind === "print" && <><label className="text-sm text-white/65">Bleed<select value={form.bleed} onChange={(event) => update("bleed", Number(event.target.value))} className={fieldClass}><option value={0}>No bleed</option><option value={0.125}>0.125 in</option></select></label>
               {form.bleed > 0 && <label className="text-sm text-white/65">Interior bleed edges<select value={form.bleedEdges} onChange={(event) => update("bleedEdges", event.target.value as FormState["bleedEdges"])} className={fieldClass}><option value="outer">Top, bottom and outer edge · KDP</option><option value="all">All four edges · Lulu</option></select></label>}
               <p className="text-xs text-white/45 sm:col-span-2">Margins below are measured from the finished trim edge. Bleed changes PDF page dimensions; it does not extend in-flow illustrations to the edge. Choose the setting required by your printer and re-render before packaging.</p></>}
-              <label className="text-sm text-white/65">Body font<select value={form.bodyFont} onChange={(event) => update("bodyFont", event.target.value as FormState["bodyFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
-              <label className="text-sm text-white/65">Heading font<select value={form.headingFont} onChange={(event) => update("headingFont", event.target.value as FormState["headingFont"])} className={fieldClass}>{FONTS.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
-              <p className="text-xs text-white/45 sm:col-span-2">Choose Bitstream Vera for both body and headings to embed every used font, including page numbers and DejaVu Sans Mono for code. Legacy Times, Helvetica and Courier retain their original behavior. Embedded fonts do not add RTL shaping.</p>
+              <label className="text-sm text-white/65">Body font<select value={form.bodyFont} onChange={(event) => selectFont("bodyFont", event.target.value as FormState["bodyFont"])} className={fieldClass}>{availableFonts.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
+              <label className="text-sm text-white/65">Heading font<select value={form.headingFont} onChange={(event) => selectFont("headingFont", event.target.value as FormState["headingFont"])} className={fieldClass}>{availableFonts.map((font) => <option key={font} value={font}>{fontLabel(font)}</option>)}</select></label>
+              <p className="text-xs text-white/45 sm:col-span-2">{form.kind === "print" ? "Amiri embeds shaped Arabic and Latin text in print PDFs. Selecting Amiri sets both body and heading fonts." : "Bitstream Vera embeds a limited Latin character set in the fixed-layout interior."} Preflight flags unsupported characters.</p>
               <label className="text-sm text-white/65">Body size (pt)<input type="number" min={7} max={24} step={0.5} value={form.bodySize} onChange={(event) => update("bodySize", Number(event.target.value))} className={fieldClass} /></label>
               <label className="text-sm text-white/65">Heading size (pt)<input type="number" min={10} max={48} value={form.headingSize} onChange={(event) => update("headingSize", Number(event.target.value))} className={fieldClass} /></label>
               <label className="text-sm text-white/65">Line spacing (pt)<input type="number" min={form.bodySize} max={36} step={0.5} value={form.leading} onChange={(event) => update("leading", Number(event.target.value))} className={fieldClass} /></label>
@@ -917,10 +931,8 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
             </>}
           </div>
           {paginated && <><div className="mt-5 grid grid-cols-2 gap-4 border-t border-white/10 pt-5 sm:grid-cols-4">{(["top", "bottom", "inner", "outer"] as const).map((key) => <label key={key} className="text-sm capitalize text-white/65">{key} margin (in)<input type="number" min={0.25} max={2} step={0.05} value={form[key]} onChange={(event) => update(key, Number(event.target.value))} className={fieldClass} /></label>)}</div>{form.kind === "print" && form.numbering !== "none" && <p className="mt-3 text-xs leading-relaxed text-white/50">Leave at least 0.75 inches at the {form.numberPosition === "top-center" ? "top" : "bottom"} for page numbers. They stay half an inch inside the trimmed page, with space between the number and manuscript text.</p>}</>}
-          {rtlPrintUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL print PDF and fixed EPUB are not available with the current fonts.</p><p className="mt-1 text-amber-100/80">Use a reflowable EPUB for this edition, or run preflight to record the requirement while a shaping-capable font pipeline is added.</p></div>}
+          {rtlPrintUnsupported && <div role="status" className="mt-5 rounded-xl border border-amber-300/30 bg-amber-300/10 p-4 text-sm text-amber-50"><p className="font-medium">RTL print PDF and fixed EPUB are not available with the current fonts.</p>{form.kind === "print" ? <button type="button" className="mt-2 underline underline-offset-4" disabled={!editable || Boolean(busy)} onClick={() => updateFields({ bodyFont: "BookwormAmiri", headingFont: "BookwormAmiri-Bold" })}>Use Amiri for Arabic print</button> : <p className="mt-1 text-amber-100/80">Choose reflowable EPUB to keep right-to-left text and accessible reading order.</p>}</div>}
         </section>
-
-        {form.kind === "print" && <p className="text-sm leading-relaxed text-white/50">Bitstream Vera embeds body and heading fonts in the PDF, including bold and italic text. It supports a limited Latin character set. Preflight identifies unsupported characters before export. Inline code uses embedded DejaVu Sans Mono for DejaVu/Vera books and Courier for legacy fonts; page numbers use the selected embedded body font.</p>}
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="front-matter-settings">
           <h2 id="front-matter-settings" className="text-xl font-semibold">Title & copyright pages</h2>
@@ -1040,7 +1052,7 @@ function PublishingWorkspace({ bookId, scope, active, verifiedAccess, editionRis
             <button type="button" onClick={() => void render()} disabled={!editable || !activeId || dirty || Boolean(busy) || renderBlocked || !renderRecoveryReady || !!renderPointer} aria-describedby={renderBlocked ? "rtl-render-guidance" : undefined} className="glass-solid rounded-full px-5 py-2 text-sm font-semibold text-black disabled:opacity-40">{busy === "render" ? "Checking…" : `Render ${form.kind === "ebook" ? "EPUB" : "PDF"}`}</button></div>
           {currentIdentity && renderPointer && <div className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-100"><p>A previous render outcome is unconfirmed. Check its status before starting another; a missing request may still arrive.</p><p className="mt-2">Keep this browser's site data. If the status remains unavailable, contact support with render reference <code className="break-all">{renderPointer.requestId}</code>.</p><div className="mt-3 flex flex-wrap gap-4"><button type="button" disabled={Boolean(busy)} onClick={() => void checkRender()} className="min-h-11 underline disabled:opacity-40">Check original render</button>{editable && <button type="button" disabled={Boolean(busy)} onClick={() => void closeRender()} className="min-h-11 underline disabled:opacity-40">Close if not started</button>}</div></div>}
           {dirty && <p className="mt-3 text-xs text-amber-200">Save these settings before rendering or validating.</p>}
-          {renderBlocked && <p id="rtl-render-guidance" className="mt-3 text-sm text-amber-100">Rendering is disabled until the RTL typography requirement above is resolved. Preflight is still available.</p>}
+          {renderBlocked && <p id="rtl-render-guidance" className="mt-3 text-sm text-amber-100">{uploadedCoverRequired ? "Upload a right-bound full cover PDF or turn off the full cover to render an interior proof." : "Review the right-to-left typography guidance above. You can run preflight now."}</p>}
           {rendered && <div className="mt-5 grid gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <PrivateCoverPreview actor={linkOwner} url={artifact.download.url} expectedPath={renderedStoragePath(book?.workspace_id, artifact)} expiresAt={rendered.expiresAt} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && renderedRef.current === rendered} /> : null}<PrivateArtifactDownload actor={linkOwner} url={artifact.download.url} filename={artifact.asset.name} expectedPath={renderedStoragePath(book?.workspace_id, artifact)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && renderedRef.current === rendered} isExpired={() => rendered.expiresAt !== undefined && Date.now() >= rendered.expiresAt} onInvalid={message => { setRendered(null); setPreflight(null); setError(message); }} className="mt-3 inline-block text-sm underline disabled:opacity-40">Download private file</PrivateArtifactDownload></div>)}</div>}
           {form.kind === "print" && rendered && currentIdentity && book && activeId && <SavedPdfProof key={`${linkOwner}:${bookId}:${activeId}:${rendered.jobId}`} actor={linkOwner} onAuthorizationFailure={invalidatePrint} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} rendered={rendered} disabled={dirty || Boolean(busy)} />}
           {form.kind === "print" && currentIdentity && book && activeId && <SavedPrintLibrary key={`${linkOwner}:${bookId}:${activeId}`} actor={linkOwner} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} refreshKey={readerRefreshKey} dirty={dirty} disabled={dirty || Boolean(busy && busy !== "print-proof")} onSelect={adoptPrint} onInvalidate={invalidatePrint} onOpeningChange={setPrintOpening} />}

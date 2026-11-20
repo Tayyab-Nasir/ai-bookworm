@@ -13,6 +13,9 @@ NUMBER_BODY_GAP_PT = 6
 
 def number_metrics(edition: PrintEdition) -> tuple[str, float, float]:
     font = page_number_font(edition.typography.body_font, edition.typography.heading_font)
+    if edition.typography.uses_amiri:
+        # The Typst template sets explicit 0.8em and -0.2em text edges.
+        return font, 0.8 * NUMBER_SIZE_PT, -0.2 * NUMBER_SIZE_PT
     ascent, descent = pdfmetrics.getAscentDescent(font, NUMBER_SIZE_PT)
     return font, ascent, descent
 

@@ -14,6 +14,7 @@ EDITION_SCHEMA_VERSION = "1.1.0"
 # intentionally do not pretend to shape these scripts with their Latin base fonts.
 _RTL_LANGUAGES = frozenset({"ar", "arc", "dv", "fa", "he", "iw", "nqo", "ps", "sd", "ug", "ur", "yi"})
 _RTL_SCRIPTS = frozenset({"arab", "hebr", "nkoo", "thaa"})
+AMIRI_FONTS = frozenset({"BookwormAmiri", "BookwormAmiri-Bold"})
 
 
 def language_requires_rtl_shaping(language: object) -> bool:
@@ -115,9 +116,9 @@ class Margins(BaseModel):  # inches
 
 
 class Typography(BaseModel):
-    body_font: Literal["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold"] = "Times-Roman"
+    body_font: Literal["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold", "BookwormAmiri", "BookwormAmiri-Bold"] = "Times-Roman"
     body_size_pt: float = Field(default=11.0, gt=0)
-    heading_font: Literal["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold"] = "Helvetica-Bold"
+    heading_font: Literal["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold", "BookwormAmiri", "BookwormAmiri-Bold"] = "Helvetica-Bold"
     heading_size_pt: float = Field(default=16.0, gt=0)
     leading: float = Field(default=14.0, gt=0)
     paragraph_spacing_pt: float = Field(default=6.0, ge=0, le=36)
@@ -128,13 +129,25 @@ class Typography(BaseModel):
     def _leading_fits_text(self):
         if self.leading < self.body_size_pt:
             raise ValueError("leading must be at least the body font size")
+        if (self.body_font in AMIRI_FONTS) != (self.heading_font in AMIRI_FONTS):
+            raise ValueError("Choose Amiri for both the body and the headings.")
         return self
+
+    @property
+    def uses_amiri(self) -> bool:
+        return self.body_font in AMIRI_FONTS and self.heading_font in AMIRI_FONTS
 
 
 class FixedLayout(BaseModel):
     trim_size: Literal["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"] = "6x9"
     margins: Margins = Field(default_factory=Margins)
     typography: Typography = Field(default_factory=lambda: Typography(body_font="BookwormVera", heading_font="BookwormVera-Bold"))
+
+    @model_validator(mode="after")
+    def _print_only_fonts(self):
+        if self.typography.uses_amiri:
+            raise ValueError("Amiri is available for print PDF. Choose a different font for fixed-layout EPUB.")
+        return self
 
 
 EbookEdition.model_rebuild()
@@ -216,7 +229,7 @@ def edition_requires_rtl_typography(edition: EbookEdition | PrintEdition, metada
 
 
 def print_requires_unsupported_rtl_typography(edition: PrintEdition, metadata: dict) -> bool:
-    return edition_requires_rtl_typography(edition, metadata)
+    return edition_requires_rtl_typography(edition, metadata) and not edition.typography.uses_amiri
 
 
 def cover_requires_unsupported_rtl_typography(edition: EbookEdition | PrintEdition, metadata: dict) -> bool:

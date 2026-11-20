@@ -425,9 +425,9 @@ export type EditionConfig = {
   margins?: { top?: number; bottom?: number; inner?: number; outer?: number };
   front_matter?: { copyright_notice?: string; publisher?: string };
   typography?: {
-    body_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold" | "BookwormVera" | "BookwormVera-Bold";
+    body_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold" | "BookwormVera" | "BookwormVera-Bold" | "BookwormAmiri" | "BookwormAmiri-Bold";
     body_size_pt?: number;
-    heading_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold" | "BookwormVera" | "BookwormVera-Bold";
+    heading_font?: "Times-Roman" | "Times-Bold" | "Helvetica" | "Helvetica-Bold" | "Courier" | "Courier-Bold" | "BookwormVera" | "BookwormVera-Bold" | "BookwormAmiri" | "BookwormAmiri-Bold";
     heading_size_pt?: number;
     leading?: number;
     paragraph_spacing_pt?: number;

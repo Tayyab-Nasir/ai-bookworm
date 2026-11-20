@@ -38,6 +38,13 @@ RENDERER_VERSION = "pdf-1.20.0"
 # reportlab invariant=1 pins CreationDate/ModDate to D:20000101000000 — reproducible bytes
 
 
+def pdf_renderer_version(edition: PrintEdition) -> str:
+    if edition.typography.uses_amiri:
+        from typst_print import RENDERER_VERSION as amiri_version
+        return amiri_version
+    return RENDERER_VERSION
+
+
 class _Contents(TableOfContents):
     def wrap(self, availWidth, availHeight):
         size = super().wrap(availWidth, availHeight)
@@ -159,6 +166,10 @@ def render_pdf(book: dict, edition: PrintEdition,
     image_issues = full_bleed_issues(book, edition, image_bytes or {})
     if image_issues:
         raise ValueError(image_issues[0]["message"])
+    if edition.typography.uses_amiri:
+        from typst_print import render_amiri_pdf
+        blob = render_amiri_pdf(book, edition, image_bytes or {}, chapter_bookmarks=chapter_bookmarks)
+        return blob, hashlib.sha256(blob).hexdigest()
     tw, th = edition.trim_in
     m = edition.margins
     typo = edition.typography

@@ -110,6 +110,13 @@ def main():
     for chapter in book["chapters"]:
         chapter["nodes"] = [node for node in chapter["nodes"] if node["type"] != "image"]
     book["chapters"][0]["nodes"].append(imported_header_table)
+    arabic_book = {**book, "metadata": {**book["metadata"], "title": "مرافئ النور", "author": "ليلى منصور", "language": "ar"},
+                   "chapters": [{**book["chapters"][0], "title": "الفصل الأول", "nodes": [
+                       {"id": "amiri-paragraph", "type": "paragraph", "text": "قالت ليلى: قرأتُ Bookworm 2.5 (2026) عند المرفأ."},
+                   ]}]}
+    amiri_request = {"bookModel": arabic_book, "editionConfig": {"kind": "print", "text_direction": "rtl",
+        "typography": {"body_font": "BookwormAmiri", "heading_font": "BookwormAmiri-Bold"}}}
+    arabic_ebook_request = {"bookModel": arabic_book, "editionConfig": {"kind": "ebook", "flow": "reflowable"}}
 
     def render(container):
         result = check_json(container, "/render", {"bookModel": book, "editionConfig": {"kind": "ebook"}})
@@ -132,7 +139,16 @@ def main():
         assert hashlib.sha256(google_epub).hexdigest() == google["sha256"]
         preflight = check_json(container, "/preflight", {**google_request, "channel": "googleplay"})
         assert preflight["errors"] == 0, preflight["findings"]
-        assert preflight["ruleVersion"] == "core-1.0.15+google-play-1.2.0"
+        assert preflight["ruleVersion"] == "core-1.0.16+google-play-1.2.0"
+        arabic = check_json(container, "/render", amiri_request)
+        arabic_pdf = base64.b64decode(arabic["artifactBase64"], validate=True)
+        assert arabic["rendererVersion"] == "pdf-1.21.0-amiri"
+        assert arabic_pdf.startswith(b"%PDF-") and hashlib.sha256(arabic_pdf).hexdigest() == arabic["sha256"]
+        arabic_proof = check_json(container, "/preflight", amiri_request)
+        assert arabic_proof["errors"] == 0, arabic_proof["findings"]
+        arabic_check = check_json(container, "/preflight", {**amiri_request, "channel": "kdp"})
+        assert any(finding["code"] == "KDP-PRINT-LANGUAGE" for finding in arabic_check["findings"])
+        arabic_ebook = check_json(container, "/render", arabic_ebook_request)
         mp3 = docker("exec", container, "python", "-c",
             "import base64,subprocess; from audio_assembly import ffmpeg_executable; "
             "r=subprocess.run([ffmpeg_executable(),'-v','error','-f','lavfi','-i','sine=frequency=440:duration=1',"
@@ -141,7 +157,7 @@ def main():
         status, audio = request(container, "/audio/assemble", {"segmentsBase64": [mp3]})
         assert status == 200, (status, audio[:1000])
         assert len(audio) > 1000
-        return result["artifactBase64"], google["artifactBase64"], google_edition
+        return result["artifactBase64"], google["artifactBase64"], google_edition, arabic_ebook["artifactBase64"]
     rendered = run_service("rendering", True, render)
 
     def package(container):
@@ -156,6 +172,13 @@ def main():
         assert google["errors"] == 0
         with zipfile.ZipFile(io.BytesIO(base64.b64decode(google["packages"][0]["dataBase64"]))) as archive:
             assert archive.read("book.epub") == base64.b64decode(rendered[1])
+        arabic = check_json(container, "/v1/publishing/package", {**arabic_ebook_request, "channel": "kdp",
+            "artifactsBase64": {"book.epub": rendered[3]}})
+        assert arabic["errors"] == 0
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(arabic["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.epub") == base64.b64decode(rendered[3])
+            assert json.loads(archive.read("metadata.json"))["metadata"]["title"] == arabic_book["metadata"]["title"]
+        print("PASS Arabic editions: Amiri print proof and byte-exact KDP ebook package", flush=True)
         assert request(container, "/v1/publishing/jobs", {})[0] == 410
     run_service("publishing", True, package)
 

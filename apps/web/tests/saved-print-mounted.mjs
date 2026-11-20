@@ -259,6 +259,57 @@ test("late plan access cannot overwrite the next book workspace", async () => {
   } finally { await page.close(); }
 });
 
+test("Arabic print typography enables a proof after saving and reopening the edition", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const list = window.bookwormApi.listEditions;
+      window.printTypographySaves = [];
+      window.bookwormApi.updateEdition = async (id, body, actor) => {
+        window.printTypographySaves.push({ id, body, actor });
+        const { editions } = await list();
+        const edition = editions.find(item => item.id === id);
+        Object.assign(edition, { language: body.language, edition_metadata_json: body.config,
+          updated_at: "2026-11-20T00:00:00.000Z" });
+        return structuredClone(edition);
+      };
+    });
+    const language = page.getByRole("textbox", { name: "Language", exact: true });
+    const direction = page.getByRole("combobox", { name: "Text direction", exact: true });
+    const bodyFont = page.getByRole("combobox", { name: "Body font", exact: true });
+    const headingFont = page.getByRole("combobox", { name: "Heading font", exact: true });
+    const useAmiri = page.getByRole("button", { name: "Use Amiri for Arabic print", exact: true });
+    const render = page.getByRole("button", { name: "Render PDF", exact: true });
+    await language.fill("ar");
+    await direction.selectOption("rtl");
+    await expect(useAmiri).toBeVisible();
+    await expect(render).toBeDisabled();
+    await useAmiri.click();
+    await expect(bodyFont).toHaveValue("BookwormAmiri");
+    await expect(headingFont).toHaveValue("BookwormAmiri-Bold");
+    await page.getByRole("button", { name: "Save edition", exact: true }).click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    const [saved] = await page.evaluate(() => window.printTypographySaves);
+    assert.deepEqual([saved.id, saved.actor, saved.body.language, saved.body.config.text_direction],
+      [ids.edition, ids.asset, "ar", "rtl"]);
+    assert.deepEqual([saved.body.config.typography.body_font, saved.body.config.typography.heading_font],
+      ["BookwormAmiri", "BookwormAmiri-Bold"]);
+
+    await page.evaluate(() => window.showStudio(null));
+    await expect(render).toHaveCount(0);
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(render).toBeEnabled();
+    await expect(language).toHaveValue("ar");
+    await expect(direction).toHaveValue("rtl");
+    await expect(bodyFont).toHaveValue("BookwormAmiri");
+    await expect(headingFont).toHaveValue("BookwormAmiri-Bold");
+    await expect(useAmiri).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.printTypographySaves.length), 1);
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.method === "POST").length), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("studio validates and saves a print edition ISBN before another proof can be used", async () => {
   const { page, errors } = await fixture({ parent: true });
   try {

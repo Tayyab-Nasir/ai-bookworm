@@ -1,9 +1,10 @@
 """Lulu print rules verified against first-party help on 2026-09-18."""
-from preflight import Finding, Rule
+from editions import resolve_text_direction
+from preflight import Finding, Rule, _meta
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "lulu-1.4.0"
+VERSION = "lulu-1.5.0"
 EFFECTIVE_DATE = "2026-09-18"
 SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255584"
 PAGE_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255583"
@@ -70,6 +71,14 @@ def check_lulu_recommended_gutter(ctx):
     return []
 
 
+def check_lulu_binding(ctx):
+    edition = ctx.get("edition") or {}
+    if edition.get("kind") == "print" and resolve_text_direction(_meta(ctx).get("language"), edition.get("text_direction")) == "rtl":
+        return [Finding(code="LULU-RTL-PAGE-ORDER", location="edition.text_direction",
+                        message="Lulu requires the interior pages in reverse order and the front cover on the left. Download the reading-order proof to prepare Lulu's files.")]
+    return []
+
+
 RULESET = make_ruleset("lulu", VERSION, metadata_rules(
     "lulu", "LULU", ["title", "author", "language"],
     EFFECTIVE_DATE, SOURCE_REF) + [
@@ -85,4 +94,6 @@ RULESET = make_ruleset("lulu", VERSION, metadata_rules(
          channels=("lulu",), effective_date=EFFECTIVE_DATE, source_ref=MARGIN_SOURCE_REF),
     Rule("LULU-PRINT-006", "warning", "channel", "Lulu distribution barcode", check_lulu_barcode,
          channels=("lulu",), effective_date="2026-11-19", source_ref=DISTRIBUTION_SOURCE_REF),
+    Rule("LULU-PRINT-007", "error", "channel", "Lulu right-to-left print file order", check_lulu_binding,
+         channels=("lulu",), effective_date="2026-11-20", source_ref=MARGIN_SOURCE_REF),
 ])

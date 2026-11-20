@@ -1,10 +1,33 @@
-# Embedded inline-code fonts
+# Embedded print fonts
+
+## Amiri for Arabic and mixed-script print
+
+The print renderer uses the four original Amiri 1.003 faces for the Amiri body
+and heading choices. The typeface covers Arabic and Latin text. Typst shapes and
+embeds those faces and the DejaVu Sans Mono code faces. The renderer disables
+system font fallback and preflight reports characters missing from the selected
+face. Keep `LICENSE-Amiri.txt` with the fonts.
+
+[Amiri 1.003 release](https://github.com/aliftype/amiri/releases/tag/1.003)
+
+The release lists archive SHA-256
+`81af0aff7d2086d8af24cea7202f7546130997982534691373485cd96744d05e`.
+The extracted files were verified from that archive.
+
+| File | SHA-256 |
+| --- | --- |
+| Amiri-Regular.ttf | `cd2550c0f4c05eb341bf97958211aaa39382bca96577ba3a67d4a3b4912c43c0` |
+| Amiri-Bold.ttf | `8cfed49b66de57e360ac61631d882dddfa23095d3ddb39fc2133eaf93892e79a` |
+| Amiri-Italic.ttf | `ca02e830027f4376fc35ab4a058880a7d43affe7bd58108a6e6a02bd2515b343` |
+| Amiri-BoldItalic.ttf | `765d9fd9eef1718b27da360b26963d5b344ae630b6e760b97d1a38c5efa4df12` |
+| LICENSE-Amiri.txt | `72de68e5954f4fdd24702292ef5a32f003ca960ec9330dc86e5eefb5dffb9b22` |
+
+## DejaVu Sans Mono for inline code
 
 Unmodified DejaVu Sans Mono regular, bold, oblique and bold-oblique fonts are
-vendored from the official DejaVu 2.37 binary release. They are used for inline
-code in paragraphs/headings whose selected font is Bookworm Vera, not as aliases
-for Times, Helvetica or Courier. Other saved font choices retain their legacy
-behavior. Keep `LICENSE-DejaVu.txt` with these files when packaging the service.
+vendored from the official DejaVu 2.37 binary release. The embedded print
+families use them for inline code. Keep `LICENSE-DejaVu.txt` with these files
+when packaging the service.
 
 - Release: https://github.com/dejavu-fonts/dejavu-fonts/releases/tag/version_2_37
 - Archive: https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.zip
@@ -21,5 +44,5 @@ SHA-256 of the exact extracted files:
 | DejaVuSansMono-Oblique.ttf | `742097840c541870e8d6dc5c9b37bb1ceeea6c0dedd1d475faf903ef9df734b0` |
 | DejaVuSansMono-BoldOblique.ttf | `91713a71d550bba22c2a6b2bb2a9ad8f9a159e12e4e9f0a5b2677998ba21213e` |
 
-These are local artifact checksums, not a claim of independently signed upstream
-attestation. Font embedding does not provide RTL shaping or full-script coverage.
+The checksums describe the extracted artifacts. Print preflight checks coverage
+for each selected face.

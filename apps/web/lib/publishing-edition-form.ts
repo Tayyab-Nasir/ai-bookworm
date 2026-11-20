@@ -1,8 +1,14 @@
 import type { AudiobookVoice, EditionConfig } from "@bookworm/api-client";
 import type { Book, Edition } from "@bookworm/types";
 
-export const FONTS = ["BookwormVera", "BookwormVera-Bold", "Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"] as const;
-export const fontLabel = (font: string) => font === "BookwormVera" ? "Bitstream Vera · embedded" : font === "BookwormVera-Bold" ? "Bitstream Vera Bold · embedded" : font;
+const AMIRI_FONTS = ["BookwormAmiri", "BookwormAmiri-Bold"] as const;
+export const FONTS = ["BookwormVera", "BookwormVera-Bold", ...AMIRI_FONTS, "Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"] as const;
+export function isAmiriFont(font: string) { return AMIRI_FONTS.some(candidate => candidate === font); }
+const FONT_LABELS: Record<string, string> = {
+  BookwormVera: "Bitstream Vera · embedded", "BookwormVera-Bold": "Bitstream Vera Bold · embedded",
+  BookwormAmiri: "Amiri · Arabic and Latin", "BookwormAmiri-Bold": "Amiri Bold · Arabic and Latin",
+};
+export const fontLabel = (font: string) => FONT_LABELS[font] ?? font;
 export type Kind = "ebook" | "print" | "audiobook";
 const RTL_LANGUAGES = new Set(["ar", "arc", "dv", "fa", "he", "iw", "nqo", "ps", "sd", "ug", "ur", "yi"]);
 const RTL_SCRIPTS = new Set(["arab", "hebr", "nkoo", "thaa"]);
@@ -105,13 +111,17 @@ export function resolveEditionRenderSafety(form: FormState, book: Pick<Book, "ti
   // Direction preference cannot waive shaping required by the effective language.
   const requiresShaping = form.kind !== "audiobook" && (resolveEditionTextDirection(metadata.language ?? "", "auto") === "rtl" || form.textDirection === "rtl");
   const paginated = form.kind === "print" || (form.kind === "ebook" && form.flow === "fixed");
-  const rtlPrintUnsupported = paginated && requiresShaping;
+  const amiriPrint = form.kind === "print" && isAmiriFont(form.bodyFont) && isAmiriFont(form.headingFont);
+  const rtlPrintUnsupported = paginated && requiresShaping && !amiriPrint;
+  const uploadedCoverRequired = form.kind === "print" && form.wrapEnabled && !usesUploadedPrintCover(form)
+    && resolveEditionTextDirection(metadata.language ?? "", form.textDirection) === "rtl";
   const rtlCoverTextUnsupported = requiresShaping && !usesUploadedPrintCover(form) && Boolean(form.coverAssetId) && (
     (form.titleOnCover && Boolean(metadata.title))
     || (form.subtitleOnCover && Boolean(metadata.subtitle))
     || (form.authorOnCover && Boolean(metadata.author))
   );
-  return { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, renderBlocked: rtlPrintUnsupported || rtlCoverTextUnsupported };
+  return { paginated, rtlPrintUnsupported, rtlCoverTextUnsupported, uploadedCoverRequired,
+    renderBlocked: rtlPrintUnsupported || rtlCoverTextUnsupported || uploadedCoverRequired };
 }
 
 export function formFromEdition(edition: Edition, fallbackLanguage = "en"): FormState {
@@ -183,7 +193,10 @@ export function toConfig(form: FormState, savedConfig?: unknown): EditionConfig 
     trim_size: form.trimSize,
     margins: { top: form.top, bottom: form.bottom, inner: form.inner, outer: form.outer },
     typography: {
-      body_font: form.bodyFont, body_size_pt: form.bodySize, heading_font: form.headingFont, heading_size_pt: form.headingSize,
+      body_font: form.kind === "ebook" && isAmiriFont(form.bodyFont) ? "BookwormVera" as const : form.bodyFont,
+      body_size_pt: form.bodySize,
+      heading_font: form.kind === "ebook" && isAmiriFont(form.headingFont) ? "BookwormVera-Bold" as const : form.headingFont,
+      heading_size_pt: form.headingSize,
       leading: form.leading, paragraph_spacing_pt: form.paragraphSpacing, first_line_indent_in: form.firstLineIndent, text_align: form.textAlign,
     },
   };

@@ -9,7 +9,7 @@ from io import BytesIO
 
 from pypdf import PdfReader
 
-from editions import language_requires_rtl_shaping, resolve_text_direction
+from editions import AMIRI_FONTS, language_requires_rtl_shaping, resolve_text_direction
 from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
 from nav_validation import inspect_navigation
 from epub_toc_targets import inspect_toc_targets
@@ -19,7 +19,7 @@ from print_images import full_bleed_issues
 from editions import PrintEdition
 from wrap_cover import validate_wrap_pdf
 
-VERSION = "core-1.0.15"
+VERSION = "core-1.0.16"
 
 
 def _find(code, msg, loc=""):
@@ -272,11 +272,13 @@ def check_rtl_typography(ctx):
     language = metadata.get("language")
     direction = resolve_text_direction(language, edition.get("text_direction", "auto"))
     requires_rtl = language_requires_rtl_shaping(language) or direction == "rtl"
-    out = [_find("RTL_COVER_TEXT_UNSUPPORTED", issue["message"], issue["location"])[0]
+    out = [_find(issue.get("code", "RTL_COVER_TEXT_UNSUPPORTED"), issue["message"], issue["location"])[0]
            for issue in cover_rtl_issues(metadata, edition)]
     if not requires_rtl:
         return out
-    if edition.get("kind") == "print" or (edition.get("kind") == "ebook" and edition.get("flow") == "fixed"):
+    typography = edition.get("typography") or {}
+    amiri_print = edition.get("kind") == "print" and {typography.get("body_font"), typography.get("heading_font")} <= AMIRI_FONTS
+    if (edition.get("kind") == "print" and not amiri_print) or (edition.get("kind") == "ebook" and edition.get("flow") == "fixed"):
         out += _find("RTL_PRINT_FONT_UNSUPPORTED",
                      "RTL print PDF requires an embedded shaping-capable font; base PDF fonts are not safe for this script",
                      "edition.text_direction")

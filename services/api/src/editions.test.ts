@@ -113,6 +113,30 @@ for (const activityFailure of ["throw", "reject"] as const) {
   });
 }
 
+test("saved Arabic print editions preserve the Amiri pair and reject other uses", async () => {
+  const store = baseStore();
+  const app = await buildApp(() => fakeSupabase(store));
+  const typography = { body_font: "BookwormAmiri", heading_font: "BookwormAmiri-Bold" };
+  const url = `/v1/books/${BOOK}/editions`;
+  try {
+    const created = await app.inject({ method: "POST", url, headers: auth,
+      payload: { language: "ar", config: { kind: "print", typography } } });
+    assert.equal(created.statusCode, 201, created.body);
+    const listed = await app.inject({ method: "GET", url, headers: auth });
+    assert.equal(listed.statusCode, 200, listed.body);
+    const edition = listed.json().editions[0];
+    assert.equal(edition.language, "ar");
+    assert.equal(edition.edition_metadata_json.typography.body_font, typography.body_font);
+    assert.equal(edition.edition_metadata_json.typography.heading_font, typography.heading_font);
+    for (const config of [{ kind: "ebook", flow: "fixed", fixed_layout: { typography } },
+      { kind: "print", typography: { ...typography, heading_font: "BookwormVera-Bold" } }]) {
+      const rejected = await app.inject({ method: "POST", url, headers: auth, payload: { language: "ar", config } });
+      assert.equal(rejected.statusCode, 422, rejected.body);
+    }
+    assert.equal(store.tables.editions.length, 1);
+  } finally { await app.close(); }
+});
+
 test("edition input rejects unsafe QR destinations and unconfirmed cover assets", async () => {
   const store = baseStore();
   const app = await buildApp(() => fakeSupabase(store));

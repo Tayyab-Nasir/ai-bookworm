@@ -28,7 +28,7 @@ from editions import (  # noqa: E402
 )
 from cover_renderer import COVER_RENDERER_VERSION, compose_front_cover  # noqa: E402
 from epub_renderer import render_epub, RENDERER_VERSION as EPUB_RENDERER_VERSION  # noqa: E402
-from pdf_renderer import render_pdf, RENDERER_VERSION as PDF_RENDERER_VERSION  # noqa: E402
+from pdf_renderer import pdf_renderer_version, render_pdf  # noqa: E402
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
 from print_fonts import print_font_issues  # noqa: E402
@@ -325,7 +325,7 @@ def render(req: RenderRequest) -> RenderResponse:
         cover_output = base64.b64encode(cover).decode()
         cover_version = UPLOADED_VERSION if edition.wrap_cover.source_pdf_version is not None else WRAP_VERSION
     return RenderResponse(format="pdf", artifactBase64=base64.b64encode(blob).decode(),
-                          sha256=sha, rendererVersion=PDF_RENDERER_VERSION,
+                          sha256=sha, rendererVersion=pdf_renderer_version(edition),
                           coverArtifactBase64=cover_output, coverSha256=cover_sha,
                           coverRendererVersion=cover_version if cover else None,
                           coverFormat=("pdf" if edition.wrap_cover.enabled else "png") if cover else None)
