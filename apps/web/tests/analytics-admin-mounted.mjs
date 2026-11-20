@@ -470,8 +470,9 @@ test("styled dashboard, long names and failed revalidation remain contained with
     await expect(page.getByRole("alert")).toContainText("503: private dashboard summary unavailable");
     await expect(page.getByRole("region", { name: "Workspace summary", exact: true })).toHaveCount(0);
     await expect(page.getByRole("region", { name: "Publishing operations", exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "Try again", exact: true }).focus();
-    await page.keyboard.press("Tab"); await page.keyboard.press("Shift+Tab");
+    await expect(page.getByRole("link", { name: "Add a book", exact: true })).toHaveCount(0);
+    await page.getByRole("link", { name: "Create or import", exact: true }).focus();
+    await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name: "Try again", exact: true })).toBeFocused();
     assert.equal(await page.getByRole("button", { name: "Try again", exact: true }).evaluate(element => getComputedStyle(element).boxShadow !== "none"), true);
     const denied = await inspect();

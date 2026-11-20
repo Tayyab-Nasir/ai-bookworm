@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import type { DashboardOverview, DashboardRecentJob } from "@bookworm/api-client";
+import { ApiClientError, type DashboardOverview, type DashboardRecentJob } from "@bookworm/api-client";
 import type { Book, Workspace } from "@bookworm/types";
 import { apiClient } from "./api";
 import { AuthorHeader } from "./AuthorShell";
@@ -45,6 +45,10 @@ export function activityLabel(eventType: string) {
   } as Record<string, string>)[eventType] ?? eventType.replaceAll("_", " ");
 }
 
+type WorkspaceCreation =
+  | { kind: "created"; actor: string; workspaceId: string }
+  | { kind: "unconfirmed"; actor: string; checked: boolean };
+
 export default function AuthorDashboard() {
   const api = apiClient();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -55,6 +59,8 @@ export default function AuthorDashboard() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [workspaceName, setWorkspaceName] = useState("My publishing studio");
+  const [verifiedActor, setVerifiedActor] = useState<string | null>(null);
+  const [creation, setCreation] = useState<WorkspaceCreation | null>(null);
   const currentLoad = useRef<object | null>(null);
   const requestedWorkspace = useRef<string | null>(null);
   const loadedAccount = useRef<string | null>(null);
@@ -62,7 +68,7 @@ export default function AuthorDashboard() {
   const createFlight = useRef<object | null>(null);
   const mounted = useRef(true);
 
-  const load = useCallback(async (requestedId?: string) => {
+  const load = useCallback(async (requestedId?: string, recovery?: WorkspaceCreation) => {
     if (!mounted.current) return;
     const request = {};
     currentLoad.current = request;
@@ -78,16 +84,20 @@ export default function AuthorDashboard() {
     setWorkspaces([]);
     setBooks([]);
     setOverview(null);
+    setVerifiedActor(null);
+    let checkingActor: string | undefined;
     try {
       const account = await readBrowserSession();
       if (!current()) return;
+      checkingActor = account.id;
       const spaces = await api.listWorkspaces(account.id);
       if (!current()) return;
       // Keep unavailable explicit selections recoverable, but do not expose even
       // workspace names until the response is bound to the current account.
       let selectionError: unknown;
       let selected: Workspace | null = null;
-      try { selected = resolveWorkspace(spaces.workspaces, requestedWorkspace.current); }
+      const created = recovery?.kind === "created" && recovery.actor === account.id ? recovery : null;
+      try { selected = resolveWorkspace(spaces.workspaces, created?.workspaceId ?? requestedWorkspace.current); }
       catch (reason) { selectionError = reason; }
       const result = selected ? await api.getDashboardOverview(selected.id, account.id) : null;
       if (!current()) return;
@@ -95,9 +105,18 @@ export default function AuthorDashboard() {
         || result.books.some((book) => book.workspace_id !== selected!.id))) {
         throw new Error("Dashboard response does not match the requested account and workspace. Reload before continuing.");
       }
+      checkingActor = undefined;
       await readBrowserSession(account.id);
       if (!current()) return;
+      setVerifiedActor(account.id);
       setWorkspaces(spaces.workspaces);
+      setCreation((outcome) => {
+        if (!outcome || outcome.actor !== account.id) return null;
+        if (outcome.kind === "created") return selected?.id === outcome.workspaceId ? null : outcome;
+        if (selected) return null;
+        // Only a read begun for this outcome can establish a checked empty list.
+        return recovery === outcome && !selectionError ? { ...outcome, checked: true } : outcome;
+      });
       if (selectionError) throw selectionError;
       loadedAccount.current = account.id;
       if (formAccount.current !== account.id) setWorkspaceName("My publishing studio");
@@ -108,13 +127,18 @@ export default function AuthorDashboard() {
       }
 
       requestedWorkspace.current = selected.id;
-      if (requestedId !== undefined) replaceWorkspaceQuery(selected.id);
+      if (requestedId !== undefined || created) replaceWorkspaceQuery(selected.id);
       setWorkspace(selected);
       setBooks(result!.books);
       setOverview(result);
       setError(null);
       rememberWorkspace(spaces.workspaces, selected.id);
     } catch (reason) {
+      // A failed dashboard read is independent of a confirmed workspace save.
+      if (checkingActor && current()) {
+        const stillSignedIn = await readBrowserSession(checkingActor).catch(() => null);
+        if (current()) setVerifiedActor(stillSignedIn?.id ?? null);
+      }
       if (current()) {
         setError(reason instanceof Error ? reason.message : "Could not load your library.");
       }
@@ -125,13 +149,14 @@ export default function AuthorDashboard() {
 
   async function createWorkspace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const actor = loadedAccount.current;
-    if (!actor || createFlight.current) return;
+    const actor = verifiedActor;
+    if (!actor || loadedAccount.current !== actor || createFlight.current || creation?.actor === actor) return;
     const flight = {};
     createFlight.current = flight;
     setCreating(true); setError(null);
     const request = currentLoad.current;
-    const current = () => mounted.current && currentLoad.current === request && createFlight.current === flight;
+    const ownsFlight = () => mounted.current && createFlight.current === flight;
+    const current = () => ownsFlight() && currentLoad.current === request;
     const name = workspaceName.trim();
     let dispatched = false;
     try {
@@ -139,23 +164,22 @@ export default function AuthorDashboard() {
       if (!current()) return;
       dispatched = true;
       const created = await api.createWorkspace({ name }, actor);
-      if (!current()) return;
-      await readBrowserSession(actor);
-      if (!current()) return;
-      await load(created.id);
-    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "Workspace creation failed. Reload before trying again."); }
+      if (!ownsFlight()) return;
+      if (typeof created?.id !== "string" || !created.id) throw new Error("Workspace creation did not return an ID.");
+      const outcome: WorkspaceCreation = { kind: "created", actor, workspaceId: created.id };
+      setCreation(outcome);
+      await load(undefined, outcome);
+    } catch (reason) {
+      if (!ownsFlight()) return;
+      const rejected = reason instanceof ApiClientError && ([401, 403, 422].includes(reason.status)
+        || (reason.status === 409 && reason.code === "auth_error"));
+      if (dispatched && !rejected) setCreation({ kind: "unconfirmed", actor, checked: false });
+      else if (current()) setError(reason instanceof Error ? reason.message : "Workspace creation failed. Reload before trying again.");
+    }
     finally {
-      // A focus refresh invalidates the old UI confirmation, not an accepted
-      // server write. Release this flight without unlocking a newer request.
       if (createFlight.current === flight) {
         createFlight.current = null;
-        if (mounted.current) {
-          setCreating(false);
-          // A superseding focus read may have finished before the write did.
-          // Confirm the *current* account's library, never adopt the old reply
-          // or expose an empty form that can immediately create a duplicate.
-          if (dispatched && currentLoad.current !== request) void load();
-        }
+        if (mounted.current) setCreating(false);
       }
     }
   }
@@ -174,6 +198,9 @@ export default function AuthorDashboard() {
     };
   }, [load]);
 
+  const visibleCreation = !loading && creation?.actor === verifiedActor ? creation : null;
+  const checkCreation = !workspace && visibleCreation?.kind === "unconfirmed" ? visibleCreation : null;
+  const reload = () => void load(undefined, visibleCreation ?? undefined);
   const createHref = workspace?.id ? `/books/new?ws=${encodeURIComponent(workspace.id)}` : "/books/new";
   const usageMeters = [
     ["Writing & editing", "ai_credits", "ai_credits_monthly"],
@@ -197,7 +224,7 @@ export default function AuthorDashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
-          <button type="button" aria-label="Reload dashboard" aria-disabled={loading || creating} onClick={() => { if (!loading && !creating) void load(); }} className="glass-ghost inline-flex min-h-12 items-center rounded-full px-5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 aria-disabled:opacity-50">
+          <button type="button" aria-label="Reload dashboard" aria-disabled={loading || creating} onClick={() => { if (!loading && !creating) reload(); }} className="glass-ghost inline-flex min-h-12 items-center rounded-full px-5 text-sm font-medium text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 aria-disabled:opacity-50">
             {loading ? "Refreshing…" : "Reload dashboard"}
           </button>
           <Link href={workspace ? `/assets?ws=${encodeURIComponent(workspace.id)}` : "/assets"} className="glass-ghost metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-medium text-white">
@@ -217,7 +244,7 @@ export default function AuthorDashboard() {
         </select>
       </div>}
 
-      {!loading && !workspace && !error && <form onSubmit={(event) => void createWorkspace(event)} className="mt-8 rounded-2xl border border-white/15 bg-white/[0.035] p-6">
+      {!loading && !workspace && !error && !visibleCreation && <form onSubmit={(event) => void createWorkspace(event)} className="mt-8 rounded-2xl border border-white/15 bg-white/[0.035] p-6">
         <h2 className="text-2xl tracking-tight">Set up your publishing workspace</h2>
         <p className="mt-2 text-sm leading-6 text-[#aaa]">This is your private home for manuscripts, images, collaborators, and publishing projects.</p>
         <label htmlFor="workspaceName" className="mt-5 block text-sm">Workspace name</label>
@@ -227,10 +254,23 @@ export default function AuthorDashboard() {
         </div>
       </form>}
 
+      {checkCreation && <section aria-labelledby="check-workspace-creation" className="mt-8 rounded-2xl border border-white/15 bg-white/[0.035] p-6">
+        <h2 id="check-workspace-creation" className="text-2xl tracking-tight">Check workspace creation</h2>
+        <p role="status" className="mt-2 text-sm leading-6 text-[#ccc]">{checkCreation.checked && !error
+          ? "No workspace is visible yet. The earlier request may still finish. Check again or return to setup to start a new attempt."
+          : "We could not confirm whether your workspace was created. Check your saved workspaces before starting another attempt."}</p>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <button type="button" onClick={reload} className="glass-solid min-h-11 rounded-full px-5 text-sm font-semibold text-black">Check saved workspaces</button>
+          {checkCreation.checked && !error && <button type="button" onClick={() => setCreation(null)} className="glass-ghost min-h-11 rounded-full px-5 text-sm font-medium text-white">Return to setup</button>}
+        </div>
+      </section>}
+
+      {!workspace && visibleCreation?.kind === "created" && <p role="status" className="mt-6 rounded-2xl border border-white/15 bg-white/[0.035] px-5 py-4 text-sm text-white">Your workspace was created. Reload the dashboard to open it.</p>}
+
       {error && (
         <div role="alert" className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-400/20 bg-red-400/[0.08] px-5 py-4 text-sm text-red-100">
           <span>{error}</span>
-          <button type="button" disabled={loading || creating} onClick={() => void load()} className="min-h-11 rounded-full border border-red-200/30 px-4 py-2 text-xs font-semibold hover:bg-red-200/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 disabled:opacity-50">
+          <button type="button" disabled={loading || creating} onClick={reload} className="min-h-11 rounded-full border border-red-200/30 px-4 py-2 text-xs font-semibold hover:bg-red-200/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 disabled:opacity-50">
             Try again
           </button>
         </div>
@@ -295,20 +335,20 @@ export default function AuthorDashboard() {
         </div>
       </section>}
 
-      <section id="books" className="mt-12 scroll-mt-24">
+      {(loading || workspace) && <section id="books" className="mt-12 scroll-mt-24">
         <div className="mb-5 flex items-end justify-between gap-4">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[#8f8f8f]">Your library</p>
             <h2 className="mt-2 text-2xl font-medium tracking-[-0.045em]">Books in motion</h2>
           </div>
-          <Link href={createHref} className="text-sm font-medium text-[#d6d6d6] underline decoration-white/30 underline-offset-4 hover:text-white">
+          {workspace && <Link href={createHref} className="text-sm font-medium text-[#d6d6d6] underline decoration-white/30 underline-offset-4 hover:text-white">
             Add a book
-          </Link>
+          </Link>}
         </div>
 
         {loading ? (
           <div role="status" className="rounded-2xl border border-white/[0.09] bg-white/[0.025] px-5 py-12 text-center text-sm text-[#969696]">Loading your library…</div>
-        ) : !workspace ? null : books.length === 0 ? (
+        ) : books.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-white/[0.16] bg-white/[0.02] px-6 py-14 text-center">
             <h3 className="text-xl font-medium tracking-[-0.035em]">Your library is ready for its first book.</h3>
             <p className="mx-auto mt-3 max-w-md text-sm leading-6 text-[#969696]">Start from a blank manuscript or bring in a source file and set up the editorial workspace.</p>
@@ -342,7 +382,7 @@ export default function AuthorDashboard() {
             ))}
           </div>
         )}
-      </section>
+      </section>}
     </main>
     </>
   );

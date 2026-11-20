@@ -178,6 +178,79 @@ test("a same-account focus read that raced creation rechecks the library before 
   } finally { await page.close(); }
 });
 
+test("an unconfirmed workspace creation stays unresolved after an empty check and can recover without another write", async () => {
+  const page = await fixture("dashboard", false, true);
+  try {
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeVisible();
+    await page.evaluate(() => {
+      window.created = false;
+      window.api.listWorkspaces = async expected => {
+        window.reads.push({ method: "list", expected });
+        if (window.readUnavailable) throw new Error("Workspace list unavailable");
+        return { workspaces: window.created ? [{ id: window.ids.A, name: "Saved studio" }] : [] };
+      };
+      window.api.createWorkspace = async (body, expected) => {
+        window.calls.push({ body, expected });
+        throw new TypeError("Connection lost before reply");
+      };
+    });
+    await page.getByRole("button", { name: "Create workspace", exact: true }).click();
+    const recovery = page.getByRole("region", { name: "Check workspace creation" });
+    await expect(recovery).toContainText("could not confirm whether your workspace was created");
+    await expect(recovery.getByRole("button", { name: "Return to setup" })).toHaveCount(0);
+    await recovery.getByRole("button", { name: "Check saved workspaces" }).click();
+    await expect(recovery).toContainText("No workspace is visible yet");
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Add a book", exact: true })).toHaveCount(0);
+    await page.evaluate(() => { window.readUnavailable = true; });
+    await recovery.getByRole("button", { name: "Check saved workspaces" }).click();
+    await expect(page.getByRole("alert")).toContainText("Workspace list unavailable");
+    await expect(recovery.getByRole("button", { name: "Return to setup" })).toHaveCount(0);
+    await page.evaluate(() => { window.created = true; window.readUnavailable = false; });
+    await recovery.getByRole("button", { name: "Check saved workspaces" }).click();
+    await expect(heading(page, "A")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Add a book", exact: true })).toHaveAttribute("href", `/books/new?ws=${A}`);
+    await expect(recovery).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(() => window.calls), [{ body: { name: "My publishing studio" }, expected: A }]);
+    assert((await page.evaluate(() => window.reads.filter(read => read.method === "list"))).every(read => read.expected === A));
+  } finally { await page.close(); }
+});
+
+test("a confirmed workspace creation survives an unavailable dashboard and stays with the creating account", async () => {
+  const page = await fixture("dashboard", false, true);
+  try {
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeVisible();
+    await page.evaluate(() => {
+      window.created = false;
+      window.api.listWorkspaces = async expected => ({ workspaces: window.created && expected === window.ids.A ? [{ id: window.ids.A, name: "Saved studio" }] : [] });
+      window.api.createWorkspace = async (body, expected) => {
+        window.calls.push({ body, expected });
+        window.created = true;
+        return { id: window.ids.A };
+      };
+      window.api.getDashboardOverview = async () => { throw new Error("Dashboard is temporarily unavailable"); };
+    });
+    await page.getByRole("button", { name: "Create workspace", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Dashboard is temporarily unavailable");
+    await expect(page.getByRole("status")).toContainText("Your workspace was created");
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Books in motion" })).toHaveCount(0);
+    await page.evaluate(() => {
+      window.api.listWorkspaces = async expected => ({ workspaces: expected === window.ids.A
+        ? [{ id: window.ids.B, name: "Other studio" }, { id: window.ids.A, name: "Saved studio" }] : [] });
+      window.api.getDashboardOverview = async id => { window.reopened = id; throw new Error("Still unavailable"); };
+    });
+    await page.getByRole("button", { name: "Try again", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("Still unavailable");
+    await expect(page.getByRole("status")).toContainText("Your workspace was created");
+    assert.equal(await page.evaluate(() => window.reopened), A);
+    await page.evaluate(() => { window.actor = window.ids.B; window.dispatchEvent(new Event("focus")); });
+    await expect(page.getByRole("button", { name: "Create workspace", exact: true })).toBeEnabled();
+    await expect(page.getByText("Your workspace was created", { exact: false })).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.calls.length), 1);
+  } finally { await page.close(); }
+});
+
 for (const outcome of ["success", "failure"]) test(`account menu drops old email, administrator link and late role ${outcome}`, async () => {
   const page = await fixture("account");
   try {
