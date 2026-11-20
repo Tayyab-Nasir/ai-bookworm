@@ -70,3 +70,22 @@ test("community discovery and join carry their original actor", async () => {
     ]);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test("invitation recovery sends the token only in an actor-bound POST body", async () => {
+  const originalFetch = globalThis.fetch;
+  const token = "synthetic-invitation-token-not-secret";
+  const controller = new AbortController();
+  let captured: { path: string; method: string; actor: string | null; key: string | null; body: string | null; signal: AbortSignal | null | undefined } | null = null;
+  globalThis.fetch = async (input, init) => {
+    const headers = new Headers(init?.headers);
+    captured = { path: String(input), method: init?.method ?? "GET", actor: headers.get("x-bookworm-actor"),
+      key: headers.get("idempotency-key"), body: typeof init?.body === "string" ? init.body : null, signal: init?.signal };
+    return Response.json({ viewerId: actor, state: "not_confirmed" });
+  };
+  try {
+    const client = createClient({ baseUrl: "/api/backend", expectedActor: actor, idempotencyKey: () => "unused-key" });
+    assert.deepEqual(await client.checkWorkspaceInvitation(token, controller.signal), { viewerId: actor, state: "not_confirmed" });
+    assert.deepEqual(captured, { path: "/api/backend/v1/workspaces/invitations/status", method: "POST", actor,
+      key: null, body: JSON.stringify({ token }), signal: controller.signal });
+  } finally { globalThis.fetch = originalFetch; }
+});

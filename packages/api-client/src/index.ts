@@ -107,6 +107,10 @@ export interface WorkspaceInvitation {
   updated_at: string;
 }
 
+export type WorkspaceInvitationStatus =
+  | { viewerId: string; state: "not_confirmed" | "accepted_unavailable" }
+  | { viewerId: string; state: "accepted"; workspaceId: string; role: WorkspaceMember["role"] };
+
 export type WorkspaceTargetType = "book" | "asset" | "chapter" | "edition";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
 
@@ -1186,6 +1190,8 @@ export function createClient(opts: ClientOptions) {
       call<{ invitationId: string; revoked: true }>("DELETE", `/v1/workspaces/${workspaceId}/invitations/${invitationId}`),
     acceptWorkspaceInvitation: (token: string) =>
       call<{ workspaceId: string; organizationId: string; role: WorkspaceMember["role"]; status: "active" }>("POST", "/v1/workspaces/invitations/accept", { token }),
+    checkWorkspaceInvitation: (token: string, signal?: AbortSignal) =>
+      call<WorkspaceInvitationStatus>("POST", "/v1/workspaces/invitations/status", { token }, false, {}, signal),
     updateMemberRole: (workspaceId: string, userId: string, role: WorkspaceMember["role"]) =>
       call<WorkspaceMember>("PATCH", `/v1/workspaces/${workspaceId}/members/${userId}`, { role }),
     createAiJob: (body: CreateAiJobRequest) => call<AiJobWithSuggestions>("POST", "/v1/ai/jobs", body),

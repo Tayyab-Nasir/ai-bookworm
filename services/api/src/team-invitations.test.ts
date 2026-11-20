@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 process.env.SUPABASE_URL ??= "http://localhost:54321";
 process.env.SUPABASE_ANON_KEY ??= "test-anon";
@@ -17,6 +18,7 @@ interface Store {
   tables: Record<string, Row[]>;
   rpcResults: Record<string, { data: unknown; error: unknown }>;
   rpcCalls: { name: string; args: Row }[];
+  beforeInvitationUpdate?: (row: Row) => void;
 }
 
 const OWNER = "a8000000-0000-4000-8000-000000000001";
@@ -37,6 +39,12 @@ function fakeSupabase(store: Store) {
       const matches = () => rows.filter((row) => filters.every(([column, value]) => row[column] === value));
       const resolveRows = () => {
         if (inserted) return [inserted];
+        if (patch && table === "workspace_invitations" && store.beforeInvitationUpdate) {
+          const callback = store.beforeInvitationUpdate;
+          delete store.beforeInvitationUpdate;
+          const row = rows.find((item) => item.id === filters.find(([column]) => column === "id")?.[1]);
+          if (row) callback(row);
+        }
         const found = matches();
         if (patch) for (const row of found) Object.assign(row, patch);
         return found;
@@ -160,4 +168,72 @@ test("invitation and owner-role database errors map to stable API boundaries", a
   const conflict = await app.inject({ method: "PATCH", url: `/v1/workspaces/${WORKSPACE}/members/${OWNER}`, headers: auth, payload: { role: "admin" } });
   assert.equal(conflict.statusCode, 409);
   await app.close();
+});
+
+test("invitation status is actor-bound, private and never returns the token", async () => {
+  const store = baseStore();
+  const token = "secret-synthetic-token-".repeat(3);
+  store.rpcResults.workspace_invitation_acceptance_status = {
+    data: { viewerId: OWNER, state: "accepted", workspaceId: WORKSPACE, role: "reviewer" }, error: null,
+  };
+  const app = await appWith(store);
+  const result = await app.inject({ method: "POST", url: "/v1/workspaces/invitations/status", headers: auth, payload: { token } });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.headers["cache-control"], "private, no-store");
+  assert.deepEqual(result.json(), { viewerId: OWNER, state: "accepted", workspaceId: WORKSPACE, role: "reviewer" });
+  assert.deepEqual(store.rpcCalls.at(-1), {
+    name: "workspace_invitation_acceptance_status",
+    args: { p_token_hash: createHash("sha256").update(token).digest("hex") },
+  });
+  assert.equal(result.body.includes(token), false);
+  for (const state of ["not_confirmed", "accepted_unavailable"] as const) {
+    store.rpcResults.workspace_invitation_acceptance_status = { data: { viewerId: OWNER, state }, error: null };
+    const response = await app.inject({ method: "POST", url: "/v1/workspaces/invitations/status", headers: auth, payload: { token } });
+    assert.deepEqual(response.json(), { viewerId: OWNER, state });
+  }
+  await app.close();
+});
+
+test("invitation status fails closed for another actor, malformed data and database errors", async () => {
+  const store = baseStore();
+  const app = await appWith(store);
+  const token = "x".repeat(43);
+  for (const response of [
+    { data: { viewerId: WORKSPACE, state: "accepted", workspaceId: WORKSPACE, role: "writer" }, error: null },
+    { data: { viewerId: OWNER, state: "not_confirmed", workspaceId: WORKSPACE }, error: null },
+    { data: { viewerId: OWNER, state: "accepted", workspaceId: "bad", role: "writer" }, error: null },
+    { data: null, error: { message: "private database details" } },
+  ]) {
+    store.rpcResults.workspace_invitation_acceptance_status = response;
+    const result = await app.inject({ method: "POST", url: "/v1/workspaces/invitations/status", headers: auth, payload: { token } });
+    assert.equal(result.statusCode, 503);
+    assert.equal(result.body.includes("private database details"), false);
+    assert.equal(result.body.includes(WORKSPACE), false);
+  }
+  const invalid = await app.inject({ method: "POST", url: "/v1/workspaces/invitations/status", headers: auth, payload: { token: "short" } });
+  assert.equal(invalid.statusCode, 422);
+  await app.close();
+});
+
+test("stale invitation rotations do not overwrite acceptance or a newer link", async () => {
+  for (const change of ["accepted", "revoked", "rotated"] as const) {
+    const store = baseStore();
+    const app = await appWith(store);
+    const payload = { email: "writer@example.com", role: "writer" };
+    const first = await app.inject({ method: "POST", url: `/v1/workspaces/${WORKSPACE}/invitations`, headers: auth, payload });
+    assert.equal(first.statusCode, 201);
+    let snapshot: Row = {};
+    store.beforeInvitationUpdate = (row) => {
+      if (change === "rotated") {
+        row.updated_at = new Date(Date.parse(String(row.updated_at)) + 1).toISOString();
+        row.token_hash = "newer-hash";
+      } else row.status = change;
+      snapshot = { ...row };
+    };
+    const stale = await app.inject({ method: "POST", url: `/v1/workspaces/${WORKSPACE}/invitations`, headers: auth, payload });
+    assert.equal(stale.statusCode, 409);
+    assert.deepEqual(store.tables.workspace_invitations[0], snapshot);
+    assert.equal("acceptanceUrl" in stale.json(), false);
+    await app.close();
+  }
 });

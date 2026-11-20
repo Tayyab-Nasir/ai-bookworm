@@ -3280,6 +3280,7 @@ paths:
         "201": { description: Invitation created, content: { application/json: { schema: { type: object, required: [invitation, acceptanceUrl], properties: { invitation: { $ref: "#/components/schemas/WorkspaceInvitation" }, acceptanceUrl: { type: string, format: uri } } } } } }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /v1/workspaces/{workspaceId}/invitations/{invitationId}:
@@ -3317,6 +3318,49 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
+  /v1/workspaces/invitations/status:
+    post:
+      tags: [v1]
+      operationId: checkWorkspaceInvitation
+      summary: Read the signed-in actor's invitation acceptance without repeating the write
+      description: >-
+        Send the original token in the request body. A not_confirmed result does not
+        prevent a prior acceptance from completing later. Workspace identity and
+        current role are returned only when the accepting actor still has active access.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 256 }
+      responses:
+        "200":
+          description: Caller-scoped invitation status; response is private and not cacheable
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    additionalProperties: false
+                    required: [viewerId, state]
+                    properties:
+                      viewerId: { type: string, format: uuid }
+                      state: { type: string, enum: [not_confirmed, accepted_unavailable] }
+                  - type: object
+                    additionalProperties: false
+                    required: [viewerId, state, workspaceId, role]
+                    properties:
+                      viewerId: { type: string, format: uuid }
+                      state: { type: string, enum: [accepted] }
+                      workspaceId: { type: string, format: uuid }
+                      role: { type: string, enum: [owner, admin, editor, writer, illustrator, designer, reviewer, viewer] }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/workspaces/{workspaceId}/members/{userId}:
     patch:
       tags: [v1]

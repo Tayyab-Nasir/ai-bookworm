@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { AppError } from "../errors.js";
 import { requireWorkspaceAdmin, requireWorkspaceMember } from "../lib/authorize.js";
 import { logActivity } from "../lib/activity.js";
+import { boundedSupabaseFetch } from "../lib/supabase.js";
 
 const ROLES = ["owner", "admin", "editor", "writer", "illustrator", "designer", "reviewer", "viewer"] as const;
 
@@ -17,6 +18,11 @@ const roleSchema = z.object({
 }).strict();
 
 const acceptInvitationSchema = z.object({ token: z.string().min(32).max(256) }).strict();
+const invitationStatusSchema = z.discriminatedUnion("state", [
+  z.object({ viewerId: z.string().uuid(), state: z.literal("not_confirmed") }).strict(),
+  z.object({ viewerId: z.string().uuid(), state: z.literal("accepted_unavailable") }).strict(),
+  z.object({ viewerId: z.string().uuid(), state: z.literal("accepted"), workspaceId: z.string().uuid(), role: z.enum(ROLES) }).strict(),
+]);
 const INVITATION_FIELDS = "id,workspace_id,email,role,status,expires_at,invited_by,accepted_by,accepted_at,revoked_by,revoked_at,created_at,updated_at";
 
 function hashInvitationToken(token: string) {
@@ -86,13 +92,20 @@ export function teamRoutes(app: FastifyInstance) {
     const token = randomBytes(32).toString("base64url");
     const url = acceptanceUrl(token);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    const { data: existing } = await svc.from("workspace_invitations").select("id")
+    const { data: existing, error: lookupError } = await svc.from("workspace_invitations").select("id,updated_at")
       .eq("workspace_id", id).eq("email", email).eq("status", "pending").maybeSingle();
-    const values = { email, role: parsed.data.role, token_hash: hashInvitationToken(token), expires_at: expiresAt, invited_by: req.userId, updated_at: new Date().toISOString() };
+    if (lookupError) throw new AppError(503, "Invitations could not be checked. Refresh before trying again.");
+    const previousTime = existing ? Date.parse(existing.updated_at) : 0;
+    if (existing && !Number.isFinite(previousTime)) throw new AppError(503, "The invitation changed. Refresh before trying again.");
+    const updatedAt = new Date(Math.max(Date.now(), previousTime + 1)).toISOString();
+    const values = { email, role: parsed.data.role, token_hash: hashInvitationToken(token), expires_at: expiresAt, invited_by: req.userId, updated_at: updatedAt };
     const query = existing
-      ? svc.from("workspace_invitations").update(values).eq("id", existing.id)
+      ? svc.from("workspace_invitations").update(values).eq("id", existing.id).eq("workspace_id", id).eq("status", "pending").eq("updated_at", existing.updated_at)
       : svc.from("workspace_invitations").insert({ workspace_id: id, ...values });
-    const { data, error } = await query.select(INVITATION_FIELDS).single();
+    const { data, error } = await query.select(INVITATION_FIELDS).maybeSingle();
+    if (error?.code === "23505" || error?.code === "PT409" || (!error && !data && existing)) {
+      throw new AppError(409, "The invitation changed. Refresh before creating another link.");
+    }
     if (error || !data) throw new AppError(500, "invitation could not be saved");
     await logActivity(svc, { workspaceId: id, actorId: req.userId, eventType: existing ? "invitation_rotated" : "member_invited", entityType: "workspace_invitation", entityId: data.id, payload: { role: parsed.data.role } });
     return reply.status(existing ? 200 : 201).send({ invitation: publicInvitation(data), acceptanceUrl: url });
@@ -120,6 +133,26 @@ export function teamRoutes(app: FastifyInstance) {
     if (error) throw invitationError(error);
     if (!data) throw new AppError(500, "invitation acceptance returned no result");
     return data;
+  });
+
+  // This is a read, not a retry. The opaque token stays in the POST body; its
+  // hash is passed to the database RPC body and never placed in a query URL.
+  app.post("/workspaces/invitations/status", { config: { durableIdempotency: true } }, async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
+    const parsed = acceptInvitationSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "invalid invitation token");
+    let result;
+    try {
+      const sb = app.supabaseFactory(req.userToken, boundedSupabaseFetch(AbortSignal.timeout(10_000)));
+      result = await sb.rpc("workspace_invitation_acceptance_status", { p_token_hash: hashInvitationToken(parsed.data.token) });
+    } catch {
+      throw new AppError(503, "Invitation status could not be checked. Try again.");
+    }
+    const status = invitationStatusSchema.safeParse(result.data);
+    if (result.error || !status.success || status.data.viewerId !== req.userId) {
+      throw new AppError(503, "Invitation status could not be checked. Try again.");
+    }
+    return status.data;
   });
 
   // Role change: owner/admin only. The last owner cannot be demoted.

@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 140 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 141 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -29,6 +29,7 @@ const savedPrintPreflight = '20261119172907_saved_print_preflight_binding.sql';
 const uploadedPaperbackCover = '20261119193430_uploaded_paperback_cover.sql';
 const aiConnectionConflictCode = '20261120022619_ai_connection_conflict_code.sql';
 const workspaceCreationReceipts = '20261120024556_workspace_creation_receipts.sql';
+const invitationRecovery = '20261120050328_invitation_acceptance_recovery.sql';
 const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
 const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
 const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
@@ -192,10 +193,33 @@ async function expectedWorkspaceCreationGuard(migration, fixture, historical, dr
   console.log(`PASS workspace onboarding ${drift} drift and rollback`);
 }
 
+async function expectedInvitationRecoveryGuard(migration, fixture, historical, drift) {
+  step = `expected invitation recovery ${drift} guard`;
+  const signature = 'public.accept_workspace_invitation(text)';
+  await db.exec('begin;');
+  try {
+    if (drift === 'body') {
+      const original = (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition;
+      const altered = original.replace('v_actor uuid := auth.uid();', 'v_actor uuid := auth.uid(); -- synthetic drift');
+      assert.notEqual(altered, original);
+      await db.exec(altered);
+    } else if (drift === 'anonymous') await db.exec(`grant execute on function ${signature} to anon;`);
+    else await db.exec('grant select on public.workspace_invitations to authenticated;');
+    await db.exec('savepoint invitation_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001'
+      && error.message === 'Invitation recovery requires the reviewed acceptance function and privileges');
+    await db.exec('rollback to savepoint invitation_guard;');
+    assert.equal((await db.query("select to_regprocedure('public.workspace_invitation_acceptance_status(text)') as target")).rows[0].target, null);
+    assert.equal((await db.query("select count(*)::int as n from pg_trigger where tgname='preserve_terminal_workspace_invitation' and not tgisinternal")).rows[0].n, 0);
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS invitation recovery ${drift} drift abort and rollback`);
+}
+
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 140, 'This reviewed rehearsal pins the 45 -> 140 target; review before extending');
+  assert.equal(names.length, 141, 'This reviewed rehearsal pins the 45 -> 141 target; review before extending');
   assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
   assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
@@ -218,7 +242,7 @@ try {
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
-  assert.deepEqual(names.slice(-8), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts]);
+  assert.deepEqual(names.slice(-9), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery]);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
@@ -239,6 +263,9 @@ try {
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Pre-upgrade authorization probes are non-mutating');
   console.log(`PASS committed baseline: two tenants, four profiles, historical versions, rich nodes, memberships, quarantined/trusted assets, ledger balances and uncertain Stripe receipts; ${Object.keys(historical).length} preserved relation projections`);
   for (const migration of migrations.slice(45)) {
+    if (migration.name === invitationRecovery) {
+      for (const drift of ['body', 'anonymous', 'table-select']) await expectedInvitationRecoveryGuard(migration, fixture, historical, drift);
+    }
     if (migration.name === workspaceCreationReceipts) {
       for (const drift of ['body', 'privileges']) await expectedWorkspaceCreationGuard(migration, fixture, historical, drift);
     }
@@ -287,6 +314,21 @@ try {
       const request=(await db.query('select to_jsonb(r) value from public.data_rights_requests r where id=$1',[requestId])).rows[0].value;
       intakeProbe={ticketId,requestId,ticket,request};
     }
+    let invitationProbe = null;
+    if (migration.name === invitationRecovery) {
+      const tenant = fixture.tenants[0], ids = [];
+      for (const status of ['pending', 'accepted', 'revoked']) {
+        const id = randomUUID(), hash = createHash('sha256').update(randomUUID()).digest('hex');
+        ids.push(id);
+        await db.query(`insert into public.workspace_invitations(id,workspace_id,email,role,token_hash,status,expires_at,invited_by,accepted_by,accepted_at)
+          values($1,$2,$3,'writer',$4,$5,clock_timestamp()+interval '7 days',$6,
+            case when $5='accepted' then $6::uuid else null end,case when $5='accepted' then clock_timestamp() else null end)`,
+          [id, tenant.workspace, `${status}-${id}@upgrade.invalid`, hash, status, tenant.user]);
+      }
+      const before = (await db.query('select to_jsonb(i) as value from public.workspace_invitations i where id=any($1::uuid[]) order by id', [ids])).rows;
+      assert.equal(before.length, 3);
+      invitationProbe = { ids, before };
+    }
     let renderProbe = null;
     if ([renderClosure, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover].includes(migration.name)) {
       const tenant = fixture.tenants[0], edition = randomUUID(), running = randomUUID(), succeeded = randomUUID();
@@ -300,6 +342,24 @@ try {
       renderProbe = { edition, running, succeeded, before };
     }
     await migrate(migration, 'upgrade');
+    if (invitationProbe) {
+      const saved = async () => (await db.query('select to_jsonb(i) as value from public.workspace_invitations i where id=any($1::uuid[]) order by id', [invitationProbe.ids])).rows;
+      assert.deepEqual(await saved(), invitationProbe.before, 'Existing invitation rows survived the upgrade unchanged');
+      await db.exec(await readFile(join(root, 'tests/security/invitation-acceptance-recovery.test.sql'), 'utf8'));
+      await db.exec('begin;');
+      try {
+        await db.exec(`drop trigger preserve_terminal_workspace_invitation on public.workspace_invitations;
+          drop function public.workspace_invitation_acceptance_status(text);
+          drop function private.workspace_invitation_acceptance_status(text);
+          drop function private.preserve_terminal_workspace_invitation();`);
+        assert.equal((await db.query("select to_regprocedure('public.workspace_invitation_acceptance_status(text)') as target")).rows[0].target, null);
+        assert.deepEqual(await saved(), invitationProbe.before, 'Removal rehearsal preserved invitation data');
+        await db.exec(migration.sql);
+        assert.deepEqual(await saved(), invitationProbe.before, 'Reapplication rehearsal preserved invitation data');
+      } finally { await db.exec('rollback;'); }
+      assert.deepEqual(await saved(), invitationProbe.before);
+      console.log('PASS populated invitation upgrade: existing pending/accepted/revoked rows, scoped assertions and removal/reapplication rehearsal');
+    }
     if (intakeProbe) {
       assert.deepEqual((await db.query('select to_jsonb(t) value from public.support_tickets t where id=$1',[intakeProbe.ticketId])).rows[0].value,intakeProbe.ticket,'legacy support row preserved');
       assert.deepEqual((await db.query('select to_jsonb(r) value from public.data_rights_requests r where id=$1',[intakeProbe.requestId])).rows[0].value,intakeProbe.request,'legacy rights request preserved');
@@ -509,7 +569,7 @@ try {
       : typeof value === 'boolean' ? value ? 't' : 'f' : String(value);
   });
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Reused paid lifecycle fixtures roll back without changing historical rows');
-  console.log(`PASS populated upgrade: 45 historical migrations + committed rows + ${migrations.length - 45} upgrades + eleven guarded aborts + reused synthetic paid lifecycle helpers.`);
+  console.log(`PASS populated upgrade: 45 historical migrations + committed rows + ${migrations.length - 45} upgrades + guarded aborts + reused synthetic paid lifecycle helpers.`);
   console.log('NOT PROVEN: hosted history/drift, real backup/restore, native concurrency, GoTrue/PostgREST/Storage HTTP, provider receipts, worker drain or production rollout authority.');
 } catch (error) {
   // Never print SQL, function definitions, row contents or raw database error detail.
