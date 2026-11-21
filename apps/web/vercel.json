@@ -1,14 +1,5 @@
 {
   "version": 2,
   "git": { "deploymentEnabled": { "codex/**": false } },
-  "root": "../..",
-  "builds": [
-    {
-      "src": "apps/web/package.json",
-      "use": "@vercel/next",
-      "config": {
-        "distDir": ".next"
-      }
-    }
-  ]
+  "framework": "nextjs"
 }

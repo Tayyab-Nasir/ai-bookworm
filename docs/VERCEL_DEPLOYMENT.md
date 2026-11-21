@@ -45,6 +45,11 @@ Those belong to the persistent API/worker/service hosts.
 
 The repository is already linked through `.vercel/project.json` (ignored by
 Git) and `vercel.json` currently points the Vercel build at `apps/web`.
+For a project whose Vercel Root Directory is `apps/web`, the
+`apps/web/vercel.json` selects the Next.js framework through Vercel's normal
+framework build. Enable **Include source files outside of the Root Directory**
+in that project so the root lockfile and shared workspace packages are
+available. The Root Directory itself is a Vercel project setting.
 
 Set these production variables in the Vercel project settings:
 

@@ -12,7 +12,12 @@ class VercelCheckpointTests(unittest.TestCase):
                 config = json.loads((repository / relative).read_text(encoding="utf-8"))
                 self.assertEqual(config["git"]["deploymentEnabled"], {"codex/**": False})
                 self.assertEqual(config["version"], 2)
-                self.assertTrue(config["builds"], "Existing build configuration must remain available")
+                if relative == "vercel.json":
+                    self.assertEqual(config["builds"][0]["src"], "apps/web/package.json")
+                else:
+                    self.assertEqual(config["framework"], "nextjs")
+                    self.assertNotIn("root", config)
+                    self.assertNotIn("builds", config)
 
 
 if __name__ == "__main__":
