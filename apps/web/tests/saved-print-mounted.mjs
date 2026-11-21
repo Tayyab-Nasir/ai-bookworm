@@ -1857,10 +1857,17 @@ test('book change while account preflight is pending never sends old-book creati
 });
 
 test('account switch before edition save hides original form and sends no write',async()=>{
- const {page}=await fixture({parent:true});let account=ids.otherAsset;try{
+ const {page}=await fixture({parent:true});let account=ids.asset;try{
   await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
   await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('must not execute');};});
-  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+  await page.getByLabel('Language',{exact:true}).fill('fr');
+  await page.waitForLoadState('networkidle');
+  const save=page.getByRole('button',{name:'Save edition',exact:true});
+  await expect(save).toBeEnabled();
+  // The fixture changes accounts at dispatch. A browser focus recheck is a separate transition.
+  account=ids.otherAsset;
+  await save.evaluate(button=>button.click());
   await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveCount(0);assert.equal(await page.evaluate(()=>window.creationCalls),0);
   account=ids.asset;await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();
  }finally{await page.close()}
