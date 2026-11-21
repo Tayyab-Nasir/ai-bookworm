@@ -208,7 +208,7 @@ function AnalyticsPageInner() {
       <p className="relative text-[11px] font-medium uppercase tracking-[0.22em] text-[#8f8f8f]">Retailer ledger</p>
       <div className="relative mt-3 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between"><div>
         <h1 className="max-w-[11ch] text-5xl font-medium leading-[0.88] tracking-[-0.065em] sm:text-6xl">Sales, <span className="font-instrument font-normal italic text-[#c5c5c5]">with receipts.</span></h1>
-        <p className="mt-5 max-w-xl text-[15px] leading-6 text-[#989898]">Import retailer reports. Bookworm preserves source-backed totals and keeps currencies separate instead of guessing at conversion.</p>
+        <p className="mt-5 max-w-xl text-[15px] leading-6 text-[#989898]">Import retailer reports. BookieWookie preserves source-backed totals and keeps currencies separate instead of guessing at conversion.</p>
       </div><Link href={workspaceId ? `/dashboard?ws=${encodeURIComponent(workspaceId)}` : "/dashboard"} className="glass-ghost relative inline-flex h-11 items-center rounded-full px-5 text-sm text-white/75">Back to desk</Link></div>
     </section>
 

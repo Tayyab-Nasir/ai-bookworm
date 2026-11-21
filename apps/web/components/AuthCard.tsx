@@ -148,7 +148,7 @@ export function AuthCard({
                 type="email"
                 autoComplete="email"
                 required
-                placeholder="you@bookworm.ai"
+                placeholder="you@example.com"
                 className="h-12 w-full rounded-full border border-white/[0.1] bg-white/[0.04] px-5 text-[15px] text-white outline-none transition-[border-color,background-color] duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] placeholder:text-[#5a5a5a] hover:border-white/[0.18] focus:border-white/30 focus:bg-white/[0.06] focus-visible:ring-0"
               />
             </div>}
