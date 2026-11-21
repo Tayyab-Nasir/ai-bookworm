@@ -11,6 +11,7 @@
   "scripts": {
     "services:local": "node scripts/run-local-processing.mjs",
     "imports:local": "node scripts/run-local-import-worker.mjs",
+    "publishing:local": "node scripts/run-local-publishing-worker.mjs",
     "test:local-processing-launcher": "node --test tests/local-processing-launcher.test.mjs",
     "test:local-import-worker": "node --test tests/local-import-worker.test.mjs",
     "worker": "node --import tsx workers/run.mjs",

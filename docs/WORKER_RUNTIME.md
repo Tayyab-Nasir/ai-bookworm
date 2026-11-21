@@ -30,6 +30,16 @@ shutdown on Windows and Linux. See `LOCAL_IMPORT_WORKER.md` before activation;
 the command starts real imports for the entire configured Supabase project.
 It does not activate any paid role or replace the production systemd units below.
 
+For proofs and retailer ZIPs on a local app, use
+`npm run publishing:local -- --check` to inspect the entry point or
+`npm run publishing:local -- --config <private-env-file>` to start the supervised
+publishing consumer. Provide the Supabase public and server keys and distinct
+loopback `RENDERING_SERVICE_URL` and `PUBLISHING_SERVICE_URL` with their matching
+role-specific tokens. It processes queued render, validation and package jobs
+for the configured project. The launcher passes only those service credentials
+and leaves the author/operator retailer handoff in the publishing studio.
+Type `stop` and press Return to drain the current job and stop claiming new ones.
+
 ## Worker roles
 
 | Role | Work processed |

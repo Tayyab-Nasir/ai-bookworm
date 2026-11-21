@@ -6,13 +6,18 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { finished } from 'node:stream/promises';
-import { createImportWorkerPlan, runImportWorker } from '../scripts/run-local-import-worker.mjs';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { createImportWorkerPlan, createPublishingWorkerPlan, runImportWorker, runPublishingWorker } from '../scripts/run-local-import-worker.mjs';
 
 const root = resolve('.');
 const config = () => ({ SUPABASE_URL: 'https://project.example.test', SUPABASE_ANON_KEY: 'synthetic-anonymous-key',
   SUPABASE_SERVICE_ROLE_KEY: 'synthetic-private-database-key-no-network',
   DOCUMENT_SERVICE_URL: 'http://127.0.0.1:8001', DOCUMENT_SERVICE_TOKEN: 'd'.repeat(40),
   SCANNING_SERVICE_URL: 'http://127.0.0.1:8004', SCANNING_SERVICE_TOKEN: 's'.repeat(40) });
+const publishingConfig = () => ({ ...config(),
+  RENDERING_SERVICE_URL: 'http://127.0.0.1:8002', RENDERING_SERVICE_TOKEN: 'r'.repeat(40),
+  PUBLISHING_SERVICE_URL: 'http://127.0.0.1:8003', PUBLISHING_SERVICE_TOKEN: 'p'.repeat(40) });
 const wait = (promise, milliseconds = 8000) => { let timer; return Promise.race([promise, new Promise((_, reject) => {
   timer = setTimeout(() => reject(new Error('Local import test deadline exceeded')), milliseconds);
 })]).finally(() => clearTimeout(timer)); };
@@ -39,6 +44,43 @@ test('document-only environment excludes provider, payment, proxies, Node inject
   assert.deepEqual(plan.args, ['--import', 'tsx', join(root, 'workers/run.mjs'), 'document']);
   for (const key of ['OPENAI_API_KEY', 'STRIPE_SECRET_KEY', 'SERVICE_AUTH_TOKEN', 'RENDERING_SERVICE_TOKEN', 'AI_SERVICE_TOKEN', 'NODE_OPTIONS', 'HTTPS_PROXY']) assert(!(key in plan.env), key);
   assert.equal(plan.env.REDIS_URL, 'redis://127.0.0.1:6379', 'Unused common configuration must not leak an authenticated Redis URL');
+});
+
+test('local publishing worker receives only its own loopback dependencies and service tokens', () => {
+  const plan = createPublishingWorkerPlan(publishingConfig(), {
+    PATH: process.env.PATH, OPENAI_API_KEY: 'fixture', STRIPE_SECRET_KEY: 'fixture', HTTPS_PROXY: 'fixture',
+  });
+  assert.deepEqual(plan.args, ['--import', 'tsx', join(root, 'workers/run.mjs'), 'publishing']);
+  assert.deepEqual(plan.dependencies.map(dep => dep.role), ['rendering', 'publishing']);
+  assert.equal(plan.env.RENDERING_SERVICE_TOKEN, 'r'.repeat(40));
+  assert.equal(plan.env.PUBLISHING_SERVICE_TOKEN, 'p'.repeat(40));
+  for (const key of ['OPENAI_API_KEY', 'STRIPE_SECRET_KEY', 'HTTPS_PROXY', 'DOCUMENT_SERVICE_TOKEN', 'SCANNING_SERVICE_TOKEN']) {
+    assert(!(key in plan.env), key);
+  }
+});
+
+test('supervised publishing worker claims only proof and package jobs and stops cleanly', async () => {
+  const controller = new AbortController();
+  const claims = [];
+  const server = createServer(async (req, res) => {
+    if (req.url !== '/rest/v1/rpc/claim_publishing_job') { res.writeHead(404).end(); return; }
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    claims.push(JSON.parse(Buffer.concat(chunks).toString('utf8')).p_actions);
+    res.writeHead(200, { 'content-type': 'application/json' }).end('[]', () => controller.abort());
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const plan = createPublishingWorkerPlan({ ...publishingConfig(), SUPABASE_URL: 'http://127.0.0.1:' + server.address().port });
+    await wait(runPublishingWorker(plan, { signal: controller.signal, healthy: async () => true, shutdownGraceMs: 2000,
+      log: () => {} }), 15000);
+    assert.deepEqual(claims, [['render', 'validate', 'export_package']]);
+  } finally {
+    controller.abort();
+    server.closeAllConnections();
+    server.close();
+  }
 });
 
 test('configuration rejects ambiguous, remote or credential-bearing processing destinations and unbounded tokens', () => {
