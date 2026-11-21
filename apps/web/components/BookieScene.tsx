@@ -1,13 +1,23 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import styles from "../app/bookiewookie.module.css";
 
 export default function BookieScene() {
   const host = useRef<HTMLDivElement>(null);
+  const [motionEnabled, setMotionEnabled] = useState(false);
+
+  useEffect(() => {
+    const preference = window.matchMedia("(min-width: 761px) and (prefers-reduced-motion: no-preference)");
+    const syncPreference = () => setMotionEnabled(preference.matches);
+    preference.addEventListener("change", syncPreference);
+    syncPreference();
+    return () => preference.removeEventListener("change", syncPreference);
+  }, []);
+
   useEffect(() => {
     const element = host.current;
-    if (!element || !matchMedia("(min-width: 761px) and (prefers-reduced-motion: no-preference)").matches) return;
+    if (!element || !motionEnabled) return;
     let cancelled = false;
     let release: (() => void) | undefined;
 
@@ -61,9 +71,15 @@ export default function BookieScene() {
       const reset = () => tilt(-.36);
       container.addEventListener("pointermove", move);
       container.addEventListener("pointerleave", reset);
+      const useStaticMascot = () => {
+        release?.();
+        release = undefined;
+      };
+      renderer.domElement.addEventListener("webglcontextlost", useStaticMascot);
       release = () => {
         container.removeEventListener("pointermove", move);
         container.removeEventListener("pointerleave", reset);
+        renderer.domElement.removeEventListener("webglcontextlost", useStaticMascot);
         tilt.tween.kill();
         resize.disconnect();
         geometry.dispose();
@@ -77,7 +93,7 @@ export default function BookieScene() {
 
     void mount(element).catch(() => { release?.(); release = undefined; });
     return () => { cancelled = true; release?.(); };
-  }, []);
+  }, [motionEnabled]);
 
   return <div ref={host} className={styles.scene} aria-hidden="true" />;
 }
