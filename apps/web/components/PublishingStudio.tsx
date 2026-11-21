@@ -1169,7 +1169,10 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="package-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="package-title" className="text-xl font-semibold">Retailer export packages</h2><p className="mt-1 max-w-2xl text-sm text-white/45">{channel === "lulu" && rightToLeftPrint
             ? "The Lulu ZIP reverses the interior for upload and keeps the exact paired cover. Your saved proof stays in reading order. Review the result in Lulu before approving it."
-            : "Create a private ZIP from the exact saved render after a zero-error retailer preflight. Download it and submit it in your retailer account. Record the status you see there in package history."}</p></div>
+            : "Create a private ZIP from the exact saved render after a zero-error retailer preflight. Download it and submit it in your retailer account. Record the status you see there in package history."}</p>
+            {managedPublishingEnabled && currentIdentity && (role === "owner" || role === "admin") && <p className="mt-2 max-w-2xl text-sm text-white/60">
+              To have a Bookworm operator handle submission, open Managed publishing request on a completed package and record your consent.
+            </p>}</div>
           </div>
           <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4 text-sm" aria-label="Plan publishing access">
             {!planStatus || planStatus.status === "loading" ? <p role="status" className="text-white/60">Checking this workspace’s publishing access…</p>

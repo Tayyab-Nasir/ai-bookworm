@@ -814,6 +814,7 @@ test("managed publishing requires exact package consent and recovers a lost repl
       window.showStudio(book, undefined, true);
     });
     const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await expect(history.getByText("To have a Bookworm operator handle submission", { exact: false })).toBeVisible();
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
     await history.getByText("Managed publishing request", { exact: true }).click();
     const consent = history.locator("details").filter({ hasText: "Managed publishing request" });
