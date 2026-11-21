@@ -60,7 +60,7 @@
   "overrides": {
     "fast-uri@<3.1.6": "3.1.7",
     "next": {
-      "postcss": "^8.5.28"
+      "postcss": "^8.5.33"
     }
   },
   "devDependencies": {
