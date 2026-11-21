@@ -32,6 +32,7 @@ const envSchema = z.object({
   SERVICE_AUTH_TOKEN: z.string().optional().default(""),
   SENTRY_DSN: z.string().optional().default(""),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional().default(""),
+  API_HOST: z.string().trim().min(1).default("0.0.0.0"),
   API_PORT: z.coerce.number().int().positive().default(3001),
   WEB_PORT: z.coerce.number().int().positive().default(3000),
   AI_SERVICE_PORT: z.coerce.number().int().positive().default(8000),

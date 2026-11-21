@@ -14,6 +14,7 @@ describe("loadEnv", () => {
   it("parses valid env with defaults", () => {
     resetEnvCache();
     const env = loadEnv(valid);
+    assert.equal(env.API_HOST, "0.0.0.0");
     assert.equal(env.API_PORT, 3001);
     assert.equal(env.NODE_ENV, "development");
     assert.equal(env.DEFAULT_AI_PROVIDER, "openai");
@@ -25,6 +26,11 @@ describe("loadEnv", () => {
   it("throws on missing required var", () => {
     resetEnvCache();
     assert.throws(() => loadEnv({}), /Invalid environment configuration/);
+  });
+
+  it("accepts the loopback host used by a local reverse proxy", () => {
+    resetEnvCache();
+    assert.equal(loadEnv({ ...valid, API_HOST: "127.0.0.1" }).API_HOST, "127.0.0.1");
   });
 
   it("throws on invalid URL", () => {

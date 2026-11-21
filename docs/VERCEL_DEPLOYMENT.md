@@ -62,6 +62,21 @@ keys, service tokens, or `ADMIN_USER_IDS` in Vercel for the web-only deployment.
 Set equivalent server-only variables on the persistent API/worker hosts; the
 complete authoritative list is in `docs/operations.md`.
 
+For a Linux API host with a same-host HTTPS reverse proxy, use the
+[`bookworm-api.service` unit](../ops/systemd/bookworm-api.service). It uses the
+same `/opt/bookworm` checkout, Node.js and service account as the worker
+setup. Store the API's server variables in root-owned `/etc/bookworm/api.env`
+with mode 0600. In this setup the reverse proxy forwards to
+`http://127.0.0.1:3002`, and the Vercel BFF uses the proxy's HTTPS origin as
+`API_URL`. The API unit starts the HTTP server independently of the worker
+target.
+
+On the intended host, verify the unit with
+`systemd-analyze verify ops/systemd/bookworm-api.service`. After starting the
+service on that host, verify both
+`curl --fail http://127.0.0.1:3002/health` and
+`curl --fail http://127.0.0.1:3002/ready` before using it from a Vercel preview.
+
 ## Before public production
 
 1. Decide the canonical application domain and set `APP_URL` consistently on

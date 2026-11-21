@@ -27,6 +27,6 @@ jobs:
           fi
           /usr/bin/node --version
       - name: Validate service templates without starting workers
-        run: systemd-analyze verify --man=no ops/systemd/bookworm-worker@.service ops/systemd/bookworm-workers.target
+        run: systemd-analyze verify --man=no ops/systemd/bookworm-api.service ops/systemd/bookworm-worker@.service ops/systemd/bookworm-workers.target
         env:
           SYSTEMD_UNIT_PATH: ${{ github.workspace }}/ops/systemd:/usr/lib/systemd/system:/lib/systemd/system

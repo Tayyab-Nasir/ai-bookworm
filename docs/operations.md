@@ -113,6 +113,7 @@
 | SERVICE_AUTH_TOKEN | api internal routes | prod | credits/referrals qualify |
 | ADMIN_USER_IDS | api admin routes | ops | comma-separated user ids |
 | APP_URL | web auth + api browser links | prod | Canonical browser origin; required in production and enforced for Stripe return URLs and workspace invitation links. |
+| API_HOST | standalone Fastify API | no | Defaults to `0.0.0.0`. The Linux API unit sets it to `127.0.0.1` for a same-host reverse proxy. |
 | API_PORT / WEB_PORT / AI_SERVICE_PORT / RENDERING_SERVICE_PORT / PUBLISHING_SERVICE_PORT / SCANNING_SERVICE_PORT | services | no | defaults 3001/3000/8000/8002/8003/8004 |
 | SENTRY_DSN / OTEL_EXPORTER_OTLP_ENDPOINT | future observability | no | Config is parsed/documented; SDK/export wiring is not implemented. |
 | LOG_LEVEL / NODE_ENV | api | no | |

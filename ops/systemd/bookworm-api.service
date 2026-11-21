@@ -1,0 +1,29 @@
+[Unit]
+Description=BookieWookie Fastify API
+Documentation=file:/opt/bookworm/docs/VERCEL_DEPLOYMENT.md
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=bookworm
+Group=bookworm
+WorkingDirectory=/opt/bookworm
+Environment=NODE_ENV=production
+Environment=API_HOST=127.0.0.1
+Environment=API_PORT=3002
+EnvironmentFile=/etc/bookworm/api.env
+ExecStart=/usr/bin/node --import tsx /opt/bookworm/services/api/src/index.ts
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
