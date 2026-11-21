@@ -10,12 +10,12 @@ const MAX_COVER_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL_BYTES = MAX_SAVED_PRINT_BYTES + MAX_COVER_BYTES;
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const artifactSchema = z.object({
-  assetId: z.string().uuid(), storagePath: z.string().min(1).max(1000), filename: z.enum(["book.pdf", "cover.pdf", "cover.png"]),
+  assetId: z.guid(), storagePath: z.string().min(1).max(1000), filename: z.enum(["book.pdf", "cover.pdf", "cover.png"]),
   type: z.enum(["rendered_book", "rendered_cover"]), role: z.enum(["rendered_print", "rendered_cover"]),
   name: z.string().min(1).max(256), mimeType: z.enum(["application/pdf", "image/png"]),
   sizeBytes: z.number().int().min(1).max(MAX_SAVED_PRINT_BYTES), checksum: z.string().regex(/^[a-f0-9]{64}$/iu),
 }).strict();
-const renderSchema = z.object({ artifacts: z.array(artifactSchema).min(1).max(2), rendererVersion: z.string().min(1).max(200), usage: z.record(z.unknown()) }).strict();
+const renderSchema = z.object({ artifacts: z.array(artifactSchema).min(1).max(2), rendererVersion: z.string().min(1).max(200), usage: z.record(z.string(), z.unknown()) }).strict();
 const requestSchema = z.object({ action: z.literal("render"), editionUpdatedAt: z.string().datetime({ offset: true }),
   bookModelSha256: digest, imageSha256: digest, artworkSnapshot: artworkSnapshotSchema }).strict();
 type Row = Record<string, unknown>;
@@ -29,7 +29,7 @@ const invalidSource = () => new AppError(422, "This saved print export has no ve
 /** Validate the immutable job and every exact version; never substitute newer artwork or exports. */
 export async function savedPrintRender(sb: SupabaseClient, workspaceId: string, bookId: string, editionId: string, job: Row): Promise<ConfirmedPrintRender> {
   if (job.book_id !== bookId || job.edition_id !== editionId) throw new AppError(404, "Saved print export not found for this edition.");
-  if (!z.string().uuid().safeParse(job.id).success || !z.string().datetime({ offset: true }).safeParse(job.created_at).success
+  if (!z.guid().safeParse(job.id).success || !z.string().datetime({ offset: true }).safeParse(job.created_at).success
     || job.channel !== "render" || job.status !== "succeeded") throw invalidSource();
   const request = requestSchema.safeParse(job.request_json);
   const response = renderSchema.safeParse(job.response_json);

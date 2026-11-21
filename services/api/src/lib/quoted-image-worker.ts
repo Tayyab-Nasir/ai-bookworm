@@ -6,7 +6,7 @@ import { loadFundedUsage, claimPricedDispatch } from "./funded-usage.js";
 import { imageRequestHash, reconcileImageUsage, type ImageQuoteRequest } from "./image-pricing.js";
 import { openAiImageGenerator, type ImageGenerator } from "./image-generation.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const jobSchema = z.object({ id, workspace_id: id, created_by: id, book_id: id.nullable(),
   model: z.string(), billing_mode: z.literal("quoted"), agent_type: z.enum(["illustrator", "cover_designer"]),

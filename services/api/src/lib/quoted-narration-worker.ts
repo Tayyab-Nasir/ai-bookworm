@@ -10,7 +10,7 @@ import { generateRealtimeNarration, REALTIME_NARRATION_MODELS, MAX_NARRATION_PCM
 import { encodeNarrationPcm, narrationEncodingProfileSchema, isNarrationMp3, MAX_NARRATION_MP3_BYTES } from "./narration-encoding.js";
 import { MAX_TTS_INPUT_BYTES } from "./speech-generation.js";
 
-const id = z.string().uuid(), digest = z.string().regex(/^[a-f0-9]{64}$/);
+const id = z.guid(), digest = z.string().regex(/^[a-f0-9]{64}$/);
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const first = (value: unknown) => { if (Array.isArray(value)) { if (value.length > 1) throw new Error("unexpected claim count"); return value[0]; } return value; };
 const jobSchema = z.object({ id, workspace_id: id, created_by: id, book_id: id, model: z.enum(REALTIME_NARRATION_MODELS),

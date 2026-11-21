@@ -8,15 +8,15 @@ import { requireWorkspaceEditor, requireWorkspaceMember } from "../lib/authorize
 import type { SupabaseClient } from "../lib/supabase.js";
 import { searchBookContext, searchSchema } from "../lib/retrieval.js";
 import { readSearchEvidence, searchEvidenceSchema } from "../lib/search-evidence.js";
-import { bibleEvidenceCitation, jobCitesBibleEvidence, verifiedBibleBatchRange } from "../lib/bible-batch-evidence.js";
+import { bibleCitationNodeId, bibleEvidenceCitation, jobCitesBibleEvidence, verifiedBibleBatchRange } from "../lib/bible-batch-evidence.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const timestamp = z.string().datetime({ offset: true });
 const editableRoles = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
 const sourceRef = z.object({
   chapterId: id,
   documentVersionId: id.optional(),
-  nodeId: z.string().min(1).max(200).optional(),
+  nodeId: bibleCitationNodeId.optional(),
   textHash: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   note: z.string().trim().max(500).optional(),
 }).strict().refine((ref) => !ref.textHash || !!ref.nodeId, "A text hash needs a source node.");
@@ -42,7 +42,7 @@ const deleteBibleSchema = z.object({ requestId: id, expectedUpdatedAt: timestamp
 
 const bibleItemSchema = z.object({
   id, book_id: id, mutation_incarnation_id: id, type: bibleSchema.shape.type, name: z.string().min(1).max(160),
-  description: z.string().max(12_000).nullable(), attributes_json: z.record(z.unknown()),
+  description: z.string().max(12_000).nullable(), attributes_json: z.record(z.string(), z.unknown()),
   confidence: z.number().finite().nullable(),
   source_refs_json: z.array(sourceRef).max(30), created_at: timestamp, updated_at: timestamp,
 }).passthrough();

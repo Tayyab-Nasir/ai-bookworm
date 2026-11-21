@@ -5,11 +5,11 @@ import { AppError } from "../errors.js";
 import { requireWorkspaceEditor, requireWorkspaceMember } from "../lib/authorize.js";
 import { assetRestoreFetch, verifyAssetRestoreBytes } from "../lib/verified-asset-restore.js";
 
-const params = z.object({ assetId: z.string().uuid() }).strict();
-const request = z.object({ workspaceId: z.string().uuid(), operationId: z.string().uuid(), expectedRevision: z.string().uuid().nullable() }).strict();
+const params = z.object({ assetId: z.guid() }).strict();
+const request = z.object({ workspaceId: z.guid(), operationId: z.guid(), expectedRevision: z.guid().nullable() }).strict();
 const restoreRequest = request.extend({ expectedDeletedAt: z.string().datetime({ offset: true }) });
-const result = z.object({ assetId: z.string().uuid(), operationId: z.string().uuid(), action: z.enum(["remove", "restore"]), expectedRevision: z.string().uuid().nullable(), replayed: z.boolean() }).strict();
-const status = z.object({ assetId: z.string().uuid(), operationId: z.string().uuid(), action: z.enum(["remove", "restore"]), expectedDeletedAt: z.string().datetime({ offset: true }).nullable(), expectedRevision: z.string().uuid().nullable(), outcome: z.enum(["committed", "closed"]), committedAt: z.string().datetime({ offset: true }).nullable(), closedAt: z.string().datetime({ offset: true }).nullable() }).strict().refine(v =>
+const result = z.object({ assetId: z.guid(), operationId: z.guid(), action: z.enum(["remove", "restore"]), expectedRevision: z.guid().nullable(), replayed: z.boolean() }).strict();
+const status = z.object({ assetId: z.guid(), operationId: z.guid(), action: z.enum(["remove", "restore"]), expectedDeletedAt: z.string().datetime({ offset: true }).nullable(), expectedRevision: z.guid().nullable(), outcome: z.enum(["committed", "closed"]), committedAt: z.string().datetime({ offset: true }).nullable(), closedAt: z.string().datetime({ offset: true }).nullable() }).strict().refine(v =>
   (v.action === "remove" ? v.expectedDeletedAt === null : v.expectedDeletedAt !== null) &&
   (v.outcome === "committed" ? v.committedAt !== null && v.closedAt === null : v.committedAt === null && v.closedAt !== null));
 const closeRequest = request.extend({ action: z.enum(["remove", "restore"]), expectedDeletedAt: z.string().datetime({ offset: true }).nullable() }).strict();
@@ -37,7 +37,7 @@ function checkResult(data: unknown, assetId: string, operationId: string, action
 export function assetLifecycleRoutes(app: FastifyInstance, lifecycleEnabled: boolean) {
   const requireReady = async () => { if (!await assetLifecycleReady(app.supabaseFactory)) throw new AppError(503, 'File operations are temporarily unavailable.'); };
   app.get('/assets/removed', lifecycleEnabled ? { preHandler: requireReady } : {}, async (req, reply) => {
-    const query = z.object({ workspaceId: z.string().uuid(), beforeDeletedAt: z.string().datetime({ offset: true }).optional(), beforeId: z.string().uuid().optional() }).strict().safeParse(req.query);
+    const query = z.object({ workspaceId: z.guid(), beforeDeletedAt: z.string().datetime({ offset: true }).optional(), beforeId: z.guid().optional() }).strict().safeParse(req.query);
     if (!query.success || (query.data.beforeDeletedAt === undefined) !== (query.data.beforeId === undefined)
         || (query.data.beforeDeletedAt !== undefined && timestampMicros(query.data.beforeDeletedAt) === null)) throw new AppError(422, 'Check the workspace and page.');
     const sb = app.supabaseFactory(req.userToken);
@@ -51,7 +51,7 @@ export function assetLifecycleRoutes(app: FastifyInstance, lifecycleEnabled: boo
     const { data, error } = await list.order('deleted_at', { ascending: false }).order('id', { ascending: false }).limit(51);
     if (error) throw new AppError(503, 'Removed files are unavailable.');
     await requireWorkspaceEditor(sb, query.data.workspaceId, req.userId);
-    const rows = z.array(z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), name: z.string().max(500), deleted_at: z.string().datetime({ offset: true }), checksum: z.string().nullable(), lifecycle_revision: z.string().uuid().nullable().optional() }).strict()).max(51).safeParse(data);
+    const rows = z.array(z.object({ id: z.guid(), workspace_id: z.guid(), name: z.string().max(500), deleted_at: z.string().datetime({ offset: true }), checksum: z.string().nullable(), lifecycle_revision: z.guid().nullable().optional() }).strict()).max(51).safeParse(data);
     if (!rows.success || rows.data.some(row => row.workspace_id !== query.data.workspaceId || (lifecycleEnabled && row.lifecycle_revision === undefined))) {
       throw new AppError(503, 'Removed files could not be verified.');
     }
@@ -72,8 +72,8 @@ export function assetLifecycleRoutes(app: FastifyInstance, lifecycleEnabled: boo
 
   if (!lifecycleEnabled) return;
   app.get("/assets/:assetId/lifecycle/:operationId", { preHandler: requireReady }, async (req, reply) => {
-    const path = z.object({ assetId: z.string().uuid(), operationId: z.string().uuid() }).strict().safeParse(req.params);
-    const query = z.object({ workspaceId: z.string().uuid() }).strict().safeParse(req.query);
+    const path = z.object({ assetId: z.guid(), operationId: z.guid() }).strict().safeParse(req.params);
+    const query = z.object({ workspaceId: z.guid() }).strict().safeParse(req.query);
     if (!path.success || !query.success) throw new AppError(422, "Check the file operation.");
     const sb = app.supabaseFactory(req.userToken);
     await requireWorkspaceMember(sb, query.data.workspaceId, req.userId);

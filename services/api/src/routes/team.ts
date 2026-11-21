@@ -19,9 +19,9 @@ const roleSchema = z.object({
 
 const acceptInvitationSchema = z.object({ token: z.string().min(32).max(256) }).strict();
 const invitationStatusSchema = z.discriminatedUnion("state", [
-  z.object({ viewerId: z.string().uuid(), state: z.literal("not_confirmed") }).strict(),
-  z.object({ viewerId: z.string().uuid(), state: z.literal("accepted_unavailable") }).strict(),
-  z.object({ viewerId: z.string().uuid(), state: z.literal("accepted"), workspaceId: z.string().uuid(), role: z.enum(ROLES) }).strict(),
+  z.object({ viewerId: z.guid(), state: z.literal("not_confirmed") }).strict(),
+  z.object({ viewerId: z.guid(), state: z.literal("accepted_unavailable") }).strict(),
+  z.object({ viewerId: z.guid(), state: z.literal("accepted"), workspaceId: z.guid(), role: z.enum(ROLES) }).strict(),
 ]);
 const INVITATION_FIELDS = "id,workspace_id,email,role,status,expires_at,invited_by,accepted_by,accepted_at,revoked_by,revoked_at,created_at,updated_at";
 

@@ -7,13 +7,13 @@ import type { SupabaseClient } from "../lib/supabase.js";
 
 const unavailable = () => new AppError(503, "The saved book overview is temporarily unavailable. No book changes were made.");
 const number = z.number().int().nonnegative().safe();
-const chapterSchema = z.object({ id: z.string().uuid(), book_id: z.string().uuid(), title: z.string().min(1).max(500), order_index: number,
-  current_document_version_id: z.string().uuid().nullable() });
-const versionSchema = z.object({ id: z.string().uuid(), chapter_id: z.string().uuid(), version_number: number.min(1), word_count: number,
+const chapterSchema = z.object({ id: z.guid(), book_id: z.guid(), title: z.string().min(1).max(500), order_index: number,
+  current_document_version_id: z.guid().nullable() });
+const versionSchema = z.object({ id: z.guid(), chapter_id: z.guid(), version_number: number.min(1), word_count: number,
   created_at: z.string().datetime({ offset: true }) });
-const editionSchema = z.object({ id: z.string().uuid(), book_id: z.string().uuid(), type: z.enum(["ebook", "print", "audiobook"]),
-  status: z.string().min(1).max(40), updated_at: z.string().datetime({ offset: true }), edition_metadata_json: z.record(z.unknown()) });
-const jobSchema = z.object({ id: z.string().uuid(), book_id: z.string().uuid(), status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]),
+const editionSchema = z.object({ id: z.guid(), book_id: z.guid(), type: z.enum(["ebook", "print", "audiobook"]),
+  status: z.string().min(1).max(40), updated_at: z.string().datetime({ offset: true }), edition_metadata_json: z.record(z.string(), z.unknown()) });
+const jobSchema = z.object({ id: z.guid(), book_id: z.guid(), status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]),
   created_at: z.string().datetime({ offset: true }), completed_at: z.string().datetime({ offset: true }).nullable(),
   agent_type: z.string().optional(), channel: z.string().optional(), action: z.string().nullable().optional() });
 function checked<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -32,8 +32,8 @@ async function managedPublications(sb: SupabaseClient, bookId: string, workspace
     .eq("workspace_id", workspaceId).eq("job.book_id", bookId).not("confirmed_at", "is", null)
     .order("confirmed_at", { ascending: false }).order("package_job_id").limit(8);
   const parsed = z.array(z.object({
-    package_job_id: z.string().uuid(), workspace_id: z.literal(workspaceId), confirmed_at: z.string().datetime({ offset: true }),
-    job: z.object({ id: z.string().uuid(), book_id: z.literal(bookId), channel: z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]) }),
+    package_job_id: z.guid(), workspace_id: z.literal(workspaceId), confirmed_at: z.string().datetime({ offset: true }),
+    job: z.object({ id: z.guid(), book_id: z.literal(bookId), channel: z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]) }),
   })).max(8).safeParse(data);
   if (error || !parsed.success || parsed.data.some(row => row.package_job_id !== row.job.id)) throw unavailable();
   return { status: "ready" as const, rows: parsed.data.map(row => ({
@@ -45,12 +45,12 @@ async function managedPublications(sb: SupabaseClient, bookId: string, workspace
 export function bookOverviewRoutes(app: FastifyInstance) {
   app.get("/books/:bookId/overview", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
-    const params = z.object({ bookId: z.string().uuid() }).safeParse(req.params);
+    const params = z.object({ bookId: z.guid() }).safeParse(req.params);
     if (!params.success) throw new AppError(422, "Choose a valid book.");
     const { bookId } = params.data;
     const sb = app.supabaseFactory(req.userToken);
     const { book, role } = await loadBook(sb, bookId, req.userId);
-    const bookFields = checked(z.object({ id: z.literal(bookId), workspace_id: z.string().uuid(), title: z.string().min(1).max(500),
+    const bookFields = checked(z.object({ id: z.literal(bookId), workspace_id: z.guid(), title: z.string().min(1).max(500),
       subtitle: z.string().max(500).nullable(), author_name: z.string().min(1).max(300), language: z.string().min(1).max(40),
       genre: z.string().max(200).nullable(), status: z.string().min(1).max(40), updated_at: z.string().datetime({ offset: true }) }), book);
     const [space, chapters, bible, metadata, editions, imports, ai, publishing, audiobookExports, renders, packages, publications] = await Promise.all([
@@ -112,7 +112,7 @@ export function bookOverviewRoutes(app: FastifyInstance) {
       editionsTotal: exactCount(editions), editions: editionRows.map(e => {
         const cover = e.edition_metadata_json.cover as { asset_id?: unknown } | null;
         return { id: e.id, kind: e.type, status: e.status, updatedAt: e.updated_at,
-          coverArtworkChosen: z.string().uuid().safeParse(cover?.asset_id).success };
+          coverArtworkChosen: z.guid().safeParse(cover?.asset_id).success };
       }),
       history: { renders: exactCount(renders), packages: exactCount(packages) }, jobs,
       ...(publications ? { managedPublications: publications } : {}),

@@ -3,7 +3,7 @@ import { AppError } from "../errors.js";
 
 const credits = z.string().regex(/^(0|[1-9][0-9]{0,20})$/);
 const rowSchema = z.object({
-  job_id: z.string().uuid(), user_id: z.string().uuid(), workspace_id: z.string().uuid(),
+  job_id: z.guid(), user_id: z.guid(), workspace_id: z.guid(),
   reserved_credits: z.number().int().positive().max(2147483647),
   status: z.enum(["held", "settled", "requires_review", "cancelled"]),
   settlement_json: z.unknown().nullable(),

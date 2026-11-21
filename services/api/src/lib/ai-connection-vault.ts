@@ -7,7 +7,7 @@ export type AiProvider = z.infer<typeof aiProvider>;
 export const apiKeyInput = z.string().min(16).max(4096).regex(/^[A-Za-z0-9_\-./+=]+$/u);
 const keyId = z.string().regex(/^[A-Za-z0-9_-]{1,40}$/u);
 const bindingSchema = z.object({
-  ownerId: z.string().uuid(), provider: aiProvider, connectionId: z.string().uuid(),
+  ownerId: z.guid(), provider: aiProvider, connectionId: z.guid(),
   revision: z.number().int().min(1).max(2_147_483_647),
 }).strict();
 export type CredentialBinding = z.infer<typeof bindingSchema>;

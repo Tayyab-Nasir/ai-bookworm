@@ -15,13 +15,13 @@ import {
 export const publishingActions = ["render", "validate", "export_package"] as const;
 export type PublishingAction = typeof publishingActions[number];
 const jobSchema = z.object({
-  id: z.string().uuid(), book_id: z.string().uuid(), edition_id: z.string().uuid(),
-  created_by: z.string().uuid(), channel: z.string(), lease_token: z.string().uuid(),
+  id: z.guid(), book_id: z.guid(), edition_id: z.guid(),
+  created_by: z.guid(), channel: z.string(), lease_token: z.guid(),
   request_json: z.object({
     action: z.enum(publishingActions), editionUpdatedAt: z.string().datetime({ offset: true }),
     bookModelSha256: z.string().regex(/^[a-f0-9]{64}$/u),
     imageSha256: z.string().regex(/^[a-f0-9]{64}$/u), artworkSnapshot: artworkSnapshotSchema,
-    sourceRenderJobId: z.string().uuid().optional(), sourcePreflightJobId: z.string().uuid().optional(),
+    sourceRenderJobId: z.guid().optional(), sourcePreflightJobId: z.guid().optional(),
   }).passthrough(),
 }).passthrough();
 type Job = z.infer<typeof jobSchema>;

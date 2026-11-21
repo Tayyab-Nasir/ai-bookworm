@@ -13,17 +13,17 @@ const BUCKET = "book-assets";
 const MAX_ARCHIVE_BYTES = 3_750 * 1024 * 1024;
 const TUS_CHUNK_BYTES = 6 * 1024 * 1024;
 const chapterSchema = z.object({
-  chapterId: z.string().uuid(), orderIndex: z.number().int(),
-  title: z.string().max(500), documentVersionId: z.string().uuid(),
-  projectId: z.string().uuid(), reportId: z.string().uuid(),
+  chapterId: z.guid(), orderIndex: z.number().int(),
+  title: z.string().max(500), documentVersionId: z.guid(),
+  projectId: z.guid(), reportId: z.guid(),
   sourceManifestSha256: z.string().regex(/^[a-f0-9]{64}$/u),
   audioSha256: z.string().regex(/^[a-f0-9]{64}$/u),
 }).strict();
 const jobSchema = z.object({
-  id: z.string().uuid(), workspace_id: z.string().uuid(),
-  book_id: z.string().uuid(), edition_id: z.string().uuid(),
-  created_by: z.string().uuid(), identifier: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/u),
-  cover_asset_id: z.string().uuid(), lease_token: z.string().uuid(),
+  id: z.guid(), workspace_id: z.guid(),
+  book_id: z.guid(), edition_id: z.guid(),
+  created_by: z.guid(), identifier: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/u),
+  cover_asset_id: z.guid(), lease_token: z.guid(),
   progress_total: z.number().int().min(1).max(250), attempts: z.number().int().min(1).max(5),
   snapshot_json: z.object({
     title: z.string().max(500), author: z.string().max(300),

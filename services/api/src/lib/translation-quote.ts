@@ -22,7 +22,7 @@ const language = z.string().regex(/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/).max(35);
 const inputSchema = z.object({
   modelId:z.string().min(1).max(64), text:z.string().min(1).refine((s) => s.trim().length > 0 && Array.from(s).length <= 32000),
   sourceLanguage:language,targetLanguage:language,
-  scope:z.object({jobId:z.string().uuid(),workspaceId:z.string().uuid(),userId:z.string().uuid()}).strict(),
+  scope:z.object({jobId:z.guid(),workspaceId:z.guid(),userId:z.guid()}).strict(),
 }).strict();
 
 /** Internal only: caller must authenticate access and load a saved chapter.

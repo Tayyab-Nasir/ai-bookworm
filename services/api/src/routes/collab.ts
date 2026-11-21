@@ -11,19 +11,19 @@ const TARGET_TYPES = ["book", "asset", "chapter", "edition"] as const;
 const APPROVER_ROLES = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer", "reviewer"]);
 
 const createCommentSchema = z.object({
-  workspaceId: z.string().uuid(),
+  workspaceId: z.guid(),
   entityType: z.string().min(1),
-  entityId: z.string().uuid(),
+  entityId: z.guid(),
   body: z.string().min(1).max(10000),
 });
 
 const createTaskSchema = z.object({
-  workspaceId: z.string().uuid(),
+  workspaceId: z.guid(),
   title: z.string().min(1).max(256),
   description: z.string().max(10000).optional(),
   entityType: z.enum(TARGET_TYPES).optional(),
-  entityId: z.string().uuid().optional(),
-  assigneeId: z.string().uuid().nullish(),
+  entityId: z.guid().optional(),
+  assigneeId: z.guid().nullish(),
   priority: z.enum(PRIORITIES).optional(),
   dueAt: z.string().datetime().nullish(),
 }).strict().refine((value) => Boolean(value.entityType) === Boolean(value.entityId), {
@@ -36,18 +36,18 @@ const patchTaskSchema = z
     status: z.enum(TASK_STATUSES).optional(),
     priority: z.enum(PRIORITIES).optional(),
     dueAt: z.string().datetime().nullable().optional(),
-    assigneeId: z.string().uuid().nullable().optional(),
+    assigneeId: z.guid().nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "nothing to update" });
 
 const createApprovalSchema = z.object({
-  workspaceId: z.string().uuid(),
+  workspaceId: z.guid(),
   entityType: z.enum(TARGET_TYPES),
-  entityId: z.string().uuid(),
-  reviewerId: z.string().uuid().nullish(),
+  entityId: z.guid(),
+  reviewerId: z.guid().nullish(),
   comment: z.string().max(2000).optional(),
   entityVersionNumber: z.number().int().positive().optional(),
-  idempotencyKey: z.string().uuid().optional(),
+  idempotencyKey: z.guid().optional(),
 }).strict();
 
 const approvalResolutionSchema = z.object({ comment: z.string().max(2000).optional() }).strict();

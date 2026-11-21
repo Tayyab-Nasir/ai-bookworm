@@ -5,8 +5,8 @@ import type { SupabaseClient } from "./supabase.js";
 
 const MAX_INPUT = 100 * 1024 * 1024;
 const MAX_OUTPUT = 150 * 1024 * 1024;
-const projectSchema = z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), document_version_id: z.string().uuid(), status: z.literal("succeeded"), segment_count: z.number().int().min(1).max(250) }).passthrough();
-const assetSchema = z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), storage_path: z.string(), mime_type: z.literal("audio/mpeg"),
+const projectSchema = z.object({ id: z.guid(), workspace_id: z.guid(), document_version_id: z.guid(), status: z.literal("succeeded"), segment_count: z.number().int().min(1).max(250) }).passthrough();
+const assetSchema = z.object({ id: z.guid(), workspace_id: z.guid(), storage_path: z.string(), mime_type: z.literal("audio/mpeg"),
   type: z.literal("audiobook_segment"), size_bytes: z.number().int().positive().max(50 * 1024 * 1024), checksum: z.string().regex(/^[a-f0-9]{64}$/i), deleted_at: z.null().optional() }).passthrough();
 const audioQualitySchema = z.object({
   schemaVersion: z.literal(1), profile: z.string().max(120), chapterDurationSeconds: z.number().finite().nonnegative().max(7200),
@@ -27,7 +27,7 @@ export type LoadedChapterAudio = {
 
 /** Uses the caller's RLS-scoped client; never accepts URLs or source paths from a request. */
 export async function loadChapterAudio(sb: SupabaseClient, projectId: string): Promise<LoadedChapterAudio> {
-  if (!z.string().uuid().safeParse(projectId).success) throw new AppError(404, "Narration not found.");
+  if (!z.guid().safeParse(projectId).success) throw new AppError(404, "Narration not found.");
   const projectResult = await sb.from("audiobook_projects").select("*").eq("id", projectId).maybeSingle();
   if (projectResult.error) throw new AppError(503, "Could not load narration.");
   if (!projectResult.data) throw new AppError(404, "Narration not found.");

@@ -25,7 +25,7 @@ const managedPackageDescriptor = z.object({
   size_bytes: z.number().int().min(1).max(managedPackageMaxBytes),
 });
 const publishingQueueEntry = z.object({
-  package_job_id: z.string().uuid(),
+  package_job_id: z.guid(),
   channel: z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]),
   title: z.string().min(1).max(500),
   package_sha256: publishingChecksum,
@@ -46,9 +46,9 @@ function requirePublishingOperator(req: FastifyRequest) {
   if (req.headers["x-bookworm-actor"] !== req.userId) throw new AppError(422, "The original operator account is required.");
 }
 const moderationReportRow = z.object({
-  id: z.string().uuid(),
+  id: z.guid(),
   entity_type: z.enum(["post", "comment"]),
-  entity_id: z.string().uuid(),
+  entity_id: z.guid(),
   reason: z.string().min(1).max(1000),
   status: z.enum(["open", "actioned", "dismissed"]),
   created_at: z.string().datetime({ offset: true }),
@@ -56,16 +56,16 @@ const moderationReportRow = z.object({
 }).strip();
 
 const documentJobView = z.object({
-  id: z.string().uuid(), book_id: z.string().uuid(), source_asset_id: z.string().uuid(),
+  id: z.guid(), book_id: z.guid(), source_asset_id: z.guid(),
   status: z.enum(["queued", "running", "succeeded", "failed"]),
   attempts: z.number().int().min(0).max(5), error_code: z.string().max(80).nullable(),
   created_at: z.string(), available_at: z.string(), completed_at: z.string().nullable(),
 }).strip();
 const aiJobView = z.object({
-  id: z.string().uuid(), book_id: z.string().uuid().nullable(), agent_type: z.string().min(1).max(100),
+  id: z.guid(), book_id: z.guid().nullable(), agent_type: z.string().min(1).max(100),
   status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]), attempts: z.number().int().min(0),
   error_code: z.string().max(80).nullable(), error_message: z.string().max(2_000).nullable(), model: z.string().max(200).nullable(),
-  usage_json: z.record(z.unknown()), created_at: z.string(), started_at: z.string().nullable(), completed_at: z.string().nullable(),
+  usage_json: z.record(z.string(), z.unknown()), created_at: z.string(), started_at: z.string().nullable(), completed_at: z.string().nullable(),
 }).strip();
 
 export function adminRoutes(app: FastifyInstance) {
@@ -96,7 +96,7 @@ export function adminRoutes(app: FastifyInstance) {
     });
     a.put("/admin/managed-publishing/:jobId/claim", async (req, reply) => {
       requirePublishingOperator(req);
-      const path = z.object({ jobId: z.string().uuid().transform(value => value.toLowerCase()) }).safeParse(req.params);
+      const path = z.object({ jobId: z.guid().transform(value => value.toLowerCase()) }).safeParse(req.params);
       const body = z.object({ packageSha256: publishingChecksum }).strict().safeParse(req.body);
       if (!path.success || !body.success) throw new AppError(422, "The package and its checksum are required.");
       const { jobId } = path.data;
@@ -106,7 +106,7 @@ export function adminRoutes(app: FastifyInstance) {
       });
       if (error?.code === "PT409") throw new AppError(409, "This request is no longer available to claim. Refresh the queue.");
       const receipt = publishingQueueEntry.pick({ package_job_id: true, package_sha256: true }).extend({
-        claimed_by: z.string().uuid(), claimed_at: publishingDate, withdrawn_at: z.null(),
+        claimed_by: z.guid(), claimed_at: publishingDate, withdrawn_at: z.null(),
       }).safeParse(Array.isArray(data) && data.length === 1 ? data[0] : data);
       if (error || !receipt.success || receipt.data.package_job_id !== jobId
         || receipt.data.package_sha256 !== packageSha256 || receipt.data.claimed_by !== req.userId) {
@@ -117,7 +117,7 @@ export function adminRoutes(app: FastifyInstance) {
     });
     a.get("/admin/managed-publishing/:jobId/package", async (req, reply) => {
       requirePublishingOperator(req);
-      const path = z.object({ jobId: z.string().uuid().transform(value => value.toLowerCase()) }).safeParse(req.params);
+      const path = z.object({ jobId: z.guid().transform(value => value.toLowerCase()) }).safeParse(req.params);
       const query = z.object({ checksum: publishingChecksum }).strict().safeParse(req.query);
       if (!path.success || !query.success) throw new AppError(422, "The package and its checksum are required.");
       if (managedDelivery) throw new AppError(503, "Package delivery is busy. Try again shortly.");
@@ -170,7 +170,7 @@ export function adminRoutes(app: FastifyInstance) {
     });
     a.put("/admin/managed-publishing/:jobId/confirmation", async (req, reply) => {
       requirePublishingOperator(req);
-      const path = z.object({ jobId: z.string().uuid().transform(value => value.toLowerCase()) }).safeParse(req.params);
+      const path = z.object({ jobId: z.guid().transform(value => value.toLowerCase()) }).safeParse(req.params);
       const body = z.object({ packageSha256: publishingChecksum, listingUrl: publishingListingUrl }).strict().safeParse(req.body);
       if (!path.success || !body.success) throw new AppError(422, "The package checksum and retailer listing URL are required.");
       const { jobId } = path.data;
@@ -182,7 +182,7 @@ export function adminRoutes(app: FastifyInstance) {
       if (error?.code === "PT404") throw new AppError(404, "Completed retailer package not found.");
       if (error?.code === "PT409") throw new AppError(409, "The assignment or confirmation changed. Refresh the queue.");
       const receipt = publishingQueueEntry.pick({ package_job_id: true, package_sha256: true }).extend({
-        claimed_by: z.string().uuid(), confirmed_at: publishingDate, listing_url: publishingListingUrl, withdrawn_at: z.null(),
+        claimed_by: z.guid(), confirmed_at: publishingDate, listing_url: publishingListingUrl, withdrawn_at: z.null(),
       }).safeParse(Array.isArray(data) && data.length === 1 ? data[0] : data);
       if (error || !receipt.success || receipt.data.package_job_id !== jobId || receipt.data.package_sha256 !== packageSha256
         || receipt.data.claimed_by !== req.userId || receipt.data.listing_url !== listingUrl) {
@@ -277,7 +277,7 @@ export function adminRoutes(app: FastifyInstance) {
 
     a.post("/admin/moderation/reports/:id/resolve", async (req, reply) => {
       reply.header("cache-control", "private, no-store");
-      const params = z.object({ id: z.string().uuid() }).safeParse(req.params);
+      const params = z.object({ id: z.guid() }).safeParse(req.params);
       if (!params.success) throw new AppError(422, "Invalid report ID.");
       const body = z.object({ action: z.enum(["remove", "dismiss"]) }).strict().safeParse(req.body ?? {});
       if (!body.success) throw new AppError(422, "Choose a supported moderation action.");
@@ -314,7 +314,7 @@ export function adminRoutes(app: FastifyInstance) {
       const svc = app.supabaseFactory();
       let profQ = svc.from("profiles").select("*").order("created_at", { ascending: false });
       if (q.search) {
-        profQ = z.string().uuid().safeParse(q.search).success
+        profQ = z.guid().safeParse(q.search).success
           ? profQ.eq("id", q.search)
           : profQ.ilike("display_name", `%${q.search.replace(/[\\%_]/g, "\\$&")}%`);
       }
@@ -390,7 +390,7 @@ export function adminRoutes(app: FastifyInstance) {
       if (type === "document") throw new AppError(503, "Retry document imports from the owning book setup screen.");
       if (type === "ai") throw new AppError(503, "AI retry is not available. Start a new review from the saved manuscript.");
       const svc = app.supabaseFactory();
-      if (!z.string().uuid().safeParse(id).success) throw new AppError(422, "Invalid publishing job ID.");
+      if (!z.guid().safeParse(id).success) throw new AppError(422, "Invalid publishing job ID.");
       const { data, error } = await svc.rpc("retry_publishing_job", { p_job_id: id, p_actor_id: req.userId });
       if (error?.code === "P0002") throw new AppError(404, "Job not found.");
       if (error?.code === "22023") throw new AppError(422, "Only failed, supported publishing jobs can retry.");
@@ -400,7 +400,7 @@ export function adminRoutes(app: FastifyInstance) {
     });
 
     a.post("/admin/jobs/ai/:id/release-image-hold", async (req, reply) => {
-      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const id = z.guid().safeParse((req.params as { id: string }).id);
       const body = z.object({ incidentRef: z.string().regex(/^[A-Z0-9][A-Z0-9-]{5,63}$/),
         storageChecked: z.literal(true), providerReviewed: z.literal(true) }).strict().safeParse(req.body);
       if (!id.success || !body.success) throw new AppError(422, "Provide an incident reference and confirm both review checks.");
@@ -421,7 +421,7 @@ export function adminRoutes(app: FastifyInstance) {
     });
 
     a.post("/admin/jobs/ai/:id/release-review-hold", async (req, reply) => {
-      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const id = z.guid().safeParse((req.params as { id: string }).id);
       const body = z.object({ incidentRef: z.string().regex(/^[A-Z0-9][A-Z0-9-]{5,63}$/),
         receiptReviewed: z.literal(true), providerReviewed: z.literal(true) }).strict().safeParse(req.body);
       if (!id.success || !body.success) throw new AppError(422, "Provide an incident reference and confirm receipt and provider review.");
@@ -443,7 +443,7 @@ export function adminRoutes(app: FastifyInstance) {
     });
 
     a.post("/admin/jobs/ai/:id/release-bible-hold", async (req, reply) => {
-      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const id = z.guid().safeParse((req.params as { id: string }).id);
       const body = z.object({ incidentRef: z.string().regex(/^[A-Z0-9][A-Z0-9-]{5,63}$/),
         receiptReviewed: z.literal(true), providerReviewed: z.literal(true) }).strict().safeParse(req.body);
       if (!id.success || !body.success) throw new AppError(422, "Provide an incident reference and confirm receipt and provider review.");
@@ -463,7 +463,7 @@ export function adminRoutes(app: FastifyInstance) {
     });
 
     a.post("/admin/jobs/ai/:id/settle-review-receipt", async (req, reply) => {
-      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const id = z.guid().safeParse((req.params as { id: string }).id);
       const body = z.object({ incidentRef: z.string().regex(/^[A-Z0-9][A-Z0-9-]{5,63}$/),
         receiptReviewed: z.literal(true), providerReviewed: z.literal(true) }).strict().safeParse(req.body);
       if (!id.success || !body.success) throw new AppError(422, "Provide an incident reference and confirm receipt and provider review.");
@@ -509,7 +509,7 @@ export function adminRoutes(app: FastifyInstance) {
         scopeType: z.string().min(1).max(40).default("global"),
         scopeId: z.string().max(120).nullable().default(null),
         enabled: z.boolean(),
-        config: z.record(z.unknown()).optional(),
+        config: z.record(z.string(), z.unknown()).optional(),
       }).strict().safeParse(req.body ?? {});
       if (!parsed.success) throw new AppError(422, "invalid flag", { issues: parsed.error.issues });
       const svc = app.supabaseFactory();

@@ -6,7 +6,7 @@ import { currentEntitlements, monthUsage } from "../lib/entitlements.js";
 import { jobSummary } from "../lib/job-summary.js";
 import { loadRetailerSalesSummary } from "./sales.js";
 
-const querySchema = z.object({ workspaceId: z.string().uuid() }).strict();
+const querySchema = z.object({ workspaceId: z.guid() }).strict();
 const activeJobStatuses = ["queued", "running"];
 const meters = [
   "ai_credits", "image_credits", "audio_credits", "translation_credits",
@@ -21,7 +21,7 @@ const queues = [
 ] as const;
 const unavailable = () => new AppError(503, "Dashboard activity is temporarily unavailable. Reload before relying on job counts.");
 const countSchema = z.number().int().nonnegative().safe();
-const jobSchema = z.object({ id: z.string().uuid(), book_id: z.string().uuid().nullable(), workspace_id: z.string().uuid().optional(),
+const jobSchema = z.object({ id: z.guid(), book_id: z.guid().nullable(), workspace_id: z.guid().optional(),
   agent_type: z.string().optional(), action: z.string().nullable().optional(), status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]),
   created_at: z.string().datetime({ offset: true }), completed_at: z.string().datetime({ offset: true }).nullable() });
 function exactCount(result: { error: unknown; count: number | null }) {

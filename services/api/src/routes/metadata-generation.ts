@@ -7,7 +7,7 @@ import { loadBook, parseNodes } from "../lib/authoring.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 
-const uuid = z.string().uuid();
+const uuid = z.guid();
 const generationRequest = z.object({
   idempotencyKey: z.string().trim().min(8).max(200),
   chapterIds: z.array(uuid).min(1).max(5).optional(),

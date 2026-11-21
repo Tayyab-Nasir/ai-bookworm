@@ -2,10 +2,11 @@ import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-const id = z.string().uuid();
+const id = z.guid();
 const hash = z.string().regex(/^[a-f0-9]{64}$/u);
+export const bibleCitationNodeId = z.string().min(1).refine(value => value.length <= 200, "Citation identifier must be at most 200 UTF-16 code units.");
 export const bibleEvidenceCitation = z.object({ chapterId: id, documentVersionId: id,
-  nodeId: z.string().min(1).max(200), textHash: hash }).strict();
+  nodeId: bibleCitationNodeId, textHash: hash }).strict();
 type Citation = z.infer<typeof bibleEvidenceCitation>;
 const version = z.object({ chapterId: id, documentVersionId: id, version: z.number().int().positive() }).strict();
 const reading = z.object({ fingerprint: hash, pageIndex: z.number().int().nonnegative() }).strict();
@@ -19,7 +20,7 @@ const quoteSchema = z.object({ id, user_id: id, workspace_id: id, book_id: id, g
   source_versions_json: z.object({ versions: z.array(version).min(1).max(3), reading }).strict(),
   generation_request_json: z.unknown() }).passthrough();
 const requestSchema = z.object({ jobId: id, workspaceId: id, bookId: id, agentType: z.literal("bookbible"),
-  input: z.object({ chapters: z.record(z.unknown()) }).passthrough() }).passthrough();
+  input: z.object({ chapters: z.record(z.string(), z.unknown()) }).passthrough() }).passthrough();
 const chapterSchema = z.object({ id, documentVersionId: id, nodes: z.array(z.unknown()).max(100) }).passthrough();
 const nodeSchema = z.object({ id: z.string().min(1).max(200), textHash: hash, text: z.string(),
   excerptStart: z.number().int().nonnegative(), excerptEnd: z.number().int().nonnegative(),

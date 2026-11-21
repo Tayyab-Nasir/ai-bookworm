@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 
-const uuid = z.string().uuid();
+const uuid = z.guid();
 const maxSegment = 50 * 1024 * 1024;
 const boundedFetch = (disconnect: AbortSignal): typeof fetch => async (input, init) => {
   const signal = AbortSignal.any([disconnect, AbortSignal.timeout(60_000), ...(init?.signal ? [init.signal] : [])]);

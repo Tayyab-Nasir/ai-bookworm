@@ -5,7 +5,7 @@ import { AppError } from "../errors.js";
 import { readTranslationCatalog } from "./translation-catalog.js";
 import { quoteUsage, type UsageQuote } from "./usage-pricing.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const counterReply = z.object({
   inputTokens: z.number().int().positive().max(2_000_000), inputSha256: hash,

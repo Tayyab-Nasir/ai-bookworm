@@ -14,16 +14,16 @@ import { editionConfigSchema, loadRenderImages, withEditionLanguage, requiresEff
 
 const channelSchema = z.enum(["export", "kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
 const retailerChannelSchema = z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]);
-const submissionJobIdSchema = z.object({ jobId: z.string().uuid().transform(value => value.toLowerCase()) });
+const submissionJobIdSchema = z.object({ jobId: z.guid().transform(value => value.toLowerCase()) });
 const submissionStatusSchema = z.enum(RETAILER_SUBMISSION_STATUSES);
 const submissionUpdateSchema = z.object({
   status: submissionStatusSchema,
-  expectedRevision: z.string().uuid().nullable(),
+  expectedRevision: z.guid().nullable(),
 }).strict();
 const submissionRowSchema = z.object({
-  publishing_job_id: z.string().uuid(),
+  publishing_job_id: z.guid(),
   status: submissionStatusSchema,
-  revision: z.string().uuid(),
+  revision: z.guid(),
   updated_at: z.string().datetime({ offset: true }),
 });
 
@@ -44,9 +44,9 @@ function publishingServiceUrl() {
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 const managedPublishingBodySchema = z.object({ packageSha256: sha256Schema, withdraw: z.literal(true).optional() }).strict();
 const managedPublishingRowSchema = z.object({
-  package_job_id: z.string().uuid(),
-  workspace_id: z.string().uuid(),
-  requested_by: z.string().uuid().nullable(),
+  package_job_id: z.guid(),
+  workspace_id: z.guid(),
+  requested_by: z.guid().nullable(),
   package_sha256: sha256Schema,
   requested_at: z.string().datetime({ offset: true }),
   withdrawn_at: z.string().datetime({ offset: true }).nullable(),
@@ -66,7 +66,7 @@ function managedPublishingResult(row: unknown, jobId: string, workspaceId: strin
   }
   return { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, confirmedAt, listingUrl };
 }
-const sourceEpubSchema = z.object({ jobId: z.string().uuid(), sha256: sha256Schema }).strict();
+const sourceEpubSchema = z.object({ jobId: z.guid(), sha256: sha256Schema }).strict();
 const savedPreflightSourceFields = {
   sourceEpub: sourceEpubSchema.optional(),
   sourcePrint: sourceEpubSchema.extend({ coverSha256: sha256Schema.nullable() }).strict().optional(),
@@ -83,8 +83,8 @@ function sameSavedPreflightSource(left: SavedPreflightSources, right: SavedPrefl
 }
 
 const preflightSchema = z.object({
-  bookId: z.string().uuid(),
-  editionId: z.string().uuid(),
+  bookId: z.guid(),
+  editionId: z.guid(),
   channel: channelSchema.default("export"),
   idempotencyKey: z.string().trim().min(8).max(200),
   ...savedPreflightSourceFields,
@@ -141,25 +141,25 @@ export function readPackagePreflight(job: Record<string, unknown>, channel: stri
 }
 
 const packageRequestSchema = z.object({
-  bookId: z.string().uuid(),
-  editionId: z.string().uuid(),
+  bookId: z.guid(),
+  editionId: z.guid(),
   channel: retailerChannelSchema,
-  renderJobId: z.string().uuid(),
-  preflightJobId: z.string().uuid(),
+  renderJobId: z.guid(),
+  preflightJobId: z.guid(),
   idempotencyKey: z.string().trim().min(8).max(200),
 }).strict();
 
 const listPackageJobsSchema = z.object({
-  bookId: z.string().uuid(),
-  editionId: z.string().uuid().optional(),
+  bookId: z.guid(),
+  editionId: z.guid().optional(),
   channel: retailerChannelSchema.optional(),
   limit: z.coerce.number().int().min(1).max(50).default(25),
   beforeCreatedAt: z.string().datetime({ offset: true }).optional(),
-  beforeId: z.string().uuid().optional(),
+  beforeId: z.guid().optional(),
 }).strict().refine(query => Boolean(query.beforeCreatedAt) === Boolean(query.beforeId));
 
 const renderArtifactSchema = z.object({
-  assetId: z.string().uuid(),
+  assetId: z.guid(),
   storagePath: z.string().min(1).max(1_000),
   filename: z.string().min(1).max(128),
   type: z.enum(["rendered_book", "rendered_cover"]),
@@ -173,7 +173,7 @@ const renderArtifactSchema = z.object({
 const renderJobResponseSchema = z.object({
   artifacts: z.array(renderArtifactSchema).min(1).max(2),
   rendererVersion: z.string().min(1).max(200),
-  usage: z.record(z.unknown()),
+  usage: z.record(z.string(), z.unknown()),
 }).strict();
 
 const packageArtifactSchema = renderArtifactSchema.extend({
@@ -350,7 +350,7 @@ async function findPackageRequest(sb: SupabaseClient, userId: string, bookId: st
 
 function assertPackageActor(req: FastifyRequest) {
   const actor = req.headers["x-bookworm-actor"];
-  if (actor !== undefined && (!z.string().uuid().safeParse(actor).success || actor !== req.userId)) {
+  if (actor !== undefined && (!z.guid().safeParse(actor).success || actor !== req.userId)) {
     throw new AppError(409, "Your account changed. Use the original account to recover this export request.");
   }
 }
@@ -768,8 +768,8 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
   app.get("/publishing/requests/:requestId", async (req, reply) => {
     assertPackageActor(req);
-    const params = z.object({ requestId: z.string().uuid() }).safeParse(req.params);
-    const query = z.object({ bookId: z.string().uuid() }).strict().safeParse(req.query);
+    const params = z.object({ requestId: z.guid() }).safeParse(req.params);
+    const query = z.object({ bookId: z.guid() }).strict().safeParse(req.query);
     if (!params.success || !query.success) throw new AppError(422, "Invalid saved package request.");
     const user = app.supabaseFactory(req.userToken);
     const { book } = await loadBook(user, query.data.bookId, req.userId);
@@ -838,7 +838,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
   });
 
   app.get("/publishing/jobs/:jobId", async (req, reply) => {
-    const parsed = z.object({ jobId: z.string().uuid() }).safeParse(req.params);
+    const parsed = z.object({ jobId: z.guid() }).safeParse(req.params);
     if (!parsed.success) throw new AppError(422, "Invalid publishing job id.");
     const user = app.supabaseFactory(req.userToken);
     const { data: job, error } = await user.from("publishing_jobs").select("*").eq("id", parsed.data.jobId).maybeSingle();

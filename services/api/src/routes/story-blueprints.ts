@@ -4,7 +4,7 @@ import { AppError } from "../errors.js";
 import { requireWorkspaceEditor, requireWorkspaceMember } from "../lib/authorize.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 
 const storySchema = z.object({
   workingTitle: z.string().trim().max(500),

@@ -3,10 +3,10 @@ import { isDeepStrictEqual } from "node:util";
 import { quoteUsage, type UsageQuote } from "./usage-pricing.js";
 import { AppError } from "../errors.js";
 
-const schema=z.object({id:z.string().uuid(),book_id:z.string().uuid(),workspace_id:z.string().uuid(),user_id:z.string().uuid(),
+const schema=z.object({id:z.guid(),book_id:z.guid(),workspace_id:z.guid(),user_id:z.guid(),
   source_language:z.string(),target_language:z.string(),reserved_credits:z.number().int().positive().max(2147483647),
-  expires_at:z.string(),accepted_project_id:z.string().uuid().nullable(),
-  chapters_json:z.array(z.object({jobId:z.string().uuid(),chapterId:z.string().uuid(),documentVersionId:z.string().uuid(),
+  expires_at:z.string(),accepted_project_id:z.guid().nullable(),
+  chapters_json:z.array(z.object({jobId:z.guid(),chapterId:z.guid(),documentVersionId:z.guid(),
     chapterOrder:z.number().int().nonnegative(),quote:z.unknown()})).min(1).max(500)});
 export function publicTranslationProposal(value:unknown,now=Date.now()) {
   try {

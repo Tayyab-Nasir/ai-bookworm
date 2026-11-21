@@ -16,7 +16,7 @@ async function signVisibleExports(app: FastifyInstance, caller: SupabaseClient, 
   const urls = new Map<string, string>();
   if (!completed.length) return urls;
   const ids = completed.map(job => job.id);
-  const validId = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
+  const validId = (value: unknown): value is string => z.guid().safeParse(value).success;
   if (ids.some(id => !validId(id)) || new Set(ids).size !== ids.length || completed.some(job => !validId(job.workspace_id) || !validId(job.book_id) || !validId(job.edition_id)))
     throw new AppError(503, "Could not verify audiobook export history.");
   const expected = new Map(completed.map(job => [job.id as string, job]));
@@ -49,11 +49,11 @@ async function signVisibleExports(app: FastifyInstance, caller: SupabaseClient, 
   await authorizeAgain();
   return urls;
 }
-const signoffSchema = z.object({ reportId: z.string().uuid(), listenedToExactAudio: z.literal(true) }).strict();
+const signoffSchema = z.object({ reportId: z.guid(), listenedToExactAudio: z.literal(true) }).strict();
 const googlePlayExportSchema = z.object({
   identifier: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u)
     .refine(googlePlayIdentifierSchemaSafe, "Use a valid ISBN-13 or a safe publisher/Google book identifier."),
-  coverAssetId: z.string().uuid(),
+  coverAssetId: z.guid(),
   idempotencyKey: z.string().trim().min(8).max(200),
 }).strict();
 
@@ -146,7 +146,7 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
   });
   app.get("/editions/:editionId/audiobook-google-play-exports", async (req, reply) => {
     const { editionId } = req.params as { editionId: string };
-    if (!z.string().uuid().safeParse(editionId).success) throw new AppError(404, "Audiobook edition not found.");
+    if (!z.guid().safeParse(editionId).success) throw new AppError(404, "Audiobook edition not found.");
     const userClient = app.supabaseFactory(req.userToken);
     const { data: jobs, error } = await userClient.from("audiobook_google_play_export_jobs").select(EXPORT_COLUMNS)
       .eq("edition_id", editionId).order("created_at", { ascending: false }).limit(20);
@@ -158,7 +158,7 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
   });
   app.get("/audiobook-google-play-exports/:jobId", async (req, reply) => {
     const { jobId } = req.params as { jobId: string };
-    if (!z.string().uuid().safeParse(jobId).success) throw new AppError(404, "Audiobook export not found.");
+    if (!z.guid().safeParse(jobId).success) throw new AppError(404, "Audiobook export not found.");
     const userClient = app.supabaseFactory(req.userToken);
     const { data: job, error } = await userClient.from("audiobook_google_play_export_jobs").select(EXPORT_COLUMNS).eq("id", jobId).maybeSingle();
     if (error) throw new AppError(503, "Could not refresh audiobook export progress.");
@@ -169,7 +169,7 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
   });
   app.post("/audiobook-google-play-exports/:jobId/cancel", async (req, reply) => {
     const { jobId } = req.params as { jobId: string };
-    if (!z.string().uuid().safeParse(jobId).success) throw new AppError(404, "Audiobook export not found.");
+    if (!z.guid().safeParse(jobId).success) throw new AppError(404, "Audiobook export not found.");
     const sb = app.supabaseFactory(req.userToken);
     const { data, error } = await sb.rpc("cancel_audiobook_google_play_export", { p_job_id: jobId });
     if (error) {
@@ -302,7 +302,7 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
   app.get("/editions/:editionId/audiobook-jobs", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
     const { editionId } = req.params as { editionId: string };
-    if (!z.string().uuid().safeParse(editionId).success) throw new AppError(404, "Audiobook edition not found.");
+    if (!z.guid().safeParse(editionId).success) throw new AppError(404, "Audiobook edition not found.");
     const sb = app.supabaseFactory(req.userToken);
     const { data, error } = await sb.from("audiobook_projects").select("*")
       .eq("edition_id", editionId).order("created_at", { ascending: false }).limit(100);
@@ -316,7 +316,7 @@ export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeo
   app.get("/audiobook-jobs/:projectId", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
     const { projectId } = req.params as { projectId: string };
-    if (!z.string().uuid().safeParse(projectId).success) throw new AppError(404, "Audiobook job not found.");
+    if (!z.guid().safeParse(projectId).success) throw new AppError(404, "Audiobook job not found.");
     const sb = app.supabaseFactory(req.userToken);
     const { data, error } = await sb.from("audiobook_projects").select("*").eq("id", projectId).maybeSingle();
     if (error) throw new AppError(500, "Could not load audiobook job.");

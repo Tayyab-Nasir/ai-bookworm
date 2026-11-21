@@ -23,7 +23,7 @@ export const policySchema = z.object({
   minimumCredits: positive,
 }).strict();
 const scopeSchema = z.object({
-  jobId: z.string().uuid(), workspaceId: z.string().uuid(), userId: z.string().uuid(),
+  jobId: z.guid(), workspaceId: z.guid(), userId: z.guid(),
   inputSha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 const quantitySchema = z.array(z.object({ dimension, tokens: integer }).strict()).min(1).max(9);

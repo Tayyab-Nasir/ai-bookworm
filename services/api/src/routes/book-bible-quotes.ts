@@ -5,12 +5,13 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import { loadBook } from "../lib/authoring.js";
 import { requireWorkspaceEditor } from "../lib/authorize.js";
+import { bibleCitationNodeId } from "../lib/bible-batch-evidence.js";
 import { availableBookBibleModels, bookBibleCatalog, prepareBookBibleQuote, type BookBibleTextRequest } from "../lib/book-bible-pricing.js";
 import { loadBibleReadingPlan } from "./book-bible-generation.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { quoteUsage, type UsageQuote } from "../lib/usage-pricing.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const bodySchema = z.object({
   modelId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/u), idempotencyKey: z.string().trim().min(8).max(200),
   chapterIds: z.array(id).min(1).max(3), maxTokens: z.number().int().min(4096).max(16000).default(12000),
@@ -36,7 +37,7 @@ const acceptancePreflightMessage = `${unsupportedCitationMessage} This action di
 
 function hasSupportedCitationIds(generation: unknown) {
   const snapshot = z.object({ input: z.object({ chapters: z.record(z.string(), z.object({
-    nodes: z.array(z.object({ id: z.string().min(1).max(200) }).passthrough()).min(1),
+    nodes: z.array(z.object({ id: bibleCitationNodeId }).passthrough()).min(1),
   }).passthrough()) }).passthrough() }).passthrough().safeParse(generation);
   return snapshot.success && Object.keys(snapshot.data.input.chapters).length > 0;
 }

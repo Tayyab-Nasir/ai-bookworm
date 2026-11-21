@@ -21,11 +21,11 @@ const reactionSchema = z.object({ kind: z.enum(["like", "love", "insightful", "c
 
 const reportSchema = z.object({
   entityType: z.enum(["post", "comment"]),
-  entityId: z.string().uuid(),
+  entityId: z.guid(),
   reason: z.string().trim().min(1).max(1000),
 }).strict();
 
-const communityJoinIdentity = z.object({ operationId: z.string().uuid() }).strict();
+const communityJoinIdentity = z.object({ operationId: z.guid() }).strict();
 const communityJoinOutcome = z.discriminatedUnion("state", [
   z.object({ state: z.literal("joined"), role: z.string().min(1).max(100), alreadyMember: z.boolean() }).strict(),
   z.object({ state: z.literal("rejected"), reason: z.enum(["not_found", "not_open", "inactive"]) }).strict(),
@@ -146,7 +146,7 @@ export function communityRoutes(app: FastifyInstance) {
       throw new AppError(503, "Community memberships could not be verified. Refresh to try again.");
     }
     const { data, error, count } = result;
-    const parsed = z.array(z.object({ community_id: z.string().uuid(), status: z.string().min(1) })).safeParse(data);
+    const parsed = z.array(z.object({ community_id: z.guid(), status: z.string().min(1) })).safeParse(data);
     if (error || typeof count !== "number" || !Number.isSafeInteger(count) || count < 0 || count > maximum
         || !parsed.success || parsed.data.length !== count
         || new Set(parsed.data.map(row => row.community_id)).size !== count) {
@@ -196,7 +196,7 @@ export function communityRoutes(app: FastifyInstance) {
   ] as const) {
     app.post(path, async (req, reply) => {
       reply.header("cache-control", "private, no-store");
-      const id = z.string().uuid().safeParse((req.params as { id: string }).id);
+      const id = z.guid().safeParse((req.params as { id: string }).id);
       const identity = communityJoinIdentity.safeParse(req.body);
       if (!id.success || !identity.success) throw new AppError(422, "A community and original join request are required.");
       return communityJoinOperation(app, name, id.data, req.userId, identity.data.operationId);
@@ -206,7 +206,7 @@ export function communityRoutes(app: FastifyInstance) {
   // Owner/moderator adds a member (private-community invite path).
   app.post("/communities/:id/members", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = z.object({ userId: z.string().uuid(), role: z.enum(["member", "moderator"]).default("member") }).safeParse(req.body);
+    const body = z.object({ userId: z.guid(), role: z.enum(["member", "moderator"]).default("member") }).safeParse(req.body);
     if (!body.success) throw new AppError(422, "invalid member", { issues: body.error.issues });
     const svc = app.supabaseFactory();
     await requireModerator(svc, id, req.userId);
@@ -311,7 +311,7 @@ export function communityRoutes(app: FastifyInstance) {
     if (error?.code === "42501") throw new AppError(403, "This content is not available to report.");
     if (error && ["23514", "22023", "22P02"].includes(error.code)) throw new AppError(422, "Choose a valid report target and reason.");
     if (error) throw new AppError(503, "Report save could not be confirmed. Refresh before trying again.");
-    const receipt = z.object({ id: z.string().uuid(), reporter_id: z.literal(req.userId),
+    const receipt = z.object({ id: z.guid(), reporter_id: z.literal(req.userId),
       entity_type: z.literal(parsed.data.entityType), entity_id: z.literal(parsed.data.entityId),
       reason: z.literal(parsed.data.reason), status: z.literal("open"), created_at: z.string().datetime({ offset: true }),
     }).safeParse(data);
@@ -331,8 +331,8 @@ export function communityRoutes(app: FastifyInstance) {
     });
     if (error?.code === "42501") throw new AppError(403, "Community access required.");
     if (error) throw new AppError(503, "The moderation queue could not be loaded. Refresh before trying again.");
-    const reports = z.array(z.object({ id: z.string().uuid(), entity_type: z.enum(["post", "comment"]),
-      entity_id: z.string().uuid(), reason: z.string().min(1).max(1000), status: z.literal("open"),
+    const reports = z.array(z.object({ id: z.guid(), entity_type: z.enum(["post", "comment"]),
+      entity_id: z.guid(), reason: z.string().min(1).max(1000), status: z.literal("open"),
       created_at: z.string().datetime({ offset: true }),
       target: z.union([
         z.object({ type: z.literal("post"), title: z.string().nullable(), body: z.string(), status: z.string(), communityName: z.string().nullable() }).strip(),
@@ -346,7 +346,7 @@ export function communityRoutes(app: FastifyInstance) {
 
   app.post("/moderation/:reportId/:action", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
-    const parsed = z.object({ reportId: z.string().uuid(), action: z.enum(["remove", "dismiss"]) }).safeParse(req.params);
+    const parsed = z.object({ reportId: z.guid(), action: z.enum(["remove", "dismiss"]) }).safeParse(req.params);
     if (!parsed.success) throw new AppError(422, "Choose a valid report and moderation action.");
     const { reportId, action } = parsed.data;
     const { data, error } = await app.supabaseFactory(req.userToken).rpc("moderate_community_report", {

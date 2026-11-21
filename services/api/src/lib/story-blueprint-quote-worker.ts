@@ -7,7 +7,7 @@ import type { SupabaseClient } from "./supabase.js";
 import { quoteStoryBlueprintUsage, type StoryBlueprintCatalogSnapshot } from "./story-blueprint-pricing.js";
 import { storyBlueprintGenerationContextPolicy, storyBlueprintSourceSnapshotSchema } from "./story-blueprint-generation-contract.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const bookSnapshotSchema = z.object({
   title: z.string().max(500).refine((value) => value.trim().length > 0),
   author: z.string().max(500),

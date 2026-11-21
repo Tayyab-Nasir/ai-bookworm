@@ -8,7 +8,7 @@ import { parseNodes } from "./authoring.js";
 import { claimPricedDispatch, loadFundedUsage } from "./funded-usage.js";
 import { reconcileUsage, type TokenQuantities, type UsageQuote } from "./usage-pricing.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const jobSchema = z.object({ id, workspace_id: id, book_id: id, created_by: id,
   agent_type: z.enum(["writer", "proofreader", "copyeditor", "consistency"]),
   billing_mode: z.literal("quoted"), lease_token: id,

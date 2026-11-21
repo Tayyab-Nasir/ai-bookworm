@@ -16,8 +16,8 @@ export const BookNodeSchema = z
     type: z.enum(NODE_TYPES),
     text: z.string().optional(),
     level: z.number().int().min(1).max(6).optional(),
-    attributes: z.record(z.unknown()).optional(),
-    assetId: z.string().uuid().nullable().optional(),
+    attributes: z.record(z.string(), z.unknown()).optional(),
+    assetId: z.guid().nullable().optional(),
     assetVersionNumber: z.number().int().positive().optional(),
     altText: z.string().max(1000).optional(),
     caption: z.string().max(2000).optional(),
@@ -27,7 +27,7 @@ export const BookNodeSchema = z
 export type BookNode = z.infer<typeof BookNodeSchema>;
 
 export const ChapterSchema = z.object({
-  id: z.string().uuid(),
+  id: z.guid(),
   order: z.number().int().min(0),
   title: z.string(),
   nodes: z.array(BookNodeSchema),
@@ -67,7 +67,7 @@ export const BookBibleEntitySchema = z
     type: z.string().min(1),
     name: z.string().min(1),
     description: z.string().optional(),
-    attributes: z.record(z.unknown()).optional(),
+    attributes: z.record(z.string(), z.unknown()).optional(),
     sourceRefs: z.array(z.string()).optional(),
     confidence: z.number().min(0).max(1).optional(),
   })
@@ -80,7 +80,7 @@ export const BookBibleSchema = z.object({
 export type BookBible = z.infer<typeof BookBibleSchema>;
 
 export const BookAssetSchema = z.object({
-  id: z.string().uuid(),
+  id: z.guid(),
   role: z.string(),
   caption: z.string().optional(),
   altText: z.string().optional(),
@@ -90,7 +90,7 @@ export type BookAsset = z.infer<typeof BookAssetSchema>;
 export const BookModelSchema = z
   .object({
     schemaVersion: z.literal("1.0"),
-    bookId: z.string().uuid(),
+    bookId: z.guid(),
     metadata: BookMetadataSchema,
     styleGuide: StyleGuideSchema,
     bookBible: BookBibleSchema,

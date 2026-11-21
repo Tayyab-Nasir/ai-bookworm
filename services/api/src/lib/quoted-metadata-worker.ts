@@ -6,7 +6,7 @@ import type { SupabaseClient } from "./supabase.js";
 import { loadFundedUsage, claimPricedDispatch } from "./funded-usage.js";
 import { reconcileUsage, type UsageQuote } from "./usage-pricing.js";
 
-const id=z.string().uuid();
+const id=z.guid();
 const measuredTokens=z.array(z.object({dimension:z.enum(["text_input","text_cached_input","text_output"]),tokens:z.string().regex(/^(0|[1-9][0-9]*)$/)}).strict()).length(3);
 const usage=z.object({inputTokens:z.number().int().nonnegative(),outputTokens:z.number().int().nonnegative(),
   estimatedCostUsd:z.number().finite().nonnegative(),latencyMs:z.number().int().nonnegative().optional(),measuredTokens}).strict();

@@ -12,7 +12,7 @@ import { claimPricedDispatch, loadFundedUsage, settlePricedUsage } from "./funde
 import { storyBlueprintCandidateSchema, storyBlueprintGenerationContextPolicy, storyBlueprintSourceSnapshotSchema } from "./story-blueprint-generation-contract.js";
 import { reconcileUsage, type TokenQuantities, type UsageQuote } from "./usage-pricing.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const measuredTokensSchema = z.array(z.object({
   dimension: z.enum(["text_input", "text_cached_input", "text_output"]),
   tokens: z.string().regex(/^(0|[1-9][0-9]*)$/),

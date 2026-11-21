@@ -14,7 +14,7 @@ export { loadRenderImages } from "../lib/render-images.js";
 
 const BUCKET = "book-assets";
 
-const httpsUrl = z.string().trim().url().max(2_048).refine((value) => {
+const httpsUrl = z.string().trim().refine(value => value.length <= 2_048, "QR destination must be at most 2048 characters.").refine((value) => {
   try { return /^https:\/\/[^/?#\s\\]+/i.test(value) && !/[\x00-\x20\x7f\\]/.test(value) && new URL(value).protocol === "https:"; } catch { return false; }
 }, "QR destination must use HTTPS.");
 const qrSchema = z.object({
@@ -28,24 +28,24 @@ const qrSchema = z.object({
 });
 
 const coverSchema = z.object({
-  asset_id: z.string().uuid().nullable().default(null),
+  asset_id: z.guid().nullable().default(null),
   title_on_cover: z.boolean().default(true),
   subtitle_on_cover: z.boolean().default(true),
   author_on_cover: z.boolean().default(true),
   text_color: z.string().regex(/^#[0-9a-f]{6}$/i).default("#ffffff"),
   overlay_opacity: z.number().min(0).max(0.9).default(0.28),
-  qr_code: qrSchema.default({}),
+  qr_code: qrSchema.prefault({}),
 }).strict().superRefine((value, ctx) => {
   if (value.qr_code.enabled && !value.asset_id) ctx.addIssue({ code: "custom", path: ["asset_id"], message: "Choose cover art before enabling QR." });
-}).default({});
+}).prefault({});
 
 const frontMatterSchema = z.object({
   copyright_notice: z.string().max(3000).default(""),
   publisher: z.string().max(200).default(""),
-}).strict().default({});
+}).strict().prefault({});
 
 const ebookSchema = z.object({
-  fixed_layout: z.lazy(() => fixedLayoutSchema).default({}),
+  fixed_layout: z.lazy(() => fixedLayoutSchema).prefault({}),
   include_title_page: z.boolean().default(false),
   kind: z.literal("ebook"),
   schema_version: z.enum(["1.0.0", "1.1.0"]).default("1.1.0"),
@@ -53,14 +53,14 @@ const ebookSchema = z.object({
   flow: z.enum(["reflowable", "fixed"]).default("reflowable"),
   navigation: z.enum(["toc", "toc+landmarks", "none"]).default("toc"),
   cover: coverSchema,
-  metadata_overrides: z.record(z.string().max(2_000)).default({}),
+  metadata_overrides: z.record(z.string(), z.string().max(2_000)).default({}),
   front_matter: frontMatterSchema,
   image_policy: z.object({
     max_width_px: z.number().int().min(320).max(6_000).default(1_600),
     max_bytes: z.number().int().min(100_000).max(25 * 1024 * 1024).default(5 * 1024 * 1024),
     embed: z.boolean().default(true),
     allowed_formats: z.array(z.enum(["jpeg", "png", "gif", "webp"])).min(1).max(4).default(["jpeg", "png", "gif"]),
-  }).strict().default({}),
+  }).strict().prefault({}),
 }).strict();
 
 const marginsSchema = z.object({
@@ -68,7 +68,7 @@ const marginsSchema = z.object({
   bottom: z.number().min(0.25).max(2).default(0.75),
   inner: z.number().min(0.25).max(2).default(0.75),
   outer: z.number().min(0.25).max(2).default(0.5),
-}).strict().default({});
+}).strict().prefault({});
 
 const amiriFonts = ["BookwormAmiri", "BookwormAmiri-Bold"] as const;
 const fontSchema = z.enum(["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold", ...amiriFonts]);
@@ -85,12 +85,12 @@ const typographySchema = z.object({
 }).strict().superRefine((value, ctx) => {
   if (value.leading < value.body_size_pt) ctx.addIssue({ code: "custom", path: ["leading"], message: "Line spacing must be at least the body font size." });
   if (isAmiriFont(value.body_font) !== isAmiriFont(value.heading_font)) ctx.addIssue({ code: "custom", path: ["heading_font"], message: "Choose Amiri for both the body and the headings." });
-}).default({});
+}).prefault({});
 
 const fixedLayoutSchema = z.object({
   trim_size: z.enum(["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"]).default("6x9"),
   margins: marginsSchema,
-  typography: typographySchema.default({ body_font: "BookwormVera", heading_font: "BookwormVera-Bold" }),
+  typography: typographySchema.prefault({ body_font: "BookwormVera", heading_font: "BookwormVera-Bold" }),
 }).strict().refine(value => !isAmiriFont(value.typography.body_font), { path: ["typography"], message: "Choose a different font for fixed-layout EPUB. Amiri is available for print PDF." });
 
 const printSchema = z.object({
@@ -109,7 +109,7 @@ const printSchema = z.object({
     style: z.enum(["arabic", "roman", "none"]).default("arabic"),
     start_at: z.number().int().min(1).max(10_000).default(1),
     position: z.enum(["bottom-center", "bottom-outer", "top-center"]).default("bottom-center"),
-  }).strict().default({}),
+  }).strict().prefault({}),
   cover: coverSchema,
   wrap_cover: z.object({
     enabled: z.boolean().default(false),
@@ -122,7 +122,7 @@ const printSchema = z.object({
     back_text: z.string().max(3000).default(""), spine_text: z.string().max(200).default(""),
     background_color: z.string().regex(/^#[0-9a-f]{6}$/i).default("#182528"),
     text_color: z.string().regex(/^#[0-9a-f]{6}$/i).default("#ffffff"),
-  }).strict().default({}),
+  }).strict().prefault({}),
 }).strict();
 
 const audiobookSchema = z.object({

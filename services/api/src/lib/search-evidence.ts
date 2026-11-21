@@ -6,7 +6,7 @@ import { parseNodes } from "./authoring.js";
 import type { SupabaseClient } from "./supabase.js";
 
 export const searchEvidenceSchema = z.object({
-  chapterId: z.string().uuid(), documentVersionId: z.string().uuid(),
+  chapterId: z.guid(), documentVersionId: z.guid(),
   nodeId: z.string().min(1).max(200),
   chunkIndex: z.number().int().min(0).max(4_000_000).multipleOf(1600),
   textHash: z.string().regex(/^[a-f0-9]{32}$/u),
@@ -33,7 +33,7 @@ export async function readSearchEvidence(sb: SupabaseClient, bookId: string, inp
   if (chapterError) throw new AppError(503, "The source chapter could not be loaded. Try again.");
   if (!chapter) throw new AppError(404, "Source chapter not found in this book.");
   if (chapter.id !== chapterId || chapter.book_id !== bookId || typeof chapter.title !== "string" || chapter.title.length > 1000
-    || (chapter.current_document_version_id !== null && !z.string().uuid().safeParse(chapter.current_document_version_id).success)) {
+    || (chapter.current_document_version_id !== null && !z.guid().safeParse(chapter.current_document_version_id).success)) {
     throw new AppError(503, "The source chapter identity could not be verified.");
   }
   const { data: version, error: versionError } = await sb.from("document_versions")

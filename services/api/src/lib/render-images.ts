@@ -7,14 +7,14 @@ import type { SupabaseClient } from "./supabase.js";
 type ImageReference = { assetId?: string | null; assetVersionNumber?: number };
 
 export const artworkSnapshotSchema = z.object({
-  schemaVersion: z.literal(1), coverAssetId: z.string().uuid().nullable(),
-  illustrationAssetIds: z.array(z.string().uuid()).max(100),
+  schemaVersion: z.literal(1), coverAssetId: z.guid().nullable(),
+  illustrationAssetIds: z.array(z.guid()).max(100),
   assets: z.array(z.object({
-    assetId: z.string().uuid(), versionNumber: z.number().int().min(1).max(2147483647),
+    assetId: z.guid(), versionNumber: z.number().int().min(1).max(2147483647),
     storagePath: z.string().min(1).max(1024), checksum: z.string().regex(/^[a-f0-9]{64}$/u),
     mimeType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"]),
     sizeBytes: z.number().int().min(1).max(25 * 1024 * 1024),
-    requiresApproval: z.boolean(), approvalId: z.string().uuid().nullable(),
+    requiresApproval: z.boolean(), approvalId: z.guid().nullable(),
   }).strict().refine(asset => asset.requiresApproval === (asset.approvalId !== null))).max(100),
 }).strict().refine(snapshot => {
   const ids = new Set(snapshot.assets.map(asset => asset.assetId));

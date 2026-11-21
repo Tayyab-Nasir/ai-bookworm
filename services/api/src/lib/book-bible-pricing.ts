@@ -6,7 +6,7 @@ import { AppError } from "../errors.js";
 import { readTranslationCatalog } from "./translation-catalog.js";
 import { quoteUsage, type UsageQuote } from "./usage-pricing.js";
 
-const uuid = z.string().uuid();
+const uuid = z.guid();
 const hash = z.string().regex(/^[a-f0-9]{64}$/u);
 const textRequest = z.object({
   jobId: uuid, workspaceId: uuid, bookId: uuid, agentType: z.literal("bookbible"),

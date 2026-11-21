@@ -5,25 +5,25 @@ import { openAiSpeechGenerator, type SpeechGenerator } from "./speech-generation
 
 const BUCKET = "book-assets";
 const claimSchema = z.object({
-  id: z.string().uuid(), workspace_id: z.string().uuid(), lease_token: z.string().uuid(),
+  id: z.guid(), workspace_id: z.guid(), lease_token: z.guid(),
   billing_mode: z.literal("operational"),
   input_ref: z.object({
-    audiobookProjectId: z.string().uuid(), documentVersionId: z.string().uuid(),
+    audiobookProjectId: z.guid(), documentVersionId: z.guid(),
     segmentIndex: z.number().int().min(0).max(249), textStart: z.number().int().nonnegative(),
     textEnd: z.number().int().positive(), textSha256: z.string().regex(/^[a-f0-9]{64}$/),
     creditUnits: z.number().int().min(1).max(5),
   }).strict(),
 }).passthrough();
 const projectSchema = z.object({
-  id: z.string().uuid(), voice: z.enum(["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"]),
+  id: z.guid(), voice: z.enum(["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"]),
   billing_mode: z.literal("operational"),
   instructions: z.string().nullable(), speed: z.coerce.number().min(0.25).max(4), status: z.string(),
 }).passthrough();
 const receiptSchema = z.object({
-  p_job_id: z.string().uuid(), p_asset_id: z.string().uuid(), p_storage_path: z.string(),
+  p_job_id: z.guid(), p_asset_id: z.guid(), p_storage_path: z.string(),
   p_mime_type: z.literal("audio/mpeg"), p_size_bytes: z.number().int().positive().max(50 * 1024 * 1024),
   p_checksum: z.string().regex(/^[a-f0-9]{64}$/), p_provider: z.string(), p_model: z.string(),
-  p_request_id: z.string().nullable(), p_usage: z.record(z.unknown()),
+  p_request_id: z.string().nullable(), p_usage: z.record(z.string(), z.unknown()),
 }).strict();
 export type AudiobookWorkerOutcome = { status: "idle" | "succeeded" | "failed" | "lease_lost" | "completion_unknown"; jobId?: string };
 

@@ -11,12 +11,12 @@ const MAX_RASTER_BYTES = 25 * 1024 * 1024;
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const layoutSchema = z.enum(["reflowable", "pre-paginated"]);
 const artifactSchema = z.object({
-  assetId: z.string().uuid(), storagePath: z.string().min(1).max(1000), filename: z.string().min(1).max(128),
+  assetId: z.guid(), storagePath: z.string().min(1).max(1000), filename: z.string().min(1).max(128),
   type: z.enum(["rendered_book", "rendered_cover"]), role: z.enum(["rendered_ebook", "rendered_print", "rendered_cover"]),
   name: z.string().min(1).max(256), mimeType: z.enum(["application/epub+zip", "application/pdf", "image/png"]),
   sizeBytes: z.number().int().min(1).max(MAX_SAVED_EPUB_BYTES), checksum: z.string().regex(/^[a-f0-9]{64}$/iu),
 }).strict();
-const renderSchema = z.object({ artifacts: z.array(artifactSchema).min(1).max(2), rendererVersion: z.string().min(1).max(200), usage: z.record(z.unknown()) }).strict();
+const renderSchema = z.object({ artifacts: z.array(artifactSchema).min(1).max(2), rendererVersion: z.string().min(1).max(200), usage: z.record(z.string(), z.unknown()) }).strict();
 const resourceSchema = z.object({
   index: z.number().int().min(0).max(9999), mimeType: z.enum(["image/png", "image/jpeg"]), sha256: digestSchema,
   sizeBytes: z.number().int().min(1).max(MAX_RASTER_BYTES), width: z.number().int().min(1).max(7200), height: z.number().int().min(1).max(7200),

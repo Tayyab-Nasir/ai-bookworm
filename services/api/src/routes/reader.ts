@@ -5,7 +5,7 @@ import { loadBook } from "../lib/authoring.js";
 import { previewSupabaseFetch, requestEpubPreview, savedEpubBytes, savedEpubSource, withinReaderDeadline, withPreviewAdmission } from "../lib/rendered-epub.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 
-const paramsSchema = z.object({ editionId: z.string().uuid(), jobId: z.string().uuid().optional(), resourceIndex: z.coerce.number().int().min(0).max(9999).optional() }).strict();
+const paramsSchema = z.object({ editionId: z.guid(), jobId: z.guid().optional(), resourceIndex: z.coerce.number().int().min(0).max(9999).optional() }).strict();
 const sectionQuery = z.object({ spine: z.coerce.number().int().min(0).max(2499).default(0), sha256: z.string().regex(/^[a-f0-9]{64}$/u) }).strict();
 const resourceQuery = z.object({ sha256: z.string().regex(/^[a-f0-9]{64}$/u) }).strict();
 
@@ -13,9 +13,9 @@ async function readerBook(sb: SupabaseClient, editionId: string, userId: string)
   const { data: edition, error } = await sb.from("editions").select("id,book_id,type").eq("id", editionId).maybeSingle();
   if (error) throw new AppError(503, "Saved edition could not be loaded.");
   if (!edition) throw new AppError(404, "Edition not found.");
-  if (edition.id !== editionId || !z.string().uuid().safeParse(edition.book_id).success) throw new AppError(503, "Saved edition could not be verified.");
+  if (edition.id !== editionId || !z.guid().safeParse(edition.book_id).success) throw new AppError(503, "Saved edition could not be verified.");
   const { book } = await loadBook(sb, edition.book_id, userId);
-  if (book.id !== edition.book_id || !z.string().uuid().safeParse(book.workspace_id).success) throw new AppError(503, "Saved book could not be verified.");
+  if (book.id !== edition.book_id || !z.guid().safeParse(book.workspace_id).success) throw new AppError(503, "Saved book could not be verified.");
   if (edition.type !== "ebook") throw new AppError(422, "The saved EPUB reader is available only for ebook editions.");
   return { book, edition };
 }
@@ -23,7 +23,7 @@ async function readerBook(sb: SupabaseClient, editionId: string, userId: string)
 export function readerRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
   app.get("/editions/:editionId/renders", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
-    const params = z.object({ editionId: z.string().uuid() }).strict().safeParse(req.params);
+    const params = z.object({ editionId: z.guid() }).strict().safeParse(req.params);
     if (!params.success || Object.keys(req.query as object).length) throw new AppError(422, "Check the saved render history request.");
     const signal = AbortSignal.timeout(30_000);
     try {
@@ -36,7 +36,7 @@ export function readerRoutes(app: FastifyInstance, options: { fetcher?: typeof f
         if (error || !Array.isArray(jobs) || jobs.length > 50) throw new AppError(503, "Saved render history could not be loaded.");
         const renders = [];
         for (const job of jobs) {
-          if (!z.string().uuid().safeParse(job.id).success || !z.string().datetime({ offset: true }).safeParse(job.created_at).success) continue;
+          if (!z.guid().safeParse(job.id).success || !z.string().datetime({ offset: true }).safeParse(job.created_at).success) continue;
           try { const source = await savedEpubSource(sb, book.workspace_id, book.id, edition.id, job); renders.push({ jobId: job.id, createdAt: job.created_at, source }); }
           catch (error) { if (!(error instanceof AppError) || ![404, 422].includes(error.status)) throw error; }
           if (renders.length === 25) break;

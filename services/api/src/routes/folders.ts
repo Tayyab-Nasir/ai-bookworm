@@ -19,13 +19,13 @@ export const FOLDER_TEMPLATE: (string | [string, string[]])[] = [
 
 const createSchema = z.object({
   name: z.string().min(1).max(128),
-  parentFolderId: z.string().uuid().nullish(),
+  parentFolderId: z.guid().nullish(),
 });
 
 const patchSchema = z
   .object({
     name: z.string().min(1).max(128).optional(),
-    parentFolderId: z.string().uuid().nullable().optional(),
+    parentFolderId: z.guid().nullable().optional(),
   })
   .refine((o) => o.name !== undefined || o.parentFolderId !== undefined, { message: "nothing to update" });
 

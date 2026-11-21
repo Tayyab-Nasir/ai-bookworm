@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 
-const uuid = z.string().uuid();
+const uuid = z.guid();
 const ticketInput = z
   .object({
     category: z.enum([

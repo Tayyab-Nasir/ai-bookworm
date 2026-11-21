@@ -8,7 +8,7 @@ import { imageCatalog, imageRequestHash, prepareImageQuote, type ImageQuoteReque
 import { imageQuoteContext } from "../lib/image-quote-context.js";
 import { quoteUsage, type UsageQuote } from "../lib/usage-pricing.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 export function imageQuoteRoutes(app: FastifyInstance) {
   app.get("/workspaces/:workspaceId/image-quotes/:quoteId/job", async (req, reply) => {
     const params = z.object({ workspaceId: id, quoteId: id }).safeParse(req.params);

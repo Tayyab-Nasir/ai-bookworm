@@ -5,13 +5,13 @@ import { aiProvider, apiKeyInput, credentialVault, type CredentialVault } from "
 import { boundedSupabaseFetch } from "../lib/supabase.js";
 import { isCustomerAiReady, type CustomerAiReadiness } from "../lib/customer-ai-readiness.js";
 
-const mutation = z.object({ connectionId: z.string().uuid().transform(value => value.toLowerCase()), operationId: z.string().uuid().transform(value => value.toLowerCase()), expectedRevision: z.number().int().min(1).max(2_147_483_646).nullable() }).strict();
+const mutation = z.object({ connectionId: z.guid().transform(value => value.toLowerCase()), operationId: z.guid().transform(value => value.toLowerCase()), expectedRevision: z.number().int().min(1).max(2_147_483_646).nullable() }).strict();
 const saveInput = mutation.extend({ apiKey: apiKeyInput }).strict();
 const recoveryInput = mutation.extend({ action: z.enum(["save", "revoke"]) }).strict();
 const stored = z.object({
-  id: z.string().uuid(), owner_id: z.string().uuid(), provider: aiProvider,
+  id: z.guid(), owner_id: z.guid(), provider: aiProvider,
   revision: z.number().int().positive(), status: z.enum(["saved", "revoked"]),
-  key_suffix: z.string().regex(/^[A-Za-z0-9_./+=-]{4}$/u).nullable(), last_operation_id: z.string().uuid(),
+  key_suffix: z.string().regex(/^[A-Za-z0-9_./+=-]{4}$/u).nullable(), last_operation_id: z.guid(),
   created_at: z.string().datetime({ offset: true }), updated_at: z.string().datetime({ offset: true }),
 });
 const fields = "id,owner_id,provider,revision,status,key_suffix,last_operation_id,created_at,updated_at";

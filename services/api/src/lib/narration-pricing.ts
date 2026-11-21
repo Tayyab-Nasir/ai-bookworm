@@ -10,7 +10,7 @@ import { REALTIME_NARRATION_MODELS, REALTIME_NARRATION_VOICES, measuredNarration
 import { priceSchema, policySchema, quoteUsage, reconcileUsage, type UsageQuote } from "./usage-pricing.js";
 
 const sha = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
-const id = z.string().uuid();
+const id = z.guid();
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const scalarText = (maximum: number) => z.string().min(1).max(maximum)
   .refine(value => Buffer.from(value, "utf8").toString("utf8") === value, "Invalid Unicode source.");

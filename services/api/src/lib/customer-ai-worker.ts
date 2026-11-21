@@ -9,7 +9,7 @@ import type { SupabaseClient } from "./supabase.js";
 import type { CredentialVault } from "./ai-connection-vault.js";
 import { customerDispatchScope, customerDispatchSigner, prepareCustomerDispatch } from "./customer-ai-dispatch.js";
 
-const id = z.string().uuid().regex(/^[0-9a-f-]+$/u), hash = z.string().regex(/^[a-f0-9]{64}$/u);
+const id = z.guid().regex(/^[0-9a-f-]+$/u), hash = z.string().regex(/^[a-f0-9]{64}$/u);
 const identity = z.object({ id, workspace_id: id, book_id: id, created_by: id,
   agent_type: customerDispatchScope.shape.agentType, model: customerDispatchScope.shape.policy.shape.model,
   billing_mode: z.literal("customer_key"), input_ref: z.object({ customerGrantId: id, requestSha256: hash }).strict() });

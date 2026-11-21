@@ -5,12 +5,12 @@ import { loadFundedUsage, claimPricedDispatch, settlePricedUsage } from "./funde
 import { reconcileUsage, type TokenQuantities } from "./usage-pricing.js";
 import { openAiTranslationGenerator, translationRequestHash, type TranslationGenerator } from "./translation-generation.js";
 
-const jobSchema = z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), created_by: z.string().uuid(),
-  billing_mode: z.literal("quoted"), lease_token: z.string().uuid(), input_ref: z.object({
-    translationProjectId: z.string().uuid(), translationChapterId: z.string().uuid(), chapterId: z.string().uuid(), documentVersionId: z.string().uuid(),
+const jobSchema = z.object({ id: z.guid(), workspace_id: z.guid(), created_by: z.guid(),
+  billing_mode: z.literal("quoted"), lease_token: z.guid(), input_ref: z.object({
+    translationProjectId: z.guid(), translationChapterId: z.guid(), chapterId: z.guid(), documentVersionId: z.guid(),
     sourceSha256: z.string().regex(/^[a-f0-9]{64}$/), sourceLanguage: z.string(), targetLanguage: z.string(), creditUnits: z.number().int().positive(),
   }).strict() }).passthrough();
-const completionSchema = z.object({ p_job_id: z.string().uuid(), p_translated_text: z.string().min(1).max(128000),
+const completionSchema = z.object({ p_job_id: z.guid(), p_translated_text: z.string().min(1).max(128000),
   p_provider: z.literal("openai"), p_model: z.string().min(1), p_request_id: z.string().min(1).max(256),
   p_usage: z.object({ inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
     estimatedCostUsd: z.number().nonnegative(), latencyMs: z.number().int().nonnegative(),

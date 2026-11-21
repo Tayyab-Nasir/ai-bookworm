@@ -4,11 +4,11 @@ import { AppError } from "../errors.js";
 import { loadBook } from "../lib/authoring.js";
 import { boundedSupabaseFetch } from "../lib/supabase.js";
 
-const ids = z.object({ editionId: z.string().uuid(), requestId: z.string().uuid() }).strict();
-const query = z.object({ bookId: z.string().uuid() }).strict();
+const ids = z.object({ editionId: z.guid(), requestId: z.guid() }).strict();
+const query = z.object({ bookId: z.guid() }).strict();
 const statuses = new Set(["queued", "running", "succeeded", "failed", "cancelled"]);
-const closeResult = z.object({ bookId: z.string().uuid(), editionId: z.string().uuid(), requestId: z.string().uuid(),
-  job: z.object({ id: z.string().uuid(), status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]) }).strict(),
+const closeResult = z.object({ bookId: z.guid(), editionId: z.guid(), requestId: z.guid(),
+  job: z.object({ id: z.guid(), status: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]) }).strict(),
   closedBeforeAcceptance: z.boolean() }).strict();
 
 /** Read-only recovery for the actor's exact render request, even after source edits. */
@@ -33,7 +33,7 @@ export function renderRequestRoutes(app: FastifyInstance) {
     if (!job) return { bookId, editionId, requestId, job: null };
     if (job.book_id !== bookId || job.edition_id !== editionId || job.created_by !== req.userId
       || job.idempotency_key !== requestId || job.channel !== "render" || job.request_json?.action !== "render"
-      || !z.string().uuid().safeParse(job.id).success || !statuses.has(job.status)) {
+      || !z.guid().safeParse(job.id).success || !statuses.has(job.status)) {
       throw new AppError(503, "Render request status could not be verified.");
     }
     return { bookId, editionId, requestId, job: { id: job.id, status: job.status } };

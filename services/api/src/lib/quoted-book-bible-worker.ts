@@ -4,12 +4,13 @@ import { z } from "zod";
 import type { SupabaseClient } from "./supabase.js";
 import { claimPricedDispatch, loadFundedUsage } from "./funded-usage.js";
 import { aiUsageSchema } from "./ai-usage.js";
+import { bibleEvidenceCitation } from "./bible-batch-evidence.js";
 import { reconcileUsage, type UsageQuote } from "./usage-pricing.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const hash = z.string().regex(/^[a-f0-9]{64}$/u);
 const version = z.object({ chapterId: id, documentVersionId: id, version: z.number().int().positive() }).strict();
-const evidence = z.object({ chapterId: id, documentVersionId: id, nodeId: z.string().min(1).max(200), textHash: hash }).strict();
+const evidence = bibleEvidenceCitation;
 const jobSchema = z.object({ id, workspace_id: id, book_id: id, created_by: id, agent_type: z.literal("bookbible"),
   billing_mode: z.literal("quoted"), lease_token: id, model: z.string().min(1).max(128),
   input_ref: z.object({ bookBibleQuoteRequestId: id, sourceSha256: hash, generationRequestSha256: hash,

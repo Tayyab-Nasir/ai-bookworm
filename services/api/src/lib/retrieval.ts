@@ -5,7 +5,7 @@ import type { SupabaseClient } from "./supabase.js";
 export const searchSchema = z.object({
   query: z.string().trim().min(1).max(1000),
   limit: z.number().int().min(1).max(20).default(8),
-  chapterIds: z.array(z.string().uuid()).max(50).optional(),
+  chapterIds: z.array(z.guid()).max(50).optional(),
   includeBible: z.boolean().default(true),
 }).strict();
 

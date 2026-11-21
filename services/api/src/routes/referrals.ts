@@ -15,7 +15,7 @@ function requireServiceToken(req: FastifyRequest) {
 }
 
 function referralId(req: FastifyRequest) {
-  const parsed = z.object({ id: z.string().uuid() }).safeParse(req.params);
+  const parsed = z.object({ id: z.guid() }).safeParse(req.params);
   if (!parsed.success) throw new AppError(422, "invalid referral id");
   return parsed.data.id;
 }
@@ -76,7 +76,7 @@ export function referralRoutes(app: FastifyInstance) {
 
   app.post("/referrals/qualify", { config: { serviceAuth: true } }, async (req) => {
     requireServiceToken(req);
-    const parsed = z.object({ referredUserId: z.string().uuid() }).strict().safeParse(req.body);
+    const parsed = z.object({ referredUserId: z.guid() }).strict().safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid qualify request", { issues: parsed.error.issues });
     return transitionReferral(app.supabaseFactory(), "qualify", parsed.data.referredUserId);
   });

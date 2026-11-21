@@ -7,8 +7,9 @@ import { requireEntitlement } from "../lib/entitlements.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 import { buildBibleReadingPlan, type BibleReadingChapter } from "../lib/bible-reading-plan.js";
 import { aiUsageSchema } from "../lib/ai-usage.js";
+import { bibleEvidenceCitation } from "../lib/bible-batch-evidence.js";
 
-const uuid = z.string().uuid();
+const uuid = z.guid();
 const generationRequest = z.object({
   idempotencyKey: z.string().trim().min(8).max(200),
   chapterIds: z.array(uuid).min(1).max(3).optional(),
@@ -19,10 +20,7 @@ const generationRequest = z.object({
     ctx.addIssue({ code: "custom", path: ["chapterIds"], message: "Do not repeat chapter IDs." });
   }
 });
-const sourceRef = z.object({
-  chapterId: uuid, documentVersionId: uuid,
-  nodeId: z.string().min(1).max(200), textHash: z.string().regex(/^[a-f0-9]{64}$/u),
-}).strict();
+const sourceRef = bibleEvidenceCitation;
 const candidate = z.object({
   suggestionKind: z.literal("book_bible_candidate"), status: z.literal("pending"),
   type: z.enum(["character", "place", "organization", "object", "event", "term"]),

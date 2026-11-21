@@ -6,13 +6,13 @@ import { executeManuscriptImport } from "./manuscript-import.js";
 
 // Public job responses deliberately exclude source checksums and lease tokens.
 export const importJobSchema = z.object({
-  id: z.string().uuid(), book_id: z.string().uuid(), source_asset_id: z.string().uuid(),
+  id: z.guid(), book_id: z.guid(), source_asset_id: z.guid(),
   status: z.enum(["queued", "running", "succeeded", "failed"]), attempts: z.number().int().min(0).max(5),
   error_code: z.string().regex(/^[a-z][a-z0-9_]{0,79}$/).nullable(),
   created_at: z.string(), available_at: z.string(), completed_at: z.string().nullable(),
 });
-const claimSchema = importJobSchema.extend({ created_by: z.string().uuid(),
-  source_checksum: z.string().regex(/^[a-f0-9]{64}$/), lease_token: z.string().uuid() });
+const claimSchema = importJobSchema.extend({ created_by: z.guid(),
+  source_checksum: z.string().regex(/^[a-f0-9]{64}$/), lease_token: z.guid() });
 const row = (value: unknown) => Array.isArray(value) ? value[0] : value;
 export type DocumentWorkerOutcome = { status: "idle" | "succeeded" | "queued" | "failed" | "lease_lost" | "completion_unknown"; jobId?: string };
 

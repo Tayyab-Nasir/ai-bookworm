@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { boundedSupabaseFetch, type SupabaseClient } from "./supabase.js";
 
-const id = z.string().uuid().regex(/^[0-9a-f-]+$/u);
+const id = z.guid().regex(/^[0-9a-f-]+$/u);
 const action = z.enum(["reconcile", "recover_receipt"]);
 const version = z.number().int().min(1).max(2_147_483_647);
 const timestamp = z.string().max(40).regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}(?::?\d{2})?)$/u)

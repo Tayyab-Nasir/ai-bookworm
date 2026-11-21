@@ -7,11 +7,11 @@ import type { SupabaseClient } from "./supabase.js";
 export function checkChapterActor(req: FastifyRequest, required = false) {
   const actor = req.headers["x-bookworm-actor"];
   if (!required && actor === undefined) return;
-  if (!z.string().uuid().safeParse(actor).success) throw new AppError(422, "The original account identity is required for this saved request.");
+  if (!z.guid().safeParse(actor).success) throw new AppError(422, "The original account identity is required for this saved request.");
   if (actor !== req.userId) throw new AppError(409, "Your account changed. Reload before recovering this manuscript request.");
 }
 
-const params = z.object({ chapterId: z.string().uuid(), operationId: z.string().uuid() });
+const params = z.object({ chapterId: z.guid(), operationId: z.guid() });
 const expectedVersionSchema = z.number().int().min(0).max(2_147_483_645);
 const bodyVersion = z.object({ expectedVersion: expectedVersionSchema }).strict();
 const queryVersion = z.object({ expectedVersion: z.string().regex(/^(0|[1-9][0-9]{0,9})$/u).transform(Number).pipe(expectedVersionSchema) }).strict();

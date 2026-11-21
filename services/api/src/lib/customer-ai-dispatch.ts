@@ -10,7 +10,7 @@ import { aiProvider, type CredentialBinding } from "./ai-connection-vault.js";
 
 const FORMAT = "bookworm-customer-dispatch-v1";
 const MAX_PAYLOAD = 524288;
-const uuid = z.string().uuid().regex(/^[0-9a-f-]+$/u);
+const uuid = z.guid().regex(/^[0-9a-f-]+$/u);
 const model = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_./:-]{0,199}$/u);
 export const customerDispatchScope = z.object({
   grantId: uuid, jobId: uuid, workspaceId: uuid, bookId: uuid, ownerId: uuid,

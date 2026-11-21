@@ -9,7 +9,7 @@ import type { SupabaseClient } from "./supabase.js";
 import { assertQuoteDispatchable, quoteUsage, reconcileUsage, type UsageQuote } from "./usage-pricing.js";
 
 const rowSchema = z.object({
-  job_id: z.string().uuid(), user_id: z.string().uuid(), workspace_id: z.string().uuid(),
+  job_id: z.guid(), user_id: z.guid(), workspace_id: z.guid(),
   quote_json: z.unknown(), reserved_credits: z.number().int().positive().max(2147483647),
   status: z.enum(["held", "settled", "requires_review", "cancelled"]), settlement_json: z.unknown().nullable(),
 });
@@ -41,7 +41,7 @@ function databaseError(error: { code?: string }) {
   return new AppError(503, "usage quote storage unavailable");
 }
 export async function loadFundedUsage(supabase: SupabaseClient, jobId: string) {
-  z.string().uuid().parse(jobId);
+  z.guid().parse(jobId);
   const { data, error } = await supabase.from("funded_usage_quotes")
     .select("job_id,user_id,workspace_id,quote_json,reserved_credits,status,settlement_json")
     .eq("job_id", jobId).maybeSingle();
@@ -91,7 +91,7 @@ export async function settlePricedUsage(
 export async function claimPricedDispatch(supabase: SupabaseClient, input: {
   jobId: string; leaseToken: string; inputSha256: string; model: string;
 }) {
-  const request = z.object({ jobId: z.string().uuid(), leaseToken: z.string().uuid(),
+  const request = z.object({ jobId: z.guid(), leaseToken: z.guid(),
     inputSha256: z.string().regex(/^[a-f0-9]{64}$/), model: z.string().min(1).max(128) }).strict().parse(input);
   // SQL checks lease/expiry/role and commits the irreversible dispatch marker.
   // On network failure, do not infer permission: subsequent calls return false

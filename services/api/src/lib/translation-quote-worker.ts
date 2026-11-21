@@ -4,12 +4,12 @@ import type { SupabaseClient } from "./supabase.js";
 import { prepareTranslationQuote, type TranslationTokenCounter } from "./translation-quote.js";
 import { quoteCatalogTranslation, readTranslationCatalog } from "./translation-catalog.js";
 
-const chapterSchema=z.object({jobId:z.string().uuid(),chapterId:z.string().uuid(),documentVersionId:z.string().uuid(),
+const chapterSchema=z.object({jobId:z.guid(),chapterId:z.guid(),documentVersionId:z.guid(),
   chapterOrder:z.number().int().nonnegative(),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
 const countSchema=z.object({inputTokens:z.number().int().positive().max(2000000),inputSha256:z.string().regex(/^[a-f0-9]{64}$/),model:z.string().min(1)}).strict();
-const requestSchema=z.object({id:z.string().uuid(),user_id:z.string().uuid(),workspace_id:z.string().uuid(),
+const requestSchema=z.object({id:z.guid(),user_id:z.guid(),workspace_id:z.guid(),
   source_language:z.string(),target_language:z.string(),model_id:z.string(),catalog_json:z.unknown(),
-  chapters_json:z.array(chapterSchema).min(1).max(500),counts_json:z.record(countSchema),lease_token:z.string().uuid()});
+  chapters_json:z.array(chapterSchema).min(1).max(500),counts_json:z.record(z.string(), countSchema),lease_token:z.guid()});
 
 /** One leased chapter per step bounds runtime for a 500-chapter book. Saved
  * counts survive process restarts; abandoned running steps fail, never recount. */

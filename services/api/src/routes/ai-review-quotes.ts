@@ -10,7 +10,7 @@ import { buildAiReviewContext, type AiReviewContextJob } from "../lib/ai-review-
 import type { SupabaseClient } from "../lib/supabase.js";
 import { quoteUsage, type UsageQuote } from "../lib/usage-pricing.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const agentType = z.enum(["writer", "proofreader", "copyeditor", "consistency"]);
 const contextPolicySchema = z.object({
   includeBookBible: z.boolean().default(true), includeStyleGuide: z.boolean().default(true),
@@ -20,7 +20,7 @@ const contextPolicySchema = z.object({
 const bodySchema = z.object({
   modelId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/), agentType, chapterIds: z.array(id).min(1).max(5),
   userInstruction: z.string().trim().min(1).max(4_000).optional(), idempotencyKey: z.string().trim().min(8).max(200),
-  contextPolicy: contextPolicySchema.default({}), allowProviderTokenCounting: z.literal(true),
+  contextPolicy: contextPolicySchema.prefault({}), allowProviderTokenCounting: z.literal(true),
 }).strict().superRefine((value, ctx) => {
   if (value.agentType === "writer" && !value.userInstruction) ctx.addIssue({ code: "custom", path: ["userInstruction"], message: "Tell the writing assistant what to draft." });
   if (new Set(value.chapterIds).size !== value.chapterIds.length) ctx.addIssue({ code: "custom", path: ["chapterIds"], message: "Do not repeat chapter IDs." });

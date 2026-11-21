@@ -12,8 +12,8 @@ import { executeManuscriptImport } from "../lib/manuscript-import.js";
 import { importJobSchema } from "../lib/document-worker.js";
 
 const createSchema = z.object({
-  workspaceId: z.string().uuid(),
-  requestId: z.string().uuid().optional(),
+  workspaceId: z.guid(),
+  requestId: z.guid().optional(),
   title: z.string().trim().min(1).max(500),
   subtitle: z.string().max(500).optional(),
   authorName: z.string().trim().min(1).max(300),
@@ -24,7 +24,7 @@ const createSchema = z.object({
 export function bookRoutes(app: FastifyInstance, options: { assetScanner?: AssetMalwareScanner } = {}) {
   const jobColumns = "id,book_id,source_asset_id,status,attempts,error_code,created_at,available_at,completed_at";
   const jobParams = (value: unknown) => {
-    const parsed = z.object({ bookId: z.string().uuid(), jobId: z.string().uuid().optional() }).safeParse(value);
+    const parsed = z.object({ bookId: z.guid(), jobId: z.guid().optional() }).safeParse(value);
     if (!parsed.success) throw new AppError(422, "Valid book and import job IDs required");
     return parsed.data;
   };
@@ -40,7 +40,7 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
   });
   app.post("/books/:bookId/import-jobs", async (req, reply) => {
     const { bookId } = jobParams(req.params);
-    const body = z.object({ assetId: z.string().uuid() }).safeParse(req.body);
+    const body = z.object({ assetId: z.guid() }).safeParse(req.body);
     if (!body.success) throw new AppError(422, "Valid source asset ID required");
     const { assetId } = body.data;
     await loadBook(app.supabaseFactory(req.userToken), bookId, req.userId, true);
@@ -105,7 +105,7 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
   app.put("/books/:bookId/chapters/order", async (req) => {
     checkChapterActor(req);
     const { bookId } = req.params as { bookId: string };
-    const body = z.object({ orderedIds: z.array(z.string().uuid()).max(500), expectedIds: z.array(z.string().uuid()).max(500) }).safeParse(req.body);
+    const body = z.object({ orderedIds: z.array(z.guid()).max(500), expectedIds: z.array(z.guid()).max(500) }).safeParse(req.body);
     if (!body.success) throw new AppError(422, "invalid chapter order");
     if (new Set(body.data.orderedIds).size !== body.data.orderedIds.length) throw new AppError(422, "Duplicate chapter IDs");
     const sb = app.supabaseFactory(req.userToken);
@@ -116,7 +116,7 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
   });
 
   app.get("/books/:bookId/imports/:assetId", async (req, reply) => {
-    const params = z.object({ bookId: z.string().uuid(), assetId: z.string().uuid() }).safeParse(req.params);
+    const params = z.object({ bookId: z.guid(), assetId: z.guid() }).safeParse(req.params);
     if (!params.success) throw new AppError(422, "Valid book and source asset IDs required");
     const sb = app.supabaseFactory(req.userToken);
     const initial = await loadBook(sb, params.data.bookId, req.userId);
@@ -130,7 +130,7 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
   app.post("/books/:bookId/import", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
     const { bookId } = req.params as { bookId: string };
-    const body = z.object({ assetId: z.string().uuid() }).safeParse(req.body);
+    const body = z.object({ assetId: z.guid() }).safeParse(req.body);
     if (!body.success) throw new AppError(422, "assetId required");
     const sb = app.supabaseFactory(req.userToken);
     const initial = await loadBook(sb, bookId, req.userId, true);

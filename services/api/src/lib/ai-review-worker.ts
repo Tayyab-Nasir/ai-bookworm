@@ -9,15 +9,15 @@ import { aiUsageSchema } from "./ai-usage.js";
 
 const agentTypes = ["writer", "proofreader", "copyeditor", "consistency"] as const;
 const inputSchema = z.object({
-  chapterVersions: z.array(z.object({ chapterId: z.string().uuid(), version: z.number().int().min(0) })).min(1).max(5),
+  chapterVersions: z.array(z.object({ chapterId: z.guid(), version: z.number().int().min(0) })).min(1).max(5),
   userInstruction: z.string().max(4_000).nullable(),
   contextPolicy: z.object({ includeBookBible: z.boolean(), includeStyleGuide: z.boolean(), includeRelatedContext: z.boolean(), semanticTopK: z.number().int().min(1).max(20), maxTokens: z.number().int().min(256).max(16_000) }).strict(),
 }).strict();
-const claimedSchema = z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), book_id: z.string().uuid(), created_by: z.string().uuid(), agent_type: z.enum(agentTypes), lease_token: z.string().uuid(), input_ref: inputSchema }).passthrough();
+const claimedSchema = z.object({ id: z.guid(), workspace_id: z.guid(), book_id: z.guid(), created_by: z.guid(), agent_type: z.enum(agentTypes), lease_token: z.guid(), input_ref: inputSchema }).passthrough();
 export type AiReviewContextJob = z.infer<typeof claimedSchema>;
 const usageSchema = aiUsageSchema;
 const resultSchema = z.object({ status: z.enum(["succeeded","failed"]), provider: z.string().min(1).max(100), model: z.string().min(1).max(200), suggestions: z.array(z.unknown()).max(200).default([]), diagnostics: z.array(z.unknown()).max(500).default([]), usage: usageSchema, error: z.string().max(2_000).optional() }).passthrough();
-const editSchema = z.object({ chapterId: z.string().uuid(), nodeId: z.string().min(1).max(200), operation: z.unknown(), rationale: z.string().trim().min(1).max(2_000), confidence: z.number().min(0).max(1).nullable().optional() }).passthrough();
+const editSchema = z.object({ chapterId: z.guid(), nodeId: z.string().min(1).max(200), operation: z.unknown(), rationale: z.string().trim().min(1).max(2_000), confidence: z.number().min(0).max(1).nullable().optional() }).passthrough();
 type Snapshot = { title: string; order: number; version: number; nodes: BookNode[] };
 const row = (value: unknown): Record<string, unknown> | null => { const candidate = Array.isArray(value) ? value[0] : value; return candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : null; };
 export type AiReviewWorkerOutcome = { status: "idle" | "succeeded" | "queued" | "failed" | "lease_lost" | "completion_unknown" | "requires_review"; jobId?: string };

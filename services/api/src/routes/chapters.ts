@@ -11,7 +11,7 @@ const saveSchema = z.object({
   expectedVersion: z.number().int().nonnegative(), nodes: nodesSchema,
   operationId: z.string().min(1).max(200), changeSummary: z.string().max(500).default("Manuscript edited"),
 });
-const versionParams = z.object({ chapterId: z.string().uuid(), versionId: z.string().uuid() });
+const versionParams = z.object({ chapterId: z.guid(), versionId: z.guid() });
 const restoreStatusQuery = z.object({
   operationId: saveSchema.shape.operationId,
   expectedVersion: z.string().regex(/^(0|[1-9][0-9]{0,9})$/u).transform(Number).pipe(z.number().max(2_147_483_646)),

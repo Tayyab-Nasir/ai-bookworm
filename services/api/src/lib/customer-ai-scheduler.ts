@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { SupabaseClient } from "./supabase.js";
 import type { CustomerAiOutcome } from "./customer-ai-worker.js";
 
-const id = z.string().uuid().regex(/^[0-9a-f-]+$/u);
+const id = z.guid().regex(/^[0-9a-f-]+$/u);
 // Keep the exact database string: Date truncates PostgreSQL microseconds.
 const timestamp = z.string().max(40).regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}(?::?\d{2})?)$/u);
 const row = z.object({ job_id: id, created_at: timestamp, ready: z.boolean() }).strict();

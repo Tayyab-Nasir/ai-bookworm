@@ -9,21 +9,21 @@ import { deductCredits } from "../lib/credits.js";
 import { currentEntitlements, monthUsage } from "../lib/entitlements.js";
 
 const checkoutSchema = z.object({
-  organizationId: z.string().uuid(),
-  planId: z.string().uuid(),
+  organizationId: z.guid(),
+  planId: z.guid(),
   successUrl: z.string().url(),
   cancelUrl: z.string().url(),
 }).strict();
 
-const portalSchema = z.object({ organizationId: z.string().uuid(), returnUrl: z.string().url() }).strict();
+const portalSchema = z.object({ organizationId: z.guid(), returnUrl: z.string().url() }).strict();
 
 const deductSchema = z.object({
-  userId: z.string().uuid(),
-  workspaceId: z.string().uuid().nullish(),
-  organizationId: z.string().uuid().nullish(),
+  userId: z.guid(),
+  workspaceId: z.guid().nullish(),
+  organizationId: z.guid().nullish(),
   meter: z.string().min(1),
   amount: z.number().int().positive(),
-  jobId: z.string().uuid(),
+  jobId: z.guid(),
 });
 
 // Org admin check (organization_members roles: owner/admin/member).
@@ -54,15 +54,15 @@ function requireWebReturnUrl(value: string) {
 
 const stripeId = (prefix: string) => z.string().regex(new RegExp(`^${prefix}_[A-Za-z0-9_]{1,250}$`));
 const eventSchema = z.object({ id: stripeId("evt"), type: z.string().min(1).max(120), livemode: z.boolean(),
-  data: z.object({ object: z.record(z.unknown()) }) });
-const bindingSchema = z.object({ organizationId: z.string().uuid().nullable(), planId: z.string().uuid().nullable(),
+  data: z.object({ object: z.record(z.string(), z.unknown()) }) });
+const bindingSchema = z.object({ organizationId: z.guid().nullable(), planId: z.guid().nullable(),
   customerId: stripeId("cus").nullable() }).strict();
 const claimSchema = z.discriminatedUnion("state", [z.object({ state: z.literal("duplicate") }).strict(),
-  z.object({ state: z.literal("busy") }).strict(), z.object({ state: z.literal("claimed"), leaseToken: z.string().uuid(), binding: bindingSchema.nullable() }).strict()]);
+  z.object({ state: z.literal("busy") }).strict(), z.object({ state: z.literal("claimed"), leaseToken: z.guid(), binding: bindingSchema.nullable() }).strict()]);
 const snapshotSchema = z.object({ id: stripeId("sub"), livemode: z.boolean(),
   customer: z.union([stripeId("cus"), z.object({ id: stripeId("cus") })]),
   status: z.enum(["active", "trialing", "past_due", "canceled", "unpaid", "incomplete", "incomplete_expired", "paused"]),
-  metadata: z.record(z.string().max(500)).default({}),
+  metadata: z.record(z.string(), z.string().max(500)).default({}),
   items: z.object({ has_more: z.boolean(), data: z.array(z.object({ quantity: z.number().int().nonnegative(),
     price: z.object({ id: stripeId("price") }), current_period_end: z.number().int().min(0).max(4102444800) })).max(20) }).optional() });
 function subscriptionMutation(value: unknown, id: string, livemode: boolean, binding: z.infer<typeof bindingSchema> | null) {
@@ -70,9 +70,9 @@ function subscriptionMutation(value: unknown, id: string, livemode: boolean, bin
   const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer.id;
   if (sub.id !== id || sub.livemode !== livemode || (binding?.customerId && binding.customerId !== customerId)) throw new Error("Billing identity conflict.");
   const granting = sub.status === "active" || sub.status === "trialing";
-  const organizationId = binding && !granting ? binding.organizationId : binding?.organizationId ?? z.string().uuid().parse(sub.metadata.organizationId);
+  const organizationId = binding && !granting ? binding.organizationId : binding?.organizationId ?? z.guid().parse(sub.metadata.organizationId);
   if (granting && sub.metadata.organizationId !== organizationId) throw new Error("Billing organization conflict.");
-  const planId = binding && !granting ? binding.planId : z.string().uuid().parse(sub.metadata.planId);
+  const planId = binding && !granting ? binding.planId : z.guid().parse(sub.metadata.planId);
   const item = sub.items?.data[0];
   // Revocation of a bound subscription must not depend on today's price map.
   const expectedPriceId = granting && planId ? planPriceIds()[planId] ?? null : null;

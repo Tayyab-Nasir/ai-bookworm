@@ -9,7 +9,7 @@ import { publicTranslationProposal } from "../lib/translation-proposal.js";
 
 const languageSchema = z.string().trim().toLowerCase().regex(/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/).max(35);
 const adoptSchema = z.object({ title: z.string().trim().min(1).max(500) }).strict();
-const projectIdSchema = z.string().uuid();
+const projectIdSchema = z.guid();
 
 function row(value: unknown): Record<string, unknown> | null {
   const candidate = Array.isArray(value) ? value[0] : value;
@@ -17,9 +17,9 @@ function row(value: unknown): Record<string, unknown> | null {
 }
 
 function quoteRequestProgress(value: unknown) {
-  const parsed=z.object({id:z.string().uuid(),book_id:z.string().uuid(),status:z.enum(["queued","running","ready","failed"]),
-    chapters_json:z.array(z.object({chapterId:z.string().uuid()})).min(1).max(500),counts_json:z.record(z.unknown()),
-    proposal_id:z.string().uuid().nullable(),created_at:z.string(),target_language:z.string(),model_id:z.string()}).safeParse(value);
+  const parsed=z.object({id:z.guid(),book_id:z.guid(),status:z.enum(["queued","running","ready","failed"]),
+    chapters_json:z.array(z.object({chapterId:z.guid()})).min(1).max(500),counts_json:z.record(z.string(), z.unknown()),
+    proposal_id:z.guid().nullable(),created_at:z.string(),target_language:z.string(),model_id:z.string()}).safeParse(value);
   if (!parsed.success) throw new AppError(503,"Could not confirm quote preparation. Refresh this request.");
   const request=parsed.data;
   return {id:request.id,bookId:request.book_id,status:request.status,chapterCount:request.chapters_json.length,
@@ -159,7 +159,7 @@ export function translationRoutes(app: FastifyInstance) {
     await loadBook(sb, project.book_id, req.userId);
     if (project.created_by !== req.userId) throw new AppError(403, "Only the translation payer can view its billing.");
     const { data: chapters, error: chapterError } = await sb.from("translation_chapters").select("ai_job_id").eq("project_id", projectId);
-    const ids = z.array(z.object({ ai_job_id: z.string().uuid() })).min(1).safeParse(chapters);
+    const ids = z.array(z.object({ ai_job_id: z.guid() })).min(1).safeParse(chapters);
     if (chapterError || !ids.success) throw new AppError(503, "Translation billing is not available yet.");
     const jobIds = ids.data.map((c) => c.ai_job_id);
     // Service access only AFTER user-scoped book/membership and payer checks.

@@ -8,7 +8,7 @@ import type { SupabaseClient } from "./supabase.js";
 import type { customerAiMaintenanceSlots } from "./customer-ai-maintenance-slots.js";
 import type { customerAiMaintenanceJournal, CustomerAiMaintenanceIdentity } from "./customer-ai-maintenance-journal.js";
 
-const id = z.string().uuid().regex(/^[0-9a-f-]+$/u);
+const id = z.guid().regex(/^[0-9a-f-]+$/u);
 const timestamp = z.string().max(40).regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}(?::?\d{2})?)$/u);
 const candidate = z.object({ job_id: id, created_at: timestamp, action: z.enum(["none", "investigate", "review", "reconcile", "receipt_available"]) }).strict();
 type Slots = Pick<ReturnType<typeof customerAiMaintenanceSlots>, "open" | "ack" | "listSlots">;

@@ -10,7 +10,7 @@ import { parseNodes } from "./authoring.js";
 import { boundedSupabaseFetch, type SupabaseFactory } from "./supabase.js";
 import { customerDispatchScope } from "./customer-ai-dispatch.js";
 
-const id = z.string().uuid().regex(/^[0-9a-f-]+$/u);
+const id = z.guid().regex(/^[0-9a-f-]+$/u);
 const scalar = (max: number, min = 0, trim = false) => (trim ? z.string().trim() : z.string()).min(min).max(max)
   .refine(text => Buffer.from(text).toString("utf8") === text);
 const selection = z.object({ chapterId: id, documentVersionId: id, version: z.number().int().min(1).max(999999999),

@@ -11,7 +11,7 @@ import { customerSourceInput } from "../lib/customer-ai-source.js";
 import { boundedSupabaseFetch } from "../lib/supabase.js";
 import { isCustomerAiReady, type CustomerAiReadiness } from "../lib/customer-ai-readiness.js";
 
-const id = z.string().uuid().regex(/^[a-f0-9-]+$/u);
+const id = z.guid().regex(/^[a-f0-9-]+$/u);
 const revision = z.number().int().min(1).max(2147483647);
 const fee = z.object({ mode: z.enum(["platform_plan", "per_request_credits"]), credits: z.number().int().min(0).max(1000000) }).strict()
   .refine(value => value.mode === "platform_plan" ? value.credits === 0 : value.credits > 0);

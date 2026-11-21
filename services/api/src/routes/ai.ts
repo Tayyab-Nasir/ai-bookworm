@@ -9,8 +9,8 @@ import type { SupabaseClient } from "../lib/supabase.js";
 import { retrievalQuery, searchBookContext } from "../lib/retrieval.js";
 
 const createJobSchema = z.object({
-  bookId: z.string().uuid(),
-  chapterIds: z.array(z.string().uuid()).min(1).max(5),
+  bookId: z.guid(),
+  chapterIds: z.array(z.guid()).min(1).max(5),
   agentType: z.enum(["writer", "proofreader", "copyeditor", "consistency"]),
   userInstruction: z.string().trim().min(1).max(4_000).optional(),
   idempotencyKey: z.string().trim().min(8).max(200),
@@ -20,7 +20,7 @@ const createJobSchema = z.object({
     includeRelatedContext: z.boolean().default(true),
     semanticTopK: z.number().int().min(1).max(20).default(5),
     maxTokens: z.number().int().min(256).max(16_000).default(4_096),
-  }).strict().default({}),
+  }).strict().prefault({}),
 }).strict().superRefine((value, ctx) => {
   if (value.agentType === "writer" && !value.userInstruction) {
     ctx.addIssue({ code: "custom", path: ["userInstruction"], message: "Tell the writing assistant what to draft or rewrite." });
@@ -47,7 +47,7 @@ const serviceResult = z.object({
 }).passthrough();
 
 const editSuggestion = z.object({
-  chapterId: z.string().uuid(),
+  chapterId: z.guid(),
   nodeId: z.string().min(1).max(200),
   operation: z.unknown(),
   rationale: z.string().trim().min(1).max(2_000),
@@ -68,7 +68,7 @@ function chapterIdsForJob(job: Record<string, unknown>) {
   if (!Array.isArray(chapterVersions)) return [];
   return [...new Set(chapterVersions.flatMap((value) => {
     if (!value || typeof value !== "object") return [];
-    const chapterId = z.string().uuid().safeParse((value as { chapterId?: unknown }).chapterId);
+    const chapterId = z.guid().safeParse((value as { chapterId?: unknown }).chapterId);
     return chapterId.success ? [chapterId.data] : [];
   }))];
 }
@@ -167,7 +167,7 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
 
   app.get("/ai/jobs", async (req, reply) => {
     const parsed = z.object({
-      bookId: z.string().uuid(),
+      bookId: z.guid(),
       limit: z.coerce.number().int().min(1).max(20).default(8),
     }).strict().safeParse(req.query);
     if (!parsed.success) throw new AppError(422, "Check the AI review history request.", { issues: parsed.error.issues });
@@ -183,7 +183,7 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
   });
 
   app.get("/ai/jobs/requests/:requestKey", async (req, reply) => {
-    const parsed = z.object({ bookId: z.string().uuid() }).strict().safeParse(req.query);
+    const parsed = z.object({ bookId: z.guid() }).strict().safeParse(req.query);
     const key = z.string().min(8).max(200).safeParse((req.params as { requestKey: string }).requestKey);
     if (!parsed.success || !key.success) throw new AppError(422, "Check the AI request lookup.");
     const sb = app.supabaseFactory(req.userToken);
@@ -252,7 +252,7 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
   });
 
   app.get("/ai/jobs/:jobId", async (req) => {
-    const result = z.string().uuid().safeParse((req.params as { jobId: string }).jobId);
+    const result = z.guid().safeParse((req.params as { jobId: string }).jobId);
     if (!result.success) throw new AppError(404, "AI job not found.");
     const sb = app.supabaseFactory(req.userToken);
     const { data: job, error } = await sb.from("ai_jobs").select("*").eq("id", result.data).maybeSingle();
@@ -262,7 +262,7 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
   });
 
   app.post("/ai/suggestions/:suggestionId/apply", async (req) => {
-    const id = z.string().uuid().safeParse((req.params as { suggestionId: string }).suggestionId);
+    const id = z.guid().safeParse((req.params as { suggestionId: string }).suggestionId);
     if (!id.success) throw new AppError(404, "AI suggestion not found.");
     const sb = app.supabaseFactory(req.userToken);
     const { data: suggestion, error } = await sb.from("ai_suggestions").select("*").eq("id", id.data).maybeSingle();
@@ -299,7 +299,7 @@ export function aiRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch
   });
 
   app.post("/ai/suggestions/:suggestionId/reject", async (req) => {
-    const id = z.string().uuid().safeParse((req.params as { suggestionId: string }).suggestionId);
+    const id = z.guid().safeParse((req.params as { suggestionId: string }).suggestionId);
     if (!id.success) throw new AppError(404, "AI suggestion not found.");
     const sb = app.supabaseFactory(req.userToken);
     const { data, error } = await sb.rpc("reject_ai_suggestion", { p_suggestion_id: id.data });

@@ -8,13 +8,13 @@ import { checkChapterActor } from "./manual-chapter-save.js";
 const revision = z.number().int().min(0).max(2_147_483_646);
 const title = z.string().min(1).max(500).refine(value => value === value.trim() && !/[\u0000-\u001f\u007f-\u009f]/u.test(value));
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
-const params = z.object({ chapterId: z.string().uuid(), operationId: z.string().uuid() }).strict();
+const params = z.object({ chapterId: z.guid(), operationId: z.guid() }).strict();
 const identity = z.object({ expectedRevision: revision, titleDigest: digest }).strict();
 const query = identity.extend({ expectedRevision: z.string().regex(/^(0|[1-9][0-9]{0,9})$/u).transform(Number).pipe(revision) });
 const save = z.object({ expectedRevision: revision, title }).strict();
 const current = z.object({ title: z.string().max(500), revision, updatedAt: z.string().datetime({ offset: true }) }).strict();
 const resultSchema = z.object({
-  chapterId: z.string().uuid(), bookId: z.string().uuid(), operationId: z.string().uuid(), expectedRevision: revision, titleDigest: digest,
+  chapterId: z.guid(), bookId: z.guid(), operationId: z.guid(), expectedRevision: revision, titleDigest: digest,
   status: z.enum(["saved", "closed", "conflict", "not_found"]),
   receipt: z.object({ title, revision }).strict().nullable(), current,
 }).strict();

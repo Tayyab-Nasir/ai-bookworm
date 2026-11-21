@@ -9,7 +9,7 @@ import { quoteUsage, type UsageQuote } from "../lib/usage-pricing.js";
 import { storyBlueprintCandidateSchema, storyBlueprintSourceSnapshotSchema } from "../lib/story-blueprint-generation-contract.js";
 import { storyBlueprintRpcError } from "./story-blueprints.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const authorRoles = new Set(["owner", "admin", "editor", "writer"]);
 const proposalRequestBody = z.object({
   modelId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),

@@ -7,7 +7,7 @@ import { previewSupabaseFetch, withinReaderDeadline, withPreviewAdmission } from
 import { printUnavailable, savedPrintRender, verifySavedPrintBytes } from "../lib/rendered-print.js";
 import { readSavedPdfForProof, requestSavedPdfPage } from "../lib/pdf-proof.js";
 
-const paramsSchema = z.object({ editionId: z.string().uuid(), jobId: z.string().uuid().optional() }).strict();
+const paramsSchema = z.object({ editionId: z.guid(), jobId: z.guid().optional() }).strict();
 const downloadQuery = z.object({ sha256: z.string().regex(/^[a-f0-9]{64}$/u), fingerprint: z.string().regex(/^[a-f0-9]{64}$/u) }).strict();
 const jobColumns = "id,book_id,edition_id,channel,status,request_json,response_json,created_at";
 
@@ -15,9 +15,9 @@ async function printBook(sb: SupabaseClient, editionId: string, userId: string) 
   const { data: edition, error } = await sb.from("editions").select("id,book_id,type").eq("id", editionId).maybeSingle();
   if (error) throw printUnavailable();
   if (!edition) throw new AppError(404, "Edition not found.");
-  if (edition.id !== editionId || !z.string().uuid().safeParse(edition.book_id).success) throw printUnavailable();
+  if (edition.id !== editionId || !z.guid().safeParse(edition.book_id).success) throw printUnavailable();
   const { book } = await loadBook(sb, edition.book_id, userId);
-  if (book.id !== edition.book_id || !z.string().uuid().safeParse(book.workspace_id).success) throw printUnavailable();
+  if (book.id !== edition.book_id || !z.guid().safeParse(book.workspace_id).success) throw printUnavailable();
   if (edition.type !== "print") throw new AppError(422, "Saved print exports are available only for print editions.");
   return { book, edition };
 }
@@ -25,7 +25,7 @@ async function printBook(sb: SupabaseClient, editionId: string, userId: string) 
 export function savedPrintRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
   app.get("/editions/:editionId/print-renders", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
-    const params = z.object({ editionId: z.string().uuid() }).strict().safeParse(req.params);
+    const params = z.object({ editionId: z.guid() }).strict().safeParse(req.params);
     if (!params.success || Object.keys(req.query as object).length) throw new AppError(422, "Check the saved print history request.");
     const signal = AbortSignal.timeout(30_000);
     try {
@@ -86,10 +86,10 @@ export function savedPrintRoutes(app: FastifyInstance, options: { fetcher?: type
 
   app.get("/editions/:editionId/print-renders/:jobId/pages/:pageNumber", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
-    const params = z.object({ editionId: z.string().uuid(), jobId: z.string().uuid(),
+    const params = z.object({ editionId: z.guid(), jobId: z.guid(),
       pageNumber: z.string().regex(/^[1-9]\d{0,4}$/u).transform(Number).pipe(z.number().int().max(20_000)),
     }).strict().safeParse(req.params);
-    const query = downloadQuery.extend({ assetId: z.string().uuid(),
+    const query = downloadQuery.extend({ assetId: z.guid(),
       width: z.enum(["720", "1080", "1440"]).default("1080") }).strict().safeParse(req.query);
     if (!params.success || !query.success) throw new AppError(422, "Check the exact saved PDF page request.");
     const signal = AbortSignal.timeout(30_000);

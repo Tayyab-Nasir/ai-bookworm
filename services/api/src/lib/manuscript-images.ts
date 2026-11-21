@@ -7,7 +7,7 @@ import { AppError } from "../errors.js";
 import { sniffAssetContent, type AssetMalwareScanner } from "./asset-scanner.js";
 
 export const embeddedImagesSchema = z.array(z.object({
-  id: z.string().uuid(), filename: z.string().min(1).max(256),
+  id: z.guid(), filename: z.string().min(1).max(256),
   mimeType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
   sizeBytes: z.number().int().min(1).max(10 * 1024 * 1024),
   checksumSha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -36,10 +36,10 @@ export async function readDocumentResponse(response: Response): Promise<unknown>
 const importReportSchema = z.object({ warnings: z.array(z.string().max(2000)).max(100), confidence: z.string().max(100).optional(),
   chapterCount: z.number().int().min(1).max(500).optional(), imageCount: z.number().int().min(0).max(100).optional() });
 const importResultSchema = (sourceAssetId: string) => z.object({
-  chapters: z.array(z.object({ id: z.string().uuid(), book_id: z.string().uuid().optional(), title: z.string().max(500).optional(),
-    order_index: z.number().int().optional(), status: z.string().optional(), current_document_version_id: z.string().uuid().nullable().optional(),
+  chapters: z.array(z.object({ id: z.guid(), book_id: z.guid().optional(), title: z.string().max(500).optional(),
+    order_index: z.number().int().optional(), status: z.string().optional(), current_document_version_id: z.guid().nullable().optional(),
     created_at: z.string().optional(), updated_at: z.string().optional() })).min(1).max(500),
-  assetIds: z.array(z.string().uuid()).max(100), sourceAssetId: z.literal(sourceAssetId),
+  assetIds: z.array(z.guid()).max(100), sourceAssetId: z.literal(sourceAssetId),
   report: importReportSchema,
 }).transform((value) => ({ ...value, report: { ...value.report,
   chapterCount: value.chapters.length, imageCount: value.assetIds.length } }));

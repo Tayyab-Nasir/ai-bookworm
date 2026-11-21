@@ -6,7 +6,7 @@ import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { boundedSupabaseFetch, type SupabaseClient } from "./supabase.js";
 
-const id = z.string().uuid().regex(/^[0-9a-f-]+$/u);
+const id = z.guid().regex(/^[0-9a-f-]+$/u);
 const identity = z.object({ attemptId: id, jobId: id, action: z.enum(["reconcile", "recover_receipt"]) }).strict();
 const receipt = identity.extend({ state: z.enum(["pending", "completed", "needs_review"]),
   result: z.enum(["unchanged", "settled", "released", "requires_review"]).nullable() }).strict().refine(value =>

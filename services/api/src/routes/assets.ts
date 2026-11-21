@@ -27,12 +27,12 @@ const MAX_UPLOAD_BYTES = MAX_USER_ASSET_BYTES;
 const MAX_GENERATED_IMAGE_BYTES = 25 * 1024 * 1024;
 
 const uploadUrlSchema = z.object({
-  workspaceId: z.string().uuid(),
-  requestId: z.string().uuid().optional(),
+  workspaceId: z.guid(),
+  requestId: z.guid().optional(),
   filename: z.string().trim().min(1).max(256),
   mimeType: z.enum(USER_ASSET_MIME_TYPES),
   sizeBytes: z.number().int().min(1).max(MAX_UPLOAD_BYTES),
-  folderId: z.string().uuid().nullish(),
+  folderId: z.guid().nullish(),
   type: z.enum(["source_document", "manuscript", "illustration", "cover"]).optional(),
 }).strict();
 
@@ -55,21 +55,21 @@ const confirmVersionSchema = z.object({
 const patchSchema = z
   .object({
     name: z.string().min(1).max(256).optional(),
-    folderId: z.string().uuid().nullable().optional(),
+    folderId: z.guid().nullable().optional(),
   })
   .refine((o) => Object.keys(o).length > 0, { message: "nothing to update" });
 
 const generateSchema = z.object({
-  workspaceId: z.string().uuid(),
-  bookId: z.string().uuid().nullable().optional(),
-  folderId: z.string().uuid().nullable().optional(),
+  workspaceId: z.guid(),
+  bookId: z.guid().nullable().optional(),
+  folderId: z.guid().nullable().optional(),
   kind: z.enum(["illustration", "front_cover"]),
   name: z.string().trim().min(1).max(256),
   prompt: z.string().trim().min(10).max(4_000),
   size: z.enum(["1024x1024", "1024x1536", "1536x1024"]).default("1024x1024"),
   quality: z.enum(["low", "medium", "high"]).default("medium"),
   idempotencyKey: z.string().trim().min(8).max(200),
-  referenceAssetIds: z.array(z.string().uuid()).max(4).default([]).refine(ids => new Set(ids).size === ids.length, "Do not repeat reference images."),
+  referenceAssetIds: z.array(z.guid()).max(4).default([]).refine(ids => new Set(ids).size === ids.length, "Do not repeat reference images."),
 }).strict();
 
 // Storage path per spec section 6: workspaces/{workspace_id}/assets/{asset_id}/v{version}/{safe_filename}
@@ -226,7 +226,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
   }
 
   app.get("/assets/access", async (req, reply) => {
-    const parsed = z.object({ workspaceId: z.string().uuid() }).strict().safeParse(req.query);
+    const parsed = z.object({ workspaceId: z.guid() }).strict().safeParse(req.query);
     if (!parsed.success) throw new AppError(422, "Check the workspace access request.");
     const role = await requireWorkspaceMember(app.supabaseFactory(req.userToken), parsed.data.workspaceId, req.userId);
     reply.header("cache-control", "private, no-store");
@@ -236,7 +236,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
   });
 
   app.get("/assets/generation-jobs", async (req, reply) => {
-    const parsed = z.object({ workspaceId: z.string().uuid(), limit: z.coerce.number().int().min(1).max(50).default(20) }).strict().safeParse(req.query);
+    const parsed = z.object({ workspaceId: z.guid(), limit: z.coerce.number().int().min(1).max(50).default(20) }).strict().safeParse(req.query);
     if (!parsed.success) throw new AppError(422, "Check the image history request.");
     const user = app.supabaseFactory(req.userToken);
     await requireWorkspaceMember(user, parsed.data.workspaceId, req.userId);
@@ -252,7 +252,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
   });
 
   app.post("/assets/generation-jobs/:jobId/finalize", { preHandler: requireWriteReady }, async (req, reply) => {
-    const jobId = z.string().uuid().safeParse((req.params as { jobId: string }).jobId);
+    const jobId = z.guid().safeParse((req.params as { jobId: string }).jobId);
     if (!jobId.success) throw new AppError(422, "Invalid image request.");
     const user = app.supabaseFactory(req.userToken);
     const { data: job, error } = await user.from("ai_jobs").select("id,workspace_id,created_by,agent_type,status")
@@ -265,7 +265,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     const { data: receipt, error: receiptError } = await service.from("image_completion_receipts").select("completion_json").eq("job_id", job.id).maybeSingle();
     if (receiptError) throw new AppError(503, "Image recovery information is temporarily unavailable.");
     if (!receipt) throw new AppError(409, "No saved completion record is available yet. The provider may still be processing; do not start a duplicate request.");
-    const parsed = z.object({ p_job_id: z.literal(job.id), p_asset_id: z.string().uuid(), p_storage_path: z.string(),
+    const parsed = z.object({ p_job_id: z.literal(job.id), p_asset_id: z.guid(), p_storage_path: z.string(),
       p_checksum: z.string().regex(/^[a-f0-9]{64}$/), p_size_bytes: z.number().int().min(1).max(MAX_GENERATED_IMAGE_BYTES),
       p_mime_type: z.literal("image/png") }).passthrough().safeParse(receipt.completion_json);
     if (!parsed.success || parsed.data.p_storage_path !== `workspaces/${job.workspace_id}/assets/${parsed.data.p_asset_id}/v1/generated.png`) {

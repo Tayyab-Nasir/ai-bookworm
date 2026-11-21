@@ -3,7 +3,7 @@ import { boundedServiceText } from "./bounded-service-response.js";
 import type { SupabaseClient } from "./supabase.js";
 
 const email = z.string().max(254).email();
-const dispatchSchema = z.object({ package_job_id: z.string().uuid(), dispatch_id: z.string().uuid(), recipient_email: email });
+const dispatchSchema = z.object({ package_job_id: z.guid(), dispatch_id: z.guid(), recipient_email: email });
 const providerReceipt = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/) });
 
 export async function sendOnePublicationEmail(

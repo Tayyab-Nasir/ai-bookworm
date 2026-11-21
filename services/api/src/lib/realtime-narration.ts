@@ -17,7 +17,7 @@ const MAX_TRANSCRIPT_CHARACTERS = 8_192;
 const MAX_EVENTS = 20_000;
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const sourceSchema = z.object({
-  model: z.enum(REALTIME_NARRATION_MODELS), userId: z.string().uuid(),
+  model: z.enum(REALTIME_NARRATION_MODELS), userId: z.guid(),
   text: z.string().min(1).max(4_096).refine(value => Boolean(value.trim())),
   instructions: z.string().trim().max(2_000).nullable().default(null),
   voice: z.enum(REALTIME_NARRATION_VOICES), speed: z.number().min(0.25).max(1.5),
@@ -140,7 +140,7 @@ export async function generateRealtimeNarration(input: RealtimeNarrationInput,
       itemId = identity.item_id;
     }
     function bindMetadata(value: unknown) {
-      const record = z.record(z.unknown()).parse(value);
+      const record = z.record(z.string(), z.unknown()).parse(value);
       if (record.narrationRequestId !== metadata.narrationRequestId || record.narrationSourceSha256 !== sourceSha256) throw new Error("request identity");
     }
     function onEvent(raw: unknown) {

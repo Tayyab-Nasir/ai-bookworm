@@ -5,15 +5,15 @@ import type { SupabaseClient } from "./supabase.js";
 import { openAiTranslationGenerator, type TranslationGenerator } from "./translation-generation.js";
 
 const inputSchema = z.object({
-  translationProjectId: z.string().uuid(), translationChapterId: z.string().uuid(), chapterId: z.string().uuid(), documentVersionId: z.string().uuid(),
+  translationProjectId: z.guid(), translationChapterId: z.guid(), chapterId: z.guid(), documentVersionId: z.guid(),
   sourceSha256: z.string().regex(/^[a-f0-9]{64}$/), sourceLanguage: z.string().regex(/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/),
   targetLanguage: z.string().regex(/^[a-z]{2,8}(?:-[a-z0-9]{2,8})*$/), creditUnits: z.number().int().min(1).max(32),
 }).strict();
-const claimSchema = z.object({ id: z.string().uuid(), workspace_id: z.string().uuid(), lease_token: z.string().uuid(), input_ref: inputSchema }).passthrough();
-const projectSchema = z.object({ id: z.string().uuid(), source_language: z.string(), target_language: z.string(), status: z.string() }).passthrough();
+const claimSchema = z.object({ id: z.guid(), workspace_id: z.guid(), lease_token: z.guid(), input_ref: inputSchema }).passthrough();
+const projectSchema = z.object({ id: z.guid(), source_language: z.string(), target_language: z.string(), status: z.string() }).passthrough();
 const receiptSchema = z.object({
-  p_job_id: z.string().uuid(), p_translated_text: z.string().min(1).max(128_000), p_provider: z.string().min(1).max(100),
-  p_model: z.string().min(1).max(200), p_request_id: z.string().max(500).nullable(), p_usage: z.record(z.unknown()),
+  p_job_id: z.guid(), p_translated_text: z.string().min(1).max(128_000), p_provider: z.string().min(1).max(100),
+  p_model: z.string().min(1).max(200), p_request_id: z.string().max(500).nullable(), p_usage: z.record(z.string(), z.unknown()),
 }).strict();
 
 export type TranslationWorkerOutcome = { status: "idle" | "succeeded" | "queued" | "failed" | "lease_lost" | "completion_unknown"; jobId?: string };

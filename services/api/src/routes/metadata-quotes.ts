@@ -10,7 +10,7 @@ import type { SupabaseClient } from "../lib/supabase.js";
 import { quoteUsage, type UsageQuote } from "../lib/usage-pricing.js";
 import { candidateFromJob } from "./metadata-generation.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const roles = new Set(["owner", "admin", "editor", "writer"]);
 const quoteRequestBody = z.object({
   modelId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/), idempotencyKey: z.string().trim().min(8).max(200),

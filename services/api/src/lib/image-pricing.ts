@@ -24,10 +24,10 @@ const catalogSchema = z.object({
   entries: z.array(entrySchema).min(1).max(50),
 }).strict();
 const requestSchema = z.object({
-  jobId: z.string().uuid(), workspaceId: z.string().uuid(), userId: z.string().uuid(), bookId: z.string().uuid().nullable(),
+  jobId: z.guid(), workspaceId: z.guid(), userId: z.guid(), bookId: z.guid().nullable(),
   kind: z.enum(["illustration", "cover"]), model: z.string().min(1).max(128),
   prompt: z.string().min(1), size: entrySchema.shape.size, quality: entrySchema.shape.quality,
-  references: z.array(z.object({ assetId: z.string().uuid(), version: z.number().int().positive(),
+  references: z.array(z.object({ assetId: z.guid(), version: z.number().int().positive(),
     sha256: hash, mimeType: z.literal("image/png") }).strict()).max(3),
 }).strict();
 export type ImageQuoteRequest = z.infer<typeof requestSchema>;

@@ -12,17 +12,17 @@ function isIsoCalendarDate(value: string) {
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isIsoCalendarDate, "Invalid date");
 const money = z.number().int().min(-1_000_000_000_000).max(1_000_000_000_000);
 const salesRowSchema = z.object({
-  bookId: z.string().uuid().nullable().optional(), soldOn: isoDate,
+  bookId: z.guid().nullable().optional(), soldOn: isoDate,
   title: z.string().trim().min(1).max(500), externalId: z.string().trim().max(200).nullable().optional(),
   marketplace: z.string().trim().max(100).nullable().optional(), format: z.string().trim().max(100).nullable().optional(),
   units: z.number().int().min(-1_000_000).max(1_000_000), reportedProceedsCents: money.nullable().optional(),
   royaltyCents: money, currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/),
 }).strict();
 const importSchema = z.object({
-  workspaceId: z.string().uuid(), source: sourceSchema, fileName: z.string().trim().min(1).max(255),
-  supersedeImportId: z.string().uuid().nullable().optional(), rows: z.array(salesRowSchema).min(1).max(2000),
+  workspaceId: z.guid(), source: sourceSchema, fileName: z.string().trim().min(1).max(255),
+  supersedeImportId: z.guid().nullable().optional(), rows: z.array(salesRowSchema).min(1).max(2000),
 }).strict();
-const querySchema = z.object({ workspaceId: z.string().uuid() }).strict();
+const querySchema = z.object({ workspaceId: z.guid() }).strict();
 const SALES_EDIT_ROLES = new Set(["owner", "admin", "editor", "writer"]);
 
 const summarySchema = z.object({
@@ -41,7 +41,7 @@ const analyticsSchema = z.object({
   windowStart: isoDate.nullable(), windowEnd: isoDate.nullable(), monthCount: z.number().int().min(1).max(36),
   monthly: z.array(analyticsAggregateSchema.extend({ month: isoDate })),
   books: z.array(analyticsAggregateSchema.extend({
-    bookId: z.string().uuid().nullable(), title: z.string().min(1).max(500), firstSoldOn: isoDate, lastSoldOn: isoDate,
+    bookId: z.guid().nullable(), title: z.string().min(1).max(500), firstSoldOn: isoDate, lastSoldOn: isoDate,
   })),
   bookCount: z.number().int().min(0), booksTruncated: z.boolean(),
   sources: z.array(analyticsAggregateSchema.extend({ source: sourceSchema })),
@@ -159,7 +159,7 @@ export function salesRoutes(app: FastifyInstance) {
     });
     rpcError(result.error, true);
     const row = Array.isArray(result.data) ? result.data[0] : result.data;
-    const response = z.object({ import_id: z.string().uuid(), row_count: z.literal(rows.length), duplicate: z.boolean() }).safeParse(row);
+    const response = z.object({ import_id: z.guid(), row_count: z.literal(rows.length), duplicate: z.boolean() }).safeParse(row);
     if (!response.success) throw new AppError(503, "The retailer import receipt could not be verified. Refresh reports or retry the same file.");
     reply.header("cache-control", "private, no-store");
     return reply.status(response.data.duplicate ? 200 : 201).send({

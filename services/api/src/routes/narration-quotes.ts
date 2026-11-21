@@ -11,13 +11,13 @@ import { availableNarrationModels, readNarrationCatalog, narrationPromptHash, na
   narrationRequestHash, narrationJobId, narrationChapterSegmentKey, prepareNarrationQuote, prepareNarrationChapterQuote, validatedNarrationQuote } from "../lib/narration-pricing.js";
 import { segmentSpeechText } from "../lib/speech-generation.js";
 
-const id = z.string().uuid();
+const id = z.guid();
 const key = z.string().min(8).max(200);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const bodySchema = z.object({ editionId: id, chapterId: id, modelId: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
   idempotencyKey: key, segmentIndex: z.number().int().min(0).max(249), voice: z.enum(REALTIME_NARRATION_VOICES),
   speed: z.number().min(0.25).max(1.5).refine(value => /^\d+(?:\.\d{1,2})?$/u.test(String(value))),
-  instructions: narrationQuoteRequestSchema.innerType().shape.instructions.default(null), consentToQuoteStorage: z.literal(true),
+  instructions: narrationQuoteRequestSchema.shape.instructions.default(null), consentToQuoteStorage: z.literal(true),
 }).strict();
 const chapterBodySchema = bodySchema.omit({ segmentIndex: true });
 const acceptanceBodySchema = z.object({
@@ -82,7 +82,7 @@ const chapterFields = "id,user_id,workspace_id,book_id,edition_id,chapter_id,doc
 const chapterSnapshotSchema = z.object({ id, user_id: id, workspace_id: id, book_id: id, edition_id: id, chapter_id: id,
   document_version_id: id, source_sha256: hash, idempotency_key: key, catalog_version: z.string().min(1).max(128),
   model_option_id: bodySchema.shape.modelId, voice: bodySchema.shape.voice, speed: bodySchema.shape.speed,
-  instructions: narrationQuoteRequestSchema.innerType().shape.instructions, segment_count: z.number().int().min(1).max(250),
+  instructions: narrationQuoteRequestSchema.shape.instructions, segment_count: z.number().int().min(1).max(250),
   reserved_credits: z.number().int().positive().max(2_147_483_647), expires_at: snapshotSchema.shape.expires_at,
 }).passthrough();
 async function savedChapterOffer(service: SupabaseClient, value: unknown, scope: { workspaceId: string; userId: string }) {

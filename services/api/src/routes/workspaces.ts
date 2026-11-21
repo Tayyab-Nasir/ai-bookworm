@@ -8,11 +8,11 @@ const createSchema = z.object({
   orgName: z.string().trim().min(1).max(160).optional(),
   slug: z.string().max(64).regex(/^[a-z0-9]+(-[a-z0-9]+)*$/).optional(),
 }).strict();
-const operationId = z.string().uuid().transform(value => value.toLowerCase());
+const operationId = z.guid().transform(value => value.toLowerCase());
 const onboardingSchema = createSchema.extend({ operationId }).strict();
 const receiptInput = z.object({ operationId }).strict();
-const receiptResult = z.object({ operationId, status: z.enum(["not_found", "pending", "created", "closed"]), workspaceId: z.string().uuid().nullable() }).strict();
-const returnedWorkspace = z.object({ id: z.string().uuid(), created_by: z.string().uuid() }).passthrough();
+const receiptResult = z.object({ operationId, status: z.enum(["not_found", "pending", "created", "closed"]), workspaceId: z.guid().nullable() }).strict();
+const returnedWorkspace = z.object({ id: z.guid(), created_by: z.guid() }).passthrough();
 
 function verifiedActor(req: FastifyRequest) {
   if (req.headers["x-bookworm-actor"] !== req.userId) throw new AppError(422, "The current account identity is required.");
