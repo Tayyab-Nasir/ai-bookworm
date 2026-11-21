@@ -17,12 +17,7 @@ const navItems = [
 ] as const;
 
 function LogoMark() {
-  return (
-    <svg aria-hidden="true" className="h-7 w-7" viewBox="0 0 32 32" fill="none">
-      <rect x="5.2" y="11" width="20" height="8" rx="4" fill="white" transform="rotate(-32 5.2 11)" />
-      <rect x="6.8" y="17.4" width="20" height="8" rx="4" fill="white" transform="rotate(32 6.8 17.4)" />
-    </svg>
-  );
+  return <span aria-hidden="true" className="h-8 w-8 shrink-0 rounded-lg bg-[url(/brand/mark.png)] bg-cover" />;
 }
 
 export function AuthorHeader({ workspaceId, bookId }: { workspaceId?: string | null; bookId?: string } = {}) {
@@ -81,10 +76,10 @@ export function AuthorHeader({ workspaceId, bookId }: { workspaceId?: string | n
         <Link
           {...linkProps("/dashboard")}
           className="inline-flex shrink-0 items-center gap-2.5 rounded-full text-white outline-none focus-visible:ring-2 focus-visible:ring-white"
-          aria-label="AI Bookworm dashboard"
+          aria-label="BookieWookie dashboard"
         >
           <LogoMark />
-          <span className="hidden text-[15px] font-semibold tracking-[-0.03em] sm:inline">AI Bookworm</span>
+          <span className="hidden text-[15px] font-semibold tracking-[-0.03em] sm:inline">BookieWookie</span>
         </Link>
 
         <nav aria-label="Author navigation" className="hidden items-center gap-1 lg:flex">

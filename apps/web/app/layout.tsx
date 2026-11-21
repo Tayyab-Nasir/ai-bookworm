@@ -19,7 +19,7 @@ const instrumentSerif = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "AI Bookworm — Book Publishing OS",
+  title: "BookieWookie — Author Publishing Studio",
   description:
     "Bring writing, editing, illustration, cover design, and retailer book files together in one workspace.",
 };

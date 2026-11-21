@@ -263,14 +263,15 @@ export default function AuthorDashboard() {
     <>
     <AuthorHeader workspaceId={workspace?.id} />
     <main aria-busy={loading} className="mx-auto min-w-0 max-w-7xl [overflow-wrap:anywhere] px-4 pb-16 pt-8 sm:px-6 lg:px-8 lg:pt-12">
-      <section className="flex flex-col justify-between gap-6 border-b border-white/[0.09] pb-8 sm:flex-row sm:items-end">
+      <section className="relative isolate flex flex-col justify-between gap-7 overflow-hidden rounded-2xl border border-[#69445e] bg-[#301e34] px-6 py-8 sm:px-8 lg:flex-row lg:items-end lg:px-10">
+        <span aria-hidden="true" className="pointer-events-none absolute -top-6 right-6 -z-10 hidden h-64 w-64 bg-[url(/brand/bookiewookie.webp)] bg-contain bg-center bg-no-repeat opacity-25 xl:block" />
         <div>
-          <p className="mb-3 text-[11px] font-medium uppercase tracking-[0.18em] text-[#8f8f8f]">Author workspace</p>
-          <h1 className="max-w-[12ch] text-4xl font-medium leading-[0.94] tracking-[-0.06em] sm:text-5xl">
-            Your publishing <span className="font-instrument instrument-italic font-normal italic text-[#bdbdbd]">desk.</span>
+          <p className="mb-4 text-xs font-semibold uppercase tracking-[0.15em] text-[#ffc39e]">Author workspace</p>
+          <h1 className="max-w-[15ch] text-4xl font-semibold leading-[0.98] tracking-[-0.045em] text-[#fff3df] sm:text-6xl">
+            Your publishing <span className="font-instrument instrument-italic font-normal italic text-[#ffbe99]">desk.</span>
           </h1>
-          <p className="mt-4 max-w-xl text-[15px] leading-6 text-[#969696]">
-            Write, shape, package, and prepare every book from one clear workspace.
+          <p className="mt-4 max-w-xl text-[15px] leading-6 text-[#e1cbd9]">
+            Open a book, check production activity, or start from a new manuscript.
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
@@ -280,7 +281,7 @@ export default function AuthorDashboard() {
           <Link href={workspace ? `/assets?ws=${encodeURIComponent(workspace.id)}` : "/assets"} className="glass-ghost metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-medium text-white">
             Manage assets
           </Link>
-          <Link href={createHref} className="glass-solid metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-semibold text-black">
+          <Link href={createHref} className="inline-flex min-h-12 items-center rounded-lg bg-[#ffe0b8] px-5 text-sm font-bold text-[#351e32] transition-colors hover:bg-[#fff1d5] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#ffe0b8]">
             <span className="relative z-10">Create or import</span>
           </Link>
         </div>
@@ -336,10 +337,10 @@ export default function AuthorDashboard() {
           ["Open jobs", String(overview.summary.pendingJobs), overview.summary.failedJobs ? `${overview.summary.failedJobs} failed in saved history` : "Imports, AI, publishing & audiobook exports"],
           ["Library assets", String(overview.summary.assets), `${overview.summary.visualAssets} cover and illustration assets`],
         ].map(([label, value, detail]) => (
-          <div key={label} className="rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5">
-            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#777]">{label}</p>
+          <div key={label} className="rounded-xl border border-[#483044] bg-[#231823] p-5">
+            <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#dbc3d3]">{label}</p>
             <p className="mt-4 text-3xl font-medium tracking-[-0.05em] text-white">{value}</p>
-            <p className="mt-2 text-[13px] leading-5 text-[#888]">{detail}</p>
+            <p className="mt-2 text-[13px] leading-5 text-[#c2aabd]">{detail}</p>
           </div>
         ))}
       </section>}
@@ -353,7 +354,7 @@ export default function AuthorDashboard() {
           <div className="mt-7 grid gap-6 sm:grid-cols-2">
             {usageMeters.map((item) => <div key={item.label}>
               <div className="flex items-center justify-between gap-3 text-sm"><span>{item.label}</span><span className="tabular-nums text-white/45">{item.used.toLocaleString()} / {item.limit.toLocaleString()}</span></div>
-              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[0.08]"><div className="h-full rounded-full bg-white transition-[width]" style={{ width: `${item.percent}%` }} /></div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[0.08]"><div className="h-full rounded-full bg-[#f3a77e] transition-[width]" style={{ width: `${item.percent}%` }} /></div>
               {!item.limit && <p className="mt-2 text-[11px] text-amber-100/70">No paid allowance on the current plan.</p>}
             </div>)}
           </div>
@@ -412,12 +413,12 @@ export default function AuthorDashboard() {
         ) : (
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {books.map((book) => (
-              <article key={book.id} className="group flex min-h-56 flex-col rounded-2xl border border-white/[0.09] bg-white/[0.025] p-5 transition-colors hover:border-white/[0.2] hover:bg-white/[0.04]">
+              <article key={book.id} className="group flex min-h-56 flex-col rounded-xl border border-[#482e43] bg-[#211722] p-5 transition-colors hover:border-[#9b6284] hover:bg-[#2e2030]">
                 <div className="flex items-center justify-between gap-3">
                   <span className={`rounded-full border px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.13em] ${statusClass(book.status)}`}>{statusLabel(book.status)}</span>
                   <span className="text-xs text-[#737373]">{book.language.toUpperCase()}</span>
                 </div>
-                <h3 className="mt-7 text-2xl font-medium leading-tight tracking-[-0.045em] text-white">{book.title}</h3>
+                <h3 className="mt-7 text-2xl font-semibold leading-tight tracking-[-0.035em] text-[#fff3df]">{book.title}</h3>
                 <p className="mt-2 text-sm text-[#919191]">{book.author_name}{book.genre ? ` · ${book.genre}` : ""}</p>
                 <div className="mt-auto flex flex-wrap items-center gap-3 pt-8">
                   <Link href={`/books/${book.id}/overview`} className="text-sm font-medium text-white underline decoration-white/30 underline-offset-4 hover:decoration-white">Book desk</Link>

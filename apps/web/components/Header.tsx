@@ -3,26 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-const NAV_LINKS = [
-  ["Benefits", "/#benefits"],
-  ["How It Works", "/#how-it-works"],
-  ["Features", "/#features"],
-  ["Pricing", "/#pricing"],
-] as const;
+const NAV_LINKS = [["The studio", "/#studio"]] as const;
 
 function LogoMark({ className = "h-7 w-7" }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={className}
-      viewBox="0 0 32 32"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <rect x="5.2" y="11" width="20" height="8" rx="4" fill="white" transform="rotate(-32 5.2 11)" />
-      <rect x="6.8" y="17.4" width="20" height="8" rx="4" fill="white" transform="rotate(32 6.8 17.4)" />
-    </svg>
-  );
+  return <span aria-hidden="true" className={`inline-block rounded-lg bg-[url(/brand/mark.png)] bg-cover ${className}`} />;
 }
 
 function ArrowIcon({ diagonal = false }: { diagonal?: boolean }) {
@@ -62,10 +46,10 @@ export function SiteHeader() {
       <Link
         href="/"
         className="inline-flex w-fit items-center gap-3 rounded-full text-white outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-4 focus-visible:ring-offset-black"
-        aria-label="AI Bookworm home"
+        aria-label="BookieWookie home"
       >
         <LogoMark className="h-7 w-7 sm:h-8 sm:w-8" />
-        <span className="text-[15px] font-semibold tracking-[-0.03em] sm:text-base">AI Bookworm</span>
+        <span className="text-[15px] font-semibold tracking-[-0.03em] sm:text-base">BookieWookie</span>
       </Link>
 
       <nav
