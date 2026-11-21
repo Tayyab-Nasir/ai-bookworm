@@ -42,16 +42,20 @@ function column(headers: string[], name: string, required = false) {
 function at(row: CsvRow, index: number) { return index < 0 ? "" : row[index]?.trim() ?? ""; }
 
 function toCents(value: string, row: number, label: string) {
-  const raw = value.trim().replace(/[ $£€]/g, "").replace(/\((.*)\)/, "-$1");
-  if (!/^-?[\d,]+(?:\.\d{1,2})?$/.test(raw)) throw new Error(`Row ${row}: ${label} must be decimal money.`);
-  const numeric = Number(raw.replace(/,/g, ""));
-  if (!Number.isFinite(numeric)) throw new Error(`Row ${row}: ${label} is invalid.`);
-  return Math.round(numeric * 100);
+  const raw = value.trim().replace(/^\(([^()]*)\)$/, "-$1").replace(/^(-?)[$£€] */, "$1");
+  const amount = /^(-?)(\d+|\d{1,3}(?:,\d{3})+)(?:\.(\d{1,2}))?$/.exec(raw);
+  if (!amount) throw new Error(`Row ${row}: ${label} must use a dot for decimals and groups of three for commas.`);
+  const [, sign, whole, fraction = ""] = amount;
+  const cents = Number(whole.replaceAll(",", "")) * 100 + Number(fraction.padEnd(2, "0"));
+  if (!Number.isSafeInteger(cents)) throw new Error(`Row ${row}: ${label} is too large.`);
+  return sign ? -cents : cents;
 }
 
 function toInteger(value: string, row: number, label: string) {
   if (!/^-?\d+$/.test(value.trim())) throw new Error(`Row ${row}: ${label} must be a whole number.`);
-  return Number(value);
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) throw new Error(`Row ${row}: ${label} is too large.`);
+  return number;
 }
 
 function isIsoCalendarDate(value: string) {
@@ -71,6 +75,7 @@ export function parseRetailerSalesCsv(text: string, bookId?: string | null): Ret
   return grid.flatMap((row, index) => {
     if (row.every((cell) => !cell.trim())) return [];
     const line = index + 2; const date = at(row, soldOn);
+    if (row.length > headers.length) throw new Error(`Row ${line}: more values than columns. Quote values that contain commas.`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isIsoCalendarDate(date)) throw new Error(`Row ${line}: sold date must be YYYY-MM-DD.`);
     const bookTitle = at(row, title);
     if (!bookTitle) throw new Error(`Row ${line}: title is required.`);
