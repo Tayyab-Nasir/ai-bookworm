@@ -143,7 +143,7 @@ export default function InvitationAcceptance() {
   const unavailable = sessionChecked && user?.id === unavailableActor;
   return <main className="mx-auto flex min-h-[100dvh] max-w-xl items-center px-4 py-16 text-white">
     <section className="w-full rounded-3xl border border-white/10 bg-white/[0.035] p-7 sm:p-9">
-      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">AI Bookworm workspace</p>
+      <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">BookieWookie workspace</p>
       <h1 className="mt-3 text-3xl font-medium tracking-[-0.05em]">Accept invitation</h1>
       {sessionChecked && user?.id === previousUnconfirmedActor && <div role="status" className="mt-5 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-100">A previous invitation request may still finish. Check that workspace separately. <Link href="/team" className="underline">Open workspaces</Link><button type="button" onClick={() => setPreviousUnconfirmedActor(null)} aria-label="Dismiss previous invitation notice" className="ml-3 underline">Dismiss</button></div>}
       {shown ? <div className="mt-7"><p className="rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{shown.recovered ? `Invitation accepted. Your current role is ${shown.role}.` : `You joined the workspace as ${shown.role}.`}</p><Link href={`/team?ws=${encodeURIComponent(shown.workspaceId)}`} className="glass-solid mt-5 inline-flex rounded-full px-5 py-2.5 text-sm font-semibold text-black">Open the team workspace</Link></div> : <>
