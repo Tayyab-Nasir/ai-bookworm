@@ -1888,11 +1888,18 @@ test('account switch before edition save hides original form and sends no write'
 });
 
 test('account switch before editing an existing edition sends no update',async()=>{
- const {page}=await fixture({parent:true});let account=ids.otherAsset;try{
+ const {page}=await fixture({parent:true});let account=ids.asset;try{
   await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
   await page.evaluate(()=>{window.updateCalls=0;window.bookwormApi.updateEdition=async()=>{window.updateCalls++;throw Error('must not execute');};});
-  await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();
-  await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();assert.equal(await page.evaluate(()=>window.updateCalls),0);
+  await page.getByLabel('Language',{exact:true}).fill('fr');
+  await page.waitForLoadState('networkidle');
+  const save=page.getByRole('button',{name:'Save edition',exact:true});
+  await expect(save).toBeEnabled();
+  account=ids.otherAsset;
+  await save.evaluate(button=>button.click());
+  await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();
+  await expect(page.getByLabel('Language',{exact:true})).toHaveCount(0);
+  assert.equal(await page.evaluate(()=>window.updateCalls),0);
   account=ids.asset;await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');
  }finally{await page.close()}
 });
