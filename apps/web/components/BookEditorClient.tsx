@@ -809,7 +809,8 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       throw new Error("The saved revision could not be verified.");
     }
   };
-  const editable = EDIT_ROLES.has(role) && !passiveCheck && !accountVerifying && !restoreHidden && !accessBlocked && !titleBlocked && !pendingRestore && !manualSave && (!document || saveRecoveryReady) && (!tabDraft || tabDraftReviewed) && !tabDraftBusy;
+  const editableBase = EDIT_ROLES.has(role) && !passiveCheck && !accountVerifying && !restoreHidden && !accessBlocked && !pendingRestore && !manualSave && (!document || saveRecoveryReady) && (!tabDraft || tabDraftReviewed) && !tabDraftBusy;
+  const editable = editableBase && !titleBlocked;
   editorInteractionAvailable.current = !passiveLocked.current && !accessBlockedRef.current && !passiveCheck && !accountVerifying && !restoreHidden
     && Boolean(editorOwner.current) && book?.id === bookId;
   childActionsAvailable.current = editorInteractionAvailable.current && editorOwner.current === saveAccount && Boolean(saveAccount) && (!tabDraft || tabDraftReviewed);
@@ -992,7 +993,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       <aside className="self-start rounded-2xl border border-white/10 p-2">
         <button type="button" className="flex min-h-11 w-full items-center justify-between px-3 text-sm text-white/75 lg:hidden" aria-expanded={structureOpen} aria-controls="chapter-structure" onClick={() => setStructureOpen((open) => !open)}><span>Chapters · {chapters.length}</span><span>{structureOpen ? "Hide" : "Show"}</span></button>
         <div id="chapter-structure" className={structureOpen ? "block" : "hidden lg:block"}>
-        <BookTree chapters={chapters} activeId={document?.chapterId ?? null} onSelect={selectChapter} onReorder={(ids) => void reorder(ids)} disabled={saving || loading || aiDecisionBusy || !!manualSave || !!pendingOrder || titleState.pending || titleState.busy} readOnly={!editable || !!creationRecovery} />
+        <BookTree chapters={chapters} activeId={document?.chapterId ?? null} onSelect={selectChapter} onReorder={(ids) => void reorder(ids)} disabled={saving || loading || aiDecisionBusy || !!manualSave || !!pendingOrder || titleState.pending || titleState.busy} readOnly={!editableBase || titleState.pending || titleState.busy || !!creationRecovery} reorderBlockedReason={titleState.dirty ? "Save or cancel the chapter title edit before reordering chapters." : undefined} />
         {EDIT_ROLES.has(role) && !pendingRestore && <form className="mt-5 space-y-2 border-t border-white/10 p-2 pt-4" onSubmit={(event) => { event.preventDefault(); void createChapter(); }}>
           <fieldset disabled={titleBlocked || saving || loading || aiDecisionBusy || !!manualSave || !!pendingOrder || (!!document && !saveRecoveryReady)} className="min-w-0 space-y-2 disabled:opacity-50">
           <label className="block text-xs text-white/50" htmlFor="new-chapter-title">New chapter</label><input id="new-chapter-title" value={book?.id === bookId ? newTitle : ""} onChange={(e) => updateChapterSetup(e.target.value, newChapterBrief)} disabled={!creationRecoveryReady || !!creationRecovery} aria-describedby={creationRecovery ? "chapter-creation-recovery" : undefined} maxLength={500} required placeholder="Chapter title" className="w-full rounded-lg border border-white/15 bg-black p-2 text-sm" />

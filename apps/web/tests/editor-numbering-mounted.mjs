@@ -1915,6 +1915,27 @@ test("corrupt recovery metadata never unlocks a new save after remount", async (
   } finally { await page.close(); }
 });
 
+test("an unsaved title explains and disables reordering while chapter selection still confirms", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => { window.reorderCalls = 0; window.bookwormApi.reorderChapters = async () => { window.reorderCalls++; throw new Error("Unexpected reorder"); }; window.confirmations = []; window.confirm = message => { window.confirmations.push(message); return false; }; });
+    const move = page.getByRole("button", { name: "Move Second chapter up" });
+    await move.waitFor(); assert.equal(await move.isEnabled(), true);
+    await page.getByRole("button", { name: "Edit chapter title", exact: true }).click();
+    await page.getByLabel("New chapter title", { exact: true }).fill("Unsaved chapter title");
+    await page.getByText("Save or cancel the chapter title edit before reordering chapters.", { exact: true }).waitFor();
+    assert.equal(await move.isDisabled(), true);
+    const selection = page.getByRole("button", { name: "02 Second chapter", exact: true });
+    assert.equal(await selection.isEnabled(), true); await selection.click();
+    assert.match((await page.evaluate(() => window.confirmations)).at(-1), /unsaved changes/);
+    assert.equal(await page.getByLabel("New chapter title", { exact: true }).inputValue(), "Unsaved chapter title");
+    assert.equal(await page.evaluate(() => window.reorderCalls), 0);
+    await page.getByRole("button", { name: "Cancel title edit", exact: true }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].find(button => button.getAttribute('aria-label') === 'Move Second chapter up')?.disabled === false);
+    assert.equal(await move.isEnabled(), true);
+  } finally { await page.close(); }
+});
+
 test("renaming a chapter preserves its unsaved manuscript and updates the chapter tree", async () => {
   const page = await fixture(1280, true);
   try {

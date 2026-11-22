@@ -1,6 +1,7 @@
 "use client";
 
 import type { Chapter } from "@bookworm/types";
+import { useId } from "react";
 
 export interface BookTreeProps {
   chapters: Chapter[];
@@ -9,9 +10,11 @@ export interface BookTreeProps {
   onReorder: (orderedIds: string[]) => void;
   disabled?: boolean;
   readOnly?: boolean;
+  reorderBlockedReason?: string;
 }
 
-export default function BookTree({ chapters, activeId, onSelect, onReorder, disabled, readOnly }: BookTreeProps) {
+export default function BookTree({ chapters, activeId, onSelect, onReorder, disabled, readOnly, reorderBlockedReason }: BookTreeProps) {
+  const reasonId = useId();
   const move = (index: number, dir: -1 | 1) => {
     const j = index + dir;
     if (j < 0 || j >= chapters.length) return;
@@ -29,6 +32,7 @@ export default function BookTree({ chapters, activeId, onSelect, onReorder, disa
         </div>
         <span className="rounded-full border border-white/10 bg-white/[0.035] px-2 py-1 text-[10px] tabular-nums text-white/45">{chapters.length}</span>
       </div>
+      {!readOnly && reorderBlockedReason && <p id={reasonId} className="px-2 pb-3 text-xs leading-5 text-amber-100/80">{reorderBlockedReason}</p>}
       <ul className="space-y-1">
         {chapters.map((c, i) => (
           <li
@@ -46,8 +50,8 @@ export default function BookTree({ chapters, activeId, onSelect, onReorder, disa
               <span className="truncate">{c.title || "Untitled"}</span>
             </button>
             {!readOnly && <div className="flex shrink-0 gap-0.5 pr-1 opacity-100 transition-opacity lg:opacity-0 lg:group-hover:opacity-100 lg:group-focus-within:opacity-100">
-              <button type="button" aria-label={`Move ${c.title} up`} disabled={disabled || i === 0} onClick={() => move(i, -1)} className="grid size-7 place-items-center rounded-md text-sm text-white/55 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-25">↑</button>
-              <button type="button" aria-label={`Move ${c.title} down`} disabled={disabled || i === chapters.length - 1} onClick={() => move(i, 1)} className="grid size-7 place-items-center rounded-md text-sm text-white/55 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-25">↓</button>
+              <button type="button" aria-label={`Move ${c.title} up`} aria-describedby={reorderBlockedReason ? reasonId : undefined} disabled={disabled || !!reorderBlockedReason || i === 0} onClick={() => move(i, -1)} className="grid size-7 place-items-center rounded-md text-sm text-white/55 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-25">↑</button>
+              <button type="button" aria-label={`Move ${c.title} down`} aria-describedby={reorderBlockedReason ? reasonId : undefined} disabled={disabled || !!reorderBlockedReason || i === chapters.length - 1} onClick={() => move(i, 1)} className="grid size-7 place-items-center rounded-md text-sm text-white/55 outline-none transition hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-25">↓</button>
             </div>}
           </li>
         ))}
