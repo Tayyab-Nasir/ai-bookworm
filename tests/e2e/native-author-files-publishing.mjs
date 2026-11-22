@@ -267,8 +267,20 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         assert.equal(preflight.errors, 0); assert.equal(preflight.requestedChannel, channel);
         assert.deepEqual(preflight.sourceEpub, sourceEpub);
         assert.deepEqual(preflight.sourcePrint, sourcePrint);
+        const bnPolicyCodes = ['BN-CATALOG-ELIGIBILITY', 'BN-PRINT-MINIMUM-PRICE'];
+        const bnPolicyFindings = preflight.findings.filter(item => bnPolicyCodes.includes(item.code));
+        if (channel === 'barnesnoble') {
+          const expectedCodes = edition.kind === 'print' ? bnPolicyCodes : bnPolicyCodes.slice(0, 1);
+          assert.match(preflight.ruleVersion, /\+barnesnoble-1\.4\.0$/);
+          assert.deepEqual(bnPolicyFindings.map(item => item.code).sort(), expectedCodes);
+          for (const finding of bnPolicyFindings) {
+            assert.equal(finding.severity, 'warning');
+            await expect(page.getByText(finding.message, { exact: false })).toBeVisible();
+          }
+        } else {
+          assert.deepEqual(bnPolicyFindings, []);
+        }
         if (channel === 'barnesnoble' && edition.kind === 'ebook') {
-          assert.match(preflight.ruleVersion, /\+barnesnoble-1\.3\.0$/);
           assert.ok(!preflight.findings.some(item => item.code === 'BN-EPUBCHECK-NO-ARTIFACT'));
         }
         const review = history.getByText('Review retailer listing', { exact: true });
@@ -316,6 +328,11 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         assert.equal(page.url(), publishUrl, 'ZIP download replaced the author interface');
         const archive = inspectNativePackage(bytes);
         assert.equal(archive.manifest.channel, channel); assert.equal(archive.preflight.errors, 0);
+        assert.deepEqual(
+          archive.preflight.findings.filter(item => bnPolicyCodes.includes(item.code)),
+          bnPolicyFindings,
+          'the downloaded ZIP must preserve the reviewed B&N warnings',
+        );
         assert.deepEqual(archive.metadata, preflight.listing);
         if (channel === 'kdp' && edition.kind === 'ebook') {
           assert.equal(archive.files['cover.jpg'].signature, 'ffd8ff');
