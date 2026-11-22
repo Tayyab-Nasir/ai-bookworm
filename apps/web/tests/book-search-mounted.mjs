@@ -15,7 +15,7 @@ const bundle = await build({ stdin: { contents: `import React from "react";
 import { createRoot } from "react-dom/client";
 import Panel from "./apps/web/components/BookSearchPanel";
 const root = createRoot(document.getElementById("root"));
-window.mount = bookId => root.render(React.createElement(Panel, {bookId, onOpenBibleEntry:item=>{window.openedBible=item;}}));`,
+window.mount = (bookId, bibleEntryLocked) => root.render(React.createElement(Panel, {bookId, bibleEntryLocked, onOpenBibleEntry:item=>{window.openedBible=item;}}));`,
   resolveDir: process.cwd(), loader: "tsx" }, write: false, bundle: true, format: "iife", platform: "browser", jsx: "automatic",
   plugins: [{ name: "synthetic-search-transport", setup(builder) {
     builder.onResolve({ filter: /^\.\/api$/ }, () => ({ path: "api", namespace: "fixture" }));
@@ -114,6 +114,28 @@ test("search loads excerpts only; explicit read returns exact saved context and 
     await p.getByRole("button", { name: "Hide cited source" }).click(); await p.getByRole("button", { name: "Read cited source", exact: true }).click();
     await p.getByLabel("Cited source text", { exact: true }).waitFor();
     assert.equal((await sources(p)).length, 2, "reopening verifies the citation again");
+  } finally { await p.close(); }
+});
+test("Book Bible search respects a busy editor before dispatch and after verification", async () => {
+  const p = await fixture();
+  try {
+    await p.evaluate(bookId => window.mount(bookId, true), BOOK);
+    await search(p);
+    const open = p.getByRole("button", { name: "Open Book Bible entry" });
+    await open.waitFor();
+    assert(await open.isDisabled());
+    assert.equal(await p.evaluate(() => window.calls.some(call => call.kind === "bible")), false);
+    await p.evaluate(bookId => { window.mount(bookId, false); window.bibleMode = "hold"; }, BOOK);
+    await open.click();
+    await p.getByRole("button", { name: "Checking Book Bible entry…" }).waitFor();
+    await p.evaluate(bookId => window.mount(bookId, true), BOOK);
+    await p.evaluate(() => new Promise(requestAnimationFrame));
+    await p.evaluate(() => window.releaseBible());
+    await p.getByRole("alert").filter({ hasText: "Wait for the current Book Bible action" }).waitFor();
+    assert.equal(await p.evaluate(() => window.openedBible), undefined);
+    await p.evaluate(bookId => { window.mount(bookId, false); window.bibleMode = "normal"; }, BOOK);
+    await open.click();
+    await p.waitForFunction(() => window.openedBible?.name === "Elara · Cartographer");
   } finally { await p.close(); }
 });
 test("a stale, foreign, or superseded Book Bible citation cannot open an entry", async () => {

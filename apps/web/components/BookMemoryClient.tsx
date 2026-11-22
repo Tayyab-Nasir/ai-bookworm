@@ -1186,7 +1186,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     {!loading && !memory && <div className={`${panelClass} mt-6`}><h2 className="text-lg font-medium">Book memory is unavailable</h2><p className="mt-2 text-sm text-[#aaa]">Check your session and workspace access, then reload. No sample book data is substituted.</p></div>}
 
     {memory && <>
-      <BookSearchPanel key={bookId} bookId={bookId} onOpenBibleEntry={openBibleEntry} readRequest={boundRequest} />
+      <BookSearchPanel key={bookId} bookId={bookId} onOpenBibleEntry={openBibleEntry} bibleEntryLocked={busy || manualPointer !== null} readRequest={boundRequest} />
       {!memory.canEdit && <p className="mt-5 rounded-xl border border-white/15 p-4 text-sm text-[#ccc]">You have read-only access. An editor can update this book’s memory and metadata.</p>}
       <section className="mt-9" aria-labelledby="bible-title">
         <div className="flex flex-wrap items-center justify-between gap-4">

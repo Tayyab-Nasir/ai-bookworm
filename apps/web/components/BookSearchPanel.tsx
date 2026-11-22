@@ -9,18 +9,24 @@ import { parseSearchBibleEntry, parseSearchResults, searchCitation } from "../li
 import SearchSourcePassage from "./SearchSourcePassage";
 
 type ScopedRequest = <T>(path: string, method?: string, body?: unknown) => Promise<T>;
-export default function BookSearchPanel(props: { bookId: string; onOpenBibleEntry?: (item: BookBibleItem) => void; readRequest?: ScopedRequest }) {
+type SearchPanelProps = {
+  bookId: string;
+  onOpenBibleEntry?: (item: BookBibleItem) => void;
+  bibleEntryLocked?: boolean;
+  readRequest?: ScopedRequest;
+};
+export default function BookSearchPanel(props: SearchPanelProps) {
   return <SearchPanel key={props.bookId} {...props} />;
 }
-function SearchPanel({ bookId, onOpenBibleEntry, readRequest }: { bookId: string; onOpenBibleEntry?: (item: BookBibleItem) => void; readRequest?: ScopedRequest }) {
+function SearchPanel({ bookId, onOpenBibleEntry, bibleEntryLocked = false, readRequest }: SearchPanelProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<BookSearchResult[]>([]);
   const [searched, setSearched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openingBibleId, setOpeningBibleId] = useState<string | null>(null);
-  const opener = useRef(onOpenBibleEntry);
-  useEffect(() => { opener.current = onOpenBibleEntry; }, [onOpenBibleEntry]);
+  const entryAccess = useRef({ onOpenBibleEntry, bibleEntryLocked });
+  useEffect(() => { entryAccess.current = { onOpenBibleEntry, bibleEntryLocked }; }, [onOpenBibleEntry, bibleEntryLocked]);
   const generation = useRef(0);
   useEffect(() => () => { ++generation.current; }, []);
   function changeQuery(value: string) {
@@ -48,7 +54,7 @@ function SearchPanel({ bookId, onOpenBibleEntry, readRequest }: { bookId: string
     } finally { if (current === generation.current) setBusy(false); }
   }
   async function openBible(result: BookSearchResult) {
-    if (!opener.current || !result.bible_item_id || openingBibleId) return;
+    if (bibleEntryLocked || !entryAccess.current.onOpenBibleEntry || !result.bible_item_id || openingBibleId) return;
     const current = ++generation.current;
     const citation = { bibleItemId: result.bible_item_id, chunkIndex: result.chunk_index, textHash: result.text_hash };
     setOpeningBibleId(result.id); setError(null);
@@ -57,7 +63,12 @@ function SearchPanel({ bookId, onOpenBibleEntry, readRequest }: { bookId: string
         ? await readRequest<SearchBibleEntry>(`/books/${encodeURIComponent(bookId)}/search/bible-evidence`, "POST", citation)
         : await apiClient().readSearchBibleEntry(bookId, citation);
       if (current !== generation.current) return;
-      opener.current?.(parseSearchBibleEntry(response, bookId, citation));
+      const entry = parseSearchBibleEntry(response, bookId, citation);
+      if (entryAccess.current.bibleEntryLocked) {
+        setError("Wait for the current Book Bible action to finish, then open the entry again.");
+        return;
+      }
+      entryAccess.current.onOpenBibleEntry?.(entry);
     } catch (reason) {
       if (current !== generation.current) return;
       const status = (reason as { status?: unknown } | null)?.status;
@@ -78,13 +89,15 @@ function SearchPanel({ bookId, onOpenBibleEntry, readRequest }: { bookId: string
     </form>
     {error && <p role="alert" className="mt-4 text-sm text-red-200">{error}</p>}
     {searched && <p role="status" className="mt-4 text-xs text-[#999]">{results.length ? `${results.length} matching passages. Showing the highest-ranked results.` : "No matching passage. Try fewer words, another spelling, or OR between alternatives."}</p>}
+    {bibleEntryLocked && onOpenBibleEntry && results.some(result => result.source_type === "bible")
+      && <p role="status" className="mt-2 text-xs text-[#aaa]">Wait for the Book Bible editor to finish its current action before opening an entry.</p>}
     <div className="mt-4 grid items-start gap-3 lg:grid-cols-2">{results.map((result) => <article key={result.id} className="min-w-0 rounded-xl border border-white/10 p-4">
       <p className="text-[10px] uppercase tracking-widest text-[#999]">{result.source_type === "bible" ? "Book Bible" : "Saved manuscript"}</p>
       <h3 className="mt-2 break-words font-medium">{result.title}</h3>
       <blockquote tabIndex={0} aria-label="Search excerpt" className="mt-3 max-h-48 overflow-y-auto whitespace-pre-wrap break-words border-l border-white/20 pl-3 text-sm leading-6 text-[#ccc] outline-none focus-visible:ring-2 focus-visible:ring-white/50">{result.excerpt}</blockquote>
       {searchCitation(result) && <SearchSourcePassage bookId={bookId} citation={searchCitation(result)!} readRequest={readRequest} onInvalidated={invalidateSources} />}
       {result.source_type === "manuscript" && result.chapter_id && <Link href={`/books/${encodeURIComponent(bookId)}?chapter=${encodeURIComponent(result.chapter_id)}`} className="mt-3 inline-flex min-h-10 items-center text-sm font-medium text-white underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-white">Open current chapter →</Link>}
-      {result.source_type === "bible" && result.bible_item_id && onOpenBibleEntry && <button type="button" disabled={openingBibleId !== null}
+      {result.source_type === "bible" && result.bible_item_id && onOpenBibleEntry && <button type="button" disabled={bibleEntryLocked || openingBibleId !== null}
         onClick={() => void openBible(result)} className="mt-3 block min-h-11 text-sm font-medium text-white underline underline-offset-4 outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-50">
         {openingBibleId === result.id ? "Checking Book Bible entry…" : "Open Book Bible entry →"}
       </button>}
