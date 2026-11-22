@@ -18,6 +18,7 @@ export default function RetailerPackageRequest(props: Props) {
   const owner = useRef<string | null>(null), saved = useRef<PackagePointer | null>(null);
   const [pointer, setPointer] = useState<PackagePointer | null>(null);
   const [ready, setReady] = useState(false), [busy, setBusy] = useState(false);
+  const [initializing, setInitializing] = useState(true), [initializationAttempt, setInitializationAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null), [notice, setNotice] = useState<string | null>(null);
   const [closeConfirmed, setCloseConfirmed] = useState(false), [closeUncertain, setCloseUncertain] = useState(false);
   const bookId = props.bookId;
@@ -25,7 +26,7 @@ export default function RetailerPackageRequest(props: Props) {
   async function account() {
     const response = await fetch("/api/auth/session", { credentials: "same-origin", cache: "no-store" });
     const session = await response.json().catch(() => null);
-    if (!response.ok || typeof session?.user?.id !== "string") throw new Error("Sign in and reload before recovering or creating an export.");
+    if (!response.ok || typeof session?.user?.id !== "string") throw new Error("Sign in, then retry loading saved export requests.");
     packageRecoveryKey(session.user.id, bookId);
     return session.user.id as string;
   }
@@ -34,18 +35,19 @@ export default function RetailerPackageRequest(props: Props) {
     const version = ++epoch.current;
     const current = () => epoch.current === version && latest.current.bookId === bookId;
     owner.current = null; saved.current = null; locked.current = false;
-    setReady(false); setPointer(null); setError(null); setNotice(null); setCloseConfirmed(false); setCloseUncertain(false);
+    setReady(false); setInitializing(true); setPointer(null); setError(null); setNotice(null); setCloseConfirmed(false); setCloseUncertain(false);
     void (async () => {
       try {
         const userId = await account(); if (!current()) return;
         const pending = readPackagePointer(window.sessionStorage, userId, bookId);
-        if (await account() !== userId) throw new Error("Your account changed. Reload to verify this account.");
+        if (await account() !== userId) throw new Error("Your account changed. Retry loading to verify this account.");
         if (!current()) return;
         owner.current = userId; saved.current = pending; setPointer(pending); setCloseUncertain(Boolean(pending?.closing)); setReady(true);
       } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "Export recovery could not be loaded."); }
+      finally { if (current()) setInitializing(false); }
     })();
     return () => { ++epoch.current; };
-  }, [bookId]);
+  }, [bookId, initializationAttempt]);
 
   async function act(action: "create" | "recover" | "retry" | "close") {
     if (!ready || locked.current || props.disabled || !owner.current) return;
@@ -61,7 +63,7 @@ export default function RetailerPackageRequest(props: Props) {
       if (!current()) return false;
       if (observed !== userId) {
         owner.current = null; saved.current = null; setPointer(null); setReady(false);
-        throw new Error("Your account changed. Reload saved data. The original export request remains with its owner.");
+        throw new Error("Your account changed. Retry loading saved requests. The original export request remains with its owner.");
       }
       return true;
     };
@@ -120,6 +122,7 @@ export default function RetailerPackageRequest(props: Props) {
   return <div className="mt-5 min-w-0" aria-label="Retailer request recovery">
     {error && <p role="alert" className="mb-3 text-sm text-red-100">{error}</p>}
     {notice && <p role="status" className="mb-3 text-sm text-white/75">{notice}</p>}
+    {!ready && !initializing && !busy && <button type="button" className={`${button} mb-3`} onClick={() => setInitializationAttempt(attempt => attempt + 1)}>Retry loading saved export requests</button>}
     {pointer ? <div className="rounded-xl border border-amber-300/20 bg-amber-300/5 p-4">
       <p className="text-sm font-medium">Saved {pointer.request.channel} export request</p>
       <p className="mt-2 text-sm text-white/65">Recovery uses the original saved edition and proofs. Only account, book and request identifiers are kept in this browser session; no manuscript or download links.</p>

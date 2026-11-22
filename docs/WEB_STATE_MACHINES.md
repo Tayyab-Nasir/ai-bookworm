@@ -225,6 +225,10 @@ the allowlist without starting a worker.
 - Saved EPUB download renewal measures expiry from the signed-link request start,
   checks expiry again at download, and asks for renewal if the response arrives
   too late. Regression: `apps/web/tests/private-artifact-mounted.mjs`.
+- Retailer request initialization remains closed if account or session-storage
+  reads fail. A read-only retry rechecks account ownership and the current book
+  before restoring the original pointer; stale attempts cannot replace a new book.
+  Regression: `apps/web/tests/retailer-init-retry-mounted.mjs`.
 - Saved EPUB proofs can be selected for packaging after reopening Publishing
   Studio. Retailer preflight checks the stored EPUB and cover through the
   private publishing service. It requires the saved render to match the
