@@ -78,6 +78,15 @@ export function AuthCard({
       try {
         const value = await response.json();
         if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+        if (value.redirectTo !== undefined) {
+          if (typeof value.redirectTo !== "string" || !value.redirectTo) throw new Error();
+          const destination = new URL(value.redirectTo, window.location.origin);
+          if (!["http:", "https:"].includes(destination.protocol)) throw new Error();
+        }
+        if (value.message !== undefined && (typeof value.message !== "string" || !value.message)) throw new Error();
+        if (value.error !== undefined && (!value.error || typeof value.error !== "object" || Array.isArray(value.error)
+          || (value.error.message !== undefined && typeof value.error.message !== "string"))) throw new Error();
+        if (response.ok && !value.redirectTo && !value.message) throw new Error();
         result = value;
       } catch {
         throw new Error("Authentication is temporarily unavailable. Please try again.");

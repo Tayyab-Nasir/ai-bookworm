@@ -41,7 +41,7 @@ const browser = await chromium.launch({ headless: true, channel: process.env.BRO
 test.after(() => browser.close());
 
 for (const mode of ["login", "signup"]) {
-  for (const invalid of ["html", "null", "array"]) {
+  for (const invalid of ["html", "null", "array", "invalid-message", "invalid-error", "invalid-redirect", "unsafe-redirect", "empty-success"]) {
     test(`${mode} shows a retryable error for ${invalid} authentication response`, async () => {
       const page = await browser.newPage();
       try {
@@ -56,8 +56,18 @@ for (const mode of ["login", "signup"]) {
           window.fetch = async () => {
             window.calls++;
             if (window.calls === 1) {
-              const value = invalid === "html" ? "<html>Gateway error</html>" : invalid === "null" ? "null" : "[]";
-              return new Response(value, { status: invalid === "null" ? 200 : 502 });
+              const replies = {
+                html: "<html>Gateway error</html>",
+                null: "null",
+                array: "[]",
+                "invalid-message": JSON.stringify({ message: { unexpected: true } }),
+                "invalid-error": JSON.stringify({ error: { message: { unexpected: true } } }),
+                "invalid-redirect": JSON.stringify({ redirectTo: { unexpected: true } }),
+                "unsafe-redirect": JSON.stringify({ redirectTo: "javascript:alert(1)" }),
+                "empty-success": "{}",
+              };
+              const failure = ["html", "array", "invalid-error"].includes(invalid);
+              return new Response(replies[invalid], { status: failure ? 502 : 200 });
             }
             return new Response(JSON.stringify({ error: { message: "Please check your credentials." } }), {
               status: 401,
@@ -110,6 +120,71 @@ test("Google sign-in retains its retry target after an unreadable response", asy
     await button.click();
     await page.getByText("Google sign-in is unavailable.", { exact: true }).waitFor();
     assert.equal(await page.evaluate(() => window.calls), 2);
+  } finally {
+    await page.close();
+  }
+});
+
+test("valid signup confirmation is shown to the author", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.route("**/*", route => route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><div id='root'></div>",
+    }));
+    await page.goto("http://127.0.0.1/fixture");
+    await page.addScriptTag({ content: script });
+    await page.evaluate(() => {
+      window.fetch = async () => new Response(JSON.stringify({ message: "Check your email to confirm your account." }), { status: 200 });
+      window.mount("signup");
+    });
+    await page.getByLabel("Name", { exact: true }).fill("Test author");
+    await page.getByLabel("Email", { exact: true }).fill("author@example.test");
+    await page.getByLabel("Password", { exact: true }).fill("testpassword");
+    await page.getByRole("button", { name: "Create account", exact: true }).click();
+    await page.getByText("Check your email to confirm your account.", { exact: true }).waitFor();
+  } finally {
+    await page.close();
+  }
+});
+
+test("valid login redirect navigates to the requested page", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.route("**/*", route => route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><div id='root'></div>",
+    }));
+    await page.goto("http://127.0.0.1/fixture");
+    await page.addScriptTag({ content: script });
+    await page.evaluate(() => {
+      window.fetch = async () => new Response(JSON.stringify({ redirectTo: "/dashboard" }), { status: 200 });
+      window.mount("login");
+    });
+    await page.getByLabel("Email", { exact: true }).fill("author@example.test");
+    await page.getByLabel("Password", { exact: true }).fill("testpassword");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.waitForURL("http://127.0.0.1/dashboard");
+  } finally {
+    await page.close();
+  }
+});
+
+test("valid Google HTTPS redirect begins navigation", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.route("**/*", route => route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><div id='root'></div>",
+    }));
+    await page.goto("http://127.0.0.1/fixture");
+    await page.addScriptTag({ content: script });
+    await page.evaluate(() => {
+      window.fetch = async () => new Response(JSON.stringify({ redirectTo: "https://oauth.example.test/authorize" }), { status: 200 });
+      window.mount("login");
+    });
+    await page.getByRole("button", { name: "Continue with Google" }).click();
+    await page.waitForURL("https://oauth.example.test/authorize");
   } finally {
     await page.close();
   }
