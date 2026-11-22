@@ -69,13 +69,18 @@ export default function ManagedPublishingConsent({ api, jobId, workspaceId, acto
           Operator confirmed publication on <time dateTime={state.receipt.confirmedAt}>{new Date(state.receipt.confirmedAt).toLocaleString()}</time>.
         </p><a href={state.receipt.listingUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline">Open retailer listing</a></div>
       : <div className="space-y-2 text-sm"><p role="status" className="text-emerald-100">
-        Consent recorded on <time dateTime={state.receipt.requestedAt}>{new Date(state.receipt.requestedAt).toLocaleString()}</time>. Retailer submission is a separate step.
-      </p><button type="button" className="min-h-11 underline" onClick={() => void update("withdraw")}>Withdraw consent</button></div>)}
+        Consent recorded on <time dateTime={state.receipt.requestedAt}>{new Date(state.receipt.requestedAt).toLocaleString()}</time>.
+        {state.receipt.claimedAt && <> A publishing operator claimed this package on <time dateTime={state.receipt.claimedAt}>{new Date(state.receipt.claimedAt).toLocaleString()}</time>.</>}
+        {" "}Awaiting retailer confirmation.
+      </p><div className="flex flex-wrap gap-x-4">
+        <button type="button" className="min-h-11 underline" onClick={() => void update("read")}>Refresh request status</button>
+        <button type="button" className="min-h-11 underline" onClick={() => void update("withdraw")}>Withdraw consent</button>
+      </div></div>)}
     {state.phase === "ready" && !canRequest && <p className="text-sm">New managed publishing requests are paused.</p>}
     {state.phase === "ready" && canRequest && !checksum && <p className="text-sm">This package is currently unavailable for a new request.</p>}
     {state.phase === "ready" && canRequest && checksum && <div className="space-y-2 text-sm">
       <label className="flex items-start gap-2"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} />
-        I authorize Bookworm to use this exact package for managed publishing.</label>
+        I authorize BookieWookie to use this exact package for managed publishing.</label>
       <button type="button" className="glass-ghost min-h-11 rounded-full px-4 disabled:opacity-40"
         onClick={() => void update("record")} disabled={!consent}>Record consent</button>
     </div>}

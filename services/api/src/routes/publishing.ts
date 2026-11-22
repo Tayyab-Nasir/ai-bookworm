@@ -50,6 +50,8 @@ const managedPublishingRowSchema = z.object({
   package_sha256: sha256Schema,
   requested_at: z.string().datetime({ offset: true }),
   withdrawn_at: z.string().datetime({ offset: true }).nullable(),
+  claimed_by: z.guid().nullable(),
+  claimed_at: z.string().datetime({ offset: true }).nullable(),
   confirmed_at: z.string().datetime({ offset: true }).nullable(),
   listing_url: z.string().max(1024).regex(/^https:\/\/[a-z0-9.]+\/[A-Za-z0-9/_~.%+?=-]+$/).nullable(),
 });
@@ -60,11 +62,11 @@ function managedPublishingResult(row: unknown, jobId: string, workspaceId: strin
     throw new AppError(503, "The managed publishing request could not be verified.");
   }
   const { requested_by: requestedBy, package_sha256: packageSha256, requested_at: requestedAt, withdrawn_at: withdrawnAt,
-    confirmed_at: confirmedAt, listing_url: listingUrl } = parsed.data;
+    claimed_by: claimedBy, claimed_at: claimedAt, confirmed_at: confirmedAt, listing_url: listingUrl } = parsed.data;
   if ((confirmedAt === null) !== (listingUrl === null) || (confirmedAt && withdrawnAt)) {
     throw new AppError(503, "The managed publishing state could not be verified.");
   }
-  return { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, confirmedAt, listingUrl };
+  return { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, claimedAt: claimedBy ? claimedAt : null, confirmedAt, listingUrl };
 }
 const sourceEpubSchema = z.object({ jobId: z.guid(), sha256: sha256Schema }).strict();
 const savedPreflightSourceFields = {
@@ -916,7 +918,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
       reply.header("cache-control", "private, no-store");
       if (req.method === "GET") {
         const { data, error } = await user.from("managed_publishing_requests")
-          .select("package_job_id,workspace_id,requested_by,package_sha256,requested_at,withdrawn_at,confirmed_at,listing_url").eq("package_job_id", jobId).maybeSingle();
+          .select("package_job_id,workspace_id,requested_by,package_sha256,requested_at,withdrawn_at,claimed_by,claimed_at,confirmed_at,listing_url").eq("package_job_id", jobId).maybeSingle();
         if (error) throw new AppError(503, "The managed publishing request is unavailable.");
         return { request: data === null ? null : managedPublishingResult(data, jobId, book.workspace_id) };
       }

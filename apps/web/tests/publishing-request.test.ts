@@ -51,6 +51,12 @@ test("managed publishing SDK preserves the actor and rejects a different workspa
     const api = createClient({ baseUrl: "https://api.example.test" });
     assert.deepEqual(await api.requestManagedPublishing(job.id, id(2), sha, id(1)), request);
     assert.deepEqual(await api.getManagedPublishingRequest(job.id, id(2), id(1)), request);
+    const claimed = { ...request, claimedAt: "2026-10-18T00:02:00Z" };
+    reply = { request: claimed };
+    assert.deepEqual(await api.getManagedPublishingRequest(job.id, id(2), id(1)), claimed);
+    reply = { request: { ...request, claimedAt: "2026-10-17T00:00:00Z" } };
+    await assert.rejects(api.getManagedPublishingRequest(job.id, id(2), id(1)), /verified/);
+    reply = { request };
     await assert.rejects(api.getManagedPublishingRequest(job.id, id(3), id(1)), /verified/);
     reply = { request: { ...request, packageSha256: "b".repeat(64) } };
     await assert.rejects(api.requestManagedPublishing(job.id, id(2), sha, id(1)), /verified/);

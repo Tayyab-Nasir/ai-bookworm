@@ -20,6 +20,8 @@ const receipt = {
   package_job_id: job, workspace_id: workspace, requested_by: actor, package_sha256: sha,
   requested_at: "2026-11-20T18:00:00+00:00",
   withdrawn_at: null as string | null,
+  claimed_at: null as string | null,
+  claimed_by: null as string | null,
   confirmed_at: null,
   listing_url: null,
 };
@@ -174,10 +176,18 @@ test("managed publishing authorizes, writes and recovers the exact package conse
     assert.equal(saved.statusCode, 200);
     assert.equal(saved.headers["cache-control"], "private, no-store");
     assert.deepEqual(saved.json(), { request: { jobId: job, workspaceId: workspace, requestedBy: actor,
-      packageSha256: sha, requestedAt: receipt.requested_at, withdrawnAt: null, confirmedAt: null, listingUrl: null } });
+      packageSha256: sha, requestedAt: receipt.requested_at, withdrawnAt: null, claimedAt: null, confirmedAt: null, listingUrl: null } });
     assert.deepEqual(writes, [{ p_job_id: job, p_sha256: sha, p_actor: actor }]);
     assert.deepEqual((await send("GET")).json(), saved.json());
     assert.equal(writes.length, 1);
+    assert.ok(stored);
+    const claim = "2026-11-20T18:05:00+00:00";
+    stored = { ...receipt, claimed_at: claim, claimed_by: book };
+    const claimed = (await send("GET")).json().request;
+    assert.equal(claimed.claimedAt, claim);
+    assert.equal(Object.values(claimed).includes(book), false);
+    stored = { ...receipt, claimed_at: claim };
+    assert.equal((await send("GET")).json().request.claimedAt, null);
     process.env.MANAGED_PUBLISHING_ENABLED = "false";
     const withdrawn = await send("PUT", actor, { packageSha256: sha, withdraw: true });
     assert.equal(withdrawn.statusCode, 200);

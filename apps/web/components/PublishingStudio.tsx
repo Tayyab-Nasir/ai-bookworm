@@ -1171,7 +1171,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
             ? "The Lulu ZIP reverses the interior for upload and keeps the exact paired cover. Your saved proof stays in reading order. Review the result in Lulu before approving it."
             : "Create a private ZIP from the exact saved render after a zero-error retailer preflight. Download it and submit it in your retailer account. Record the status you see there in package history."}</p>
             {managedPublishingEnabled && currentIdentity && (role === "owner" || role === "admin") && <p className="mt-2 max-w-2xl text-sm text-white/60">
-              To have a Bookworm operator handle submission, open Managed publishing request on a completed package and record your consent.
+              To have a BookieWookie operator handle submission, open Managed publishing request on a completed package and record your consent.
             </p>}</div>
           </div>
           <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4 text-sm" aria-label="Plan publishing access">

@@ -24,6 +24,7 @@ export interface ManagedPublishingRequest {
   packageSha256: string;
   requestedAt: string;
   withdrawnAt: string | null;
+  claimedAt?: string | null;
   confirmedAt: string | null;
   listingUrl: string | null;
 }

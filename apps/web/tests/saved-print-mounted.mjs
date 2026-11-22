@@ -814,7 +814,7 @@ test("managed publishing requires exact package consent and recovers a lost repl
       window.showStudio(book, undefined, true);
     });
     const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
-    await expect(history.getByText("To have a Bookworm operator handle submission", { exact: false })).toBeVisible();
+    await expect(history.getByText("To have a BookieWookie operator handle submission", { exact: false })).toBeVisible();
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
     await history.getByText("Managed publishing request", { exact: true }).click();
     const consent = history.locator("details").filter({ hasText: "Managed publishing request" });
@@ -828,6 +828,11 @@ test("managed publishing requires exact package consent and recovers a lost repl
     assert.deepEqual(await page.evaluate(() => window.consentWrites), [{
       jobId: ids.job, workspaceId: ids.workspace, packageSha256: "a".repeat(64), requestedBy: ids.asset,
     }]);
+    await page.evaluate(() => { window.consentReceipt.claimedAt = "2026-10-18T00:00:30Z"; });
+    await consent.getByRole("button", { name: "Refresh request status" }).click();
+    await expect(consent.getByRole("status")).toContainText("A publishing operator claimed this package");
+    await expect(consent.getByRole("status")).toContainText("Awaiting retailer confirmation");
+    assert.equal(await page.evaluate(() => window.consentWrites.length), 1);
     await page.evaluate(() => {
       window.consentPackageUnavailable = true;
       window.showStudio(window.ids.book, undefined, false);

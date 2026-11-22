@@ -660,19 +660,22 @@ function parseRetailerSubmission(value: unknown, expectedJobId: string): Retaile
 function parseManagedPublishingRequest(value: unknown, expectedJobId: string, expectedWorkspaceId: string): ManagedPublishingRequest | null {
   const record = (value as { request?: Partial<ManagedPublishingRequest> | null } | null)?.request;
   if (record === null) return null;
-  const { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, confirmedAt, listingUrl } = record ?? {};
+  const { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, claimedAt, confirmedAt, listingUrl } = record ?? {};
   if (jobId !== expectedJobId || workspaceId !== expectedWorkspaceId
     || (requestedBy !== null && (typeof requestedBy !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(requestedBy)))
     || typeof packageSha256 !== "string" || !/^[a-f0-9]{64}$/.test(packageSha256)
     || typeof requestedAt !== "string" || !Number.isFinite(Date.parse(requestedAt))
     || (withdrawnAt !== null && (typeof withdrawnAt !== "string" || !Number.isFinite(Date.parse(withdrawnAt))
       || Date.parse(withdrawnAt) < Date.parse(requestedAt)))
+    || (claimedAt != null && (typeof claimedAt !== "string" || !Number.isFinite(Date.parse(claimedAt))
+      || Date.parse(claimedAt) < Date.parse(requestedAt)))
     || (confirmedAt !== null && (typeof confirmedAt !== "string" || !Number.isFinite(Date.parse(confirmedAt)) || withdrawnAt !== null))
     || (listingUrl !== null && (typeof listingUrl !== "string" || listingUrl.length > 1024 || !/^https:\/\/[a-z0-9.]+\/[A-Za-z0-9/_~.%+?=-]+$/.test(listingUrl)))
     || (confirmedAt === null) !== (listingUrl === null)) {
     throw new Error("The managed publishing request could not be verified.");
   }
-  return { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt, confirmedAt, listingUrl };
+  return { jobId, workspaceId, requestedBy, packageSha256, requestedAt, withdrawnAt,
+    ...(claimedAt !== undefined && { claimedAt }), confirmedAt, listingUrl };
 }
 
 export class ApiClientError extends Error {
