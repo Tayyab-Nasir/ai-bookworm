@@ -174,8 +174,20 @@ stayed accessible only in its own scope. The disposable database contained
 two separate AGE graphs.
 
 Both runs used deterministic extraction and embeddings and restricted sockets
-to the disposable loopback database. Cross-host worker fencing and production
-database privilege and deployment review remain open.
+to the disposable loopback database.
+
+[Run 44995243417](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/44995243417)
+repeated the test with a worker role that lacks superuser, role creation,
+database creation, replication and row-security bypass privileges. The fixture
+administrator installed both extensions first. The worker can create AGE
+graphs and LightRAG tables in the isolated test database, use its schemas,
+and read AGE's graph and label catalogs. An explicit check shows that the same
+worker is denied access to the admin-only fixture schema. Without catalog read
+access, LightRAG startup stopped when it queried `ag_catalog.ag_graph`.
+
+The worker identity is for internal operations across books in the dedicated
+retrieval database. Author-level access still comes from the BookieWookie
+canonical lookup. Cross-host worker fencing and hosted deployment are open.
 
 ## Local multilingual retrieval comparison
 
