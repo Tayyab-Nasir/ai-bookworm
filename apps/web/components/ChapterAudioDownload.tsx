@@ -66,19 +66,22 @@ function ScopedAudioDownload({ scope, projectId, ready, isProjectCurrent }: { sc
   const [reports, setReports] = useState<AudiobookQcReport[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const historyGeneration = useRef(0);
   const signoffState = useRef({ listened, downloadedReportId }); signoffState.current = { listened, downloadedReportId };
 
   const refreshHistory = useCallback(async () => {
     if (!mounted.current || !isProjectCurrent() || !scope.current()) return;
-    const current = begin(); setHistoryBusy(true);
+    const current = begin(), generation = ++historyGeneration.current;
+    const latest = () => generation === historyGeneration.current && current();
+    setHistoryBusy(true);
     try {
       const result = await scope.checked(() => {
-        if (!current()) throw new Error("Audio request superseded.");
+        if (!latest()) throw new Error("Audio request superseded.");
         return apiClient().listAudiobookQcReports(projectId, scope.actor);
       });
-      if (mounted.current && current()) { setReports(result.reports); setHistoryError(null); }
-    } catch { if (mounted.current && current()) setHistoryError("Saved QC history is not available yet. You can still download and review the current chapter."); }
-    finally { if (mounted.current) setHistoryBusy(false); }
+      if (mounted.current && latest()) { setReports(result.reports); setHistoryError(null); }
+    } catch { if (mounted.current && latest()) setHistoryError("Saved QC history is not available yet. You can still download and review the current chapter."); }
+    finally { if (mounted.current && generation === historyGeneration.current) setHistoryBusy(false); }
   }, [projectId, scope]);
   useEffect(() => { if (ready) void refreshHistory(); }, [ready, refreshHistory]);
 
