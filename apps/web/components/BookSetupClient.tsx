@@ -11,6 +11,9 @@ import { rememberWorkspace, resolveWorkspace } from "../lib/workspace-selection"
 import { editorAccount } from "../lib/manual-chapter-save";
 
 type SetupMode = "blank" | "import" | "ai";
+type ModelCatalog =
+  | { bookId: string; status: "loading" | "unavailable" }
+  | { bookId: string; status: "ready"; models: AiReviewModelChoice[] };
 const stageLabels: Record<SetupStage, string> = { creating: "Creating book...", uploading: "Uploading source...", scanning: "Checking source...", importing: "Importing chapters...", drafting: "Queuing first draft..." };
 const quoteIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function validFirstDraftQuote(quote: AiReviewUsageQuote): boolean {
@@ -44,7 +47,8 @@ export default function BookSetupClient() {
   const [report, setReport] = useState<ManuscriptImportResult["report"] | null>(null);
   const [importJob, setImportJob] = useState<ManuscriptImportJob | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
-  const [aiModels, setAiModels] = useState<AiReviewModelChoice[]>([]);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  const [catalogAttempt, setCatalogAttempt] = useState(0);
   const [aiModelId, setAiModelId] = useState("");
   const [countingConsent, setCountingConsent] = useState(false);
   const [aiQuote, setAiQuote] = useState<AiReviewUsageQuote | null>(null);
@@ -97,7 +101,9 @@ export default function BookSetupClient() {
         setNotice(!book ? "Book creation was interrupted. Re-enter the same details, then retry; Bookworm will reuse this request ID."
           : saved.completed ? "This setup already finished. Open the editor to review your manuscript."
           : saved.setupMode === "ai" && saved.starter && !saved.starter.jobId
-            ? "Chapter 1 is ready. Your brief was not saved in browser recovery; open the editor and use Draft to enter it again."
+            ? saved.starter.quoteRequestId
+              ? "Chapter 1 is ready. This page checks the saved quote. Your original brief is available only in the tab where you entered it."
+              : "Chapter 1 is ready. Re-enter your brief to continue here, or open the editor to write."
             : "Your existing book is ready to resume. We will reuse its uploaded source when available.");
       }
       if (!cancelled) { setWorkspaceId(workspace); setUserId(user.id); setReady(true); }
@@ -109,15 +115,31 @@ export default function BookSetupClient() {
 
   useEffect(() => {
     if (!ready || mode !== "ai" || !checkpoint?.bookCreated || checkpoint.completed) return;
+    const bookId = checkpoint.bookId;
     let cancelled = false;
+    setModelCatalog({ bookId, status: "loading" });
     void (async () => {
       await editorAccount(userId);
-      const { models } = await api.listAiReviewModels(checkpoint.bookId, userId);
+      const { models } = await api.listAiReviewModels(bookId, userId);
       await editorAccount(userId);
-      if (!cancelled) { setAiModels(models); setAiModelId((checkpoint.starter?.modelId && models.some((item) => item.id === checkpoint.starter?.modelId) ? checkpoint.starter.modelId : models[0]?.id) ?? ""); }
-    })().catch(async (reason) => { if (!cancelled) { try { await editorAccount(userId); } catch { setAccountHidden(true); } setError(reason instanceof Error ? reason.message : "Could not load available AI models."); } });
+      if (cancelled) return;
+      setModelCatalog({ bookId, status: "ready", models });
+      setAiModelId(selected => models.some(model => model.id === selected) ? selected : models[0]?.id ?? "");
+    })().catch(async () => {
+      if (cancelled) return;
+      try { await editorAccount(userId); }
+      catch { if (!cancelled) setAccountHidden(true); return; }
+      if (!cancelled) setModelCatalog({ bookId, status: "unavailable" });
+    });
     return () => { cancelled = true; };
-  }, [api, checkpoint?.bookId, checkpoint?.bookCreated, checkpoint?.completed, checkpoint?.starter?.modelId, mode, ready, userId]);
+  }, [api, catalogAttempt, checkpoint?.bookId, checkpoint?.bookCreated, checkpoint?.completed, mode, ready, userId]);
+
+  const catalog = modelCatalog?.bookId === checkpoint?.bookId ? modelCatalog : null;
+  const aiModels = catalog?.status === "ready" ? catalog.models : [];
+  const lockedQuote = Boolean(checkpoint?.starter?.quoteKey);
+  const originalModel = lockedQuote ? checkpoint?.starter?.modelId : undefined;
+  const chosenModel = lockedQuote ? originalModel ?? "" : aiModels.some(model => model.id === aiModelId) ? aiModelId : "";
+  const modelLabel = aiModels.find(model => model.id === originalModel)?.label ?? originalModel;
 
   useEffect(() => {
     const starter = checkpoint?.starter;
@@ -223,6 +245,7 @@ export default function BookSetupClient() {
       await editorAccount(userId);
       try { window.sessionStorage.removeItem(setupKey(userId, workspaceId)); } catch { /* Server content is unchanged. */ }
       current.current = null; setCheckpoint(null); setReport(null); setError(null); setNotice(null); setQuotedBrief(null); setAiQuote(null); setQuoteCounting(false); setCountingConsent(false);
+      setModelCatalog(null); setAiModelId("");
       setImportJob(null); setJobError(null);
       setTitle(""); setAuthorName(""); setGenre(""); setStoryBrief(""); setSourceFile(null);
     } catch { setAccountHidden(true); }
@@ -285,16 +308,17 @@ export default function BookSetupClient() {
 
   const prepareFirstDraftQuote = async () => {
     const saved = current.current;
-    if (!saved?.starter || !aiModelId || !storyBrief.trim() || !(countingConsent || saved.starter.allowProviderTokenCounting) || busy.current) return;
+    if (!saved?.starter || !chosenModel || !storyBrief.trim() || !(countingConsent || saved.starter.allowProviderTokenCounting) || busy.current
+      || saved.bookId !== checkpoint?.bookId || (saved.starter.quoteKey && saved.starter.modelId !== chosenModel)) return;
     const submittedBrief = storyBrief.trim();
     busy.current = true; setSaving(true); setError(null); setNotice(null); setAiQuote(null);
     try {
       const session = await fetch("/api/auth/session", { cache: "no-store" });
       if (!session.ok || (await session.json()).user?.id !== userId) throw new Error("Your session changed. Reload before continuing.");
-      const starter = { ...saved.starter, quoteKey: saved.starter.quoteKey ?? `story-starter:${crypto.randomUUID()}`, modelId: aiModelId, allowProviderTokenCounting: true as const };
+      const starter = { ...saved.starter, quoteKey: saved.starter.quoteKey ?? `story-starter:${crypto.randomUUID()}`, modelId: chosenModel, allowProviderTokenCounting: true as const };
       const pending = { ...saved, starter, savedAt: Date.now() };
       saveCheckpoint(pending); // Persist stable quote identity and consent before sending the selected brief for counting.
-      const result = await api.createAiReviewQuote(saved.bookId, { modelId: aiModelId, agentType: "writer", chapterIds: [starter.chapterId], userInstruction: submittedBrief,
+      const result = await api.createAiReviewQuote(saved.bookId, { modelId: chosenModel, agentType: "writer", chapterIds: [starter.chapterId], userInstruction: submittedBrief,
         idempotencyKey: starter.quoteKey!, contextPolicy: { includeBookBible: true, includeStyleGuide: true, includeRelatedContext: true, semanticTopK: 5, maxTokens: 16_000 }, allowProviderTokenCounting: true }, userId);
       await editorAccount(userId);
       if (result.quote) {
@@ -449,15 +473,21 @@ export default function BookSetupClient() {
 
             {mode === "ai" && checkpoint?.starter && !checkpoint.completed && !checkpoint.starter.jobId && <section aria-label="First draft usage quote" className="mt-5 rounded-2xl border border-white/[0.1] bg-black/20 p-4 sm:p-5">
               <label className="block"><span className="mb-2 block text-[11px] font-medium uppercase tracking-[0.14em] text-[#8a8a8a]">Generation model</span>
-                <select value={aiModelId} disabled={saving || quoteCounting || !!aiQuote} onChange={(event) => setAiModelId(event.target.value)} className="h-11 w-full rounded-xl border border-white/[0.1] bg-[#151515] px-3 text-sm text-white outline-none focus:border-white/35">
-                  {aiModels.length ? aiModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>) : <option value="">No approved model available</option>}
+                <select value={chosenModel} disabled={saving || quoteCounting || !!aiQuote || lockedQuote || !aiModels.length} onChange={(event) => setAiModelId(event.target.value)} className="h-11 w-full rounded-xl border border-white/[0.1] bg-[#151515] px-3 text-sm text-white outline-none focus:border-white/35">
+                  {lockedQuote ? <option value={originalModel ?? ""}>{modelLabel ?? "Original model unavailable"}</option>
+                    : aiModels.length ? aiModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)
+                      : <option value="">{catalog?.status === "ready" ? "No approved model available" : catalog?.status === "unavailable" ? "Model list unavailable" : "Loading models…"}</option>}
                 </select>
               </label>
+              {!lockedQuote && (catalog?.status === "unavailable" || (catalog?.status === "ready" && !aiModels.length)) && <div className="mt-3 text-sm text-amber-100">
+                <p role="status">{catalog.status === "unavailable" ? "Could not load writing models. Your Chapter 1 and brief are still available here." : "No writing model is available for a new quote. You can keep writing in the editor."}</p>
+                <button type="button" disabled={saving} className="min-h-11 underline underline-offset-4" onClick={() => setCatalogAttempt(attempt => attempt + 1)}>Check writing models</button>
+              </div>}
               <label className="mt-4 flex items-start gap-2 text-xs leading-5 text-[#bdbdbd]"><input type="checkbox" checked={countingConsent || checkpoint.starter.allowProviderTokenCounting === true} disabled={saving || quoteCounting || !!aiQuote || checkpoint.starter.allowProviderTokenCounting === true} onChange={(event) => setCountingConsent(event.target.checked)} />
                 <span>I agree to send the selected saved Chapter 1 context and this brief to OpenAI for token counting. This calculates the quote; it does not generate content or reserve credits.</span></label>
               {quoteCounting && <p role="status" className="mt-4 text-sm text-[#d0d0d0]">Counting usage. No generation job or credit hold has been created.</p>}
               {aiQuote && <div className="mt-4 rounded-xl border border-emerald-200/20 bg-emerald-200/[0.06] p-4" role="status"><p className="text-sm font-medium text-white">Exact quote · {aiQuote.reservedCredits} credits</p><p className="mt-1 text-xs leading-5 text-[#bdbdbd]">{aiQuote.countedInputTokens.toLocaleString()} counted input tokens · up to {aiQuote.maxOutputTokens.toLocaleString()} output tokens · expires {new Date(aiQuote.expiresAt).toLocaleString()}</p></div>}
-              {!aiQuote && <button type="button" disabled={!ready || saving || !aiModelId || !storyBrief.trim() || !(countingConsent || checkpoint.starter.allowProviderTokenCounting === true) || quoteCounting} onClick={() => void prepareFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{quoteCounting ? "Counting tokens…" : checkpoint.starter.quoteRequestId ? "Retry same quote request" : "Prepare exact credit quote"}</button>}
+              {!aiQuote && <button type="button" disabled={!ready || saving || !chosenModel || !storyBrief.trim() || !(countingConsent || checkpoint.starter.allowProviderTokenCounting === true) || quoteCounting} onClick={() => void prepareFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{quoteCounting ? "Counting tokens…" : lockedQuote ? "Retry same quote request" : "Prepare exact credit quote"}</button>}
               {aiQuote && <button type="button" disabled={saving || !!checkpoint.starter.acceptAttempted || Date.parse(aiQuote.expiresAt) <= Date.now() || quotedBrief?.requestId !== aiQuote.requestId || quotedBrief.text !== storyBrief.trim()} onClick={() => void acceptFirstDraftQuote()} className="mt-4 inline-flex h-11 items-center rounded-full bg-white px-4 text-sm font-semibold text-black disabled:opacity-40">{saving ? "Accepting…" : `Accept · ${aiQuote.reservedCredits} credits and generate`}</button>}
               {checkpoint.starter.acceptAttempted && <p role="status" className="mt-3 text-xs leading-5 text-amber-100">Acceptance may still complete. This page checks the original request; keep its recovery record and do not request another draft until its outcome is confirmed.</p>}
               {aiQuote && Date.parse(aiQuote.expiresAt) <= Date.now() && !checkpoint.starter.acceptAttempted && <p role="status" className="mt-3 text-xs leading-5 text-amber-100">This quote has expired. Continue to the editor to review a new quote.</p>}

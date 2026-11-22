@@ -35,6 +35,56 @@ test('switching account during book creation stops the manuscript upload and kee
  }finally{await page.close();}
 });
 
+test("first draft model lookup can recover without recreating the book or losing the brief", async () => {
+ const page = await browser.newPage();
+ try {
+  await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' }));
+  await page.goto("http://127.0.0.1/books/new");
+  await page.evaluate(() => {
+   const owner = "11111111-1111-4111-8111-111111111111";
+   const workspace = "22222222-2222-4222-8222-222222222222";
+   window.calls = { books: 0, chapters: 0, catalogs: [], quotes: 0 };
+   window.fetch = async () => Response.json({ user: { id: owner } });
+   window.bookwormApi = {
+    listWorkspaces: async () => ({ workspaces: [{ id: workspace, name: "Workspace" }] }),
+    createBook: async body => { window.calls.books++; return { id: body.requestId }; },
+    createChapter: async book => {
+     window.calls.chapters++;
+     return { chapter: { id: "44444444-4444-4444-8444-444444444444", book_id: book } };
+    },
+    listAiReviewModels: async (book, actor) => {
+     window.calls.catalogs.push({ book, actor });
+     if (window.calls.catalogs.length === 1) throw Error("Temporary catalog failure");
+     return { models: window.calls.catalogs.length === 2 ? [] : [{ id: "writer", label: "Writer" }] };
+    },
+    createAiReviewQuote: async () => { window.calls.quotes++; throw Error("Quote was not requested"); },
+   };
+  });
+  await page.addScriptTag({ content: bundled.outputFiles[0].text });
+  await page.getByRole("button", { name: "Start with AI", exact: true }).click();
+  await page.getByPlaceholder("The title on the cover").fill("Preview book");
+  const brief = page.getByLabel("Story brief");
+  await brief.fill("A private opening scene");
+  await page.getByRole("button", { name: "Create book & Chapter 1", exact: true }).click();
+  const check = page.getByRole("button", { name: "Check writing models" });
+  await expect(page.getByText(/Could not load writing models/)).toBeVisible();
+  await check.click();
+  await expect(page.getByText(/No writing model is available for a new quote/)).toBeVisible();
+  await check.click();
+  await expect(page.getByLabel("Generation model")).toHaveValue("writer");
+  await expect(brief).toHaveValue("A private opening scene");
+  await expect(page.getByRole("button", { name: "Prepare exact credit quote" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Continue to editor" })).toBeEnabled();
+  const calls = await page.evaluate(() => window.calls);
+  assert.equal(calls.books, 1);
+  assert.equal(calls.chapters, 1);
+  assert.equal(calls.catalogs.length, 3);
+  assert.equal(new Set(calls.catalogs.map(call => call.book)).size, 1);
+  assert.ok(calls.catalogs.every(call => call.actor === "11111111-1111-4111-8111-111111111111"));
+  assert.equal(calls.quotes, 0);
+ } finally { await page.close(); }
+});
+
 test('switching accounts during token counting hides the quote and retains only the original recovery key',async()=>{
  const page=await browser.newPage();try{
  await page.route('**/*',r=>r.fulfill({contentType:'text/html',body:'<html><body><div id="root"></div></body></html>'}));await page.goto('http://127.0.0.1/books/new');
@@ -137,12 +187,61 @@ test('lost quote response retries only the original request and never accepts ch
  const page=await browser.newPage();try{
  await page.route('**/*',r=>r.fulfill({contentType:'text/html',body:'<html><body><div id="root"></div></body></html>'}));await page.goto('http://127.0.0.1/books/new');
  await page.evaluate(()=>{const owner='11111111-1111-4111-8111-111111111111',workspace='22222222-2222-4222-8222-222222222222',chapter='44444444-4444-4444-8444-444444444444',request='55555555-5555-4555-8555-555555555555';window.requests=[];window.accepts=0;
- window.fetch=async path=>{if(path==='/api/auth/session')return Response.json({user:{id:owner}});throw Error('Unexpected fetch')};window.bookwormApi={listWorkspaces:async()=>({workspaces:[{id:workspace,name:'Workspace'}]}),createBook:async body=>({id:body.requestId}),createChapter:async book=>({chapter:{id:chapter,book_id:book}}),listAiReviewModels:async()=>({models:[{id:'writer',label:'Writer'}]}),
- createAiReviewQuote:async(book,body)=>{window.requests.push({key:body.idempotencyKey,brief:body.userInstruction});if(window.requests.length===1)throw Error('Response lost');if(body.userInstruction!=='Original opening')throw Error('This AI review quote key is already bound to different settings or saved inputs.');return {quote:{requestId:request,status:'ready',agentType:'writer',model:'test-model',reservedCredits:5,countedInputTokens:30,maxOutputTokens:50,expiresAt:'2030-01-01T00:00:00.000Z'}}},getAiReviewQuote:async()=>({quote:{requestId:request,status:'ready',agentType:'writer',model:'test-model',reservedCredits:5,countedInputTokens:30,maxOutputTokens:50,expiresAt:'2030-01-01T00:00:00.000Z'}}),acceptAiReviewQuote:async()=>{window.accepts++;throw Error('unexpected')}};});
+ window.fetch=async path=>{if(path==='/api/auth/session')return Response.json({user:{id:owner}});throw Error('Unexpected fetch')};window.bookwormApi={listWorkspaces:async()=>({workspaces:[{id:workspace,name:'Workspace'}]}),createBook:async body=>({id:body.requestId}),createChapter:async book=>({chapter:{id:chapter,book_id:book}}),listAiReviewModels:async()=>({models:[{id:'writer',label:'Writer'},{id:'another',label:'Another writer'}]}),
+ createAiReviewQuote:async(book,body)=>{window.requests.push({key:body.idempotencyKey,brief:body.userInstruction,model:body.modelId});if(window.requests.length===1)throw Error('Response lost');if(body.userInstruction!=='Original opening')throw Error('This AI review quote key is already bound to different settings or saved inputs.');return {quote:{requestId:request,status:'ready',agentType:'writer',model:'test-model',reservedCredits:5,countedInputTokens:30,maxOutputTokens:50,expiresAt:'2030-01-01T00:00:00.000Z'}}},getAiReviewQuote:async()=>({quote:{requestId:request,status:'ready',agentType:'writer',model:'test-model',reservedCredits:5,countedInputTokens:30,maxOutputTokens:50,expiresAt:'2030-01-01T00:00:00.000Z'}}),acceptAiReviewQuote:async()=>{window.accepts++;throw Error('unexpected')}};});
  await page.addScriptTag({content:bundled.outputFiles[0].text});await expect(page.getByRole('button',{name:'Create book',exact:true})).toBeEnabled();await page.getByRole('button',{name:'Start with AI',exact:true}).click();await page.getByPlaceholder('The title on the cover').fill('Book');const brief=page.getByLabel('Story brief');await brief.fill('Original opening');await page.getByRole('button',{name:'Create book & Chapter 1',exact:true}).click();await expect(page.getByLabel('Generation model')).toBeVisible();await page.getByRole('checkbox').check();await page.getByRole('button',{name:'Prepare exact credit quote'}).click();await expect(page.getByText('Response lost',{exact:false})).toBeVisible();
- await brief.fill('Different opening');await page.getByRole('button',{name:'Prepare exact credit quote'}).click();await expect(page.getByText('This AI review quote key is already bound',{exact:false})).toBeVisible();assert.equal(await page.getByRole('button',{name:/Accept ·/}).count(),0);
- await brief.fill('Original opening');await page.getByRole('button',{name:'Prepare exact credit quote'}).click();await expect(page.getByRole('button',{name:'Accept · 5 credits and generate'})).toBeEnabled();const observed=await page.evaluate(()=>({requests:window.requests,accepts:window.accepts,storage:Object.values(sessionStorage).join(' ')}));assert.equal(new Set(observed.requests.map(v=>v.key)).size,1);assert.deepEqual(observed.requests.map(v=>v.brief),['Original opening','Different opening','Original opening']);assert.equal(observed.accepts,0);assert.doesNotMatch(observed.storage,/Original opening|Different opening/);
+ const model=page.getByLabel('Generation model');
+ await expect(model).toBeDisabled();
+ await expect(model).toHaveValue('writer');
+ const retry=page.getByRole('button',{name:'Retry same quote request'});
+ await brief.fill('Different opening');await retry.click();await expect(page.getByText('This AI review quote key is already bound',{exact:false})).toBeVisible();assert.equal(await page.getByRole('button',{name:/Accept ·/}).count(),0);
+ await brief.fill('Original opening');await retry.click();await expect(page.getByRole('button',{name:'Accept · 5 credits and generate'})).toBeEnabled();const observed=await page.evaluate(()=>({requests:window.requests,accepts:window.accepts,storage:Object.values(sessionStorage).join(' ')}));assert.equal(new Set(observed.requests.map(v=>v.key)).size,1);assert.ok(observed.requests.every(v=>v.model==='writer'));assert.deepEqual(observed.requests.map(v=>v.brief),['Original opening','Different opening','Original opening']);assert.equal(observed.accepts,0);assert.doesNotMatch(observed.storage,/Original opening|Different opening/);
  }finally{await page.close()}
+});
+
+test("a lost quote can recover its original model after the catalog changes", async () => {
+ const page = await browser.newPage();
+ try {
+  await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' }));
+  await page.goto("http://127.0.0.1/books/new");
+  await page.evaluate(() => {
+   const owner = "11111111-1111-4111-8111-111111111111";
+   const workspace = "22222222-2222-4222-8222-222222222222";
+   const book = "33333333-3333-4333-8333-333333333333";
+   const chapter = "44444444-4444-4444-8444-444444444444";
+   window.fetch = async () => Response.json({ user: { id: owner } });
+   window.calls = [];
+   window.bookwormApi = {
+    listWorkspaces: async () => ({ workspaces: [{ id: workspace, name: "Workspace" }] }),
+    getBook: async () => ({ book: { id: book, workspace_id: workspace, title: "Saved book", author_name: "Author", language: "en" } }),
+    listAiReviewModels: async () => ({ models: [{ id: "new-writer", label: "New writer" }] }),
+    createAiReviewQuote: async (bookId, body, actor) => {
+     window.calls.push({ bookId, model: body.modelId, key: body.idempotencyKey, actor });
+     return { quote: {
+      requestId: "55555555-5555-4555-8555-555555555555", status: "ready", agentType: "writer", model: "old-model",
+      reservedCredits: 5, countedInputTokens: 30, maxOutputTokens: 50, expiresAt: "2030-01-01T00:00:00.000Z",
+     } };
+    },
+    getAiReviewQuote: async () => { throw Error("Ignore polling in this fixture"); },
+   };
+   sessionStorage.setItem(`bookworm:setup:${owner}:${workspace}`, JSON.stringify({
+    version: 1, userId: owner, workspaceId: workspace, bookId: book, savedAt: Date.now(), completed: false,
+    importing: false, setupMode: "ai", bookCreated: true,
+    starter: { chapterId: chapter, quoteKey: "story-starter:recovery", modelId: "old-writer", allowProviderTokenCounting: true },
+   }));
+  });
+  await page.addScriptTag({ content: bundled.outputFiles[0].text });
+  const model = page.getByLabel("Generation model");
+  await expect(model).toHaveValue("old-writer");
+  await expect(model).toBeDisabled();
+  await page.getByLabel("Story brief").fill("My original opening");
+  await page.getByRole("button", { name: "Retry same quote request" }).click();
+  await expect(page.getByRole("button", { name: "Accept · 5 credits and generate" })).toBeEnabled();
+  assert.deepEqual(await page.evaluate(() => window.calls), [{
+   bookId: "33333333-3333-4333-8333-333333333333", model: "old-writer",
+   key: "story-starter:recovery", actor: "11111111-1111-4111-8111-111111111111",
+  }]);
+ } finally { await page.close(); }
 });
 
 test('uncertain first-draft acceptance keeps its recovery identity and blocks a duplicate after reload',async()=>{

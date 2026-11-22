@@ -35,6 +35,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/story-blueprint-actor-mounted.mjs
+      - name: Verify manuscript setup and first-draft quote recovery
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/manuscript-account-mounted.mjs
       - name: Verify inert reader and browser-worker isolation
         run: node tests/e2e/native-author-files-browser-guard.mjs
       - name: Verify invitation account changes in full Chromium
