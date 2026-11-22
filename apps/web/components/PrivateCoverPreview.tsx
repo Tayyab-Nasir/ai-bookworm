@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { readArtifactSession } from "../lib/browser-session";
 
 /** Validate the actor and Storage destination before mounting a cover image. */
@@ -8,9 +8,11 @@ export default function PrivateCoverPreview({ actor, url, expectedPath, expiresA
   actor: string | null; url: string; expectedPath: string; expiresAt?: number; isCurrent: () => boolean;
 }) {
   const current = useRef(isCurrent);
+  const previewId = useId();
   useLayoutEffect(() => { current.current = isCurrent; });
   const key = JSON.stringify([actor, url, expectedPath, expiresAt]);
   const [preview, setPreview] = useState<{ key: string; url: string | null; error: string | null }>({ key: "", url: null, error: null });
+  const [enlargedKey, setEnlargedKey] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
@@ -34,6 +36,18 @@ export default function PrivateCoverPreview({ actor, url, expectedPath, expiresA
   }, [actor, url, expectedPath, expiresAt, key]);
   if (!isCurrent()) return null;
   if (preview.key !== key || !preview.url) return <p role="status" className="mt-3 text-xs text-white/55">{preview.key === key && preview.error ? preview.error : "Checking private cover preview…"}</p>;
-  return <img src={preview.url} alt="Rendered book cover" referrerPolicy="no-referrer" className="mt-3 max-h-80 w-full rounded-lg object-contain"
-    onError={() => { if (current.current()) setPreview({ key, url: null, error: "Cover preview could not be loaded. Download the private file to review it." }); }} />;
+  const enlarged = enlargedKey === key;
+  return <div className="mt-3 min-w-0">
+    <button type="button" aria-pressed={enlarged} aria-controls={previewId}
+      onClick={() => { if (current.current()) setEnlargedKey(enlarged ? null : key); }}
+      className="min-h-11 text-sm font-medium underline underline-offset-4">
+      Enlarge cover
+    </button>
+    <div id={previewId} role={enlarged ? "region" : undefined} aria-label={enlarged ? "Enlarged cover preview" : undefined}
+      tabIndex={enlarged ? 0 : undefined} className={enlarged ? "max-h-[70vh] overflow-auto rounded-lg" : undefined}>
+      <img src={preview.url} alt="Rendered book cover" referrerPolicy="no-referrer"
+        className={enlarged ? "block h-auto w-full min-w-[640px] max-w-none" : "block max-h-80 w-full rounded-lg object-contain"}
+        onError={() => { if (current.current()) setPreview({ key, url: null, error: "Cover preview could not be loaded. Download the private file to review it." }); }} />
+    </div>
+  </div>;
 }
