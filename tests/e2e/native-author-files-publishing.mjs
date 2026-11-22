@@ -317,15 +317,20 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
           assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith('bookworm:package:'))), false);
           console.log('PASS native browser lost accepted export reply recovered after reload with one original package request');
         } else await expect(page.getByText(`${channel} package is ready for manual submission.`, { exact: true })).toBeVisible();
-        onStage(`retailer browser ${channel} ${edition.kind} exact private ZIP download`);
-        const row = history.getByRole('listitem').first();
+        onStage(`retailer browser ${channel} ${edition.kind} exact package history row`);
+        const row = history.locator(`#package-${job.id}`);
         await expect(row.getByText('ready', { exact: true })).toBeVisible();
+        const checksum = job.package.asset.checksum;
+        await expect(row).toContainText(checksum.slice(0, 12));
+        onStage(`retailer browser ${channel} ${edition.kind} package portal`);
         const [label, href] = portals[channel];
         const portal = row.getByRole('link', { name: label, exact: true });
         assert.equal(await portal.getAttribute('href'), href);
         assert.equal(await portal.getAttribute('target'), '_blank');
-        const bytes = await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), job.package.asset.checksum);
+        onStage(`retailer browser ${channel} ${edition.kind} exact private ZIP download`);
+        const bytes = await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), checksum);
         assert.equal(page.url(), publishUrl, 'ZIP download replaced the author interface');
+        onStage(`retailer browser ${channel} ${edition.kind} exact private ZIP contents`);
         const archive = inspectNativePackage(bytes);
         assert.equal(archive.manifest.channel, channel); assert.equal(archive.preflight.errors, 0);
         assert.deepEqual(
@@ -365,9 +370,8 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     await page.reload();
     await select(saved.edition);
     const { jobs } = await api('GET', `/publishing/jobs?bookId=${retailer.bookId}`);
-    const index = jobs.filter(job => job.editionId === saved.edition.id).findIndex(job => job.id === saved.job.id);
-    assert.ok(index >= 0);
-    const row = history.getByRole('listitem').nth(index);
+    assert.ok(jobs.some(job => job.id === saved.job.id && job.editionId === saved.edition.id));
+    const row = history.locator(`#package-${saved.job.id}`);
     const checksum = saved.job.package.asset.checksum;
     const savedBytes = await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), checksum);
     const savedListing = await api('GET', `/publishing/jobs/${saved.job.id}/listing?checksum=${checksum}`);
@@ -409,8 +413,8 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
       await page.locator(`a[href="${target}"]`).click();
       await expect(page).toHaveURL(origin + target);
       await expect(page.getByRole('combobox', { name: 'Format', exact: true })).toHaveValue(linked.edition.kind);
-      const exact = history.getByRole('listitem').filter({ hasText: linked.job.package.asset.checksum.slice(0, 12) });
-      await expect(exact).toHaveCount(1);
+      const exact = history.locator(`#package-${linked.job.id}`);
+      await expect(exact).toContainText(linked.job.package.asset.checksum.slice(0, 12));
       await download(page, exact.getByRole('button', { name: 'Download private ZIP', exact: true }), linked.job.package.asset.checksum);
     }
     assert.equal(requests.length, mutations, 'Opening and downloading an exact activity link must not create work');
@@ -506,8 +510,8 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     assert.equal(uploadedPackage.sourcePreflightJobId, uploadedPreflight.jobId);
     await expect(page.getByText('barnesnoble package is ready for manual submission.', { exact: true })).toBeVisible();
     const packageChecksum = uploadedPackage.package.asset.checksum;
-    const packageRow = history.getByRole('listitem').filter({ hasText: packageChecksum.slice(0, 12) });
-    await expect(packageRow).toHaveCount(1);
+    const packageRow = history.locator(`#package-${uploadedPackage.id}`);
+    await expect(packageRow).toContainText(packageChecksum.slice(0, 12));
     const archiveBytes = await download(page, packageRow.getByRole('button', { name: 'Download private ZIP', exact: true }), packageChecksum);
     const archive = inspectNativePackage(archiveBytes);
     assert.deepEqual(archive.metadata, uploadedPreflight.listing);
