@@ -87,6 +87,7 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
   const [book, setBook] = useState<Book | null>(null); const [role, setRole] = useState<string | null>(null);
   const [projects, setProjects] = useState<TranslationProjectResult[]>([]); const [selected, setSelected] = useState<TranslationProjectResult | null>(null);
   const selectedRef = useRef<TranslationProjectResult | null>(null);
+  const selectionGeneration = useRef(0);
   useLayoutEffect(() => { selectedRef.current = selected; }, [selected]);
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "error">("loading");
   const historySequence = useRef(0); const mounted = useRef(false);
@@ -110,7 +111,7 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
   const editable = role ? editableRoles.has(role) : false;
 
   const load = useCallback(async () => {
-    const sequence = ++historySequence.current, selectedAtStart = selectedRef.current; setHistoryState("loading");
+    const sequence = ++historySequence.current, selectedAtStart = selectedRef.current, selectionAtStart = selectionGeneration.current; setHistoryState("loading");
     try {
       const [identity, history] = await scope.checked(() => Promise.all([api.getBook(bookId, scope.actor), api.listTranslationProjects(bookId, scope.actor)]));
       if (identity.book.id !== bookId || history.projects.some(project => project.bookId !== bookId)) throw new Error("Translation results do not match this book.");
@@ -127,14 +128,14 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
         setBook(identity.book); setRole(identity.role);
         setProjects(current => {
           const newerId = selectedRef.current?.id;
-          if (!newerId || newerId === selectedAtStart?.id) return history.projects;
+          if (!newerId || selectionGeneration.current === selectionAtStart) return history.projects;
           const newer = current.find(project => project.id === newerId);
           if (!newer) return history.projects;
           return history.projects.some(project => project.id === newerId)
             ? history.projects.map(project => project.id === newerId ? newer : project)
             : [newer, ...history.projects];
         });
-        if (selectedAtStart) { const sameSelection = selectedRef.current?.id === selectedAtStart.id; if (sameSelection) selectedRef.current = verifiedSelection; setSelected(current => current?.id === selectedAtStart.id ? verifiedSelection : current); if (sameSelection && !verifiedSelection) setBilling(null); }
+        if (selectedAtStart) { const sameSelection = selectionGeneration.current === selectionAtStart && selectedRef.current?.id === selectedAtStart.id; if (sameSelection) selectedRef.current = verifiedSelection; setSelected(current => selectionGeneration.current === selectionAtStart && current?.id === selectedAtStart.id ? verifiedSelection : current); if (sameSelection && !verifiedSelection) setBilling(null); }
         setHistoryState("ready");
       }
     } catch(error) { if (scope.current() && historySequence.current === sequence && !isSuperseded(error)) setHistoryState("error"); throw error; }
@@ -155,7 +156,7 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
     try {
       const project = await scope.checked(() => api.getTranslationProject(projectId, includeText, scope.actor));
       if (project.id !== projectId || project.bookId !== bookId) throw new Error("Translation does not match this book.");
-      selectedRef.current = project; setSelected(project);
+      selectionGeneration.current++; selectedRef.current = project; setSelected(project);
       setBillingRevision((revision) => revision + 1);
       setProjects((current) => current.map((item) => item.id === project.id ? { ...project, chapters: project.chapters.map(({ translatedText: _text, ...chapter }) => chapter) } : item));
     } catch (error) { if (scope.current() && !isSuperseded(error)) setError("Could not refresh translation. Recheck your account and try again."); }
@@ -164,13 +165,13 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
 
   const adopt = async () => {
     if (!selected || busy || !adoptTitle.trim()) { setError("Give the translated draft a title before creating it."); return; }
-    const submittedProjectId = selected.id;
+    const submittedProjectId = selected.id, submittedSelectionGeneration = selectionGeneration.current;
     setBusy("adopt"); setError(null); setNotice(null);
     try {
       const submittedTitle = adoptTitle.trim();
       const { book: draft } = await scope.checked(() => api.adoptTranslationProject(submittedProjectId, { title: submittedTitle }, scope.actor));
       if (!draft.id || !book || draft.workspace_id !== book.workspace_id || draft.title !== submittedTitle) throw new Error("The translated draft could not be confirmed.");
-      const stillSelected = selectedRef.current?.id === submittedProjectId;
+      const stillSelected = selectionGeneration.current === submittedSelectionGeneration && selectedRef.current?.id === submittedProjectId;
       setNotice(stillSelected ? "Translated draft created. Review every chapter before layout or publishing." : "The earlier translation draft was created. Open it from translation history when ready.");
       setProjects((current) => current.map((item) => item.id === submittedProjectId ? { ...item, adoptedBookId: draft.id } : item));
       setSelected((current) => current?.id === submittedProjectId ? { ...current, adoptedBookId: draft.id } : current);
@@ -204,7 +205,7 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
 
     </>}
     <TranslationQuotePanel key={bookId} bookId={bookId} scope={scope} active={active && historyState === "ready"} sourceLanguage={book?.language ?? ""} editable={editable} disabled={Boolean(busy)||historyState!=="ready"} onAccepted={(project) => {
-      selectedRef.current = project; setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]); setSelected(project);
+      selectionGeneration.current++; selectedRef.current = project; setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]); setSelected(project); setBillingRevision(revision => revision + 1);
       setNotice("Translation purchase confirmed. Track chapter progress and your held credits below.");
     }} />
 
