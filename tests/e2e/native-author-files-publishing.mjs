@@ -408,6 +408,18 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     assert.equal(requests.length, mutations, 'History recovery must not render, validate or package again');
 
     assert.ok(finishedCover, 'A matching paperback template is required for the uploaded-cover journey');
+    onStage('retailer browser opens the saved ebook edition from the book overview');
+    const ebookEdition = retailer.editions.find(edition => edition.kind === 'ebook');
+    assert.ok(ebookEdition);
+    const editionTarget = `/books/${retailer.bookId}/publish?edition=${ebookEdition.id}`;
+    await page.goto(origin + `/books/${retailer.bookId}/overview`);
+    const savedEditions = page.getByRole('region', { name: 'Saved editions', exact: true });
+    await savedEditions.locator(`a[href="${editionTarget}"]`).click();
+    await expect(page).toHaveURL(origin + editionTarget);
+    await expect(page.getByRole('combobox', { name: 'Format', exact: true })).toHaveValue('ebook');
+    await expect(page.getByRole('button', { name: /^ebook /i, pressed: true })).toBeVisible();
+    assert.equal(requests.length, mutations, 'Opening the linked edition must not create work');
+
     onStage('retailer browser follows exact package links from dashboard and book overview');
     const linked = packages.at(-1);
     const target = `/books/${retailer.bookId}/publish?packageJob=${linked.job.id}`;

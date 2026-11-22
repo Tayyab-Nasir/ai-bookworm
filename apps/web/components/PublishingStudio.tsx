@@ -72,13 +72,13 @@ const cardClass = "rounded-2xl border border-white/10 bg-white/[0.035] p-5";
 type EditionRisk = { current: Map<string, EditionCreateFence> };
 type PublishingScope = { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> };
 function superseded() { const e = new Error("Account check superseded."); e.name = "PublishingScopeChanged"; return e; }
-export default function PublishingStudio({ bookId, packageJobId, managedPublishingEnabled = false }: { bookId: string; packageJobId?: string; managedPublishingEnabled?: boolean }) {
+export default function PublishingStudio({ bookId, packageJobId, editionId, managedPublishingEnabled = false }: { bookId: string; packageJobId?: string; editionId?: string; managedPublishingEnabled?: boolean }) {
   const latestBook = useRef(bookId); latestBook.current = bookId;
   const editionRisks = useRef(new Map<string, EditionCreateFence>());
   const isBookCurrent = useCallback(() => latestBook.current === bookId, [bookId]);
-  return <ScopedPublishingStudio key={bookId} bookId={bookId} packageJobId={packageJobId} isBookCurrent={isBookCurrent} editionRisks={editionRisks} managedPublishingEnabled={managedPublishingEnabled} />;
+  return <ScopedPublishingStudio key={bookId} bookId={bookId} packageJobId={packageJobId} editionId={editionId} isBookCurrent={isBookCurrent} editionRisks={editionRisks} managedPublishingEnabled={managedPublishingEnabled} />;
 }
-function ScopedPublishingStudio({ bookId, packageJobId, isBookCurrent, editionRisks, managedPublishingEnabled }: { bookId: string; packageJobId?: string; isBookCurrent: () => boolean; editionRisks: EditionRisk; managedPublishingEnabled: boolean }) {
+function ScopedPublishingStudio({ bookId, packageJobId, editionId, isBookCurrent, editionRisks, managedPublishingEnabled }: { bookId: string; packageJobId?: string; editionId?: string; isBookCurrent: () => boolean; editionRisks: EditionRisk; managedPublishingEnabled: boolean }) {
   type Entry = { actor: string; scope: PublishingScope; access: {book:Book;role:string} };
   const [entries, setEntries] = useState<Entry[]>([]), [identity,setIdentity] = useState<Entry|null>(null);
   const [active,setActive]=useState(false), [checking,setChecking]=useState(true), [error,setError]=useState("");
@@ -116,12 +116,14 @@ function ScopedPublishingStudio({ bookId, packageJobId, isBookCurrent, editionRi
     return()=>{mounted.current=false;epoch.current={};activeRef.current=false;window.removeEventListener("focus",focus);document.removeEventListener("visibilitychange",visibility);};
   },[check]);
   return <>
-    {entries.map(entry => <PublishingWorkspace key={entry.actor} bookId={bookId} packageJobId={packageJobId} scope={entry.scope}
+    {entries.map(entry => <PublishingWorkspace key={entry.actor} bookId={bookId} packageJobId={packageJobId} editionId={editionId} scope={entry.scope}
       active={active && identity?.actor===entry.actor} verifiedAccess={entry.access} editionRisks={editionRisks} managedPublishingEnabled={managedPublishingEnabled} />)}
     {!active&&<section className="mx-auto max-w-7xl px-4 py-8 text-white"><h1 className="text-2xl">Publishing studio</h1>{checking?<p role="status">Checking your account…</p>:<p role="alert">{error} <button className="underline" onClick={()=>void check()}>Try again</button> <Link className="underline" href="/login">Sign in</Link></p>}</section>}
   </>;
 }
-function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAccess, editionRisks, managedPublishingEnabled }: { bookId:string;packageJobId?:string;scope:PublishingScope;active:boolean;verifiedAccess:{book:Book;role:string};editionRisks:EditionRisk;managedPublishingEnabled:boolean }) {
+function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, verifiedAccess, editionRisks, managedPublishingEnabled }: { bookId:string;packageJobId?:string;editionId?:string;scope:PublishingScope;active:boolean;verifiedAccess:{book:Book;role:string};editionRisks:EditionRisk;managedPublishingEnabled:boolean }) {
+  // Entry links select a starting edition without replacing an active edit on a rerender.
+  const entryEditionId = useRef(editionId);
   const api = useMemo(() => {
     const scoped = apiClient(scope.actor);
     return new Proxy(scoped, { get(target, key, receiver) {
@@ -405,7 +407,9 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
       catch { setTabError("The local edition copy could not be read. Contact support; clearing site data can remove unconfirmed request warnings."); }
       setBook(identity.book); setRole(identity.role); setEditions(editionResult.editions); setAssets(assetResult.assets); setChapters(chapterResult.chapters);
       setNarrationChapterId(chapterResult.chapters[0]?.id ?? "");
-      let selected = editionResult.editions[0];
+      const requestedEditionId = entryEditionId.current;
+      let selected = requestedEditionId ? editionResult.editions.find(edition => edition.id === requestedEditionId) : editionResult.editions[0];
+      if (requestedEditionId && !selected && !packageJobId) setError("The linked edition is unavailable for this book. Choose a saved edition to continue.");
       if (packageJobId) {
         try {
           const startedAt = downloadClock();
@@ -963,7 +967,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
       <aside className={`${cardClass} h-fit`}>
         <div className="flex items-center justify-between"><h2 className="font-semibold">Editions</h2><span className="text-xs text-white/40">{editions.length}</span></div>
         <div className="mt-4 space-y-2">
-          {editions.map((edition) => <button key={edition.id} type="button" onClick={() => selectEdition(edition)} className={`w-full rounded-xl border p-3 text-left text-sm ${activeId === edition.id ? "border-white/40 bg-white/10" : "border-white/10 hover:bg-white/5"}`}>
+          {editions.map((edition) => <button key={edition.id} type="button" aria-pressed={activeId === edition.id} onClick={() => selectEdition(edition)} className={`w-full rounded-xl border p-3 text-left text-sm ${activeId === edition.id ? "border-white/40 bg-white/10" : "border-white/10 hover:bg-white/5"}`}>
             <span className="block font-medium capitalize">{edition.type}</span><span className="text-xs text-white/45">{edition.language ?? "en"} · {edition.status}</span>
           </button>)}
           {!editions.length && busy !== "load" && <p className="py-3 text-sm text-white/45">No saved editions yet.</p>}

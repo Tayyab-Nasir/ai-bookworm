@@ -267,7 +267,19 @@ try {
   await expect(page.getByRole('button', { name: 'Render EPUB', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Save edition', exact: true })).toBeDisabled();
   await expect(desk.getByRole('button', { name: 'Renew exact EPUB download', exact: true })).toBeEnabled();
-  readOnly = false; await page.reload(); await waitReader(first.source.jobId, 0);
+  readOnly = false;
+  const publishUrl = `${appOrigin}/books/${first.source.bookId}/publish`;
+  await page.goto(`${publishUrl}?edition=${editions[1].id.toUpperCase()}`);
+  await waitReader(artifacts[2].source.jobId, 0);
+  await expect(page.getByRole('combobox', { name: 'Flow', exact: true })).toHaveValue('fixed');
+  await expect(page.getByRole('button', { name: /^ebook en · draft$/i, pressed: true })).toHaveCount(1);
+  const readsBeforeUnknownEdition = historyRequests.length;
+  await page.goto(`${publishUrl}?edition=e0000000-0000-4000-8000-000000000099`);
+  await expect(page.getByRole('alert').filter({ hasText: 'The linked edition is unavailable for this book.' })).toBeVisible();
+  await expect(desk).toHaveCount(0);
+  assert.equal(historyRequests.length, readsBeforeUnknownEdition, 'unknown edition opened another proof');
+  await page.goto(publishUrl);
+  await waitReader(first.source.jobId, 0);
   const editionButtons = page.getByRole('button', { name: /^ebook en · draft$/i });
   await expect(editionButtons).toHaveCount(2);
   // The actual edition buttons expose kind/language/status, not saved flow.

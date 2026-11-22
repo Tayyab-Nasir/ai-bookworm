@@ -49,6 +49,7 @@ test('book desk shows saved facts and exact scoped links without commercial comp
     await expect(page.getByRole('link',{name:'Prepare book details',exact:true})).toHaveAttribute('href',`/books/${A}/memory`);
     const tools=page.getByRole('navigation',{name:'Book tools'});await expect(tools.getByRole('link',{name:'Workspace artwork'})).toHaveAttribute('href',`/assets?ws=${SPACE}`);
     await expect(page.getByRole('region',{name:'Chapter ledger'}).getByRole('link',{name:/^01 The harbor at dawn v2/})).toHaveAttribute('href',`/books/${A}?chapter=${id(5)}`);
+    await expect(page.getByRole('region',{name:'Saved editions'}).getByRole('link',{name:/^Print/})).toHaveAttribute('href',`/books/${A}/publish?edition=${id(7)}`);
     await expect(page.getByText('1 package in saved history',{exact:true})).toBeVisible();
     await expect(page.getByRole('link',{name:/^Proofreading AI pipeline failed/})).toHaveAttribute('href',`/books/${A}?aiJob=${id(9)}`);
     await expect(page.getByText(/Stored job history does not verify current files/)).toBeVisible();
