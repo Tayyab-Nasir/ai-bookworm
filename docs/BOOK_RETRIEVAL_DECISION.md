@@ -84,8 +84,8 @@ For citations, LightRAG normalizes the supplied source path to its basename.
 Use an opaque source token resolved to BookieWookie's authorized document
 version if building an adapter. Never treat the returned path or extracted
 relationship as authorization. The smoke provides local lifecycle evidence.
-A representative semantic recall comparison, PostgreSQL storage behavior and
-live application authorization still require independent verification.
+A representative semantic recall comparison and live application authorization
+still require independent verification.
 
 The smoke also indexes identical passages under two chapter IDs and two opaque
 filenames in a single LightRAG workspace. Version 1.5.7 returned only the first
@@ -102,8 +102,8 @@ the other occurrence remains citable. Resolution also rejects a foreign book,
 changed excerpt bytes, an old result after a chapter edit, and a delayed
 index write after the final occurrence was removed. The index still requires
 cleanup after the last occurrence. The probe uses file-backed storage and an
-in-memory authority fixture. Transactional source binding, PostgreSQL-backed
-storage and authorization in the app still require independent proof.
+in-memory authority fixture. The following evaluations cover database source
+binding and storage. The application route still requires verification.
 
 The PostgreSQL baseline now exercises the citation lookup with BookieWookie's
 actual migration chain in disposable PostgreSQL/WASM. The lookup runs under
@@ -154,6 +154,20 @@ completion. A fresh reopen confirms the chunk and graph relation remain absent.
 This case establishes recovery on one machine with durable local storage. A
 multi-host deployment still needs an ownership and storage protocol that
 prevents a former writer from issuing physical writes after failover.
+
+## PostgreSQL storage evaluation
+
+[GitHub Actions run 44994477786](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/44994477786)
+passed the storage probe with LightRAG 1.5.7, PostgreSQL 16 and pgvector 0.8.7.
+Two isolated synthetic workspaces reused the same document ID. Each returned
+its own exact excerpt. Replacing a chapter removed the old chunk and preserved
+the other workspace's content. After reopening, the probe verified the surviving
+chunks both through LightRAG and by reading their rows in PostgreSQL.
+
+The probe used PostgreSQL for documents, vectors and status, and local NetworkX
+for the graph. It used deterministic extraction and embeddings and restricted
+socket connections to the disposable loopback database. Shared graph storage
+and worker fencing across hosts still require verification.
 
 ## Local multilingual retrieval comparison
 
