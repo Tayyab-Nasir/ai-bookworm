@@ -74,7 +74,14 @@ export function AuthCard({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ ...values, next }),
       });
-      const result = await response.json();
+      let result: { error?: { message?: string }; redirectTo?: string; message?: string };
+      try {
+        const value = await response.json();
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+        result = value;
+      } catch {
+        throw new Error("Authentication is temporarily unavailable. Please try again.");
+      }
       if (!response.ok) throw new Error(result.error?.message ?? "Unable to complete this request.");
       if (result.redirectTo) {
         // Full navigation avoids serving an old prefetched anonymous page after login.
