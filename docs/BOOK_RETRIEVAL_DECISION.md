@@ -105,6 +105,16 @@ cleanup after the last occurrence. The probe uses file-backed storage and an
 in-memory authority fixture. Transactional source binding, PostgreSQL-backed
 storage and authorization in the app still require independent proof.
 
+The PostgreSQL baseline now exercises the citation lookup with BookieWookie's
+actual migration chain in disposable PostgreSQL/WASM. The lookup runs under
+the authenticated role and matches both the opaque filename and the exact
+excerpt to a canonical current version. It returns distinct citations for
+repeated text, retains the other citation after an ordinary authoring edit,
+and rejects a stale derived row even when it still exists. A viewer sees both
+sources while their membership is active and neither after revocation.
+This tests database filtering without a hosted database or app route. Worker
+concurrency, index cleanup and performance still need measurement.
+
 ## Local multilingual retrieval comparison
 
 Both evaluators read the same synthetic manuscript facts and queries from
