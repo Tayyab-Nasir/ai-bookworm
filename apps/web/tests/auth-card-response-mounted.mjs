@@ -189,3 +189,29 @@ test("valid Google HTTPS redirect begins navigation", async () => {
     await page.close();
   }
 });
+
+test("unverified confirmation link explains recovery on the login page", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.route("**/*", route => route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><div id='root'></div>",
+    }));
+    await page.goto("http://127.0.0.1/fixture?error=confirmation");
+    await page.addScriptTag({ content: script });
+    await page.evaluate(() => {
+      window.fetch = async () => new Response(JSON.stringify({ error: { message: "Sign-in failed." } }), { status: 401 });
+      window.mount("login");
+    });
+    const error = page.getByRole("alert");
+    await error.getByText("This email link could not be verified. Try signing in, or request a new password reset if needed.", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("link", { name: "Forgot?" }).getAttribute("href"), "/forgot-password");
+    await page.getByLabel("Email", { exact: true }).fill("author@example.test");
+    await page.getByLabel("Password", { exact: true }).fill("testpassword");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByText("Sign-in failed.", { exact: true }).waitFor();
+    assert.equal(await page.getByText("This email link could not be verified.", { exact: false }).count(), 0);
+  } finally {
+    await page.close();
+  }
+});

@@ -46,11 +46,15 @@ export function AuthCard({
 
   useEffect(() => {
     rememberReferral(window.location.search);
-    if (new URLSearchParams(window.location.search).get("error") === "oauth") {
+    const callbackError = new URLSearchParams(window.location.search).get("error");
+    if (callbackError === "oauth") {
       setErrorAction("google");
       setError("Google sign-in didn't complete. Try again or use email sign-in. If Google is unavailable, the app owner must finish OAuth setup.");
+    } else if (mode === "login" && callbackError === "confirmation") {
+      setErrorAction("login");
+      setError("This email link could not be verified. Try signing in, or request a new password reset if needed.");
     }
-  }, []);
+  }, [mode]);
 
   useEffect(() => {
     // A disabled loading button loses browser focus. Restore its retry target
