@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import type { BookSearchResult, SearchBibleEntry } from "@bookworm/api-client";
 import type { BookBibleItem } from "@bookworm/types";
 import { apiClient } from "./api";
@@ -26,7 +26,9 @@ function SearchPanel({ bookId, onOpenBibleEntry, bibleEntryLocked = false, readR
   const [error, setError] = useState<string | null>(null);
   const [openingBibleId, setOpeningBibleId] = useState<string | null>(null);
   const entryAccess = useRef({ onOpenBibleEntry, bibleEntryLocked });
-  useEffect(() => { entryAccess.current = { onOpenBibleEntry, bibleEntryLocked }; }, [onOpenBibleEntry, bibleEntryLocked]);
+  useLayoutEffect(() => {
+    entryAccess.current = { onOpenBibleEntry, bibleEntryLocked };
+  }, [onOpenBibleEntry, bibleEntryLocked]);
   const generation = useRef(0);
   useEffect(() => () => { ++generation.current; }, []);
   function changeQuery(value: string) {

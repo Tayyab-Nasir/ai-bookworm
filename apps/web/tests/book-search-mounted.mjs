@@ -129,7 +129,7 @@ test("Book Bible search respects a busy editor before dispatch and after verific
     await open.click();
     await p.getByRole("button", { name: "Checking Book Bible entry…" }).waitFor();
     await p.evaluate(bookId => window.mount(bookId, true), BOOK);
-    await p.evaluate(() => new Promise(requestAnimationFrame));
+      await p.getByRole("status").filter({ hasText: "Wait for the Book Bible editor" }).waitFor();
     await p.evaluate(() => window.releaseBible());
     await p.getByRole("alert").filter({ hasText: "Wait for the current Book Bible action" }).waitFor();
     assert.equal(await p.evaluate(() => window.openedBible), undefined);
