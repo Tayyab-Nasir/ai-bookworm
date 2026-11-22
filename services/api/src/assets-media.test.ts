@@ -246,11 +246,22 @@ test("image history is bounded, author/workspace scoped and omits private job pa
     const response = await app.inject({ method: "GET", url: `/v1/assets/generation-jobs?workspaceId=${WORKSPACE}&limit=1`, headers: auth });
     assert.equal(response.statusCode, 200, response.body);
     assert.deepEqual(response.json().jobs.map((job: { id: string }) => job.id), ["own"]);
-    store.tables.ai_jobs.push({ ...seed, id: "quoted", billing_mode: "quoted", created_at: "2026-09-11T00:00:00Z" });
+    store.tables.ai_jobs.push(
+      { ...seed, id: "quoted", billing_mode: "quoted", status: "succeeded", output_ref: { ...seed.output_ref, assetId: EXISTING_ASSET }, created_at: "2026-09-11T00:00:00Z" },
+      { ...seed, id: "invalid-output", status: "succeeded", output_ref: { assetId: "private-invalid-id" } },
+      { ...seed, id: "unsettled", output_ref: { assetId: EXISTING_ASSET } },
+    );
     const all = await app.inject({ method: "GET", url: `/v1/assets/generation-jobs?workspaceId=${WORKSPACE}&limit=20`, headers: auth });
-    assert.equal(all.json().jobs.find((job: { id: string }) => job.id === "own").billingMode, "operational");
-    assert.equal(all.json().jobs.find((job: { id: string }) => job.id === "quoted").billingMode, "quoted");
-    assert.doesNotMatch(response.body, /private-|input_ref|output_ref|idempotency/);
+    assert.equal(all.statusCode, 200, all.body);
+    const jobs = all.json().jobs;
+    assert.deepEqual(jobs.map((job: { id: string }) => job.id).sort(), ["invalid-output", "own", "quoted", "unsettled"]);
+    const job = (id: string) => jobs.find((item: { id: string }) => item.id === id);
+    assert.equal(job("own").billingMode, "operational");
+    assert.equal(job("quoted").billingMode, "quoted");
+    assert.equal(job("quoted").assetId, EXISTING_ASSET);
+    assert.equal(job("invalid-output").assetId, null);
+    assert.equal(job("unsettled").assetId, null);
+    assert.doesNotMatch(all.body, /private-|input_ref|output_ref|idempotency/);
     assert.equal(response.headers["cache-control"], "private, no-store");
     const invalid = await app.inject({ method: "GET", url: `/v1/assets/generation-jobs?workspaceId=${WORKSPACE}&limit=51`, headers: auth });
     assert.equal(invalid.statusCode, 422);

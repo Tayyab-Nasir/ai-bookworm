@@ -241,14 +241,17 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
     const user = app.supabaseFactory(req.userToken);
     await requireWorkspaceMember(user, parsed.data.workspaceId, req.userId);
     const { data, error } = await user.from("ai_jobs")
-      .select("id,book_id,agent_type,billing_mode,status,created_at,completed_at")
+      .select("id,book_id,agent_type,billing_mode,status,created_at,completed_at,output_ref")
       .eq("workspace_id", parsed.data.workspaceId).eq("created_by", req.userId)
       .in("agent_type", ["illustrator", "cover_designer"]).order("created_at", { ascending: false }).limit(parsed.data.limit);
     if (error) throw new AppError(503, "Image request history is temporarily unavailable.");
     reply.header("cache-control", "private, no-store");
-    return { jobs: (data ?? []).map(job => ({ id: job.id, bookId: job.book_id ?? null,
+    return { jobs: (data ?? []).map(job => ({
+      id: job.id, bookId: job.book_id ?? null,
       kind: job.agent_type === "cover_designer" ? "front_cover" : "illustration", status: job.status,
-      billingMode: job.billing_mode ?? "operational", createdAt: job.created_at, completedAt: job.completed_at ?? null })) };
+      billingMode: job.billing_mode ?? "operational", createdAt: job.created_at, completedAt: job.completed_at ?? null,
+      assetId: job.status === "succeeded" ? z.guid().safeParse(job.output_ref?.assetId).data ?? null : null,
+    })) };
   });
 
   app.post("/assets/generation-jobs/:jobId/finalize", { preHandler: requireWriteReady }, async (req, reply) => {

@@ -354,6 +354,7 @@ export interface ImageGenerationJob {
   billingMode?: "operational" | "quoted";
   createdAt: string;
   completedAt: string | null;
+  assetId?: string | null;
 }
 
 export interface ImageQuoteModel { id: string; label: string; model: string; size: "1024x1024" | "1024x1536" | "1536x1024";

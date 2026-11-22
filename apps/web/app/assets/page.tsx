@@ -347,8 +347,14 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     };
   }, [open]);
 
+  const findArtwork = (id: string, type: "illustration" | "cover") => {
+    if (!active || !verified || !dataReady) return;
+    return assets.find(asset => asset.id === id && asset.workspace_id === workspaceId && asset.type === type
+      && !asset.deleted_at && (asset.current_scan_status === "clean" || asset.current_scan_status === "trusted_generated"));
+  };
+
   const openAsset = async (a: Asset) => {
-    if (!dataReady || scopeVersion.current !== permissionScope || activeWorkspace.current !== workspaceId || a.workspace_id !== workspaceId || !assets.some(asset => asset.id === a.id)) return;
+    if (!scope.current() || !dataReady || scopeVersion.current !== permissionScope || activeWorkspace.current !== workspaceId || a.workspace_id !== workspaceId || !assets.some(asset => asset.id === a.id)) return;
     const version = scopeVersion.current; const request = ++detailRequest.current; const valid = scope.begin();
     const current = () => valid() && version === scopeVersion.current && request === detailRequest.current && activeWorkspace.current === workspaceId;
     activeAsset.current = a.id; downloadRequest.current++; preparingDownload.current = false;
@@ -535,7 +541,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
           </div>
         )}
 
-        {workspaceId && <ImageQuoteStudio key={`image-quote:${workspaceId}`} isWorkspaceCurrent={isWorkspaceCurrent} scope={scope} active={active && verified} workspaceId={workspaceId} books={books} assets={assets} canEdit={Boolean(canEdit)} onCompleted={load} />}
+        {workspaceId && <ImageQuoteStudio key={`image-quote:${workspaceId}`} isWorkspaceCurrent={isWorkspaceCurrent} scope={scope} active={active && verified} workspaceId={workspaceId} books={books} assets={assets} canEdit={Boolean(canEdit)} onCompleted={load} findArtwork={findArtwork} onReviewArtwork={openAsset} />}
         {libraryLoading && <p role="status" className="mb-5 text-sm text-[#999]">Loading asset library…</p>}
         <section className="mb-8 rounded-2xl border border-white/10 p-5" aria-labelledby="image-history-title">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -545,9 +551,13 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
           <p className="mt-2 text-xs leading-5 text-[#999]">Latest 20 requests by you in this workspace. A pending request may still be processing or need recovery; refresh before submitting another image. This list never retries or spends credits.</p>
           {historyError && <p role="alert" className="mt-3 text-sm text-amber-200">{historyError}</p>}
           {historyLoading ? <p role="status" className="mt-3 text-sm text-[#999]">Loading image history…</p> : !historyError && !imageJobs.length ? <p className="mt-3 text-sm text-[#999]">No image requests found.</p> : null}
-          <ul className="mt-3 divide-y divide-white/10">{imageJobs.map(job => <li key={job.id} className="py-3 text-sm">
+          <ul className="mt-3 divide-y divide-white/10">{imageJobs.map(job => {
+            const artwork = job.status === "succeeded" && job.assetId
+              ? findArtwork(job.assetId, job.kind === "front_cover" ? "cover" : "illustration") : undefined;
+            return <li key={job.id} className="py-3 text-sm">
             <div className="flex flex-wrap justify-between gap-2"><span>{job.kind === "front_cover" ? "Cover artwork" : "Illustration"}</span><span>{job.status === "succeeded" ? "Saved to asset library" : job.status === "failed" ? "Failed — review before starting again" : job.billingMode === "quoted" ? `${job.status} · token-priced request` : "Pending confirmation"}</span></div>
             <p className="mt-1 break-all text-xs text-[#888]">{job.createdAt} · Request {job.id}</p>
+            {artwork && <button type="button" className="mt-1 min-h-11 text-sm underline" onClick={() => void openAsset(artwork)}>Review {artwork.name}</button>}
             {job.status === "running" && job.billingMode !== "quoted" && canEdit && <div className="mt-2"><button type="button" disabled={!!finalizingImage} className="text-sm underline disabled:opacity-50" onClick={async () => {
               if (!editReady.current || scopeVersion.current !== permissionScope || activeWorkspace.current !== workspaceId) return;
               setFinalizingImage(job.id); setHistoryError(null);
@@ -556,7 +566,8 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
               catch (reason) { if (version === scopeVersion.current) setHistoryError(reason instanceof Error ? reason.message : "Image finalization is unavailable."); }
               finally { if (version === scopeVersion.current) setFinalizingImage(null); }
             }}>{finalizingImage === job.id ? "Finalizing…" : "Finalize saved image"}</button><p className="mt-1 text-xs text-[#999]">Uses the existing generated file, if available. Records the original image credit once; never starts another AI generation.</p></div>}
-          </li>)}</ul>
+          </li>;
+          })}</ul>
         </section>
         <AssetBrowser
           restorationAvailable={recoveryAvailable}

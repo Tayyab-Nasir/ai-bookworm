@@ -29,8 +29,10 @@ function replaceCheckpoint(storageKey: string, legacyKey: string, expected: stri
   if (sessionStorage.getItem(storageKey) !== next) throw new Error("Image recovery storage could not be verified.");
 }
 
-export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, onCompleted, scope, active, isWorkspaceCurrent }: {
+export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, onCompleted, scope, active, isWorkspaceCurrent, findArtwork, onReviewArtwork }: {
   workspaceId: string; books: Book[]; assets: Asset[]; canEdit: boolean; onCompleted: () => Promise<void>; scope: { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> }; active: boolean; isWorkspaceCurrent: (id: string) => boolean;
+  findArtwork?: (id: string, type: "illustration" | "cover") => Asset | undefined;
+  onReviewArtwork?: (asset: Asset) => void;
 }) {
   const mounted = useRef(false);
   useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -207,6 +209,8 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
     ? imageAssets.filter(asset => bookBibleNames(asset).length > 0 || references.includes(asset.id))
     : imageAssets;
   const activeJob = quote?.job;
+  const artwork = activeJob?.status === "succeeded" && activeJob.assetId && quote
+    ? findArtwork?.(activeJob.assetId, quote.quote.kind) : undefined;
   const formLocked = recoveryBlocked || isImageQuoteFormLocked({ canEdit, busy, hasRequestKey: Boolean(idempotencyKey), hasSavedQuote: Boolean(quote) });
   const acceptAllowed = !recoveryBlocked && canAcceptImageQuote({ canEdit, busy, purchaseAvailable, generateConsent, acceptanceUncertain, quote: quote?.quote ?? null, hasJob: Boolean(activeJob) });
 
@@ -307,11 +311,18 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
     {quote && <div className="mt-6 rounded-2xl border border-violet-200/20 bg-violet-200/[0.04] p-5" aria-live="polite">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs uppercase tracking-[0.14em] text-violet-100/60">Maximum credit hold</p><p className="mt-1 text-3xl tabular-nums text-white">{Number(quote.quote.reservedCredits).toLocaleString()} <span className="text-sm text-white/55">credits</span></p><p className="mt-2 text-xs text-white/50">{quote.quote.model} · {quote.quote.size} · {quote.quote.quality} · expires {new Date(quote.quote.expiresAt).toLocaleString()}</p></div><button className="min-h-10 rounded-full border border-white/15 px-4 text-sm text-white/75 hover:bg-white/5" disabled={busy} onClick={() => void refresh()} type="button">Refresh status</button></div>
       <p className="mt-3 text-sm leading-6 text-white/60">This is the maximum hold for the saved request. Final usage is reconciled from provider token measurements. Unsupported measurements remain under review. Your image stays a private draft until you use it in a book.</p>
-      {activeJob && <p className="mt-3 text-sm text-white/75">Generation {activeJob.status}{activeJob.assetId ? ` · asset ${activeJob.assetId}` : ""}. Refreshing never starts another generation.</p>}
+      {activeJob && <p className="mt-3 text-sm text-white/75">Generation {activeJob.status}. Refreshing never starts another generation.</p>}
       {acceptanceUncertain && <p className="mt-3 text-sm text-amber-100" role="status">Acceptance is unconfirmed. Refresh status to recover the same job. A missing job cannot rule out a delayed acceptance; contact support before preparing another quote.</p>}
       {!activeJob && quote.quote.status === "ready" && <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t border-white/10 pt-4"><label className="flex max-w-xl items-start gap-3 text-sm leading-5 text-white/60"><input type="checkbox" checked={generateConsent} disabled={!canEdit || busy || recoveryBlocked || acceptanceUncertain || !purchaseAvailable} onChange={event => setGenerateConsent(event.target.checked)} /><span>I approve sending this saved prompt and selected references for paid image generation, up to {Number(quote.quote.reservedCredits).toLocaleString()} credits.</span></label><button className={button} type="button" disabled={!acceptAllowed} onClick={() => void accept()}>{purchaseAvailable ? `Accept quote · ${Number(quote.quote.reservedCredits).toLocaleString()} credits` : "Purchases not enabled"}</button></div>}
       {quote.quote.status === "expired" && !acceptanceUncertain && <p className="mt-4 text-sm text-amber-100">This offer expired. Prepare a new quote to continue.</p>}
-      {activeJob?.status === "succeeded" && <div className="mt-3 flex flex-wrap items-center gap-4"><p className="text-sm text-emerald-100">Artwork is saved in your private asset library and ready to select in Publishing Studio.</p><a className="text-sm underline" href={`/assets?ws=${encodeURIComponent(workspaceId)}`}>Open asset library</a><button type="button" disabled={busy || recoveryBlocked || acceptanceUncertain} className="text-sm underline disabled:opacity-45" onClick={startFresh}>Create another image</button></div>}
+      {activeJob?.status === "succeeded" && <div className="mt-3">
+        <p className="text-sm text-emerald-100">Artwork was saved to your private library. {quote.quote.kind === "cover" ? "Review the file before choosing it for an edition." : "Review and approve the illustration before inserting it in a chapter."}</p>
+        {findArtwork && !artwork && <p className="mt-2 text-sm text-white/60">This file is unavailable in the current library. Use Refresh library to check again.</p>}
+        <div className="mt-2 flex flex-wrap items-center gap-4">
+          {artwork && onReviewArtwork && <button type="button" className="min-h-11 text-sm underline" onClick={() => { if (entryCurrent()) onReviewArtwork(artwork); }}>Review generated artwork</button>}
+          <button type="button" disabled={busy || recoveryBlocked || acceptanceUncertain} className="min-h-11 text-sm underline disabled:opacity-45" onClick={startFresh}>Create another image</button>
+        </div>
+      </div>}
       {activeJob && ["failed", "cancelled"].includes(activeJob.status) && <div className="mt-3 flex flex-wrap items-center gap-4"><p className="text-sm text-amber-100">This request is finished. Review your credit activity before preparing a new image.</p><button type="button" disabled={busy || recoveryBlocked || acceptanceUncertain} className="text-sm underline disabled:opacity-45" onClick={startFresh}>Prepare a new quote</button></div>}
       {!activeJob && !acceptanceUncertain && quote.quote.status === "expired" && <button type="button" disabled={busy || recoveryBlocked} className="mt-3 text-sm underline disabled:opacity-45" onClick={startFresh}>Prepare a new quote</button>}
     </div>}

@@ -121,6 +121,44 @@ async function fixture(width = 1280, admin = false, withBookBible = false) {
   await expect(page.getByRole("button", { name: /^My draft\.pdf/ })).toBeVisible();
   return { page, signedRequests };
 }
+test("completed artwork opens the exact file from a recovered quote and request history", async () => {
+  const { page } = await fixture(390, false, true);
+  try {
+    const quoteId = "11111111-1111-4111-8111-111111111111";
+    await page.evaluate(({ A, quoteId, PORTRAIT, FIRST_BOOK }) => {
+      sessionStorage.setItem(`bookworm.image-quote.v2:${A}:${A}`, JSON.stringify({ quoteId }));
+      window.api.getImageQuote = async () => ({
+        quote: { id: quoteId, status: "ready", model: "test", kind: "illustration", reservedCredits: "30", expiresAt: "2027-01-01" },
+      });
+      window.api.getImageQuoteJob = async () => ({ quoteId, job: { id: "job", status: "succeeded", assetId: PORTRAIT } });
+      window.api.listAssetVersions = async assetId => {
+        window.calls.push({ operation: "versions", assetId });
+        return { versions: [] };
+      };
+      const result = { status: "succeeded", kind: "illustration", createdAt: "2026-11-22" };
+      window.api.listImageGenerationJobs = async () => ({ jobs: [
+        { ...result, id: "owned", assetId: PORTRAIT },
+        { ...result, id: "unavailable", assetId: FIRST_BOOK },
+        { ...result, id: "wrong-kind", assetId: PORTRAIT, kind: "front_cover" },
+      ] });
+      window.clearAssets();
+    }, { A, quoteId, PORTRAIT, FIRST_BOOK });
+    await expect(page.getByRole("heading", { name: "Your recent image requests" })).toHaveCount(0);
+    await page.evaluate(() => window.renderAssets());
+    await page.getByRole("button", { name: "Review generated artwork" }).click();
+    const dialog = page.getByRole("dialog", { name: "Mira portrait.png" });
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press("Escape");
+    const history = page.getByRole("region", { name: "Your recent image requests" });
+    await expect(history.getByRole("button", { name: /^Review / })).toHaveCount(1);
+    await history.getByRole("button", { name: "Review Mira portrait.png" }).click();
+    await expect(dialog).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.calls.filter(call => call.operation === "versions").map(call => call.assetId)))
+      .toEqual([PORTRAIT, PORTRAIT]);
+    assert.equal(await page.evaluate(() => window.calls.some(call => call.operation === "quote")), false);
+  } finally { await page.close(); }
+});
+
 async function openFile(page, name = /^My draft\.pdf/) {
   await page.getByRole("button", { name }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
