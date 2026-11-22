@@ -86,3 +86,29 @@ version if building an adapter. Never treat the returned path or extracted
 relationship as authorization. The smoke provides local lifecycle evidence.
 A representative semantic recall comparison, PostgreSQL storage behavior and
 live application authorization still require independent verification.
+
+## Local multilingual retrieval comparison
+
+Both evaluators read the same synthetic manuscript facts and queries from
+`tests/ai-evals/fixtures/book-retrieval.json`. For the vector comparison, use
+LightRAG 1.5.7, ONNX Runtime 1.32.0, and Tokenizers 0.23.3 in a separate Python
+environment. Download the pinned quantized model and tokenizer from the
+[model repository](https://huggingface.co/intfloat/multilingual-e5-small/tree/614241f622f53c4eeff9890bdc4f31cfecc418b3/onnx).
+The runner verifies both file digests before inference.
+
+Run the PostgreSQL baseline with
+`node tests/ai-evals/evals/book-retrieval-baseline.mjs` and save stdout as JSON.
+Run `python tests/ai-evals/evals/book-retrieval-semantic.py MODEL_DIR --baseline BASELINE_JSON`
+with the separate experiment interpreter. The vector index keeps one copy per
+source of the repeated background paragraphs. It uses CPU embeddings and
+skips graph extraction to isolate the vector search comparison.
+
+The 13 synthetic queries contained 11 expected sources, including three
+queries with zero expected sources. PostgreSQL found 7 of 11 in seven returned
+candidates. LightRAG vector search found 8 of 11 in 104 candidates, recovering
+a translated query and an accentless query while missing an exact phrase.
+An evaluated fallback retained the lexical result when present, then tried one
+vector candidate when it was empty. It found 9 of 11 in 14 candidates and
+suggested irrelevant sources for all three queries with no expected source.
+The fallback is experimental. Additional evaluation must measure whether it
+can abstain reliably on unrelated questions.

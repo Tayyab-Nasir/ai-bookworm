@@ -1,0 +1,109 @@
+{
+  "passages": [
+    [
+      "Compass",
+      "Elara hid the silver compass under the lantern."
+    ],
+    [
+      "Letters",
+      "Cyrus sent a sealed letter to Mira from the observatory."
+    ],
+    [
+      "Harbor",
+      "Mira escorted the shipkeeper to the harbor museum."
+    ],
+    [
+      "Carte",
+      "Le cartographe protège la boussole cassée."
+    ],
+    [
+      "Pasaje",
+      "La llave de cobre abre la puerta del molino."
+    ]
+  ],
+  "bible": {
+    "name": "Tova",
+    "description": "A mechanical apprentice."
+  },
+  "background": {
+    "chapters": 95,
+    "paragraphsPerChapter": 40,
+    "paragraph": "During the evening session, the committee copied meeting minutes and counted supplies for the annual exhibition. Section"
+  },
+  "queries": [
+    [
+      "exact name",
+      "Elara",
+      [
+        "Compass"
+      ]
+    ],
+    [
+      "exact phrase",
+      "\"sealed letter\"",
+      [
+        "Letters"
+      ]
+    ],
+    [
+      "exact Bible fact",
+      "\"mechanical apprentice\"",
+      [
+        "Bible"
+      ]
+    ],
+    [
+      "cross-chapter keyword",
+      "Mira",
+      [
+        "Letters",
+        "Harbor"
+      ]
+    ],
+    [
+      "paraphrase",
+      "concealed navigation instrument",
+      [
+        "Compass"
+      ]
+    ],
+    [
+      "paraphrase",
+      "mailed a confidential message",
+      [
+        "Letters"
+      ]
+    ],
+    [
+      "French exact",
+      "\"boussole cassée\"",
+      [
+        "Carte"
+      ]
+    ],
+    [
+      "Spanish exact",
+      "\"llave de cobre\"",
+      [
+        "Pasaje"
+      ]
+    ],
+    [
+      "translated query",
+      "copper key",
+      [
+        "Pasaje"
+      ]
+    ],
+    [
+      "accent omitted",
+      "protege",
+      [
+        "Carte"
+      ]
+    ],
+    ["unrelated subject", "trilobite fossils", []],
+    ["unrelated phrase", "barometric pressure and quantum tunneling", []],
+    ["unknown character", "Bramber", []]
+  ]
+}

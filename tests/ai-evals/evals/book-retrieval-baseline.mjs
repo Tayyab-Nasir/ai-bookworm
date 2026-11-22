@@ -7,25 +7,9 @@ import { citext } from "@electric-sql/pglite/contrib/citext";
 import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 
 const root = new URL("../../../", import.meta.url);
-const passages = [
-  ["Compass", "Elara hid the silver compass under the lantern."],
-  ["Letters", "Cyrus sent a sealed letter to Mira from the observatory."],
-  ["Harbor", "Mira escorted the shipkeeper to the harbor museum."],
-  ["Carte", "Le cartographe protège la boussole cassée."],
-  ["Pasaje", "La llave de cobre abre la puerta del molino."],
-];
-const queries = [
-  ["exact name", "Elara", ["Compass"]],
-  ["exact phrase", '"sealed letter"', ["Letters"]],
-  ["exact Bible fact", '"mechanical apprentice"', ["Bible"]],
-  ["cross-chapter keyword", "Mira", ["Letters", "Harbor"]],
-  ["paraphrase", "concealed navigation instrument", ["Compass"]],
-  ["paraphrase", "mailed a confidential message", ["Letters"]],
-  ["French exact", '"boussole cassée"', ["Carte"]],
-  ["Spanish exact", '"llave de cobre"', ["Pasaje"]],
-  ["translated query", "copper key", ["Pasaje"]],
-  ["accent omitted", "protege", ["Carte"]],
-];
+const { passages, bible: bibleFixture, background, queries } = JSON.parse(
+  await readFile(new URL("../fixtures/book-retrieval.json", import.meta.url), "utf8"),
+);
 
 const owner = "ac700000-0000-4000-8000-000000000001";
 const other = "ac700000-0000-4000-8000-000000000002";
@@ -61,20 +45,20 @@ try {
   await db.exec("set role authenticated");
   await setActor(owner);
   const chapters = passages.map(([title, text]) => ({ title, nodes: [{ id: "fact", type: "paragraph", text }] }));
-  for (let index = 1; index <= 95; index++) {
+  for (let index = 1; index <= background.chapters; index++) {
     chapters.push({
       title: "Background " + index,
-      nodes: Array.from({ length: 40 }, (_, paragraph) => ({
+      nodes: Array.from({ length: background.paragraphsPerChapter }, (_, paragraph) => ({
         id: "p" + paragraph, type: "paragraph",
-        text: "During the evening session, the committee copied meeting minutes and counted supplies for the annual exhibition. Section " + index + ".",
+        text: "${background.paragraph} " + index + ".",
       })),
     });
   }
   const sourceNodes = new Map(chapters.map(({ title, nodes }) => [title, new Map(nodes.map(node => [node.id, node.text]))]));
   const bookId = await makeBook("Retrieval fixtures", chapters);
   const bible = await db.query(
-    "insert into public.book_bible_items(book_id,type,name,description) values($1,'character','Tova','A mechanical apprentice.') returning id",
-    [bookId],
+    "insert into public.book_bible_items(book_id,type,name,description) values($1,'character',$2,$3) returning id",
+    [bookId, bibleFixture.name, bibleFixture.description],
   );
   const rows = [];
   for (const [scenario, query, expected] of queries) {
@@ -96,7 +80,11 @@ try {
         returned.add(hit.title);
       }
     }
-    rows.push({ scenario, query, expected: expected.length, retrieved: expected.filter((source) => returned.has(source)).length });
+    rows.push({
+      scenario, query, expected: expected.length, candidates: result.rows.length,
+      retrieved: expected.filter((source) => returned.has(source)).length,
+      first: result.rows[0]?.source_type === "bible" ? "Bible" : result.rows[0]?.title ?? null,
+    });
   }
 
   await setActor(other);
