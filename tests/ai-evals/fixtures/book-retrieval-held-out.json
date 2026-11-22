@@ -1,0 +1,147 @@
+{
+  "passages": [
+    [
+      "North Bridge",
+      "At dawn, Nera slipped through the flooded arch beneath North Bridge. She hid the brass gate key inside a blue ceramic jar beside the baker’s oven and left before the market bell. The person waiting on the opposite bank was the ferryman, not the watchman."
+    ],
+    [
+      "Railway Ledger",
+      "Milo repaired clocks for the stationmaster. A scorched timetable fell from the ledger where the clerk had written the date of the last freight departure. The margin named a platform, but the destination had been deliberately erased."
+    ],
+    [
+      "Pledge",
+      "The retired judge promised to guard the witness until her hearing. She carried a plain leather satchel filled with legal notes and refused entry to the inspector who brought a red envelope."
+    ],
+    [
+      "Windmill",
+      "Alma escondió una moneda de plata debajo de la piedra del molino. Antes del amanecer regresó con su hermana; las dos reconocieron el ruido de las aspas, pero no consiguieron mover la piedra."
+    ],
+    [
+      "Observatoire",
+      "Ilyan réparait la lunette dans la tour. La lentille était fendue, alors il rangea son carnet près du télescope. Son apprenti ramassa les outils pendant que la pluie couvrait les vitres."
+    ],
+    [
+      "Aunt’s Letter",
+      "Pavel received a letter written by his aunt, who urged him to travel before the bridge closed. He tucked it into a tin box and asked the railway clerk to hold a seat without recording his name."
+    ],
+    [
+      "Library Window",
+      "The library keeper left a copper lamp burning on the upper floor until the caretaker arrived. The keeper set a silver seal on the desk next to a box of blank cards and locked the register away."
+    ],
+    [
+      "Miller’s Door",
+      "The miller’s apprentice borrowed a wooden ladder to reach the shutters. A stranger offered a gold coin to unlock the mill, but the apprentice returned the coin and shut the door."
+    ],
+    [
+      "Clinic Passage",
+      "Sera brought a white coat to the clinic after the laundry closed. A nurse wrote a note about the missing ledger. Nobody found the gloves that were supposed to be in the bottom drawer."
+    ]
+  ],
+  "bible": {
+    "name": "Mira",
+    "description": "Nera’s cousin and a traveling tailor. She has a blue wool coat and a limp in her left leg."
+  },
+  "background": {
+    "chapters": 91,
+    "paragraphsPerChapter": 20,
+    "paragraph": "Stock records from ordinary voyages list days of the week, quantities remaining in each crate and the meals shared by the crew. Folio"
+  },
+  "queries": [
+    [
+      "paraphrase",
+      "where did Nera stow the metal instrument for unlocking the gate",
+      [
+        "North Bridge"
+      ]
+    ],
+    [
+      "paraphrase",
+      "who assured the witness she would be protected pending her appearance",
+      [
+        "Pledge"
+      ]
+    ],
+    [
+      "paraphrase",
+      "who sent Pavel correspondence asking him to leave early",
+      [
+        "Aunt’s Letter"
+      ]
+    ],
+    [
+      "translated query",
+      "silver coin under the millstone",
+      [
+        "Windmill"
+      ]
+    ],
+    [
+      "translated query",
+      "cracked lens at the observatory",
+      [
+        "Observatoire"
+      ]
+    ],
+    [
+      "accent omitted",
+      "qui reparait la lunette avec la lentille fendue",
+      [
+        "Observatoire"
+      ]
+    ],
+    [
+      "exact phrase",
+      "\"copper lamp burning\"",
+      [
+        "Library Window"
+      ]
+    ],
+    [
+      "exact Bible fact",
+      "\"traveling tailor\"",
+      [
+        "Bible"
+      ]
+    ],
+    [
+      "near-match false location",
+      "Nera hid the brass gate key in the stationmaster drawer",
+      []
+    ],
+    [
+      "near-match false author",
+      "Pavel received a letter from his brother",
+      []
+    ],
+    [
+      "near-match false object",
+      "golden telescope beside the millstone",
+      []
+    ],
+    [
+      "near-match false decision",
+      "the witness was arrested by the judge",
+      []
+    ],
+    [
+      "near-match false identity",
+      "a traveling surgeon with a blue wool coat",
+      []
+    ],
+    [
+      "unknown detail",
+      "what destination was written on the scorched freight timetable",
+      []
+    ],
+    [
+      "unrelated concept",
+      "trilobite fossils discovered under a glacier",
+      []
+    ],
+    [
+      "unknown character",
+      "Ordon hid a red jewel in a green cupboard",
+      []
+    ]
+  ]
+}

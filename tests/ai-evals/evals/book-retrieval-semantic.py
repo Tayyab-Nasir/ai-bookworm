@@ -92,8 +92,10 @@ def evaluate_sources(fixture, result, expected):
     }
 
 
-async def evaluate(model, root):
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+async def evaluate(model, root, fixture_path):
+    raw = fixture_path.read_bytes()
+    fixture_hash = hashlib.sha256(raw).hexdigest()
+    fixture = json.loads(raw)
     background = fixture["background"]
     # Repeated identical background paragraphs share one source per chapter here.
     passages = [*fixture["passages"], *(
@@ -143,13 +145,20 @@ async def evaluate(model, root):
             result = await rag.aquery_data(query, param=QueryParam(
                 mode="naive", top_k=LIMIT, chunk_top_k=LIMIT, enable_rerank=False,
             ))
+            texts = [chunk["content"] for chunk in (result.get("data") or {}).get("chunks", [])[:2]]
+            scores = []
+            if texts:
+                vector = (await model.embed([query], "query"))[0]
+                scores = (await model.embed(texts, "document") @ vector).tolist()
             rows.append({
                 "scenario": scenario, "query": query,
+                "cosine": round(scores[0], 6) if scores else None,
+                "margin": round(scores[0] - scores[1], 6) if len(scores) == 2 else None,
                 **evaluate_sources(labels, result, expected),
                 "queryMs": round((perf_counter() - started) * 1000, 1),
             })
         return {
-            "backend": "lightrag-vector", "modelRevision": MODEL_REVISION,
+            "backend": "lightrag-vector", "modelRevision": MODEL_REVISION, "fixtureHash": fixture_hash,
             "sources": len(labels), "limit": LIMIT, "indexSeconds": index_seconds,
             "expected": sum(row["expected"] for row in rows),
             "retrieved": sum(row["retrieved"] for row in rows),
@@ -186,17 +195,54 @@ def compare_fallback(lexical_report, vector_report):
     }
 
 
-async def main(model_dir, baseline):
+def fallback_scores(lexical_report, vector_report):
+    assert lexical_report["fixtureHash"] == vector_report["fixtureHash"], "fixture bytes differ"
+    for lexical, semantic in zip(lexical_report["rows"], vector_report["rows"], strict=True):
+        assert lexical["query"] == semantic["query"], "query order differs"
+        if not lexical["candidates"]:
+            yield semantic
+
+
+def test_abstention(lexical, vector, calibration):
+    assert vector["fixtureHash"] != calibration["fixtureHash"], "held-out fixture must be distinct"
+    assert vector["modelRevision"] == calibration["modelRevision"], "model revision differs"
+    calibration_rows = calibration["fallbackRows"]
+    holdout = list(fallback_scores(lexical, vector))
+    metrics = {}
+    for score_name in ("cosine", "margin"):
+        wrong_scores = [
+            row[score_name] for row in calibration_rows
+            if not row["firstRelevant"] and row[score_name] is not None
+        ]
+        assert wrong_scores, f"no calibration negatives for {score_name}"
+        threshold = max(wrong_scores)
+        accepted = [row for row in holdout if row[score_name] is not None and row[score_name] > threshold]
+        metrics[score_name] = {
+            "strictlyAbove": threshold,
+            "heldOutFallbackQueries": len(holdout),
+            "correctSuggestions": sum(row["firstRelevant"] for row in accepted),
+            "incorrectSuggestions": sum(not row["firstRelevant"] for row in accepted),
+            "unsupportedSuggestions": sum(row["expected"] == 0 for row in accepted),
+            "abstentions": len(holdout) - len(accepted),
+        }
+    return metrics
+
+
+async def main(model_dir, baseline, fixture, calibration_path):
     def reject_connection(*_args, **_kwargs):
         raise AssertionError("Network connection attempted during offline evaluation")
 
     assert version("lightrag-hku") == "1.5.7"
     with TemporaryDirectory(prefix="bookiewookie-e5-") as root:
         with patch.object(socket.socket, "connect", reject_connection), patch.object(socket.socket, "connect_ex", reject_connection):
-            stats = await evaluate(LocalE5(model_dir), root)
+            stats = await evaluate(LocalE5(model_dir), root, fixture)
     if baseline:
         lexical = json.loads(baseline.read_text(encoding="utf-8-sig"))
         stats["fallback"] = compare_fallback(lexical, stats)
+        stats["fallbackRows"] = list(fallback_scores(lexical, stats))
+        if calibration_path:
+            calibration = json.loads(calibration_path.read_text(encoding="utf-8-sig"))
+            stats["heldOutThresholds"] = test_abstention(lexical, stats, calibration)
     print(json.dumps(stats, ensure_ascii=False))
 
 
@@ -204,5 +250,9 @@ if __name__ == "__main__":
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("model_dir", type=Path)
     cli.add_argument("--baseline", type=Path, help="Saved JSON output from the PostgreSQL benchmark")
+    cli.add_argument("--fixture", type=Path, default=FIXTURE)
+    cli.add_argument("--calibration", type=Path, help="Vector report for a different corpus")
     args = cli.parse_args()
-    asyncio.run(main(args.model_dir, args.baseline))
+    if args.calibration and not args.baseline:
+        cli.error("--calibration requires a lexical --baseline")
+    asyncio.run(main(args.model_dir, args.baseline, args.fixture, args.calibration))

@@ -7,9 +7,10 @@ import { citext } from "@electric-sql/pglite/contrib/citext";
 import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
 
 const root = new URL("../../../", import.meta.url);
-const { passages, bible: bibleFixture, background, queries } = JSON.parse(
-  await readFile(new URL("../fixtures/book-retrieval.json", import.meta.url), "utf8"),
-);
+const fixturePath = process.argv[2] ?? new URL("../fixtures/book-retrieval.json", import.meta.url);
+const corpus = await readFile(fixturePath, "utf8");
+const fixtureHash = createHash("sha256").update(corpus).digest("hex");
+const { passages, bible: bibleFixture, background, queries } = JSON.parse(corpus);
 
 const owner = "ac700000-0000-4000-8000-000000000001";
 const other = "ac700000-0000-4000-8000-000000000002";
@@ -68,7 +69,7 @@ try {
       assert.equal(hit.text_hash, sourceHash(hit.excerpt), "citation excerpt hash");
       if (hit.source_type === "bible") {
         assert.equal(hit.bible_item_id, bible.rows[0].id, "exact bible item");
-        assert.match(hit.excerpt, /mechanical apprentice/);
+        assert.equal(hit.excerpt, [bibleFixture.name, bibleFixture.description, "{}"].join("\n"));
         returned.add("Bible");
       } else {
         assert.equal(hit.source_type, "manuscript");
@@ -99,7 +100,7 @@ try {
   const expected = rows.reduce((total, row) => total + row.expected, 0);
   const retrieved = rows.reduce((total, row) => total + row.retrieved, 0);
   console.log(JSON.stringify({
-    backend: "postgres-fts", chapters: chapters.length, limit: 8, expected, retrieved,
+    backend: "postgres-fts", fixtureHash, chapters: chapters.length, limit: 8, expected, retrieved,
     rows, citedSourcesAndWorkspaceIsolation: "passed",
   }, null, 2));
 } finally {

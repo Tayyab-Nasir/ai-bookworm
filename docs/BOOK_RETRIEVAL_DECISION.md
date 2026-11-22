@@ -112,3 +112,20 @@ vector candidate when it was empty. It found 9 of 11 in 14 candidates and
 suggested irrelevant sources for all three queries with no expected source.
 The fallback is experimental. Additional evaluation must measure whether it
 can abstain reliably on unrelated questions.
+
+The held-out fixture in `tests/ai-evals/fixtures/book-retrieval-held-out.json`
+uses different passages and 16 queries, including eight without a supported
+answer. Several negative queries closely resemble real manuscript facts while
+changing a person, object, place, or action. The second argument to the
+PostgreSQL runner selects this fixture. For LightRAG, pass its path in
+`--fixture`, the matching PostgreSQL report in `--baseline`, and the first
+fixture's vector report in `--calibration`. The runner rejects identical
+calibration and held-out fixture digests.
+
+For each confidence measure, the experiment places the cutoff immediately above
+the highest incorrect calibration suggestion. On the held-out keyword misses,
+cosine accepted five correct suggestions and eight incorrect ones. The
+first-to-second score margin accepted four correct and seven incorrect
+suggestions. Seven and six of those incorrect suggestions, respectively, were
+for queries with no answer. Similarity and ranking separation alone could not
+identify whether the manuscript supported the queried detail.
