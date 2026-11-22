@@ -233,21 +233,23 @@ test("reader rejects malformed dependency markup with bounded linear scanning", 
     const value = documentResult(); value.document.html = html;
     assert.throws(() => validateEpubPreview(value, expectedSource(), { spineIndex: 0 }));
   }
-  // Run this malformed 64 KiB response in an isolated child with a hard bound,
-  // so a regressed quadratic scanner cannot hang the API test process.
+  // Measure validation after module loading. The outer process deadline also
+  // stops a scanner that never returns without charging startup to the parser.
   const module = new URL("./lib/rendered-epub.ts", import.meta.url).href;
   const value = documentResult();
   const code = `import { validateEpubPreview } from ${JSON.stringify(module)};
 const value = ${JSON.stringify(value)};
+const start = performance.now();
 for (const html of ["<".repeat(65_536), "<p" + " ".repeat(65_536) + "=>"]) {
   value.document.html = html;
   try { validateEpubPreview(value, ${JSON.stringify(expectedSource())}, { spineIndex: 0 }); process.exitCode = 1; }
   catch (error) { if (error.status !== 503) throw error; }
-}`;
+}
+if (performance.now() - start > 2_000) throw new Error("Malformed markup validation exceeded two seconds.");`;
   const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => ["path", "systemroot", "windir", "comspec", "pathext", "temp", "tmp", "localappdata", "programfiles", "programfiles(x86)", "allusersprofile"].includes(name.toLowerCase())));
   environment.NODE_ENV = "production"; environment.NODE_OPTIONS = "";
-  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], { env: environment, encoding: "utf8", windowsHide: true, timeout: 2_000, maxBuffer: 16_384 });
-  assert.equal(result.error, undefined, "Malformed markup rejection must complete within the isolated two-second safety bound.");
+  const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", code], { env: environment, encoding: "utf8", windowsHide: true, timeout: 15_000, maxBuffer: 16_384 });
+  assert.equal(result.error, undefined, "The isolated validation process exceeded its startup and execution deadline.");
   assert.equal(result.status, 0, result.stderr.slice(-1000));
 });
 
