@@ -242,6 +242,33 @@ function successfulRenderer(requests: unknown[], coverRendererVersion: string | 
   };
 }
 
+test("QR renderer correction survives exact-request recovery without exposing service diagnostics", async () => {
+  const known = "QR size is too small for this destination; increase QR size or shorten the HTTPS URL";
+  for (const [qrEnabled, detail, isQrError] of [[true, known, true], [false, known, false], [true, "private renderer diagnostic", false]] as const) {
+    const store = baseStore();
+    const qr = { enabled: qrEnabled, url: qrEnabled ? "https://example.test/book" : null, size_px: 96 };
+    store.tables.editions[0].edition_metadata_json = { kind: "ebook", cover: { asset_id: COVER, qr_code: qr } };
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: async () =>
+      Response.json({ detail, privateField: "private source data" }, { status: 422 }),
+    });
+    try {
+      const requestId = crypto.randomUUID();
+      const result = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: requestId } });
+      assert.equal(result.statusCode, 422, result.body);
+      assert.equal(result.json().error.code === "cover_qr_too_small", isQrError, result.body);
+      assert.doesNotMatch(result.body, /private (renderer|source)/);
+      const recovery = await app.inject({ method: "GET", url: `/v1/editions/${EDITION}/render-requests/${requestId}?bookId=${BOOK}`, headers: auth });
+      assert.equal(recovery.statusCode, 200, recovery.body);
+      assert.equal(recovery.json().job.status, "failed");
+      assert.equal(recovery.json().job.coverQrCorrection, isQrError ? result.json().error.message : undefined);
+      assert.doesNotMatch(recovery.body, /private (renderer|source)|response_json/);
+      assert.equal(store.tables.publishing_jobs.length, 1);
+      assert.equal(store.objects.size, 2);
+      assert.equal(store.tables.usage_events.length, 0);
+    } finally { await app.close(); }
+  }
+});
+
 function enableRetailerPackages(store: Store) {
   const planId = "d0000000-0000-4000-8000-000000000009";
   store.tables.subscriptions.push({ id: crypto.randomUUID(), organization_id: ORG, plan_id: planId, status: "active", created_at: "2026-09-04T00:00:00Z", current_period_end: null });

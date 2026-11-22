@@ -1275,7 +1275,7 @@ export function createClient(opts: ClientOptions) {
     renderEdition: (editionId: string, body: { idempotencyKey: string }) =>
       call<RenderedEditionResult>("POST", `/v1/editions/${editionId}/render`, body),
     getRenderRequest: (bookId: string, editionId: string, requestId: string, expectedActor: string) =>
-      call<{ bookId: string; editionId: string; requestId: string; job: { id: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled" } | null }>(
+      call<{ bookId: string; editionId: string; requestId: string; job: { id: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled"; coverQrCorrection?: string } | null }>(
         "GET", `/v1/editions/${encodeURIComponent(editionId)}/render-requests/${encodeURIComponent(requestId)}?bookId=${encodeURIComponent(bookId)}`,
         undefined, true, { "x-bookworm-actor": expectedActor }),
     closeRenderRequest: (bookId: string, editionId: string, requestId: string, expectedActor: string) =>

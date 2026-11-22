@@ -466,6 +466,27 @@ test("studio saves cover QR size and placement and restores them when reopening 
     await expect(placement).toHaveValue("bottom-left");
     await expect(size).toHaveValue("320");
     await expect(page.getByRole("textbox", { name: "HTTPS destination", exact: true })).toHaveValue(destination);
+    const correction = "Increase QR size or shorten the HTTPS destination in Cover composition.";
+    await page.evaluate(correction => {
+      window.qrRenderCount = 0;
+      window.bookwormApi.renderEdition = async () => {
+        window.qrRenderCount++;
+        throw new window.ApiClientError(422, "cover_qr_too_small", correction, "fixture");
+      };
+      window.bookwormApi.getRenderRequest = async (bookId, editionId, requestId) => ({
+        bookId, editionId, requestId, job: { id: window.ids.job, status: "failed", coverQrCorrection: correction },
+      });
+    }, correction);
+    const render = page.getByRole("button", { name: "Render PDF", exact: true });
+    const correctionLink = page.getByRole("link", { name: "Edit cover QR settings", exact: true });
+    await render.click();
+    await expect(page.getByRole("alert").filter({ hasText: correction })).toBeVisible();
+    await expect(correctionLink).toHaveAttribute("href", "#cover-settings");
+    await expect(render).toBeDisabled();
+    await page.getByRole("button", { name: "Check original render" }).click();
+    await expect(correctionLink).toBeVisible();
+    await expect(render).toBeEnabled();
+    assert.equal(await page.evaluate(() => window.qrRenderCount), 1);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });

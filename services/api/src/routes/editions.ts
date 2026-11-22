@@ -9,6 +9,7 @@ import type { SupabaseClient } from "../lib/supabase.js";
 import { requireEntitlement } from "../lib/entitlements.js";
 import { loadRenderImages, renderImagesFingerprint, assertRenderImagesCurrent } from "../lib/render-images.js";
 import { boundedServiceText } from "../lib/bounded-service-response.js";
+import { coverQrRendererFailure, savedCoverQrCorrection } from "../lib/cover-qr-failure.js";
 import { nextEditionTimestamp } from "../lib/edition-timestamp.js";
 export { loadRenderImages } from "../lib/render-images.js";
 
@@ -497,12 +498,18 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
         redirect: "error",
         signal: AbortSignal.timeout(150_000),
       });
-      const responseText = await boundedServiceText(response, 220_000_000, "The renderer response exceeded the supported size.");
       if (response.status === 422) {
+        const rejection = await boundedServiceText(response, 64_000, "The renderer rejection exceeded the supported size.").catch(() => "");
+        const qrFailure = config.cover.qr_code.enabled ? coverQrRendererFailure(rejection) : undefined;
+        if (qrFailure) throw new AppError(422, qrFailure.message, undefined, qrFailure.code);
         if (uploadedCoverVersion(config) !== undefined) throw new AppError(422, "The print edition or uploaded cover could not be rendered. Run preflight for details.");
         throw new AppError(422, "This saved edition needs a supported typography configuration. Run preflight to review the required changes.");
       }
-      if (!response.ok) throw new AppError(503, "The renderer could not complete this edition.");
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw new AppError(503, "The renderer could not complete this edition.");
+      }
+      const responseText = await boundedServiceText(response, 220_000_000, "The renderer response exceeded the supported size.");
       let raw: unknown;
       try { raw = JSON.parse(responseText); } catch { throw new AppError(503, "The renderer returned an invalid response."); }
       const renderedResult = renderResponseSchema.safeParse(raw);
@@ -588,7 +595,8 @@ export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof 
         // Once completion has been dispatched, retain these private objects:
         // a concurrent or delayed completion may still reference them.
         if (uploadedPaths.length) await service.storage.from(BUCKET).remove(uploadedPaths);
-        await failRenderJob(service, jobId, "render_failed");
+        const code = error instanceof AppError && savedCoverQrCorrection(error.code) ? error.code : "render_failed";
+        await failRenderJob(service, jobId, code);
       }
       if (completionAttempted && !completionPersisted) {
         throw new AppError(503, "Render completion is unconfirmed. Output files are retained; avoid starting another render until its status is resolved.");

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useLayoutEffect, useRef, useState } from "react";
+import { ApiClientError } from "@bookworm/api-client";
 import type { AudiobookGooglePlayExportJob, PrivateAudiobookProjectResult, AudiobookVoice, PreflightResult, PublishingHistoryCursor, PublishingPackageJob, RenderedEditionResult, RetailerChannel, SavedEpubSource } from "@bookworm/api-client";
 import type { Asset, Book, Chapter, Edition } from "@bookworm/types";
 import { Isbn13Schema } from "@bookworm/book-model/schema";
@@ -183,6 +184,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
     observedClock.current = now; setPackageClock(now); return now;
   };
   const [error, setError] = useState<string | null>(null);
+  const [coverQrCorrection, setCoverQrCorrection] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const uncertainEditionCreates = editionRisks;
   const editionRiskKey = bookId.toLowerCase();
@@ -703,7 +705,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
     const edition = activeId, actor = scope.actor;
     const pointer: RenderPointer = { schema: 1, actor, bookId, editionId: edition, requestId: crypto.randomUUID() };
     renderFlight.current = true;
-    setBusy("render"); setError(null); setNotice(null); setRendered(null); setPreflight(null); setSavedPackageProof(null);
+    setBusy("render"); setError(null); setCoverQrCorrection(null); setNotice(null); setRendered(null); setPreflight(null); setSavedPackageProof(null);
     const startedAt = Date.now();
     try {
       await readBrowserSession(actor); if (!valid()) return;
@@ -718,7 +720,12 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
       await readBrowserSession(actor); if (!valid()) return;
       clearRenderPointer(window.sessionStorage, pointer); setRenderPointer(null);
       setRendered({ ...result, expiresAt }); setReaderRefreshKey(result.jobId); setNotice("Private render completed.");
-    } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Render outcome is unconfirmed. Check the saved request."); }
+    } catch (reason) {
+      if (valid()) {
+        setError(reason instanceof Error ? reason.message : "Render outcome is unconfirmed. Check the saved request.");
+        if (reason instanceof ApiClientError && reason.status === 422 && reason.code.startsWith("cover_qr_")) setCoverQrCorrection(reason.message);
+      }
+    }
     finally { renderFlight.current = false; if (valid()) setBusy(null); }
   };
 
@@ -734,6 +741,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
       if (status.status === "queued" || status.status === "running") { setNotice("The original render is still in progress or awaiting reconciliation. Check again; no new render was started."); return; }
       clearRenderPointer(window.sessionStorage, pointer); setRenderPointer(null);
       if (status.status === "succeeded") { setReaderRefreshKey(status.id); setNotice("The original render completed. Open it in saved EPUB or print history below."); }
+      else if (status.coverQrCorrection) { setCoverQrCorrection(status.coverQrCorrection); setError(status.coverQrCorrection); }
       else setNotice(`The original render is ${status.status}. You can start a new render after reviewing the saved edition.`);
     } catch (reason) { if (valid()) setError(reason instanceof Error ? reason.message : "Render status is unavailable. Check again."); }
     finally { renderFlight.current = false; if (valid()) setBusy(null); }
@@ -909,6 +917,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
       <Link href={book ? `/assets?ws=${book.workspace_id}` : "/assets"} onClick={leave} className="glass-ghost rounded-full px-4 py-2 text-sm">Manage artwork</Link>
     </div>
     {error && <div role="alert" className="mb-5 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}
+      {error === coverQrCorrection && form.qrEnabled && !uploadedCover && <a href="#cover-settings" className="mt-2 flex min-h-11 w-fit items-center underline underline-offset-4">Edit cover QR settings</a>}
       {!currentIdentity && <button type="button" onClick={() => void load()} disabled={Boolean(busy)} className="mt-3 block rounded-lg border border-red-200/30 px-3 py-2 underline disabled:opacity-40">Retry loading this book</button>}
     </div>}
     {notice && <p role="status" className="mb-5 text-sm text-emerald-200">{notice}</p>}

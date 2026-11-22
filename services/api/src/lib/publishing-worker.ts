@@ -3,6 +3,8 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "./authoring.js";
 import { currentEntitlements } from "./entitlements.js";
+import { boundedServiceText } from "./bounded-service-response.js";
+import { coverQrRendererFailure } from "./cover-qr-failure.js";
 import type { SupabaseClient } from "./supabase.js";
 import { artworkSnapshotSchema, renderImagesFingerprint, assertRenderImagesCurrent, printProofImageInputs } from "./render-images.js";
 import { decodeArtifact, decodeRenderedCover, editionConfigSchema, loadRenderImages, renderResponseSchema, uploadedCoverVersion, withEditionLanguage } from "../routes/editions.js";
@@ -72,14 +74,17 @@ export async function loadPublishingInputs(sb: SupabaseClient, job: Job) {
 }
 
 async function serviceRequest(fetcher: typeof fetch, kind: "RENDERING" | "PUBLISHING", path: string,
-  body: unknown, maxBytes: number, signal: AbortSignal) {
+  body: unknown, maxBytes: number, signal: AbortSignal, coverQrEnabled = false) {
   const url = (process.env[`${kind}_SERVICE_URL`] ?? `http://127.0.0.1:${process.env[`${kind}_SERVICE_PORT`] ?? (kind === "RENDERING" ? "8002" : "8003")}`).replace(/\/$/u, "");
   const token = process.env[`${kind}_SERVICE_TOKEN`] || process.env.SERVICE_AUTH_TOKEN;
   const response = await fetcher(`${url}${path}`, {
     method: "POST", headers: { "content-type": "application/json", ...(token ? { "x-service-token": token } : {}) },
     body: JSON.stringify(body), redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(150_000)]),
   });
-  if (response.status === 422) throw new WorkerFailure("worker_service_rejected_input", false);
+  if (response.status === 422) {
+    const body = coverQrEnabled ? await boundedServiceText(response, 64_000, "Renderer rejection exceeded the supported size.").catch(() => "") : "";
+    throw new WorkerFailure(coverQrRendererFailure(body)?.code ?? "worker_service_rejected_input", false);
+  }
   if (!response.ok) throw new WorkerFailure("worker_service_unavailable", true);
   if (Number(response.headers.get("content-length")) > maxBytes) throw new WorkerFailure("worker_response_too_large", false);
   if (!response.body) throw new WorkerFailure("worker_invalid_response", true);
@@ -198,7 +203,8 @@ export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetche
     await recheckImages();
     return { ...parsed.data, requestedChannel: job.channel, imageSha256 };
   }
-  const raw = await serviceRequest(fetcher, "RENDERING", "/render", { editionConfig: config, bookModel: model, ...images }, 220_000_000, signal);
+  const raw = await serviceRequest(fetcher, "RENDERING", "/render", { editionConfig: config, bookModel: model, ...images },
+    220_000_000, signal, config.cover.qr_code.enabled);
   const parsed = renderResponseSchema.safeParse(raw);
   const format = config.kind === "ebook" ? "epub" : "pdf";
   if (!parsed.success || parsed.data.format !== format) throw new WorkerFailure("worker_invalid_response", true);

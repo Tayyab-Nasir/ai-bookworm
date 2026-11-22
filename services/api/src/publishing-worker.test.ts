@@ -320,6 +320,28 @@ test("leased render completion persists verified cover version and policy", asyn
   assert.deepEqual(fixture.uploads.map(upload => upload.bytes), [fixture.epub, fixture.png]);
 });
 
+test("leased render records an actionable QR failure without uploading or retrying", async () => {
+  const fixture = await savedCoverWorkerFixture(true);
+  const edition = fixture.tables.editions[0];
+  edition.edition_metadata_json = { ...(edition.edition_metadata_json as Row),
+    cover: { asset_id: IMAGE, qr_code: { enabled: true, url: "https://example.test/book", size_px: 96 } },
+  };
+  let failure: Row | undefined;
+  const sb = Object.assign(fixture.sb, { rpc: async (name: string, args: Row) => {
+    if (name === "claim_publishing_job") return { data: [fixture.job], error: null };
+    assert.equal(name, "fail_leased_publishing_job");
+    failure = args;
+    return { data: { id: JOB, status: "failed" }, error: null };
+  } }) as never;
+  const fetcher = async () => Response.json({
+    detail: "QR size is too small for this destination; increase QR size or shorten the HTTPS URL",
+  }, { status: 422 });
+  assert.deepEqual(await runOnePublishingJob(sb, { fetcher }), { status: "failed", jobId: JOB });
+  assert.equal(failure?.p_error_code, "cover_qr_too_small");
+  assert.equal(failure?.p_retryable, false);
+  assert.deepEqual(fixture.uploads, []);
+});
+
 test("publishing worker terminally rejects incompatible cover versions without redispatch", async () => {
   for (const coverRendererVersion of [null, "cover-1.3.0", "cover-1.5.0"]) {
     const fixture = await savedCoverWorkerFixture(true);

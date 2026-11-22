@@ -3,6 +3,7 @@ import { z } from "zod";
 import { AppError } from "../errors.js";
 import { loadBook } from "../lib/authoring.js";
 import { boundedSupabaseFetch } from "../lib/supabase.js";
+import { savedCoverQrCorrection } from "../lib/cover-qr-failure.js";
 
 const ids = z.object({ editionId: z.guid(), requestId: z.guid() }).strict();
 const query = z.object({ bookId: z.guid() }).strict();
@@ -25,7 +26,7 @@ export function renderRequestRoutes(app: FastifyInstance) {
     if (editionError) throw new AppError(503, "Render request status is unavailable.");
     if (!edition || edition.id !== editionId || edition.book_id !== bookId) throw new AppError(404, "Edition not found for this book.");
     const { data: job, error } = await user.from("publishing_jobs")
-      .select("id,book_id,edition_id,created_by,channel,status,idempotency_key,request_json")
+      .select("id,book_id,edition_id,created_by,channel,status,idempotency_key,request_json,response_json")
       .eq("book_id", bookId).eq("edition_id", editionId).eq("created_by", req.userId)
       .eq("idempotency_key", requestId).maybeSingle();
     if (error) throw new AppError(503, "Render request status is unavailable.");
@@ -36,7 +37,8 @@ export function renderRequestRoutes(app: FastifyInstance) {
       || !z.guid().safeParse(job.id).success || !statuses.has(job.status)) {
       throw new AppError(503, "Render request status could not be verified.");
     }
-    return { bookId, editionId, requestId, job: { id: job.id, status: job.status } };
+    const coverQrCorrection = job.status === "failed" ? savedCoverQrCorrection(job.response_json?.error) : undefined;
+    return { bookId, editionId, requestId, job: { id: job.id, status: job.status, coverQrCorrection } };
   });
 
   app.post("/editions/:editionId/render-requests/:requestId/close", async (req, reply) => {

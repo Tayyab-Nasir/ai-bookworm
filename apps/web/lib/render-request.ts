@@ -35,16 +35,19 @@ export function clearRenderPointer(storage: Pick<Storage, "getItem" | "removeIte
   if (storage.getItem(target) !== null) throw new Error("Render status was confirmed, but recovery could not be cleared.");
 }
 
-export function validateRenderStatus(value: unknown, pointer: RenderPointer): { id: string; status: string } | null {
+export function validateRenderStatus(value: unknown, pointer: RenderPointer): { id: string; status: string; coverQrCorrection?: string } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Render status could not be verified.");
   const result = value as { bookId?: unknown; editionId?: unknown; requestId?: unknown; job?: unknown };
   if (result.bookId !== pointer.bookId || result.editionId !== pointer.editionId || result.requestId !== pointer.requestId
     || !("job" in result)) throw new Error("Render status belongs to a different request.");
   if (result.job === null) return null;
   if (!result.job || typeof result.job !== "object" || Array.isArray(result.job)) throw new Error("Render status could not be verified.");
-  const job = result.job as { id?: unknown; status?: unknown };
+  const job = result.job as { id?: unknown; status?: unknown; coverQrCorrection?: unknown };
   if (typeof job.id !== "string" || !uuid.test(job.id) || typeof job.status !== "string"
     || !["queued", "running", "succeeded", "failed", "cancelled"].includes(job.status)) throw new Error("Render status could not be verified.");
+  if (job.status === "failed" && typeof job.coverQrCorrection === "string" && job.coverQrCorrection.length <= 180) {
+    return { id: job.id, status: job.status, coverQrCorrection: job.coverQrCorrection };
+  }
   return { id: job.id, status: job.status };
 }
 
