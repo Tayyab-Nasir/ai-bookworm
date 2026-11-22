@@ -69,6 +69,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/retailer-init-retry-mounted.mjs
+      - name: Verify private artifact downloads and saved EPUB proof invalidation
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/private-artifact-mounted.mjs
       - name: Verify community directory and discussion account isolation in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium

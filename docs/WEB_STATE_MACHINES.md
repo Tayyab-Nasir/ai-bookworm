@@ -225,6 +225,9 @@ the allowlist without starting a worker.
 - Saved EPUB download renewal measures expiry from the signed-link request start,
   checks expiry again at download, and asks for renewal if the response arrives
   too late. Regression: `apps/web/tests/private-artifact-mounted.mjs`.
+- A saved EPUB section or resource 404 removes that unavailable reader source;
+  when it is the selected packaging proof, its preflight is invalidated. A
+  temporary reader failure keeps the existing proof available for retry.
 - Retailer request initialization remains closed if account or session-storage
   reads fail. A read-only retry rechecks account ownership and the current book
   before restoring the original pointer; stale attempts cannot replace a new book.

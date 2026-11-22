@@ -70,6 +70,13 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
     historyFence.current.clear(); clearContent(); setRenders([]); setHistoryBusy(false);
     setError("Your session or access changed. Sign in again before opening private saved exports.");
   }, [clearContent]);
+  const failMissingSource = useCallback((missing: SavedEpubSource) => {
+    const selected = packaging.current.source;
+    if (selected && readerSourceKey(selected) === readerSourceKey(missing)) packaging.current.onUnavailable?.(selected);
+    lastSelection.current = null;
+    clearContent(); setRenders(current => current.filter(entry => readerSourceKey(entry.source) !== readerSourceKey(missing)));
+    setError("This saved EPUB is no longer available. Refresh saved exports before choosing another proof.");
+  }, [clearContent]);
   const loadImage = useCallback(async (document: EpubReaderResult, descriptor: EpubReaderResource, valid: () => boolean) => {
     if (!valid()) return;
     setImageBusy(descriptor.index); setError(null);
@@ -79,9 +86,9 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
       const url = verifyReaderResource(result, document.source, descriptor);
       const next = retainReaderImage(imagesRef.current, descriptor.index, url, descriptor.sizeBytes, descriptor.width, descriptor.height);
       imagesRef.current = next; setImages(next);
-    } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else setError(retryMessage(reason)); } }
+    } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else if (reason instanceof ApiClientError && reason.status === 404) failMissingSource(document.source); else setError(retryMessage(reason)); } }
     finally { if (valid()) setImageBusy(null); }
-  }, [api, editionId, failAuthorization, readerGet]);
+  }, [api, editionId, failAuthorization, failMissingSource, readerGet]);
   const readSection = useCallback(async (selected: SavedEpubSource, index: number) => {
     lastSelection.current = { source: selected, index };
     const ticket = contentFence.current.reset(`${owner}:${readerSourceKey(selected)}:${index}`);
@@ -100,9 +107,9 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
       // One initial raster keeps fixed pages immediately useful. Every other
       // illustration is explicitly available through the parent controls.
       if (first) void loadImage(verified, first, valid);
-    } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else setError(retryMessage(reason)); } }
+    } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else if (reason instanceof ApiClientError && reason.status === 404) failMissingSource(selected); else setError(retryMessage(reason)); } }
     finally { if (valid()) setSectionBusy(false); }
-  }, [api, editionId, failAuthorization, loadImage, owner, readerGet]);
+  }, [api, editionId, failAuthorization, failMissingSource, loadImage, owner, readerGet]);
   const refreshHistory = useCallback(async (preserveSelection = false) => {
     if (!actor) return;
     if (!preserveSelection) lastSelection.current = null;

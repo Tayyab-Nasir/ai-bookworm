@@ -404,3 +404,37 @@ test("a slow EPUB download reply cannot extend the signed link lifetime", async 
     await expect(desk.getByRole("button", { name: "Download saved EPUB v1" })).toHaveCount(0);
   } finally { await page.close(); }
 });
+
+test("a missing saved EPUB section invalidates its selected packaging preflight", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    const desk = await setupEpub(page);
+    await page.evaluate(() => { window.bookwormApi.runPreflight = async body => ({ jobId: window.ids.otherJob, requestedChannel: body.channel, channel: body.channel, ruleVersion: "fixture", errors: 0, warnings: 0, findings: [], sourceEpub: body.sourceEpub }); });
+    await desk.getByRole("button", { name: "Use this EPUB for packaging" }).click();
+    await page.getByRole("combobox", { name: "Preflight target" }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight" }).click();
+    const create = page.getByRole("button", { name: "Create retailer package" });
+    await expect(create).toBeEnabled();
+    await page.evaluate(() => { window.bookwormApi.readEpubSection = async () => { throw new window.ApiClientError(404, "not_found", "Saved render not found", "fixture"); }; });
+    await desk.getByRole("button", { name: "Refresh saved exports" }).click();
+    await expect(page.getByText("The selected EPUB could not be verified. Choose a saved proof and run retailer preflight again.")).toBeVisible();
+    await expect(create).toBeDisabled();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 0);
+  } finally { await page.close(); }
+});
+
+test("a temporarily unavailable EPUB reader preserves the selected packaging preflight", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    const desk = await setupEpub(page);
+    await page.evaluate(() => { window.bookwormApi.runPreflight = async body => ({ jobId: window.ids.otherJob, requestedChannel: body.channel, channel: body.channel, ruleVersion: "fixture", errors: 0, warnings: 0, findings: [], sourceEpub: body.sourceEpub }); });
+    await desk.getByRole("button", { name: "Use this EPUB for packaging" }).click();
+    await page.getByRole("combobox", { name: "Preflight target" }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight" }).click();
+    const create = page.getByRole("button", { name: "Create retailer package" }); await expect(create).toBeEnabled();
+    await page.evaluate(() => { window.bookwormApi.readEpubSection = async () => { throw new window.ApiClientError(503, "unavailable", "Reader busy", "fixture"); }; });
+    await desk.getByRole("button", { name: "Refresh saved exports" }).click();
+    await expect(desk.getByText(/saved reader is busy/)).toBeVisible(); await expect(create).toBeEnabled();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 0);
+  } finally { await page.close(); }
+});
