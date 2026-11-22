@@ -1,0 +1,162 @@
+"""Offline storage contract smoke with lightrag-hku==1.5.7.
+
+Install the pinned SDK in a separate virtual environment and run this file with
+that environment's Python. Requires no network or model credentials at runtime.
+"""
+import asyncio
+import hashlib
+import json
+import os
+import re
+import socket
+from importlib.metadata import version
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+
+import numpy as np
+from lightrag import LightRAG, QueryParam
+from lightrag.utils import EmbeddingFunc, Tokenizer
+
+
+class FixtureTokenizer:
+    """Character tokenizer keeps the small synthetic test offline."""
+
+    def encode(self, text):
+        return [ord(char) for char in text]
+
+    def decode(self, tokens):
+        return "".join(map(chr, tokens))
+
+
+async def fixture_embeddings(texts):
+    vectors = np.zeros((len(texts), 256), dtype=np.float32)
+    for row, text in zip(vectors, texts, strict=True):
+        for word in re.findall(r"\w+", text.casefold()):
+            index = hashlib.sha256(word.encode()).digest()[0]
+            row[index] += 1
+    return vectors
+
+
+async def fixture_extraction(prompt, **_kwargs):
+    for subject, item in (("Elara", "silver compass"), ("Elara", "amber lantern"), ("Mira", "cobalt atlas")):
+        article = "an" if item == "amber lantern" else "a"
+        fact = f"{subject} carries {article} {item}."
+        if fact in prompt:
+            separator = "<|#|>"
+            records = (
+                ("entity", subject, "Person", f"A character named {subject}."),
+                ("entity", item, "Artifact", f"The {item}."),
+                ("relation", subject, item, "carries", fact),
+            )
+            return "\n".join(separator.join(record) for record in records) + "\n<|COMPLETE|>"
+    raise AssertionError("Unexpected LLM input for the deterministic extraction fixture")
+
+
+def new_scope(root, workspace):
+    return LightRAG(
+        working_dir=str(root),
+        workspace=workspace,
+        kv_storage="JsonKVStorage",
+        doc_status_storage="JsonDocStatusStorage",
+        graph_storage="NetworkXStorage",
+        vector_storage="NanoVectorDBStorage",
+        tokenizer=Tokenizer("fixture-character", FixtureTokenizer()),
+        embedding_func=EmbeddingFunc(embedding_dim=256, max_token_size=1000, func=fixture_embeddings, model_name="fixture-lexical"),
+        llm_model_func=fixture_extraction,
+        llm_model_name="fixture-graph-extraction",
+        enable_llm_cache=False,
+        enable_llm_cache_for_entity_extract=False,
+        entity_extract_max_gleaning=0,
+        cosine_better_than_threshold=0.1,
+    )
+
+
+async def chunks(client, text):
+    response = await client.aquery_data(
+        text,
+        param=QueryParam(mode="naive", top_k=8, chunk_top_k=8, enable_rerank=False),
+    )
+    return response.get("data", {}).get("chunks", [])
+
+
+async def assert_one(client, text, path, expected_text):
+    result = await chunks(client, text)
+    assert len(result) == 1, (text, result)
+    hit = result[0]
+    assert (hit["file_path"], hit["content"]) == (path, expected_text), hit
+    assert hit["reference_id"] and hit["chunk_id"]
+
+
+async def exercise(root):
+    first = new_scope(root, "fixture_book_a")
+    second = new_scope(root, "fixture_book_b")
+    old = "Elara carries a silver compass."
+    replacement = "Elara carries an amber lantern."
+    other = "Mira carries a cobalt atlas."
+    await first.initialize_storages()
+    await second.initialize_storages()
+    try:
+        await first.ainsert(old, ids="chapter-one", file_paths="book-a/v1/book-a-v1-chapter-one.txt")
+        await second.ainsert(other, ids="chapter-one", file_paths="book-b-v1-chapter-one.txt")
+        await assert_one(first, "silver compass", "book-a-v1-chapter-one.txt", old)
+        await assert_one(second, "cobalt atlas", "book-b-v1-chapter-one.txt", other)
+        assert await chunks(first, "cobalt atlas") == []
+        assert await chunks(second, "silver compass") == []
+        local = QueryParam(mode="local", top_k=8, chunk_top_k=8, ll_keywords=["silver compass"],
+                           hl_keywords=["carries"], enable_rerank=False)
+        graph_result = (await first.aquery_data("silver compass", param=local))["data"]
+        assert any(row["entity_name"].casefold() == "silver compass" for row in graph_result["entities"]), graph_result
+        assert any(row["file_path"] == "book-a-v1-chapter-one.txt" for row in graph_result["chunks"]), graph_result
+        assert await first.chunk_entity_relation_graph.has_edge("Elara", "silver compass")
+        assert not await second.chunk_entity_relation_graph.has_node("silver compass")
+
+        deletion = await first.adelete_by_doc_id("chapter-one")
+        assert deletion.status == "success", deletion
+        assert await chunks(first, "silver compass") == []
+        assert not await first.chunk_entity_relation_graph.has_node("silver compass")
+        assert not await first.chunk_entity_relation_graph.has_edge("Elara", "silver compass")
+        assert await second.chunk_entity_relation_graph.has_edge("Mira", "cobalt atlas")
+        await first.ainsert(replacement, ids="chapter-two", file_paths="book-a-v2-chapter-one.txt")
+        await assert_one(first, "amber lantern", "book-a-v2-chapter-one.txt", replacement)
+        assert await chunks(first, "silver compass") == []
+        await assert_one(second, "cobalt atlas", "book-b-v1-chapter-one.txt", other)
+    finally:
+        await second.finalize_storages()
+        await first.finalize_storages()
+
+    reopened = new_scope(root, "fixture_book_a")
+    await reopened.initialize_storages()
+    try:
+        await assert_one(reopened, "amber lantern", "book-a-v2-chapter-one.txt", replacement)
+        assert await chunks(reopened, "silver compass") == []
+        assert await chunks(reopened, "cobalt atlas") == []
+        assert await reopened.chunk_entity_relation_graph.has_edge("Elara", "amber lantern")
+        assert not await reopened.chunk_entity_relation_graph.has_node("silver compass")
+    finally:
+        await reopened.finalize_storages()
+
+
+async def main():
+    def reject_connection(*_args, **_kwargs):
+        raise AssertionError("Network connection attempted during LightRAG fixture")
+
+    assert version("lightrag-hku") == "1.5.7"
+    with TemporaryDirectory(prefix="bookiewookie-lightrag-") as root:
+        with patch.object(socket.socket, "connect", reject_connection), patch.object(socket.socket, "connect_ex", reject_connection):
+            await exercise(Path(root))
+    print(json.dumps({
+        "lightrag": version("lightrag-hku"),
+        "modes": ["naive", "local"],
+        "two_workspaces_same_document_id": "passed",
+        "exact_chunk_and_reference": "passed",
+        "reference_uses_filename": "confirmed",
+        "graph_relation_lifecycle": "passed",
+        "delete_replace_and_reopen": "passed",
+    }))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

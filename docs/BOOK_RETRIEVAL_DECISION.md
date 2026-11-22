@@ -69,3 +69,20 @@ proof that its workspace model satisfies Bookworm's book-level authorization
 or deletion rules. Keep it out of the author request path until a private
 adapter proves those invariants and improves the measured citation/recall
 baseline. [Official LightRAG repository](https://github.com/HKUDS/LightRAG).
+
+## Offline LightRAG smoke
+
+The optional synthetic check pins LightRAG 1.5.7. Install it in a dedicated
+Python environment with `pip install lightrag-hku==1.5.7`, then run
+`python tests/ai-evals/evals/book-retrieval-lightrag-smoke.py`.
+It exercises two file-backed workspaces using the same document ID, confirms
+returned excerpts and citation IDs, and verifies chunk and graph removal,
+replacement, and reopen. The smoke uses deterministic extraction and embeddings
+and denies socket connections during execution.
+
+For citations, LightRAG normalizes the supplied source path to its basename.
+Use an opaque source token resolved to BookieWookie's authorized document
+version if building an adapter. Never treat the returned path or extracted
+relationship as authorization. The smoke provides local lifecycle evidence.
+A representative semantic recall comparison, PostgreSQL storage behavior and
+live application authorization still require independent verification.
