@@ -26,6 +26,15 @@ test('late adoption updates its original project without navigating away from a 
  assert.equal(await p.evaluate(()=>window.pushedTo ?? null),null);
  await expect(p.getByRole('link',{name:'Open translated draft'})).toHaveCount(1);
  }finally{await p.close();}});
+test('simultaneous acceptance and adoption completions cannot attach a draft to the new project',async()=>{const p=await fixture();try{
+ await ready(p);const second='88888888-8888-4888-8888-888888888888',draft='77777777-7777-4777-8777-777777777777';
+ await p.evaluate(({second})=>{window.api.acceptTranslationQuote=()=>window.defer('accept-other');window.api.adoptTranslationProject=()=>window.defer('adopt-first');window.otherProject={...window.project(window.ids.A),id:second,chapters:[{...window.project(window.ids.A).chapters[0],chapterTitle:'Other project chapter'}]}},{second});
+ await p.getByRole('button',{name:'Review quote'}).click();await p.getByRole('button',{name:'Confirm 23-credit hold & translate'}).click();await p.waitForFunction(()=>!!window.gates['accept-other']);
+ await p.getByRole('button',{name:'Preview',exact:true}).click();await p.getByLabel('Translated draft title').fill('First project title');await p.getByRole('button',{name:'Create separate draft'}).click();await p.waitForFunction(()=>!!window.gates['adopt-first']);
+ await p.evaluate(()=>{window.proposal={...window.proposal,status:'accepted',acceptedProjectId:window.otherProject.id};window.api.getTranslationProposal=()=>window.defer('accepted-receipt');window.gates['accept-other'].resolve(window.otherProject)});await p.waitForFunction(()=>!!window.gates['accepted-receipt']);
+ await p.evaluate(draft=>{window.gates['accepted-receipt'].resolve(window.proposal);window.gates['adopt-first'].resolve({book:{id:draft,workspace_id:window.ids.WS,title:'First project title'}})},draft);
+ await expect(p.getByText('Other project chapter')).toBeVisible();await expect(p.getByRole('button',{name:'Create separate draft'})).toBeVisible();assert.equal(await p.evaluate(()=>window.pushedTo??null),null);
+ }finally{await p.close();}});
 test('translation draft titles stay scoped to each project through refresh and adoption',async()=>{const p=await fixture();try{
  await ready(p);const second='88888888-8888-4888-8888-888888888888';
  await p.evaluate(second=>{window.api.listTranslationProjects=async(_book,actor)=>({projects:[window.project(actor),{...window.project(actor),id:second,targetLanguage:'fr'}]});window.api.getTranslationProject=async(id,_text,actor)=>({...window.project(actor),id,targetLanguage:id===second?'fr':'es'});window.api.adoptTranslationProject=async(id,body,actor)=>{window.calls.push(['adopt',actor,id,body]);return {book:{id:'77777777-7777-4777-8777-777777777777',workspace_id:window.ids.WS,title:body.title}}}},second);

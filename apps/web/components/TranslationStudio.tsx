@@ -125,7 +125,7 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
       }
       if (scope.current() && historySequence.current === sequence) {
         setBook(identity.book); setRole(identity.role); setProjects(history.projects);
-        if (selectedAtStart) { setSelected(current => current?.id === selectedAtStart.id ? verifiedSelection : current); if (!verifiedSelection) setBilling(null); }
+        if (selectedAtStart) { if (selectedRef.current?.id === selectedAtStart.id) selectedRef.current = verifiedSelection; setSelected(current => current?.id === selectedAtStart.id ? verifiedSelection : current); if (!verifiedSelection) setBilling(null); }
         setHistoryState("ready");
       }
     } catch(error) { if (scope.current() && historySequence.current === sequence && !isSuperseded(error)) setHistoryState("error"); throw error; }
@@ -146,7 +146,7 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
     try {
       const project = await scope.checked(() => api.getTranslationProject(projectId, includeText, scope.actor));
       if (project.id !== projectId || project.bookId !== bookId) throw new Error("Translation does not match this book.");
-      setSelected(project);
+      selectedRef.current = project; setSelected(project);
       setBillingRevision((revision) => revision + 1);
       setProjects((current) => current.map((item) => item.id === project.id ? { ...project, chapters: project.chapters.map(({ translatedText: _text, ...chapter }) => chapter) } : item));
     } catch (error) { if (scope.current() && !isSuperseded(error)) setError("Could not refresh translation. Recheck your account and try again."); }
@@ -195,7 +195,7 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
 
     </>}
     <TranslationQuotePanel key={bookId} bookId={bookId} scope={scope} active={active && historyState === "ready"} sourceLanguage={book?.language ?? ""} editable={editable} disabled={Boolean(busy)||historyState!=="ready"} onAccepted={(project) => {
-      setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]); setSelected(project);
+      selectedRef.current = project; setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]); setSelected(project);
       setNotice("Translation purchase confirmed. Track chapter progress and your held credits below.");
     }} />
 
