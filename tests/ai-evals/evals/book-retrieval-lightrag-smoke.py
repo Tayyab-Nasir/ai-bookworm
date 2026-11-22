@@ -11,7 +11,7 @@ import re
 import socket
 import sqlite3
 import sys
-from contextlib import closing
+from contextlib import closing, contextmanager
 from importlib.metadata import version
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -446,12 +446,11 @@ async def isolated_failover_writer(root, first):
         await failover_writer(root, first)
 
 
-async def postgres_fixture():
+@contextmanager
+def postgres_sandbox():
     if os.environ.get("BOOKWORM_LIGHTRAG_PG_TEST") != "1":
         raise RuntimeError("Requires a disposable BookieWookie LightRAG PostgreSQL fixture")
     assert version("lightrag-hku") == "1.5.7"
-    import asyncpg
-
     address = ("127.0.0.1", 55440)
     login = {"host": address[0], "port": address[1], "user": "lightrag_ci",
              "password": "disposable-lightrag-only", "database": "bookworm_lightrag_ci"}
@@ -459,7 +458,11 @@ async def postgres_fixture():
     config = {"POSTGRES_HOST": login["host"], "POSTGRES_PORT": str(login["port"]),
               "POSTGRES_USER": worker["user"], "POSTGRES_PASSWORD": worker["password"],
               "POSTGRES_DATABASE": login["database"], "POSTGRES_SSL_MODE": "disable",
-              "POSTGRES_MAX_CONNECTIONS": "5", "PYTHON_DOTENV_DISABLED": "1"}
+              "POSTGRES_MAX_CONNECTIONS": "5", "PYTHON_DOTENV_DISABLED": "1",
+              "BOOKWORM_LIGHTRAG_PG_TEST": "1"}
+    for key in ("PATH", "LD_LIBRARY_PATH", "SystemRoot", "TEMP", "TMP"):
+        if key in os.environ:
+            config[key] = os.environ[key]
     original_connect = socket.socket.connect
     original_connect_ex = socket.socket.connect_ex
 
@@ -470,10 +473,118 @@ async def postgres_fixture():
             return connect(sock, destination)
         return checked
 
-    with (TemporaryDirectory(prefix="bookiewookie-lightrag-postgres-") as root,
-          patch.dict(os.environ, config, clear=True),
+    with (patch.dict(os.environ, config, clear=True),
           patch.object(socket.socket, "connect", restrict(original_connect)),
           patch.object(socket.socket, "connect_ex", restrict(original_connect_ex))):
+        yield login, worker
+
+
+PG_FAILOVER_SCOPE = "fixture_pg_book_failover"
+PG_FAILOVER_PASSAGE = "Elara carries a silver compass."
+
+
+async def postgres_failover_writer(root, mode):
+    if mode not in {"first", "successor"} or root.name != mode or not root.parent.name.startswith(
+        "bookiewookie-lightrag-postgres-"
+    ):
+        raise RuntimeError("PostgreSQL worker requires an initialized disposable fixture")
+    with postgres_sandbox() as (_, worker):
+        import asyncpg
+
+        owner = await asyncpg.connect(
+            **worker, ssl=False, timeout=5,
+            server_settings={"application_name": f"bookworm_lightrag_{mode}", "statement_timeout": "12000"},
+        )
+        try:
+            await owner.execute("select pg_advisory_lock(912711, 43007)")
+            state = await owner.fetchrow("select generation, occurrences, applied from fixture_writer_state")
+            expected = (1, 1, 0) if mode == "first" else (2, 0, 0)
+            assert tuple(state.values()) == expected
+            client = new_scope(root, PG_FAILOVER_SCOPE, postgres=True)
+            filename = opaque_passage_name(PG_FAILOVER_SCOPE, PG_FAILOVER_PASSAGE)
+            index_id = filename.removesuffix(".txt")
+            await client.initialize_storages()
+            try:
+                if mode == "first":
+                    await client.ainsert(PG_FAILOVER_PASSAGE, ids=index_id, file_paths=filename)
+                    await assert_one(client, "silver compass", filename, PG_FAILOVER_PASSAGE)
+                else:
+                    await assert_one(client, "silver compass", filename, PG_FAILOVER_PASSAGE)
+                    assert (await client.adelete_by_doc_id(index_id)).status == "success"
+            finally:
+                await client.finalize_storages()
+
+            if mode == "first":
+                # Publication of this checkpoint happens after storage is finalized.
+                await owner.execute("update fixture_writer_state set first_persisted=true")
+                await asyncio.sleep(30)
+                raise AssertionError("The fixture supervisor did not stop the first writer")
+            assert await owner.execute("""
+                update fixture_writer_state set applied=2 where generation=2 and occurrences=0
+            """) == "UPDATE 1"
+        finally:
+            await owner.close()
+
+
+async def exercise_postgres_failover(root, probe):
+    await probe.execute("""
+        create table fixture_writer_state (
+            generation integer not null, occurrences integer not null,
+            applied integer not null, first_persisted boolean not null
+        );
+        insert into fixture_writer_state values (1, 1, 0, false);
+        grant select, update (applied, first_persisted) on fixture_writer_state to lightrag_worker_ci;
+    """)
+
+    async def start(mode):
+        with (root / f"{mode}.log").open("wb") as log:
+            return await asyncio.create_subprocess_exec(
+                sys.executable, str(Path(__file__).resolve()), "--pg-failover-writer", str(root / mode), mode,
+                stdout=log, stderr=log,
+            )
+
+    async def wait_for(query, child, mode):
+        async with asyncio.timeout(12):
+            while not await probe.fetchval(query):
+                assert child.returncode is None, (root / f"{mode}.log").read_text(encoding="utf-8")
+                await asyncio.sleep(0.03)
+
+    first = await start("first")
+    successor = None
+    try:
+        await wait_for("select first_persisted from fixture_writer_state", first, "first")
+        await probe.execute("update fixture_writer_state set generation=2, occurrences=0")
+        successor = await start("successor")
+        await wait_for("""
+            select exists(select 1 from pg_stat_activity
+              where application_name='bookworm_lightrag_successor' and wait_event='advisory')
+        """, successor, "successor")
+        assert await probe.fetchval("select applied from fixture_writer_state") == 0
+        first.kill()
+        assert await asyncio.wait_for(first.wait(), timeout=5) != 0
+        assert await asyncio.wait_for(successor.wait(), timeout=12) == 0, (
+            root / "successor.log"
+        ).read_text(encoding="utf-8")
+        assert await probe.fetchval("select applied from fixture_writer_state") == 2
+    finally:
+        for child in (first, successor):
+            if child is not None and child.returncode is None:
+                child.kill()
+                await child.wait()
+
+    reopened = new_scope(root / "final_reader", PG_FAILOVER_SCOPE, postgres=True)
+    await reopened.initialize_storages()
+    try:
+        assert await chunks(reopened, "silver compass") == []
+        assert not await reopened.chunk_entity_relation_graph.has_edge("Elara", "silver compass")
+    finally:
+        await reopened.finalize_storages()
+
+
+async def postgres_fixture():
+    with TemporaryDirectory(prefix="bookiewookie-lightrag-postgres-") as root, postgres_sandbox() as (login, worker):
+        import asyncpg
+
         probe = await asyncpg.connect(**login, ssl=False, timeout=5)
         try:
             assert await probe.fetchval("select current_database()") == login["database"]
@@ -520,12 +631,14 @@ async def postgres_fixture():
                 ("fixture_book_a", "Elara carries an amber lantern."),
                 ("fixture_book_b", "Mira carries a cobalt atlas."),
             ]
+            await exercise_postgres_failover(Path(root), probe)
         finally:
             await probe.close()
     print(json.dumps({"lightrag": version("lightrag-hku"), "postgres_kv_vector_status": "passed",
                       "same_document_id_book_scoping": "passed", "deletion_replacement_reopen": "passed",
                       "database_worker": "non-superuser; admin-only schema denied",
-                      "graph_storage": "Apache AGE 1.6.0; exact relation survived a fresh client"}))
+                      "graph_storage": "Apache AGE 1.6.0; exact relation survived a fresh client",
+                      "postgres_process_failover": "advisory lock serialized writers; successor applied durable deletion"}))
 
 
 if __name__ == "__main__":
@@ -533,5 +646,7 @@ if __name__ == "__main__":
         asyncio.run(isolated_failover_writer(Path(sys.argv[2]), sys.argv[3] == "first"))
     elif sys.argv[1:] == ["--postgres-fixture"]:
         asyncio.run(postgres_fixture())
+    elif len(sys.argv) == 4 and sys.argv[1] == "--pg-failover-writer":
+        asyncio.run(postgres_failover_writer(Path(sys.argv[2]), sys.argv[3]))
     else:
         asyncio.run(main())
