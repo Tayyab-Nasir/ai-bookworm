@@ -794,13 +794,18 @@ test("managed publishing requires exact package consent and recovers a lost repl
       const { job, book, edition, workspace, asset } = window.ids;
       const checksum = "a".repeat(64);
       const storagePath = `workspaces/${workspace}/assets/${asset}/v1/kdp-export.zip`;
-      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{
+      const packageJob = (expiresIn) => ({
         id: job, bookId: book, editionId: edition, channel: "kdp", status: "succeeded", createdAt: "2026-10-18T00:00:00Z",
         package: window.consentPackageUnavailable ? null : { asset: { id: asset, workspace_id: workspace, storage_path: storagePath, size_bytes: 1024, checksum },
-          download: { url: window.results[job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 300 } },
-      }] });
+          download: { url: window.results[job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn } },
+      });
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [packageJob(1)] });
+      window.bookwormApi.getPublishingJob = async () => packageJob(300);
       window.consentWrites = [];
-      window.bookwormApi.getManagedPublishingRequest = async () => window.consentReceipt ?? null;
+      window.bookwormApi.getManagedPublishingRequest = async () => {
+        if (!window.firstConsentRead) await new Promise(resolve => { window.firstConsentRead = resolve; });
+        return window.consentReceipt ?? null;
+      };
       window.bookwormApi.requestManagedPublishing = async (jobId, workspaceId, packageSha256, requestedBy) => {
         window.consentWrites.push({ jobId, workspaceId, packageSha256, requestedBy });
         window.consentReceipt = { jobId, workspaceId, packageSha256, requestedBy, requestedAt: "2026-10-18T00:00:00Z", withdrawnAt: null, confirmedAt: null, listingUrl: null };
@@ -818,6 +823,10 @@ test("managed publishing requires exact package consent and recovers a lost repl
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
     await history.getByText("Managed publishing request", { exact: true }).click();
     const consent = history.locator("details").filter({ hasText: "Managed publishing request" });
+    await expect(consent.getByRole("status")).toContainText("Checking the saved request");
+    await history.getByRole("button", { name: "Renew private link" }).click();
+    await expect(history.getByRole("button", { name: "Download private ZIP" })).toBeVisible();
+    await page.evaluate(() => window.firstConsentRead());
     const record = consent.getByRole("button", { name: "Record consent" });
     await expect(record).toBeDisabled();
     await consent.getByRole("checkbox").check();

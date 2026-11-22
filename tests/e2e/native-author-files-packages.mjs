@@ -31,11 +31,15 @@ async function verifyManagedPublishing(request, service, author, alice, bob, pac
     await request(bob.token, 'GET', authorRequest(primary), undefined, 404, operator);
     await request(bob.token, 'GET', zip(primary), undefined, 404, operator);
     const initial = await request(alice.token, 'PUT', authorRequest(primary), consent(primary), 200, owner);
+    assert.equal(initial.request.claimedAt, null);
     await request(alice.token, 'PUT', authorRequest(withdrawn), consent(withdrawn), 200, owner);
     assert.deepEqual((await request(bob.token, 'GET', queue, undefined, 200, operator)).requests.map(row => row.jobId).sort(),
       [primary.id, withdrawn.id].sort());
     assert.deepEqual(await request(alice.token, 'GET', authorRequest(primary), undefined, 200, owner), initial);
     const assigned = await request(bob.token, 'PUT', claim(primary), consent(primary), 200, operator);
+    const authorClaim = (await request(alice.token, 'GET', authorRequest(primary), undefined, 200, owner)).request;
+    assert.equal(authorClaim.claimedAt, assigned.claim.claimedAt);
+    assert.equal(Object.values(authorClaim).includes(bob.userId), false);
     assert.deepEqual(await request(bob.token, 'PUT', claim(primary), consent(primary), 200, operator), assigned);
     await request(otherOperator.token, 'PUT', claim(primary), consent(primary), 409, peer);
     await request(otherOperator.token, 'GET', zip(primary), undefined, 404, peer);
