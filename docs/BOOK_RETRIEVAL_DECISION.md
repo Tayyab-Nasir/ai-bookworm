@@ -113,7 +113,22 @@ repeated text, retains the other citation after an ordinary authoring edit,
 and rejects a stale derived row even when it still exists. A viewer sees both
 sources while their membership is active and neither after revocation.
 This tests database filtering without a hosted database or app route. Worker
-concurrency, index cleanup and performance still need measurement.
+concurrency and index cleanup still need verification.
+
+Set `BOOKWORM_RETRIEVAL_MEASURE=1` on either lexical benchmark command to
+compare the original citation lookup with a staged match and a disposable
+`(book_id, text_hash)` index. The existing MD5 hash narrows candidates.
+The exact excerpt, SHA-256 token, workspace policy and current revision
+remain required for a citation. The runner checks identical ordered rows
+and records nine warmed EXPLAIN ANALYZE execution times per query.
+
+In a local PostgreSQL/WASM run, the 1,830- and 3,806-chunk books each had
+100 chapters. The original median execution times were 79 ms and 155 ms.
+Indexed medians were 1.21 ms and 0.86 ms, respectively. PostgreSQL used the
+composite index for each hint, then read the matching rows by primary key.
+These timings exclude network, retrieval and embedding time. The compound
+index is created and dropped within the disposable benchmark. Native
+PostgreSQL latency, index write cost and concurrency remain unmeasured.
 
 ## Local multilingual retrieval comparison
 

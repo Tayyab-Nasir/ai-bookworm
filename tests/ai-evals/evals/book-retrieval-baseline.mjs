@@ -5,7 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { citext } from "@electric-sql/pglite/contrib/citext";
 import { pgcrypto } from "@electric-sql/pglite/contrib/pgcrypto";
-import { verifyCitationBinding } from "./book-retrieval-citation-binding.mjs";
+import { measureCitationLookup, verifyCitationBinding } from "./book-retrieval-citation-binding.mjs";
 
 const root = new URL("../../../", import.meta.url);
 const fixturePath = process.argv[2] ?? new URL("../fixtures/book-retrieval.json", import.meta.url);
@@ -101,9 +101,11 @@ try {
   const citationBinding = await verifyCitationBinding({ db, owner, other, makeBook, setActor, foreignBook });
   const expected = rows.reduce((total, row) => total + row.expected, 0);
   const retrieved = rows.reduce((total, row) => total + row.retrieved, 0);
+  const citationProfile = process.env.BOOKWORM_RETRIEVAL_MEASURE === "1"
+    ? await measureCitationLookup(db, bookId) : undefined;
   console.log(JSON.stringify({
     backend: "postgres-fts", fixtureHash, chapters: chapters.length, limit: 8, expected, retrieved,
-    rows, citedSourcesAndWorkspaceIsolation: "passed", citationBinding,
+    rows, citedSourcesAndWorkspaceIsolation: "passed", citationBinding, citationProfile,
   }, null, 2));
 } finally {
   await db.close();
