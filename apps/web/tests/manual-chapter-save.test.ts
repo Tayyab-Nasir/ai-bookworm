@@ -73,7 +73,11 @@ test("chapter create, reorder and setup preserve the original actor in web trans
     const api = createClient({ baseUrl: "/api/backend" });
     await api.createChapter(scope.bookId, { title: "First", idempotencyKey: pointer.operationId }, scope.userId);
     await api.reorderChapters(scope.bookId, { orderedIds: [scope.chapterId], expectedIds: [scope.chapterId] }, scope.userId);
-    assert.equal(calls.length, 2);
+    await api.getChapterCreation(scope.bookId, pointer.operationId, scope.userId);
+    await api.closeChapterCreation(scope.bookId, pointer.operationId, scope.userId);
+    assert.equal(calls.length, 4);
+    assert.equal(calls[2].init?.method, "GET");
+    assert.equal(calls[3].init?.method, "POST");
     for (const call of calls) assert.equal(new Headers(call.init?.headers).get("x-bookworm-actor"), scope.userId);
   } finally { globalThis.fetch = original; }
 });

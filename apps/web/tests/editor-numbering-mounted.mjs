@@ -58,13 +58,14 @@ const browser = await chromium.launch({ headless: true, channel: process.env.BRO
 const artifacts = await mkdtemp(resolve(tmpdir(), "bookworm-numbering-mounted-"));
 test.after(() => browser.close());
 
-async function fixture(width = 1280, parent = false, realReview = false) {
+async function fixture(width = 1280, parent = false, realReview = false, recoveryValue = null) {
   const page = await browser.newPage({ viewport: { width, height: 980 } });
   page.setDefaultTimeout(6000);
   await page.route("**/*", route => route.fulfill(new URL(route.request().url()).pathname === "/api/auth/session"
     ? { contentType: "application/json", body: JSON.stringify({ user: { id: "fixture-author" } }) }
     : { contentType: "text/html", body: '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><div id="root"></div></body></html>' }));
   await page.goto("http://127.0.0.1/bookworm-editor-numbering-fixture");
+  if (recoveryValue !== null) await page.evaluate(value => sessionStorage.setItem("bookworm:chapter-creation:v1:fixture-author:book", value), recoveryValue);
   await page.addStyleTag({ content: styles.css + "body {padding: 16px;}" });
   await page.evaluate(parent => {
     window.saves = 0;
@@ -85,6 +86,7 @@ async function fixture(width = 1280, parent = false, realReview = false) {
       getChapterDocument: async chapterId => { window.documentReads.push(chapterId); return { role: "owner", document: { chapterId, version: 1, nodes: structuredClone(window.nodes) } }; },
       listDocumentVersions: async () => ({ versions: [{ id: "version", version_number: 1, created_at: "2026-10-05T12:00:00Z", plain_text: "Saved source" }] }),
       saveChapterDocument: async (chapterId, body) => { window.requests.push(body); return { version: 2, document: { chapterId, version: 2, nodes: body.nodes } }; },
+      getChapterCreation: async (bookId, requestKey) => ({ bookId, requestKey, status: "not_found", chapterId: null }),
       createChapter: async () => { window.creations++; throw new Error("Unexpected chapter write"); },
       restoreDocumentVersion: async () => { window.restores++; throw new Error("Unexpected restore write"); },
       listAiJobs: async () => ({ jobs: [] }),
@@ -984,7 +986,7 @@ test("chapter creation keeps the original actor and request after an account swi
     assert.equal(await page.evaluate(() => window.createCalls[0].expectedActor), "fixture-author");
     actor = "fixture-author"; await page.getByRole("button", { name: "Recheck original account" }).click();
     await page.getByRole("button", { name: "Retry chapter creation", exact: true }).waitFor();
-    assert.match(await page.locator("#chapter-creation-recovery").innerText(), /deleted.*create it again/);
+    assert.match(await page.locator("#chapter-creation-recovery").innerText(), /close it before starting/);
     assert.equal(await page.evaluate(() => window.createCalls.length), 1);
   } finally { await page.close(); }
 });
@@ -2681,4 +2683,222 @@ test('independent tab draft waits for pending save and rejects old base version'
     assert.match(await page.evaluate(()=>sessionStorage.getItem(window.tabKey)),/Older unsaved draft/);
     assert.equal(await page.getByText('Older unsaved draft',{exact:true}).count(),0);
   } finally {await page.close()}
+});
+
+test("unconfirmed chapter creation survives reload without storing its title or brief", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.createChapter = async () => { throw new Error("Synthetic response loss"); };
+    });
+    await page.getByLabel("New chapter", { exact: true }).fill("Private title");
+    await page.getByLabel("Optional AI drafting brief", { exact: true }).fill("Private brief");
+    await page.getByRole("button", { name: "Add & review AI brief", exact: true }).click();
+    await page.getByText(/Submit again to recover the original chapter request/).waitFor();
+    const stored = await page.evaluate(() => Object.entries(sessionStorage).find(([key]) => key.startsWith("bookworm:chapter-creation:v1:")));
+    assert.ok(stored);
+    assert.doesNotMatch(stored[1], /Private title|Private brief/);
+    const pointer = JSON.parse(stored[1]);
+
+    await page.reload();
+    await page.evaluate(() => {
+      const chapters = [{ id: "chapter", book_id: "book", title: "First chapter" }];
+      window.calls = [];
+      window.bookwormApi = {
+        getBook: async () => ({ book: { id: "book", workspace_id: "workspace", title: "Book" }, role: "owner" }),
+        listChapters: async () => ({ chapters }),
+        getChapterTitle: async chapterId => ({ bookId: "book", chapterId, title: "First chapter", revision: 0, updatedAt: "2026-10-23T15:00:00Z", role: "owner" }),
+        getChapterDocument: async chapterId => ({ role: "owner", document: { chapterId, version: 1, nodes: [{ id: "node", type: "paragraph", text: "Saved" }] } }),
+        listDocumentVersions: async () => ({ versions: [] }),
+        listAiJobs: async () => ({ jobs: [] }),
+        getChapterCreation: async (bookId, requestKey, actor) => {
+          window.calls.push(["read", bookId, requestKey, actor]);
+          return { bookId, requestKey, status: "not_found", chapterId: null };
+        },
+        closeChapterCreation: async (bookId, requestKey, actor) => {
+          window.calls.push(["close", bookId, requestKey, actor]);
+          return { bookId, requestKey, status: "closed", chapterId: null };
+        },
+      };
+    });
+    for (const file of parentBundle.outputFiles.filter(file => file.path.endsWith(".css"))) await page.addStyleTag({ content: file.text });
+    await page.addScriptTag({ content: parentBundle.outputFiles.find(file => file.path.endsWith(".js")).text });
+    await page.evaluate(() => window.renderBookEditor());
+    await page.getByText("An earlier chapter request is unconfirmed. Its title and brief are not in the recovery record.", { exact: true }).waitFor();
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: /Move .* (up|down)/ }).count(), 0);
+    await page.getByRole("button", { name: "Check chapter request" }).click();
+    await page.getByText(/original request may still arrive/).waitFor();
+    assert.ok(await page.evaluate(key => sessionStorage.getItem(key), stored[0]));
+    await page.getByRole("button", { name: "Close unconfirmed request" }).click();
+    await page.getByText("The unconfirmed request was closed. It cannot create a chapter later.", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(key => sessionStorage.getItem(key), stored[0]), null);
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).isDisabled(), false);
+    assert.deepEqual(await page.evaluate(() => window.calls), [
+      ["read", "book", pointer.requestKey, "fixture-author"],
+      ["close", "book", pointer.requestKey, "fixture-author"],
+    ]);
+  } finally { await page.close(); }
+});
+
+test("checking a committed chapter request refreshes the list without a second create", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      const chapters = [{ id: "chapter", book_id: "book", title: "First chapter" }, { id: "second", book_id: "book", title: "Second chapter" }];
+      window.creationCount = 0;
+      window.bookwormApi.createChapter = async (_bookId, body) => {
+        window.creationCount++;
+        chapters.push({ id: "created", book_id: "book", title: body.title });
+        throw new Error("Synthetic lost response");
+      };
+      window.bookwormApi.listChapters = async () => ({ chapters });
+      window.bookwormApi.getChapterCreation = async (bookId, requestKey) => ({ bookId, requestKey, status: "created", chapterId: "created" });
+    });
+    await page.getByLabel("New chapter", { exact: true }).fill("Recovered chapter");
+    await page.getByRole("button", { name: "Add chapter", exact: true }).click();
+    await page.getByText(/Submit again to recover the original chapter request/).waitFor();
+    await page.getByRole("button", { name: "Check chapter request" }).click();
+    await page.getByText("The original chapter was created. Select it in the chapter list to continue.", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.creationCount), 1);
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).inputValue(), "");
+    assert.equal(await page.getByRole("navigation", { name: "Chapters" }).getByText("Recovered chapter").count(), 1);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:chapter-creation:v1:"))), false);
+  } finally { await page.close(); }
+});
+
+test("unreadable chapter recovery blocks creation without hiding the manuscript", async () => {
+  const page = await fixture(1280, true, false, "not-json");
+  try {
+    await page.getByText(/Chapter recovery details are unreadable/).waitFor();
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("textbox", { name: "Manuscript editor" }).isVisible(), true);
+    assert.equal(await page.evaluate(() => window.creations), 0);
+  } finally { await page.close(); }
+});
+
+test("account change during chapter recovery retains the original pointer", async () => {
+  const page = await fixture(1280, true);
+  let actor = "fixture-author";
+  try {
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: actor } } }));
+    await page.evaluate(() => {
+      window.bookwormApi.createChapter = async () => { throw new Error("Synthetic response loss"); };
+      window.bookwormApi.closeChapterCreation = (bookId, requestKey) => new Promise(resolve => {
+        window.finishClose = () => resolve({ bookId, requestKey, status: "closed", chapterId: null });
+      });
+    });
+    await page.getByLabel("New chapter", { exact: true }).fill("Original request");
+    await page.getByRole("button", { name: "Add chapter", exact: true }).click();
+    await page.getByText(/Submit again to recover the original chapter request/).waitFor();
+    const stored = await page.evaluate(() => Object.keys(sessionStorage).find(key => key.startsWith("bookworm:chapter-creation:v1:")));
+    await page.getByRole("button", { name: "Close unconfirmed request" }).click();
+    await page.waitForFunction(() => typeof window.finishClose === "function");
+    actor = "different-author";
+    await page.evaluate(() => window.finishClose());
+    await page.getByText(/Your account changed/i).waitFor();
+    assert.ok(await page.evaluate(key => sessionStorage.getItem(key), stored));
+    assert.equal(await page.getByText("The unconfirmed request was closed. It cannot create a chapter later.", { exact: true }).count(), 0);
+  } finally { await page.close(); }
+});
+
+test("chapter creation remains blocked until recovery storage is rechecked", async () => {
+  const page = await fixture(1280, true, false, "broken");
+  try {
+    await page.getByText(/Chapter recovery details are unreadable/).waitFor();
+    const field = page.getByLabel("New chapter", { exact: true });
+    assert.equal(await field.isDisabled(), true);
+    await page.evaluate(() => sessionStorage.removeItem("bookworm:chapter-creation:v1:fixture-author:book"));
+    assert.equal(await field.isDisabled(), true);
+    await page.getByRole("button", { name: "Recheck chapter recovery" }).click();
+    await field.waitFor({ state: "visible" });
+    await page.waitForFunction(() => !document.querySelector("#new-chapter-title").disabled);
+    assert.equal(await field.isDisabled(), false);
+    assert.equal(await page.evaluate(() => window.creations), 0);
+  } finally { await page.close(); }
+});
+
+test("a removed chapter receipt does not recreate the chapter", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.createChapter = async () => { window.creations++; throw new Error("Synthetic response loss"); };
+      window.bookwormApi.getChapterCreation = async (bookId, requestKey) => ({ bookId, requestKey, status: window.creations ? "removed" : "not_found", chapterId: null });
+    });
+    await page.getByLabel("New chapter", { exact: true }).fill("Removed chapter");
+    await page.getByRole("button", { name: "Add chapter", exact: true }).click();
+    await page.getByText(/Submit again to recover the original chapter request/).waitFor();
+    await page.getByRole("button", { name: "Check chapter request" }).click();
+    await page.getByText("The original chapter was created and later removed. The same request cannot create it again.", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.creations), 1);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:chapter-creation:v1:"))), false);
+  } finally { await page.close(); }
+});
+
+test("chapter creation does not send without a durable recovery pointer", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      const original = Storage.prototype.setItem;
+      Storage.prototype.setItem = function(key, value) {
+        if (key.startsWith("bookworm:chapter-creation:v1:")) throw new DOMException("Storage unavailable", "QuotaExceededError");
+        return original.call(this, key, value);
+      };
+      window.restoreStorage = () => { Storage.prototype.setItem = original; };
+    });
+    await page.getByLabel("New chapter", { exact: true }).fill("Draft title");
+    await page.getByRole("button", { name: "Add chapter", exact: true }).click();
+    await page.getByText(/Chapter recovery could not be saved. No new chapter was sent/).waitFor();
+    assert.equal(await page.evaluate(() => window.creations), 0);
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).isDisabled(), true);
+    await page.evaluate(() => window.restoreStorage());
+    await page.getByRole("button", { name: "Recheck chapter recovery" }).click();
+    await page.waitForFunction(() => !document.querySelector("#new-chapter-title").disabled);
+    assert.equal(await page.getByLabel("New chapter", { exact: true }).inputValue(), "Draft title");
+    assert.equal(await page.evaluate(() => window.creations), 0);
+  } finally { await page.close(); }
+});
+
+test("chapter creation stays unsent when recovery service is unavailable", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.getChapterCreation = async () => { throw new Error("Recovery service unavailable"); };
+      window.bookwormApi.createChapter = async () => { window.creations++; throw new Error("Unexpected write"); };
+    });
+    await page.getByLabel("New chapter", { exact: true }).fill("Must remain uncreated");
+    await page.getByRole("button", { name: "Add chapter", exact: true }).click();
+    await page.getByText(/Recovery service unavailable/).waitFor();
+    assert.equal(await page.evaluate(() => window.creations), 0);
+    await page.getByRole("button", { name: "Retry chapter creation" }).click();
+    await page.getByText(/Recovery service unavailable/).waitFor();
+    assert.equal(await page.evaluate(() => window.creations), 0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:chapter-creation:v1:"))), true);
+  } finally { await page.close(); }
+});
+
+test("retry restores the original recovery pointer before sending if storage was cleared", async () => {
+  const page = await fixture(1280, true);
+  try {
+    await page.evaluate(() => {
+      window.sent = [];
+      window.bookwormApi.createChapter = async (_bookId, body) => {
+        const stored = Object.entries(sessionStorage).find(([key]) => key.startsWith("bookworm:chapter-creation:v1:"));
+        window.sent.push({ key: body.idempotencyKey, stored: stored ? JSON.parse(stored[1]).requestKey : null });
+        throw new Error("Synthetic response loss");
+      };
+    });
+    await page.getByLabel("New chapter", { exact: true }).fill("Recovered title");
+    await page.getByRole("button", { name: "Add chapter", exact: true }).click();
+    await page.getByText(/Submit again to recover the original chapter request/).waitFor();
+    await page.evaluate(() => {
+      for (const key of Object.keys(sessionStorage)) if (key.startsWith("bookworm:chapter-creation:v1:")) sessionStorage.removeItem(key);
+    });
+    await page.getByRole("button", { name: "Retry chapter creation" }).click();
+    await page.waitForFunction(() => window.sent.length === 2);
+    const sent = await page.evaluate(() => window.sent);
+    assert.equal(sent[0].key, sent[1].key);
+    assert.equal(sent[0].stored, sent[0].key);
+    assert.equal(sent[1].stored, sent[1].key);
+  } finally { await page.close(); }
 });

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 import { checkChapterActor } from "../lib/manual-chapter-save.js";
@@ -98,10 +98,36 @@ export function bookRoutes(app: FastifyInstance, options: { assetScanner?: Asset
     const { data, error } = body.data.idempotencyKey
       ? await sb.rpc("create_book_chapter_once", { p_book_id: bookId, p_title: body.data.title, p_nodes: body.data.nodes ?? null, p_request_key: body.data.idempotencyKey })
       : await sb.rpc("create_book_chapters", { p_book_id: bookId, p_chapters: [{ title: body.data.title, nodes }], p_source_asset_id: null });
+    if (error?.code === "40001" || error?.code === "PT409") throw new AppError(409, "The original chapter request conflicts or is no longer available. Check its saved status.");
     if (error) rpcError(error);
     return reply.status(201).send({ chapter: data?.[0] });
   });
 
+  // Read and fence the original request without creating or recreating a chapter.
+  const chapterCreationStatus = async (req: FastifyRequest, reply: FastifyReply, close: boolean) => {
+    checkChapterActor(req, true);
+    const parsed = z.object({ bookId: z.guid(), requestKey: z.guid() }).safeParse(req.params);
+    if (!parsed.success) throw new AppError(422, "Valid book and chapter request IDs required");
+    const { bookId, requestKey } = parsed.data;
+    const sb = app.supabaseFactory(req.userToken);
+    await loadBook(sb, bookId, req.userId, true);
+    const { data, error } = await sb.rpc("chapter_creation_status", {
+      p_book_id: bookId, p_request_key: requestKey, p_close: close,
+    });
+    if (error) rpcError(error);
+    const result = z.object({
+      bookId: z.guid(), requestKey: z.guid(), status: z.enum(["not_found", "created", "removed", "closed"]),
+      chapterId: z.guid().nullable(),
+    }).strict().safeParse(data);
+    if (!result.success || result.data.bookId !== bookId || result.data.requestKey !== requestKey
+      || (result.data.status === "created") !== (result.data.chapterId !== null)) {
+      throw new AppError(503, "The chapter request status could not be verified.");
+    }
+    reply.header("cache-control", "private, no-store");
+    return result.data;
+  };
+  app.get("/books/:bookId/chapter-creation/:requestKey", (req, reply) => chapterCreationStatus(req, reply, false));
+  app.post("/books/:bookId/chapter-creation/:requestKey/close", (req, reply) => chapterCreationStatus(req, reply, true));
   app.put("/books/:bookId/chapters/order", async (req) => {
     checkChapterActor(req);
     const { bookId } = req.params as { bookId: string };

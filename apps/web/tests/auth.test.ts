@@ -275,6 +275,26 @@ test("retailer create, recovery and closure bind the original account before for
   }
 });
 
+test("chapter creation recovery proxy requires the original actor", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const upstream = "https://api.example.test/v1/books/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ status: "not_found" }) : authProvider(url, init);
+  const root = ["v1", "books", "88888888-8888-4888-8888-888888888888", "chapter-creation", "99999999-9999-4999-8999-999999999999"];
+  for (const [suffix, method, handler] of [[[], "GET", backendGet], [["close"], "POST", backendPost]] as const) {
+    const path = [...root, ...suffix];
+    for (const [actor, status] of [[undefined, 422], ["bad", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) },
+      }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, status);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + Number(status === 200));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+    }
+  }
+});
+
 test("local auth keeps the active development origin instead of a stale APP_URL port", () => {
   for (const host of ["localhost:3001", "127.0.0.1:3001", "[::1]:3001"]) {
     assert.equal(appOrigin(new NextRequest(`http://${host}/books/new`, { headers: { host } })), `http://${host}`);

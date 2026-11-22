@@ -41,9 +41,12 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     const chapterStructure = path[1] === "books" && path[3] === "chapters"
       && ((path.length === 4 && request.method === "POST")
         || (path.length === 5 && path[4] === "order" && request.method === "PUT"));
+    const chapterCreation = path[1] === "books" && path[3] === "chapter-creation"
+      && ((path.length === 5 && request.method === "GET")
+        || (path.length === 6 && path[5] === "close" && request.method === "POST"));
     const aiConnection = path[1] === "account" && ["ai-connections", "customer-ai"].includes(path[2]);
     const managedOperator = path[1] === "admin" && path[2] === "managed-publishing";
-    const boundRequest = aiConnection || manualBible || packageRequest || managedOperator || manualSave || chapterTitle || chapterRestore || chapterStructure || request.headers.has("x-bookworm-actor");
+    const boundRequest = aiConnection || manualBible || packageRequest || managedOperator || manualSave || chapterTitle || chapterRestore || chapterStructure || chapterCreation || request.headers.has("x-bookworm-actor");
     const actor = boundRequest ? request.headers.get("x-bookworm-actor") : null;
     if (boundRequest && (!actor || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(actor))) {
       return auth.finish(authError(422, "The original account identity is required for this saved request."));

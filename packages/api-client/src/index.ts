@@ -1118,6 +1118,10 @@ export function createClient(opts: ClientOptions) {
     listChapters: (bookId: string, expectedActor?: string, signal?: AbortSignal) => call<{ chapters: Chapter[] }>("GET", `/v1/books/${bookId}/chapters`, undefined, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}, signal),
     createChapter: (bookId: string, body: { title: string; nodes?: BookNode[]; idempotencyKey?: string }, expectedActor?: string) =>
       call<{ chapter: Chapter }>("POST", `/v1/books/${bookId}/chapters`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
+    getChapterCreation: (bookId: string, requestKey: string, expectedActor: string) =>
+      call<{ bookId: string; requestKey: string; status: "not_found" | "created" | "removed" | "closed"; chapterId: string | null }>("GET", `/v1/books/${encodeURIComponent(bookId)}/chapter-creation/${encodeURIComponent(requestKey)}`, undefined, true, { "x-bookworm-actor": expectedActor }),
+    closeChapterCreation: (bookId: string, requestKey: string, expectedActor: string) =>
+      call<{ bookId: string; requestKey: string; status: "not_found" | "created" | "removed" | "closed"; chapterId: string | null }>("POST", `/v1/books/${encodeURIComponent(bookId)}/chapter-creation/${encodeURIComponent(requestKey)}/close`, {}, true, { "x-bookworm-actor": expectedActor }),
     reorderChapters: (bookId: string, body: { orderedIds: string[]; expectedIds: string[] }, expectedActor?: string) =>
       call<{ chapters: Chapter[] }>("PUT", `/v1/books/${bookId}/chapters/order`, body, true, expectedActor ? { "x-bookworm-actor": expectedActor } : {}),
     importManuscript: (bookId: string, assetId: string, expectedActor?: string) =>

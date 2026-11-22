@@ -1166,7 +1166,7 @@ paths:
                 idempotencyKey: { type: string, minLength: 8, maxLength: 200 }
       responses:
         "201": { description: Created or recovered chapter; same actor/book/key replays identical input }
-        "409": { description: Request key reused with different input }
+        "409": { description: "Request key reused with different input, closed before arrival, or its created chapter was removed" }
         "403": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
     get:
@@ -1193,6 +1193,36 @@ paths:
                       type: object
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/chapter-creation/{requestKey}:
+    get:
+      tags: [v1]
+      operationId: getChapterCreation
+      summary: Check an original chapter creation request
+      description: Actor-bound read. A not_found result does not fence an in-flight creation.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestKey, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: x-bookworm-actor, in: header, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: "Private request status with bookId, requestKey, status and nullable chapterId" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/chapter-creation/{requestKey}/close:
+    post:
+      tags: [v1]
+      operationId: closeChapterCreation
+      summary: Fence an unconfirmed chapter creation request
+      description: Returns a committed or removed receipt when present. Otherwise fences the exact actor and request so delayed creation cannot proceed.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: requestKey, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: x-bookworm-actor, in: header, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: "Private request status with bookId, requestKey, status and nullable chapterId" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/chapters/order:
     put:
       operationId: reorderChapters

@@ -75,7 +75,7 @@ test("chapter create rejects invalid keys and viewers before persistence", async
 });
 
 test("chapter key conflicts return 409 and legacy creation stays supported", async () => {
-  for (const code of ["40001", undefined]) {
+  for (const code of ["40001", "PT409", undefined]) {
     const { app, calls } = await fixture("editor", code);
     try {
       const result = await app.inject({ method: "POST", url: "/books/book/chapters", payload: { title: "First", ...(code ? { idempotencyKey: "request-one" } : {}) } });

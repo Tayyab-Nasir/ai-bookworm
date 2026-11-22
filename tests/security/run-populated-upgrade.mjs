@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 144 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 145 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -195,6 +195,28 @@ async function expectedWorkspaceCreationGuard(migration, fixture, historical, dr
   console.log(`PASS workspace onboarding ${drift} drift and rollback`);
 }
 
+async function expectedChapterCreationGuard(migration, fixture, historical, drift) {
+  step = `expected chapter creation ${drift} guard`;
+  const signature = 'public.create_book_chapter_once(uuid,text,jsonb,text)';
+  await db.exec('begin;');
+  try {
+    if (drift === 'body') {
+      const original = (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition;
+      const altered = original.replace("v_chapter public.chapters; v_hash text; v_nodes jsonb;", "v_chapter public.chapters; v_hash text; v_nodes jsonb; -- synthetic drift");
+      assert.notEqual(altered, original);
+      await db.exec(altered);
+    } else if (drift === 'settings') await db.exec(`alter function ${signature} set search_path = public;`);
+    else await db.exec(`grant execute on function ${signature} to anon;`);
+    await db.exec('savepoint chapter_creation_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001'
+      && error.message === 'chapter creation function differs from the reviewed contract');
+    await db.exec('rollback to savepoint chapter_creation_guard;');
+    assert.equal((await db.query("select to_regprocedure('public.chapter_creation_status(uuid,text,boolean)') as target")).rows[0].target, null);
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS chapter creation ${drift} drift abort and rollback`);
+}
+
 async function expectedInvitationRecoveryGuard(migration, fixture, historical, drift) {
   step = `expected invitation recovery ${drift} guard`;
   const signature = 'public.accept_workspace_invitation(text)';
@@ -221,7 +243,7 @@ async function expectedInvitationRecoveryGuard(migration, fixture, historical, d
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 144, 'This reviewed rehearsal pins the 45 -> 144 target; review before extending');
+  assert.equal(names.length, 145, 'This reviewed rehearsal pins the 45 -> 145 target; review before extending');
   assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
   assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
@@ -244,7 +266,7 @@ try {
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
-  assert.deepEqual(names.slice(-12), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure, communityJoinOperations, '20261121090000_managed_publishing_requests.sql']);
+  assert.deepEqual(names.slice(-13), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure, communityJoinOperations, '20261121090000_managed_publishing_requests.sql', '20261122150000_chapter_creation_recovery.sql']);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
@@ -265,6 +287,9 @@ try {
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Pre-upgrade authorization probes are non-mutating');
   console.log(`PASS committed baseline: two tenants, four profiles, historical versions, rich nodes, memberships, quarantined/trusted assets, ledger balances and uncertain Stripe receipts; ${Object.keys(historical).length} preserved relation projections`);
   for (const migration of migrations.slice(45)) {
+    if (migration.name === "20261122150000_chapter_creation_recovery.sql") {
+      for (const drift of ["body", "privileges", "settings"]) await expectedChapterCreationGuard(migration, fixture, historical, drift);
+    }
     if (migration.name === invitationRecovery) {
       for (const drift of ['body', 'anonymous', 'table-select']) await expectedInvitationRecoveryGuard(migration, fixture, historical, drift);
     }
@@ -317,6 +342,9 @@ try {
       intakeProbe={ticketId,requestId,ticket,request};
     }
     let invitationProbe = null;
+    if (migration.name === "20261122150000_chapter_creation_recovery.sql") {
+      for (const drift of ["body", "privileges", "settings"]) await expectedChapterCreationGuard(migration, fixture, historical, drift);
+    }
     if (migration.name === invitationRecovery) {
       const tenant = fixture.tenants[0], ids = [];
       for (const status of ['pending', 'accepted', 'revoked']) {
@@ -352,7 +380,20 @@ try {
       const communityBefore = (await db.query('select to_jsonb(c) as value from public.communities c where id=$1', [community])).rows[0].value;
       communityProbe = { community, before, communityBefore };
     }
+    let chapterCreationProbe = null;
+    if (migration.name === "20261122150000_chapter_creation_recovery.sql") {
+      const tenant = fixture.tenants[0];
+      await db.query("insert into public.chapter_creation_requests(book_id,actor_id,request_key,request_hash,chapter_id) values($1,$2,$3,$4,$5)",
+        [tenant.book, tenant.user, "historical-create", "old-hash", tenant.chapter]);
+      chapterCreationProbe = tenant;
+    }
     await migrate(migration, 'upgrade');
+    if (chapterCreationProbe) {
+      const rows = (await db.query("select chapter_id, request_hash, closed from public.chapter_creation_requests where book_id=$1 and actor_id=$2 and request_key='historical-create'",
+        [chapterCreationProbe.book, chapterCreationProbe.user])).rows;
+      assert.deepEqual(rows, [{ chapter_id: chapterCreationProbe.chapter, request_hash: "old-hash", closed: false }]);
+      console.log("PASS existing chapter creation receipt survives recovery migration");
+    }
     if (communityProbe) {
       assert.deepEqual((await db.query('select to_jsonb(m) as value from public.community_members m where community_id=$1 order by user_id', [communityProbe.community])).rows, communityProbe.before,
         'Existing active and inactive community memberships survived unchanged');
