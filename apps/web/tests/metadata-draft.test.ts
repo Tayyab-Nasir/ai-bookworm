@@ -49,7 +49,8 @@ test("metadata UI keeps AI generation and persistence as separate author actions
   assert.match(source, />Use this draft<\/button>/);
   assert.match(source, /Using a draft does not save it\./);
   assert.match(source, /AI draft copied into the form\. Review it, then choose Save metadata/);
-  const useDraft = source.split("function useMetadataCandidate()")[1]?.split("async function loadBibleHistory()")[0] ?? "";
+  const useDraft = source.split("function useMetadataCandidate(")[1]?.split("async function loadBibleHistory()")[0] ?? "";
+  assert.ok(useDraft.length, "The draft adoption handler must be included in this check");
   assert.equal(/request<[^>]*>/.test(useDraft), false, "Use draft must not make a persistence request");
 });
 

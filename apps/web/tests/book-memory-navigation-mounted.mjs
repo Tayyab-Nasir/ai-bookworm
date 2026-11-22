@@ -98,6 +98,51 @@ test("the listing deep link scrolls to metadata after the book loads", async () 
   } finally { await page.close(); }
 });
 
+test("copying generated keywords preserves the author's other listing edits until an explicit save", async () => {
+  const page = await fixture("#publishing-metadata");
+  try {
+    await page.evaluate(() => {
+      const request = window.fetch;
+      window.fetch = (path, init) => {
+        if (path.endsWith("/metadata/drafts")) return Promise.resolve(Response.json({
+          drafts: [{ id: "synthetic-draft", createdAt: "2026-10-13T00:00:00.000Z", candidate: {
+            description: "A generated description for an alternate version of this private listing.",
+            keywords: ["coastal mystery", "family secrets"], categories: ["Mystery"],
+            sourceRefs: [{ chapterId: "44444444-4444-4444-8444-444444444444", nodeId: "opening" }],
+          } }], pending: [],
+        }));
+        return request(path, init);
+      };
+    });
+    const listing = page.getByRole("region", { name: "Publishing metadata", exact: true });
+    const description = listing.getByRole("textbox", { name: "Book description", exact: true });
+    const keywords = listing.getByRole("textbox", { name: /Keywords/ });
+    const categories = listing.getByRole("textbox", { name: /Categories/ });
+    await description.fill("The author's preferred description.");
+    await categories.fill("Historical fiction");
+    await listing.getByLabel("Planned publication date", { exact: true }).fill("2030-01-02");
+    await listing.getByRole("button", { name: "Load saved drafts · no credits" }).click();
+    await listing.getByRole("button", { name: /A generated description for an alternate version/ }).click();
+    await listing.getByRole("button", { name: "Use generated keywords" }).click();
+    await expect(keywords).toHaveValue("coastal mystery\nfamily secrets");
+    await expect(description).toHaveValue("The author's preferred description.");
+    await expect(categories).toHaveValue("Historical fiction");
+    assert.deepEqual(await page.evaluate(() => window.prompts), []);
+    await listing.getByRole("button", { name: "Use generated description" }).click();
+    await expect(description).toHaveValue("The author's preferred description.");
+    assert.deepEqual(await page.evaluate(() => window.prompts), ["Replace unsaved edits to description with this AI draft?"]);
+    assert.deepEqual(await page.evaluate(() => window.writes), []);
+    await listing.getByRole("button", { name: "Save metadata" }).click();
+    await expect(page.getByText("Publishing metadata saved.", { exact: true })).toBeVisible();
+    const writes = await page.evaluate(() => window.writes);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].body.description, "The author's preferred description.");
+    assert.deepEqual(writes[0].body.keywords, ["coastal mystery", "family secrets"]);
+    assert.deepEqual(writes[0].body.categories, ["Historical fiction"]);
+    assert.equal(writes[0].body.publicationDate, "2030-01-02");
+  } finally { await page.close(); }
+});
+
 test("cancelled manuscript navigation keeps an unsaved Book Bible entry available for explicit save", async () => {
   const page = await fixture();
   try {

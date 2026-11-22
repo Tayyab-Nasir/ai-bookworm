@@ -22,6 +22,9 @@ export type GeneratedMetadataCandidate = {
   sourceRefs: GeneratedSourceRef[];
 };
 type MetadataFields = { description: string; keywords: string; categories: string };
+const metadataFieldLabels: Record<keyof MetadataFields, string> = {
+  description: "description", keywords: "keywords", categories: "categories",
+};
 type PendingMetadata = { id: string; createdAt: string; status: "queued" | "running" };
 type MetadataHistoryResponse = { drafts: { id: string; createdAt: string; candidate: unknown }[]; pending: PendingMetadata[] };
 type MetadataModel = { id: string; label: string; model: string; priceVersion: string; policyVersion: string };
@@ -997,16 +1000,27 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     finally { if (bookScope.current === scope) setSaving(null); }
   }
 
-  function useMetadataCandidate() {
-    if (!metadataCandidate || !memory?.canEdit || busy) return;
-    if (metadataDirty && !window.confirm("Replace your unsaved description, keywords, and categories with this AI draft?")) return;
-    setMetadataFields({
+  function useMetadataCandidate(field?: keyof MetadataFields) {
+    if (!metadataCandidate || !memory?.canEdit || memory.book.id !== bookId || busy) return;
+    const next: MetadataFields = {
       description: metadataCandidate.description,
       keywords: metadataCandidate.keywords.join("\n"),
       categories: metadataCandidate.categories.join("\n"),
-    });
-    setMetadataDirty(true); setMetadataCandidate(null); setMetadataGenerationError(null);
-    setNotice("AI draft copied into the form. Review it, then choose Save metadata when you are ready.");
+    };
+    const saved: MetadataFields = {
+      description: memory.metadata?.description ?? "",
+      keywords: memory.metadata?.keywords.join("\n") ?? "",
+      categories: memory.metadata?.categories.join("\n") ?? "",
+    };
+    const selected = field ? [field] : (Object.keys(metadataFieldLabels) as (keyof MetadataFields)[]);
+    const unsaved = selected.filter(key => metadataFields[key] !== saved[key] && metadataFields[key] !== next[key]);
+    if (unsaved.length && !window.confirm(`Replace unsaved edits to ${unsaved.map(key => metadataFieldLabels[key]).join(", ")} with this AI draft?`)) return;
+    setMetadataFields(current => field ? { ...current, [field]: next[field] } : next);
+    setMetadataDirty(true); setMetadataGenerationError(null);
+    if (!field) setMetadataCandidate(null);
+    setNotice(field
+      ? `Generated ${metadataFieldLabels[field]} copied into the form. Review it, then choose Save metadata.`
+      : "AI draft copied into the form. Review it, then choose Save metadata when you are ready.");
   }
 
   async function loadBibleHistory() {
@@ -1376,10 +1390,25 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
             </div>
             {metadataCandidate && <article className="mt-5 rounded-xl border border-white/15 bg-black/35 p-4" aria-labelledby="metadata-preview-title">
               <div className="flex flex-wrap items-center justify-between gap-2"><h4 id="metadata-preview-title" className="font-medium">Review generated draft</h4>{metadataCandidate.confidence !== undefined && <span className="rounded-full border border-white/15 px-2.5 py-1 text-xs text-[#bbb]">{Math.round(metadataCandidate.confidence * 100)}% confidence</span>}</div>
-              <div className="mt-4"><h5 className="text-[11px] uppercase tracking-widest text-[#888]">Description</h5><p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#ddd]">{metadataCandidate.description}</p></div>
+              <div className="mt-4">
+                <h5 className="text-[11px] uppercase tracking-widest text-[#888]">Description</h5>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#ddd]">{metadataCandidate.description}</p>
+                <button type="button" disabled={busy || metadataFields.description === metadataCandidate.description}
+                  onClick={() => useMetadataCandidate("description")} className={`${secondaryClass} mt-2`}>Use generated description</button>
+              </div>
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <div><h5 className="text-[11px] uppercase tracking-widest text-[#888]">Keywords</h5><ul className="mt-2 flex flex-wrap gap-2">{metadataCandidate.keywords.map((keyword) => <li key={keyword} className="rounded-full bg-white/10 px-2.5 py-1 text-xs text-[#ddd]">{keyword}</li>)}</ul></div>
-                <div><h5 className="text-[11px] uppercase tracking-widest text-[#888]">Categories</h5><ul className="mt-2 space-y-1 text-sm text-[#ccc]">{metadataCandidate.categories.map((category) => <li key={category}>• {category}</li>)}</ul></div>
+                <div>
+                  <h5 className="text-[11px] uppercase tracking-widest text-[#888]">Keywords</h5>
+                  <ul className="mt-2 flex flex-wrap gap-2">{metadataCandidate.keywords.map(keyword => <li key={keyword} className="rounded-full bg-white/10 px-2.5 py-1 text-xs text-[#ddd]">{keyword}</li>)}</ul>
+                  <button type="button" disabled={busy || metadataFields.keywords === metadataCandidate.keywords.join("\n")}
+                    onClick={() => useMetadataCandidate("keywords")} className={`${secondaryClass} mt-2`}>Use generated keywords</button>
+                </div>
+                <div>
+                  <h5 className="text-[11px] uppercase tracking-widest text-[#888]">Categories</h5>
+                  <ul className="mt-2 space-y-1 text-sm text-[#ccc]">{metadataCandidate.categories.map(category => <li key={category}>• {category}</li>)}</ul>
+                  <button type="button" disabled={busy || metadataFields.categories === metadataCandidate.categories.join("\n")}
+                    onClick={() => useMetadataCandidate("categories")} className={`${secondaryClass} mt-2`}>Use generated categories</button>
+                </div>
               </div>
               {metadataCandidate.audience && <div className="mt-4"><h5 className="text-[11px] uppercase tracking-widest text-[#888]">Audience</h5><p className="mt-1 text-sm text-[#ccc]">{metadataCandidate.audience}</p></div>}
               {metadataCandidate.rationale && <div className="mt-4"><h5 className="text-[11px] uppercase tracking-widest text-[#888]">Why this draft</h5><p className="mt-1 text-sm leading-6 text-[#aaa]">{metadataCandidate.rationale}</p></div>}
@@ -1391,7 +1420,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
                   {ref.note && <p className="mt-1 break-words px-3">{ref.note}</p>}
                 </li>;
               })}</ul> : <p className="mt-2 text-xs leading-5 text-amber-100">No source references were returned. Review the wording carefully against your manuscript before using it.</p>}</div>
-              <div className="mt-5 flex flex-wrap items-center gap-3"><button type="button" disabled={busy} onClick={useMetadataCandidate} className={primaryClass}>Use this draft</button><button type="button" disabled={busy} onClick={() => setMetadataCandidate(null)} className={secondaryClass}>Dismiss</button><span className="text-xs text-[#888]">Using a draft does not save it.</span></div>
+              <div className="mt-5 flex flex-wrap items-center gap-3"><button type="button" disabled={busy} onClick={() => useMetadataCandidate()} className={primaryClass}>Use this draft</button><button type="button" disabled={busy} onClick={() => setMetadataCandidate(null)} className={secondaryClass}>Dismiss</button><span className="text-xs text-[#888]">Using a draft does not save it.</span></div>
             </article>}
           </div>}
           <fieldset disabled={!memory.canEdit || busy} onChange={() => setMetadataDirty(true)} className="mt-5 min-w-0 space-y-4">
