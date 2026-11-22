@@ -853,7 +853,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
   async function loadCompletedPackage(user: SupabaseClient, jobId: string) {
     const { data: job, error } = await user.from("publishing_jobs")
-      .select("id,book_id,channel,status,request_json").eq("id", jobId).maybeSingle();
+      .select("id,book_id,edition_id,channel,status,request_json").eq("id", jobId).maybeSingle();
     if (error) throw new AppError(503, "The publishing package could not be verified.");
     if (!job || job.id !== jobId || job.status !== "succeeded" || requestJson(job).action !== "export_package"
       || !retailerChannelSchema.safeParse(job.channel).success) {
@@ -861,6 +861,38 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     }
     return job;
   }
+
+  app.get("/publishing/jobs/:jobId/preflight", async (req, reply) => {
+    assertPackageActor(req);
+    const path = submissionJobIdSchema.safeParse(req.params);
+    if (!path.success) throw new AppError(422, "Invalid publishing job id.");
+    const user = app.supabaseFactory(req.userToken);
+    const job = await loadCompletedPackage(user, path.data.jobId);
+    await loadBook(user, job.book_id, req.userId);
+    const snapshot = requestJson(job);
+    const source = z.object({ sourcePreflightJobId: z.guid(), sourceRenderJobId: z.guid(),
+      editionUpdatedAt: z.string().min(1), bookModelSha256: sha256Schema, imageSha256: sha256Schema }).safeParse(snapshot);
+    const unavailable = new AppError(404, "The preflight for this package could not be verified.");
+    if (!source.success) throw unavailable;
+    const { sourcePreflightJobId, sourceRenderJobId, ...fingerprint } = source.data;
+    const { data: preflight, error } = await user.from("publishing_jobs")
+      .select("id,book_id,edition_id,channel,status,request_json,response_json")
+      .eq("id", sourcePreflightJobId).eq("book_id", job.book_id).eq("edition_id", job.edition_id).maybeSingle();
+    if (error) throw new AppError(503, "The saved package preflight is temporarily unavailable.");
+    if (!preflight || preflight.id !== sourcePreflightJobId) throw unavailable;
+    try {
+      assertSourceJob(preflight, { ...fingerprint, bookId: job.book_id, editionId: job.edition_id, action: "validate", channel: job.channel });
+    } catch (reason) {
+      if (reason instanceof AppError && reason.status === 422) throw unavailable;
+      throw reason;
+    }
+    const report = readPackagePreflight(preflight, job.channel);
+    const proof = report?.sourcePrint ?? report?.sourceEpub;
+    if (!report || report.channel !== job.channel || (proof && proof.jobId !== sourceRenderJobId)) throw unavailable;
+    reply.header("cache-control", "private, no-store");
+    return { packageJobId: job.id, preflightJobId: preflight.id, ruleVersion: report.ruleVersion,
+      warnings: report.warnings, findings: report.findings };
+  });
 
   app.get("/publishing/jobs/:jobId/submission", async (req, reply) => {
     const path = submissionJobIdSchema.safeParse(req.params);

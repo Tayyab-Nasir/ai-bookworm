@@ -627,6 +627,10 @@ export interface PublishingPackageRequest {
 
 export type PublishingHistoryCursor = { createdAt: string; id: string };
 
+export type PackagePreflight = Pick<PreflightResult, "ruleVersion" | "warnings" | "findings"> & {
+  packageJobId: string; preflightJobId: string;
+};
+
 export interface PublishingPackageJob {
   id: string;
   requestId: string;
@@ -1375,6 +1379,9 @@ export function createClient(opts: ClientOptions) {
     getPublishingJob: (jobId: string, expectedActorId?: string) =>
       call<PublishingPackageJob>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}`, undefined, false,
         expectedActorId ? { "x-bookworm-actor": expectedActorId } : {}),
+    getPackagePreflight: (jobId: string, expectedActorId: string) =>
+      call<PackagePreflight>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/preflight`, undefined, false,
+        { "x-bookworm-actor": expectedActorId }),
     getRetailerSubmission: (jobId: string, expectedActorId: string) =>
       call<unknown>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/submission`, undefined, false, {
         "x-bookworm-actor": expectedActorId,

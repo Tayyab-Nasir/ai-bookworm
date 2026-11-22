@@ -2768,6 +2768,35 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /v1/publishing/jobs/{jobId}/preflight:
+    get:
+      tags: [v1]
+      operationId: getPackagePreflight
+      summary: Read the saved preflight linked to a completed retailer package
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: x-bookworm-actor, in: header, required: false, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Private saved preflight findings for the original package
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [packageJobId, preflightJobId, ruleVersion, warnings, findings]
+                properties:
+                  packageJobId: { type: string, format: uuid }
+                  preflightJobId: { type: string, format: uuid }
+                  ruleVersion: { type: string }
+                  warnings: { type: integer, minimum: 0 }
+                  findings: { type: array, items: { type: object } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/publishing/jobs/{jobId}/submission:
     parameters:
       - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }

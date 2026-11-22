@@ -820,6 +820,25 @@ test("editor creates a durable private retailer package and can list, read, and 
   assert.equal(detail.statusCode, 200, detail.body);
   assert.equal(detail.json().package.asset.id, body.package.asset.id);
 
+  const reportUrl = `/v1/publishing/jobs/${body.id}/preflight`;
+  const report = await app.inject({ method: "GET", url: reportUrl, headers: { ...auth, "x-bookworm-actor": USER } });
+  assert.equal(report.statusCode, 200, report.body);
+  assert.equal(report.headers["cache-control"], "private, no-store");
+  assert.deepEqual(report.json(), { packageJobId: body.id, preflightJobId: sources.preflightJobId,
+    ruleVersion: "core-test+kdp-test", warnings: 1, findings: [] });
+  assert.equal((await app.inject({ method: "GET", url: reportUrl, headers: { ...auth, "x-bookworm-actor": BOOK } })).statusCode, 409);
+  const originalProof = store.tables.publishing_jobs.find(job => job.id === sources.preflightJobId)!;
+  const savedProofRequest = originalProof.request_json;
+  originalProof.request_json = { ...(savedProofRequest as Row), imageSha256: "1".repeat(64) };
+  assert.equal((await app.inject({ method: "GET", url: reportUrl, headers: auth })).statusCode, 404);
+  originalProof.request_json = savedProofRequest;
+  assert.equal((await app.inject({ method: "GET", url: `/v1/publishing/jobs/${sources.renderJobId}/preflight`, headers: auth })).statusCode, 404);
+  store.tables.workspace_members[0].status = "suspended";
+  assert.equal((await app.inject({ method: "GET", url: reportUrl, headers: auth })).statusCode, 403);
+  store.tables.workspace_members[0].status = "active";
+  assert.equal(renderRequests.length, 2);
+  assert.equal(packageRequests.length, 1);
+
   const replay = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
   assert.equal(replay.statusCode, 200, replay.body);
   assert.equal(replay.json().id, body.id);

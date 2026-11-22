@@ -880,6 +880,41 @@ test("managed publishing requires exact package consent and recovers a lost repl
   } finally { await page.close(); }
 });
 
+test("package preflight reads only on demand and refuses a mismatched saved report", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const { job, book, edition, otherAsset, cover } = window.ids;
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{ id: job, bookId: book, editionId: edition,
+        channel: "kdp", status: "succeeded", sourcePreflightJobId: otherAsset, createdAt: "2026-10-18T00:00:00Z", package: null }] });
+      window.preflightMatches = false;
+      window.bookwormApi.getPackagePreflight = async (jobId, actor) => {
+        window.requests.push({ method: "GET", action: "packagePreflight", jobId, actor });
+        return { packageJobId: jobId, preflightJobId: window.preflightMatches ? otherAsset : cover,
+          ruleVersion: "fixture-rules-v1", warnings: 1,
+          findings: [{ code: "FILE_REVIEW", message: "Review the printed cover before approving.", location: "cover.pdf" }] };
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const label = "Review package preflight";
+    await expect(history.getByText(label, { exact: true })).toBeVisible();
+    const requests = () => page.evaluate(() => window.requests.filter(row => row.action === "packagePreflight"));
+    assert.deepEqual(await requests(), []);
+    await history.getByText(label, { exact: true }).click();
+    await expect(history.getByRole("alert").filter({ hasText: "The saved preflight is unavailable here" })).toBeVisible();
+    await expect(history.getByText("Review the printed cover before approving.")).toHaveCount(0);
+    await page.evaluate(() => { window.preflightMatches = true; });
+    await history.getByRole("button", { name: "Check again", exact: true }).click();
+    await expect(history.getByText("Review the printed cover before approving.")).toBeVisible();
+    assert.deepEqual(await requests(), Array.from({ length: 2 }, () =>
+      ({ method: "GET", action: "packagePreflight", jobId: ids.job, actor: ids.asset })));
+    await history.getByText(label, { exact: true }).click();
+    await expect(history.getByText("Review the printed cover before approving.")).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("retailer submission status handles collapse, unavailable reads, lost replies and stale edits", async () => {
   const { page, errors } = await fixture({ parent: true, width: 390 });
   try {

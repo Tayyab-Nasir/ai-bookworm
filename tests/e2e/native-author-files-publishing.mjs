@@ -352,6 +352,12 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     assert.ok(index >= 0);
     const row = history.getByRole('listitem').nth(index);
     await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), saved.job.package.asset.checksum);
+    const expectedReport = await api('GET', `/publishing/jobs/${saved.job.id}/preflight`);
+    assert.equal(expectedReport.preflightJobId, saved.job.sourcePreflightJobId);
+    const reportToggle = row.getByText('Review package preflight', { exact: true });
+    await reportToggle.click();
+    await expect(row.getByText(`Rules ${expectedReport.ruleVersion}`, { exact: true })).toBeVisible();
+    await reportToggle.click();
     onStage('retailer browser deleted package history');
     await api('DELETE', `/assets/${saved.job.package.asset.id}`);
     await history.getByRole('button', { name: 'Refresh', exact: true }).click();
