@@ -895,7 +895,7 @@ test("authors copy the listing from the exact saved package after reopening hist
         window.requests.push({ method: "GET", action: "packageListing", jobId, checksum: requestedChecksum, actor });
         return { packageJobId: jobId, packageSha256: window.listingMatches ? checksum : "b".repeat(64),
           metadata: { title: "Original package title", author: "Author", language: "en", description: "First saved description.",
-            keywords: ["harbor", "letters"], categories: ["Literary fiction"] } };
+            keywords: ["harbor", "letters, lost at sea", "مرسى هادئ"], categories: ["Literary fiction"] } };
       };
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
         writeText: async value => { window.copiedListing = value; },
@@ -912,10 +912,19 @@ test("authors copy the listing from the exact saved package after reopening hist
     await expect(history.getByText("Original package title", { exact: true })).toHaveCount(0);
     await page.evaluate(() => { window.listingMatches = true; });
     await history.getByRole("button", { name: "Check again", exact: true }).click();
-    for (const [name, value] of [["description", "First saved description."], ["keywords", "harbor, letters"], ["categories", "Literary fiction"]]) {
+    for (const [name, value] of [
+      ["description", "First saved description."],
+      ["keywords", "harbor, letters, lost at sea, مرسى هادئ"],
+      ["categories", "Literary fiction"],
+      ["keyword 2", "letters, lost at sea"],
+      ["keyword 3", "مرسى هادئ"],
+      ["category 1", "Literary fiction"],
+    ]) {
       await history.getByRole("button", { name: `Copy ${name}`, exact: true }).click();
       await expect.poll(() => page.evaluate(() => window.copiedListing)).toBe(value);
     }
+    await expect(history.getByRole("status").filter({ hasText: "Category 1 copied." })).toBeVisible();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     assert.deepEqual(await requests(), Array.from({ length: 2 }, () =>
       ({ method: "GET", action: "packageListing", jobId: ids.job, checksum: "a".repeat(64), actor: ids.asset })));
     await toggle.click();

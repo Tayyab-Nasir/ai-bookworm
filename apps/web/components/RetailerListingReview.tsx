@@ -11,9 +11,12 @@ export default function RetailerListingReview({ metadata, isCurrent, inline = fa
   const fields = [
     ["Title", metadata.title], ["Subtitle", metadata.subtitle], ["Author", metadata.author],
     ["Language", metadata.language], ["ISBN-13", metadata.isbn13], ["Edition", metadata.edition],
-    ["Publication date", metadata.publicationDate], ["Keywords", metadata.keywords?.join(", ")],
-    ["Categories", metadata.categories?.join(", ")],
+    ["Publication date", metadata.publicationDate],
   ] as const;
+  const lists = [
+    { label: "Keywords", item: "Keyword", values: metadata.keywords ?? [] },
+    { label: "Categories", item: "Category", values: metadata.categories ?? [] },
+  ];
   async function copyField(label: string, value: string) {
     if (!isCurrent()) return;
     try {
@@ -28,8 +31,27 @@ export default function RetailerListingReview({ metadata, isCurrent, inline = fa
         {fields.map(([label, value]) => <div key={label} className="min-w-0">
           <dt className="text-xs text-white/55">{label}</dt>
           <dd className="mt-1 break-words"><span dir="auto">{value || "—"}</span>
-            {value && ["Title", "Author", "ISBN-13", "Keywords", "Categories"].includes(label) && <button type="button"
+            {value && ["Title", "Author", "ISBN-13"].includes(label) && <button type="button"
               onClick={() => void copyField(label, value)} className="ml-3 min-h-11 text-violet-200 underline underline-offset-4">Copy {label === "ISBN-13" ? label : label.toLowerCase()}</button>}
+          </dd>
+        </div>)}
+        {lists.map(({ label, item, values }) => <div key={label} className="min-w-0">
+          <dt className="text-xs text-white/55">{label}</dt>
+          <dd className="mt-1">
+            {values.length === 0 ? "—" : <>
+              <ul className="divide-y divide-white/10">
+                {values.map((value, index) => {
+                  const itemLabel = `${item} ${index + 1}`;
+                  return <li key={index} className="flex flex-wrap items-center justify-between gap-x-3">
+                    <span dir="auto" className="min-w-0 break-words">{value}</span>
+                    {value && <button type="button" onClick={() => void copyField(itemLabel, value)}
+                      className="min-h-11 shrink-0 text-violet-200 underline underline-offset-4">Copy {itemLabel.toLowerCase()}</button>}
+                  </li>;
+                })}
+              </ul>
+              <button type="button" onClick={() => void copyField(label, values.join(", "))}
+                className="min-h-11 text-violet-200 underline underline-offset-4">Copy {label.toLowerCase()}</button>
+            </>}
           </dd>
         </div>)}
       </dl>
