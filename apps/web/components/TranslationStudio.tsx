@@ -125,7 +125,7 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
       }
       if (scope.current() && historySequence.current === sequence) {
         setBook(identity.book); setRole(identity.role); setProjects(history.projects);
-        if (selectedAtStart) { if (selectedRef.current?.id === selectedAtStart.id) selectedRef.current = verifiedSelection; setSelected(current => current?.id === selectedAtStart.id ? verifiedSelection : current); if (!verifiedSelection) setBilling(null); }
+        if (selectedAtStart) { const sameSelection = selectedRef.current?.id === selectedAtStart.id; if (sameSelection) selectedRef.current = verifiedSelection; setSelected(current => current?.id === selectedAtStart.id ? verifiedSelection : current); if (sameSelection && !verifiedSelection) setBilling(null); }
         setHistoryState("ready");
       }
     } catch(error) { if (scope.current() && historySequence.current === sequence && !isSuperseded(error)) setHistoryState("error"); throw error; }

@@ -14,6 +14,16 @@ async function fixture(){const p=await browser.newPage();p.setDefaultTimeout(500
 const consent=p=>p.getByLabel('I agree to send the saved chapter text',{exact:false});
 async function ready(p){await expect(p.getByText('ES · 1/1 chapters counted')).toBeVisible()}
 async function openPreview(p){await p.getByRole('button',{name:'Preview',exact:true}).click();await p.getByText('A chapter').click();await expect(p.getByText('A private translated manuscript')).toBeVisible();}
+test('late prior-project refresh failure preserves newly accepted project billing',async()=>{const p=await fixture();try{
+ await ready(p);const second='88888888-8888-4888-8888-888888888888';
+ await p.evaluate(second=>{window.api.acceptTranslationQuote=()=>window.defer('accept-other');window.otherProject={...window.project(window.ids.A),id:second,chapters:[{...window.project(window.ids.A).chapters[0],chapterTitle:'Other project chapter'}]};window.api.getTranslationBilling=async id=>{window.billingSeen=id;return {reservedCredits:'100',heldCredits:id===second?'99':'8',chargedCredits:'1',returnedCredits:'0',reviewChapters:0}};},second);
+ await p.getByRole('button',{name:'Review quote'}).click();await p.getByRole('button',{name:'Confirm 23-credit hold & translate'}).click();await p.waitForFunction(()=>!!window.gates['accept-other']);
+ await p.getByRole('button',{name:'Preview',exact:true}).click();await expect(p.getByRole('region',{name:'Translation credit summary'})).toContainText('8');
+ await p.evaluate(()=>{window.api.getTranslationProject=()=>window.defer('refresh-first')});await p.getByRole('button',{name:'Refresh history'}).click();await p.waitForFunction(()=>!!window.gates['refresh-first']);
+ await p.evaluate(()=>{window.proposal={...window.proposal,status:'accepted',acceptedProjectId:window.otherProject.id};window.gates['accept-other'].resolve(window.otherProject)});await expect.poll(()=>p.evaluate(()=>window.billingSeen)).toBe(second);
+ await p.evaluate(()=>window.gates['refresh-first'].reject(Error('older project unavailable')));
+ await expect(p.getByRole('button',{name:'Refresh history'})).toBeEnabled();await expect(p.getByRole('region',{name:'Translation credit summary'})).toContainText('99');
+ }finally{await p.close();}});
 test('late adoption updates its original project without navigating away from a newly accepted translation',async()=>{const p=await fixture();try{
  await ready(p);const second='88888888-8888-4888-8888-888888888888',draft='77777777-7777-4777-8777-777777777777';
  await p.evaluate(({second})=>{window.api.acceptTranslationQuote=(_id,_credits,actor)=>{window.calls.push(['accept',actor]);return window.defer('accept-other')};window.api.adoptTranslationProject=(id,body,actor)=>{window.calls.push(['adopt',actor,id,body]);return window.defer('adopt-first')};window.otherProject={...window.project(window.ids.A),id:second,chapters:[{...window.project(window.ids.A).chapters[0],chapterTitle:'Other project chapter'}]}},{second});
