@@ -140,12 +140,12 @@ function ScopedAudioDownload({ scope, projectId, ready, isProjectCurrent }: { sc
       {signoffError && <p role="alert" className="mt-3 text-xs text-red-200">{signoffError}</p>}
       {downloadedReportId && !downloadedReport?.isCurrentSource && reports.some((report) => report.id === downloadedReportId) && <p role="status" className="mt-4 text-xs text-amber-100">This report belongs to an older manuscript version. Reassemble the current narration before signing it off.</p>}
     </section>}
-    {(historyBusy || reports.length > 0) && <section aria-label="Saved audiobook quality history" className="mt-4 rounded-xl border border-white/10 p-4">
-      <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">Saved QC history</h3><button type="button" onClick={() => { if (handlerCurrent()) void refreshHistory(); }} disabled={historyBusy} className="text-xs text-white/60 underline disabled:opacity-40">{historyBusy ? "Refreshing…" : "Refresh"}</button></div>
+    {(historyBusy || reports.length > 0 || historyError) && <section aria-label="Saved audiobook quality history" className="mt-4 rounded-xl border border-white/10 p-4">
+      <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-medium">Saved QC history</h3><button type="button" onClick={() => { if (handlerCurrent()) void refreshHistory(); }} disabled={historyBusy || !ready} className="text-xs text-white/60 underline disabled:opacity-40">{historyBusy ? "Refreshing…" : historyError ? "Retry history" : "Refresh"}</button></div>
       {reports.length > 0 ? <ul className="mt-3 space-y-2">{reports.map((report) => <li key={report.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-white/[0.03] px-3 py-2 text-xs">
         <span className="text-white/65">{new Date(report.createdAt).toLocaleString()} · {typeof report.qualityReport.rmsDbfs === "number" ? `${report.qualityReport.rmsDbfs.toFixed(1)} dB RMS` : "measured QC"} · {report.isCurrentSource ? "current manuscript version" : "older manuscript version"}</span>
         <span className="text-white/45">{report.signoffs.length} sign-off{report.signoffs.length === 1 ? "" : "s"}{report.signedByMe ? " · signed by you" : ""}</span>
-      </li>)}</ul> : !historyBusy && <p className="mt-3 text-xs text-white/40">No saved quality reports yet. Download the assembled chapter to measure it.</p>}
+      </li>)}</ul> : !historyBusy && !historyError && <p className="mt-3 text-xs text-white/40">No saved quality reports yet. Download the assembled chapter to measure it.</p>}
     </section>}
     {error && <p role="alert" className="mt-2 text-sm text-red-200">{error}</p>}
   </div>;

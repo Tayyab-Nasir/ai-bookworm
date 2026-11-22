@@ -73,6 +73,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/private-artifact-mounted.mjs
+      - name: Verify audiobook QC history retry
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/audio-qc-retry-mounted.mjs
       - name: Verify community directory and discussion account isolation in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium
