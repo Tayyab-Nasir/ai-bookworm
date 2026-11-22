@@ -15,9 +15,9 @@ try {
   const search = page.getByRole('searchbox', { name: 'Words or phrase' });
   await search.fill('Elara');
   await page.getByRole('button', { name: 'Search saved sources' }).click();
-  await expect(page.getByRole('link', { name: 'Open saved chapter' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open current chapter' })).toBeVisible();
   await search.fill('Zarina');
-  await expect(page.getByRole('link', { name: 'Open saved chapter' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Open current chapter' })).toHaveCount(0);
   await expect(page.getByText('matching passages', { exact: false })).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Add memory entry' }).click();
@@ -26,13 +26,25 @@ try {
   await page.getByRole('button', { name: 'Save memory entry' }).click();
   await expect(page.getByText('“Zarina” saved to this book’s memory.')).toBeVisible();
   await page.getByRole('button', { name: 'Search saved sources' }).click();
-  await expect(page.getByRole('button', { name: 'Open Book Bible entry' })).toBeVisible();
-  await page.getByRole('button', { name: 'Open Book Bible entry' }).click();
-  await expect(page.locator('#bible-entry-details').getByLabel('Name', { exact: true })).toHaveValue('Zarina');
+  const openEntry = page.getByRole('button', { name: 'Open Book Bible entry' });
+  const details = page.locator('#bible-entry-details');
+  await expect(openEntry).toBeVisible();
+  await openEntry.click();
+  const description = details.getByRole('textbox', { name: 'Description', exact: true });
+  await expect(description).toHaveValue('Keeper of the northern observatory.');
+  await description.fill('Unsaved author note');
+  page.once('dialog', dialog => dialog.dismiss());
+  await openEntry.click();
+  await expect(openEntry).toBeEnabled();
+  await expect(description).toHaveValue('Unsaved author note');
+  page.once('dialog', dialog => dialog.accept());
+  await openEntry.click();
+  await expect(details.getByLabel('Name', { exact: true })).toHaveValue('Zarina');
+  await expect(description).toHaveValue('Keeper of the northern observatory.');
 
   await search.fill('Elara');
   await page.getByRole('button', { name: 'Search saved sources' }).click();
-  await page.getByRole('link', { name: 'Open saved chapter' }).click();
+  await page.getByRole('link', { name: 'Open current chapter' }).click();
   await expect(page).toHaveURL(/\?chapter=44444444-4444-4444-8444-444444444444$/);
   await expect(page.getByRole('heading', { name: 'Arrival' })).toBeVisible();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);

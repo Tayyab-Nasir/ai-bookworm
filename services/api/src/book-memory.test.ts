@@ -211,6 +211,35 @@ test("Book Bible evidence reads the exact pinned passage and identifies historic
   assert.equal(store.book_bible_items?.length ?? 0, 0);
 });
 
+test("Book Bible search citations re-read the scoped current row and check the PostgreSQL text projection", async (t) => {
+  const store = initialStore("viewer");
+  const itemId = randomUUID();
+  const item = { id: itemId, book_id: BOOK, mutation_incarnation_id: randomUUID(),
+    type: "character", name: "Elara", description: "🌙".repeat(1600),
+    attributes_json: { role: "mapmaker" }, source_refs_json: [], confidence: null,
+    created_at: TIME, updated_at: TIME, search_attributes: '{"role": "mapmaker"}' };
+  store.book_bible_items = [item];
+  const app = await appWith(store); t.after(() => app.close());
+  const url = `/v1/books/${BOOK}/search/bible-evidence`;
+  const projection = [item.name, item.description, item.search_attributes].join("\n");
+  const chunk = Array.from(projection).slice(1600, 3400).join("");
+  const payload = { bibleItemId: itemId, chunkIndex: 1600, textHash: createHash("md5").update(chunk).digest("hex") };
+  const response = await app.inject({ method: "POST", url, headers: auth, payload });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.headers["cache-control"], "private, no-store");
+  const { search_attributes: _, ...expected } = item;
+  assert.deepEqual(response.json(), { bookId: BOOK, citation: payload, item: expected });
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload: { ...payload, chunkIndex: 1 } })).statusCode, 422);
+  item.search_attributes = '{"role": "captain"}';
+  item.attributes_json.role = "captain";
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload })).statusCode, 409);
+  item.book_id = OTHER_BOOK;
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload })).statusCode, 404);
+  store.workspace_members[0].status = "suspended";
+  assert.equal((await app.inject({ method: "POST", url, headers: auth, payload })).statusCode, 403);
+  assert.equal(store.usage_events?.length ?? 0, 0);
+});
+
 test("Book Bible candidate evidence opens its verified reading batch without changing canon or usage", async (t) => {
   const store = initialStore("viewer");
   const jobId = randomUUID(), quoteId = randomUUID();

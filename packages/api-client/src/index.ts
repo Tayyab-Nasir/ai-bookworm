@@ -25,6 +25,12 @@ export interface BookSearchResult {
 export interface SearchPassageCitation {
   chapterId: string; documentVersionId: string; nodeId: string; chunkIndex: number; textHash: string;
 }
+export interface SearchBibleCitation {
+  bibleItemId: string; chunkIndex: number; textHash: string;
+}
+export interface SearchBibleEntry {
+  bookId: string; citation: SearchBibleCitation; item: BookBibleItem;
+}
 export interface SearchSourcePassage {
   bookId: string; citation: SearchPassageCitation; chapterTitle: string; versionNumber: number; isCurrentVersion: boolean;
   text: string; startOffset: number; endOffset: number; totalLength: number;
@@ -1484,6 +1490,8 @@ export function createClient(opts: ClientOptions) {
       ),
     searchBook: (bookId: string, body: { query: string; limit?: number; chapterIds?: string[]; includeBible?: boolean }) =>
       call<{ results: BookSearchResult[]; strategy: "postgres_full_text"; query: string }>("POST", `/v1/books/${encodeURIComponent(bookId)}/search`, body),
+    readSearchBibleEntry: (bookId: string, body: SearchBibleCitation) =>
+      call<SearchBibleEntry>("POST", `/v1/books/${encodeURIComponent(bookId)}/search/bible-evidence`, body),
     readSearchPassage: (bookId: string, body: SearchPassageCitation & { offset?: number }) =>
       call<SearchSourcePassage>("POST", `/v1/books/${encodeURIComponent(bookId)}/search/evidence`, body),
     qualifyReferral: (referredUserId: string, serviceToken: string) =>

@@ -602,10 +602,16 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     return true;
   }
 
-  function openBibleEntry(id: string) {
-    const item = memory?.items.find((entry) => entry.id === id);
-    if (!item) { setNotice("This entry is no longer in the loaded Book Bible. Reload saved data and search again."); return; }
-    if (chooseEntry(item)) requestAnimationFrame(() => document.getElementById("bible-entry-details")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  function openBibleEntry(item: BookBibleItem) {
+    if (!memory || item.book_id !== bookId || !chooseEntry(item)) return;
+    setMemory(current => {
+      if (!current || current.book.id !== item.book_id) return current;
+      const items = current.items.some(entry => entry.id === item.id)
+        ? current.items.map(entry => entry.id === item.id ? item : entry)
+        : [...current.items, item];
+      return { ...current, items };
+    });
+    requestAnimationFrame(() => document.getElementById("bible-entry-details")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
   function changeDraft(change: Partial<EntryDraft>) {

@@ -236,7 +236,17 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     stage = 'Book Bible reload after confirmed save';
     await page.reload();
     stage = 'saved Book Bible entry selection';
-    await page.getByRole('button', { name: /Browser Captain Mira/ }).click();
+    await page.getByRole('searchbox', { name: 'Words or phrase' }).fill('Browser Captain Mira');
+    await page.getByRole('button', { name: 'Search saved sources', exact: true }).click();
+    const [citationReply] = await Promise.all([
+      page.waitForResponse(reply => new URL(reply.url()).pathname.endsWith('/search/bible-evidence') && reply.request().method() === 'POST'),
+      page.getByRole('button', { name: 'Open Book Bible entry' }).click(),
+    ]);
+    assert.equal(citationReply.status(), 200);
+    assert.equal(citationReply.headers()['cache-control'], 'private, no-store');
+    const verified = (await citationReply.json()).item;
+    assert.equal(verified.id, canon.id);
+    assert.equal(verified.mutation_incarnation_id, canon.mutation_incarnation_id);
     stage = 'saved Book Bible image and source values';
     await expect(form.getByLabel('Name', { exact: true })).toHaveValue('Browser Captain Mira');
     await expect(form.getByRole('checkbox')).toBeChecked();

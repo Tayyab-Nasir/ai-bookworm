@@ -15,7 +15,7 @@ const bundle = await build({ stdin: { contents: `import React from "react";
 import { createRoot } from "react-dom/client";
 import Panel from "./apps/web/components/BookSearchPanel";
 const root = createRoot(document.getElementById("root"));
-window.mount = bookId => root.render(React.createElement(Panel, {bookId, onOpenBibleEntry:id=>{window.openedBible=id;}}));`,
+window.mount = bookId => root.render(React.createElement(Panel, {bookId, onOpenBibleEntry:item=>{window.openedBible=item;}}));`,
   resolveDir: process.cwd(), loader: "tsx" }, write: false, bundle: true, format: "iife", platform: "browser", jsx: "automatic",
   plugins: [{ name: "synthetic-search-transport", setup(builder) {
     builder.onResolve({ filter: /^\.\/api$/ }, () => ({ path: "api", namespace: "fixture" }));
@@ -37,7 +37,7 @@ async function fixture(width = 1280) {
   await page.goto("http://127.0.0.1/source-reader-fixture");
   await page.addStyleTag({ content: styles.css + "body{background:#050505;color:#fff;padding:12px;} main{max-width:1100px;margin:0 auto;}" });
   await page.evaluate(() => {
-    window.calls = []; window.searchMode = "normal"; window.sourceMode = "normal"; window.historical = false;
+    window.calls = []; window.searchMode = "normal"; window.sourceMode = "normal"; window.bibleMode = "normal"; window.historical = false;
     window.sourceText = ("🌙 Elara opened the atlas. The silver compass pointed toward the lantern harbor.\n").repeat(120);
     window.row = { id: "44444444-4444-4444-8444-444444444444", source_type: "manuscript",
       chapter_id: "22222222-2222-4222-8222-222222222222", document_version_id: "33333333-3333-4333-8333-333333333333",
@@ -53,6 +53,17 @@ async function fixture(width = 1280) {
         if (window.searchMode === "hold") return new Promise(resolve => { window.releaseSearch = () => resolve(result); });
         if (window.searchMode === "wrong") return { ...result, query: "foreign query" };
         if (window.searchMode === "empty") return { ...result, results: [] };
+        return result;
+      },
+      readSearchBibleEntry: async (bookId, citation) => {
+        window.calls.push({ kind: "bible", bookId, body: citation });
+        if (window.bibleMode === "stale") throw Object.assign(Error("Entry changed."), { status: 409 });
+        const result = { bookId, citation, item: { id: citation.bibleItemId,
+          book_id: window.bibleMode === "foreign" ? "99999999-9999-4999-8999-999999999999" : bookId,
+          mutation_incarnation_id: "88888888-8888-4888-8888-888888888888", name: "Elara · Cartographer",
+          type: "character", description: "Updated canonical details", updated_at: "2026-11-22T00:00:00Z",
+          attributes_json: {}, source_refs_json: [] } };
+        if (window.bibleMode === "hold") return new Promise(resolve => { window.releaseBible = () => resolve(result); });
         return result;
       },
       readSearchPassage: async (bookId, body) => {
@@ -88,7 +99,11 @@ test("search loads excerpts only; explicit read returns exact saved context and 
     assert.equal((await sources(p)).length, 0); await search(p);
     await p.getByRole("status").filter({ hasText: "2 matching" }).waitFor(); assert.equal((await sources(p)).length, 0);
     await p.getByRole("button", { name: "Open Book Bible entry" }).click();
-    assert.equal(await p.evaluate(() => window.openedBible), "66666666-6666-4666-8666-666666666666");
+    await p.waitForFunction(() => window.openedBible?.id === "66666666-6666-4666-8666-666666666666");
+    assert.equal(await p.evaluate(() => window.openedBible.description), "Updated canonical details");
+    assert.deepEqual(await p.evaluate(() => window.calls.find(call => call.kind === "bible").body), {
+      bibleItemId: "66666666-6666-4666-8666-666666666666", chunkIndex: 0, textHash: "a".repeat(32),
+    });
     const reader = p.getByRole("button", { name: "Read cited source", exact: true }); await reader.focus(); await p.keyboard.press("Enter");
     await p.getByRole("status").filter({ hasText: "current when loaded" }).waitFor();
     assert.equal((await sources(p)).length, 1);
@@ -99,6 +114,32 @@ test("search loads excerpts only; explicit read returns exact saved context and 
     await p.getByRole("button", { name: "Hide cited source" }).click(); await p.getByRole("button", { name: "Read cited source", exact: true }).click();
     await p.getByLabel("Cited source text", { exact: true }).waitFor();
     assert.equal((await sources(p)).length, 2, "reopening verifies the citation again");
+  } finally { await p.close(); }
+});
+test("a stale, foreign, or superseded Book Bible citation cannot open an entry", async () => {
+  const p = await fixture();
+  try {
+    await search(p);
+    const open = p.getByRole("button", { name: "Open Book Bible entry" });
+    await p.evaluate(() => { window.bibleMode = "hold"; });
+    await open.click();
+    await p.getByRole("button", { name: "Checking Book Bible entry…" }).waitFor();
+    await p.getByLabel("Words or phrase").fill("lantern");
+    await p.evaluate(() => window.releaseBible());
+    await p.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(await p.evaluate(() => window.openedBible), undefined);
+
+    await p.evaluate(() => { window.bibleMode = "foreign"; });
+    await search(p);
+    await open.click();
+    await p.getByRole("alert").filter({ hasText: "could not be verified" }).waitFor();
+    assert.equal(await p.evaluate(() => window.openedBible), undefined);
+
+    await p.evaluate(() => { window.bibleMode = "stale"; });
+    await open.click();
+    await p.getByRole("alert").filter({ hasText: "Search results were cleared" }).waitFor();
+    assert.equal(await p.getByLabel("Search excerpt", { exact: true }).count(), 0);
+    assert.equal(await p.evaluate(() => window.openedBible), undefined);
   } finally { await p.close(); }
 });
 test("reopening a hidden citation verifies access and preserves its page only after a valid reply", async () => {

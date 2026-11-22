@@ -1,4 +1,5 @@
-import type { BookSearchResult, SearchPassageCitation, SearchSourcePassage } from "@bookworm/api-client";
+import type { BookSearchResult, SearchBibleCitation, SearchPassageCitation, SearchSourcePassage } from "@bookworm/api-client";
+import { isScopedBibleItem } from "./manual-bible-recovery";
 
 const uuid = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(value);
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -28,6 +29,13 @@ export function searchCitation(result: BookSearchResult): SearchPassageCitation 
   return result.source_type === "manuscript" && result.chapter_id && result.document_version_id && result.node_id
     ? { chapterId: result.chapter_id, documentVersionId: result.document_version_id, nodeId: result.node_id,
       chunkIndex: result.chunk_index, textHash: result.text_hash } : null;
+}
+
+export function parseSearchBibleEntry(value: unknown, bookId: string, citation: SearchBibleCitation) {
+  if (!record(value) || value.bookId !== bookId || !record(value.citation)
+    || value.citation.bibleItemId !== citation.bibleItemId || value.citation.chunkIndex !== citation.chunkIndex
+    || value.citation.textHash !== citation.textHash || !isScopedBibleItem(value.item, bookId, citation.bibleItemId)) throw invalid();
+  return value.item;
 }
 
 export function parseSearchPassage(value: unknown, bookId: string, citation: SearchPassageCitation, offset?: number): SearchSourcePassage {

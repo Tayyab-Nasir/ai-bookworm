@@ -52,6 +52,8 @@ let lostReviewQuoteReply = false;
 const memoryBookId = '88888888-8888-4888-8888-888888888888';
 const memoryBook = { id: memoryBookId, workspace_id: '33333333-3333-4333-8333-333333333333', title: 'The Long Way Home', subtitle: null, author_name: 'Fixture author', language: 'en', genre: 'Fantasy', status: 'draft', updated_at: '2026-08-31T08:00:00.000Z' };
 const memoryItems = [];
+const fixtureSearchText = (item) => [item.name, item.description, JSON.stringify(item.attributes_json)].filter(value => value !== null).join('\n');
+const fixtureSearchHash = (value) => createHash('md5').update(value).digest('hex');
 const memoryMutationReceipts = new Map();
 const memoryRequestClosures = new Map();
 // Browser-only transport simulation. Native SQL tests establish atomicity and
@@ -620,19 +622,27 @@ const server = createServer(async (req, res) => {
     return json(200, { url: `http://127.0.0.1:4399/fixture-image?token=${token}`, expiresIn: 60 });
   }
   if (url.pathname === `${memoryBase}/memory` && req.method === 'GET') return json(200, { book: memoryBook, metadata: memoryMetadata, items: memoryItems, chapters: memoryChapters, imageAssets: memoryImages, canEdit: true });
+  if (url.pathname === `${memoryBase}/search/bible-evidence` && req.method === 'POST') {
+    const item = memoryItems.find(entry => entry.id === body.bibleItemId && entry.book_id === memoryBook.id);
+    if (!item) return json(404, { error: { message: 'Entry no longer belongs to this book.' } });
+    if (body.chunkIndex !== 0 || body.textHash !== fixtureSearchHash(fixtureSearchText(item))) {
+      return json(409, { error: { message: 'Entry changed.' } });
+    }
+    return json(200, { bookId: memoryBook.id, citation: body, item });
+  }
   if (url.pathname === `${memoryBase}/search` && req.method === 'POST') {
     const phrase = String(body.query ?? '').toLowerCase();
     const bibleResults = memoryItems.filter(item => `${item.name} ${item.description ?? ''}`.toLowerCase().includes(phrase)).map(item => ({
       id: item.id, source_type: 'bible', chapter_id: null, bible_item_id: item.id,
       document_version_id: null, node_id: null, chunk_index: 0, title: item.name,
-      excerpt: item.description || item.name, text_hash: 'fixture-bible-hash', score: 1,
+      excerpt: fixtureSearchText(item), text_hash: fixtureSearchHash(fixtureSearchText(item)), score: 1,
     }));
     return json(200, {
       results: [...(phrase.includes('elara') ? [{
         id: '77777777-7777-4777-8777-777777777777', source_type: 'manuscript', chapter_id: memoryChapters[0].id,
         bible_item_id: null, document_version_id: memoryChapters[0].current_document_version_id,
         node_id: 'n1', chunk_index: 0, title: 'Arrival',
-        excerpt: 'Elara carries a silver compass from the harbor.', text_hash: 'fixture-search-hash', score: 1,
+        excerpt: 'Elara carries a silver compass from the harbor.', text_hash: fixtureSearchHash('Elara carries a silver compass from the harbor.'), score: 1,
       }] : []), ...bibleResults],
       strategy: 'postgres_full_text', query: body.query,
     });

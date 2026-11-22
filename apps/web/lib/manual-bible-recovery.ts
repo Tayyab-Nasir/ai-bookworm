@@ -98,6 +98,13 @@ export async function manualBibleIntentDigest(action: ManualBibleAction, targetI
   return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
+export function isScopedBibleItem(item: unknown, bookId: string, itemId: string): item is NonNullable<ManualBibleResult["item"]> {
+  return record(item) && item.id === itemId && item.book_id === bookId && typeof item.type === "string" && typeof item.name === "string"
+    && typeof item.mutation_incarnation_id === "string" && uuid.test(item.mutation_incarnation_id)
+    && (item.description === null || typeof item.description === "string") && record(item.attributes_json)
+    && Array.isArray(item.source_refs_json) && timestamp(item.updated_at);
+}
+
 export function validateManualBibleResult(value: unknown, pointer: ManualBiblePointer): ManualBibleResult {
   if (!record(value) || typeof value.replayed !== "boolean" || typeof value.closed !== "boolean") throw new Error("The saved request result could not be confirmed. Recover this same request before continuing.");
   if (value.receipt === null) {
@@ -125,10 +132,8 @@ export function validateManualBibleResult(value: unknown, pointer: ManualBiblePo
     if (value.item !== null) throw new Error("The saved request returned inconsistent deletion details.");
   } else {
     const item = value.item;
-    if (!record(item) || item.id !== receipt.itemId || item.book_id !== pointer.bookId || typeof item.type !== "string" || typeof item.name !== "string"
-      || typeof item.mutation_incarnation_id !== "string" || !uuid.test(item.mutation_incarnation_id)
-      || (item.description !== null && typeof item.description !== "string") || !record(item.attributes_json) || !Array.isArray(item.source_refs_json)
-      || !timestamp(item.updated_at) || (value.disposition === "unchanged" && Date.parse(item.updated_at) !== Date.parse(receipt.resultUpdatedAt))) {
+    if (!isScopedBibleItem(item, pointer.bookId, receipt.itemId)
+      || (value.disposition === "unchanged" && Date.parse(item.updated_at) !== Date.parse(receipt.resultUpdatedAt))) {
       throw new Error("The current Book Bible entry could not be confirmed. Recover the saved request again.");
     }
   }

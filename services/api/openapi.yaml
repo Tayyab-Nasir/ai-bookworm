@@ -1510,6 +1510,40 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/books/{bookId}/search/bible-evidence:
+    post:
+      tags: [v1]
+      operationId: readSearchBibleEntry
+      summary: Verify a Book Bible search citation and return the current entry
+      description: Requires current book membership. Checks the cited chunk against current canonical name, description and PostgreSQL JSONB text before returning the entry. No writes or provider calls.
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SearchBibleCitation' }
+      responses:
+        "200":
+          description: Current Book Bible entry and verified citation
+          headers:
+            Cache-Control: { schema: { type: string, const: 'private, no-store' } }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [bookId, citation, item]
+                properties:
+                  bookId: { type: string, format: uuid }
+                  citation: { $ref: '#/components/schemas/SearchBibleCitation' }
+                  item: { $ref: '#/components/schemas/BookBibleItem' }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/books/{bookId}/bible/reading-plan:
     post:
       operationId: prepareBookBibleReadingPlan
@@ -6278,6 +6312,14 @@ components:
         chapterId: { type: string, format: uuid }
         documentVersionId: { type: string, format: uuid }
         nodeId: { type: string, minLength: 1, maxLength: 200 }
+        chunkIndex: { type: integer, minimum: 0, maximum: 4000000, multipleOf: 1600 }
+        textHash: { type: string, pattern: '^[a-f0-9]{32}$' }
+    SearchBibleCitation:
+      type: object
+      additionalProperties: false
+      required: [bibleItemId, chunkIndex, textHash]
+      properties:
+        bibleItemId: { type: string, format: uuid }
         chunkIndex: { type: integer, minimum: 0, maximum: 4000000, multipleOf: 1600 }
         textHash: { type: string, pattern: '^[a-f0-9]{32}$' }
     SearchSourcePassage:

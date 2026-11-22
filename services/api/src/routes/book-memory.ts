@@ -12,6 +12,7 @@ import { bibleCitationNodeId, bibleEvidenceCitation, jobCitesBibleEvidence, veri
 
 const id = z.guid();
 const timestamp = z.string().datetime({ offset: true });
+const bibleSearchCitationSchema = searchEvidenceSchema.pick({ chunkIndex: true, textHash: true }).extend({ bibleItemId: id });
 const editableRoles = new Set(["owner", "admin", "editor", "writer", "illustrator", "designer"]);
 const sourceRef = z.object({
   chapterId: id,
@@ -209,6 +210,29 @@ export function bookMemoryRoutes(app: FastifyInstance) {
     const body = parse(searchEvidenceSchema, req.body);
     const { sb, bookId } = await scopedBook(app, req);
     return readSearchEvidence(sb, bookId, body);
+  });
+  app.post("/books/:bookId/search/bible-evidence", { onSend: privateMutationResponse }, async (req) => {
+    const citation = parse(bibleSearchCitationSchema, req.body);
+    const { sb, bookId } = await scopedBook(app, req);
+    const { data, error } = await sb.from("book_bible_items")
+      .select("*,search_attributes:attributes_json::text")
+      .eq("book_id", bookId).eq("id", citation.bibleItemId).maybeSingle();
+    if (error) throw new AppError(503, "The cited Book Bible entry could not be loaded. Try again.");
+    if (!data) throw new AppError(404, "The cited Book Bible entry is no longer in this book.");
+    const { search_attributes: attributesText, ...row } = data;
+    const parsed = bibleItemSchema.safeParse(row);
+    if (!parsed.success || parsed.data.id !== citation.bibleItemId || parsed.data.book_id !== bookId
+      || typeof attributesText !== "string") {
+      throw new AppError(503, "The saved Book Bible entry could not be verified.");
+    }
+    const item = parsed.data;
+    // Keep PostgreSQL JSONB text and Unicode slicing identical to the search trigger.
+    const points = Array.from([item.name, item.description, attributesText].filter(value => value !== null).join("\n"));
+    const chunk = points.slice(citation.chunkIndex, citation.chunkIndex + 1800).join("");
+    if (!chunk || createHash("md5").update(chunk).digest("hex") !== citation.textHash) {
+      throw new AppError(409, "This Book Bible entry changed. Search again for the current passage.");
+    }
+    return { bookId, citation, item };
   });
   app.post("/books/:bookId/search", { onSend: privateMutationResponse }, async (req) => {
     const body = parse(searchSchema, req.body);
