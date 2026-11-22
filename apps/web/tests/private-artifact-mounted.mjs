@@ -385,3 +385,22 @@ test("EPUB actor mismatch on history withdraws saved chapter and download", asyn
   await expect(desk.getByRole("button", {name:"Download saved EPUB v1"})).toHaveCount(0);
  } finally { await page.close(); }
 });
+
+test("a slow EPUB download reply cannot extend the signed link lifetime", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    const desk = await setupEpub(page);
+    await page.evaluate(() => {
+      const realNow = Date.now;
+      const original = window.bookwormApi.getAssetDownloadUrl;
+      window.bookwormApi.getAssetDownloadUrl = async (...args) => {
+        const result = await original(...args);
+        Date.now = () => realNow() + 2000;
+        return { ...result, expiresIn: 1 };
+      };
+    });
+    await desk.getByRole("button", { name: "Renew exact EPUB download" }).click();
+    await expect(desk.getByText("The private download link expired while it was being prepared. Renew it to try again.", { exact: true })).toBeVisible();
+    await expect(desk.getByRole("button", { name: "Download saved EPUB v1" })).toHaveCount(0);
+  } finally { await page.close(); }
+});

@@ -62,13 +62,13 @@ export function nextDownloadClockWait(deadlines: (DownloadClock | null)[], rende
   if (!live.length) return null;
   return Math.max(0, Math.min(10_000, ...live.map(deadline => Math.min(deadline.wall - now.wall, deadline.monotonic - now.monotonic))));
 }
-/** A slow response never extends the lifetime of a private package URL. */
-export function signedDownloadDeadline(download: { url: string; expiresIn: number } | null, startedAt: DownloadClock): DownloadClock | null {
+/** A slow response never extends the lifetime of a private artifact URL. */
+export function signedDownloadDeadline(download: { url: string; expiresIn: number } | null, startedAt: DownloadClock, maximumSeconds = 300): DownloadClock | null {
   if (!download || !Number.isFinite(startedAt.wall) || !Number.isFinite(startedAt.monotonic)) return null;
   try {
     validateReaderDownload(download);
     const seconds = download.expiresIn;
-    if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 300) return null;
+    if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > maximumSeconds) return null;
     return { wall: startedAt.wall + seconds * 1000, monotonic: startedAt.monotonic + seconds * 1000 };
   } catch { return null; }
 }

@@ -145,6 +145,8 @@ test("private package deadlines use request start and reject unsafe URLs and inv
     {url: "https://storage.example/signed.zip", expiresIn: 301},
     {url: "https://storage.example/signed.zip", expiresIn: 0},
   ]) assert.equal(signedDownloadDeadline(download, start), null);
+  assert.deepEqual(signedDownloadDeadline({url: "https://storage.example/book.epub", expiresIn: 3600}, start, 3600), {wall: 3601000, monotonic: 3600500});
+  assert.equal(signedDownloadDeadline({url: "https://storage.example/book.epub", expiresIn: 3601}, start, 3600), null);
   assert.equal(signedDownloadDeadline(null, start), null);
   assert.equal(signedDownloadDeadline({url: "https://storage.example/signed.zip", expiresIn: 300}, {wall: NaN, monotonic: 1}), null);
 });

@@ -222,6 +222,9 @@ the allowlist without starting a worker.
   receipt](evidence/supabase-audiobook-export-privacy-2026-11-19.json) records the
   member-visible fields and worker access. Signed-in verification for the
   current application candidate ran against disposable native services.
+- Saved EPUB download renewal measures expiry from the signed-link request start,
+  checks expiry again at download, and asks for renewal if the response arrives
+  too late. Regression: `apps/web/tests/private-artifact-mounted.mjs`.
 - Saved EPUB proofs can be selected for packaging after reopening Publishing
   Studio. Retailer preflight checks the stored EPUB and cover through the
   private publishing service. It requires the saved render to match the
