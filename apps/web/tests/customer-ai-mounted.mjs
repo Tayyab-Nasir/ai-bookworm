@@ -19,12 +19,12 @@ const script=bundle.outputFiles.find(f=>f.path.endsWith('.js')).text,css=bundle.
 const font=await readFile('apps/web/app/fonts/instrument-serif-italic.ttf');
 const browser=await chromium.launch({headless:true,channel:process.env.BROWSER_TEST_CHANNEL||'msedge'});
 test.after(()=>browser.close());
-async function fixture({enabled=true,corrupt=false,blocked=false,role='writer'}={}) {
+async function fixture({enabled=true,corrupt=false,blocked=false,role='writer',hasConnection=true,hasSavedChapter=true}={}) {
  const page=await browser.newPage({viewport:{width:1280,height:1000}});page.setDefaultTimeout(6000);
  await page.route('**/*',r=>r.request().url().endsWith('/font.ttf')?r.fulfill({contentType:'font/ttf',body:font}):r.fulfill({contentType:'text/html',body:'<!doctype html><html><body><div id="root"></div></body></html>'}));
  await page.goto('http://127.0.0.1/fixture');
  await page.addStyleTag({content:`@font-face{font-family:Instrument;src:url('/font.ttf')}html{--font-instrument-serif:Instrument;--font-inter:Arial}body{margin:0;background:#070807;color:#ece8df}a{color:inherit}button,input,select,textarea{font:inherit}${css}`});
- await page.evaluate(({ids,enabled,corrupt,blocked,role})=>{
+ await page.evaluate(({ids,enabled,corrupt,blocked,role,hasConnection,hasSavedChapter})=>{
   window.ids=ids;window.actor=ids.a;window.mode='normal';window.calls=[];window.operations={};window.gates={};window.jobs=0;window.role=role;window.enabled=enabled;window.completed=false;
   if(corrupt)sessionStorage.setItem(`bookworm:customer-ai:${ids.a}:${ids.book}`,'corrupt');
   if(blocked)Storage.prototype.setItem=function(){throw new Error('blocked')};
@@ -34,8 +34,8 @@ async function fixture({enabled=true,corrupt=false,blocked=false,role='writer'}=
    window.calls.push({url,body,actor});
    const error=(status=409)=>Response.json({error:{message:'private-provider-canary',code:'conflict',requestId:'fixture'}},{status});
    if(actor!==window.actor)return error();
-   const chapter={id:ids.chapter,book_id:ids.book,title:'The letter at low tide',current_document_version_id:ids.version,order_index:0};
-   if(url.endsWith('/ai-connections'))return Response.json({viewerId:actor,canSave:true,generationAvailable:window.enabled,connections:[{id:ids.connection,provider:'openai',status:'saved',revision:1,keySuffix:'TEST',lastOperationId:ids.policy,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}]});
+   const chapter={id:ids.chapter,book_id:ids.book,title:'The letter at low tide',current_document_version_id:hasSavedChapter?ids.version:null,order_index:0};
+   if(url.endsWith('/ai-connections'))return Response.json({viewerId:actor,canSave:true,generationAvailable:window.enabled,connections:hasConnection?[{id:ids.connection,provider:'openai',status:'saved',revision:1,keySuffix:'TEST',lastOperationId:ids.policy,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}]:[]});
    if(url.toLowerCase().endsWith(`/books/${ids.book}`))return Response.json({book:{id:ids.book,workspace_id:ids.ws,title:actor===ids.a?'The Lighthouse Letters':'A different account book'},role:window.role});
    if(url.endsWith('/chapters'))return Response.json({chapters:[chapter]});
    if(url.endsWith('/document')) {
@@ -44,6 +44,8 @@ async function fixture({enabled=true,corrupt=false,blocked=false,role='writer'}=
    }
    const action=url.split('/').at(-1),key=actor+':'+body.operationId;
    if(action==='options') {
+    if(window.mode==='options-unavailable')return error(503);
+    if(window.mode==='options-empty')return Response.json({viewerId:actor,options:[]});
     if(window.mode==='options-deferred')await new Promise(r=>window.gates.options=r);
     return Response.json({viewerId:actor,options:[{id:ids.policy,provider:body.provider,agentType:body.agentType,model:'synthetic-editor-1',upstream:null,maxOutputTokens:1024,platformFee:{mode:'platform_plan',credits:0},providerCostStatus:'unknown',expiresAt:new Date(Date.now()+3600000).toISOString()}]});
    }
@@ -74,7 +76,7 @@ async function fixture({enabled=true,corrupt=false,blocked=false,role='writer'}=
    if(window.mode==='wrong-book')return Response.json({viewerId:actor,receipt:{...receipt,bookId:ids.other}});
    return Response.json({viewerId:actor,receipt});
   };
- },{ids,enabled,corrupt,blocked,role});
+ },{ids,enabled,corrupt,blocked,role,hasConnection,hasSavedChapter});
  await page.addScriptTag({content:script});await page.evaluate(()=>window.mount());
  await expect(page.getByRole('button',{name:'Recheck account & saved status'})).toBeEnabled();return page;
 }
@@ -88,6 +90,44 @@ async function confirm(page) {
  await page.getByLabel(/I reviewed this source and direction/).check();await page.getByRole('button',{name:'Confirm & queue request'}).click();
 }
 const count=(page,action)=>page.evaluate(action=>window.calls.filter(c=>c.url.endsWith('/'+action)).length,action);
+
+test('missing saved inputs give a next step without sending a customer AI request', async () => {
+ for (const setup of [{hasSavedChapter:false}, {hasConnection:false}]) {
+  const p=await fixture(setup);
+  try {
+   if (setup.hasSavedChapter === false) {
+    await expect(p.getByLabel('Saved chapter', {exact:true})).toHaveValue('');
+    await expect(p.getByText(/Save a chapter in the manuscript/)).toBeVisible();
+    await expect(p.getByRole('option', {name:'The letter at low tide'})).toHaveCount(0);
+   } else {
+    await expect(p.getByText(/Add a provider key in/).getByRole('link', {name:'AI connections'})).toHaveAttribute('href', '/settings/ai');
+   }
+   await expect(p.getByRole('button', {name:'Load approved models'})).toBeDisabled();
+   assert.equal(await count(p,'options'),0);
+   assert.equal(await count(p,'prepare'),0);
+  } finally { await p.close(); }
+ }
+});
+
+test('a failed model lookup can be retried without an unconfirmed request', async () => {
+ const p=await fixture();
+ try {
+  const load=p.getByRole('button', {name:'Load approved models'});
+  await p.evaluate(()=>{window.mode='options-unavailable';});
+  await load.click();
+  await expect(p.getByRole('alert')).toHaveText('Approved models could not be loaded. Try loading them again. No generation request was sent.');
+  assert.equal(await p.evaluate(()=>sessionStorage.length),0);
+  await p.evaluate(()=>{window.mode='options-empty';});
+  await load.click();
+  await expect(p.getByRole('alert')).toHaveText('No approved model is available for this connection and task.');
+  await p.evaluate(()=>{window.mode='normal';});
+  await load.click();
+  await expect(p.getByLabel('Approved model', {exact:true})).toHaveValue(ids.policy);
+  await expect(p.getByRole('alert')).toHaveCount(0);
+  assert.equal(await count(p,'options'),3);
+  assert.equal(await count(p,'prepare'),0);
+ } finally { await p.close(); }
+});
 
 test('exact saved source, model, separate charges and explicit consent; success links to review, never auto-apply',async()=>{
  const p=await fixture();try{

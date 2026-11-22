@@ -54,8 +54,9 @@ export default function CustomerAiStudio({ bookId: requestedBookId }: { bookId: 
       const op = readCustomerAiPending(identity.id, bookId);
       const result = op ? await api.getCustomerAiStatus(bookId, op, identity.id, signal) : null;
       await readBrowserSession(identity.id); if (!valid(epoch)) return;
-      setDesk({ actor: identity.id, book, role, chapters, connections }); setPending(op); setReceipt(result);
-      setConnection(connections.connections.find(c => c.status === "saved")?.id ?? ""); setChapter(chapters[0]?.id ?? "");
+      const savedChapters = chapters.filter(chapter => customerUuid.test(chapter.current_document_version_id ?? ""));
+      setDesk({ actor: identity.id, book, role, chapters: savedChapters, connections }); setPending(op); setReceipt(result);
+      setConnection(connections.connections.find(c => c.status === "saved")?.id ?? ""); setChapter(savedChapters[0]?.id ?? "");
     } catch { if (valid(epoch)) { clearPrivate(); setError("Saved book and request status could not be verified. Nothing was submitted. Reload or sign in again; do not clear browser recovery data."); } }
     finally { if (valid(epoch)) setBusy(false); }
   }, [api, bookId, clearPrivate]);
@@ -77,7 +78,8 @@ export default function CustomerAiStudio({ bookId: requestedBookId }: { bookId: 
 
   // Each request is actor-bound on the server as well as checked before/after
   // awaits. A late old-account response cannot restore controls or review data.
-  async function run(work: (actor: string, signal: AbortSignal, epoch: number) => Promise<void>) {
+  async function run(work: (actor: string, signal: AbortSignal, epoch: number) => Promise<void>,
+    failureMessage = "The outcome is unconfirmed. Check saved status before another decision. Do not create a duplicate request or assume a refund.") {
     const state = lifecycle.current, epoch = state.epoch;
     if (!desk || busy || state.flight === epoch) return;
     const owner = desk.actor; state.flight = epoch; setBusy(true); setError(""); setConsent(false);
@@ -87,25 +89,27 @@ export default function CustomerAiStudio({ bookId: requestedBookId }: { bookId: 
     } catch {
       let current = false; try { await readBrowserSession(owner); current = true; } catch { /* Never retain the old account's private view. */ }
       if (valid(epoch)) { if (!current) clearPrivate(); setReview(null); setReceipt(null); setOptions([]); setPolicy("");
-        setError("The outcome is unconfirmed. Check saved status before another decision. Do not create a duplicate request or assume a refund."); }
+        setError(failureMessage); }
     }
     finally { if (valid(epoch)) { state.flight = -1; setBusy(false); } }
   }
   async function acceptRead(actor: string, epoch: number) { await readBrowserSession(actor); return valid(epoch); }
-  const connection = desk?.connections.connections.find(c => c.id === connectionId && c.status === "saved");
+  const savedConnections = desk?.connections.connections.filter(c => c.status === "saved") ?? [];
+  const connection = savedConnections.find(c => c.id === connectionId);
+  const savedChapter = desk?.chapters.find(chapter => chapter.id === chapterId);
   const selected = (c: AiConnection): CustomerAiSelection => ({ bookId, workspaceId: desk!.book.workspace_id, connectionId: c.id,
     credentialRevision: c.revision, provider: c.provider, agentType: agent });
   const creation = !!desk && writes(desk.role) && desk.connections.generationAvailable;
   const locked = busy || !!pending || !creation;
   const invalidateOptions = () => { setOptions([]); setPolicy(""); setConsent(false); };
   const loadOptions = () => run(async (owner, signal, epoch) => {
-    if (!connection || pending || !creation) return;
+    if (!connection || !savedChapter || pending || !creation) return;
     const values = await api.listCustomerAiOptions(selected(connection), owner, signal);
-    if (await acceptRead(owner, epoch)) { setOptions(values); setPolicy(values[0]?.id ?? ""); if (!values.length) setError("No approved model and platform fee are available for this task."); }
-  });
+    if (await acceptRead(owner, epoch)) { setOptions(values); setPolicy(values[0]?.id ?? ""); if (!values.length) setError("No approved model is available for this connection and task."); }
+  }, "Approved models could not be loaded. Try loading them again. No generation request was sent.");
   const prepare = () => run(async (owner, signal, epoch) => {
     const option = options.find(o => o.id === policyId);
-    if (!creation || pending || !connection || !option || !chapterId || Date.parse(option.expiresAt) <= Date.now() || (agent === "writer" && !instruction.trim())) return;
+    if (!creation || pending || !connection || !option || !savedChapter || Date.parse(option.expiresAt) <= Date.now() || (agent === "writer" && !instruction.trim())) return;
     const snapshot = { instruction: instruction.trim(), bible, guide, budget }, selection = selected(connection);
     const saved = await api.getChapterDocument(chapterId, owner, signal);
     if (!writes(saved.role) || saved.chapter.id !== chapterId || saved.chapter.book_id !== bookId || saved.document.chapterId !== chapterId
@@ -173,18 +177,20 @@ export default function CustomerAiStudio({ bookId: requestedBookId }: { bookId: 
       {!creation && <p role="status" className={styles.notice}>{!writes(desk.role) ? "Current write access is required to prepare a request." : "Customer-key generation is not activated. Saved requests can still be checked, closed safely or recovered. No free fallback is offered."}</p>}
       <div className={styles.columns}>
         <section className={styles.sheet} aria-labelledby="customer-source-heading"><p className={styles.eyebrow}>01 / PREPARE</p><h2 id="customer-source-heading">A precise starting point.</h2>
+          {creation && !desk.chapters.length && <p className={styles.caption}>Save a chapter in the manuscript, then recheck the account and saved status.</p>}
+          {creation && !savedConnections.length && <p className={styles.caption}>Add a provider key in <Link href="/settings/ai">AI connections</Link> and return to this book.</p>}
           <fieldset disabled={locked} className={styles.form}><legend className={styles.srOnly}>Saved source and AI selection</legend>
-            <label>Saved chapter<select value={chapterId} onChange={e => setChapter(e.target.value)}>{desk.chapters.length ? desk.chapters.map(c => <option value={c.id} key={c.id}>{c.title}</option>) : <option value="">No saved chapters</option>}</select></label>
+            <label>Saved chapter<select aria-label="Saved chapter" value={chapterId} onChange={e => setChapter(e.target.value)}>{desk.chapters.length ? desk.chapters.map(c => <option value={c.id} key={c.id}>{c.title}</option>) : <option value="">No saved chapters</option>}</select></label>
             <p className={styles.caption}>Uses the latest committed chapter revision, never an unsaved editor draft. An oversized source is rejected, not silently shortened.</p>
             <div className={styles.pair}><label>Task<select value={agent} onChange={e => { setAgent(e.target.value as CustomerTextAgent); invalidateOptions(); }}>{tasks.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}</select></label>
-              <label>Saved connection<select value={connectionId} onChange={e => { setConnection(e.target.value); invalidateOptions(); }}><option value="">Select a connection</option>{desk.connections.connections.filter(c => c.status === "saved").map(c => <option key={c.id} value={c.id}>{names[c.provider]} · revision {c.revision}</option>)}</select></label></div>
+              <label>Saved connection<select value={connectionId} onChange={e => { setConnection(e.target.value); invalidateOptions(); }}><option value="">Select a connection</option>{savedConnections.map(c => <option key={c.id} value={c.id}>{names[c.provider]} · revision {c.revision}</option>)}</select></label></div>
             <label>Direction {agent === "writer" ? "(required)" : "(optional)"}<textarea value={instruction} maxLength={4000} rows={4} onChange={e => setInstruction(e.target.value)} placeholder="What should this passage accomplish?" /></label>
             <label>Context budget<select value={budget} onChange={e => setBudget(Number(e.target.value))}><option value={4096}>Compact · about 4K tokens</option><option value={8192}>Balanced · about 8K tokens</option><option value={16000}>Extended · about 16K tokens</option></select></label>
             <div className={styles.checks}><label><input type="checkbox" checked={bible} onChange={e => setBible(e.target.checked)} />Include saved Book Bible</label><label><input type="checkbox" checked={guide} onChange={e => setGuide(e.target.checked)} />Include saved style guide</label></div>
             <p className={styles.caption}>Related-passage retrieval is not enabled for customer-key requests.</p>
-            <button type="button" disabled={!connection} onClick={() => void loadOptions()}>Load approved models</button>
-            <label>Approved model<select value={policyId} onChange={e => setPolicy(e.target.value)}><option value="">Select an approved model</option>{options.map(o => <option key={o.id} value={o.id}>{o.model}{o.upstream ? ` · via ${o.upstream}` : ""}</option>)}</select></label>
-            <button type="button" className={styles.primary} disabled={!policyId || !chapterId || !connection || (agent === "writer" && !instruction.trim())} onClick={() => void prepare()}>Prepare for review →</button>
+            <button type="button" disabled={!connection || !savedChapter} onClick={() => void loadOptions()}>Load approved models</button>
+            <label>Approved model<select aria-label="Approved model" value={policyId} onChange={e => setPolicy(e.target.value)}><option value="">Select an approved model</option>{options.map(o => <option key={o.id} value={o.id}>{o.model}{o.upstream ? ` · via ${o.upstream}` : ""}</option>)}</select></label>
+            <button type="button" className={styles.primary} disabled={!policyId || !savedChapter || !connection || (agent === "writer" && !instruction.trim())} onClick={() => void prepare()}>Prepare for review →</button>
           </fieldset>
         </section>
         <section className={styles.sheet} aria-labelledby="customer-review-heading"><p className={styles.eyebrow}>02 / REVIEW &amp; CONFIRM</p><h2 id="customer-review-heading" tabIndex={-1} ref={reviewHeading}>Nothing starts unseen.</h2>

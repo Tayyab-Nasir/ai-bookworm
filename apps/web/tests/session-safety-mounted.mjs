@@ -63,6 +63,9 @@ test("StrictMode drops its cancelled identity read before dispatching workspace 
   const page = await fixture("dashboard", true);
   try {
     await expect(heading(page, "A")).toBeVisible();
+    const operations = page.getByRole("region", { name: "Publishing operations", exact: true });
+    await expect(operations.getByRole("link", { name: "Manage AI connections", exact: true })).toHaveAttribute("href", "/settings/ai");
+    await expect(operations.getByText(/Connected providers bill their API usage separately/)).toBeVisible();
     assert.equal(await page.evaluate(() => window.reads.filter(read => read.method === "list").length), 1);
   } finally { await page.close(); }
 });
