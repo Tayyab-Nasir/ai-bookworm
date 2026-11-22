@@ -1,7 +1,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { ArrowDownRight, ArrowUpRight, BookOpen, Feather, Layers3 } from "lucide-react";
-import BookieScene from "../components/BookieScene";
+import BookieMascot from "../components/BookieMascot";
 import styles from "./bookiewookie.module.css";
 
 const stages = [
@@ -21,6 +21,12 @@ const publishingSteps = [
   { title: "Check the edition", text: "Run preflight and review the files for your chosen retailer." },
   { title: "Download the package", text: "Get the proof, cover, and listing materials prepared for that channel." },
   { title: "Track the release", text: "Record a submission and its review status as the retailer processes it." },
+];
+
+const commonQuestions = [
+  { question: "Can I bring a manuscript I already wrote?", answer: "Yes. Import DOCX, EPUB, PDF, or TXT files up to 20 MB. Review the imported text, especially when the source is a scanned PDF." },
+  { question: "How do AI generation costs work?", answer: "Available AI tools depend on your plan and provider settings. Review the credit quote before approving a BookieWookie generation request." },
+  { question: "What happens after I export a retailer package?", answer: "Download the private ZIP and use it in your retailer account. You can record the submission status in BookieWookie while the retailer reviews it." },
 ];
 
 export default function Home() {
@@ -46,11 +52,7 @@ export default function Home() {
           <a href="#studio" className={styles.secondary}>Explore the studio <ArrowDownRight size={18} aria-hidden /></a>
         </div>
       </div>
-      <div className={styles.art}>
-        <span className={styles.orbit} aria-hidden />
-        <Image className={styles.mascot} src="/brand/bookiewookie.webp" width={950} height={950} alt="BookieWookie, a paper owl wearing a red bookmark scarf and holding a plum book" priority sizes="(max-width: 760px) 85vw, 42vw" />
-        <BookieScene />
-      </div>
+      <BookieMascot />
     </section>
 
     <section id="studio" className={styles.studio} aria-labelledby="studio-title">
@@ -70,6 +72,14 @@ export default function Home() {
       </div>)}</dl>
     </section>
 
+    <section className={styles.bibleFeature} aria-labelledby="bible-title">
+      <h2 id="bible-title">Keep your story <em>consistent.</em></h2>
+      <div>
+        <p>Use the Book Bible to save character details, settings, and artwork references as the manuscript develops.</p>
+        <p>Keep notes alongside their source passages so you can check a detail before revising a later chapter.</p>
+      </div>
+    </section>
+
     <section id="publishing" className={styles.publishing} aria-labelledby="publishing-title">
       <div>
         <h2 id="publishing-title">Ready for <em>the bookshelf.</em></h2>
@@ -78,6 +88,13 @@ export default function Home() {
       <ol className={styles.publishingSteps}>{publishingSteps.map(({ title, text }) => <li key={title}>
         <h3>{title}</h3><p>{text}</p>
       </li>)}</ol>
+    </section>
+
+    <section className={styles.answers} aria-labelledby="answers-title">
+      <h2 id="answers-title">Before you start</h2>
+      <div>{commonQuestions.map(({ question, answer }) => <details key={question}>
+        <summary>{question}</summary><p>{answer}</p>
+      </details>)}</div>
     </section>
 
     <section className={styles.closing} aria-labelledby="closing-title">

@@ -3,11 +3,12 @@
 import { useEffect, useRef, useState, type ReactNode, type FormEvent } from "react";
 import Link from "next/link";
 import { rememberReferral } from "../lib/referrals";
+import styles from "../app/bookiewookie.module.css";
 
 interface AuthCardProps {
-  badge: string;
+  badge?: string;
   headline: ReactNode;
-  italicWord: ReactNode;
+  italicWord?: ReactNode;
   subtext: string;
   primaryLabel: string;
   altPrompt: string;
@@ -17,6 +18,7 @@ interface AuthCardProps {
   showForgot?: boolean;
   showRemember?: boolean;
   mode?: "login" | "signup" | "forgot-password" | "reset-password";
+  appearance?: "paper";
 }
 
 export function AuthCard({
@@ -32,6 +34,7 @@ export function AuthCard({
   showForgot = false,
   showRemember = false,
   mode = "login",
+  appearance,
 }: AuthCardProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,8 +95,8 @@ export function AuthCard({
   }
 
   return (
-    <div className="w-full max-w-[420px]">
-      <div className="mb-3 flex items-center justify-center">
+    <div className={`w-full max-w-[420px] ${appearance === "paper" ? styles.paperAuth : ""}`}>
+      {badge && <div className="mb-3 flex items-center justify-center">
         <span className="inline-flex items-center gap-2.5 rounded-full border border-white/[0.13] bg-white/[0.045] px-3.5 py-2 text-[10px] font-medium uppercase tracking-[0.19em] text-[#c5c5c5]">
           <span className="relative flex h-1.5 w-1.5">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white/50" />
@@ -101,22 +104,22 @@ export function AuthCard({
           </span>
           {badge}
         </span>
-      </div>
+      </div>}
 
       <h1 className="text-center text-[clamp(2.25rem,8.5vw,3.5rem)] font-medium leading-[0.95] tracking-[-0.072em] sm:text-[clamp(2.75rem,6.5vw,3.75rem)]">
         {headline}
-        <br />
+        {italicWord && <><br />
         <span className="font-instrument instrument-italic font-normal italic tracking-[-0.045em] text-[#9a9a9a]">
           {italicWord}
-        </span>
+        </span></>}
       </h1>
 
       <p className="mt-4 text-center text-[14px] leading-[1.6] tracking-[-0.015em] text-[#9a9a9a] sm:text-[15px]">
         {subtext}
       </p>
 
-      <div className="mt-10 rounded-[28px] border border-white/[0.09] bg-white/[0.025] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_24px_64px_-24px_rgba(0,0,0,0.6)]">
-        <div className="rounded-[calc(28px-0.375rem)] border border-white/[0.05] bg-gradient-to-b from-white/[0.025] to-transparent p-7 sm:p-9">
+      <div className={`mt-10 rounded-[28px] border border-white/[0.09] bg-white/[0.025] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_24px_64px_-24px_rgba(0,0,0,0.6)] ${styles.authFrame}`}>
+        <div className={`rounded-[calc(28px-0.375rem)] border border-white/[0.05] bg-gradient-to-b from-white/[0.025] to-transparent p-7 sm:p-9 ${styles.authFields}`}>
           <form
             onSubmit={onSubmit}
             className="flex flex-col gap-5"
