@@ -15,6 +15,7 @@ import * as savedPrint from "../lib/saved-print";
 import * as editionTabRecovery from "../lib/edition-tab-recovery";
 import * as editionCreateFence from "../lib/edition-create-fence";
 import { jobLink } from "../lib/job-link";
+import { retailerPortal } from "../lib/retailer-portals";
 import { BookNodeSchema, Isbn13Schema } from "@bookworm/book-model/schema";
 
 const A = "11111111-1111-4111-8111-111111111111";
@@ -97,6 +98,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/workspace-creation-recovery")) return workspaceCreationRecovery;
     if (name.endsWith("/book-route-id")) return pure("apps/web/lib/book-route-id.ts");
     if (name.endsWith("/job-link")) return { jobLink };
+    if (name.endsWith("/retailer-portals")) return { retailerPortal };
     if (name.endsWith("/api")) return { apiClient: () => api };
     if (name.endsWith("/AuthorShell")) return { AuthorHeader: "Header", AuthorPage: "Page" };
     for (const component of ["AuthorDashboard", "BillingCenter", "CollaborationCenter", "BookSetupClient", "BookEditorClient", "BookMemoryClient", "StoryBlueprintClient", "PublishingStudio", "TranslationStudio"]) {

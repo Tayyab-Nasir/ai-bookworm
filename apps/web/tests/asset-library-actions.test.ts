@@ -7,6 +7,7 @@ import ts from "typescript";
 import { ApiClientError } from "@bookworm/api-client";
 import { privateUploadUrl } from "../lib/private-upload";
 import { isAssetMutationReceipt } from "../lib/asset-lifecycle-operation";
+import { isArtworkRequestable } from "../lib/approved-artwork";
 
 const workspace = "11111111-1111-4111-8111-111111111111";
 const otherWorkspace = "22222222-2222-4222-8222-222222222222";
@@ -75,6 +76,7 @@ function harness(overrides: Record<string, (...args: any[]) => any> = {}, accoun
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
     if (name.endsWith("/workspace-selection")) return selection;
     if (name.endsWith("/private-upload")) return { privateUploadUrl };
+    if (name.endsWith("/approved-artwork")) return { isArtworkRequestable };
     if (name === "@bookworm/api-client") return { ApiClientError, createClient: () => api };
     throw new Error(`Unexpected test import: ${name}`);
   };
