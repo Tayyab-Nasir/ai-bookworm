@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiClientError } from "@bookworm/api-client";
 import { readBrowserSession } from "../lib/browser-session";
+import { retailerPortal } from "../lib/retailer-portals";
 import { apiClient } from "./api";
 
 const tabs = ["users", "jobs", "managed publishing", "moderation", "flags", "support", "audit", "usage"] as const;
@@ -291,6 +292,7 @@ export default function AdminConsole() {
           const id = tab === "managed publishing" ? value(row, "jobId") : value(row, "id", String(index));
           const stamp = date(row.created_at);
           const listingUrl = value(row, "listingUrl", "");
+          const portal = retailerPortal(value(row, "channel", ""));
           const target = row.target && typeof row.target === "object" ? row.target as Row : null;
           const pendingAction = pendingModeration?.reportId === id ? pendingModeration.action : null;
           return <article key={id} className="p-5 sm:p-6">
@@ -307,6 +309,9 @@ export default function AdminConsole() {
                 <button type="button" disabled={!!busy || !ready} className={button} onClick={() => void downloadManagedPackage(row)}>
                   {busy === id ? "Verifying ZIP…" : "Download private ZIP"}
                 </button>
+                {portal && <p className="text-sm text-white/75">Follow the upload steps in the ZIP at{" "}
+                  <a href={portal.href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">{portal.label}</a>.
+                </p>}
                 <details className="mt-2 rounded-xl border border-white/15 p-3">
                   <summary className="cursor-pointer py-2 text-sm">Confirm publication</summary>
                   <form className="mt-2 space-y-3" onSubmit={event => {

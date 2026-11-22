@@ -24,6 +24,7 @@ import { readBrowserSession } from "../lib/browser-session";
 import { discardEditionTab, editionBase, parseEditionTab, readEditionTab, writeEditionTab } from "../lib/edition-tab-recovery";
 import { beginEditionCreateFence, clearEditionCreateFence, readEditionCreateFence, type EditionCreateFence } from "../lib/edition-create-fence";
 import { packageDownloadDeadline, signedDownloadDeadline, downloadClock, downloadExpired, nextDownloadClockWait, type DownloadClock } from "../lib/publishing-request";
+import { retailerPortal } from "../lib/retailer-portals";
 
 import { FONTS, fontLabel, isAmiriFont, DEFAULT_FORM, LAYOUT_PRESET_LABELS, isLayoutPresetId, applyLayoutPreset, resolveEditionRenderSafety, formFromEdition, toConfig, matchesCreatedEditionConfig, usesUploadedPrintCover, type FormState, type Kind, type LayoutPresetId } from "../lib/publishing-edition-form";
 export { applyLayoutPreset, resolveEditionTextDirection, formFromEdition, toConfig } from "../lib/publishing-edition-form";
@@ -37,13 +38,6 @@ const timePackage = (job: PublishingPackageJob, startedAt: DownloadClock): Timed
 const CHANNEL_FORMATS: Record<RetailerChannel, Kind[]> = { kdp: ["ebook", "print"], apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"] };
 const CHANNEL_LABELS: Record<Channel, string> = { export: "Universal export", kdp: "Amazon KDP", apple: "Apple Books", barnesnoble: "Barnes & Noble Press", lulu: "Lulu", googleplay: "Google Play Books" };
 const CHANNEL_ENTITLEMENTS: Record<RetailerChannel, string> = { kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu", googleplay: "google_play" };
-const CHANNEL_PORTALS: Record<RetailerChannel, { label: string; href: string }> = {
-  kdp: { label: "KDP Bookshelf", href: "https://kdp.amazon.com/en_US/bookshelf" },
-  apple: { label: "Apple Books Publishing Portal", href: "https://authors.apple.com/epub-upload" },
-  barnesnoble: { label: "B&N Press", href: "https://press.barnesandnoble.com/" },
-  lulu: { label: "Lulu print book projects", href: "https://www.lulu.com/create/print-books" },
-  googleplay: { label: "Google Play Books Partner Center", href: "https://play.google.com/books/publish/" },
-};
 const artifactUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function renderedStoragePath(workspace: string | undefined, artifact: RenderedEditionResult["artifacts"][number]) {
   if (!workspace || !artifactUuid.test(workspace) || !artifactUuid.test(artifact.asset.id) || artifact.asset.workspace_id !== workspace) return "";
@@ -1208,12 +1202,14 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
           <div className="mt-7 flex items-center justify-between border-t border-white/10 pt-5"><h3 className="font-medium">Package history</h3><button type="button" onClick={() => void refreshHistory()} disabled={Boolean(busy) || !activeId} className="text-sm text-white/55 underline disabled:opacity-40">{busy === "history" ? "Refreshing…" : "Refresh"}</button></div>
           {!activeId ? <p className="mt-4 text-sm text-white/45">Save this edition to view its package history.</p> : packageHistory.editionId !== activeId || packageHistory.status === "loading" ? <p role="status" className="mt-4 text-sm text-white/45">Checking package history for this edition…</p> : null}
           {packageHistory.editionId === activeId && packageHistory.status === "unavailable" && <p role="status" className="mt-4 text-sm text-amber-100">Package history is unavailable. Refresh before relying on this list.</p>}
-          {packageHistory.editionId === activeId && packageHistory.status === "ready" && activePublishingJobs.length ? <ul className="mt-4 space-y-3">{activePublishingJobs.map((job) => <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
+          {packageHistory.editionId === activeId && packageHistory.status === "ready" && activePublishingJobs.length ? <ul className="mt-4 space-y-3">{activePublishingJobs.map((job) => {
+            const portal = retailerPortal(job.channel);
+            return <li key={job.id} className="rounded-xl border border-white/10 bg-black/30 p-4">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-medium capitalize">{job.channel === "barnesnoble" ? "Barnes & Noble" : job.channel === "googleplay" ? "Google Play Books" : job.channel} package</p><p className="mt-1 text-xs text-white/40">{new Date(job.createdAt).toLocaleString()} · {job.ruleVersion ?? "rules pending"}</p></div><span className={`rounded-full px-3 py-1 text-xs ${job.status === "succeeded" && job.package ? "bg-emerald-400/15 text-emerald-100" : job.status === "failed" ? "bg-red-400/15 text-red-100" : "bg-amber-300/10 text-amber-100"}`}>{job.status === "succeeded" ? (job.package ? "ready" : "unavailable") : job.status}</span></div>
             {job.package ? <div className="mt-3 flex flex-wrap items-center gap-4 text-sm"><span className="text-white/55">{(job.package.asset.size_bytes / 1024).toFixed(0)} KB · SHA-256 {job.package.asset.checksum.slice(0, 12)}…</span>{currentIdentity && currentBook.current === bookId && !packageClockFault && !downloadExpired(job.downloadExpiresAt, packageClock) ? <PrivateArtifactDownload actor={linkOwner} url={job.package.download.url} filename={`${job.channel}-export.zip`} expectedPath={packageStoragePath(book?.workspace_id, job)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && (publishingJobsRef.current.includes(job) || linkedPackageRef.current === job)} isExpired={() => { const now = observePackageClock(); return clockFault.current || downloadExpired(job.downloadExpiresAt, now); }} onInvalid={(message, kind) => { if (kind === "expired") return; setPackageHistory({ editionId: activeId, status: "unavailable" }); setError(message); }} className="underline disabled:opacity-40">Download private ZIP</PrivateArtifactDownload> : <span>{packageClockFault ? "Device clock moved backwards. Reload this page before renewing private links." : "Private link expired or could not be verified."}</span>}{currentIdentity && !packageClockFault && downloadExpired(job.downloadExpiresAt, packageClock) && <button type="button" disabled={Boolean(busy)} onClick={() => void renewPackage(job)} className="min-h-11 underline disabled:opacity-40">Renew private link</button>}</div> : <p className="mt-3 text-sm text-white/45">{job.failureCode ? `Package failed: ${job.failureCode}` : job.status === "succeeded" ? "This job is saved in history, but its file is currently unavailable. Check Assets or contact your workspace admin." : "No downloadable package is available for this job."}</p>}
-            {currentIdentity && job.status === "succeeded" && job.package && CHANNEL_PORTALS[job.channel] && (
+            {currentIdentity && job.status === "succeeded" && job.package && portal && (
               <p className="mt-2 text-sm text-white/65">
-                Open <a href={CHANNEL_PORTALS[job.channel].href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">{CHANNEL_PORTALS[job.channel].label}</a> and follow the upload steps in the ZIP.
+                Open <a href={portal.href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">{portal.label}</a> and follow the upload steps in the ZIP.
               </p>
             )}
             {currentIdentity && job.status === "succeeded" && job.bookId === bookId && job.editionId === activeId && (
@@ -1229,7 +1225,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
                   isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId
                     && viewEpoch.current === linkEpoch && (publishingJobsRef.current.includes(job) || linkedPackageRef.current === job)} />
               )}
-          </li>)}</ul> : packageHistory.editionId === activeId && packageHistory.status === "ready" ? <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p> : null}
+          </li>; })}</ul> : packageHistory.editionId === activeId && packageHistory.status === "ready" ? <p className="mt-4 text-sm text-white/45">No retailer packages for this edition yet.</p> : null}
           {packageHistory.editionId === activeId && packageHistory.status === "ready" && packageHistory.nextCursor && (
             <button type="button" onClick={() => void refreshHistory(packageHistory.nextCursor ?? undefined)} disabled={Boolean(busy)}
               className="glass-ghost mt-4 min-h-11 rounded-full px-4 text-sm disabled:opacity-40">

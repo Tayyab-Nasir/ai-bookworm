@@ -119,6 +119,7 @@ test("managed publishing recovers an operator-confirmed listing after a lost res
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(page.getByText(/Publication confirmed/)).toBeVisible();
     await expect(page.getByRole("link", { name: "Open retailer listing" })).toHaveAttribute("href", listing);
+    await expect(page.getByRole("link", { name: "KDP Bookshelf" })).toHaveCount(0);
     await expect(save).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Download private ZIP" })).toHaveCount(0);
     assert.deepEqual(await page.evaluate(() => window.calls), [
@@ -166,12 +167,16 @@ test("managed publishing queue is capability-scoped and recovers a claim without
     await refresh.click();
     await tab.click();
     await expect(page.getByText("Harbor Letters", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "KDP Bookshelf" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
     await page.getByRole("button", { name: "Claim request" }).click();
     await expect(page.getByRole("alert")).toContainText("Refresh to check");
     await expect(page.getByText("Harbor Letters", { exact: true })).toHaveCount(0);
     await refresh.click();
     await expect(page.getByText("Claimed by you")).toBeVisible();
+    const portal = page.getByRole("link", { name: "KDP Bookshelf" });
+    await expect(portal).toHaveAttribute("href", "https://kdp.amazon.com/en_US/bookshelf");
+    await expect(portal).toHaveAttribute("rel", "noopener noreferrer");
     assert.deepEqual(await page.evaluate(() => window.calls), [[
       "33333333-3333-4333-8333-333333333333", "a".repeat(64), "11111111-1111-4111-8111-111111111111",
     ]]);
