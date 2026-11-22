@@ -447,14 +447,20 @@ async def isolated_failover_writer(root, first):
 
 
 @contextmanager
-def postgres_sandbox():
+def postgres_sandbox(identity="worker"):
     if os.environ.get("BOOKWORM_LIGHTRAG_PG_TEST") != "1":
         raise RuntimeError("Requires a disposable BookieWookie LightRAG PostgreSQL fixture")
     assert version("lightrag-hku") == "1.5.7"
     address = ("127.0.0.1", 55440)
     login = {"host": address[0], "port": address[1], "user": "lightrag_ci",
              "password": "disposable-lightrag-only", "database": "bookworm_lightrag_ci"}
-    worker = {**login, "user": "lightrag_worker_ci", "password": "disposable-worker-only"}
+    roles = {
+        "worker": ("lightrag_worker_ci", "disposable-worker-only"),
+        "former": ("lightrag_former_ci", "disposable-former-only"),
+        "next": ("lightrag_next_ci", "disposable-next-only"),
+    }
+    user, password = roles[identity]
+    worker = {**login, "user": user, "password": password}
     config = {"POSTGRES_HOST": login["host"], "POSTGRES_PORT": str(login["port"]),
               "POSTGRES_USER": worker["user"], "POSTGRES_PASSWORD": worker["password"],
               "POSTGRES_DATABASE": login["database"], "POSTGRES_SSL_MODE": "disable",
@@ -481,6 +487,7 @@ def postgres_sandbox():
 
 PG_FAILOVER_SCOPE = "fixture_pg_book_failover"
 PG_FAILOVER_PASSAGE = "Elara carries a silver compass."
+PG_FENCE_SCOPE = "fixture_pg_lock_loss"
 
 
 async def postgres_failover_writer(root, mode):
@@ -581,6 +588,121 @@ async def exercise_postgres_failover(root, probe):
         await reopened.finalize_storages()
 
 
+async def await_fixture_signal(path):
+    async with asyncio.timeout(15):
+        while not path.exists():
+            await asyncio.sleep(0.03)
+
+
+async def postgres_former_writer(root):
+    if root.name != "former" or not root.parent.name.startswith("bookiewookie-lightrag-postgres-"):
+        raise RuntimeError("Former PostgreSQL writer requires a disposable fixture")
+    with postgres_sandbox("former") as (_, credentials):
+        import asyncpg
+
+        owner = await asyncpg.connect(**credentials, ssl=False, timeout=5,
+                                      server_settings={"application_name": "bookworm_lightrag_former_lock"})
+        client = new_scope(root, PG_FENCE_SCOPE, postgres=True)
+        name = opaque_passage_name(PG_FENCE_SCOPE, PG_FAILOVER_PASSAGE)
+        try:
+            await owner.execute("select pg_advisory_lock(912711, 43008)")
+            await client.initialize_storages()
+            (root / "ready").touch()
+            await await_fixture_signal(root / "try-stale-write")
+            try:
+                await owner.fetchval("select 1")
+            except (asyncpg.PostgresConnectionError, asyncpg.InterfaceError):
+                pass
+            else:
+                raise AssertionError("Control session still owns its lock")
+            await client.ainsert(PG_FAILOVER_PASSAGE, ids=name.removesuffix(".txt"), file_paths=name)
+            await assert_one(client, "silver compass", name, PG_FAILOVER_PASSAGE)
+            (root / "stale-write-durable").touch()
+
+            await await_fixture_signal(root / "try-reconnect")
+            try:
+                reconnect = await asyncpg.connect(**credentials, ssl=False, timeout=5)
+            except asyncpg.InvalidAuthorizationSpecificationError:
+                (root / "reconnect-refused").touch()
+            else:
+                await reconnect.close()
+                raise AssertionError("A fenced writer reopened a PostgreSQL connection")
+        finally:
+            await client.finalize_storages()
+            await owner.close()
+
+
+async def exercise_postgres_role_fence(root, probe):
+    import asyncpg
+
+    await probe.execute("""
+        create role lightrag_former_ci login password 'disposable-former-only'
+            nosuperuser nocreatedb nocreaterole noreplication nobypassrls in role lightrag_worker_ci;
+        create role lightrag_next_ci login password 'disposable-next-only'
+            nosuperuser nocreatedb nocreaterole noreplication nobypassrls in role lightrag_worker_ci;
+    """)
+    # Provision the shared graph under its owner before handing it to either login.
+    initializer = new_scope(root / "fence_initializer", PG_FENCE_SCOPE, postgres=True)
+    await initializer.initialize_storages()
+    await initializer.finalize_storages()
+    work = root / "former"
+    work.mkdir()
+    with (root / "former.log").open("wb") as log:
+        former = await asyncio.create_subprocess_exec(
+            sys.executable, str(Path(__file__).resolve()), "--pg-former-writer", str(work),
+            stdout=log, stderr=log,
+        )
+    try:
+        await await_fixture_signal(work / "ready")
+        control = await probe.fetch("""
+            select pg_terminate_backend(pid, 5000) as stopped from pg_stat_activity
+            where datname=current_database() and usename='lightrag_former_ci'
+              and application_name='bookworm_lightrag_former_lock'
+        """)
+        assert [row["stopped"] for row in control] == [True]
+        (work / "try-stale-write").touch()
+        await await_fixture_signal(work / "stale-write-durable")
+
+        assert former.returncode is None
+        await probe.execute("alter role lightrag_former_ci nologin")
+        remaining = await probe.fetch("""
+            select pg_terminate_backend(pid, 5000) as stopped from pg_stat_activity
+            where datname=current_database() and usename='lightrag_former_ci'
+        """)
+        assert remaining and all(row["stopped"] for row in remaining)
+        assert await probe.fetchval("""
+            select count(*) from pg_stat_activity
+            where datname=current_database() and usename='lightrag_former_ci'
+        """) == 0
+
+        with postgres_sandbox("next") as (_, credentials):
+            owner = await asyncpg.connect(**credentials, ssl=False, timeout=5)
+            try:
+                assert await owner.fetchval("select pg_try_advisory_lock(912711, 43008)")
+                client = new_scope(root / "next", PG_FENCE_SCOPE, postgres=True)
+                name = opaque_passage_name(PG_FENCE_SCOPE, PG_FAILOVER_PASSAGE)
+                await client.initialize_storages()
+                try:
+                    await assert_one(client, "silver compass", name, PG_FAILOVER_PASSAGE)
+                    assert (await client.adelete_by_doc_id(name.removesuffix(".txt"))).status == "success"
+                    (work / "try-reconnect").touch()
+                    await await_fixture_signal(work / "reconnect-refused")
+                    assert await chunks(client, "silver compass") == []
+                    assert not await client.chunk_entity_relation_graph.has_edge("Elara", "silver compass")
+                finally:
+                    await client.finalize_storages()
+            finally:
+                await owner.close()
+        assert await asyncio.wait_for(former.wait(), timeout=10) == 0
+    except Exception as error:
+        details = (root / "former.log").read_text(encoding="utf-8")
+        raise AssertionError(f"Former writer fixture did not complete:\n{details}") from error
+    finally:
+        if former.returncode is None:
+            former.kill()
+            await former.wait()
+
+
 async def postgres_fixture():
     with TemporaryDirectory(prefix="bookiewookie-lightrag-postgres-") as root, postgres_sandbox() as (login, worker):
         import asyncpg
@@ -632,13 +754,15 @@ async def postgres_fixture():
                 ("fixture_book_b", "Mira carries a cobalt atlas."),
             ]
             await exercise_postgres_failover(Path(root), probe)
+            await exercise_postgres_role_fence(Path(root), probe)
         finally:
             await probe.close()
     print(json.dumps({"lightrag": version("lightrag-hku"), "postgres_kv_vector_status": "passed",
                       "same_document_id_book_scoping": "passed", "deletion_replacement_reopen": "passed",
                       "database_worker": "non-superuser; admin-only schema denied",
                       "graph_storage": "Apache AGE 1.6.0; exact relation survived a fresh client",
-                      "postgres_process_failover": "advisory lock serialized writers; successor applied durable deletion"}))
+                      "postgres_process_failover": "advisory lock serialized writers; successor applied durable deletion",
+                      "postgres_live_former": "lock loss permitted a stale write; role and session fencing blocked reconnection"}))
 
 
 if __name__ == "__main__":
@@ -648,5 +772,7 @@ if __name__ == "__main__":
         asyncio.run(postgres_fixture())
     elif len(sys.argv) == 4 and sys.argv[1] == "--pg-failover-writer":
         asyncio.run(postgres_failover_writer(Path(sys.argv[2]), sys.argv[3]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--pg-former-writer":
+        asyncio.run(postgres_former_writer(Path(sys.argv[2])))
     else:
         asyncio.run(main())
