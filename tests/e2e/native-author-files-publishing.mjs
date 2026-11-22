@@ -416,7 +416,15 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     assert.equal(requests.length, mutations, 'Opening and downloading an exact activity link must not create work');
     console.log('PASS native dashboard and book overview open exact retailer package ZIP without creating work');
 
-    await api('PUT', `/publishing/jobs/${linked.job.id}/submission`, { status: 'changes_requested', expectedRevision: null });
+    onStage('retailer browser saves an author report from the exact package');
+    const currentPackage = page.locator(`#package-${linked.job.id}`);
+    await currentPackage.getByText('Retailer submission status', { exact: true }).click();
+    await expect(currentPackage.getByText('Author-reported status · No status recorded', { exact: true })).toBeVisible();
+    await currentPackage.getByRole('combobox', { name: 'Update status', exact: true }).selectOption('changes_requested');
+    await currentPackage.getByRole('button', { name: 'Save status', exact: true }).click();
+    await expect(currentPackage.getByText('Submission status saved.', { exact: true })).toBeVisible();
+
+    onStage('retailer browser reopens the author report from the book overview');
     await page.goto(origin + `/books/${retailer.bookId}/overview`);
     const reports = page.getByRole('region', { name: 'Retailer submission updates' });
     const reportLink = reports.getByRole('link', { name: /Author-reported · Changes requested/ });
