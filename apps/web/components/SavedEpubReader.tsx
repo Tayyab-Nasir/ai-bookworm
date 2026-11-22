@@ -43,7 +43,8 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
   const historyFence = useRef(createReaderFence()); const contentFence = useRef(createReaderFence());
   const sectionValid = useRef<() => boolean>(() => false);
   const lastSelection = useRef<{ source: SavedEpubSource; index: number } | null>(null);
-  const packageSourceRef = useRef(packageSource); packageSourceRef.current = packageSource;
+  const packaging = useRef({ source: packageSource, onUnavailable: onPackageProofUnavailable });
+  packaging.current = { source: packageSource, onUnavailable: onPackageProofUnavailable };
   const downloadGeneration = useRef(0);
   const visibleDownloadGeneration = downloadGeneration.current;
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -62,12 +63,12 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
     setOccurrenceIndex(0); setOccurrenceInput("1"); setInspecting(false);
   }, []);
   const failAuthorization = useCallback(() => {
-    const selected = packageSourceRef.current;
-    if (selected) onPackageProofUnavailable?.(selected);
+    const { source: selected, onUnavailable } = packaging.current;
+    if (selected) onUnavailable?.(selected);
     lastSelection.current = null;
     historyFence.current.clear(); clearContent(); setRenders([]); setHistoryBusy(false);
     setError("Your session or access changed. Sign in again before opening private saved exports.");
-  }, [clearContent, onPackageProofUnavailable]);
+  }, [clearContent]);
   const loadImage = useCallback(async (document: EpubReaderResult, descriptor: EpubReaderResource, valid: () => boolean) => {
     if (!valid()) return;
     setImageBusy(descriptor.index); setError(null);
@@ -105,14 +106,14 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
     if (!actor) return;
     if (!preserveSelection) lastSelection.current = null;
     const previous = lastSelection.current;
-    const packageProof = packageSourceRef.current;
+    const packageProof = packaging.current.source;
     const ticket = historyFence.current.reset(owner); const valid = () => ownerRef.current === owner && ticket();
     clearContent(); setVisibleOwner(owner); setRenders([]); setError(null); setHistoryBusy(true);
     try {
       const result = await api.listEditionRenders(editionId); if (!valid()) return;
       const verified = validateReaderHistory(result, bookId, editionId); setRenders(verified);
       if (packageProof && !verified.some((entry) => readerSourceKey(entry.source) === readerSourceKey(packageProof))) {
-        onPackageProofUnavailable?.(packageProof);
+        packaging.current.onUnavailable?.(packageProof);
       }
       if (previous) {
         const exact = verified.find((entry) => readerSourceKey(entry.source) === readerSourceKey(previous.source));
@@ -121,7 +122,7 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
       } else if (verified[0]) void readSection(verified[0].source, 0);
     } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else setError(retryMessage(reason)); } }
     finally { if (valid()) setHistoryBusy(false); }
-  }, [actor, api, bookId, clearContent, editionId, failAuthorization, onPackageProofUnavailable, owner, readSection]);
+  }, [actor, api, bookId, clearContent, editionId, failAuthorization, owner, readSection]);
   useEffect(() => {
     void refreshHistory();
     return () => { historyFence.current.clear(); contentFence.current.clear(); sectionValid.current = () => false; downloadGeneration.current++; imagesRef.current.clear(); };
