@@ -4,9 +4,11 @@ from preflight import Finding, Rule, _meta, _open_epub
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "barnesnoble-1.3.0"
+VERSION = "barnesnoble-1.4.0"
 EFFECTIVE_DATE = "2026-09-18"
 EPUB_CHECK_DATE = "2026-11-20"
+PRINT_PRICE_EFFECTIVE_DATE = "2026-04-22"
+CONTENT_POLICY_REF = "https://press.barnesandnoble.com/bnpress-blog/may-2026-policy-updates/"
 EPUB_LIMIT_BYTES = 20_000_000
 SOURCE_REF = "https://help-press.barnesandnoble.com/hc/en-us/articles/46990297345691-B-N-Press-ePub-Formatting-Guide-for-eBooks"
 SIZE_SOURCE_REF = "https://help-press.barnesandnoble.com/hc/en-us/articles/31534821208859-Maximum-File-Size"
@@ -23,6 +25,19 @@ def check_bn_isbn(ctx):
                         location="book.metadata.isbn13")]
     return []
 
+
+def check_bn_print_price(ctx):
+    if (ctx.get("edition") or {}).get("kind") == "print":
+        return [Finding(code="BN-PRINT-MINIMUM-PRICE",
+                        message="Set the print retail price to at least US$14.99 in B&N Press.",
+                        location="retailer.pricing")]
+    return []
+
+
+def check_bn_catalog_eligibility(ctx):
+    return [Finding(code="BN-CATALOG-ELIGIBILITY",
+                    message="Confirm the title is eligible under B&N Press content policy. Public-domain titles are excluded, and an account normally has a limit of 100 individual titles.",
+                    location="retailer.account")]
 
 def check_bn_page_count(ctx):
     count = print_pdf_page_count(ctx)
@@ -109,6 +124,10 @@ RULESET = make_ruleset("barnesnoble", VERSION, metadata_rules(
          channels=("barnesnoble",), effective_date=EPUB_CHECK_DATE, source_ref=SOURCE_REF),
     Rule("BN-EPUB-003", "warning", "epub_structure", "W3C EPUBCheck warnings", check_bn_epub_warnings,
          channels=("barnesnoble",), effective_date=EPUB_CHECK_DATE, source_ref=SOURCE_REF),
+    Rule("BN-CATALOG-001", "warning", "channel", "B&N catalog and account eligibility", check_bn_catalog_eligibility,
+         channels=("barnesnoble",), effective_date="2026-05-15", source_ref=CONTENT_POLICY_REF),
+    Rule("BN-PRINT-005", "warning", "channel", "B&N print minimum retail price", check_bn_print_price,
+         channels=("barnesnoble",), effective_date=PRINT_PRICE_EFFECTIVE_DATE, source_ref=CONTENT_POLICY_REF),
     Rule("BN-PRINT-001", "warning", "channel", "B&N print ISBN choice", check_bn_isbn,
          channels=("barnesnoble",), effective_date=EFFECTIVE_DATE, source_ref=ISBN_SOURCE_REF),
     Rule("BN-PRINT-002", "error", "channel", "B&N actual interior geometry", check_print_pdf_geometry,

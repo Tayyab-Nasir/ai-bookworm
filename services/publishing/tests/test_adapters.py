@@ -66,7 +66,7 @@ def test_bn_preflight_and_package_check_their_exact_epub(monkeypatch, status):
     monkeypatch.setattr(bn_rules, "run_epubcheck", check)
     adapter = get_adapter("barnesnoble")
     report = adapter.validate({**ctx, "_bn_epubcheck_result": EpubCheckResult("valid")})
-    assert report["ruleVersion"].endswith("+barnesnoble-1.3.0")
+    assert report["ruleVersion"].endswith("+barnesnoble-1.4.0")
     if status == "valid":
         result = adapter.build_package({**ctx, "artifact": b"stale proof"}, {"book.epub": epub})[0]
         with zipfile.ZipFile(BytesIO(result.data)) as archive:
@@ -112,6 +112,19 @@ def test_bn_applies_strict_epub_size_limit_and_skips_preliminary_and_print_check
     assert not any(item["code"].startswith("BN-EPUB") for item in print_report["findings"])
     assert calls == [epub]
 
+
+@pytest.mark.parametrize(("kind", "expected"), [
+    ("ebook", {"BN-CATALOG-ELIGIBILITY"}),
+    ("print", {"BN-CATALOG-ELIGIBILITY", "BN-PRINT-MINIMUM-PRICE"}),
+])
+def test_bn_retailer_policy_checks_are_manual_and_format_specific(kind, expected):
+    codes = {"BN-CATALOG-ELIGIBILITY", "BN-PRINT-MINIMUM-PRICE"}
+    context = {**_ctx(artifact=False), "edition": {"kind": kind}, "channel": "barnesnoble"}
+    findings = get_adapter("barnesnoble").validate(context)["findings"]
+    assert {item["code"] for item in findings if item["code"] in codes} == expected
+    assert all(item["severity"] == "warning" for item in findings if item["code"] in codes)
+    other = get_adapter("kdp").validate({**context, "channel": "kdp"})["findings"]
+    assert not any(item["code"] in codes for item in other)
 
 def test_bn_package_endpoint_runs_epubcheck_once(monkeypatch):
     from epubcheck_runner import EpubCheckResult
