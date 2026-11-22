@@ -226,6 +226,12 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
     && savedPackageProof.view === viewEpoch.current && savedPackageProof.revision === formRevision.current
     && savedPackageProof.source.bookId === bookId && savedPackageProof.source.editionId === activeId ? savedPackageProof.source : null;
   const savedEpubRef = useRef(savedEpub); savedEpubRef.current = savedEpub;
+  const invalidateSavedEpub = useCallback((source: SavedEpubSource) => {
+    if (savedEpubRef.current !== source) return;
+    savedEpubRef.current = null;
+    setSavedPackageProof(null); setPreflight(null);
+    setNotice("The selected EPUB could not be verified. Choose a saved proof and run retailer preflight again.");
+  }, []);
   const savedPrint = currentIdentity && !dirty && form.kind === "print" ? printPreflightSource(rendered) : undefined;
   const packageRenderId = savedEpub?.jobId ?? rendered?.jobId;
   useEffect(() => {
@@ -1181,7 +1187,7 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
         </section>}
 
         {currentIdentity && activeId && form.kind === "ebook" && <SavedEpubReader key={`${linkOwner}:${bookId}:${activeId}`} actor={linkOwner} workspaceId={book?.workspace_id ?? ""} bookId={bookId} editionId={activeId} dirty={dirty} refreshKey={readerRefreshKey}
-          onUseForPackaging={editable ? useSavedEpub : undefined} packageSourceJobId={savedEpub?.jobId} packagingDisabled={Boolean(busy || renderPointer)} />}
+          onUseForPackaging={editable ? useSavedEpub : undefined} packageSource={savedEpub} onPackageProofUnavailable={invalidateSavedEpub} packagingDisabled={Boolean(busy || renderPointer)} />}
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="package-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="package-title" className="text-xl font-semibold">Retailer export packages</h2><p className="mt-1 max-w-2xl text-sm text-white/45">{channel === "lulu" && rightToLeftPrint

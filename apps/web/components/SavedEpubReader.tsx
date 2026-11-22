@@ -12,9 +12,10 @@ const authorizationFailure = (reason: unknown) => reason instanceof ApiClientErr
 const retryMessage = (reason: unknown) => reason instanceof ApiClientError && reason.status === 503 ? "The saved reader is busy. Retry this saved export in a moment; no credits are used." : "This saved export could not be read or verified. Retry, or download the exact EPUB for inspection.";
 
 export default function SavedEpubReader({ actor, workspaceId, bookId, editionId, dirty = false, refreshKey = "",
-  onUseForPackaging, packageSourceJobId, packagingDisabled = false }: {
+  onUseForPackaging, packageSource, onPackageProofUnavailable, packagingDisabled = false }: {
   actor: string | null; workspaceId: string; bookId: string; editionId: string; dirty?: boolean; refreshKey?: string;
-  onUseForPackaging?: (source: SavedEpubSource) => void; packageSourceJobId?: string; packagingDisabled?: boolean;
+  onUseForPackaging?: (source: SavedEpubSource) => void; packageSource?: SavedEpubSource | null;
+  onPackageProofUnavailable?: (source: SavedEpubSource) => void; packagingDisabled?: boolean;
 }) {
   const api = apiClient(actor ?? undefined); const id = useId(); const owner = `${actor ?? ""}:${workspaceId}:${bookId}:${editionId}`;
   const ownerRef = useRef(owner); ownerRef.current = owner;
@@ -42,6 +43,7 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
   const historyFence = useRef(createReaderFence()); const contentFence = useRef(createReaderFence());
   const sectionValid = useRef<() => boolean>(() => false);
   const lastSelection = useRef<{ source: SavedEpubSource; index: number } | null>(null);
+  const packageSourceRef = useRef(packageSource); packageSourceRef.current = packageSource;
   const downloadGeneration = useRef(0);
   const visibleDownloadGeneration = downloadGeneration.current;
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -60,10 +62,12 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
     setOccurrenceIndex(0); setOccurrenceInput("1"); setInspecting(false);
   }, []);
   const failAuthorization = useCallback(() => {
+    const selected = packageSourceRef.current;
+    if (selected) onPackageProofUnavailable?.(selected);
     lastSelection.current = null;
     historyFence.current.clear(); clearContent(); setRenders([]); setHistoryBusy(false);
     setError("Your session or access changed. Sign in again before opening private saved exports.");
-  }, [clearContent]);
+  }, [clearContent, onPackageProofUnavailable]);
   const loadImage = useCallback(async (document: EpubReaderResult, descriptor: EpubReaderResource, valid: () => boolean) => {
     if (!valid()) return;
     setImageBusy(descriptor.index); setError(null);
@@ -101,11 +105,15 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
     if (!actor) return;
     if (!preserveSelection) lastSelection.current = null;
     const previous = lastSelection.current;
+    const packageProof = packageSourceRef.current;
     const ticket = historyFence.current.reset(owner); const valid = () => ownerRef.current === owner && ticket();
     clearContent(); setVisibleOwner(owner); setRenders([]); setError(null); setHistoryBusy(true);
     try {
       const result = await api.listEditionRenders(editionId); if (!valid()) return;
       const verified = validateReaderHistory(result, bookId, editionId); setRenders(verified);
+      if (packageProof && !verified.some((entry) => readerSourceKey(entry.source) === readerSourceKey(packageProof))) {
+        onPackageProofUnavailable?.(packageProof);
+      }
       if (previous) {
         const exact = verified.find((entry) => readerSourceKey(entry.source) === readerSourceKey(previous.source));
         if (exact) void readSection(exact.source, previous.index);
@@ -113,7 +121,7 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
       } else if (verified[0]) void readSection(verified[0].source, 0);
     } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else setError(retryMessage(reason)); } }
     finally { if (valid()) setHistoryBusy(false); }
-  }, [actor, api, bookId, clearContent, editionId, failAuthorization, owner, readSection]);
+  }, [actor, api, bookId, clearContent, editionId, failAuthorization, onPackageProofUnavailable, owner, readSection]);
   useEffect(() => {
     void refreshHistory();
     return () => { historyFence.current.clear(); contentFence.current.clear(); sectionValid.current = () => false; downloadGeneration.current++; imagesRef.current.clear(); };
@@ -177,8 +185,8 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
       {(current && renders.length > 0) && <label className="mt-5 block text-xs font-semibold uppercase tracking-wider text-[var(--bookworm-proof-muted)]">Saved export<select aria-label="Saved EPUB export" value={source?.jobId ?? ""} onChange={(event) => { const render = renders.find((entry) => entry.jobId === event.target.value); if (render) void readSection(render.source, 0); }} className={`${control} mt-2 block w-full min-w-0 font-normal normal-case tracking-normal`}><option value="" disabled>Select a saved export</option>{renders.map((render) => <option key={render.jobId} value={render.jobId}>{new Date(render.createdAt).toLocaleString()} · {render.source.sha256.slice(0, 12)}…</option>)}</select></label>}
       {activeRender && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--bookworm-proof-muted)]"><p><time dateTime={activeRender.createdAt}>{new Date(activeRender.createdAt).toLocaleString()}</time> · immutable v1 · {(activeRender.source.sizeBytes / 1024).toFixed(0)} KB</p><details className="min-w-0 max-w-full"><summary className="cursor-pointer rounded py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Source & checksum</summary><dl className="mt-2 grid gap-2 break-all font-mono text-[11px]"><dt>SHA-256</dt><dd>{activeRender.source.sha256}</dd><dt>Saved job / asset v1</dt><dd>{activeRender.source.jobId} / {activeRender.source.assetId}</dd></dl></details></div>}
       {activeRender && onUseForPackaging && <div className="mt-4 flex flex-wrap items-center gap-3">
-        <button type="button" className={control} disabled={dirty || packagingDisabled || packageSourceJobId === activeRender.jobId}
-          onClick={() => onUseForPackaging(activeRender.source)}>{packageSourceJobId === activeRender.jobId ? "Selected for packaging" : "Use this EPUB for packaging"}</button>
+        <button type="button" className={control} disabled={dirty || packagingDisabled || packageSource?.jobId === activeRender.jobId}
+          onClick={() => onUseForPackaging(activeRender.source)}>{packageSource?.jobId === activeRender.jobId ? "Selected for packaging" : "Use this EPUB for packaging"}</button>
         <p className="text-xs text-[var(--bookworm-proof-muted)]">Retailer preflight will check this saved file against the current manuscript and edition.</p>
       </div>}
     </header>

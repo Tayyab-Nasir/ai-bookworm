@@ -63,7 +63,7 @@ const browser = await chromium.launch({ headless: true, ...(process.env.BROWSER_
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   page.setDefaultTimeout(30000); page.setDefaultNavigationTimeout(60000);
-  const errors = []; const readerRequests = []; const historyRequests = []; const explicitRenders = []; const mutations = []; const hostileRequests = [];
+  const errors = []; const readerRequests = []; const historyRequests = []; const explicitRenders = []; const preflightRequests = []; const mutations = []; const hostileRequests = [];
   let activeReaderGets = 0; let peakReaderGets = 0;
   page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.dismiss());
   page.on('request', (request) => { if (request.url().includes('reader-hostile.example')) hostileRequests.push(request.url()); });
@@ -91,6 +91,15 @@ try {
         storage_path: `workspaces/33333333-3333-4333-8333-333333333333/assets/${artifact.source.assetId}/v1/book.epub`, mime_type: 'application/epub+zip', size_bytes: artifact.source.sizeBytes, checksum: artifact.source.sha256,
         status: 'approved', current_version_number: 1, created_by: '11111111-1111-4111-8111-111111111111', created_at: artifact.createdAt, updated_at: artifact.createdAt,
       }, download: { url: `${fixtureOrigin}/storage/v1/object/sign/book-assets/workspaces/33333333-3333-4333-8333-333333333333/assets/${artifact.source.assetId}/v1/book.epub?token=render`, expiresIn: 300 } }] });
+    }
+    if (request.method() === 'POST' && path === '/v1/publishing/validate') {
+      const body = request.postDataJSON();
+      const older = artifacts[1].source;
+      assert.equal(body.channel, 'kdp');
+      assert.deepEqual(body.sourceEpub, { jobId: older.jobId, sha256: older.sha256 });
+      preflightRequests.push(body.sourceEpub);
+      return json(201, { jobId: 'c0000000-0000-4000-8000-000000000001', requestedChannel: 'kdp', channel: 'kdp',
+        ruleVersion: 'fixture-kdp', errors: 0, warnings: 0, findings: [], sourceEpub: body.sourceEpub });
     }
     if (request.method() !== 'GET') { mutations.push({ method: request.method(), path }); return route.continue(); }
     if (readOnly && path === `/v1/books/${artifacts[0].source.bookId}`) {
@@ -203,9 +212,16 @@ try {
   await waitReader(artifacts[1].source.jobId, opening);
   assert.equal(await content.getByText('Saved export one & exact <words> — native artifact.', { exact: true }).count(), 0);
   const refresh = desk.getByRole('button', { name: 'Refresh saved exports', exact: true });
+  const packages = page.getByRole('region', { name: 'Retailer export packages', exact: true });
+  const createPackage = packages.getByRole('button', { name: 'Create retailer package', exact: true });
+  await desk.getByRole('button', { name: 'Use this EPUB for packaging', exact: true }).click();
+  await page.getByLabel('Preflight target').selectOption('kdp');
+  await page.getByRole('button', { name: 'Run preflight', exact: true }).click();
+  await expect(createPackage).toBeEnabled();
   await refresh.click();
   await content.getByText('Older export two — exact saved text.', { exact: true }).waitFor();
   await waitReader(artifacts[1].source.jobId, opening);
+  await expect(createPackage).toBeEnabled();
   failHistory = true;
   await refresh.click();
   await desk.getByRole('alert').filter({ hasText: 'The saved reader is busy.' }).waitFor();
@@ -218,10 +234,15 @@ try {
   await expect(desk.getByLabel('Saved EPUB export')).toHaveValue('');
   assert.equal(await desk.locator('iframe').count(), 0);
   assert.equal(readerRequests.length, readsBeforeMissing, 'refresh silently opened a different saved export');
+  await expect(createPackage).toBeDisabled();
+  await expect(packages.getByText(/Package source · Saved EPUB/)).toHaveCount(0);
   hideOlderExport = false;
   await refresh.click();
   await content.getByText('Older export two — exact saved text.', { exact: true }).waitFor();
   await waitReader(artifacts[1].source.jobId, opening);
+  await expect(createPackage).toBeDisabled();
+  await expect(desk.getByRole('button', { name: 'Use this EPUB for packaging', exact: true })).toBeEnabled();
+  assert.equal(preflightRequests.length, 1, 'reader refresh unexpectedly restarted preflight');
   mode = 'wrong-source'; await desk.getByRole('button', { name: 'Next saved section', exact: true }).click();
   await desk.getByRole('alert').filter({ hasText: 'could not be read or verified' }).waitFor(); assert.equal(await desk.locator('iframe').count(), 0);
   await desk.getByRole('button', { name: 'Retry saved section', exact: true }).click(); await content.getByText('All done.', { exact: true }).waitFor();
