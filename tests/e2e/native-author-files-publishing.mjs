@@ -331,8 +331,10 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         const bytes = await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), checksum);
         assert.equal(page.url(), publishUrl, 'ZIP download replaced the author interface');
         onStage(`retailer browser ${channel} ${edition.kind} exact private ZIP contents`);
-        const archive = inspectNativePackage(bytes);
+        const archive = inspectNativePackage(bytes, { scanCovers: true });
         assert.equal(archive.manifest.channel, channel); assert.equal(archive.preflight.errors, 0);
+        const coverName = edition.kind === 'ebook' ? 'cover.png' : 'cover.pdf';
+        assert.deepEqual(archive.coverQr[coverName], ['https://example.com/harbor'], `${channel} ${coverName} QR destination`);
         assert.deepEqual(
           archive.preflight.findings.filter(item => bnPolicyCodes.includes(item.code)),
           bnPolicyFindings,
@@ -340,6 +342,7 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         );
         assert.deepEqual(archive.metadata, preflight.listing);
         if (channel === 'kdp' && edition.kind === 'ebook') {
+          assert.deepEqual(archive.coverQr['cover.jpg'], ['https://example.com/harbor'], 'Kindle upload JPEG QR destination');
           assert.equal(archive.files['cover.jpg'].signature, 'ffd8ff');
           assert.equal(archive.manifest.files['cover.jpg'], archive.files['cover.jpg'].sha256);
           assert.match(archive.readme, /Upload book\.epub and cover\.jpg/);

@@ -100,8 +100,8 @@ async function verifyManagedPublishing(request, service, author, alice, bob, pac
   }
 }
 
-export function inspectNativePackage(bytes) {
-  // Reuse Python's ZIP reader; do not add a package dependency or extract files.
+export function inspectNativePackage(bytes, { scanCovers = false } = {}) {
+  // Inspect the downloaded archive in memory, including the actual upload artwork.
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('../../scripts/run-python.mjs', import.meta.url)), '-I', '-c', `
 import hashlib, io, json, sys, zipfile
 with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as archive:
@@ -110,13 +110,34 @@ with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as archive:
  assert sum(item.file_size for item in infos) < 25000000
  assert all('/' not in item.filename and '\\\\' not in item.filename for item in infos)
  files = {item.filename: archive.read(item) for item in infos}
+ cover_qr = {}
+ if sys.argv[1] == 'scan-covers':
+  import subprocess
+  import zxingcpp
+  from PIL import Image
+  for name in ('cover.png', 'cover.jpg', 'cover.pdf'):
+   if name not in files:
+    continue
+   image_bytes = files[name]
+   if name == 'cover.pdf':
+    image_bytes = subprocess.run(
+     ['pdftoppm', '-f', '1', '-l', '1', '-singlefile', '-scale-to', '2600', '-png', '-'],
+     input=image_bytes, capture_output=True, check=True, timeout=15,
+    ).stdout
+   with Image.open(io.BytesIO(image_bytes)) as image:
+    cover_qr[name] = [code.text for code in zxingcpp.read_barcodes(
+     image.convert('L'), formats=zxingcpp.BarcodeFormat.QRCode,
+    )]
  print(json.dumps({
   'files': {name: {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data), 'signature': data[:3].hex()} for name, data in files.items()},
   'manifest': json.loads(files['manifest.json']), 'metadata': json.loads(files['metadata.json']),
-  'preflight': json.loads(files['preflight.json']), 'readme': files['README.txt'].decode('utf-8')
+  'preflight': json.loads(files['preflight.json']), 'readme': files['README.txt'].decode('utf-8'),
+  'coverQr': cover_qr,
  }))
-`], { input: bytes, env: childEnvironment(), timeout: 30_000, maxBuffer: 1_000_000 });
-  assert.equal(result.status, 0, 'Private retailer ZIP could not be inspected with the standard ZIP reader');
+`, scanCovers ? 'scan-covers' : 'metadata-only'], { input: bytes, env: childEnvironment(), timeout: 30_000, maxBuffer: 1_000_000 });
+  assert.equal(result.status, 0, scanCovers
+    ? 'Private retailer ZIP or cover QR could not be inspected. Check the native QR decoder and Poppler setup.'
+    : 'Private retailer ZIP could not be inspected with the standard ZIP reader');
   return JSON.parse(result.stdout.toString('utf8'));
 }
 

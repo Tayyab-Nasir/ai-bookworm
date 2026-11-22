@@ -149,6 +149,11 @@ jobs:
           docker build -f ops/processing.Dockerfile --target document -t bookworm-ci-document .
           docker build -f ops/processing.Dockerfile --target rendering -t bookworm-ci-rendering .
           docker build -f ops/processing.Dockerfile --target publishing -t bookworm-ci-publishing .
+      - name: Install test-only decoders for QR checks on exported covers
+        run: |
+          command -v pdftoppm || (sudo apt-get update && sudo apt-get install -y poppler-utils)
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --only-binary=:all: Pillow==12.3.0 zxing-cpp==3.1.1
       - name: Verify native authoring, saved proofs and private retailer packages
         env:
           BOOKWORM_NATIVE_AUTHOR_TEST: '1'
