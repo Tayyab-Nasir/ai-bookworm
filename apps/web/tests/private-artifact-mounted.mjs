@@ -423,7 +423,7 @@ test("a missing saved EPUB section invalidates its selected packaging preflight"
   } finally { await page.close(); }
 });
 
-test("a temporarily unavailable EPUB reader preserves the selected packaging preflight", async () => {
+test("a temporarily unavailable EPUB reader requires preflight again", async () => {
   const { page } = await fixture({ parent: true });
   try {
     const desk = await setupEpub(page);
@@ -434,7 +434,57 @@ test("a temporarily unavailable EPUB reader preserves the selected packaging pre
     const create = page.getByRole("button", { name: "Create retailer package" }); await expect(create).toBeEnabled();
     await page.evaluate(() => { window.bookwormApi.readEpubSection = async () => { throw new window.ApiClientError(503, "unavailable", "Reader busy", "fixture"); }; });
     await desk.getByRole("button", { name: "Refresh saved exports" }).click();
-    await expect(desk.getByText(/saved reader is busy/)).toBeVisible(); await expect(create).toBeEnabled();
+    await expect(desk.getByText(/saved reader is busy/)).toBeVisible(); await expect(create).toBeDisabled();
     assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 0);
+  } finally { await page.close(); }
+});
+
+test("an older selected EPUB omitted from bounded history remains available after exact verification", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    const desk = await setupEpub(page);
+    await page.evaluate(() => { window.bookwormApi.runPreflight = async body => ({ jobId: window.ids.otherJob, requestedChannel: body.channel, channel: body.channel, ruleVersion: "fixture", errors: 0, warnings: 0, findings: [], sourceEpub: body.sourceEpub }); });
+    await desk.getByRole("button", { name: "Use this EPUB for packaging" }).click();
+    await page.getByRole("combobox", { name: "Preflight target" }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight" }).click();
+    const create = page.getByRole("button", { name: "Create retailer package" }); await expect(create).toBeEnabled();
+    await page.evaluate(() => { window.bookwormApi.listEditionRenders = async () => ({ renders: [] }); });
+    await desk.getByRole("button", { name: "Refresh saved exports" }).click();
+    await expect(desk.getByRole("button", { name: "Selected for packaging" })).toBeVisible();
+    await expect(create).toBeDisabled();
+    await page.getByRole("button", { name: "Run preflight" }).click(); await expect(create).toBeEnabled();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 0);
+  } finally { await page.close(); }
+});
+
+test("an unverified older EPUB stays blocked until exact verification succeeds", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    const desk = await setupEpub(page);
+    await desk.getByRole("button", { name: "Use this EPUB for packaging" }).click();
+    await page.getByRole("combobox", { name: "Preflight target" }).selectOption("kdp");
+    await page.evaluate(() => { window.bookwormApi.listEditionRenders = async () => ({ renders: [] }); window.savedReader = window.bookwormApi.readEpubSection; window.bookwormApi.readEpubSection = async () => { throw new window.ApiClientError(503, "unavailable", "busy", "fixture"); }; });
+    await desk.getByRole("button", { name: "Refresh saved exports" }).click();
+    await expect(desk.getByText(/saved reader is busy/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+    await page.evaluate(() => { window.bookwormApi.readEpubSection = window.savedReader; });
+    await desk.getByRole("button", { name: "Refresh saved exports" }).click();
+    await expect(page.getByRole("button", { name: "Run preflight" })).toBeEnabled();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 0);
+  } finally { await page.close(); }
+});
+
+test("an in-flight exact EPUB verification blocks preflight", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    const desk = await setupEpub(page);
+    await desk.getByRole("button", { name: "Use this EPUB for packaging" }).click();
+    await page.getByRole("combobox", { name: "Preflight target" }).selectOption("kdp");
+    await page.evaluate(() => { const original = window.bookwormApi.readEpubSection; let first = true; window.bookwormApi.readEpubSection = async (...args) => { if (first) { first = false; await new Promise(resolve => { window.finishVerification = resolve; }); } return original(...args); }; });
+    await desk.getByRole("button", { name: "Refresh saved exports" }).click();
+    await expect.poll(() => page.evaluate(() => typeof window.finishVerification)).toBe("function");
+    await expect(page.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+    await page.evaluate(() => window.finishVerification());
+    await expect(page.getByRole("button", { name: "Run preflight" })).toBeEnabled();
   } finally { await page.close(); }
 });

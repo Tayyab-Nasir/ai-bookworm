@@ -207,6 +207,9 @@ function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, v
   const currentEdition = useRef(activeId); currentEdition.current = activeId;
   const viewEpoch = useRef(0);
   const [savedPackageProof, setSavedPackageProof] = useState<{ source: SavedEpubSource; actor: string; revision: number; view: number } | null>(null);
+  const [epubProofChecking, setEpubProofChecking] = useState(false);
+  const epubCheckingRef = useRef(false);
+  const epubCheckGeneration = useRef(0);
   const audioHistoryEpoch = useRef(0), audioProjectEpoch = useRef(0);
   const audioMutation = useRef<object | null>(null), audioManualRead = useRef<object | null>(null);
   const adoptPrint = useCallback((result: RenderedEditionResult, expiresAt: number) => { setRendered({ ...result, expiresAt }); setPreflight(null); setNotice("Saved print proof opened. Choose a retailer and run preflight on this proof."); }, []);
@@ -236,8 +239,14 @@ function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, v
   const invalidateSavedEpub = useCallback((source: SavedEpubSource) => {
     if (savedEpubRef.current !== source) return;
     savedEpubRef.current = null;
-    setSavedPackageProof(null); setPreflight(null);
+    setSavedPackageProof(null); setPreflight(null); epubCheckingRef.current = false; setEpubProofChecking(false);
     setNotice("The selected EPUB could not be verified. Choose a saved proof and run retailer preflight again.");
+  }, []);
+  const checkSavedEpub = useCallback((source: SavedEpubSource, checking: boolean) => {
+    if (savedEpubRef.current !== source) return;
+    epubCheckingRef.current = checking; setEpubProofChecking(checking);
+    if (checking) epubCheckGeneration.current++;
+    if (checking) setPreflight(null);
   }, []);
   const savedPrint = currentIdentity && !dirty && form.kind === "print" ? printPreflightSource(rendered) : undefined;
   const packageRenderId = savedEpub?.jobId ?? rendered?.jobId;
@@ -804,15 +813,15 @@ function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, v
   const useSavedEpub = (source: SavedEpubSource) => {
     if (!handlerCurrent() || !editable || liveDirty.current || busy || renderFlight.current || renderPointer
       || form.kind !== "ebook" || source.bookId !== bookId || source.editionId !== currentEdition.current) return;
-    setSavedPackageProof({ source, actor: scope.actor, revision: formRevision.current, view: viewEpoch.current });
+    setSavedPackageProof({ source, actor: scope.actor, revision: formRevision.current, view: viewEpoch.current }); epubCheckingRef.current = false; setEpubProofChecking(false);
     setRendered(null); setPreflight(null); setError(null);
     setNotice("Saved EPUB selected. Choose a retailer and run preflight to use it for packaging.");
   };
 
   const validate = async () => {
-    if (!editable || !activeId || dirty || busy || !channelCompatible) return;
+    if (!editable || !activeId || dirty || busy || !channelCompatible || (savedEpub && epubCheckingRef.current)) return;
     const valid = captureView(); if (!valid()) return;
-    const edition = activeId, target = channel, proof = renderedRef.current, savedProof = savedEpubRef.current;
+    const edition = activeId, target = channel, proof = renderedRef.current, savedProof = savedEpubRef.current, proofCheck = epubCheckGeneration.current;
     const sourceEpub = savedProof && target !== "export" ? { jobId: savedProof.jobId, sha256: savedProof.sha256 } : undefined;
     const requirePrintProof = form.kind === "print" && target !== "export" && proof !== null;
     const sourcePrint = requirePrintProof ? printPreflightSource(proof) : undefined;
@@ -821,7 +830,7 @@ function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, v
       return;
     }
     const sameRequest = () => valid() && currentEdition.current === edition && currentChannel.current === target
-      && renderedRef.current === proof && savedEpubRef.current === savedProof && !liveDirty.current;
+      && renderedRef.current === proof && savedEpubRef.current === savedProof && !(savedProof && (epubCheckingRef.current || epubCheckGeneration.current !== proofCheck)) && !liveDirty.current;
     setBusy("preflight"); setError(null); setNotice(null); setPreflight(null);
     try {
       const result = await api.runPreflight({ bookId, editionId: edition, channel: target, idempotencyKey: crypto.randomUUID(),
@@ -1169,7 +1178,7 @@ function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, v
           {rendered && <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">{rendered.artifacts.map((artifact) => <div key={artifact.asset.id} className="min-w-0 rounded-xl border border-white/10 bg-black/40 p-4"><p className="text-sm font-medium">{artifact.asset.name}</p><p className="mt-1 text-xs text-white/40">{artifact.role} · {(artifact.asset.size_bytes / 1024).toFixed(0)} KB</p>{artifact.asset.mime_type === "image/png" ? <PrivateCoverPreview actor={linkOwner} url={artifact.download.url} expectedPath={renderedStoragePath(book?.workspace_id, artifact)} expiresAt={rendered.expiresAt} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && renderedRef.current === rendered} /> : null}<PrivateArtifactDownload actor={linkOwner} url={artifact.download.url} filename={artifact.asset.name} expectedPath={renderedStoragePath(book?.workspace_id, artifact)} isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId && viewEpoch.current === linkEpoch && loadedEditionOwner.current === linkOwner && renderedRef.current === rendered} isExpired={() => rendered.expiresAt !== undefined && Date.now() >= rendered.expiresAt} onInvalid={message => { setRendered(null); setPreflight(null); setError(message); }} className="mt-3 inline-block text-sm underline disabled:opacity-40">Download private file</PrivateArtifactDownload></div>)}</div>}
           {form.kind === "print" && rendered && currentIdentity && book && activeId && <SavedPdfProof key={`${linkOwner}:${bookId}:${activeId}:${rendered.jobId}`} actor={linkOwner} onProofUnavailable={invalidatePrint} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} rendered={rendered} disabled={dirty || Boolean(busy)} />}
           {form.kind === "print" && currentIdentity && book && activeId && <SavedPrintLibrary key={`${linkOwner}:${bookId}:${activeId}`} actor={linkOwner} bookId={bookId} workspaceId={book.workspace_id} editionId={activeId} refreshKey={readerRefreshKey} dirty={dirty} disabled={dirty || Boolean(busy && busy !== "print-proof")} onSelect={adoptPrint} onInvalidate={invalidatePrint} onOpeningChange={setPrintOpening} />}
-          <div className="mt-6 flex flex-wrap items-end gap-3 border-t border-white/10 pt-5"><label className="min-w-52 flex-1 text-sm text-white/65">Preflight target<select value={channel} disabled={Boolean(busy)} onChange={(event) => { if (!handlerCurrent() || busy) return; setChannel(event.target.value as Channel); setPreflight(null); }} className={fieldClass}><option value="export">Universal export</option><option value="kdp">Amazon KDP</option><option value="apple">Apple Books</option><option value="barnesnoble">Barnes & Noble Press</option><option value="lulu">Lulu</option><option value="googleplay">Google Play Books</option></select></label><button type="button" onClick={() => void validate()} disabled={!editable || !activeId || dirty || Boolean(busy) || !channelCompatible} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "preflight" ? "Checking…" : "Run preflight"}</button></div>
+          <div className="mt-6 flex flex-wrap items-end gap-3 border-t border-white/10 pt-5"><label className="min-w-52 flex-1 text-sm text-white/65">Preflight target<select value={channel} disabled={Boolean(busy)} onChange={(event) => { if (!handlerCurrent() || busy) return; setChannel(event.target.value as Channel); setPreflight(null); }} className={fieldClass}><option value="export">Universal export</option><option value="kdp">Amazon KDP</option><option value="apple">Apple Books</option><option value="barnesnoble">Barnes & Noble Press</option><option value="lulu">Lulu</option><option value="googleplay">Google Play Books</option></select></label><button type="button" onClick={() => void validate()} disabled={!editable || !activeId || dirty || Boolean(busy) || !channelCompatible || Boolean(savedEpub && epubProofChecking)} className="glass-ghost rounded-full px-5 py-2.5 text-sm disabled:opacity-40">{busy === "preflight" ? "Checking…" : "Run preflight"}</button></div>
           {!channelCompatible && <p className="mt-3 text-sm text-amber-200">{channel === "lulu" ? "Lulu packages require a print PDF edition." : channel === "googleplay" ? "Google Play Books packages require an EPUB edition with an embedded front cover." : channel === "apple" ? "Apple Books packages require an EPUB edition." : "Choose an edition supported by this retailer."}</p>}
           {channel === "googleplay" && channelCompatible && <p className="mt-3 text-xs leading-5 text-white/45">Single-title Partner Center handoff only. Run EpubCheck and inspect Google’s processed preview, pricing, territories, and Review tab before publishing. This does not submit the book.</p>}
           {channel === "barnesnoble" && form.kind === "ebook" && <p className="mt-3 text-xs leading-5 text-white/55">B&amp;N Press requires an EPUB smaller than 20 MB. Preflight runs EPUBCheck on the saved file. Review the processed preview in B&amp;N Press before submitting.</p>}
@@ -1196,7 +1205,8 @@ function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, v
         </section>}
 
         {currentIdentity && activeId && form.kind === "ebook" && <SavedEpubReader key={`${linkOwner}:${bookId}:${activeId}`} actor={linkOwner} workspaceId={book?.workspace_id ?? ""} bookId={bookId} editionId={activeId} dirty={dirty} refreshKey={readerRefreshKey}
-          onUseForPackaging={editable ? useSavedEpub : undefined} packageSource={savedEpub} onPackageProofUnavailable={invalidateSavedEpub} packagingDisabled={Boolean(busy || renderPointer)} />}
+          onUseForPackaging={editable ? useSavedEpub : undefined} packageSource={savedEpub} onPackageProofUnavailable={invalidateSavedEpub} onPackageProofCheck={checkSavedEpub} packagingDisabled={Boolean(busy || renderPointer)} />}
+        {savedEpub && epubProofChecking && <p role="status" className="mt-3 text-sm text-amber-100">Verify the selected EPUB by refreshing saved exports before running preflight.</p>}
 
         {form.kind !== "audiobook" && <section className={cardClass} aria-labelledby="package-title">
           <div className="flex flex-wrap items-end justify-between gap-4"><div><h2 id="package-title" className="text-xl font-semibold">Retailer export packages</h2><p className="mt-1 max-w-2xl text-sm text-white/45">{channel === "lulu" && rightToLeftPrint
@@ -1219,7 +1229,7 @@ function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, v
               metadata={preflight.listing.metadata} isCurrent={handlerCurrent} />}
           </div>}
           <RetailerPackageRequest key={bookId} bookId={bookId} canEdit={editable} disabled={Boolean(busy) && busy !== "package"}
-            request={activeId && !dirty && channel !== "export" && channelCompatible && packageRenderId && preflight && preflight.requestedChannel === channel && preflight.errors === 0
+            request={activeId && !dirty && !(savedEpub && epubProofChecking) && channel !== "export" && channelCompatible && packageRenderId && preflight && preflight.requestedChannel === channel && preflight.errors === 0
               && (!savedEpub || (preflight.sourceEpub?.jobId === savedEpub.jobId && preflight.sourceEpub.sha256 === savedEpub.sha256))
               && (form.kind !== "print" || (savedPrint && matchesPrintPreflight(savedPrint, preflight.sourcePrint)))
               ? { bookId, editionId: activeId, channel, renderJobId: packageRenderId, preflightJobId: preflight.jobId } : null}
