@@ -68,6 +68,7 @@ try {
   page.on('pageerror', (error) => errors.push(error.message)); page.on('dialog', (dialog) => dialog.dismiss());
   page.on('request', (request) => { if (request.url().includes('reader-hostile.example')) hostileRequests.push(request.url()); });
   let mode = 'busy-section'; let heldResource; let releaseResource; let downloadTicket = 0; let readOnly = false;
+  let hideOlderExport = false; let failHistory = false;
   await page.route(`${fixtureOrigin}/storage/v1/object/sign/book-assets/**`, async (route) => {
     const url = new URL(route.request().url()); const artifact = artifacts.find((entry) => url.pathname.endsWith(`/assets/${entry.source.assetId}/v1/book.epub`));
     assert.ok(artifact); assert.ok(url.searchParams.get('token'));
@@ -98,7 +99,12 @@ try {
     }
     if (path === `/v1/books/${artifacts[0].source.bookId}/editions`) return json(200, { editions });
     const history = /^\/v1\/editions\/([^/]+)\/renders$/.exec(path);
-    if (history) { historyRequests.push(path); return json(200, { renders: artifacts.filter((entry) => entry.source.editionId === history[1]).map(({ source, createdAt }) => ({ source, jobId: source.jobId, createdAt })) }); }
+    if (history) {
+      historyRequests.push(path);
+      if (failHistory) return json(503, { error: { code: 'reader_busy', message: 'Synthetic history unavailable' } });
+      const renders = artifacts.filter((entry) => entry.source.editionId === history[1] && !(hideOlderExport && entry === artifacts[1]));
+      return json(200, { renders: renders.map(({ source, createdAt }) => ({ source, jobId: source.jobId, createdAt })) });
+    }
     const reader = /^\/v1\/editions\/([^/]+)\/renders\/([^/]+)\/reader(?:\/resources\/(\d+))?$/.exec(path);
     if (reader) {
       activeReaderGets++; peakReaderGets = Math.max(peakReaderGets, activeReaderGets);
@@ -196,6 +202,26 @@ try {
   await desk.getByLabel('Saved EPUB section').selectOption(String(opening)); await content.getByText('Older export two — exact saved text.', { exact: true }).waitFor();
   await waitReader(artifacts[1].source.jobId, opening);
   assert.equal(await content.getByText('Saved export one & exact <words> — native artifact.', { exact: true }).count(), 0);
+  const refresh = desk.getByRole('button', { name: 'Refresh saved exports', exact: true });
+  await refresh.click();
+  await content.getByText('Older export two — exact saved text.', { exact: true }).waitFor();
+  await waitReader(artifacts[1].source.jobId, opening);
+  failHistory = true;
+  await refresh.click();
+  await desk.getByRole('alert').filter({ hasText: 'The saved reader is busy.' }).waitFor();
+  assert.equal(await desk.locator('iframe').count(), 0);
+  failHistory = false;
+  hideOlderExport = true;
+  const readsBeforeMissing = readerRequests.length;
+  await refresh.click();
+  await desk.getByRole('alert').filter({ hasText: 'The selected saved export is no longer available.' }).waitFor();
+  await expect(desk.getByLabel('Saved EPUB export')).toHaveValue('');
+  assert.equal(await desk.locator('iframe').count(), 0);
+  assert.equal(readerRequests.length, readsBeforeMissing, 'refresh silently opened a different saved export');
+  hideOlderExport = false;
+  await refresh.click();
+  await content.getByText('Older export two — exact saved text.', { exact: true }).waitFor();
+  await waitReader(artifacts[1].source.jobId, opening);
   mode = 'wrong-source'; await desk.getByRole('button', { name: 'Next saved section', exact: true }).click();
   await desk.getByRole('alert').filter({ hasText: 'could not be read or verified' }).waitFor(); assert.equal(await desk.locator('iframe').count(), 0);
   await desk.getByRole('button', { name: 'Retry saved section', exact: true }).click(); await content.getByText('All done.', { exact: true }).waitFor();

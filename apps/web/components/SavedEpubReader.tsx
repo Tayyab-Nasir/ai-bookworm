@@ -41,6 +41,7 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
   const stage = useRef<HTMLDivElement>(null);
   const historyFence = useRef(createReaderFence()); const contentFence = useRef(createReaderFence());
   const sectionValid = useRef<() => boolean>(() => false);
+  const lastSelection = useRef<{ source: SavedEpubSource; index: number } | null>(null);
   const downloadGeneration = useRef(0);
   const visibleDownloadGeneration = downloadGeneration.current;
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -59,6 +60,7 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
     setOccurrenceIndex(0); setOccurrenceInput("1"); setInspecting(false);
   }, []);
   const failAuthorization = useCallback(() => {
+    lastSelection.current = null;
     historyFence.current.clear(); clearContent(); setRenders([]); setHistoryBusy(false);
     setError("Your session or access changed. Sign in again before opening private saved exports.");
   }, [clearContent]);
@@ -75,6 +77,7 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
     finally { if (valid()) setImageBusy(null); }
   }, [api, editionId, failAuthorization, readerGet]);
   const readSection = useCallback(async (selected: SavedEpubSource, index: number) => {
+    lastSelection.current = { source: selected, index };
     const ticket = contentFence.current.reset(`${owner}:${readerSourceKey(selected)}:${index}`);
     const valid = () => ownerRef.current === owner && ticket(); sectionValid.current = valid;
     downloadGeneration.current++; setDownload(null); setDownloadBusy(false);
@@ -94,14 +97,20 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
     } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else setError(retryMessage(reason)); } }
     finally { if (valid()) setSectionBusy(false); }
   }, [api, editionId, failAuthorization, loadImage, owner, readerGet]);
-  const refreshHistory = useCallback(async () => {
+  const refreshHistory = useCallback(async (preserveSelection = false) => {
     if (!actor) return;
+    if (!preserveSelection) lastSelection.current = null;
+    const previous = lastSelection.current;
     const ticket = historyFence.current.reset(owner); const valid = () => ownerRef.current === owner && ticket();
     clearContent(); setVisibleOwner(owner); setRenders([]); setError(null); setHistoryBusy(true);
     try {
       const result = await api.listEditionRenders(editionId); if (!valid()) return;
       const verified = validateReaderHistory(result, bookId, editionId); setRenders(verified);
-      if (verified[0]) void readSection(verified[0].source, 0);
+      if (previous) {
+        const exact = verified.find((entry) => readerSourceKey(entry.source) === readerSourceKey(previous.source));
+        if (exact) void readSection(exact.source, previous.index);
+        else setError("The selected saved export is no longer available. Choose another export or refresh to check again.");
+      } else if (verified[0]) void readSection(verified[0].source, 0);
     } catch (reason) { if (valid()) { if (authorizationFailure(reason)) failAuthorization(); else setError(retryMessage(reason)); } }
     finally { if (valid()) setHistoryBusy(false); }
   }, [actor, api, bookId, clearContent, editionId, failAuthorization, owner, readSection]);
@@ -163,7 +172,7 @@ export default function SavedEpubReader({ actor, workspaceId, bookId, editionId,
 
   return <section aria-labelledby={`${id}-title`} data-saved-epub-reader className="min-w-0 overflow-hidden rounded-2xl border border-[var(--bookworm-proof-edge)] bg-[var(--bookworm-proof-paper)] text-[var(--bookworm-proof-ink)]">
     <header className="border-b border-[var(--bookworm-proof-edge)] p-5 sm:p-6">
-      <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--bookworm-proof-muted)]">Bookworm / proof desk</p><h2 id={`${id}-title`} className="mt-2 pb-1 font-instrument text-4xl italic leading-[1.1] sm:text-5xl">Saved EPUB proof</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--bookworm-proof-copy)]">Read a private, dated export. This opens the saved file, not a new render, and uses no generation credits.</p></div><button type="button" onClick={() => void refreshHistory()} disabled={historyBusy} className={control}>{historyBusy ? "Checking exports…" : "Refresh saved exports"}</button></div>
+      <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--bookworm-proof-muted)]">Bookworm / proof desk</p><h2 id={`${id}-title`} className="mt-2 pb-1 font-instrument text-4xl italic leading-[1.1] sm:text-5xl">Saved EPUB proof</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-[var(--bookworm-proof-copy)]">Read a private, dated export. This opens the saved file, not a new render, and uses no generation credits.</p></div><button type="button" onClick={() => void refreshHistory(true)} disabled={historyBusy} className={control}>{historyBusy ? "Checking exports…" : "Refresh saved exports"}</button></div>
       <p className="mt-4 border-s-2 border-[var(--bookworm-proof-edge)] ps-3 text-sm leading-6 text-[var(--bookworm-proof-copy)]">{dirty ? "Unsaved edition settings are not included. " : ""}Manuscript and settings changes after the export are not included in this snapshot.</p>
       {(current && renders.length > 0) && <label className="mt-5 block text-xs font-semibold uppercase tracking-wider text-[var(--bookworm-proof-muted)]">Saved export<select aria-label="Saved EPUB export" value={source?.jobId ?? ""} onChange={(event) => { const render = renders.find((entry) => entry.jobId === event.target.value); if (render) void readSection(render.source, 0); }} className={`${control} mt-2 block w-full min-w-0 font-normal normal-case tracking-normal`}><option value="" disabled>Select a saved export</option>{renders.map((render) => <option key={render.jobId} value={render.jobId}>{new Date(render.createdAt).toLocaleString()} · {render.source.sha256.slice(0, 12)}…</option>)}</select></label>}
       {activeRender && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-[var(--bookworm-proof-muted)]"><p><time dateTime={activeRender.createdAt}>{new Date(activeRender.createdAt).toLocaleString()}</time> · immutable v1 · {(activeRender.source.sizeBytes / 1024).toFixed(0)} KB</p><details className="min-w-0 max-w-full"><summary className="cursor-pointer rounded py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Source & checksum</summary><dl className="mt-2 grid gap-2 break-all font-mono text-[11px]"><dt>SHA-256</dt><dd>{activeRender.source.sha256}</dd><dt>Saved job / asset v1</dt><dd>{activeRender.source.jobId} / {activeRender.source.assetId}</dd></dl></details></div>}
