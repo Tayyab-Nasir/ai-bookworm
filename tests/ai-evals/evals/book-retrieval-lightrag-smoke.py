@@ -212,6 +212,97 @@ async def exercise_occurrence_binding(root):
             await client.finalize_storages()
 
 
+async def reconcile_fixture_passage(client, book_lock, latest, passage, filename):
+    """Apply current desired state under the single fixture writer's book lock."""
+    index_id = filename.removesuffix(".txt")
+    async with book_lock:
+        for _ in range(4):
+            generation, occurrences = latest()
+            if occurrences:
+                await client.ainsert(passage, ids=index_id, file_paths=filename)
+            else:
+                result = await client.adelete_by_doc_id(index_id)
+                if result.status not in {"success", "not_found"}:
+                    raise RuntimeError("Passage cleanup needs reconciliation")
+            if latest()[0] == generation:
+                return generation
+        raise RuntimeError("Passage changed during reconciliation")
+
+
+async def exercise_index_cleanup(root):
+    scope = "fixture_book_worker_order"
+    client = new_scope(root, scope)
+    passage = "Elara carries a silver compass."
+    filename = opaque_passage_name(scope, passage)
+    lock = asyncio.Lock()
+    state = (1, frozenset({"chapter-a", "chapter-b"}))
+
+    def latest():
+        return state
+
+    async def reconcile():
+        return await reconcile_fixture_passage(client, lock, latest, passage, filename)
+
+    await client.initialize_storages()
+    try:
+        await reconcile()
+        state = (2, frozenset({"chapter-b"}))
+        await reconcile()
+        await assert_one(client, "silver compass", filename, passage)
+
+        # Simulate a missing index during repair so the paused write really inserts.
+        assert (await client.adelete_by_doc_id(filename.removesuffix(".txt"))).status == "success"
+        insert = client.ainsert
+        started = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def slow_insert(*args, **kwargs):
+            started.set()
+            await resume.wait()
+            await insert(*args, **kwargs)
+            await assert_one(client, "silver compass", filename, passage)
+
+        with patch.object(client, "ainsert", slow_insert):
+            async with asyncio.TaskGroup() as tasks:
+                slow = tasks.create_task(reconcile())
+                await asyncio.wait_for(started.wait(), timeout=5)
+                state = (3, frozenset())
+                cleanup = tasks.create_task(reconcile())
+                resume.set()
+            assert slow.result() == cleanup.result() == 3
+        assert await chunks(client, "silver compass") == []
+        assert not await client.chunk_entity_relation_graph.has_edge("Elara", "silver compass")
+
+        # A delete whose acknowledgement was lost remains safe to retry.
+        state = (4, frozenset({"chapter-c"}))
+        await reconcile()
+        state = (5, frozenset())
+        delete = client.adelete_by_doc_id
+
+        async def lose_delete_reply(index_id):
+            assert (await delete(index_id)).status == "success"
+            raise ConnectionError("Fixture lost a completed deletion reply")
+
+        with patch.object(client, "adelete_by_doc_id", lose_delete_reply):
+            try:
+                await reconcile()
+            except ConnectionError:
+                pass
+            else:
+                raise AssertionError("An unconfirmed deletion must stay pending")
+        assert await reconcile() == 5
+    finally:
+        await client.finalize_storages()
+
+    reopened = new_scope(root, scope)
+    await reopened.initialize_storages()
+    try:
+        assert await chunks(reopened, "silver compass") == []
+        assert not await reopened.chunk_entity_relation_graph.has_edge("Elara", "silver compass")
+    finally:
+        await reopened.finalize_storages()
+
+
 async def main():
     def reject_connection(*_args, **_kwargs):
         raise AssertionError("Network connection attempted during LightRAG fixture")
@@ -222,6 +313,7 @@ async def main():
             await exercise(Path(root))
             await exercise_repeated_content(Path(root))
             await exercise_occurrence_binding(Path(root))
+            await exercise_index_cleanup(Path(root))
     print(json.dumps({
         "lightrag": version("lightrag-hku"),
         "modes": ["naive", "local"],
@@ -232,6 +324,7 @@ async def main():
         "delete_replace_and_reopen": "passed",
         "repeated_content": "second source omitted; no citation remains after first is deleted",
         "occurrence_binding": "either occurrence survives independently; stale and foreign hints rejected",
+        "index_cleanup": "single-writer late insertion converges; lost deletion reply retries and stays removed",
     }))
 
 

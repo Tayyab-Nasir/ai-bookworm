@@ -130,6 +130,21 @@ These timings exclude network, retrieval and embedding time. The compound
 index is created and dropped within the disposable benchmark. Native
 PostgreSQL latency, index write cost and concurrency remain unmeasured.
 
+## Offline index cleanup ordering
+
+The single-writer smoke now pauses an actual LightRAG insertion while an
+authoritative fixture removes the final source. Reconciliation reads desired
+state under a book-scoped lock and rechecks the generation after each writer
+operation. It removed the late chunk and graph relation. It also recovered
+from a lost deletion reply, then verified absence after reopening storage.
+When one of two duplicate sources remains, the shared entry stays indexed.
+
+This proof covers one process and file-backed storage. Production still needs
+durable writer ownership and restart reconciliation. All index writes must
+pass through the same owner, including cleanup after uncertain completions.
+The current-version lookup remains the publication boundary for citations
+while physical index reconciliation is pending.
+
 ## Local multilingual retrieval comparison
 
 Both evaluators read the same synthetic manuscript facts and queries from
