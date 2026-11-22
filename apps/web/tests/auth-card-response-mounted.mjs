@@ -215,3 +215,74 @@ test("unverified confirmation link explains recovery on the login page", async (
     await page.close();
   }
 });
+
+test("pending password-reset request keeps the submitted email visible", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.route("**/*", route => route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><div id='root'></div>",
+    }));
+    await page.goto("http://127.0.0.1/fixture");
+    await page.addScriptTag({ content: script });
+    await page.evaluate(() => {
+      window.fetch = async (_url, options) => {
+        window.submittedEmail = JSON.parse(options.body).email;
+        return new Promise(resolve => { window.resolveRequest = resolve; });
+      };
+      window.mount("forgot-password");
+    });
+    const email = page.getByLabel("Email", { exact: true });
+    await email.fill("first@example.test");
+    await page.locator("form").evaluate(form => form.requestSubmit());
+    await page.waitForFunction(() => typeof window.resolveRequest === "function");
+    assert.equal(await email.isDisabled(), true);
+    assert.equal(await email.inputValue(), "first@example.test");
+    assert.equal(await page.evaluate(() => window.submittedEmail), "first@example.test");
+    await page.evaluate(() => window.resolveRequest(new Response(JSON.stringify({
+      message: "If this address has an account, a password-reset email is on its way."
+    }), { status: 200 })));
+    await page.getByText("If this address has an account, a password-reset email is on its way.", { exact: true }).waitFor();
+    assert.equal(await email.isDisabled(), false);
+  } finally {
+    await page.close();
+  }
+});
+
+for (const mode of ["signup", "reset-password"]) {
+  test(`${mode} locks submitted fields until an unsuccessful request finishes`, async () => {
+    const page = await browser.newPage();
+    try {
+      await page.route("**/*", route => route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><div id='root'></div>",
+      }));
+      await page.goto("http://127.0.0.1/fixture");
+      await page.addScriptTag({ content: script });
+      await page.evaluate(mode => {
+        window.fetch = async () => new Promise(resolve => { window.resolveRequest = resolve; });
+        window.mount(mode);
+      }, mode);
+      const fields = [page.getByLabel("Password", { exact: true })];
+      if (mode === "signup") {
+        fields.push(page.getByLabel("Name", { exact: true }), page.getByLabel("Email", { exact: true }));
+        await page.getByLabel("Name", { exact: true }).fill("Test author");
+        await page.getByLabel("Email", { exact: true }).fill("author@example.test");
+      } else {
+        fields.push(page.getByLabel("Confirm new password", { exact: true }));
+        await page.getByLabel("Confirm new password", { exact: true }).fill("testpassword");
+      }
+      await page.getByLabel("Password", { exact: true }).fill("testpassword");
+      await page.locator("form").evaluate(form => form.requestSubmit());
+      await page.waitForFunction(() => typeof window.resolveRequest === "function");
+      for (const field of fields) assert.equal(await field.isDisabled(), true);
+      await page.evaluate(() => window.resolveRequest(new Response(JSON.stringify({
+        error: { message: "Please try again." },
+      }), { status: 503 })));
+      await page.getByText("Please try again.", { exact: true }).waitFor();
+      for (const field of fields) assert.equal(await field.isDisabled(), false);
+    } finally {
+      await page.close();
+    }
+  });
+}

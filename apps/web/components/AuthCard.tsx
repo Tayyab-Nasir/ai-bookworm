@@ -151,6 +151,7 @@ export function AuthCard({
                 </label>
                 <input
                   id="name"
+                  disabled={busy}
                   name="name"
                   type="text"
                   autoComplete="name"
@@ -167,6 +168,7 @@ export function AuthCard({
               </label>
               <input
                 id="email"
+                disabled={busy}
                 name="email"
                 type="email"
                 autoComplete="email"
@@ -189,6 +191,7 @@ export function AuthCard({
               </div>
               <input
                 id="password"
+                disabled={busy}
                 name="password"
                 type="password"
                 autoComplete={mode === "login" ? "current-password" : "new-password"}
@@ -202,7 +205,7 @@ export function AuthCard({
 
             {passwordOnly && <div>
               <label htmlFor="confirmPassword" className="mb-2 block text-sm text-[#9a9a9a]">Confirm new password</label>
-              <input id="confirmPassword" name="confirmPassword" type="password" autoComplete="new-password" required minLength={8} maxLength={128} className="h-12 w-full rounded-full border border-white/10 bg-white/[0.04] px-5 text-white" />
+              <input id="confirmPassword" disabled={busy} name="confirmPassword" type="password" autoComplete="new-password" required minLength={8} maxLength={128} className="h-12 w-full rounded-full border border-white/10 bg-white/[0.04] px-5 text-white" />
             </div>}
 
             {error && errorAction !== "google" && <p role="alert" className="rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-100">{error}</p>}
@@ -212,6 +215,7 @@ export function AuthCard({
               <label className="flex cursor-pointer items-center gap-2.5 pl-1">
                 <input
                   type="checkbox"
+                  disabled={busy}
                   className="h-4 w-4 cursor-pointer rounded border-white/20 bg-white/[0.04] text-white accent-white outline-none transition-colors duration-200 hover:border-white/30"
                 />
                 <span className="text-[13px] text-[#9a9a9a]">Keep me signed in</span>
