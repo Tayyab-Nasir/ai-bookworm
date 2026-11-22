@@ -197,9 +197,20 @@ the advisory lock, read the newer deletion generation and removed the stale
 entry before acknowledging it. A fresh client verified the chunk and graph
 edge were gone.
 
-That test covers confirmed process exit. A worker that stays alive after
-losing its lock connection may still have separate LightRAG pool connections.
-Fencing that scenario and hosted deployment remain open.
+[Run 45021115791](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/45021115791)
+tested loss of the lock connection while the former worker stayed alive. Its
+separate LightRAG pool successfully wrote a stale passage after the lock was
+released. The controller set that worker's dedicated role to `NOLOGIN`,
+terminated its remaining database sessions and verified the session count was
+zero before the successor acquired the lock. The old process was still alive
+when PostgreSQL refused its reconnect attempt. The successor removed the stale
+chunk and AGE relation and verified their absence.
+
+This experiment used separate identities in a disposable database on one
+runner. Hosted use still requires a controller that can prevent stale writer
+access across hosts, isolated credential provisioning, and recovery tests
+against the intended pooler and deployment topology. Canonical book and
+source authorization still applies to every read.
 
 ## Local multilingual retrieval comparison
 
