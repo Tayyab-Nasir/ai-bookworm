@@ -486,6 +486,7 @@ async def postgres_fixture():
                 grant connect, create on database bookworm_lightrag_ci to lightrag_worker_ci;
                 grant usage, create on schema public to lightrag_worker_ci;
                 grant usage on schema ag_catalog to lightrag_worker_ci;
+                grant select on ag_catalog.ag_graph, ag_catalog.ag_label to lightrag_worker_ci;
                 create schema fixture_admin_only;
                 create table fixture_admin_only.private_record (label text);
                 insert into fixture_admin_only.private_record values ('synthetic admin marker');
