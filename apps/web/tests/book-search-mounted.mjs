@@ -97,9 +97,42 @@ test("search loads excerpts only; explicit read returns exact saved context and 
     assert.equal(await p.getByRole("link", { name: "Open current chapter" }).getAttribute("href"), `/books/${BOOK}?chapter=22222222-2222-4222-8222-222222222222`);
     await p.screenshot({ path: resolve(artifacts, "search-source-desktop.png"), fullPage: true });
     await p.getByRole("button", { name: "Hide cited source" }).click(); await p.getByRole("button", { name: "Read cited source", exact: true }).click();
-    assert.equal((await sources(p)).length, 1, "local hide/show must not refetch");
+    await p.getByLabel("Cited source text", { exact: true }).waitFor();
+    assert.equal((await sources(p)).length, 2, "reopening verifies the citation again");
   } finally { await p.close(); }
 });
+test("reopening a hidden citation verifies access and preserves its page only after a valid reply", async () => {
+  const p = await fixture();
+  try {
+    await search(p);
+    const open = p.getByRole("button", { name: "Read cited source", exact: true });
+    const text = p.getByLabel("Cited source text", { exact: true });
+    await open.click();
+    await text.waitFor();
+    await p.getByRole("button", { name: "Next source section" }).click();
+    await p.waitForFunction(() => document.querySelector('[aria-label="Cited source text"]')?.textContent === Array.from(window.sourceText).slice(6000).join(""));
+    await p.getByRole("button", { name: "Hide cited source", exact: true }).click();
+    await text.waitFor({ state: "hidden" });
+    assert.equal((await sources(p)).length, 2, "hiding does not fetch");
+    await p.evaluate(() => { window.sourceMode = 503; });
+    await open.click();
+    await p.getByRole("alert").filter({ hasText: "Source temporarily unavailable." }).waitFor();
+    assert.equal(await text.count(), 0, "closed passage stays hidden after a transient failure");
+
+    await p.evaluate(() => { window.sourceMode = "normal"; });
+    await open.click();
+    await text.waitFor();
+    assert.equal((await sources(p)).at(-1).body.offset, 6000, "reopening verifies the same section");
+    assert.equal(await text.innerText(), await p.evaluate(() => Array.from(window.sourceText).slice(6000).join("")));
+    await p.getByRole("button", { name: "Hide cited source", exact: true }).click();
+    await p.evaluate(() => { window.sourceMode = 403; });
+    await open.click();
+    await p.getByRole("alert").filter({ hasText: "Search results were cleared" }).waitFor();
+    assert.equal(await text.count(), 0);
+    assert.equal(await p.getByLabel("Search excerpt", { exact: true }).count(), 0);
+  } finally { await p.close(); }
+});
+
 test("historical source stays historical with safe Unicode pagination and no mobile overflow", async () => {
   const p = await fixture(320); try {
     await p.evaluate(() => { window.historical = true; }); await search(p);

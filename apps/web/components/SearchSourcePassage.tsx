@@ -20,15 +20,17 @@ function SourceReader({ bookId, citation, readRequest, onInvalidated }: Props) {
   useEffect(() => () => { ++generation.current; }, []);
   async function read(offset?: number) {
     if (inFlight.current) return;
-    if (passage && offset === undefined) { setOpen(value => !value); return; }
+    if (open && offset === undefined) { setOpen(false); setError(null); return; }
+    // Keep the reader's place, but recheck access before reopening a hidden passage.
+    const requestOffset = offset ?? passage?.startOffset;
     const current = ++generation.current; inFlight.current = true; setBusy(true); setError(null);
     try {
-      const body = { ...citation, ...(offset === undefined ? {} : { offset }) };
+      const body = { ...citation, ...(requestOffset === undefined ? {} : { offset: requestOffset }) };
       const response = readRequest
         ? await readRequest<Passage>(`/books/${encodeURIComponent(bookId)}/search/evidence`, "POST", body)
         : await apiClient().readSearchPassage(bookId, body);
       if (current !== generation.current) return;
-      const verified = parseSearchPassage(response, bookId, citation, offset);
+      const verified = parseSearchPassage(response, bookId, citation, requestOffset);
       if (passage && (passage.versionNumber !== verified.versionNumber || passage.totalLength !== verified.totalLength)) {
         throw new Error("The saved source changed unexpectedly. Search again before using this passage.");
       }
