@@ -104,6 +104,10 @@ export default function Home() {
       </div>
       <Link href="/signup" className={styles.primary}>Create your workspace <ArrowUpRight size={19} aria-hidden /></Link>
     </section>
-    <footer className={styles.footer}><Link href="/">BookieWookie</Link><span>Bookiewookie.app</span><Link href="/login">Open your studio</Link></footer>
+    <footer className={styles.footer}>
+      <Link href="/">BookieWookie</Link>
+      <Link href="/data-and-privacy">Data &amp; privacy</Link>
+      <Link href="/login">Open your studio</Link>
+    </footer>
   </main>;
 }

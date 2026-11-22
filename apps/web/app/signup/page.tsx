@@ -23,6 +23,9 @@ export default function SignupPage() {
           altHref="/login"
         />
       </div>
+      <footer className={styles.footer}>
+        <Link href="/data-and-privacy">Data &amp; privacy</Link>
+      </footer>
     </main>
   );
 }
