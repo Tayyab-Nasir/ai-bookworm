@@ -631,6 +631,8 @@ export type PackagePreflight = Pick<PreflightResult, "ruleVersion" | "warnings" 
   packageJobId: string; preflightJobId: string;
 };
 
+export type PackageListing = { packageJobId: string; packageSha256: string; metadata: BookMetadata };
+
 export interface PublishingPackageJob {
   id: string;
   requestId: string;
@@ -1382,6 +1384,9 @@ export function createClient(opts: ClientOptions) {
     getPackagePreflight: (jobId: string, expectedActorId: string) =>
       call<PackagePreflight>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/preflight`, undefined, false,
         { "x-bookworm-actor": expectedActorId }),
+    getPackageListing: (jobId: string, checksum: string, expectedActorId: string) =>
+      call<PackageListing>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/listing?${new URLSearchParams({ checksum })}`,
+        undefined, false, { "x-bookworm-actor": expectedActorId }),
     getRetailerSubmission: (jobId: string, expectedActorId: string) =>
       call<unknown>("GET", `/v1/publishing/jobs/${encodeURIComponent(jobId)}/submission`, undefined, false, {
         "x-bookworm-actor": expectedActorId,

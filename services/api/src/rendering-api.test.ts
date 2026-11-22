@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { strToU8, zipSync } from "fflate";
+import { readPackageListing } from "./lib/package-listing.js";
 
 process.env.SUPABASE_URL ??= "http://localhost:54321";
 process.env.SUPABASE_ANON_KEY ??= "test-anon";
@@ -845,6 +847,63 @@ test("editor creates a durable private retailer package and can list, read, and 
   assert.equal(packageRequests.length, 1);
   assert.equal(store.tables.usage_events.filter((row) => row.meter === "publishing").length, 1);
   await app.close();
+});
+
+test("package listing reads the original archive and refuses changed bytes or revoked access", async () => {
+  const store = baseStore();
+  enableRetailerPackages(store);
+  const metadata = { title: "Original title", author: "A. Writer", language: "en", description: "Saved description", keywords: ["letters"] };
+  const archive = Buffer.from(zipSync({
+    "metadata.json": strToU8(JSON.stringify({ schemaVersion: "1.0", metadata })),
+    "private-fixture.txt": strToU8("Do not return this file"),
+  }));
+  const packageChecksum = sha(archive);
+  let exports = 0;
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([]), publishingFetch: async () => {
+      exports++;
+      return Response.json({ channel: "kdp", ruleVersion: "fixture", errors: 0,
+        packages: [{ path: "kdp-export.zip", dataBase64: archive.toString("base64"), sha256: packageChecksum }] });
+    },
+  });
+  try {
+    const sources = await createReadySources(app);
+    const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth,
+      payload: { ...sources, bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: crypto.randomUUID() } });
+    assert.equal(created.statusCode, 201, created.body);
+    const job = created.json();
+    const url = `/v1/publishing/jobs/${job.id}/listing?checksum=${packageChecksum}`;
+    store.tables.books[0].title = "Later title";
+    store.signedPaths = [];
+    const get = (path = url, headers: Record<string, string> = auth) => app.inject({ method: "GET", url: path, headers });
+    const result = await get();
+    assert.equal(result.statusCode, 200, result.body);
+    assert.equal(result.headers["cache-control"], "private, no-store");
+    assert.deepEqual(result.json(), { packageJobId: job.id, packageSha256: packageChecksum, metadata });
+    assert.equal((await get(url.replace(packageChecksum, "a".repeat(64)))).statusCode, 404);
+    assert.equal((await get(url, { ...auth, "x-bookworm-actor": BOOK })).statusCode, 409);
+    const storagePath = job.package.asset.storage_path as string;
+    const altered = Buffer.from(archive);
+    altered[altered.length - 1] ^= 1;
+    store.objects.set(storagePath, altered);
+    assert.equal((await get()).statusCode, 409);
+    store.objects.set(storagePath, archive);
+    store.downloadBarrier = async () => { store.tables.workspace_members[0].status = "suspended"; };
+    assert.equal((await get()).statusCode, 403);
+    store.tables.workspace_members[0].status = "active";
+    assert.equal((await get()).statusCode, 200);
+    assert.deepEqual(store.signedPaths, []);
+    assert.equal(exports, 1);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 1);
+  } finally { await app.close(); }
+});
+
+test("listing extraction rejects missing, oversized and non-listing metadata", () => {
+  assert.equal(readPackageListing(zipSync({ "elsewhere/metadata.json": strToU8("{}") })), null);
+  assert.equal(readPackageListing(zipSync({ "metadata.json": strToU8("x".repeat(131_073)) })), null);
+  assert.equal(readPackageListing(zipSync({ "metadata.json": strToU8(JSON.stringify({
+    schemaVersion: "1.0", metadata: { title: "Fixture", author: "Author", language: "en", privateContext: "draft" },
+  })) })), null);
 });
 
 test("unbound package preflight cannot use a quarantined render or an unavailable cover", async () => {

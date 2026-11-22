@@ -21,6 +21,7 @@ import RetailerPackageRequest from "./RetailerPackageRequest";
 import RetailerListingReview from "./RetailerListingReview";
 import RetailerSubmission from "./RetailerSubmission";
 import PackagePreflightReview from "./PackagePreflightReview";
+import PackageListingReview from "./PackageListingReview";
 import ManagedPublishingConsent from "./ManagedPublishingConsent";
 import { readBrowserSession } from "../lib/browser-session";
 import { discardEditionTab, editionBase, parseEditionTab, readEditionTab, writeEditionTab } from "../lib/edition-tab-recovery";
@@ -1226,6 +1227,12 @@ function PublishingWorkspace({ bookId, packageJobId, scope, active, verifiedAcce
                 api={api} actor={scope.actor} jobId={job.id} preflightId={job.sourcePreflightJobId}
                 isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId
                   && viewEpoch.current === linkEpoch && (publishingJobsRef.current.some(item => item.id === job.id) || linkedPackageRef.current === job)} />
+            )}
+            {currentIdentity && job.status === "succeeded" && job.package && job.bookId === bookId && job.editionId === activeId && (
+              <PackageListingReview key={`${scope.actor}:${job.id}:${job.package.asset.checksum}`} api={api} actor={scope.actor}
+                jobId={job.id} checksum={job.package.asset.checksum.toLowerCase()}
+                isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId
+                  && viewEpoch.current === linkEpoch && (publishingJobsRef.current.some(sameConsentPackage) || sameConsentPackage(linkedPackageRef.current))} />
             )}
             {currentIdentity && job.status === "succeeded" && job.package && portal && (
               <p className="mt-2 text-sm text-white/65">

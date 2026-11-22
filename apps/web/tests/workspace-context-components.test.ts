@@ -110,7 +110,7 @@ function harness(path: string, api: Record<string, (...args: any[]) => any>, opt
     if (name.endsWith("/RemovedAssets")) return { default: "RemovedAssets" };
     if (name.endsWith("/asset-lifecycle-operation")) return { beginAssetOperation: (_s: any, input: any, uuid: () => string) => ({...input, operationId: uuid()}), clearConfirmedAssetOperation: () => {}, readAssetOperation: () => null };
     if (name.endsWith("/ImageQuoteStudio")) return { default: "ImageQuoteStudio" };
-    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "SavedPdfProof", "RetailerPackageRequest", "RetailerListingReview", "ManagedPublishingConsent", "RetailerSubmission", "PackagePreflightReview", "PrivateArtifactDownload", "PrivateCoverPreview"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
+    if (["ChapterAudioDownload", "NarrationQuoteStudio", "SavedEpubReader", "SavedPrintLibrary", "SavedPdfProof", "RetailerPackageRequest", "RetailerListingReview", "ManagedPublishingConsent", "RetailerSubmission", "PackagePreflightReview", "PackageListingReview", "PrivateArtifactDownload", "PrivateCoverPreview"].some(component => name.endsWith(`/${component}`))) return { default: name.split("/").at(-1) };
     if (name.endsWith("/pdf-proof")) return { renderLinksDeadline };
     if (name.endsWith("/publishing-request")) return { ...publishingRequests, downloadClock: api.fixtureDownloadClock ?? publishingRequests.downloadClock };
     if (name.endsWith("/render-request")) return renderRequests;

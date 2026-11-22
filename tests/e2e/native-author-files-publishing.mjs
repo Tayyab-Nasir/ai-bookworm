@@ -351,7 +351,14 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     const index = jobs.filter(job => job.editionId === saved.edition.id).findIndex(job => job.id === saved.job.id);
     assert.ok(index >= 0);
     const row = history.getByRole('listitem').nth(index);
-    await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), saved.job.package.asset.checksum);
+    const checksum = saved.job.package.asset.checksum;
+    const savedBytes = await download(page, row.getByRole('button', { name: 'Download private ZIP', exact: true }), checksum);
+    const savedListing = await api('GET', `/publishing/jobs/${saved.job.id}/listing?checksum=${checksum}`);
+    assert.deepEqual(savedListing.metadata, inspectNativePackage(savedBytes).metadata.metadata);
+    const listingToggle = row.getByText('Copy package listing', { exact: true });
+    await listingToggle.click();
+    await expect(row.getByText(savedListing.metadata.description, { exact: true })).toBeVisible();
+    await listingToggle.click();
     const expectedReport = await api('GET', `/publishing/jobs/${saved.job.id}/preflight`);
     assert.equal(expectedReport.preflightJobId, saved.job.sourcePreflightJobId);
     const reportToggle = row.getByText('Review package preflight', { exact: true });

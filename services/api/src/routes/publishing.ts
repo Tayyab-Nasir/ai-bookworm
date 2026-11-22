@@ -8,7 +8,9 @@ import { AppError } from "../errors.js";
 import { boundedServiceText } from "../lib/bounded-service-response.js";
 import { assembleBookModel, bookModelFingerprint, loadBook } from "../lib/authoring.js";
 import { requireEntitlement } from "../lib/entitlements.js";
+import { boundedSupabaseFetch } from "../lib/supabase.js";
 import type { SupabaseClient } from "../lib/supabase.js";
+import { readPackageListing } from "../lib/package-listing.js";
 import { editionConfigSchema, loadRenderImages, withEditionLanguage, requiresEffectiveEbookCoverPolicy, uploadedCoverVersion,
   EFFECTIVE_EBOOK_COVER_POLICY, EFFECTIVE_EBOOK_COVER_RENDERER_VERSION, UPLOADED_WRAP_RENDERER_VERSION } from "./editions.js";
 
@@ -406,11 +408,13 @@ export function decodePackage(encoded: string, checksum: string) {
   return bytes;
 }
 
-async function hydratePackageJob(sb: SupabaseClient, workspaceId: string, job: Record<string, unknown>) {
-  const response = job.response_json && typeof job.response_json === "object" && !Array.isArray(job.response_json)
-    ? job.response_json as Record<string, unknown>
-    : {};
-  let packageArtifact = null;
+function packageResponse(job: Record<string, unknown>) {
+  return job.response_json && typeof job.response_json === "object" && !Array.isArray(job.response_json)
+    ? job.response_json as Record<string, unknown> : {};
+}
+
+async function verifyPackageArtifact(sb: SupabaseClient, workspaceId: string, job: Record<string, unknown>) {
+  const response = packageResponse(job);
   const parsed = packageArtifactSchema.safeParse(response.artifact);
   if (job.status === "succeeded" && parsed.success) {
     const descriptor = parsed.data;
@@ -431,11 +435,21 @@ async function hydratePackageJob(sb: SupabaseClient, workspaceId: string, job: R
         && asset.type === descriptor.type && ["draft", "in_review", "approved"].includes(String(asset.status))
         && matches(version) && version?.asset_id === descriptor.assetId && version.version_number === 1
         && ["clean", "trusted_generated"].includes(String(version.scan_status))) {
-        const { data: signed, error: signError } = await sb.storage.from(BUCKET).createSignedUrl(canonicalPath, 300);
-        if (signError || !signed?.signedUrl) throw new AppError(503, "A private package download link could not be created.");
-        packageArtifact = { asset, download: { url: signed.signedUrl, expiresIn: 300 } };
+        return { asset, descriptor };
       }
     }
+  }
+  return null;
+}
+
+async function hydratePackageJob(sb: SupabaseClient, workspaceId: string, job: Record<string, unknown>) {
+  const response = packageResponse(job);
+  const verified = await verifyPackageArtifact(sb, workspaceId, job);
+  let packageArtifact = null;
+  if (verified) {
+    const { data: signed, error: signError } = await sb.storage.from(BUCKET).createSignedUrl(verified.descriptor.storagePath, 300);
+    if (signError || !signed?.signedUrl) throw new AppError(503, "A private package download link could not be created.");
+    packageArtifact = { asset: verified.asset, download: { url: signed.signedUrl, expiresIn: 300 } };
   }
   const request = requestJson(job);
   return {
@@ -853,7 +867,7 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
 
   async function loadCompletedPackage(user: SupabaseClient, jobId: string) {
     const { data: job, error } = await user.from("publishing_jobs")
-      .select("id,book_id,edition_id,channel,status,request_json").eq("id", jobId).maybeSingle();
+      .select("id,book_id,edition_id,channel,status,request_json,response_json").eq("id", jobId).maybeSingle();
     if (error) throw new AppError(503, "The publishing package could not be verified.");
     if (!job || job.id !== jobId || job.status !== "succeeded" || requestJson(job).action !== "export_package"
       || !retailerChannelSchema.safeParse(job.channel).success) {
@@ -892,6 +906,43 @@ export function publishingRoutes(app: FastifyInstance, options: { renderFetcher?
     reply.header("cache-control", "private, no-store");
     return { packageJobId: job.id, preflightJobId: preflight.id, ruleVersion: report.ruleVersion,
       warnings: report.warnings, findings: report.findings };
+  });
+
+  // The listing may require reading a large private ZIP. Keep one such
+  // operation in flight per API instance, independently of package creation.
+  let readingListing = false;
+  app.get("/publishing/jobs/:jobId/listing", async (req, reply) => {
+    assertPackageActor(req);
+    const path = submissionJobIdSchema.safeParse(req.params);
+    const query = z.object({ checksum: sha256Schema }).strict().safeParse(req.query);
+    if (!path.success || !query.success) throw new AppError(422, "The package and its checksum are required.");
+    const user = app.supabaseFactory(req.userToken);
+    const job = await loadCompletedPackage(user, path.data.jobId);
+    const { book } = await loadBook(user, job.book_id, req.userId);
+    if (readingListing) throw new AppError(503, "The listing reader is busy. Try again shortly.");
+    readingListing = true;
+    try {
+      const signal = AbortSignal.timeout(90_000);
+      const service = app.supabaseFactory(undefined, boundedSupabaseFetch(signal, fetch, 200 * 1024 * 1024));
+      const verified = await verifyPackageArtifact(service, book.workspace_id, job);
+      if (!verified || verified.descriptor.checksum.toLowerCase() !== query.data.checksum) {
+        throw new AppError(404, "The saved package is unavailable.");
+      }
+      const descriptor = verified.descriptor;
+      const { data, error } = await service.storage.from(BUCKET).download(descriptor.storagePath);
+      if (error || !data || data.size !== descriptor.sizeBytes) throw new AppError(409, "The saved package could not be verified.");
+      const bytes = Buffer.from(await data.arrayBuffer());
+      if (createHash("sha256").update(bytes).digest("hex") !== query.data.checksum) {
+        throw new AppError(409, "The saved package could not be verified.");
+      }
+      const metadata = readPackageListing(bytes);
+      if (!metadata) throw new AppError(404, "This package has no readable saved listing.");
+      await loadBook(user, job.book_id, req.userId);
+      if (!await verifyPackageArtifact(service, book.workspace_id, job)) throw new AppError(404, "The saved package is unavailable.");
+      signal.throwIfAborted();
+      reply.header("cache-control", "private, no-store");
+      return { packageJobId: job.id, packageSha256: query.data.checksum, metadata };
+    } finally { readingListing = false; }
   });
 
   app.get("/publishing/jobs/:jobId/submission", async (req, reply) => {

@@ -2797,6 +2797,34 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "422": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /v1/publishing/jobs/{jobId}/listing:
+    get:
+      tags: [v1]
+      operationId: getPackageListing
+      summary: Read the listing from a verified private retailer package
+      parameters:
+        - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: checksum, in: query, required: true, schema: { type: string, pattern: '^[a-f0-9]{64}$' } }
+        - { name: x-bookworm-actor, in: header, required: false, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Saved retailer listing from the original package metadata.json
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [packageJobId, packageSha256, metadata]
+                properties:
+                  packageJobId: { type: string, format: uuid }
+                  packageSha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+                  metadata: { $ref: "#/components/schemas/PreflightResult/properties/listing/properties/metadata" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /v1/publishing/jobs/{jobId}/submission:
     parameters:
       - { name: jobId, in: path, required: true, schema: { type: string, format: uuid } }

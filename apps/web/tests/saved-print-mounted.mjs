@@ -880,6 +880,50 @@ test("managed publishing requires exact package consent and recovers a lost repl
   } finally { await page.close(); }
 });
 
+test("authors copy the listing from the exact saved package after reopening history", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const { job, book, edition, workspace, asset } = window.ids;
+      const checksum = "a".repeat(64);
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{
+        id: job, bookId: book, editionId: edition, channel: "kdp", status: "succeeded", createdAt: "2026-10-18T00:00:00Z",
+        package: { asset: { id: asset, workspace_id: workspace, storage_path: `workspaces/${workspace}/assets/${asset}/v1/kdp-export.zip`,
+          size_bytes: 1024, checksum }, download: { url: "https://storage.example/package", expiresIn: 300 } },
+      }] });
+      window.bookwormApi.getPackageListing = async (jobId, requestedChecksum, actor) => {
+        window.requests.push({ method: "GET", action: "packageListing", jobId, checksum: requestedChecksum, actor });
+        return { packageJobId: jobId, packageSha256: window.listingMatches ? checksum : "b".repeat(64),
+          metadata: { title: "Original package title", author: "Author", language: "en", description: "First saved description.",
+            keywords: ["harbor", "letters"], categories: ["Literary fiction"] } };
+      };
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+        writeText: async value => { window.copiedListing = value; },
+      } });
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const toggle = history.getByText("Copy package listing", { exact: true });
+    await expect(toggle).toBeVisible();
+    const requests = () => page.evaluate(() => window.requests.filter(row => row.action === "packageListing"));
+    assert.deepEqual(await requests(), []);
+    await toggle.click();
+    await expect(history.getByRole("alert").filter({ hasText: "The listing is unavailable here." })).toBeVisible();
+    await expect(history.getByText("Original package title", { exact: true })).toHaveCount(0);
+    await page.evaluate(() => { window.listingMatches = true; });
+    await history.getByRole("button", { name: "Check again", exact: true }).click();
+    for (const [name, value] of [["description", "First saved description."], ["keywords", "harbor, letters"], ["categories", "Literary fiction"]]) {
+      await history.getByRole("button", { name: `Copy ${name}`, exact: true }).click();
+      await expect.poll(() => page.evaluate(() => window.copiedListing)).toBe(value);
+    }
+    assert.deepEqual(await requests(), Array.from({ length: 2 }, () =>
+      ({ method: "GET", action: "packageListing", jobId: ids.job, checksum: "a".repeat(64), actor: ids.asset })));
+    await toggle.click();
+    await expect(history.getByText("Original package title", { exact: true })).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("package preflight reads only on demand and refuses a mismatched saved report", async () => {
   const { page, errors } = await fixture({ parent: true, width: 390 });
   try {
