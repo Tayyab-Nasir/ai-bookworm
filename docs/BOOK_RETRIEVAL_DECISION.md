@@ -164,10 +164,18 @@ its own exact excerpt. Replacing a chapter removed the old chunk and preserved
 the other workspace's content. After reopening, the probe verified the surviving
 chunks both through LightRAG and by reading their rows in PostgreSQL.
 
-The probe used PostgreSQL for documents, vectors and status, and local NetworkX
-for the graph. It used deterministic extraction and embeddings and restricted
-socket connections to the disposable loopback database. Shared graph storage
-and worker fencing across hosts still require verification.
+That run used PostgreSQL for documents, vectors and status, and local NetworkX
+for the graph. [Run 44994765455](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/44994765455)
+also passed with Apache AGE 1.6.0. It verified the release archive against the
+published checksum, then ran the same fixture with PostgreSQL graph storage.
+The exact relationship survived a fresh client with a different working directory.
+An old relation disappeared after replacement, and the other book's relation
+stayed accessible only in its own scope. The disposable database contained
+two separate AGE graphs.
+
+Both runs used deterministic extraction and embeddings and restricted sockets
+to the disposable loopback database. Cross-host worker fencing and production
+database privilege and deployment review remain open.
 
 ## Local multilingual retrieval comparison
 
