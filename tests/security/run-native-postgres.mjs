@@ -21,6 +21,7 @@ import { customerAiMaintenanceLookupRaces } from './native-customer-ai-maintenan
 import { customerAiMaintenanceSlotRaces } from './native-customer-ai-maintenance-slots.mjs';
 import { chapterRestoreLedgerRaces } from './native-chapter-restore-ledger.mjs';
 import { renderCloseRaces } from './native-render-close.mjs';
+import { retrievalCitationRaces } from './native-retrieval-citation-races.mjs';
 import { workspaceCreationReceiptRaces } from './native-workspace-creation-receipts.mjs';
 import { invitationRecoveryRaces } from './native-invitation-recovery.mjs';
 import { storyBlueprintQuoteClosureRaces } from './native-story-blueprint-quote-closure.mjs';
@@ -598,6 +599,7 @@ try {
     console.log(`PASS native assertions ${file}`);
   }
   await verifyAudiobookSegmentationFixtures(sql);
+  await retrievalCitationRaces({ sql, session, until, database });
   await verifyNarrationQuoteFixtures(sql);
   await verifyNarrationChapterQuoteFixtures(sql);
   await verifyNarrationFundedFixtures(sql);

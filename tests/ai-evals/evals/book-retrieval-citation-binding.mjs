@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
-function passageHint(bookId, excerpt) {
+export function passageHint(bookId, excerpt) {
   const digest = createHash("sha256").update(bookId).update("\0").update(excerpt).digest("hex");
   return { filename: `${digest}.txt`, excerpt };
 }
@@ -25,7 +25,7 @@ const resolveSql = `
   limit $4
 `;
 
-const indexedResolveSql = `
+export const indexedResolveSql = `
   with matches as materialized (
     select c.id, min(hint.rank) as rank
     from unnest($2::text[], $3::text[]) with ordinality as hint(filename, excerpt, rank)
