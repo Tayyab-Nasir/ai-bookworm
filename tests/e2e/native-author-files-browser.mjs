@@ -242,8 +242,12 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
       page.waitForResponse(reply => new URL(reply.url()).pathname.endsWith('/search/bible-evidence') && reply.request().method() === 'POST'),
       page.getByRole('button', { name: 'Open Book Bible entry' }).click(),
     ]);
+    stage = 'saved Book Bible source response status';
     assert.equal(citationReply.status(), 200);
-    assert.equal(citationReply.headers()['cache-control'], 'private, no-store');
+    stage = 'saved Book Bible source cache protections';
+    const cacheDirectives = new Set((citationReply.headers()['cache-control'] ?? '').split(',').map(value => value.trim().toLowerCase()));
+    assert.ok(cacheDirectives.has('private') && cacheDirectives.has('no-store'));
+    stage = 'saved Book Bible source identity';
     const verified = (await citationReply.json()).item;
     assert.equal(verified.id, canon.id);
     assert.equal(verified.mutation_incarnation_id, canon.mutation_incarnation_id);
@@ -251,7 +255,7 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await expect(form.getByLabel('Name', { exact: true })).toHaveValue('Browser Captain Mira');
     await expect(form.getByRole('checkbox')).toBeChecked();
     await expect(form.getByRole('combobox', { name: 'Source chapter', exact: true })).toHaveValue(chapter.id);
-    succeeded('Book Bible save/reload with scanned image and version-pinned chapter');
+    succeeded('Book Bible search opens the verified canonical entry with scanned image and version-pinned chapter');
 
     stage = 'publishing metadata description input';
     const metadata = page.getByRole('region', { name: 'Publishing metadata', exact: true });
