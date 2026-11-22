@@ -58,14 +58,14 @@ async def fixture_extraction(prompt, **_kwargs):
     raise AssertionError("Unexpected LLM input for the deterministic extraction fixture")
 
 
-def new_scope(root, workspace):
+def new_scope(root, workspace, *, postgres=False):
     return LightRAG(
         working_dir=str(root),
         workspace=workspace,
-        kv_storage="JsonKVStorage",
-        doc_status_storage="JsonDocStatusStorage",
+        kv_storage="PGKVStorage" if postgres else "JsonKVStorage",
+        doc_status_storage="PGDocStatusStorage" if postgres else "JsonDocStatusStorage",
         graph_storage="NetworkXStorage",
-        vector_storage="NanoVectorDBStorage",
+        vector_storage="PGVectorStorage" if postgres else "NanoVectorDBStorage",
         tokenizer=Tokenizer("fixture-character", FixtureTokenizer()),
         embedding_func=EmbeddingFunc(embedding_dim=256, max_token_size=1000, func=fixture_embeddings, model_name="fixture-lexical"),
         llm_model_func=fixture_extraction,
@@ -93,9 +93,9 @@ async def assert_one(client, text, path, expected_text):
     assert hit["reference_id"] and hit["chunk_id"]
 
 
-async def exercise(root):
-    first = new_scope(root, "fixture_book_a")
-    second = new_scope(root, "fixture_book_b")
+async def exercise(root, *, postgres=False):
+    first = new_scope(root, "fixture_book_a", postgres=postgres)
+    second = new_scope(root, "fixture_book_b", postgres=postgres)
     old = "Elara carries a silver compass."
     replacement = "Elara carries an amber lantern."
     other = "Mira carries a cobalt atlas."
@@ -130,7 +130,7 @@ async def exercise(root):
         await second.finalize_storages()
         await first.finalize_storages()
 
-    reopened = new_scope(root, "fixture_book_a")
+    reopened = new_scope(root, "fixture_book_a", postgres=postgres)
     await reopened.initialize_storages()
     try:
         await assert_one(reopened, "amber lantern", "book-a-v2-chapter-one.txt", replacement)
@@ -445,8 +445,57 @@ async def isolated_failover_writer(root, first):
         await failover_writer(root, first)
 
 
+async def postgres_fixture():
+    if os.environ.get("BOOKWORM_LIGHTRAG_PG_TEST") != "1":
+        raise RuntimeError("Requires a disposable BookieWookie LightRAG PostgreSQL fixture")
+    assert version("lightrag-hku") == "1.5.7"
+    import asyncpg
+
+    address = ("127.0.0.1", 55440)
+    login = {"host": address[0], "port": address[1], "user": "lightrag_ci",
+             "password": "disposable-lightrag-only", "database": "bookworm_lightrag_ci"}
+    config = {"POSTGRES_HOST": login["host"], "POSTGRES_PORT": str(login["port"]),
+              "POSTGRES_USER": login["user"], "POSTGRES_PASSWORD": login["password"],
+              "POSTGRES_DATABASE": login["database"], "POSTGRES_SSL_MODE": "disable",
+              "POSTGRES_MAX_CONNECTIONS": "5", "PYTHON_DOTENV_DISABLED": "1"}
+    original_connect = socket.socket.connect
+    original_connect_ex = socket.socket.connect_ex
+
+    def restrict(connect):
+        def checked(sock, destination):
+            if destination != address:
+                reject_connection()
+            return connect(sock, destination)
+        return checked
+
+    with (TemporaryDirectory(prefix="bookiewookie-lightrag-postgres-") as root,
+          patch.dict(os.environ, config, clear=True),
+          patch.object(socket.socket, "connect", restrict(original_connect)),
+          patch.object(socket.socket, "connect_ex", restrict(original_connect_ex))):
+        probe = await asyncpg.connect(**login, ssl=False, timeout=5)
+        try:
+            assert await probe.fetchval("select current_database()") == login["database"]
+            assert await probe.fetchval("select to_regclass('public.lightrag_doc_chunks')") is None
+            await exercise(Path(root), postgres=True)
+            assert await probe.fetchval("select extversion from pg_extension where extname='vector'")
+            rows = await probe.fetch(
+                "select workspace, content from public.lightrag_doc_chunks order by workspace"
+            )
+            assert [tuple(row.values()) for row in rows] == [
+                ("fixture_book_a", "Elara carries an amber lantern."),
+                ("fixture_book_b", "Mira carries a cobalt atlas."),
+            ]
+        finally:
+            await probe.close()
+    print(json.dumps({"lightrag": version("lightrag-hku"), "postgres_kv_vector_status": "passed",
+                      "same_document_id_book_scoping": "passed", "deletion_replacement_reopen": "passed",
+                      "graph_storage": "local NetworkX fixture"}))
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--failover-writer" and sys.argv[3] in {"first", "successor"}:
         asyncio.run(isolated_failover_writer(Path(sys.argv[2]), sys.argv[3] == "first"))
+    elif sys.argv[1:] == ["--postgres-fixture"]:
+        asyncio.run(postgres_fixture())
     else:
         asyncio.run(main())

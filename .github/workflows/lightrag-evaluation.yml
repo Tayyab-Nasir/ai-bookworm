@@ -1,0 +1,44 @@
+name: LightRAG storage evaluation
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - tests/ai-evals/evals/book-retrieval-lightrag-smoke.py
+      - .github/workflows/lightrag-evaluation.yml
+  push:
+    branches: [main, master, 'codex/**']
+    paths:
+      - tests/ai-evals/evals/book-retrieval-lightrag-smoke.py
+      - .github/workflows/lightrag-evaluation.yml
+permissions:
+  contents: read
+jobs:
+  storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg16-bookworm
+        env:
+          POSTGRES_USER: lightrag_ci
+          POSTGRES_PASSWORD: disposable-lightrag-only
+          POSTGRES_DB: bookworm_lightrag_ci
+        ports: ['127.0.0.1:55440:5432']
+        options: >-
+          --health-cmd "pg_isready -U lightrag_ci -d bookworm_lightrag_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned storage evaluation dependencies
+        run: python -m pip install lightrag-hku==1.5.7 asyncpg==0.31.0 pgvector==0.4.2
+      - name: Verify file-backed lifecycle and worker failover
+        run: python tests/ai-evals/evals/book-retrieval-lightrag-smoke.py
+      - name: Verify PostgreSQL vector and document isolation with synthetic inputs
+        run: python tests/ai-evals/evals/book-retrieval-lightrag-smoke.py --postgres-fixture
+        env:
+          BOOKWORM_LIGHTRAG_PG_TEST: '1'
