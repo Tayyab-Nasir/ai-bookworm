@@ -124,7 +124,13 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
         } catch (error) { if (isSuperseded(error)) throw error; }
       }
       if (scope.current() && historySequence.current === sequence) {
-        setBook(identity.book); setRole(identity.role); setProjects(history.projects);
+        setBook(identity.book); setRole(identity.role);
+        setProjects(current => {
+          const newerId = selectedRef.current?.id;
+          if (!newerId || newerId === selectedAtStart?.id || history.projects.some(project => project.id === newerId)) return history.projects;
+          const newer = current.find(project => project.id === newerId);
+          return newer ? [newer, ...history.projects] : history.projects;
+        });
         if (selectedAtStart) { const sameSelection = selectedRef.current?.id === selectedAtStart.id; if (sameSelection) selectedRef.current = verifiedSelection; setSelected(current => current?.id === selectedAtStart.id ? verifiedSelection : current); if (sameSelection && !verifiedSelection) setBilling(null); }
         setHistoryState("ready");
       }

@@ -23,6 +23,7 @@ test('late prior-project refresh failure preserves newly accepted project billin
  await p.evaluate(()=>{window.proposal={...window.proposal,status:'accepted',acceptedProjectId:window.otherProject.id};window.gates['accept-other'].resolve(window.otherProject)});await expect.poll(()=>p.evaluate(()=>window.billingSeen)).toBe(second);
  await p.evaluate(()=>window.gates['refresh-first'].reject(Error('older project unavailable')));
  await expect(p.getByRole('button',{name:'Refresh history'})).toBeEnabled();await expect(p.getByRole('region',{name:'Translation credit summary'})).toContainText('99');
+ await expect(p.getByRole('heading',{name:'Translation history'}).locator('xpath=ancestor::section').getByRole('button',{name:'Preview'})).toHaveCount(2);
  }finally{await p.close();}});
 test('late adoption updates its original project without navigating away from a newly accepted translation',async()=>{const p=await fixture();try{
  await ready(p);const second='88888888-8888-4888-8888-888888888888',draft='77777777-7777-4777-8777-777777777777';
