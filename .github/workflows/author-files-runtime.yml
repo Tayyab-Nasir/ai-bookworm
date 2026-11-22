@@ -65,6 +65,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/saved-print-mounted.mjs
+      - name: Verify retailer recovery initialization retry and account fencing
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/retailer-init-retry-mounted.mjs
       - name: Verify community directory and discussion account isolation in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium
