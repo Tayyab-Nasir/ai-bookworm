@@ -1,0 +1,62 @@
+[
+  [
+    "The driver put the marble model inside a green tin box for the exhibition.",
+    "The marble model was put inside a green tin box.",
+    true
+  ],
+  [
+    "The driver put the marble model inside a green tin box for the exhibition.",
+    "The marble model was stored in a paper bag.",
+    false
+  ],
+  [
+    "Lena did not ring the bell. Anton rang it after lunch.",
+    "Anton rang the bell after lunch.",
+    true
+  ],
+  [
+    "Lena did not ring the bell. Anton rang it after lunch.",
+    "Lena rang the bell after lunch.",
+    false
+  ],
+  [
+    "The mayor brought a map to the school. The baker came without a map.",
+    "The baker brought a map to the school.",
+    false
+  ],
+  [
+    "Amira shipped the knitted cap on Tuesday and the scarf on Wednesday.",
+    "Amira sent the scarf on Wednesday.",
+    true
+  ],
+  [
+    "Amira shipped the knitted cap on Tuesday and the scarf on Wednesday.",
+    "Amira sent the knitted cap on Wednesday.",
+    false
+  ],
+  [
+    "Rafael recibió una carta de su hermana. Guardó la carta en la biblioteca.",
+    "Rafael recibió una carta de su hermana.",
+    true
+  ],
+  [
+    "Rafael recibió una carta de su hermana. Guardó la carta en la biblioteca.",
+    "Rafael recibió una carta de su primo.",
+    false
+  ],
+  [
+    "Claire a caché le cahier blanc dans le grenier.",
+    "Claire hid the white notebook in the attic.",
+    true
+  ],
+  [
+    "Claire a caché le cahier blanc dans le grenier.",
+    "Claire hid a white handbag in the attic.",
+    false
+  ],
+  [
+    "Un livre bleu se trouvait près de la fenêtre.",
+    "Le livre près de la fenêtre était bleu.",
+    true
+  ]
+]

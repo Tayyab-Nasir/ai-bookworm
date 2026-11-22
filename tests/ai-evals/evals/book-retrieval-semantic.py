@@ -20,6 +20,8 @@ from lightrag.base import DocStatus
 from lightrag.utils import EmbeddingFunc, Tokenizer
 from tokenizers import Tokenizer as ModelTokenizer
 
+from book_retrieval_nli import LocalEvidenceCheck
+
 class FixtureTokenizer:
     def encode(self, text):
         return list(map(ord, text))
@@ -92,10 +94,12 @@ def evaluate_sources(fixture, result, expected):
     }
 
 
-async def evaluate(model, root, fixture_path):
+async def evaluate(model, root, fixture_path, verifier=None, claims=None):
     raw = fixture_path.read_bytes()
     fixture_hash = hashlib.sha256(raw).hexdigest()
     fixture = json.loads(raw)
+    if claims is not None and claims.keys() != {query for _, query, _ in fixture["queries"]}:
+        raise ValueError("Claims must cover exactly the evaluation questions")
     background = fixture["background"]
     # Repeated identical background paragraphs share one source per chapter here.
     passages = [*fixture["passages"], *(
@@ -140,6 +144,8 @@ async def evaluate(model, root, fixture_path):
         assert len(indexed) == len(labels), "corpus was not fully indexed"
         index_seconds = round(perf_counter() - started, 3)
         rows = []
+        evidence_rows = []
+        calibration = verifier.calibration() if verifier else None
         for scenario, query, expected in fixture["queries"]:
             started = perf_counter()
             result = await rag.aquery_data(query, param=QueryParam(
@@ -157,6 +163,34 @@ async def evaluate(model, root, fixture_path):
                 **evaluate_sources(labels, result, expected),
                 "queryMs": round((perf_counter() - started) * 1000, 1),
             })
+            if verifier:
+                retrieved = (result.get("data") or {}).get("chunks", [])
+                nli = verifier.classify([hit["content"] for hit in retrieved], claims[query])
+                supported = [
+                    (labels[hit["file_path"]][0], row["entailment"])
+                    for hit, row in zip(retrieved, nli, strict=True)
+                    if row["label"] == "entailment" and row["entailment"] > calibration["strictlyAbove"]
+                ]
+                selected = max(supported, key=lambda item: item[1], default=None)
+                evidence_rows.append({
+                    "scenario": scenario, "query": query, "expected": expected,
+                    "selected": selected[0] if selected else None,
+                    "support": round(selected[1], 6) if selected else None,
+                    "correct": bool(selected and selected[0] in expected),
+                })
+        evidence = {}
+        if verifier:
+            evidence = {
+                "evidenceVerification": {
+                    "modelRevision": verifier.revision,
+                    "calibration": calibration,
+                    "correct": sum(row["correct"] for row in evidence_rows),
+                    "incorrect": sum(row["selected"] is not None and not row["correct"] for row in evidence_rows),
+                    "unsupportedAccepted": sum(not row["expected"] and row["selected"] is not None for row in evidence_rows),
+                    "abstained": sum(row["selected"] is None for row in evidence_rows),
+                    "rows": evidence_rows,
+                }
+            }
         return {
             "backend": "lightrag-vector", "modelRevision": MODEL_REVISION, "fixtureHash": fixture_hash,
             "sources": len(labels), "limit": LIMIT, "indexSeconds": index_seconds,
@@ -165,6 +199,7 @@ async def evaluate(model, root, fixture_path):
             "candidates": sum(row["candidates"] for row in rows),
             "firstRelevant": sum(row["firstRelevant"] for row in rows),
             "rows": rows,
+            **evidence,
         }
     finally:
         await rag.finalize_storages()
@@ -228,14 +263,16 @@ def test_abstention(lexical, vector, calibration):
     return metrics
 
 
-async def main(model_dir, baseline, fixture, calibration_path):
+async def main(model_dir, baseline, fixture, calibration_path, nli_dir, claims_path):
     def reject_connection(*_args, **_kwargs):
         raise AssertionError("Network connection attempted during offline evaluation")
 
     assert version("lightrag-hku") == "1.5.7"
     with TemporaryDirectory(prefix="bookiewookie-e5-") as root:
         with patch.object(socket.socket, "connect", reject_connection), patch.object(socket.socket, "connect_ex", reject_connection):
-            stats = await evaluate(LocalE5(model_dir), root, fixture)
+            verifier = LocalEvidenceCheck(nli_dir) if nli_dir else None
+            claims = json.loads(claims_path.read_text(encoding="utf-8")) if claims_path else None
+            stats = await evaluate(LocalE5(model_dir), root, fixture, verifier, claims)
     if baseline:
         lexical = json.loads(baseline.read_text(encoding="utf-8-sig"))
         stats["fallback"] = compare_fallback(lexical, stats)
@@ -252,7 +289,11 @@ if __name__ == "__main__":
     cli.add_argument("--baseline", type=Path, help="Saved JSON output from the PostgreSQL benchmark")
     cli.add_argument("--fixture", type=Path, default=FIXTURE)
     cli.add_argument("--calibration", type=Path, help="Vector report for a different corpus")
+    cli.add_argument("--nli-model", type=Path, help="Pinned local evidence checker directory")
+    cli.add_argument("--claims", type=Path, help="Curated claims for the selected synthetic fixture")
     args = cli.parse_args()
+    if bool(args.nli_model) != bool(args.claims):
+        cli.error("--nli-model and --claims must be supplied together")
     if args.calibration and not args.baseline:
         cli.error("--calibration requires a lexical --baseline")
-    asyncio.run(main(args.model_dir, args.baseline, args.fixture, args.calibration))
+    asyncio.run(main(args.model_dir, args.baseline, args.fixture, args.calibration, args.nli_model, args.claims))

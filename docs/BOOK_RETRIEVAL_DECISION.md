@@ -129,3 +129,27 @@ first-to-second score margin accepted four correct and seven incorrect
 suggestions. Seven and six of those incorrect suggestions, respectively, were
 for queries with no answer. Similarity and ranking separation alone could not
 identify whether the manuscript supported the queried detail.
+
+## Local passage-to-claim verification
+
+The held-out fixture also has manually written claims. Each claim is checked
+against the eight retrieved source excerpts. The input claims are curated;
+this evaluation does not generate questions, produce an answer, or rewrite a
+reader's prompt. A separate 12-pair fixture calibrates the acceptance cutoff
+above the highest entailment score for an unsupported calibration claim.
+
+Pass `--claims tests/ai-evals/fixtures/book-retrieval-held-out-claims.json`
+and `--nli-model MODEL_DIRECTORY` to the semantic runner with the held-out
+fixture. Supported artifact manifests are pinned in
+`tests/ai-evals/evals/book_retrieval_nli.py`. The models were
+[multilingual MiniLMv2](https://huggingface.co/onnx-community/multilingual-MiniLMv2-L6-mnli-xnli-ONNX/tree/ca5daf3d11b6c4b3143b1f4602a2edfb64c3ad7e)
+and
+[multilingual mDeBERTa](https://huggingface.co/MoritzLaurer/mDeBERTa-v3-base-xnli-multilingual-nli-2mil7/tree/b5113eb38ab63efdd7f280f8c144ea8b13f978ce).
+Each model directory contains its quantized ONNX file, config and tokenizer.
+The evaluator verifies all three digests before running locally.
+
+MiniLMv2 selected a correct excerpt for one of eight supported claims and
+accepted no unsupported claims. mDeBERTa selected four correct excerpts and
+accepted two of eight unsupported claims. Similar actors and objects still
+produced false support, including an incorrect occupation and a missing
+destination. These results do not justify automatic factual acceptance.
