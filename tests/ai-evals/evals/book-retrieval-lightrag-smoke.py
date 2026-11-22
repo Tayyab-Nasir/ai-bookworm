@@ -158,6 +158,60 @@ async def exercise_repeated_content(root):
         await client.finalize_storages()
 
 
+def opaque_passage_name(scope, passage):
+    digest = hashlib.sha256(f"{scope}\0{passage}".encode()).hexdigest()
+    return f"{digest}.txt"
+
+
+def resolve_current_occurrences(scope, hits, current_chapters):
+    """Resolve hints using a fresh, authorized snapshot of canonical sources."""
+    candidates = {(row["file_path"], row["content"]) for row in hits}
+    return sorted(
+        (chapter, revision) for chapter, (revision, text) in current_chapters.items()
+        if (opaque_passage_name(scope, text), text) in candidates
+    )
+
+
+async def exercise_occurrence_binding(root):
+    passage = "Elara carries a silver compass."
+    changed = "Elara carries an amber lantern."
+    for removed, survivor in (("a", "b"), ("b", "a")):
+        scope = f"fixture_book_bind_{removed}"
+        client = new_scope(root, scope)
+        name = opaque_passage_name(scope, passage)
+        index_id = name.removesuffix(".txt")
+        current = {"a": ("a-v1", passage), "b": ("b-v1", passage)}
+        await client.initialize_storages()
+        try:
+            await client.ainsert(passage, ids=index_id, file_paths=name)
+            candidates = await chunks(client, "silver compass")
+            assert len(candidates) == 1
+            assert resolve_current_occurrences(scope, candidates, current) == [("a", "a-v1"), ("b", "b-v1")]
+            assert resolve_current_occurrences("other_book", candidates, current) == []
+            altered = [{**candidates[0], "content": changed}]
+            assert resolve_current_occurrences(scope, altered, current) == []
+
+            # The index entry belongs to the content, not the first chapter.
+            del current[removed]
+            candidates = await chunks(client, "silver compass")
+            assert resolve_current_occurrences(scope, candidates, current) == [(survivor, f"{survivor}-v1")]
+
+            # A late response from before the update cannot cite an older revision.
+            current[survivor] = (f"{survivor}-v2", changed)
+            assert resolve_current_occurrences(scope, candidates, current) == []
+            assert (await client.adelete_by_doc_id(index_id)).status == "success"
+            assert await chunks(client, "silver compass") == []
+
+            # Even a slow writer repopulating the index cannot restore authority.
+            await client.ainsert(passage, ids=index_id, file_paths=name)
+            stale = await chunks(client, "silver compass")
+            assert len(stale) == 1
+            assert resolve_current_occurrences(scope, stale, current) == []
+            assert (await client.adelete_by_doc_id(index_id)).status == "success"
+        finally:
+            await client.finalize_storages()
+
+
 async def main():
     def reject_connection(*_args, **_kwargs):
         raise AssertionError("Network connection attempted during LightRAG fixture")
@@ -167,6 +221,7 @@ async def main():
         with patch.object(socket.socket, "connect", reject_connection), patch.object(socket.socket, "connect_ex", reject_connection):
             await exercise(Path(root))
             await exercise_repeated_content(Path(root))
+            await exercise_occurrence_binding(Path(root))
     print(json.dumps({
         "lightrag": version("lightrag-hku"),
         "modes": ["naive", "local"],
@@ -176,6 +231,7 @@ async def main():
         "graph_relation_lifecycle": "passed",
         "delete_replace_and_reopen": "passed",
         "repeated_content": "second source omitted; no citation remains after first is deleted",
+        "occurrence_binding": "either occurrence survives independently; stale and foreign hints rejected",
     }))
 
 

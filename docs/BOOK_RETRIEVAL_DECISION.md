@@ -96,6 +96,15 @@ An adapter must preserve the remaining citation after one occurrence is removed
 and withhold the passage when the final occurrence is gone. The file-backed
 probe uses synthetic inputs and establishes a requirement for adapter design.
 
+The follow-up probe indexes one opaque passage token per book and resolves the
+result against the current chapter-version snapshot. In both deletion orders,
+the other occurrence remains citable. Resolution also rejects a foreign book,
+changed excerpt bytes, an old result after a chapter edit, and a delayed
+index write after the final occurrence was removed. The index still requires
+cleanup after the last occurrence. The probe uses file-backed storage and an
+in-memory authority fixture. Transactional source binding, PostgreSQL-backed
+storage and authorization in the app still require independent proof.
+
 ## Local multilingual retrieval comparison
 
 Both evaluators read the same synthetic manuscript facts and queries from
