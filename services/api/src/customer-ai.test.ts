@@ -285,6 +285,22 @@ for (const [code, status] of [["42501", 403], ["40001", 409], ["23505", 409], ["
     } finally { await f.app.close(); }
   });
 }
+test("model lookup reports a scoped paid-plan denial without creating a request", async () => {
+  const f = await fixture();
+  try {
+    f.db.settings.error = "23514";
+    const blocked = await f.send("options", f.db.selected);
+    assert.equal(blocked.statusCode, 403);
+    assert.equal(blocked.json().error.code, "customer_ai_paid_plan_required");
+    assert(!blocked.body.includes("private-database-detail"));
+    f.db.settings.error = "42501";
+    const forbidden = await f.send("options", f.db.selected);
+    assert.equal(forbidden.statusCode, 403);
+    assert.notEqual(forbidden.json().error.code, "customer_ai_paid_plan_required");
+    assert.deepEqual(f.db.calls.map(call => call.name), ["customer_ai_preparation_options", "customer_ai_preparation_options"]);
+    assert.equal(f.db.settings.privateCalls, 0);
+  } finally { await f.app.close(); }
+});
 test("receipts reject wrong identity, hidden source, fee, model and lifecycle metadata", async () => {
   const f = await fixture(); try {
     for (const delta of [{ operationId: ids.other }, { connectionId: ids.other }, { credentialRevision: 2 }, { policyId: ids.other },

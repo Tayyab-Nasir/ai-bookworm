@@ -45,6 +45,8 @@ async function fixture({enabled=true,corrupt=false,blocked=false,role='writer',h
    const action=url.split('/').at(-1),key=actor+':'+body.operationId;
    if(action==='options') {
     if(window.mode==='options-unavailable')return error(503);
+    if(window.mode==='options-plan-blocked')return Response.json({error:{code:'customer_ai_paid_plan_required',message:'private-database-canary',requestId:'fixture'}},{status:403});
+    if(window.mode==='options-forbidden')return error(403);
     if(window.mode==='options-empty')return Response.json({viewerId:actor,options:[]});
     if(window.mode==='options-deferred')await new Promise(r=>window.gates.options=r);
     return Response.json({viewerId:actor,options:[{id:ids.policy,provider:body.provider,agentType:body.agentType,model:'synthetic-editor-1',upstream:null,maxOutputTokens:1024,platformFee:{mode:'platform_plan',credits:0},providerCostStatus:'unknown',expiresAt:new Date(Date.now()+3600000).toISOString()}]});
@@ -125,6 +127,30 @@ test('a failed model lookup can be retried without an unconfirmed request', asyn
   await expect(p.getByLabel('Approved model', {exact:true})).toHaveValue(ids.policy);
   await expect(p.getByRole('alert')).toHaveCount(0);
   assert.equal(await count(p,'options'),3);
+  assert.equal(await count(p,'prepare'),0);
+ } finally { await p.close(); }
+});
+
+test('an eligible-plan requirement links to the selected workspace and clears the stale model', async () => {
+ const p=await fixture();
+ try {
+  const models=p.getByLabel('Approved model', {exact:true});
+  const load=p.getByRole('button', {name:'Load approved models'});
+  await p.getByLabel('Direction (required)',{exact:true}).fill(direction);
+  await load.click();
+  await expect(models).toHaveValue(ids.policy);
+  await p.evaluate(()=>{window.mode='options-plan-blocked';});
+  await load.click();
+  const billing=p.getByRole('link', {name:'View workspace billing'});
+  await expect(billing).toHaveAttribute('href', `/billing?ws=${ids.ws}`);
+  await expect(models).toHaveValue('');
+  await expect(p.getByRole('button', {name:'Prepare for review'})).toBeDisabled();
+  await expect(p.getByText('private-database-canary')).toHaveCount(0);
+  assert.equal(await p.evaluate(()=>sessionStorage.length),0);
+  await p.evaluate(()=>{window.mode='options-forbidden';});
+  await load.click();
+  await expect(p.getByRole('alert')).toContainText('Approved models could not be loaded');
+  await expect(billing).toHaveCount(0);
   assert.equal(await count(p,'prepare'),0);
  } finally { await p.close(); }
 });

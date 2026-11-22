@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiClientError } from "@bookworm/api-client";
 import type { AiConnection, AiConnections } from "@bookworm/api-client/ai-connections";
 import { customerUuid, type CustomerAiOption, type CustomerAiReceipt, type CustomerAiSelection, type CustomerTextAgent } from "@bookworm/api-client/customer-ai";
 import type { Book, Chapter } from "@bookworm/types";
@@ -30,11 +31,12 @@ export default function CustomerAiStudio({ bookId: requestedBookId }: { bookId: 
   const [connectionId, setConnection] = useState(""), [chapterId, setChapter] = useState(""), [agent, setAgent] = useState<CustomerTextAgent>("writer");
   const [instruction, setInstruction] = useState(""), [bible, setBible] = useState(false), [guide, setGuide] = useState(false), [budget, setBudget] = useState(4096);
   const [options, setOptions] = useState<CustomerAiOption[]>([]), [policyId, setPolicy] = useState("");
+  const [needsPaidPlan, setNeedsPaidPlan] = useState(false);
   const [review, setReview] = useState<{ operation: string; instruction: string; bible: boolean; guide: boolean; budget: number } | null>(null);
   const [consent, setConsent] = useState(false), [now, setNow] = useState(Date.now());
   const valid = (epoch: number) => lifecycle.current.alive && lifecycle.current.epoch === epoch;
   const clearPrivate = useCallback(() => {
-    setDesk(null); setReceipt(null); setPending(null); setOptions([]); setPolicy(""); setInstruction(""); setReview(null); setConsent(false);
+    setDesk(null); setReceipt(null); setPending(null); setOptions([]); setPolicy(""); setNeedsPaidPlan(false); setInstruction(""); setReview(null); setConsent(false);
     setConnection(""); setChapter(""); setBible(false); setGuide(false); setAgent("writer"); setBudget(4096);
   }, []);
   const reload = useCallback(async () => {
@@ -101,10 +103,18 @@ export default function CustomerAiStudio({ bookId: requestedBookId }: { bookId: 
     credentialRevision: c.revision, provider: c.provider, agentType: agent });
   const creation = !!desk && writes(desk.role) && desk.connections.generationAvailable;
   const locked = busy || !!pending || !creation;
-  const invalidateOptions = () => { setOptions([]); setPolicy(""); setConsent(false); };
+  const invalidateOptions = () => { setOptions([]); setPolicy(""); setNeedsPaidPlan(false); setConsent(false); };
   const loadOptions = () => run(async (owner, signal, epoch) => {
     if (!connection || !savedChapter || pending || !creation) return;
-    const values = await api.listCustomerAiOptions(selected(connection), owner, signal);
+    invalidateOptions();
+    let values: CustomerAiOption[];
+    try {
+      values = await api.listCustomerAiOptions(selected(connection), owner, signal);
+    } catch (reason) {
+      if (!(reason instanceof ApiClientError && reason.status === 403 && reason.code === "customer_ai_paid_plan_required")) throw reason;
+      if (await acceptRead(owner, epoch)) setNeedsPaidPlan(true);
+      return;
+    }
     if (await acceptRead(owner, epoch)) { setOptions(values); setPolicy(values[0]?.id ?? ""); if (!values.length) setError("No approved model is available for this connection and task."); }
   }, "Approved models could not be loaded. Try loading them again. No generation request was sent.");
   const prepare = () => run(async (owner, signal, epoch) => {
@@ -179,6 +189,9 @@ export default function CustomerAiStudio({ bookId: requestedBookId }: { bookId: 
         <section className={styles.sheet} aria-labelledby="customer-source-heading"><p className={styles.eyebrow}>01 / PREPARE</p><h2 id="customer-source-heading">A precise starting point.</h2>
           {creation && !desk.chapters.length && <p className={styles.caption}>Save a chapter in the manuscript, then recheck the account and saved status.</p>}
           {creation && !savedConnections.length && <p className={styles.caption}>Add a provider key in <Link href="/settings/ai">AI connections</Link> and return to this book.</p>}
+          {needsPaidPlan && <p role="status" className={styles.notice}>Connected AI requires an eligible paid plan for this workspace.{" "}
+            <Link href={`/billing?ws=${encodeURIComponent(desk.book.workspace_id)}`}>View workspace billing</Link>
+          </p>}
           <fieldset disabled={locked} className={styles.form}><legend className={styles.srOnly}>Saved source and AI selection</legend>
             <label>Saved chapter<select aria-label="Saved chapter" value={chapterId} onChange={e => setChapter(e.target.value)}>{desk.chapters.length ? desk.chapters.map(c => <option value={c.id} key={c.id}>{c.title}</option>) : <option value="">No saved chapters</option>}</select></label>
             <p className={styles.caption}>Uses the latest committed chapter revision, never an unsaved editor draft. An oversized source is rejected, not silently shortened.</p>

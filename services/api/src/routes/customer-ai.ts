@@ -67,6 +67,9 @@ export function customerAiRoutes(app: FastifyInstance, options: { preparation?: 
         if (error.code === "42501") throw new AppError(403, "Current account and book access are required.");
         if (error.code === "23514") {
           if (args.p_action === "recover") throw new AppError(409, "The saved provider receipt could not be accepted. Keep this request for review.");
+          if (name === "customer_ai_preparation_options") {
+            throw new AppError(403, "Connected AI requires an eligible paid plan for this workspace.", undefined, "customer_ai_paid_plan_required");
+          }
           throw new AppError(403, "A current approved policy, paid plan and available request allowance are required.");
         }
         if (error.code === "22023") throw new AppError(422, "Review the request and confirm its exact platform fee and provider charges.");
