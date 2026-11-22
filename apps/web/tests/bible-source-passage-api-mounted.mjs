@@ -83,10 +83,13 @@ test("candidate source reader uses the real scoped API and clears text when memb
     await expect(page.locator("mark")).toHaveText(excerpt);
     assert.deepEqual(responses[0], { status: 200, cache: "private, no-store" });
     assert.ok(fixture.calls.includes("book_bible_token_quote_requests"));
+    await page.getByRole("button", { name: "Hide source passage" }).click();
+    assert.equal(responses.length, 1);
     fixture.state.workspace_members[0].status = "suspended";
-    await page.getByRole("button", { name: "Next passage section" }).click();
+    await page.getByRole("button", { name: "Read source passage" }).click();
     await expect(page.getByRole("alert")).toBeVisible();
     await expect(page.getByLabel("Saved source passage")).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Open current chapter" })).toHaveCount(0);
     assert.deepEqual(responses[1], { status: 403, cache: "private, no-store" });
     fixture.state.workspace_members[0].status = "active";
     await page.getByRole("button", { name: "Read source passage" }).click();

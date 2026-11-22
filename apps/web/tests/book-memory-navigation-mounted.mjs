@@ -510,6 +510,13 @@ test("saved candidate history binds the source reader to its job across a late r
     assert.deepEqual(await page.evaluate(() => window.evidenceJobs), [
       "66666666-6666-4666-8666-666666666666", "77777777-7777-4777-8777-777777777777",
     ]);
+    const chapter = page.getByRole("link", { name: "Open current chapter", exact: true });
+    await expect(chapter).toHaveAttribute("href", "/books/11111111-1111-4111-8111-111111111111?chapter=44444444-4444-4444-8444-444444444444");
+    await page.getByRole("textbox", { name: "Book description", exact: true }).fill("Unsaved Book Bible listing");
+    const memoryUrl = page.url();
+    await chapter.click();
+    assert.equal(page.url(), memoryUrl);
+    assert.deepEqual(await page.evaluate(() => window.prompts), ["Leave Book Bible and discard your unsaved changes?"]);
     assert.equal(await page.evaluate(() => window.writes.length), 0);
   } finally { await page.close(); }
 });

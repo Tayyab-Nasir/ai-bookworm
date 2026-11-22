@@ -128,3 +128,36 @@ test("a revoked source clears the previously visible private passage", async () 
     await expect(page.locator("mark")).toHaveText("Elara carries the silver compass.");
   } finally { await page.close(); }
 });
+
+test("reopening rechecks the exact section before exposing the passage or current chapter link", async () => {
+  const page = await fixture();
+  try {
+    const passage = page.getByLabel("Saved source passage");
+    const currentChapter = page.getByRole("link", { name: "Open current chapter", exact: true });
+    await page.getByRole("button", { name: "Read source passage" }).click();
+    await expect(page.locator("mark")).toHaveText("Elara carries the silver compass.");
+    await expect(currentChapter).toHaveAttribute("href", "/books/book-a?chapter=chapter-a");
+    await page.getByRole("button", { name: "Next passage section" }).click();
+    await expect(passage).not.toContainText("Elara carries the silver compass.");
+    const { count, offset } = await page.evaluate(() => ({ count: window.calls.length, offset: window.calls.at(-1).body.offset }));
+    await page.getByRole("button", { name: "Hide source passage" }).click();
+    await expect(passage).toHaveCount(0);
+    await expect(currentChapter).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.calls.length), count);
+    await page.evaluate(() => { window.mode = "hold"; });
+    await page.getByRole("button", { name: "Read source passage" }).click();
+    await page.waitForFunction(() => typeof window.releaseOldRead === "function");
+    await expect(passage).toHaveCount(0);
+    await expect(currentChapter).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.calls.at(-1).body.offset), offset);
+    await page.evaluate(() => { window.mode = "verified"; window.releaseOldRead(); });
+    await expect(passage).toBeVisible();
+    await expect(passage).not.toContainText("Elara carries the silver compass.");
+    await page.getByRole("button", { name: "Hide source passage" }).click();
+    await page.evaluate(() => { window.mode = "denied"; });
+    await page.getByRole("button", { name: "Read source passage" }).click();
+    await expect(page.getByRole("alert")).toContainText("Access to this source was revoked.");
+    await expect(passage).toHaveCount(0);
+    await expect(currentChapter).toHaveCount(0);
+  } finally { await page.close(); }
+});

@@ -26,9 +26,8 @@ function SourceReader({ bookId, citation, title, jobId, readRequest }: Props) {
   const inFlight = useRef(false), generation = useRef(0);
   useEffect(() => () => { ++generation.current; }, []);
 
-  async function read(offset?: number, force = false) {
+  async function read(offset?: number) {
     if (inFlight.current) return;
-    if (passage && offset === undefined && !force) { setOpen((value) => !value); return; }
     const requestedOffset = offset ?? (jobId ? undefined : 0);
     const current = ++generation.current;
     inFlight.current = true; setLoading(true); setError(null);
@@ -75,7 +74,11 @@ function SourceReader({ bookId, citation, title, jobId, readRequest }: Props) {
 
   return <div aria-busy={loading} className="min-w-0 rounded-lg border border-white/10 p-3 text-xs leading-5 text-[#aaa] [overflow-wrap:anywhere]">
     <span className="font-medium text-[#ddd]">{title}</span>
-    <button type="button" aria-disabled={loading} aria-expanded={open} aria-controls={regionId} onClick={() => void read()} className="ml-3 min-h-11 rounded-lg px-2 text-sky-100 underline underline-offset-4 outline-none hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-white aria-disabled:cursor-not-allowed aria-disabled:opacity-50">
+    <button type="button" aria-disabled={loading} aria-expanded={open} aria-controls={regionId} onClick={() => {
+      if (inFlight.current) return;
+      if (open) { setOpen(false); setError(null); }
+      else void read(passage?.startOffset);
+    }} className="ml-3 min-h-11 rounded-lg px-2 text-sky-100 underline underline-offset-4 outline-none hover:bg-white/5 focus-visible:ring-2 focus-visible:ring-white aria-disabled:cursor-not-allowed aria-disabled:opacity-50">
       {loading ? "Loading passage…" : open ? "Hide source passage" : "Read source passage"}
     </button>
     {error && <p role="alert" className="mt-2 text-red-200">{error}</p>}
@@ -95,12 +98,16 @@ function SourceReader({ bookId, citation, title, jobId, readRequest }: Props) {
       {jobId && <div className="mt-2 flex flex-wrap gap-2">
         {passage.startOffset > 0 && <button type="button" aria-disabled={loading} onClick={() => void read(0)} className="min-h-11 rounded-lg px-2 text-sky-100 underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-white aria-disabled:opacity-40">Start of saved passage</button>}
         {passage.batchRange && passage.startOffset !== passage.batchRange.startOffset && <button type="button" aria-disabled={loading} onClick={() => void read(passage.batchRange!.startOffset)} className="min-h-11 rounded-lg px-2 text-sky-100 underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-white aria-disabled:opacity-40">Show AI reading batch</button>}
-        {!passage.batchRange && <button type="button" aria-disabled={loading} onClick={() => void read(undefined, true)} className="min-h-11 rounded-lg px-2 text-sky-100 underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-white aria-disabled:opacity-40">Recheck AI reading range</button>}
+        {!passage.batchRange && <button type="button" aria-disabled={loading} onClick={() => void read()} className="min-h-11 rounded-lg px-2 text-sky-100 underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-white aria-disabled:opacity-40">Recheck AI reading range</button>}
       </div>}
       {(previousOffsets.length > 0 || passage.nextOffset !== null) && <div className="mt-2 flex flex-wrap gap-3">
         <button type="button" aria-disabled={loading || !previousOffsets.length} onClick={() => previousOffsets.length > 0 && void read(previousOffsets[previousOffsets.length - 1])} className="min-h-11 rounded-lg border border-white/15 px-3 text-sky-100 outline-none focus-visible:ring-2 focus-visible:ring-white aria-disabled:cursor-not-allowed aria-disabled:opacity-40">Previous passage section</button>
         <button type="button" aria-disabled={loading || passage.nextOffset === null} onClick={() => passage.nextOffset !== null && void read(passage.nextOffset)} className="min-h-11 rounded-lg border border-white/15 px-3 text-sky-100 outline-none focus-visible:ring-2 focus-visible:ring-white aria-disabled:cursor-not-allowed aria-disabled:opacity-40">Next passage section</button>
       </div>}
+      <a href={`/books/${encodeURIComponent(bookId)}?chapter=${encodeURIComponent(citation.chapterId)}`}
+        className="mt-2 inline-flex min-h-11 items-center rounded-lg px-2 text-sky-100 underline underline-offset-4 focus-visible:ring-2 focus-visible:ring-white">
+        Open current chapter
+      </a>
     </div>}
   </div>;
 }
