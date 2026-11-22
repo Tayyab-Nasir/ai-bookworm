@@ -77,6 +77,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test apps/web/tests/audio-qc-retry-mounted.mjs
+      - name: Verify translation account and draft isolation
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/translation-actor-mounted.mjs
       - name: Verify community directory and discussion account isolation in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium

@@ -14,8 +14,27 @@ async function fixture(){const p=await browser.newPage();p.setDefaultTimeout(500
 const consent=p=>p.getByLabel('I agree to send the saved chapter text',{exact:false});
 async function ready(p){await expect(p.getByText('ES · 1/1 chapters counted')).toBeVisible()}
 async function openPreview(p){await p.getByRole('button',{name:'Preview',exact:true}).click();await p.getByText('A chapter').click();await expect(p.getByText('A private translated manuscript')).toBeVisible();}
-test('account switch hides old chapter, credits and consent',async()=>{const p=await fixture();try{await ready(p);await openPreview(p);await expect(p.getByText('Still held')).toBeVisible();await p.getByLabel('Target language code').fill('fr');await consent(p).check();
- await p.evaluate(()=>{window.actor=window.ids.B;window.dispatchEvent(new Event('focus'))});await expect(p.getByText('A private translated manuscript')).toHaveCount(0);await expect(p.getByText('Still held')).toHaveCount(0);await expect(consent(p)).not.toBeChecked();await expect(p.getByLabel('Target language code')).toHaveValue('');await expect(p.getByRole('button',{name:'Prepare quote'})).toBeDisabled();assert.equal(await p.evaluate(()=>window.calls.filter(x=>x[0]==='prepare').length),0);
+test('translation draft titles stay scoped to each project through refresh and adoption',async()=>{const p=await fixture();try{
+ await ready(p);const second='88888888-8888-4888-8888-888888888888';
+ await p.evaluate(second=>{window.api.listTranslationProjects=async(_book,actor)=>({projects:[window.project(actor),{...window.project(actor),id:second,targetLanguage:'fr'}]});window.api.getTranslationProject=async(id,_text,actor)=>({...window.project(actor),id,targetLanguage:id===second?'fr':'es'});window.api.adoptTranslationProject=async(id,body,actor)=>{window.calls.push(['adopt',actor,id,body]);return {book:{id:'77777777-7777-4777-8777-777777777777',workspace_id:window.ids.WS,title:body.title}}}},second);
+ await p.getByRole('button',{name:'Refresh history'}).click();
+ const history=p.getByRole('heading',{name:'Translation history'}).locator('xpath=ancestor::section');
+ await expect(history.getByRole('button',{name:'Preview'})).toHaveCount(2);
+ await history.getByRole('button',{name:'Preview'}).nth(0).click();
+ await expect(p.getByLabel('Translated draft title')).toHaveValue('A private title (ES)');
+ await p.getByLabel('Translated draft title').fill('Custom Spanish');
+ await p.getByRole('button',{name:'Refresh history'}).click();await expect(p.getByLabel('Translated draft title')).toHaveValue('Custom Spanish');
+ await history.getByRole('button',{name:'Preview'}).nth(1).click();await expect(p.getByLabel('Translated draft title')).toHaveValue('A private title (FR)');
+ await p.getByLabel('Translated draft title').fill('Custom French');
+ await history.getByRole('button',{name:'Preview'}).nth(0).click();await expect(p.getByLabel('Translated draft title')).toHaveValue('Custom Spanish');
+ await p.getByLabel('Translated draft title').fill('');
+ await history.getByRole('button',{name:'Preview'}).nth(1).click();await expect(p.getByLabel('Translated draft title')).toHaveValue('Custom French');
+ await history.getByRole('button',{name:'Preview'}).nth(0).click();await expect(p.getByLabel('Translated draft title')).toHaveValue('');
+ await history.getByRole('button',{name:'Preview'}).nth(1).click();await p.getByRole('button',{name:'Create separate draft'}).click();
+ await expect.poll(()=>p.evaluate(()=>window.calls.filter(x=>x[0]==='adopt'))).toEqual([['adopt',A,second,{title:'Custom French'}]]);
+ }finally{await p.close();}});
+test('account switch hides old chapter, credits and consent',async()=>{const p=await fixture();try{await ready(p);await openPreview(p);await expect(p.getByText('Still held')).toBeVisible();await p.getByLabel('Translated draft title').fill('A private custom title');await p.getByLabel('Target language code').fill('fr');await consent(p).check();
+ await p.evaluate(()=>{window.actor=window.ids.B;window.dispatchEvent(new Event('focus'))});await expect(p.getByText('A private translated manuscript')).toHaveCount(0);await expect(p.getByText('Still held')).toHaveCount(0);await expect(consent(p)).not.toBeChecked();await expect(p.getByLabel('Target language code')).toHaveValue('');await expect(p.getByRole('button',{name:'Prepare quote'})).toBeDisabled();await p.getByRole('button',{name:'Preview',exact:true}).click();await expect(p.getByLabel('Translated draft title')).toHaveValue('B private title (ES)');assert.equal(await p.evaluate(()=>window.calls.filter(x=>x[0]==='prepare').length),0);
  }finally{await p.close();}});
 test('a stale account read cannot replace the new account',async()=>{const p=await fixture();try{await ready(p);await p.evaluate(()=>{const initial=window.api.getBook;window.api.getBook=(id,actor)=>actor===window.ids.A?window.defer('a-book'):initial(id,actor);window.dispatchEvent(new Event('focus'))});await p.waitForFunction(()=>!!window.gates['a-book']);await p.evaluate(()=>{window.actor=window.ids.B;window.dispatchEvent(new Event('focus'))});await expect(consent(p)).toBeVisible();await p.evaluate(()=>window.gates['a-book'].resolve({book:window.book(window.ids.A),role:'owner'}));await expect(p.getByText('A private translated manuscript')).toHaveCount(0);await expect(consent(p)).not.toBeChecked();
  }finally{await p.close();}});

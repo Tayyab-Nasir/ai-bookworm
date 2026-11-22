@@ -92,7 +92,8 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
   const historySequence = useRef(0); const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useLayoutEffect(() => { if (!active) setHistoryState("loading"); }, [active]);
-  const [adoptTitle, setAdoptTitle] = useState("");
+  const [adoptTitles, setAdoptTitles] = useState<Map<string, string>>(() => new Map());
+  const adoptTitle = selected ? adoptTitles.get(selected.id) ?? `${book?.title ?? "Untitled"} (${selected.targetLanguage.toUpperCase()})` : "";
   const [busy, setBusy] = useState<"queue" | "refresh" | "preview" | "adopt" | "cancel" | null>(null); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState<string | null>(null);
   const [cancelConfirmation, setCancelConfirmation] = useState<string | null>(null);
   const [billing, setBilling] = useState<TranslationBillingResult | null>(null);
@@ -148,7 +149,6 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
       setSelected(project);
       setBillingRevision((revision) => revision + 1);
       setProjects((current) => current.map((item) => item.id === project.id ? { ...project, chapters: project.chapters.map(({ translatedText: _text, ...chapter }) => chapter) } : item));
-      setAdoptTitle((current) => current || `${book?.title ?? "Untitled"} (${project.targetLanguage.toUpperCase()})`);
     } catch (error) { if (scope.current() && !isSuperseded(error)) setError("Could not refresh translation. Recheck your account and try again."); }
     finally { if (mounted.current) setBusy(null); }
   };
@@ -194,7 +194,6 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
     </>}
     <TranslationQuotePanel key={bookId} bookId={bookId} scope={scope} active={active && historyState === "ready"} sourceLanguage={book?.language ?? ""} editable={editable} disabled={Boolean(busy)||historyState!=="ready"} onAccepted={(project) => {
       setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)]); setSelected(project);
-      setAdoptTitle(`${book?.title ?? "Untitled"} (${project.targetLanguage.toUpperCase()})`);
       setNotice("Translation purchase confirmed. Track chapter progress and your held credits below.");
     }} />
 
@@ -220,7 +219,7 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
           : <button type="button" className={`${subtle} mt-3`} disabled={Boolean(busy)} onClick={() => setCancelConfirmation(selected.id)}>Cancel before dispatch</button>}
       </div>}
       <div className="mt-6 space-y-3">{selected.chapters.map((chapter) => <details key={chapter.id} className="rounded-xl border border-white/10 bg-black/25 p-4"><summary className="cursor-pointer list-none"><div className="flex flex-wrap items-center justify-between gap-3 pr-6"><span className="font-medium">{chapter.chapterOrder + 1}. {chapter.chapterTitle}</span><span className={`rounded-full px-3 py-1 text-xs ${badge(chapter.status)}`}>{chapter.status}</span></div></summary>{chapter.translatedText ? <p className="mt-4 max-h-96 overflow-y-auto whitespace-pre-wrap border-t border-white/10 pt-4 text-sm leading-7 text-white/80">{chapter.translatedText}</p> : <p className="mt-4 border-t border-white/10 pt-4 text-sm text-white/45">{chapter.failureCode ? `This chapter stopped: ${chapter.failureCode}.` : "Translation text will appear after the worker completes this chapter."}</p>}</details>)}</div>
-      {selected.status === "succeeded" && !selected.adoptedBookId && <div className="mt-7 border-t border-white/10 pt-6"><h3 className="font-medium">Create a translated draft</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-amber-100">This makes a separate draft with the translated chapter text. It does not copy a cover, publish anything, or certify translation quality. Review the manuscript, metadata, illustrations, and layout before publishing.</p><div className="mt-4 flex flex-col gap-3 sm:flex-row"><input value={adoptTitle} onChange={(event) => setAdoptTitle(event.target.value)} maxLength={500} className={field} aria-label="Translated draft title" /><button type="button" onClick={() => void adopt()} disabled={!editable || busy === "adopt"} className={primary}>{busy === "adopt" ? "Creating…" : "Create separate draft"}</button></div></div>}
+      {selected.status === "succeeded" && !selected.adoptedBookId && <div className="mt-7 border-t border-white/10 pt-6"><h3 className="font-medium">Create a translated draft</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-amber-100">This makes a separate draft with the translated chapter text. It does not copy a cover, publish anything, or certify translation quality. Review the manuscript, metadata, illustrations, and layout before publishing.</p><div className="mt-4 flex flex-col gap-3 sm:flex-row"><input value={adoptTitle} onChange={(event) => { const title = event.target.value; setAdoptTitles(current => new Map(current).set(selected.id, title)); }} maxLength={500} className={field} aria-label="Translated draft title" /><button type="button" onClick={() => void adopt()} disabled={!editable || busy === "adopt"} className={primary}>{busy === "adopt" ? "Creating…" : "Create separate draft"}</button></div></div>}
       {selected.adoptedBookId && <Link href={`/books/${selected.adoptedBookId}`} className="mt-6 inline-block text-sm text-emerald-100 underline">Open translated draft</Link>}
     </section>}</>}
   </main>;
