@@ -9,6 +9,9 @@ import json
 import os
 import re
 import socket
+import sqlite3
+import sys
+from contextlib import closing
 from importlib.metadata import version
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -303,10 +306,116 @@ async def exercise_index_cleanup(root):
         await reopened.finalize_storages()
 
 
-async def main():
-    def reject_connection(*_args, **_kwargs):
-        raise AssertionError("Network connection attempted during LightRAG fixture")
+def reject_connection(*_args, **_kwargs):
+    raise AssertionError("Network connection attempted during LightRAG fixture")
 
+
+def authority_row(root):
+    with closing(sqlite3.connect(root / "authority.sqlite")) as database:
+        return database.execute("select generation, occurrences, applied from desired").fetchone()
+
+
+async def failover_writer(root, first):
+    disposable = root.name == "process-failover" and root.parent.name.startswith("bookiewookie-lightrag-")
+    if not disposable or not (root / "authority.sqlite").is_file():
+        raise RuntimeError("Failover writer requires an initialized disposable fixture")
+    scope = "fixture_book_failover"
+    passage = "Elara carries a silver compass."
+    filename = opaque_passage_name(scope, passage)
+    client = new_scope(root, scope)
+    # The fixture's lock and desired state use separate files so an author can
+    # commit removal while the index owner still holds its independent lock.
+    with closing(sqlite3.connect(root / "book-lock.sqlite", timeout=0)) as ownership:
+        if first:
+            ownership.execute("begin immediate")
+        else:
+            try:
+                ownership.execute("begin immediate")
+            except sqlite3.OperationalError as error:
+                if error.sqlite_errorcode != sqlite3.SQLITE_BUSY:
+                    raise
+                (root / "takeover-waiting").touch()
+                ownership.execute("pragma busy_timeout=10000")
+                ownership.execute("begin immediate")
+            else:
+                raise AssertionError("Successor acquired the book while the first writer still owned it")
+
+        await client.initialize_storages()
+        try:
+            if first:
+                assert authority_row(root) == (1, 1, 0)
+                await client.ainsert(passage, ids=filename.removesuffix(".txt"), file_paths=filename)
+                await assert_one(client, "silver compass", filename, passage)
+            else:
+                assert authority_row(root) == (2, 0, 0)
+                await assert_one(client, "silver compass", filename, passage)
+                result = await client.adelete_by_doc_id(filename.removesuffix(".txt"))
+                assert result.status == "success", result
+        finally:
+            await client.finalize_storages()
+
+        if first:
+            (root / "first-write-durable").touch()
+            await asyncio.sleep(20)
+            raise AssertionError("The fixture parent did not stop the first writer")
+
+        with closing(sqlite3.connect(root / "authority.sqlite")) as database, database:
+            changed = database.execute("update desired set applied=2 where generation=2 and occurrences=0")
+            assert changed.rowcount == 1
+        ownership.commit()
+
+
+async def exercise_process_failover(root):
+    root.mkdir()
+    with closing(sqlite3.connect(root / "authority.sqlite")) as database, database:
+        database.execute("create table desired(generation int, occurrences int, applied int)")
+        database.execute("insert into desired values(1,1,0)")
+
+    async def start(mode):
+        with (root / f"{mode}.log").open("wb") as log:
+            return await asyncio.create_subprocess_exec(
+                sys.executable, str(Path(__file__).resolve()), "--failover-writer", str(root), mode,
+                stdout=log, stderr=log,
+            )
+
+    async def wait_for_marker(path, worker, mode):
+        async with asyncio.timeout(12):
+            while not path.exists():
+                assert worker.returncode is None, (root / f"{mode}.log").read_text(encoding="utf-8")
+                await asyncio.sleep(0.025)
+
+    first = await start("first")
+    successor = None
+    try:
+        await wait_for_marker(root / "first-write-durable", first, "first")
+        assert authority_row(root) == (1, 1, 0)
+        with closing(sqlite3.connect(root / "authority.sqlite")) as database, database:
+            database.execute("update desired set generation=2, occurrences=0")
+        successor = await start("successor")
+        await wait_for_marker(root / "takeover-waiting", successor, "successor")
+        assert authority_row(root) == (2, 0, 0)
+        first.kill()
+        assert await asyncio.wait_for(first.wait(), timeout=5) != 0
+        assert await asyncio.wait_for(successor.wait(), timeout=12) == 0, (
+            root / "successor.log"
+        ).read_text(encoding="utf-8")
+        assert authority_row(root) == (2, 0, 2)
+    finally:
+        for worker in (first, successor):
+            if worker is not None and worker.returncode is None:
+                worker.kill()
+                await worker.wait()
+
+    reopened = new_scope(root, "fixture_book_failover")
+    await reopened.initialize_storages()
+    try:
+        assert await chunks(reopened, "silver compass") == []
+        assert not await reopened.chunk_entity_relation_graph.has_edge("Elara", "silver compass")
+    finally:
+        await reopened.finalize_storages()
+
+
+async def main():
     assert version("lightrag-hku") == "1.5.7"
     with TemporaryDirectory(prefix="bookiewookie-lightrag-") as root:
         with patch.object(socket.socket, "connect", reject_connection), patch.object(socket.socket, "connect_ex", reject_connection):
@@ -314,6 +423,7 @@ async def main():
             await exercise_repeated_content(Path(root))
             await exercise_occurrence_binding(Path(root))
             await exercise_index_cleanup(Path(root))
+            await exercise_process_failover(Path(root) / "process-failover")
     print(json.dumps({
         "lightrag": version("lightrag-hku"),
         "modes": ["naive", "local"],
@@ -325,8 +435,18 @@ async def main():
         "repeated_content": "second source omitted; no citation remains after first is deleted",
         "occurrence_binding": "either occurrence survives independently; stale and foreign hints rejected",
         "index_cleanup": "single-writer late insertion converges; lost deletion reply retries and stays removed",
+        "process_failover": "new owner waited for crashed writer and applied the newest generation",
     }))
 
 
+async def isolated_failover_writer(root, first):
+    assert version("lightrag-hku") == "1.5.7"
+    with patch.object(socket.socket, "connect", reject_connection), patch.object(socket.socket, "connect_ex", reject_connection):
+        await failover_writer(root, first)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) == 4 and sys.argv[1] == "--failover-writer" and sys.argv[3] in {"first", "successor"}:
+        asyncio.run(isolated_failover_writer(Path(sys.argv[2]), sys.argv[3] == "first"))
+    else:
+        asyncio.run(main())

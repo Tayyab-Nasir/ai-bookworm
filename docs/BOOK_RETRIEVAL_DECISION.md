@@ -145,6 +145,16 @@ pass through the same owner, including cleanup after uncertain completions.
 The current-version lookup remains the publication boundary for citations
 while physical index reconciliation is pending.
 
+A separate failover case uses two operating-system processes. The first writer
+persists a real LightRAG insertion and is then stopped before acknowledging
+it. A SQLite fixture lock keeps the successor waiting while an independent
+desired-state record removes the final source. After the first writer exits,
+the successor reopens the index, applies the latest generation and records its
+completion. A fresh reopen confirms the chunk and graph relation remain absent.
+This case establishes recovery on one machine with durable local storage. A
+multi-host deployment still needs an ownership and storage protocol that
+prevents a former writer from issuing physical writes after failover.
+
 ## Local multilingual retrieval comparison
 
 Both evaluators read the same synthetic manuscript facts and queries from
