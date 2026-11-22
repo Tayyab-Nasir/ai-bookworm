@@ -187,7 +187,19 @@ access, LightRAG startup stopped when it queried `ag_catalog.ag_graph`.
 
 The worker identity is for internal operations across books in the dedicated
 retrieval database. Author-level access still comes from the BookieWookie
-canonical lookup. Cross-host worker fencing and hosted deployment are open.
+canonical lookup.
+
+[Run 44995594222](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/44995594222)
+exercised takeover on the shared PostgreSQL and AGE stores with two worker
+processes and separate working directories. The first worker saved an indexed
+passage, then exited before recording completion. The second worker waited on
+the advisory lock, read the newer deletion generation and removed the stale
+entry before acknowledging it. A fresh client verified the chunk and graph
+edge were gone.
+
+That test covers confirmed process exit. A worker that stays alive after
+losing its lock connection may still have separate LightRAG pool connections.
+Fencing that scenario and hosted deployment remain open.
 
 ## Local multilingual retrieval comparison
 
