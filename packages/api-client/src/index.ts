@@ -1061,7 +1061,8 @@ export function createClient(opts: ClientOptions) {
       items: Pick<BookBibleItem, "book_id" | "name" | "attributes_json">[];
       imageAssets: Pick<Asset, "id" | "mime_type" | "checksum">[];
     }>("GET", `/v1/books/${encodeURIComponent(bookId)}/memory`, undefined, true),
-    getBookOverview: (bookId: string) => call<unknown>("GET", `/v1/books/${encodeURIComponent(bookId)}/overview`)
+    getBookOverview: (bookId: string, options?: { retailerStatuses: boolean }) => call<unknown>("GET",
+      `/v1/books/${encodeURIComponent(bookId)}/overview${options?.retailerStatuses ? "?retailerStatuses=1" : ""}`)
       .then(value => parseBookOverview(value, bookId)),
     updateBook: (bookId: string, body: Partial<Omit<CreateBookRequest, "workspaceId" | "requestId" | "subtitle" | "genre">> & { subtitle?: string | null; genre?: string | null; expectedUpdatedAt: string }) =>
       call<{ book: Book }>("PATCH", `/v1/books/${bookId}`, body),

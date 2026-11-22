@@ -1,3 +1,5 @@
+import { RETAILER_SUBMISSION_STATUSES, type RetailerSubmissionStatus } from "@bookworm/types";
+
 /** Saved operational facts, not a compliance or publication certificate. */
 export interface BookOverview {
   viewerId: string;
@@ -12,6 +14,9 @@ export interface BookOverview {
   editions: { id: string; kind: "ebook" | "print" | "audiobook"; status: string; updatedAt: string; coverArtworkChosen: boolean }[];
   history: { renders: number; packages: number };
   managedPublications?: { status: "unavailable" } | { status: "ready"; rows: { jobId: string; channel: string; confirmedAt: string }[] };
+  retailerStatuses?: { status: "unavailable" } | { status: "ready"; rows: {
+    jobId: string; channel: "kdp" | "apple" | "barnesnoble" | "lulu" | "googleplay"; status: RetailerSubmissionStatus; updatedAt: string;
+  }[] };
   jobs: { id: string; kind: "import" | "ai" | "publishing" | "audiobook_export"; label: string; status: string; createdAt: string; completedAt: string | null; destination: "editor" | "memory" | "publish" | "translate" | "plan" | "assets" | "overview" | "retailer_package" }[];
 }
 
@@ -29,7 +34,8 @@ const unique = (rows: { id: string }[]) => new Set(rows.map(row => row.id)).size
 export function parseBookOverview(value: unknown, bookId: string): BookOverview {
   const fail = () => { throw Error("The saved book overview could not be verified. Reload before continuing."); };
   if (!object(value) || !keys(value, ["viewerId", "observedAt", "book", "workspace", "manuscript", "chapters", "bibleItems", "listing", "editionsTotal", "editions", "history", "jobs",
-    ...("managedPublications" in value ? ["managedPublications"] : [])])) return fail();
+    ...("managedPublications" in value ? ["managedPublications"] : []),
+    ...("retailerStatuses" in value ? ["retailerStatuses"] : [])])) return fail();
   const { book, workspace, manuscript, listing, history } = value;
   if (!id(bookId) || !id(value.viewerId) || !date(value.observedAt)
     || !object(book) || !keys(book, ["id", "workspaceId", "title", "subtitle", "authorName", "language", "genre", "status", "updatedAt"])
@@ -73,6 +79,18 @@ export function parseBookOverview(value: unknown, bookId: string): BookOverview 
         || !keys(entry, ["jobId", "channel", "confirmedAt"]) || !id(entry.jobId) || !date(entry.confirmedAt)
         || !["kdp", "apple", "barnesnoble", "lulu", "googleplay"].includes(String(entry.channel)))
       || new Set(publications.rows.map(entry => entry.jobId)).size !== publications.rows.length) return fail();
+  }
+  if ("retailerStatuses" in value) {
+    const reports = value.retailerStatuses;
+    if (!object(reports)) return fail();
+    if (reports.status === "unavailable") {
+      if (!keys(reports, ["status"])) return fail();
+    } else if (reports.status !== "ready" || !keys(reports, ["status", "rows"])
+      || !Array.isArray(reports.rows) || reports.rows.length > 8 || reports.rows.some(row => !object(row)
+        || !keys(row, ["jobId", "channel", "status", "updatedAt"]) || !id(row.jobId) || !date(row.updatedAt)
+        || !RETAILER_SUBMISSION_STATUSES.some(status => status === row.status)
+        || !["kdp", "apple", "barnesnoble", "lulu", "googleplay"].includes(String(row.channel)))
+      || new Set(reports.rows.map(row => row.jobId)).size !== reports.rows.length) return fail();
   }
   return value as unknown as BookOverview;
 }

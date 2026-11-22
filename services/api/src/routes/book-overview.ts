@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 import { loadBook } from "../lib/authoring.js";
+import { RETAILER_SUBMISSION_STATUSES } from "@bookworm/types";
 import { jobSummary } from "../lib/job-summary.js";
 import type { SupabaseClient } from "../lib/supabase.js";
 
@@ -41,19 +42,38 @@ async function managedPublications(sb: SupabaseClient, bookId: string, workspace
   })) };
 }
 
+async function retailerStatuses(sb: SupabaseClient, bookId: string) {
+  const { data, error } = await sb.from("retailer_submissions")
+    .select("publishing_job_id,status,updated_at,job:publishing_jobs!inner(id,book_id,channel,status,action:request_json->>action)")
+    .eq("job.book_id", bookId).eq("job.status", "succeeded").eq("job.request_json->>action", "export_package")
+    .order("updated_at", { ascending: false }).order("publishing_job_id").limit(8);
+  const parsed = z.array(z.object({
+    publishing_job_id: z.guid(), status: z.enum(RETAILER_SUBMISSION_STATUSES), updated_at: z.string().datetime({ offset: true }),
+    job: z.object({ id: z.guid(), book_id: z.literal(bookId), status: z.literal("succeeded"), action: z.literal("export_package"),
+      channel: z.enum(["kdp", "apple", "barnesnoble", "lulu", "googleplay"]) }),
+  })).max(8).safeParse(data);
+  if (error || !parsed.success || parsed.data.some(row => row.publishing_job_id !== row.job.id)
+    || new Set(parsed.data.map(row => row.publishing_job_id)).size !== parsed.data.length) throw unavailable();
+  return { status: "ready" as const, rows: parsed.data.map(row => ({
+    jobId: row.publishing_job_id, channel: row.job.channel, status: row.status, updatedAt: row.updated_at,
+  })) };
+}
+
 /** One user-scoped, read-only projection. No provider, Storage link or service-role access. */
 export function bookOverviewRoutes(app: FastifyInstance) {
   app.get("/books/:bookId/overview", async (req, reply) => {
     reply.header("cache-control", "private, no-store");
     const params = z.object({ bookId: z.guid() }).safeParse(req.params);
+    const query = z.object({ retailerStatuses: z.literal("1").optional() }).safeParse(req.query);
     if (!params.success) throw new AppError(422, "Choose a valid book.");
+    if (!query.success) throw new AppError(422, "Check the book overview options.");
     const { bookId } = params.data;
     const sb = app.supabaseFactory(req.userToken);
     const { book, role } = await loadBook(sb, bookId, req.userId);
     const bookFields = checked(z.object({ id: z.literal(bookId), workspace_id: z.guid(), title: z.string().min(1).max(500),
       subtitle: z.string().max(500).nullable(), author_name: z.string().min(1).max(300), language: z.string().min(1).max(40),
       genre: z.string().max(200).nullable(), status: z.string().min(1).max(40), updated_at: z.string().datetime({ offset: true }) }), book);
-    const [space, chapters, bible, metadata, editions, imports, ai, publishing, audiobookExports, renders, packages, publications] = await Promise.all([
+    const [space, chapters, bible, metadata, editions, imports, ai, publishing, audiobookExports, renders, packages, publications, submissions] = await Promise.all([
       sb.from("workspaces").select("id,name").eq("id", bookFields.workspace_id).maybeSingle(),
       sb.from("chapters").select("id,book_id,title,order_index,current_document_version_id").eq("book_id", bookId).order("order_index").limit(501),
       sb.from("book_bible_items").select("id", { count: "exact", head: true }).eq("book_id", bookId),
@@ -67,6 +87,9 @@ export function bookOverviewRoutes(app: FastifyInstance) {
       sb.from("publishing_jobs").select("id", { count: "exact", head: true }).eq("book_id", bookId).eq("status", "succeeded").contains("request_json", { action: "export_package" }),
       process.env.MANAGED_PUBLISHING_ENABLED === "true" && (role === "owner" || role === "admin")
         ? managedPublications(sb, bookId, bookFields.workspace_id).catch(() => ({ status: "unavailable" as const }))
+        : undefined,
+      query.data.retailerStatuses
+        ? retailerStatuses(sb, bookId).catch(() => ({ status: "unavailable" as const }))
         : undefined,
     ]);
     if ([space, chapters, metadata, editions, imports, ai, publishing, audiobookExports].some(r => r.error)) throw unavailable();
@@ -116,6 +139,7 @@ export function bookOverviewRoutes(app: FastifyInstance) {
       }),
       history: { renders: exactCount(renders), packages: exactCount(packages) }, jobs,
       ...(publications ? { managedPublications: publications } : {}),
+      ...(submissions ? { retailerStatuses: submissions } : {}),
     };
   });
 }

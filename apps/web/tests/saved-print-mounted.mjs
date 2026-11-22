@@ -2152,10 +2152,12 @@ test("a retailer package link selects its edition and exposes the exact job outs
         return { id: jobId, bookId: jobId === window.ids.job ? window.ids.otherAsset : window.ids.book, editionId: window.ids.otherEdition,
           channel: "barnesnoble", status: "succeeded", package: null, createdAt: "2026-10-13T12:00:00Z" };
       };
+      window.history.replaceState(null, "", `#package-${window.ids.otherJob}`);
       window.showStudio(window.ids.book, window.ids.otherJob);
     });
     const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
     await expect(history.getByText("Barnes & Noble package", { exact: true })).toBeVisible();
+    await expect(history.locator(`#package-${ids.otherJob}`)).toBeFocused();
     assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.action === "linked-package")),
       [{ method: "GET", action: "linked-package", jobId: ids.otherJob, actor: ids.asset }]);
     await page.evaluate(() => window.showStudio(window.ids.book, window.ids.job));

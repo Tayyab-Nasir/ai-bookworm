@@ -52,7 +52,11 @@ function fake(data: Record<string, Row[]>, options: { error?: string; missingCou
       };
       const query = {
         select(columns: string, opts?: { count?: string; head?: boolean }) { read.columns = columns; counted = opts?.count === "exact"; head = opts?.head === true; return query; },
-        eq(k: string, value: unknown) { filters.push(r => k === "job.book_id" ? (r.job as Row)?.book_id === value : r[k] === value); return query; },
+        eq(k: string, value: unknown) {
+          const joinedKey = k === "job.request_json->>action" ? "action" : k.slice(4);
+          filters.push(r => (k.startsWith("job.") ? (r.job as Row)?.[joinedKey] : r[k]) === value);
+          return query;
+        },
         not(k: string, op: string, value: unknown) { assert.equal(op, "is"); filters.push(r => r[k] !== value); return query; },
         in(k: string, values: unknown[]) { filters.push(r => values.includes(r[k])); return query; },
         contains(k: string, value: Row) { filters.push(r => Object.entries(value).every(([key, item]) => (r[k] as Row)?.[key] === item)); return query; },
@@ -65,11 +69,11 @@ function fake(data: Record<string, Row[]>, options: { error?: string; missingCou
     },
   } as never;
 }
-async function request(data = tables(), options: { error?: string; missingCount?: string } = {}, token = "good", book = BOOK) {
+async function request(data = tables(), options: { error?: string; missingCount?: string; retailerStatuses?: boolean } = {}, token = "good", book = BOOK) {
   const reads: { table: string; columns?: string }[] = [], tokens: (string | undefined)[] = [];
   const app = await buildApp(t => { tokens.push(t); return fake(data, options, reads); });
   try {
-    const response = await app.inject({ method: "GET", url: `/v1/books/${book}/overview`, headers: { authorization: `Bearer ${token}` } });
+    const response = await app.inject({ method: "GET", url: `/v1/books/${book}/overview${options.retailerStatuses ? "?retailerStatuses=1" : ""}`, headers: { authorization: `Bearer ${token}` } });
     return { response, reads, tokens };
   } finally { await app.close(); }
 }
@@ -128,6 +132,36 @@ test("book desk includes only this book's audiobook exports and routes actual Bi
   assert.equal(jobs.find((job: Row) => job.id === id(93)).destination, "plan");
   assert.equal(jobs.find((job: Row) => job.id === id(94)).destination, "assets");
   assert(!jobs.some((job: Row) => job.id === id(91))); assert.doesNotMatch(response.body, /private-payload|snapshot_json/);
+});
+
+test("opt-in book desk lists only recorded statuses for completed packages of the current book", async () => {
+  const data = tables();
+  const job = { id: id(30), book_id: BOOK, channel: "barnesnoble", status: "succeeded", action: "export_package" };
+  const row = { publishing_job_id: job.id, status: "changes_requested", updated_at: now, reported_by: "private-payload", job };
+  data.retailer_submissions = [
+    row,
+    { ...row, publishing_job_id: id(31), job: { ...job, id: id(31), book_id: OTHER } },
+    { ...row, publishing_job_id: id(32), job: { ...job, id: id(32), status: "failed" } },
+    { ...row, publishing_job_id: id(33), job: { ...job, id: id(33), action: "validate" } },
+  ];
+  const old = await request(data);
+  assert.equal(old.response.json().retailerStatuses, undefined);
+  assert.ok(!old.reads.some(read => read.table === "retailer_submissions"));
+
+  const { response, tokens } = await request(data, { retailerStatuses: true });
+  assert.equal(response.statusCode, 200, response.body);
+  assert.equal(response.json().book.status, "draft");
+  assert.deepEqual(response.json().retailerStatuses, { status: "ready", rows: [
+    { jobId: id(30), channel: "barnesnoble", status: "changes_requested", updatedAt: now },
+  ] });
+  assert.doesNotMatch(response.body, /private-payload|reported_by/);
+  assert.ok(tokens.every(token => token === "good"));
+
+  const failure = await request(data, { retailerStatuses: true, error: "retailer_submissions" });
+  assert.equal(failure.response.statusCode, 200, failure.response.body);
+  assert.deepEqual(failure.response.json().retailerStatuses, { status: "unavailable" });
+  const invalid = await request({ ...data, retailer_submissions: [{ ...row, publishing_job_id: OTHER }] }, { retailerStatuses: true });
+  assert.deepEqual(invalid.response.json().retailerStatuses, { status: "unavailable" });
 });
 
 test("empty books show actual zeroes without pretending an unsaved chapter is a version", async () => {

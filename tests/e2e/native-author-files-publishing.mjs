@@ -399,6 +399,18 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
     assert.equal(requests.length, mutations, 'Opening and downloading an exact activity link must not create work');
     console.log('PASS native dashboard and book overview open exact retailer package ZIP without creating work');
 
+    await api('PUT', `/publishing/jobs/${linked.job.id}/submission`, { status: 'changes_requested', expectedRevision: null });
+    await page.goto(origin + `/books/${retailer.bookId}/overview`);
+    const reports = page.getByRole('region', { name: 'Retailer submission updates' });
+    const reportLink = reports.getByRole('link', { name: /Author-reported · Changes requested/ });
+    await expect(reportLink).toHaveAttribute('href', `${target}#package-${linked.job.id}`);
+    await reportLink.click();
+    const reportedPackage = page.locator(`#package-${linked.job.id}`);
+    await expect(reportedPackage).toBeFocused();
+    await reportedPackage.getByText('Retailer submission status', { exact: true }).click();
+    await expect(reportedPackage.getByText('Author-reported status · Changes requested')).toBeVisible();
+    assert.equal(requests.length, mutations, 'Opening the reported package status must not create work');
+
     onStage('retailer browser finished cover PDF upload and clean scan');
     await page.goto(`${origin}/assets?ws=${finishedCover.workspaceId}`);
     const pickingFile = page.waitForEvent('filechooser');

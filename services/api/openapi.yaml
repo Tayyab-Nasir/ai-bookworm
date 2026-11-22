@@ -1081,6 +1081,11 @@ paths:
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: retailerStatuses
+          in: query
+          required: false
+          description: Include up to eight recent author-reported retailer updates for this book.
+          schema: { type: string, const: '1' }
       responses:
         "200":
           description: Safe saved operational facts, not a completion certificate
@@ -6366,6 +6371,31 @@ components:
       additionalProperties: false
       required: [viewerId, observedAt, book, workspace, manuscript, chapters, bibleItems, listing, editionsTotal, editions, history, jobs]
       properties:
+        retailerStatuses:
+          description: Recent author reports attached to this book's completed retailer packages.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status: { const: unavailable }
+            - type: object
+              additionalProperties: false
+              required: [status, rows]
+              properties:
+                status: { const: ready }
+                rows:
+                  type: array
+                  maxItems: 8
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [jobId, channel, status, updatedAt]
+                    properties:
+                      jobId: { type: string, format: uuid }
+                      channel: { enum: [kdp, apple, barnesnoble, lulu, googleplay] }
+                      status: { $ref: "#/components/schemas/RetailerSubmissionStatus" }
+                      updatedAt: { type: string, format: date-time }
         managedPublications:
           description: Recent operator-confirmed packages for an authorized workspace owner or admin.
           oneOf:

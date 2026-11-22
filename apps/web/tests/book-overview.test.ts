@@ -58,6 +58,17 @@ test("typed overview fetch is a read and validates the returned book before expo
     const api = createClient({ baseUrl: "/api/backend" });
     assert.equal((await api.getBookOverview(BOOK)).book.id, BOOK);
     assert.equal(calls.length, 1); assert.equal(calls[0].method, "GET"); assert(calls[0].input.endsWith(`/v1/books/${BOOK}/overview`));
+    assert.equal((await api.getBookOverview(BOOK, { retailerStatuses: true })).book.id, BOOK);
+    assert.ok(calls.at(-1)?.input.endsWith(`/v1/books/${BOOK}/overview?retailerStatuses=1`));
     await assert.rejects(api.getBookOverview(id(99)), /could not be verified/);
   } finally { globalThis.fetch = original; }
+});
+
+test("book desk distinguishes author reports from official status and rejects malformed report rows", () => {
+  const row = { jobId: id(90), channel: "kdp", status: "submitted", updatedAt: now } as const;
+  const valid = { ...fixture(), retailerStatuses: { status: "ready", rows: [row] } };
+  assert.deepEqual(parseBookOverview(valid, BOOK).retailerStatuses, valid.retailerStatuses);
+  for (const rows of [[row, row], [{ ...row, status: "approved" }], [{ ...row, reportedBy: id(91) }]]) {
+    assert.throws(() => parseBookOverview({ ...valid, retailerStatuses: { status: "ready", rows } }, BOOK));
+  }
 });

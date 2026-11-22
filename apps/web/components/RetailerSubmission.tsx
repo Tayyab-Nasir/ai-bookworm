@@ -3,15 +3,7 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { ApiClientError, type ApiClient } from "@bookworm/api-client";
 import { RETAILER_SUBMISSION_STATUSES, type RetailerSubmission as Submission, type RetailerSubmissionStatus } from "@bookworm/types";
-
-const STATUS_LABELS: Record<RetailerSubmissionStatus, string> = {
-  not_submitted: "Not submitted",
-  submitted: "Submitted",
-  in_review: "In review",
-  changes_requested: "Changes requested",
-  published: "Published",
-  withdrawn: "Withdrawn",
-};
+import { retailerSubmissionLabels } from "../lib/retailer-portals";
 
 type Props = {
   api: Pick<ApiClient, "getRetailerSubmission" | "saveRetailerSubmission">;
@@ -94,7 +86,7 @@ function SubmissionForm({ api, actor, jobId, canEdit, isCurrent, open }: Props &
     </div>;
   }
   return <div className="space-y-3 text-sm">
-    <p className="text-white/70">Author-reported status · {state.saved ? STATUS_LABELS[state.saved.status] : "No status recorded"}</p>
+    <p className="text-white/70">Author-reported status · {state.saved ? retailerSubmissionLabels[state.saved.status] : "No status recorded"}</p>
     {state.saved && <p className="text-xs text-white/50">Last updated <time dateTime={state.saved.updatedAt}>{new Date(state.saved.updatedAt).toLocaleString()}</time></p>}
     {canEdit && <div className="flex flex-wrap items-end gap-3">
       <label className="min-w-0 text-white/70">Update status
@@ -108,7 +100,7 @@ function SubmissionForm({ api, actor, jobId, canEdit, isCurrent, open }: Props &
           className="mt-1 block min-h-11 max-w-full rounded-lg border border-white/20 bg-black px-3 text-white"
         >
           <option value="">Choose a status</option>
-          {RETAILER_SUBMISSION_STATUSES.map(status => <option key={status} value={status}>{STATUS_LABELS[status]}</option>)}
+          {RETAILER_SUBMISSION_STATUSES.map(status => <option key={status} value={status}>{retailerSubmissionLabels[status]}</option>)}
         </select>
       </label>
       <button type="button" onClick={() => void save()}

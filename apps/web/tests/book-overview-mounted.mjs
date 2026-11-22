@@ -82,6 +82,26 @@ test('mobile book desk preserves content, readable links and keyboard focus at 3
     assert((await page.getByRole('link',{name:'Open manuscript',exact:true}).boundingBox()).height>=44);
   }finally{await page.close();}
 });
+test('author-reported status opens the original package and an outage leaves the book desk readable',async()=>{
+  const page=await fixture('normal',320);
+  try {
+    await ready(page);
+    const refresh=page.getByRole('button',{name:'Refresh book desk',exact:true});
+    await page.evaluate(({book,job})=>{window.fixtureData[book].retailerStatuses={status:'ready',
+      rows:[{jobId:job,channel:'barnesnoble',status:'changes_requested',updatedAt:'2026-11-22T00:00:00Z'}]};},{book:A,job:id(96)});
+    await refresh.click();
+    const reports=page.getByRole('region',{name:'Retailer submission updates'});
+    await expect(reports.getByRole('link',{name:/Barnes & Noble Press Author-reported · Changes requested/}))
+      .toHaveAttribute('href',`/books/${A}/publish?packageJob=${id(96)}#package-${id(96)}`);
+    await expect(page.getByRole('region',{name:'Confirmed retailer listings'})).toHaveCount(0);
+    await screenshot(page,'retailer-updates-mobile');
+    await page.evaluate(book=>{window.fixtureData[book].retailerStatuses={status:'unavailable'};},A);
+    await refresh.click();
+    await expect(reports.getByText('Retailer status history is temporarily unavailable.')).toBeVisible();
+    await expect(reports.getByRole('link')).toHaveCount(0);
+    await ready(page);
+  } finally {await page.close();}
+});
 test('transport, foreign-scope and malformed responses show no old or private book data',async()=>{
   for(const mode of ['error','wrong','malformed','account']){const page=await fixture(mode);try{
     await expect(page.getByRole('alert')).toContainText('Book progress could not be verified');await expect(page.getByRole('heading',{name:'The Harbor Notebook',exact:true})).toHaveCount(0);

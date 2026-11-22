@@ -6,6 +6,7 @@ import { parseBookOverview, type BookOverview as Overview } from "@bookworm/api-
 import { apiClient } from "./api";
 import styles from "./BookOverview.module.css";
 import { jobLink } from "../lib/job-link";
+import { retailerChannelNames, retailerSubmissionLabels } from "../lib/retailer-portals";
 
 async function viewer() {
   const response = await fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
@@ -31,7 +32,7 @@ export default function BookOverview({ bookId }: { bookId: string }) {
     try {
       const account = await viewer();
       if (!current()) return;
-      const overview = parseBookOverview(await api.getBookOverview(bookId), bookId);
+      const overview = parseBookOverview(await api.getBookOverview(bookId, { retailerStatuses: true }), bookId);
       if (!current()) return;
       if (overview.viewerId !== account || await viewer() !== account) throw Error("Session changed");
       if (current()) setSaved(overview);
@@ -102,6 +103,19 @@ export default function BookOverview({ bookId }: { bookId: string }) {
             <Link href={`${root}/publish?packageJob=${encodeURIComponent(item.jobId)}`}>
               <span>{({ kdp: "Amazon KDP", apple: "Apple Books", barnesnoble: "Barnes & Noble Press", lulu: "Lulu", googleplay: "Google Play Books" } as Record<string, string>)[item.channel]}
                 <small>Operator confirmed · <time dateTime={item.confirmedAt}>{new Date(item.confirmedAt).toLocaleDateString()}</time></small>
+              </span><span aria-hidden="true">↗</span>
+            </Link>
+          </li>)}</ul>}
+      </section>}
+
+      {overview.history.packages > 0 && overview.retailerStatuses && <section aria-labelledby="retailer-status-title" className={styles.panel}>
+        <div className={styles.panelHeading}><h2 id="retailer-status-title">Retailer submission updates</h2></div>
+        {overview.retailerStatuses.status === "unavailable" ? <p className={styles.note}>Retailer status history is temporarily unavailable.</p>
+          : overview.retailerStatuses.rows.length === 0 ? <p className={styles.note}>No submission status has been recorded for this book. <Link href={`${root}/publish`}>Review packages</Link></p>
+          : <ul className={styles.editions}>{overview.retailerStatuses.rows.map(item => <li key={item.jobId}>
+            <Link href={`${root}/publish?packageJob=${encodeURIComponent(item.jobId)}#package-${item.jobId}`}>
+              <span>{retailerChannelNames[item.channel]}
+                <small>Author-reported · {retailerSubmissionLabels[item.status]} · <time dateTime={item.updatedAt}>{new Date(item.updatedAt).toLocaleDateString()}</time></small>
               </span><span aria-hidden="true">↗</span>
             </Link>
           </li>)}</ul>}
