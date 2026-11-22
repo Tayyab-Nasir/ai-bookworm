@@ -455,8 +455,9 @@ async def postgres_fixture():
     address = ("127.0.0.1", 55440)
     login = {"host": address[0], "port": address[1], "user": "lightrag_ci",
              "password": "disposable-lightrag-only", "database": "bookworm_lightrag_ci"}
+    worker = {**login, "user": "lightrag_worker_ci", "password": "disposable-worker-only"}
     config = {"POSTGRES_HOST": login["host"], "POSTGRES_PORT": str(login["port"]),
-              "POSTGRES_USER": login["user"], "POSTGRES_PASSWORD": login["password"],
+              "POSTGRES_USER": worker["user"], "POSTGRES_PASSWORD": worker["password"],
               "POSTGRES_DATABASE": login["database"], "POSTGRES_SSL_MODE": "disable",
               "POSTGRES_MAX_CONNECTIONS": "5", "PYTHON_DOTENV_DISABLED": "1"}
     original_connect = socket.socket.connect
@@ -477,10 +478,40 @@ async def postgres_fixture():
         try:
             assert await probe.fetchval("select current_database()") == login["database"]
             assert await probe.fetchval("select to_regclass('public.lightrag_doc_chunks')") is None
+            await probe.execute("""
+                create extension vector;
+                create extension age;
+                create role lightrag_worker_ci login password 'disposable-worker-only'
+                    nosuperuser nocreatedb nocreaterole noreplication nobypassrls;
+                grant connect, create on database bookworm_lightrag_ci to lightrag_worker_ci;
+                grant usage, create on schema public to lightrag_worker_ci;
+                grant usage on schema ag_catalog to lightrag_worker_ci;
+                create schema fixture_admin_only;
+                create table fixture_admin_only.private_record (label text);
+                insert into fixture_admin_only.private_record values ('synthetic admin marker');
+            """)
+            bounded = await asyncpg.connect(**worker, ssl=False, timeout=5)
+            try:
+                assert await bounded.fetchval("""
+                    select not (rolsuper or rolcreatedb or rolcreaterole or rolreplication or rolbypassrls)
+                    from pg_roles where rolname = current_user
+                """)
+                try:
+                    await bounded.fetch("select * from fixture_admin_only.private_record")
+                except asyncpg.InsufficientPrivilegeError:
+                    pass
+                else:
+                    raise AssertionError("Worker could read the separate admin-only schema")
+            finally:
+                await bounded.close()
             await exercise(Path(root), postgres=True)
             assert await probe.fetchval("select extversion from pg_extension where extname='vector'")
             assert await probe.fetchval("select extversion from pg_extension where extname='age'") == "1.6.0"
             assert await probe.fetchval("select count(*) from ag_catalog.ag_graph") == 2
+            assert await probe.fetchval("""
+                select count(*) from pg_tables where schemaname='public'
+                  and tablename='lightrag_doc_chunks' and tableowner='lightrag_worker_ci'
+            """) == 1
             rows = await probe.fetch(
                 "select workspace, content from public.lightrag_doc_chunks order by workspace"
             )
@@ -492,6 +523,7 @@ async def postgres_fixture():
             await probe.close()
     print(json.dumps({"lightrag": version("lightrag-hku"), "postgres_kv_vector_status": "passed",
                       "same_document_id_book_scoping": "passed", "deletion_replacement_reopen": "passed",
+                      "database_worker": "non-superuser; admin-only schema denied",
                       "graph_storage": "Apache AGE 1.6.0; exact relation survived a fresh client"}))
 
 
