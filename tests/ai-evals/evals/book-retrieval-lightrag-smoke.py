@@ -139,6 +139,25 @@ async def exercise(root):
         await reopened.finalize_storages()
 
 
+async def exercise_repeated_content(root):
+    client = new_scope(root, "fixture_book_repeated")
+    passage = "Elara carries a silver compass."
+    await client.initialize_storages()
+    try:
+        await client.ainsert(passage, ids="chapter-a", file_paths="opaque-a.txt")
+        await client.ainsert(passage, ids="chapter-b", file_paths="opaque-b.txt")
+        before = await chunks(client, "silver compass")
+        deletion = await client.adelete_by_doc_id("chapter-a")
+        assert deletion.status == "success", deletion
+        remaining = await chunks(client, "silver compass")
+        # Record the current behavior of the pinned version. A single surviving
+        # citation here would require rechecking the duplicate-content policy.
+        assert [row["file_path"] for row in before] == ["opaque-a.txt"], before
+        assert remaining == [], remaining
+    finally:
+        await client.finalize_storages()
+
+
 async def main():
     def reject_connection(*_args, **_kwargs):
         raise AssertionError("Network connection attempted during LightRAG fixture")
@@ -147,6 +166,7 @@ async def main():
     with TemporaryDirectory(prefix="bookiewookie-lightrag-") as root:
         with patch.object(socket.socket, "connect", reject_connection), patch.object(socket.socket, "connect_ex", reject_connection):
             await exercise(Path(root))
+            await exercise_repeated_content(Path(root))
     print(json.dumps({
         "lightrag": version("lightrag-hku"),
         "modes": ["naive", "local"],
@@ -155,6 +175,7 @@ async def main():
         "reference_uses_filename": "confirmed",
         "graph_relation_lifecycle": "passed",
         "delete_replace_and_reopen": "passed",
+        "repeated_content": "second source omitted; no citation remains after first is deleted",
     }))
 
 

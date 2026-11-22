@@ -87,6 +87,15 @@ relationship as authorization. The smoke provides local lifecycle evidence.
 A representative semantic recall comparison, PostgreSQL storage behavior and
 live application authorization still require independent verification.
 
+The smoke also indexes identical passages under two chapter IDs and two opaque
+filenames in a single LightRAG workspace. Version 1.5.7 returned only the first
+source. Deleting it removed the result even though the second chapter still
+exists in the fixture's book. BookieWookie therefore needs an authoritative
+mapping from each indexed passage to every authorized current chapter version.
+An adapter must preserve the remaining citation after one occurrence is removed
+and withhold the passage when the final occurrence is gone. The file-backed
+probe uses synthetic inputs and establishes a requirement for adapter design.
+
 ## Local multilingual retrieval comparison
 
 Both evaluators read the same synthetic manuscript facts and queries from
