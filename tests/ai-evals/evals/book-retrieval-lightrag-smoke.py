@@ -64,7 +64,7 @@ def new_scope(root, workspace, *, postgres=False):
         workspace=workspace,
         kv_storage="PGKVStorage" if postgres else "JsonKVStorage",
         doc_status_storage="PGDocStatusStorage" if postgres else "JsonDocStatusStorage",
-        graph_storage="NetworkXStorage",
+        graph_storage="PGGraphStorage" if postgres else "NetworkXStorage",
         vector_storage="PGVectorStorage" if postgres else "NanoVectorDBStorage",
         tokenizer=Tokenizer("fixture-character", FixtureTokenizer()),
         embedding_func=EmbeddingFunc(embedding_dim=256, max_token_size=1000, func=fixture_embeddings, model_name="fixture-lexical"),
@@ -130,7 +130,8 @@ async def exercise(root, *, postgres=False):
         await second.finalize_storages()
         await first.finalize_storages()
 
-    reopened = new_scope(root, "fixture_book_a", postgres=postgres)
+    reopen_root = root / "fresh_client" if postgres else root
+    reopened = new_scope(reopen_root, "fixture_book_a", postgres=postgres)
     await reopened.initialize_storages()
     try:
         await assert_one(reopened, "amber lantern", "book-a-v2-chapter-one.txt", replacement)
@@ -478,6 +479,8 @@ async def postgres_fixture():
             assert await probe.fetchval("select to_regclass('public.lightrag_doc_chunks')") is None
             await exercise(Path(root), postgres=True)
             assert await probe.fetchval("select extversion from pg_extension where extname='vector'")
+            assert await probe.fetchval("select extversion from pg_extension where extname='age'") == "1.6.0"
+            assert await probe.fetchval("select count(*) from ag_catalog.ag_graph") == 2
             rows = await probe.fetch(
                 "select workspace, content from public.lightrag_doc_chunks order by workspace"
             )
@@ -489,7 +492,7 @@ async def postgres_fixture():
             await probe.close()
     print(json.dumps({"lightrag": version("lightrag-hku"), "postgres_kv_vector_status": "passed",
                       "same_document_id_book_scoping": "passed", "deletion_replacement_reopen": "passed",
-                      "graph_storage": "local NetworkX fixture"}))
+                      "graph_storage": "Apache AGE 1.6.0; exact relation survived a fresh client"}))
 
 
 if __name__ == "__main__":

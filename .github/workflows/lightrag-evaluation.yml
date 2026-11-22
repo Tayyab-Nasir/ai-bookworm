@@ -15,7 +15,7 @@ permissions:
 jobs:
   storage:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     services:
       postgres:
         image: pgvector/pgvector:0.8.7-pg16-bookworm
@@ -38,7 +38,26 @@ jobs:
         run: python -m pip install lightrag-hku==1.5.7 asyncpg==0.31.0 pgvector==0.4.2
       - name: Verify file-backed lifecycle and worker failover
         run: python tests/ai-evals/evals/book-retrieval-lightrag-smoke.py
-      - name: Verify PostgreSQL vector and document isolation with synthetic inputs
+      - name: Install verified Apache AGE in the disposable PostgreSQL container
+        env:
+          AGE_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          build_dir=$(mktemp -d)
+          cd "$build_dir"
+          curl --fail --silent --show-error --location --retry 2 --max-time 60 \
+            https://downloads.apache.org/age/PG16/1.6.0/apache-age-1.6.0-src.tar.gz \
+            --output age.tar.gz
+          echo '1e0a434d53d669e5d067721e1eba8c3c3c2ae072709d5f90783beeba6f5e88f592fa5d8808d621b720c22edfe8c698baa9b0adb9c7b4e3e2a83e7a753bd795c8  age.tar.gz' | sha512sum --check
+          docker cp age.tar.gz "$AGE_CONTAINER:/tmp/bookworm-age.tar.gz"
+          docker exec --user root "$AGE_CONTAINER" sh -eu -c '
+            apt-get update
+            apt-get install -y --no-install-recommends build-essential bison flex postgresql-server-dev-16
+            mkdir /tmp/bookworm-age
+            tar -xzf /tmp/bookworm-age.tar.gz -C /tmp/bookworm-age --strip-components=1
+            make -C /tmp/bookworm-age -j2 PG_CONFIG="$(command -v pg_config)"
+            make -C /tmp/bookworm-age PG_CONFIG="$(command -v pg_config)" install
+          '
+      - name: Verify shared PostgreSQL graph, vector and document isolation
         run: python tests/ai-evals/evals/book-retrieval-lightrag-smoke.py --postgres-fixture
         env:
           BOOKWORM_LIGHTRAG_PG_TEST: '1'
