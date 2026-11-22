@@ -155,15 +155,17 @@ function TranslationWorkspace({ bookId, scope, active }: { bookId: string; scope
 
   const adopt = async () => {
     if (!selected || busy || !adoptTitle.trim()) { setError("Give the translated draft a title before creating it."); return; }
+    const submittedProjectId = selected.id;
     setBusy("adopt"); setError(null); setNotice(null);
     try {
       const submittedTitle = adoptTitle.trim();
-      const { book: draft } = await scope.checked(() => api.adoptTranslationProject(selected.id, { title: submittedTitle }, scope.actor));
+      const { book: draft } = await scope.checked(() => api.adoptTranslationProject(submittedProjectId, { title: submittedTitle }, scope.actor));
       if (!draft.id || !book || draft.workspace_id !== book.workspace_id || draft.title !== submittedTitle) throw new Error("The translated draft could not be confirmed.");
-      setNotice("Translated draft created. Review every chapter before layout or publishing.");
-      setProjects((current) => current.map((item) => item.id === selected.id ? { ...item, adoptedBookId: draft.id } : item));
-      setSelected((current) => current ? { ...current, adoptedBookId: draft.id } : current);
-      router.push(`/books/${draft.id}`);
+      const stillSelected = selectedRef.current?.id === submittedProjectId;
+      setNotice(stillSelected ? "Translated draft created. Review every chapter before layout or publishing." : "The earlier translation draft was created. Open it from translation history when ready.");
+      setProjects((current) => current.map((item) => item.id === submittedProjectId ? { ...item, adoptedBookId: draft.id } : item));
+      setSelected((current) => current?.id === submittedProjectId ? { ...current, adoptedBookId: draft.id } : current);
+      if (stillSelected) router.push(`/books/${draft.id}`);
     } catch (error) { if (scope.current() && !isSuperseded(error)) setError("The translated draft or its title is not confirmed. Refresh its status before trying again; an earlier draft may already exist."); }
     finally { if (mounted.current) setBusy(null); }
   };
