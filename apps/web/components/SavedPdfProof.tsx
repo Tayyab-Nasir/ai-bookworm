@@ -6,11 +6,13 @@ import { apiClient } from "./api";
 import { validatePrintDownload, validatePrintHistory } from "../lib/saved-print";
 import { verifyPdfProofPage } from "../lib/pdf-proof";
 
-export default function SavedPdfProof({ actor, bookId, workspaceId, editionId, rendered, disabled = false, onAuthorizationFailure }: {
-  actor: string | null; bookId: string; workspaceId: string; editionId: string; rendered: RenderedEditionResult; disabled?: boolean; onAuthorizationFailure: (jobId: string) => void;
+const unavailableProof = "The selected print proof is no longer available. Refresh print history and open a verified proof before running retailer preflight again.";
+
+export default function SavedPdfProof({ actor, bookId, workspaceId, editionId, rendered, disabled = false, onProofUnavailable }: {
+  actor: string | null; bookId: string; workspaceId: string; editionId: string; rendered: RenderedEditionResult; disabled?: boolean; onProofUnavailable: (jobId: string, notice?: string) => void;
 }) {
   const api = apiClient(actor ?? undefined);
-  const authorizationFailure = useRef(onAuthorizationFailure); authorizationFailure.current = onAuthorizationFailure;
+  const invalidateProof = useRef(onProofUnavailable); invalidateProof.current = onProofUnavailable;
   const pdfs = rendered.artifacts.filter(artifact => artifact.asset.mime_type === "application/pdf");
   const [assetId, setAssetId] = useState(pdfs[0]?.asset.id ?? "");
   const [pageNumber, setPageNumber] = useState(1), [jump, setJump] = useState("1");
@@ -34,7 +36,11 @@ export default function SavedPdfProof({ actor, bookId, workspaceId, editionId, r
         const proof = validatePrintHistory(await api.listPrintRenders(editionId, controller.signal), bookId, editionId)
           .find(item => item.jobId === rendered.jobId);
         if (!valid()) return;
-        if (!proof || !artifact) throw new Error("This exact saved PDF is no longer available. Refresh print history.");
+        if (!proof) {
+          invalidateProof.current(rendered.jobId, unavailableProof);
+          return;
+        }
+        if (!artifact) throw new Error("This exact saved PDF is no longer available. Refresh print history.");
         validatePrintDownload(rendered, proof, workspaceId);
         const response = await api.readPrintPage(editionId, proof.jobId, pageNumber,
           { sha256: proof.source.sha256, fingerprint: proof.fingerprint, assetId, width }, controller.signal);
@@ -42,7 +48,10 @@ export default function SavedPdfProof({ actor, bookId, workspaceId, editionId, r
         const url = verifyPdfProofPage(response, proof, artifact, pageNumber, width);
         if (valid()) setPage({ response, url, key: requestKey });
       } catch (reason) { if (valid()) {
-        if (reason instanceof ApiClientError && [401, 403, 409].includes(reason.status)) { setPage(null); authorizationFailure.current(rendered.jobId); }
+        if (reason instanceof ApiClientError && [401, 403, 404, 409].includes(reason.status)) {
+          invalidateProof.current(rendered.jobId, reason.status === 404 ? unavailableProof : undefined);
+          return;
+        }
         setError(reason instanceof Error ? reason.message : "Could not open this saved PDF page.");
       } }
       finally { window.clearTimeout(timer); if (valid()) setBusy(false); }

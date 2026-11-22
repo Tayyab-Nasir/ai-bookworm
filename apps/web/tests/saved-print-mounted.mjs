@@ -1390,6 +1390,38 @@ test("freshly rendered links and PDF pages are withdrawn at their conservative e
   } finally { await page.close(); }
 });
 
+for (const missing of ["history", "page"]) test(`unavailable print proof clears the open files and preflight after ${missing}`, async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page);
+    const packageButton = page.getByRole("button", { name: "Create retailer package", exact: true });
+    const proof = page.getByRole("region", { name: "Saved PDF page proof", exact: true });
+    await page.getByRole("combobox", { name: /^Preflight target/ }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await expect(packageButton).toBeEnabled();
+    await expect(proof.getByAltText("Saved interior, page 1 of 4")).toBeVisible();
+
+    if (missing === "page") {
+      await page.evaluate(() => { window.pageError = 503; });
+      await proof.getByRole("button", { name: "Next page", exact: true }).click();
+      await expect(proof.getByRole("alert")).toBeVisible();
+      await expect(packageButton).toBeEnabled();
+      await page.evaluate(() => { window.pageError = 404; });
+      await proof.getByRole("button", { name: "Retry saved page", exact: true }).click();
+    } else {
+      await page.evaluate(() => { window.proofs = window.proofs.filter(proof => proof.jobId !== window.ids.job); });
+      await proof.getByRole("button", { name: "Next page", exact: true }).click();
+    }
+
+    await expect(page.getByRole("alert").filter({ hasText: "The selected print proof is no longer available." })).toBeVisible();
+    await expect(proof).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(0);
+    await expect(packageButton).toBeDisabled();
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(r => r.method === "POST").map(r => r.action)), ["preflight"]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 test("initial parent loading waits, then reads history without posting or rendering", async () => {
   const { page, errors } = await fixture({ disabled: true });
   try {
