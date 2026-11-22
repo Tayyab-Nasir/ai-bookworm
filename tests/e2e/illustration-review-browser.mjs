@@ -27,6 +27,9 @@ const book = { id: bookId, workspace_id: workspaceId, title: 'Harbor browser jou
 const asset = { id: assetId, workspace_id: workspaceId, type: 'illustration', name: 'Harbor lantern illustration',
   mime_type: 'image/png', storage_path: artworkPath(3), checksum: 'a'.repeat(64), size_bytes: artworkPng.length,
   status: 'draft', deleted_at: null, requires_approval: true, current_version_number: 3, current_scan_status: 'clean' };
+const coverId = '99999999-9999-4999-8999-999999999999';
+const cover = { ...asset, id: coverId, type: 'cover', name: 'Harbor front cover', current_version_number: 1,
+  storage_path: `workspaces/${workspaceId}/assets/${coverId}/v1/cover.png`, current_scan_status: 'trusted_generated' };
 const members = [
   { workspace_id: workspaceId, user_id: authorId, role: 'editor', status: 'active' },
   { workspace_id: workspaceId, user_id: reviewerId, role: 'reviewer', status: 'active' },
@@ -66,11 +69,19 @@ async function installFixtureRoutes(page, sessionUserId, pageErrors) {
     const url = new URL(request.url());
     const path = url.pathname.replace('/api/backend', '');
     const method = request.method();
-    if (method === 'GET' && path === `/v1/assets/${assetId}/download-url`) {
+    const file = [asset, cover].find(item => path.startsWith(`/v1/assets/${item.id}/`));
+    if (method === 'GET' && file && path.endsWith('/download-url')) {
       const version = url.searchParams.get('versionNumber');
       downloadVersions.push(version);
-      return reply(route, 200, { url: `${fixtureOrigin}/storage/v1/object/sign/book-assets/${artworkPath(version)}?token=fixture-artwork`, expiresIn: 60 });
+      assert.equal(Number(version), file.current_version_number);
+      return reply(route, 200, { url: `${fixtureOrigin}/storage/v1/object/sign/book-assets/${file.storage_path}?token=fixture-artwork`, expiresIn: 60 });
     }
+    if (method === 'GET' && file && path.endsWith('/versions')) return reply(route, 200, { versions: [{
+      id: `version-${file.id}`, asset_id: file.id, version_number: file.current_version_number, checksum: file.checksum,
+      storage_path: file.storage_path, mime_type: file.mime_type, size_bytes: file.size_bytes,
+      scan_status: file.current_scan_status, detected_mime_type: file.mime_type, created_at: '2026-11-22',
+    }] });
+    if (method === 'GET' && file && path.endsWith('/usage')) return reply(route, 200, { links: [] });
     if (method === 'GET' && path === '/v1/workspaces') {
       return reply(route, 200, { workspaces: [{ id: workspaceId, name: 'Harbor project', organization_id: 'org-fixture', created_by: authorId }] });
     }
@@ -78,7 +89,14 @@ async function installFixtureRoutes(page, sessionUserId, pageErrors) {
     if (method === 'GET' && path === '/v1/activity') return reply(route, 200, { events: [] });
     if (method === 'GET' && path === '/v1/tasks') return reply(route, 200, { tasks: [] });
     if (method === 'GET' && path === '/v1/books') return reply(route, 200, { books: [book] });
-    if (method === 'GET' && path === '/v1/assets') return reply(route, 200, { assets: [{ ...asset }] });
+    if (method === 'GET' && path === '/v1/assets') return reply(route, 200, { assets: [asset, cover] });
+    if (method === 'GET' && path === '/v1/assets/access') return reply(route, 200, { canEdit: sessionUserId === authorId });
+    if (method === 'GET' && path === `/v1/workspaces/${workspaceId}/folders`) return reply(route, 200, { folders: [] });
+    if (method === 'GET' && path === `/v1/workspaces/${workspaceId}/image-models`) return reply(route, 200, { models: [], purchaseAvailable: false });
+    if (method === 'GET' && path === '/v1/assets/generation-jobs') return reply(route, 200, { jobs: [
+      { id: 'illustration-job', assetId, kind: 'illustration', status: 'succeeded', createdAt: '2026-11-22' },
+      { id: 'cover-job', assetId: coverId, kind: 'front_cover', status: 'succeeded', createdAt: '2026-11-22' },
+    ] });
     if (method === 'GET' && path === '/v1/approvals') return reply(route, 200, { approvals: approvals.map((item) => ({ ...item })) });
     if (method === 'POST' && path === '/v1/approvals') {
       assert.equal(request.headers()['x-bookworm-actor'], sessionUserId);
@@ -147,10 +165,24 @@ try {
   await authorPage.goto(`${origin}/team?ws=${workspaceId}`);
   await authorPage.getByRole('heading', { name: 'Members', exact: true }).waitFor();
   await authorPage.getByText('Only workspace owners and admins can invite or change roles.', { exact: true }).waitFor();
-  await authorPage.goto(`${origin}/approvals?ws=${workspaceId}`);
+  for (const file of [cover, asset]) {
+    await authorPage.setViewportSize({ width: file === cover ? 390 : 1280, height: 900 });
+    await authorPage.goto(`${origin}/assets?ws=${workspaceId}`);
+    await authorPage.getByRole('button', { name: `Review ${file.name}`, exact: true }).click();
+    const details = authorPage.getByRole('dialog', { name: file.name });
+    await details.getByRole('img', { name: file.name, exact: true }).waitFor();
+    await authorPage.waitForFunction(name => Array.from(document.images).some(image => image.alt === name && image.naturalWidth > 0), file.name);
+    assert.ok(await authorPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'private artwork preview overflows');
+    await details.getByRole('link', { name: 'Open artwork approval', exact: true }).click();
+    await authorPage.waitForFunction(expected => document.querySelector('select[aria-label="Artwork"]')?.value === expected, file.id);
+    assert.equal(createBodies.length, 0, 'opening a review silently requested approval');
+  }
+  await authorPage.goto(`${origin}/approvals?ws=${workspaceId}&artwork=${assetId}&version=2`);
+  await authorPage.getByText('The linked version is unavailable for a new review.', { exact: false }).waitFor();
+  assert.equal(await authorPage.getByLabel('Artwork', { exact: true }).inputValue(), '');
+  await authorPage.goto(`${origin}/approvals?ws=${workspaceId}&artwork=${assetId}&version=3`);
   const artwork = authorPage.getByLabel('Artwork', { exact: true });
-  await artwork.waitFor();
-  await artwork.selectOption(assetId);
+  await authorPage.waitForFunction(expected => document.querySelector('select[aria-label="Artwork"]')?.value === expected, assetId);
   const reviewer = authorPage.getByLabel('Assigned reviewer', { exact: true });
   const reviewerOptions = await reviewer.locator('option').allTextContents();
   assert.equal(reviewerOptions.some((option) => option.includes('Fixture author')), false, 'requester cannot assign self');
@@ -203,6 +235,7 @@ try {
   assert.equal(asset.status, 'approved');
 
   const artworkPage = await authorContext.newPage();
+  downloadVersions.length = 0;
   await installFixtureRoutes(artworkPage, authorId, errors);
   await artworkPage.goto(`${origin}/books/${bookId}`);
   const initialDocument = await artworkPage.evaluate(async (id) => {
@@ -240,7 +273,7 @@ try {
   if (process.env.BROWSER_TEST_SCREENSHOT) await artworkPage.screenshot({ path: process.env.BROWSER_TEST_SCREENSHOT });
   if (process.env.BROWSER_TEST_ARTWORK_JSON) await writeFile(process.env.BROWSER_TEST_ARTWORK_JSON, JSON.stringify(imageNode), 'utf8');
   assert.deepEqual(errors, [], 'browser runtime errors');
-  console.log('PASS illustration review browser: idempotent request recovery, no duplicate pending review, assigned reject/approve, new version gate, exact-version placement/download, save/reload and mobile containment.');
+  console.log('PASS artwork review browser: private illustration/cover previews, exact approval links, stale version handling, request recovery, assigned decisions, chapter placement, save/reload and mobile containment.');
 } catch (error) {
   const page = authorContext?.pages().at(-1);
   console.error('Author UI at failure:', await page?.locator('body').innerText().then(text => text.slice(0, 3000)));

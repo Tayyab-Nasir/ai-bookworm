@@ -84,6 +84,7 @@ export default function CollaborationCenter({ view }: { view: View }) {
   const [approvalReviewer, setApprovalReviewer] = useState("");
   const [approvalComment, setApprovalComment] = useState("");
   const [artworkApprovalTarget, setArtworkApprovalTarget] = useState("");
+  const [artworkLink, setArtworkLink] = useState<{ version: number } | "unavailable" | null>(null);
   const [artworkReviewer, setArtworkReviewer] = useState("");
   const [artworkComment, setArtworkComment] = useState("");
   const [artworkRetryIdentity, setArtworkRetryIdentity] = useState<string | null>(null);
@@ -92,6 +93,7 @@ export default function CollaborationCenter({ view }: { view: View }) {
   const artworkRequestKeys = useRef(new Map<string, string>());
   const artworkRequestIntents = useRef(new Map<string, ArtworkApprovalIntent>());
   const artworkResolutionIntents = useRef(new Map<string, string>());
+  const consumedArtworkLink = useRef(false);
   const requestGeneration = useRef(0);
   const mounted = useRef(true);
   const accountRead = useRef<object | null>(null);
@@ -121,7 +123,7 @@ export default function CollaborationCenter({ view }: { view: View }) {
     artworkResolutionIntents.current.clear();
     setMembers([]); setProfiles([]); setTasks([]); setApprovals([]); setBooks([]); setAssets([]); setInvitations([]); setActivity([]);
     setTaskAssignee(""); setApprovalTarget(""); setApprovalReviewer(""); setArtworkApprovalTarget(""); setArtworkReviewer(""); setArtworkComment("");
-    setArtworkRetryIdentity(null); setRejectionNotes({}); setRejectionRetryIds({}); setInviteLink(""); setOutcome(null); setError(null);
+    setArtworkLink(null); setArtworkRetryIdentity(null); setRejectionNotes({}); setRejectionRetryIds({}); setInviteLink(""); setOutcome(null); setError(null);
   }, []);
 
   const verifyAccount = useCallback(async () => {
@@ -252,10 +254,25 @@ export default function CollaborationCenter({ view }: { view: View }) {
   const pendingArtwork = approvals.filter((approval) => approval.entity_type === "asset" && approval.status === "pending");
   const resolvedArtwork = approvals.filter((approval) => approval.entity_type === "asset" && approval.status !== "pending");
   const reviewableAssets = useMemo(() => getRequestableArtwork(assets, approvals), [assets, approvals]);
+  useEffect(() => {
+    if (view !== "approvals" || !scopeReady || !canEdit || consumedArtworkLink.current) return;
+    consumedArtworkLink.current = true;
+    const query = new URLSearchParams(window.location.search);
+    const id = query.get("artwork");
+    if (!id || query.get("ws") !== workspaceId) return;
+    const requested = reviewableAssets.find(asset => asset.workspace_id === workspaceId && asset.id === id
+      && String(asset.current_version_number) === query.get("version"));
+    if (requested?.current_version_number) {
+      setArtworkApprovalTarget(requested.id);
+      setArtworkLink({ version: requested.current_version_number });
+    } else setArtworkLink("unavailable");
+    document.getElementById("artwork-review-title")?.scrollIntoView();
+  }, [view, scopeReady, canEdit, workspaceId, reviewableAssets]);
   const targets = useMemo(() => [
     ...books.map((book) => ({ value: `book:${book.id}`, label: `Book · ${book.title}` })),
   ], [books]);
-  const selectedArtwork = reviewableAssets.find((asset) => asset.id === artworkApprovalTarget) ?? null;
+  const selectedArtwork = reviewableAssets.find(asset => asset.id === artworkApprovalTarget
+    && (!artworkLink || artworkLink === "unavailable" || asset.current_version_number === artworkLink.version)) ?? null;
   const selectedArtworkVersion = selectedArtwork?.current_version_number ?? null;
   const selectedArtworkIdentity = selectedArtwork && selectedArtworkVersion
     ? `${workspaceId}:${actorId ?? ""}:${selectedArtwork.id}:${selectedArtworkVersion}`
@@ -263,10 +280,11 @@ export default function CollaborationCenter({ view }: { view: View }) {
   const selectedArtworkRetry = selectedArtworkIdentity !== null && artworkRetryIdentity === selectedArtworkIdentity;
   const artworkReviewers = activeMembers.filter((member) => approveRoles.has(member.role) && member.user_id !== actorId);
   useEffect(() => {
-    if (artworkApprovalTarget && !reviewableAssets.some((asset) => asset.id === artworkApprovalTarget)) {
+    if (scopeReady && artworkApprovalTarget && !selectedArtwork) {
       setArtworkApprovalTarget("");
+      if (artworkLink) setArtworkLink("unavailable");
     }
-  }, [artworkApprovalTarget, reviewableAssets]);
+  }, [artworkApprovalTarget, artworkLink, scopeReady, selectedArtwork]);
   useEffect(() => {
     if (!selectedArtworkIdentity || artworkRetryIdentity !== selectedArtworkIdentity) return;
     const intent = artworkRequestIntents.current.get(selectedArtworkIdentity);
@@ -448,9 +466,10 @@ export default function CollaborationCenter({ view }: { view: View }) {
         <div className="space-y-6">
           {canEdit ? <form className={`${card} p-5`} onSubmit={(event) => { event.preventDefault(); void perform("request-artwork-approval", submitArtworkApproval, "Artwork sent to the assigned reviewer.", "retry-original"); }}>
             <h3 className="text-lg font-medium">Send artwork for review</h3>
-            <p className="mt-1 text-xs leading-5 text-white/45">Choose an uploaded or generated illustration that has completed its safety scan.</p>
-            <label className="mt-5 block text-xs text-white/55">Artwork<select aria-label="Artwork" required value={artworkApprovalTarget} onChange={(event) => setArtworkApprovalTarget(event.target.value)} className={input}><option value="">Select reviewable artwork</option>{reviewableAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name} · v{asset.current_version_number}</option>)}</select></label>
-            {!reviewableAssets.length && <p className="mt-2 text-xs text-white/35">No clean, review-required illustrations are waiting for a decision.</p>}
+            <p className="mt-1 text-xs leading-5 text-white/45">Choose an illustration or cover that has completed its safety scan.</p>
+            {artworkLink === "unavailable" && <p role="status" className="mt-3 text-sm text-amber-100">The linked version is unavailable for a new review. Choose a current file below.</p>}
+            <label className="mt-5 block text-xs text-white/55">Artwork<select aria-label="Artwork" required value={selectedArtwork?.id ?? ""} onChange={(event) => { setArtworkLink(null); setArtworkApprovalTarget(event.target.value); }} className={input}><option value="">Select reviewable artwork</option>{reviewableAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name} · v{asset.current_version_number}</option>)}</select></label>
+            {!reviewableAssets.length && <p className="mt-2 text-xs text-white/35">No clean illustrations or covers are ready to request review.</p>}
             {selectedArtwork && <p className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs text-white/55">Pinned to version <span className="font-medium text-white">{selectedArtworkVersion}</span> · scan <span className="text-emerald-100">{selectedArtwork.current_scan_status}</span></p>}
             <label className="mt-4 block text-xs text-white/55">Assigned reviewer<select aria-label="Assigned reviewer" required value={artworkReviewer} disabled={selectedArtworkRetry} onChange={(event) => setArtworkReviewer(event.target.value)} className={input}><option value="">Choose an independent reviewer</option>{artworkReviewers.map((member) => <option key={member.user_id} value={member.user_id}>{nameOf(member.user_id)} · {member.role}</option>)}</select></label>
             {!artworkReviewers.length && <p className="mt-2 text-xs text-amber-100/60">Add an active reviewer other than yourself before requesting artwork approval.</p>}

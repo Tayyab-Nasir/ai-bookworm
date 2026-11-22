@@ -14,6 +14,7 @@ import { readArtifactSession, readBrowserSession } from "../../lib/browser-sessi
 import { privateUploadUrl } from "../../lib/private-upload";
 import type { ImageGenerationJob } from "@bookworm/api-client";
 import { rememberWorkspace, replaceWorkspaceQuery, resolveWorkspace } from "../../lib/workspace-selection";
+import { isArtworkRequestable } from "../../lib/approved-artwork";
 
 interface VersionRow {
   id: string;
@@ -650,6 +651,11 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
                   <span className="font-medium">Checksum:</span> {open.checksum.slice(0, 12)}…
                 </p>
                 {open.mime_type.startsWith("image/") && !previewUrl && <div className="mt-2 text-sm text-[#9a9a9a]"><p role="status">{previewError ?? "Preview unavailable."}</p>{!detailLoading && open.checksum !== "pending" && <button type="button" onClick={() => void openAsset(open)} className="mt-2 min-h-11 underline">Retry preview</button>}</div>}
+                {canEdit && previewUrl && isArtworkRequestable(open) && (
+                  <a className="mt-3 inline-flex min-h-11 items-center text-sm underline" href={`/approvals?${new URLSearchParams({
+                    ws: open.workspace_id, artwork: open.id, version: String(open.current_version_number),
+                  })}#artwork-review-title`}>Open artwork approval</a>
+                )}
               </div>
 
               <div className="space-y-4">
