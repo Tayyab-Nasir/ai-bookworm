@@ -1,4 +1,4 @@
--- Stage-one RPC: this test does not assume direct DELETE intake is fenced yet.
+-- The confirmation RPC and export-only direct intake work together.
 begin;
 insert into auth.users(id,email) values
  ('a8940000-0000-4000-8000-000000000001','confirm-owner@invalid.test'),
@@ -28,6 +28,19 @@ do $$ begin
 end $$;
 select set_config('request.jwt.claim.sub','a8940000-0000-4000-8000-000000000001',true);
 do $$ declare v public.data_rights_requests; begin
+ begin
+  insert into public.data_rights_requests(user_id,request_type,status)
+   values('a8940000-0000-4000-8000-000000000001','delete','submitted');
+  assert false,'direct delete intake bypassed confirmation';
+ exception when insufficient_privilege then null; end;
+ begin
+  insert into public.data_rights_requests(user_id,request_type,status,completed_at)
+   values('a8940000-0000-4000-8000-000000000001','export','submitted',now());
+  assert false,'direct export wrote a server-owned column';
+ exception when insufficient_privilege then null; end;
+ insert into public.data_rights_requests(user_id,request_type,status)
+  values('a8940000-0000-4000-8000-000000000001','export','submitted') returning * into v;
+ assert v.request_type='export' and v.completed_at is null,'direct export failed';
  begin perform public.submit_delete_data_rights_request(null,null); assert false,'null confirmation accepted'; exception when invalid_parameter_value then null; end;
  begin perform public.submit_delete_data_rights_request('delete my account',null); assert false,'inexact confirmation accepted'; exception when invalid_parameter_value then null; end;
  begin perform public.submit_delete_data_rights_request('DELETE MY ACCOUNT',repeat(chr(128512),1001)); assert false,'overlong reason accepted'; exception when invalid_parameter_value then null; end;
