@@ -91,6 +91,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test --test-name-pattern='metadata .*model catalog|metadata catalog retry|delayed metadata catalog|changing metadata model' apps/web/tests/quote-recovery-mounted.mjs
+      - name: Verify Book Bible model catalog recovery
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test --test-name-pattern='Book Bible .*model catalog|Book Bible model retry|changing Book Bible model' apps/web/tests/quote-recovery-mounted.mjs
       - name: Verify community directory and discussion account isolation in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium

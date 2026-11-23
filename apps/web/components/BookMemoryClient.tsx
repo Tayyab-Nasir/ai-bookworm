@@ -278,6 +278,9 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const [pendingBible, setPendingBible] = useState<PendingMetadata[] | null>(null);
   const [bibleModels, setBibleModels] = useState<BibleModel[] | null>(null);
   const [bibleModelId, setBibleModelId] = useState("");
+  const bibleModelRef = useRef(bibleModelId); bibleModelRef.current = bibleModelId;
+  const bibleCatalogGeneration = useRef(0);
+  const [bibleCatalogState, setBibleCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [bibleCountConsent, setBibleCountConsent] = useState(false);
   const [bibleAcceptConsent, setBibleAcceptConsent] = useState(false);
   const [bibleQuoteIntent, setBibleQuoteIntent] = useState<BibleQuoteIntent | null>(null);
@@ -420,6 +423,24 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     } catch { if (current()) setMetadataCatalogState("error"); }
   }
 
+  async function refreshBibleModels() {
+    const scope = bookScope.current, identity = manualIdentity.current, epoch = manualEpoch.current;
+    if (!identity || identity.bookId !== bookId || hiddenAccount.current) return;
+    const generation = ++bibleCatalogGeneration.current;
+    const current = () => bookScope.current === scope && manualIdentity.current === identity && manualEpoch.current === epoch && !hiddenAccount.current && bibleCatalogGeneration.current === generation;
+    setBibleCatalogState("loading");
+    try {
+      const catalog = await boundRequest<{ models: BibleModel[] }>(`${endpoint}/bible/models`, "GET", undefined, identity.userId);
+      if (!current()) return;
+      if (!Array.isArray(catalog.models)) throw new Error("Invalid model catalog.");
+      const previous = bibleModelRef.current;
+      setBibleModels(catalog.models);
+      if (previous && !catalog.models.some(model => model.id === previous)) { setBibleModelId(""); setBibleCountConsent(false); }
+      else if (!previous) setBibleModelId(catalog.models[0]?.id ?? "");
+      setBibleCatalogState("ready");
+    } catch { if (current()) setBibleCatalogState("error"); }
+  }
+
   const load = useCallback(async () => {
     const scope = { bookId };
     bookScope.current = scope;
@@ -442,7 +463,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setMetadataCountConsent(false); setMetadataAcceptConsent(false); setMetadataAcceptanceUncertain(false);
     setMetadataRecoveryNotFound(false);
     setBiblePreview(null); setBibleHistory(null); setBibleQuoteIntent(null); setBibleQuote(null); setBibleQuoteJob(null);
-    setBibleQuoteStage("idle"); setBibleGenerationError(null); setBibleModels(null); setBibleModelId("");
+    bibleCatalogGeneration.current++; setBibleCatalogState("loading"); setBibleQuoteStage("idle"); setBibleGenerationError(null); setBibleModels(null); setBibleModelId("");
     setBibleCountConsent(false); setBibleAcceptConsent(false); setBibleAcceptanceUncertain(false);
     setBibleReadingPlan(null); setBiblePageIndex(0); setBibleChapterIds([]);
     setIdentityDirty(false); setMetadataDirty(false); setEntryDirty(false);
@@ -514,16 +535,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           setBibleHistory(history.drafts.map((item) => ({ ...item, candidates: parseBookBibleCandidates(item.candidates) })));
           setPendingBible(history.pending);
         } catch (reason) { if (bookScope.current !== scope) return; setBibleGenerationError(messageOf(reason)); }
-        try {
-          const catalog = await boundRequest<{ catalogVersion: string; models: BibleModel[] }>(`${endpoint}/bible/models`);
-          if (bookScope.current !== scope) return;
-          setBibleModels(catalog.models);
-          setBibleModelId(catalog.models[0]?.id ?? "");
-        } catch (reason) {
-          if (bookScope.current !== scope) return;
-          setBibleModels([]);
-          setBibleGenerationError(messageOf(reason));
-        }
+        await refreshBibleModels(); if (bookScope.current !== scope) return;
         try {
           const scopedKey = bibleQuoteIntentKey(bookId, userId), legacyKey = bibleQuoteIntentKey(bookId);
           const scoped = window.sessionStorage.getItem(scopedKey), legacy = window.sessionStorage.getItem(legacyKey);
@@ -1076,6 +1088,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setBibleGenerationError(null); setNotice(null);
     let intent = bibleQuoteIntent;
     if (!intent || ["failed", "expired"].includes(bibleQuoteStage)) {
+      if (bibleCatalogState !== "ready") return;
       if (bibleGenerationBlocked(pendingBible)) {
         setBibleGenerationError("Recover or resolve existing Book Bible jobs before requesting a new quote."); return;
       }
@@ -1232,15 +1245,16 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
             </label>}
           </div>
           <div className="mt-4 border-t border-white/10 pt-4">
+            {bibleCatalogState !== "loading" && (bibleCatalogState === "error" || !bibleModels?.length) && <p role="status" className="mb-3 text-xs text-amber-100">{bibleCatalogState === "error" ? "Book Bible models are temporarily unavailable." : "No Book Bible models are configured."} <button type="button" className="underline" onClick={() => void refreshBibleModels()}>Retry Book Bible models</button></p>}
             <div className="grid gap-4 sm:grid-cols-[minmax(220px,0.7fr)_minmax(0,1.3fr)]">
               <label className="text-xs text-[#bbb]">Approved AI model
-                <select value={bibleModelId} disabled={busy || Boolean(bibleQuoteIntent) || !bibleModels?.length} onChange={(event) => setBibleModelId(event.target.value)} className={inputClass}>
-                  {!bibleModels?.length && <option value="">{bibleModels === null ? "Loading approved models…" : "No approved models available"}</option>}
+                <select value={bibleModelId} disabled={busy || Boolean(bibleQuoteIntent) || bibleCatalogState !== "ready" || !bibleModels?.length} onChange={(event) => { setBibleModelId(event.target.value); setBibleCountConsent(false); }} className={inputClass}>
+                  <option value="">{bibleCatalogState === "loading" ? "Loading approved models…" : bibleCatalogState === "error" ? "Model list unavailable" : bibleModels?.length ? "Choose a model" : "No approved models available"}</option>
                   {bibleModels?.map((model) => <option key={model.id} value={model.id}>{model.label} · max {model.maxOutputTokens.toLocaleString()} output tokens</option>)}
                 </select>
               </label>
               {!bibleQuoteIntent && <label className="flex items-start gap-3 rounded-xl border border-white/10 p-3 text-xs leading-5 text-[#ccc]">
-                <input type="checkbox" checked={bibleCountConsent} onChange={(event) => setBibleCountConsent(event.target.checked)} disabled={busy || bibleGenerationBlocked(pendingBible)} className="mt-1 size-4 shrink-0 accent-sky-200" />
+                <input type="checkbox" checked={bibleCountConsent} onChange={(event) => setBibleCountConsent(event.target.checked)} disabled={busy || bibleCatalogState !== "ready" || !bibleModels?.length || !bibleModelId || bibleGenerationBlocked(pendingBible)} className="mt-1 size-4 shrink-0 accent-sky-200" />
                 <span>I agree to send the selected saved manuscript batch to OpenAI for input-token counting. This only prepares a quote; it does not generate candidates or reserve credits.</span>
               </label>}
               {bibleQuoteIntent && <div className="rounded-xl border border-sky-200/15 p-3 text-xs leading-5 text-[#ccc]">
@@ -1274,7 +1288,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               {(bibleQuoteJob.status === "failed" || bibleQuoteJob.status === "succeeded") && <p className="mt-2 text-[#aaa]">If the result is not available through recovery, do not submit a new quote until this job is resolved.</p>}
             </div>}
             <div className="mt-4 flex flex-wrap gap-2">
-              <button type="button" disabled={busy || bibleRecoveryBlocked || (!bibleQuoteIntent && (dirty || !bibleChapterIds.length || !bibleModelId || !bibleCountConsent || bibleGenerationBlocked(pendingBible)))} onClick={() => void requestBibleQuote()} className={secondaryClass}>
+              <button type="button" disabled={busy || bibleRecoveryBlocked || (!bibleQuoteIntent && (dirty || bibleCatalogState !== "ready" || !bibleChapterIds.length || !bibleModelId || !bibleCountConsent || bibleGenerationBlocked(pendingBible)))} onClick={() => void requestBibleQuote()} className={secondaryClass}>
                 {generatingBible ? "Checking…" : bibleQuoteIntent ? (bibleQuoteIntent.requestId ? "Check quote/job status" : "Retry same quote request") : "Count tokens and request quote"}
               </button>
               {bibleQuoteIntent && ["failed", "expired"].includes(bibleQuoteStage) && <button type="button" disabled={busy} onClick={() => { saveBibleQuoteIntent(null); setBibleQuote(null); setBibleQuoteJob(null); setBibleQuoteStage("idle"); setBibleCountConsent(false); }} className={secondaryClass}>Clear resolved quote and start fresh</button>}

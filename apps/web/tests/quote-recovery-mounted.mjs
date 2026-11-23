@@ -968,6 +968,35 @@ test("changing metadata model resets counting consent", async () => {
   }finally{await page.close()}
 });
 
+for (const failure of ["outage", "empty"]) test(`Book Bible ${failure} model catalog can be retried without changing unsaved fields`, async () => {
+  const page=await fixture();try{
+    await memoryFixture(page);await page.evaluate(failure=>{window.memoryFetch=async path=>path.endsWith('/bible/models')?failure==='outage'?Response.json({error:{message:'unavailable'}},{status:503}):Response.json({models:[]}):undefined;window.renderMemory({bookId:'11111111-1111-4111-8111-111111111111'})},failure);
+    await page.getByRole('button',{name:'Retry Book Bible models'}).waitFor();await expect(page.getByText(failure==='outage'?'Book Bible models are temporarily unavailable.':'No Book Bible models are configured.',{exact:false})).toBeVisible();
+    await expect(page.getByRole('checkbox',{name:/I agree to send the selected saved manuscript batch/})).toBeDisabled();await page.getByLabel('Book description').fill('Unsaved description stays here');await page.getByRole('button',{name:'Add memory entry'}).click();await page.getByLabel('Description',{exact:true}).fill('Unsaved Bible entry');
+    await page.evaluate(()=>{window.memoryFetch=undefined});await page.getByRole('button',{name:'Retry Book Bible models'}).click();await expect(page.getByLabel('Approved AI model')).toHaveValue('approved');await expect(page.getByLabel('Book description')).toHaveValue('Unsaved description stays here');await expect(page.getByPlaceholder('Who or what is this? What must remain consistent?')).toHaveValue('Unsaved Bible entry');
+    assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.method==='POST').length),0);
+  }finally{await page.close()}
+});
+
+test('Book Bible model retry cannot cross an account switch',async()=>{const page=await fixture();try{
+ await memoryFixture(page);await page.evaluate(()=>{window.memoryFetch=async path=>path.endsWith('/bible/models')?Response.json({error:{message:'unavailable'}},{status:503}):undefined;window.renderMemory({bookId:'11111111-1111-4111-8111-111111111111'})});await page.getByRole('button',{name:'Retry Book Bible models'}).waitFor();
+ await page.evaluate(()=>{const original=window.fetch;window.fetch=(path,init)=>path==='/api/auth/session'?Promise.resolve(Response.json({user:{id:'different-account'}})):original(path,init)});await page.getByRole('button',{name:'Retry Book Bible models'}).click();await expect(page.getByText(/account changed/i).first()).toBeVisible();
+ assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.path.endsWith('/bible/models')).length),1);assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.method==='POST').length),0);
+}finally{await page.close()}});
+
+test('delayed Book Bible model retry cannot replace the new book catalog',async()=>{const page=await fixture();try{
+ await memoryFixture(page);await page.evaluate(()=>{window.memoryFetch=async path=>path.endsWith('/bible/models')?Response.json({error:{message:'unavailable'}},{status:503}):undefined;window.renderMemory({bookId:'11111111-1111-4111-8111-111111111111'})});await page.getByRole('button',{name:'Retry Book Bible models'}).waitFor();
+ await page.evaluate(()=>{window.memoryFetch=async path=>path.endsWith('/bible/models')?window.defer('old-bible-models'):undefined});await page.getByRole('button',{name:'Retry Book Bible models'}).click();await page.waitForFunction(()=>!!window.gates['old-bible-models']);
+ await page.evaluate(()=>{window.memory.book.id='22222222-2222-4222-8222-222222222222';window.memoryFetch=async path=>path.endsWith('/bible/models')?Response.json({models:[{id:'new-model',label:'New book model',model:'new',maxOutputTokens:1000}]}):undefined;window.renderMemory({bookId:window.memory.book.id})});await expect(page.getByLabel('Approved AI model')).toHaveValue('new-model');
+ await page.evaluate(async()=>{window.gates['old-bible-models'].resolve(Response.json({models:[{id:'old-model',label:'Old book model',model:'old',maxOutputTokens:1000}]}));await new Promise(resolve=>setTimeout(resolve,30))});await expect(page.getByLabel('Approved AI model')).toHaveValue('new-model');await expect(page.getByRole('option',{name:/Old book model/})).toHaveCount(0);
+ assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.method==='POST').length),0);
+}finally{await page.close()}});
+
+test('changing Book Bible model resets counting consent',async()=>{const page=await fixture();try{
+ await memoryFixture(page);await page.evaluate(()=>{window.memoryFetch=async path=>path.endsWith('/bible/models')?Response.json({models:[{id:'approved',label:'Approved',model:'approved',maxOutputTokens:1000},{id:'other',label:'Other',model:'other',maxOutputTokens:1000}]}):undefined;window.renderMemory({bookId:'11111111-1111-4111-8111-111111111111'})});
+ await expect(page.getByLabel('Approved AI model')).toHaveValue('approved');const consent=page.getByRole('checkbox',{name:/I agree to send the selected saved manuscript batch/});await consent.check();await page.getByLabel('Approved AI model').selectOption('other');await expect(consent).not.toBeChecked();assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.method==='POST').length),0);
+}finally{await page.close()}});
+
 test("metadata storage failure prevents even the first counting POST", async () => {
   const page = await fixture();
   try {
