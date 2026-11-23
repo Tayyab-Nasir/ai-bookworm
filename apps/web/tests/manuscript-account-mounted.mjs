@@ -7,6 +7,61 @@ const bundled=await build({stdin:{contents:`import React from 'react'; import {c
  b.onLoad({filter:/.*/,namespace:'fixture'},a=>({resolveDir:process.cwd(),contents:a.path==='next/link'?`import React from 'react'; export default p=>React.createElement('a',p,p.children);`:a.path==='next/navigation'?`export const useRouter=()=>({push: x=>window.dest=x});`:a.path==='./AuthorShell'?`import React from 'react'; export const AuthorHeader=()=>React.createElement('div');`:`export const apiClient=()=>window.bookwormApi;`}));
 }}]});
 const browser=await chromium.launch({headless:true,channel:process.env.BROWSER_TEST_CHANNEL||'chromium-headless-shell'}); test.after(()=>browser.close());
+
+test("an existing upload waits for a verified import status before allowing retry", async () => {
+ const page = await browser.newPage();
+ try {
+  await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' }));
+  await page.goto("http://127.0.0.1/books/new");
+  await page.evaluate(() => {
+   const actor = "11111111-1111-4111-8111-111111111111";
+   const workspace = "22222222-2222-4222-8222-222222222222";
+   const book = "33333333-3333-4333-8333-333333333333";
+   const asset = "44444444-4444-4444-8444-444444444444";
+   const job = "55555555-5555-4555-8555-555555555555";
+   const checkpoint = { version: 1, userId: actor, workspaceId: workspace, bookId: book, savedAt: Date.now(),
+     completed: false, importing: true, bookCreated: true, setupMode: "import",
+     source: { assetId: asset, checksumSha256: "a".repeat(64), sizeBytes: 128, uploaded: true } };
+   window.setupKey = `bookworm:setup:${actor}:${workspace}`;
+   sessionStorage.setItem(window.setupKey, JSON.stringify(checkpoint));
+   window.originalSetup = sessionStorage.getItem(window.setupKey);
+   window.importReads = 0;
+   window.writes = 0;
+   window.fetch = async () => Response.json({ user: { id: actor } });
+   window.bookwormApi = {
+    listWorkspaces: async () => ({ workspaces: [{ id: workspace, name: "Workspace" }] }),
+    getBook: async () => ({ book: { id: book, workspace_id: workspace, title: "Saved book", author_name: "Writer", language: "en" } }),
+    getManuscriptImport: async () => ({ import: null }),
+    listManuscriptImports: async () => {
+     const read = ++window.importReads;
+     if (read === 1) return new Promise((_, reject) => { window.failStatusRead = () => reject(new Error("Import status is offline.")); });
+     if (read === 2) return { jobs: [{ id: job, book_id: actor, source_asset_id: asset, status: "failed" }] };
+     return { jobs: [] };
+    },
+    queueManuscriptImport: async () => { window.writes++; throw Error("Unexpected queue"); },
+    retryManuscriptImport: async () => { window.writes++; throw Error("Unexpected retry"); },
+   };
+  });
+  await page.addScriptTag({ content: bundled.outputFiles[0].text });
+  const retry = page.getByRole("button", { name: "Retry import", exact: true });
+  const check = page.getByRole("button", { name: "Check saved import status", exact: true });
+  await page.waitForFunction(() => typeof window.failStatusRead === "function");
+  await expect(retry).toBeDisabled();
+  await expect(page.getByText("Checking the saved import status…")).toBeVisible();
+  await page.evaluate(() => window.failStatusRead());
+  await expect(page.getByRole("alert")).toContainText("Import status is offline.");
+  await expect(retry).toBeDisabled();
+  await check.click();
+  await expect(page.getByRole("alert")).toContainText("saved import job list could not be verified");
+  await expect(retry).toBeDisabled();
+  await check.click();
+  await expect(retry).toBeEnabled();
+  assert.deepEqual(await page.evaluate(() => ({
+   reads: window.importReads, writes: window.writes, checkpointIntact: sessionStorage.getItem(window.setupKey) === window.originalSetup,
+  })), { reads: 3, writes: 0, checkpointIntact: true });
+ } finally { await page.close(); }
+});
+
 test('switching account during book creation stops the manuscript upload and keeps its recovery ID',async()=>{
  const page=await browser.newPage();try{
  await page.route('**/*',r=>r.fulfill({contentType:'text/html',body:'<html><body><div id="root"></div></body></html>'}));

@@ -228,6 +228,10 @@ the allowlist without starting a worker.
 - A saved EPUB section or resource 404 removes that unavailable reader source;
   when it is the selected packaging proof, its preflight is invalidated. A
   temporary reader failure keeps the existing proof available for retry.
+- A resumed manuscript upload checks its saved job list before enabling import
+  retry. An unavailable or mismatched list leaves the original upload in place
+  and offers a read-only status check.
+  Regression: `apps/web/tests/manuscript-account-mounted.mjs`.
 - Saved AI review history offers a read-only retry after an unavailable or
   invalid list response. Opening a review waits for recovery initialization and
   checks its exact job, book and chapter before displaying suggestions.

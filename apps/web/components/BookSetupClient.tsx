@@ -15,9 +15,9 @@ type ModelCatalog =
   | { bookId: string; status: "loading" | "unavailable" }
   | { bookId: string; status: "ready"; models: AiReviewModelChoice[] };
 const stageLabels: Record<SetupStage, string> = { creating: "Creating book...", uploading: "Uploading source...", scanning: "Checking source...", importing: "Importing chapters...", drafting: "Queuing first draft..." };
-const quoteIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function validFirstDraftQuote(quote: AiReviewUsageQuote): boolean {
-  return quote.status === "ready" && quoteIdPattern.test(quote.requestId) && quote.agentType === "writer"
+  return quote.status === "ready" && uuid.test(quote.requestId) && quote.agentType === "writer"
     && typeof quote.model === "string" && quote.model.length > 0
     && [quote.reservedCredits, quote.countedInputTokens, quote.maxOutputTokens].every(value => Number.isSafeInteger(value) && value > 0)
     && Number.isFinite(Date.parse(quote.expiresAt));
@@ -47,6 +47,8 @@ export default function BookSetupClient() {
   const [report, setReport] = useState<ManuscriptImportResult["report"] | null>(null);
   const [importJob, setImportJob] = useState<ManuscriptImportJob | null>(null);
   const [jobError, setJobError] = useState<string | null>(null);
+  const [checkedImportSource, setCheckedImportSource] = useState<string | null>(null);
+  const [importCheckAttempt, setImportCheckAttempt] = useState(0);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   const [catalogAttempt, setCatalogAttempt] = useState(0);
   const [aiModelId, setAiModelId] = useState("");
@@ -57,6 +59,9 @@ export default function BookSetupClient() {
   const [quotedBrief, setQuotedBrief] = useState<{ requestId: string; text: string } | null>(null);
   const [quoteCounting, setQuoteCounting] = useState(false);
   const reportHeading = useRef<HTMLHeadingElement>(null);
+  const importSource = checkpoint?.source;
+  const importStatusUnconfirmed = Boolean(checkpoint && importSource && importSource.uploaded !== false
+    && !checkpoint.completed && checkedImportSource !== `${checkpoint.bookId}:${importSource.assetId}`);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,9 +160,9 @@ export default function BookSetupClient() {
         // checkpoint from the effect's older snapshot or erase its attempt.
         const latest = current.current;
         if (!latest || !latest.starter || latest.completed || latest.bookId !== checkpoint.bookId || latest.starter.quoteRequestId !== starter.quoteRequestId) return;
-        if (status.quote.requestId !== starter.quoteRequestId || !quoteIdPattern.test(status.quote.requestId)) throw new Error("The saved quote identity could not be verified.");
+        if (status.quote.requestId !== starter.quoteRequestId || !uuid.test(status.quote.requestId)) throw new Error("The saved quote identity could not be verified.");
         if (status.job) {
-          if (!quoteIdPattern.test(status.job.id)) throw new Error("The saved generation identity could not be verified.");
+          if (!uuid.test(status.job.id)) throw new Error("The saved generation identity could not be verified.");
           const saved = { ...latest, completed: true, starter: { ...latest.starter, jobId: status.job.id }, savedAt: Date.now() };
           saveCheckpoint(saved); setAiQuote(null); setQuoteCounting(false);
           setNotice("Your first draft is queued. Open Chapter 1 to review it; nothing is applied automatically.");
@@ -185,8 +190,13 @@ export default function BookSetupClient() {
         const { jobs } = await api.listManuscriptImports(bookId, userId);
         await editorAccount(userId);
         if (cancelled) return;
-        const job = jobs.find((item) => item.source_asset_id === sourceId) ?? null;
-        setImportJob(job); setJobError(null);
+        if (!Array.isArray(jobs) || jobs.some(item => item?.book_id !== bookId)) throw new Error("The saved import job list could not be verified.");
+        const matching = jobs.filter(item => item.source_asset_id === sourceId);
+        const job = matching[0] ?? null;
+        if (matching.length > 1 || job && (!uuid.test(job.id) || !["queued", "running", "succeeded", "failed"].includes(job.status))) {
+          throw new Error("The saved import job could not be verified.");
+        }
+        setImportJob(job); setJobError(null); setCheckedImportSource(`${bookId}:${sourceId}`);
         if (job?.status === "succeeded") {
           const result = await api.getManuscriptImport(bookId, sourceId, userId);
           await editorAccount(userId);
@@ -202,13 +212,18 @@ export default function BookSetupClient() {
         }
         if (job?.status === "failed") { setNotice(null); return; } // Author must deliberately request another retry batch.
       } catch (reason) {
-        if (!cancelled) { try { await editorAccount(userId); } catch { setAccountHidden(true); } setJobError(reason instanceof Error ? reason.message : "Could not check import status. Checking again."); }
+        if (!cancelled) {
+          try { await editorAccount(userId); } catch { if (!cancelled) setAccountHidden(true); }
+          if (cancelled) return;
+          setCheckedImportSource(null);
+          setJobError(reason instanceof Error ? reason.message : "Could not check import status.");
+        }
       }
       if (!cancelled) timer = setTimeout(poll, 5000);
     };
     void poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [api, ready, saving, checkpoint?.bookId, checkpoint?.source?.assetId, checkpoint?.completed, importJob?.status, userId, workspaceId]);
+  }, [api, ready, saving, checkpoint?.bookId, checkpoint?.source?.assetId, checkpoint?.source?.uploaded, checkpoint?.completed, importJob?.status, importCheckAttempt, userId, workspaceId]);
 
   const continueToEditor = async (bookId: string, bookTitle: string, chapterId?: string, jobId?: string) => {
     try { await editorAccount(userId); } catch { setAccountHidden(true); return; }
@@ -246,7 +261,7 @@ export default function BookSetupClient() {
       try { window.sessionStorage.removeItem(setupKey(userId, workspaceId)); } catch { /* Server content is unchanged. */ }
       current.current = null; setCheckpoint(null); setReport(null); setError(null); setNotice(null); setQuotedBrief(null); setAiQuote(null); setQuoteCounting(false); setCountingConsent(false);
       setModelCatalog(null); setAiModelId("");
-      setImportJob(null); setJobError(null);
+      setImportJob(null); setJobError(null); setCheckedImportSource(null);
       setTitle(""); setAuthorName(""); setGenre(""); setStoryBrief(""); setSourceFile(null);
     } catch { setAccountHidden(true); }
     finally { busy.current = false; setSaving(false); }
@@ -254,7 +269,8 @@ export default function BookSetupClient() {
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (busy.current || !ready || !title.trim() || checkpoint?.completed || (mode === "ai" && checkpoint?.starter && !checkpoint.starter.jobId) || (importJob && importJob.status !== "failed")) return;
+    if (busy.current || !ready || !title.trim() || checkpoint?.completed || importStatusUnconfirmed
+      || (mode === "ai" && checkpoint?.starter && !checkpoint.starter.jobId) || (importJob && importJob.status !== "failed")) return;
     busy.current = true;
     setSaving(true);
     setSaveStage("creating");
@@ -328,7 +344,7 @@ export default function BookSetupClient() {
         saveCheckpoint(next); setAiQuote(result.quote); setQuoteCounting(false);
       }
       else if (result.request) {
-        if (result.request.status !== "counting" || !quoteIdPattern.test(result.request.id) || (starter.quoteRequestId && starter.quoteRequestId !== result.request.id)) throw new Error("The quote request could not be verified. Check the original request before retrying.");
+        if (result.request.status !== "counting" || !uuid.test(result.request.id) || (starter.quoteRequestId && starter.quoteRequestId !== result.request.id)) throw new Error("The quote request could not be verified. Check the original request before retrying.");
         setQuotedBrief({ requestId: result.request.id, text: submittedBrief });
         const next = { ...pending, starter: { ...starter, quoteRequestId: result.request.id }, savedAt: Date.now() };
         saveCheckpoint(next); setQuoteCounting(true); setNotice("Counting the selected saved chapter and brief. This does not reserve credits or start generation.");
@@ -356,7 +372,7 @@ export default function BookSetupClient() {
       dispatched = true;
       const accepted = await api.acceptAiReviewQuote(saved.bookId, quote.requestId, quote.reservedCredits, userId);
       await editorAccount(userId);
-      if (!quoteIdPattern.test(accepted.jobId)) throw new Error("The accepted generation identity could not be verified.");
+      if (!uuid.test(accepted.jobId)) throw new Error("The accepted generation identity could not be verified.");
       if (current.current?.completed && current.current.starter?.jobId !== accepted.jobId) throw new Error("The accepted generation does not match the recovered job. Check its saved status.");
       const next = { ...saved, completed: true, starter: { ...saved.starter, jobId: accepted.jobId }, savedAt: Date.now() };
       saveCheckpoint(next); setAiQuote(null); setNotice("Draft accepted and queued. Nothing is applied until you review it in Chapter 1.");
@@ -369,7 +385,7 @@ export default function BookSetupClient() {
         await editorAccount(userId);
         const status = await api.getAiReviewQuote(saved.bookId, requestId, userId);
         await editorAccount(userId);
-        if (status.quote.requestId !== requestId || (status.job && !quoteIdPattern.test(status.job.id))) throw new Error("The saved acceptance identity could not be verified.");
+        if (status.quote.requestId !== requestId || (status.job && !uuid.test(status.job.id))) throw new Error("The saved acceptance identity could not be verified.");
         if (current.current?.completed && current.current.starter?.jobId) {
           if (status.job && status.job.id !== current.current.starter.jobId) throw new Error("The saved generation identity changed. Check its status.");
           setNotice("Your first draft is queued. Open Chapter 1 to review it; nothing is applied automatically."); return;
@@ -507,12 +523,17 @@ export default function BookSetupClient() {
               {importJob.error_code && <p className="mt-2 break-words">Reference: {importJob.error_code}</p>}
             </div>}
             {checkpoint?.starter?.jobId && <div role="status" className="mt-5 rounded-xl border border-white/15 px-4 py-3 text-sm leading-6 text-[#bdbdbd]"><p className="font-medium text-white">First draft queued</p><p>Open Chapter 1 to follow progress and accept, reject, or revise the AI proposal. Your story brief is not kept in browser recovery storage.</p></div>}
-            {jobError && <p role="alert" className="mt-3 text-sm text-amber-100">Status temporarily unavailable. {jobError}</p>}
+            {importStatusUnconfirmed && !jobError && !saving && <p role="status" className="mt-3 text-sm text-[#bdbdbd]">Checking the saved import status…</p>}
+            {jobError && <div className="mt-3 text-sm text-amber-100">
+              <p role="alert">Status temporarily unavailable. {jobError}</p>
+              <button type="button" disabled={saving} onClick={() => { setJobError(null); setImportCheckAttempt(attempt => attempt + 1); }}
+                className="min-h-11 underline underline-offset-4 disabled:opacity-40">Check saved import status</button>
+            </div>}
             {error && <p role="alert" className="mt-5 rounded-xl border border-red-400/20 bg-red-400/[0.08] px-4 py-3 text-sm text-red-100">{error}</p>}
             {notice && <p role="status" className="mt-5 rounded-xl border border-amber-300/20 bg-amber-300/[0.08] px-4 py-3 text-sm leading-6 text-amber-50">{notice}</p>}
 
             <div className="mt-6 flex flex-wrap items-center gap-3">
-              {!checkpoint?.completed && (!importJob || importJob.status === "failed") && !(mode === "ai" && checkpoint?.starter) && <button type="submit" disabled={!ready || saving} className="glass-solid metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-semibold text-black disabled:cursor-wait disabled:opacity-60">
+              {!checkpoint?.completed && (!importJob || importJob.status === "failed") && !(mode === "ai" && checkpoint?.starter) && <button type="submit" disabled={!ready || saving || importStatusUnconfirmed} className="glass-solid metal-shine inline-flex h-12 items-center rounded-full px-5 text-sm font-semibold text-black disabled:cursor-wait disabled:opacity-60">
                 <span className="relative z-10">{saveStage ? stageLabels[saveStage] : checkpoint?.bookCreated === false ? "Retry book creation" : checkpoint ? mode === "ai" ? "Prepare Chapter 1" : mode === "import" ? "Retry import" : "Continue setup" : mode === "import" ? "Create and import" : mode === "ai" ? "Create book & Chapter 1" : "Create book"}</span>
               </button>}
               {checkpoint && checkpoint.bookCreated !== false && (
