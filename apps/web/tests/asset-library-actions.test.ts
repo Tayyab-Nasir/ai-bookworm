@@ -147,6 +147,28 @@ test("PDF preparation revalidates the current version and provides a separate do
   assert.equal(h.downloads[0].rel, "noopener noreferrer"); assert.equal(h.assigned.length, 0);
 });
 
+test("file usage reports unavailable until a successful retry confirms an empty result", async () => {
+  let attempts = 0;
+  const h = harness({
+    getAssetUsage: async () => {
+      if (++attempts === 1) throw new Error("Usage service unavailable");
+      return { links: [] };
+    },
+  });
+  let tree = await h.initialize();
+  await nodes(tree).find(node => node.type === "AssetBrowser").props.onOpen(file);
+  await settle();
+  tree = h.render();
+  assert(control(tree, "File usage could not be verified."));
+  assert(!control(tree, "No links recorded."));
+  assert(control(tree, "Prepare download"), "a usage outage should not hide other eligible file actions");
+  await control(tree, "Retry file usage").props.onClick();
+  await settle();
+  tree = h.render();
+  assert(control(tree, "No links recorded."));
+  assert(!control(tree, "File usage could not be verified."));
+});
+
 test("download preparation is single-flight and late signed replies are discarded after workspace replacement", async () => {
   const reply = deferred<any>(); let calls = 0;
   const h = harness({ getAssetDownloadUrl: () => { calls++; return reply.promise; } });

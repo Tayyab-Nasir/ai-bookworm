@@ -133,7 +133,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   const [previewUrl, setPreviewUrl] = useState<{ url: string; expiresAt: number } | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [versions, setVersions] = useState<VersionRow[]>([]);
-  const [usage, setUsage] = useState<{ id: string; entity_type: string; entity_id: string; usage_role: string | null }[]>([]);
+  const [usage, setUsage] = useState<{ id: string; entity_type: string; entity_id: string; usage_role: string | null }[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [imageJobs, setImageJobs] = useState<ImageGenerationJob[]>([]);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -165,7 +165,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     activeAsset.current = null; preparingDownload.current = false;
     editReady.current = false;
     setWorkspaceId(id); setLibraryWorkspaceId(""); setLibraryLoading(Boolean(id));
-    setBooks([]); setFolders([]); setAssets([]); setOpen(null); setPreviewUrl(null); setPreviewError(null); setVersions([]); setUsage([]);
+    setBooks([]); setFolders([]); setAssets([]); setOpen(null); setPreviewUrl(null); setPreviewError(null); setVersions([]); setUsage(null);
     setAssetAccess(null); setAccessError(false); setImageJobs([]); setHistoryError(null); setHistoryLoading(false);
     setError(null); setUploadNotice(null); setUploadStage(null); setFinalizingImage(null);
     setDetailLoading(false); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
@@ -195,7 +195,7 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
   function closeAsset() {
     if (scopeVersion.current !== permissionScope || detailRequest.current !== renderedDetailRequest) return;
     detailRequest.current++; downloadRequest.current++; activeAsset.current = null; preparingDownload.current = false;
-    setOpen(null); setPreviewUrl(null); setPreviewError(null); setVersions([]); setUsage([]);
+    setOpen(null); setPreviewUrl(null); setPreviewError(null); setVersions([]); setUsage(null);
     setDetailLoading(false); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
   }
 
@@ -360,19 +360,28 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
     const current = () => valid() && version === scopeVersion.current && request === detailRequest.current && activeWorkspace.current === workspaceId;
     activeAsset.current = a.id; downloadRequest.current++; preparingDownload.current = false;
     setOpen(a);
-    setPreviewUrl(null); setPreviewError(null); setVersions([]); setUsage([]);
+    setPreviewUrl(null); setPreviewError(null); setVersions([]); setUsage(null);
     setDetailLoading(true); setDetailError(null); setDownloadBusy(false); setDownloadError(null); setDownload(null);
     try {
-      const [v, u] = await Promise.all([
-        api.listAssetVersions(a.id),
-        api.getAssetUsage(a.id),
+      const [versionResult, usageResult] = await Promise.allSettled([
+        api.listAssetVersions(a.id, scope.actor),
+        api.getAssetUsage(a.id, scope.actor),
       ]);
       if (!current()) return;
-      setVersions(v.versions);
-      setUsage(u.links);
+      if (usageResult.status === "fulfilled") {
+        const links = usageResult.value?.links;
+        if (Array.isArray(links) && links.every(link => typeof link?.id === "string"
+          && typeof link.entity_type === "string" && typeof link.entity_id === "string"
+          && (link.usage_role === null || typeof link.usage_role === "string"))) {
+          setUsage(links);
+        }
+      }
+      if (versionResult.status === "rejected") throw versionResult.reason;
+      const { versions: savedVersions } = versionResult.value;
+      setVersions(savedVersions);
       if (previewMimeTypes.has(a.mime_type) && a.checksum !== "pending") {
         try {
-          const selected = verifiedDownloadVersion(a, v.versions);
+          const selected = verifiedDownloadVersion(a, savedVersions);
           const startedAt = Date.now();
           const preview = await api.getAssetDownloadUrl(a.id, selected.version_number);
           if (!current()) return;
@@ -702,8 +711,13 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
 
             <div className="mb-6">
               <h3 className="text-lg font-semibold text-white mb-2">Used in</h3>
-              {usage.length === 0 ? (
-                <p className="text-[#9a9a9a] text-center py-4">Not linked anywhere.</p>
+              {usage === null ? (
+                <div role="status" className="py-4 text-[#9a9a9a]">
+                  <p>{detailLoading ? "Checking where this file is used…" : "File usage could not be verified."}</p>
+                  {!detailLoading && <button type="button" onClick={() => void openAsset(open)} className="mt-2 min-h-11 underline">Retry file usage</button>}
+                </div>
+              ) : usage.length === 0 ? (
+                <p className="text-[#9a9a9a] text-center py-4">No links recorded.</p>
               ) : (
                 <div className="space-y-2">
                   {usage.map((l) => (
