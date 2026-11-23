@@ -997,6 +997,17 @@ test('changing Book Bible model resets counting consent',async()=>{const page=aw
  await expect(page.getByLabel('Approved AI model')).toHaveValue('approved');const consent=page.getByRole('checkbox',{name:/I agree to send the selected saved manuscript batch/});await consent.check();await page.getByLabel('Approved AI model').selectOption('other');await expect(consent).not.toBeChecked();assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.method==='POST').length),0);
 }finally{await page.close()}});
 
+for(const kind of ['metadata','bible']) test(`interrupted ${kind} catalog can retry after the original account returns`,async()=>{const page=await fixture();try{
+ await memoryFixture(page);await page.evaluate(kind=>{window.sessionActor='00000000-0000-4000-8000-000000000001';const original=window.fetch;window.fetch=(path,init)=>path==='/api/auth/session'?Promise.resolve(Response.json({user:{id:window.sessionActor}})):original(path,init);window.memoryFetch=async path=>path.endsWith(`/${kind}/models`)?Response.json({error:{message:'unavailable'}},{status:503}):undefined;window.renderMemory({bookId:'11111111-1111-4111-8111-111111111111'})},kind);
+ const retry=page.getByRole('button',{name:kind==='metadata'?'Retry metadata models':'Retry Book Bible models'});await retry.waitFor();await page.getByLabel('Book description').fill('Preserve unsaved metadata');
+ await page.evaluate(kind=>{window.memoryFetch=async path=>path.endsWith(`/${kind}/models`)?window.defer('held-model-catalog'):undefined},kind);await retry.click();await page.waitForFunction(()=>!!window.gates['held-model-catalog']);
+ await page.evaluate(()=>{window.sessionActor='different-account';window.dispatchEvent(new Event('focus'))});await page.getByRole('button',{name:'Verify original account'}).waitFor();
+ await page.evaluate(()=>{window.sessionActor='00000000-0000-4000-8000-000000000001';window.memoryFetch=undefined});await page.getByRole('button',{name:'Verify original account'}).click();await expect(retry).toBeVisible();await expect(page.getByLabel('Book description')).toHaveValue('Preserve unsaved metadata');
+ await retry.click();const model=page.getByLabel(kind==='metadata'?'Generation model':'Approved AI model');await expect(model).toHaveValue('approved');
+ await page.evaluate(async()=>{window.gates['held-model-catalog'].resolve(Response.json({models:[{id:'stale',label:'Stale model',model:'stale',maxOutputTokens:1000}]}));await new Promise(resolve=>setTimeout(resolve,30))});await expect(model).toHaveValue('approved');await expect(page.getByRole('option',{name:/Stale model/})).toHaveCount(0);
+ assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.method==='POST').length),0);
+}finally{await page.close()}});
+
 test("metadata storage failure prevents even the first counting POST", async () => {
   const page = await fixture();
   try {

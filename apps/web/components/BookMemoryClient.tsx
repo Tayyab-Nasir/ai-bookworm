@@ -337,7 +337,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       const actor = await authenticatedManualUser().catch(() => null);
       if (!current()) throw new Error("This request belongs to an earlier book view.");
       if (actor !== owner || hiddenAccount.current) {
-        hiddenAccount.current = true; setAccountHidden(true); setAccountRecoveryError(null);
+        hideChangedAccount();
         throw new Error("Your account changed. Return to the original account and check the saved outcome before retrying.");
       }
     };
@@ -348,6 +348,15 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     await verify();
     return result;
   };
+
+  function hideChangedAccount() {
+    hiddenAccount.current = true; setAccountHidden(true); setAccountRecoveryError(null);
+    metadataCatalogGeneration.current++; bibleCatalogGeneration.current++;
+    setMetadataCatalogState(state => state === "loading" ? "error" : state);
+    setBibleCatalogState(state => state === "loading" ? "error" : state);
+    setMetadataCountConsent(false); setBibleCountConsent(false);
+    setMetadataAcceptConsent(false); setBibleAcceptConsent(false);
+  }
 
   async function restoreOriginalAccount() {
     const identity = manualIdentity.current, scope = bookScope.current;
@@ -587,7 +596,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       if (!identity || identity.bookId !== bookId || scope.bookId !== bookId) return;
       const actor = await authenticatedManualUser().catch(() => null);
       if (manualIdentity.current !== identity || bookScope.current !== scope || hiddenAccount.current) return;
-      if (actor !== identity.userId) { hiddenAccount.current = true; setAccountHidden(true); setAccountRecoveryError(null); }
+      if (actor !== identity.userId) hideChangedAccount();
     };
     const onFocus = () => { void check(); };
     window.addEventListener("focus", onFocus);
@@ -669,7 +678,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     const userId = await authenticatedManualUser().catch(() => null);
     if (!context.current()) return false;
     if (userId !== context.identity.userId) {
-      hiddenAccount.current = true; setAccountHidden(true); setAccountRecoveryError(null);
+      hideChangedAccount();
       return false;
     }
     return true;
