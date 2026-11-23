@@ -84,7 +84,7 @@ async function fixture(width = 1280, parent = false, realReview = false, recover
       listChapters: async () => ({ chapters }),
       getChapterTitle: async chapterId => ({ bookId: "book", chapterId, title: chapters.find(c => c.id === chapterId).title, revision: 0, updatedAt: "2026-10-23T15:00:00Z", role: "owner" }),
       getChapterDocument: async chapterId => { window.documentReads.push(chapterId); return { role: "owner", document: { chapterId, version: 1, nodes: structuredClone(window.nodes) } }; },
-      listDocumentVersions: async () => ({ versions: [{ id: "version", version_number: 1, created_at: "2026-10-05T12:00:00Z", plain_text: "Saved source" }] }),
+      listDocumentVersions: async () => ({ versions: [{ id: "10000000-0000-4000-8000-000000000001", version_number: 1, created_at: "2026-10-05T12:00:00Z", plain_text: "Saved source" }] }),
       saveChapterDocument: async (chapterId, body) => { window.requests.push(body); return { version: 2, document: { chapterId, version: 2, nodes: body.nodes } }; },
       getChapterCreation: async (bookId, requestKey) => ({ bookId, requestKey, status: "not_found", chapterId: null }),
       createChapter: async () => { window.creations++; throw new Error("Unexpected chapter write"); },
@@ -689,7 +689,7 @@ for (const outcome of ["success", "failure"]) for (const action of ["save", "his
       const api = window.bookwormApi;
       api.getChapterDocument = async chapterId => ({ role: "owner", document: { chapterId, version: 1,
         nodes: chapterId === "second" ? [{ id: "second-node", type: "paragraph", text: "Second chapter manuscript" }] : structuredClone(window.nodes) } });
-      const history = chapterId => ({ versions: [{ id: `${chapterId}-version`, version_number: 1,
+      const history = chapterId => ({ versions: [{ id: chapterId === "second" ? "10000000-0000-4000-8000-000000000002" : "10000000-0000-4000-8000-000000000001", version_number: 1,
         created_at: "2026-10-06T00:00:00Z", change_summary: chapterId === "second" ? "Second chapter revision" : "Late first chapter history" }] });
       api.listDocumentVersions = async chapterId => history(chapterId);
       const deferred = result => new Promise((resolve, reject) => { window.finishOldRequest = () => outcome === "failure" ? reject(new Error("Late previous chapter failure")) : resolve(result); });
@@ -731,7 +731,9 @@ test("restore is bound to the original account before sending and hides private 
     assert.equal(await page.evaluate(() => window.restoreCalls.length), 0);
     actor = "fixture-author";
     await page.getByRole("button", { name: "Recheck original account" }).click();
-    await page.getByRole("button", { name: "Retry original restore" }).waitFor();
+    await page.getByRole("button", { name: "Restore version 1", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Retry original restore" }).count(), 0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:chapter-restore:v1:"))), false);
   } finally { await page.close(); }
 });
 
