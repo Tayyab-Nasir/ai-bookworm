@@ -125,6 +125,20 @@ test("Google sign-in retains its retry target after an unreadable response", asy
   }
 });
 
+test("password mismatch remains visible after an OAuth callback error", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><div id='root'></div>" }));
+    await page.goto("http://127.0.0.1/fixture?error=oauth");
+    await page.addScriptTag({ content: script });
+    await page.evaluate(() => { window.mount("reset-password"); });
+    await page.getByLabel("Password", { exact: true }).fill("firstpassword");
+    await page.getByLabel("Confirm new password").fill("differentpassword");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("alert").getByText("The passwords do not match.").waitFor();
+  } finally { await page.close(); }
+});
+
 for (const moveFocus of [false, true]) {
   test(`email sign-in failure ${moveFocus ? "preserves a new focus target" : "restores keyboard retry focus"}`, async () => {
     const page = await browser.newPage();
