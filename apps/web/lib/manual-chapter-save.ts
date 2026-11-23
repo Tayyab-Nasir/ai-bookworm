@@ -9,6 +9,49 @@ const fields = ["schema", "userId", "bookId", "chapterId", "operationId", "expec
 const version = (n: unknown): n is number => Number.isSafeInteger(n) && Number(n) >= 0 && Number(n) <= 2_147_483_647;
 const record = (v: unknown): v is Record<string, unknown> => Boolean(v && typeof v === "object" && !Array.isArray(v));
 export const chapterSaveKey = ({ userId, bookId, chapterId }: ChapterSaveScope) => `bookworm:manual-save:v1:${userId}:${bookId}:${chapterId}`;
+export type ChapterRestorePointer = ChapterSaveScope & {
+  schema: 1;
+  operationId: string;
+  expectedVersion: number;
+  versionId: string;
+};
+
+const restoreKey = ({ userId, bookId, chapterId }: ChapterSaveScope) => `bookworm:chapter-restore:v1:${userId}:${bookId}:${chapterId}`;
+
+export function readChapterRestore(storage: Pick<Storage, "getItem">, scope: ChapterSaveScope): ChapterRestorePointer | null {
+  const raw = storage.getItem(restoreKey(scope));
+  if (raw === null) return null;
+  try {
+    if (raw.length > 1800) throw Error();
+    const p: unknown = JSON.parse(raw);
+    if (!record(p) || Object.keys(p).length !== 7 || p.schema !== 1
+      || (["userId", "bookId", "chapterId"] as const).some(key => !identity.test(scope[key]) || p[key] !== scope[key])
+      || typeof p.operationId !== "string" || !uuid.test(p.operationId)
+      || typeof p.versionId !== "string" || !uuid.test(p.versionId)
+      || !version(p.expectedVersion) || p.expectedVersion > 2_147_483_646) throw Error();
+    return p as ChapterRestorePointer;
+  } catch { throw Error("The restore recovery record is unreadable. It has been kept so it cannot be replaced by another restore."); }
+}
+
+export function checkChapterRestore(storage: Pick<Storage, "getItem">, pointer: ChapterRestorePointer) {
+  const saved = readChapterRestore(storage, pointer);
+  if (!saved || saved.operationId !== pointer.operationId || saved.versionId !== pointer.versionId || saved.expectedVersion !== pointer.expectedVersion) {
+    throw Error("The restore recovery record changed. Reload to check the saved request before continuing.");
+  }
+}
+
+export function persistChapterRestore(storage: Pick<Storage, "getItem" | "setItem">, pointer: ChapterRestorePointer) {
+  if (readChapterRestore(storage, pointer)) throw Error("Recover the earlier restore before starting another.");
+  const { schema, userId, bookId, chapterId, versionId, operationId, expectedVersion } = pointer;
+  storage.setItem(restoreKey(pointer), JSON.stringify({ schema, userId, bookId, chapterId, versionId, operationId, expectedVersion }));
+  checkChapterRestore(storage, pointer);
+}
+
+export function clearChapterRestore(storage: Pick<Storage, "getItem" | "removeItem">, pointer: ChapterRestorePointer) {
+  checkChapterRestore(storage, pointer);
+  storage.removeItem(restoreKey(pointer));
+  if (readChapterRestore(storage, pointer)) throw Error("The confirmed restore record could not be cleared. Check saved status again.");
+}
 
 /** No expiry: an unconfirmed write must not silently become a new request. */
 export function parseChapterSave(raw: string | null, scope: ChapterSaveScope): ChapterSavePointer | null {

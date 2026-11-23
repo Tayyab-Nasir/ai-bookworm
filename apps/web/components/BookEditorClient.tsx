@@ -16,7 +16,7 @@ import { storyBlueprintWriterBrief } from "../lib/story-blueprint-draft";
 import { clearChapterCreation, readChapterCreation, saveChapterCreation, type ChapterCreationPointer } from "../lib/chapter-creation-recovery";
 import { chapterDraftBackup, chapterDraftReopenWarning, inspectChapterDraftBackup, MAX_CHAPTER_DRAFT_BACKUP_BYTES } from "../lib/chapter-draft";
 import { discardChapterTabRecovery, openChapterTabRecovery, readChapterTabRecovery, writeChapterTabRecovery } from "../lib/chapter-tab-recovery";
-import { chapterSaveDigest, chapterSaveKey, clearChapterSave, editorAccount, parseChapterSave, persistChapterSave,
+import { chapterSaveDigest, chapterSaveKey, checkChapterRestore, clearChapterRestore, clearChapterSave, editorAccount, parseChapterSave, persistChapterRestore, persistChapterSave, readChapterRestore,
   validateChapterSaveResult, validateCurrentChapter, validateSavedChapter, type ChapterSavePointer } from "../lib/manual-chapter-save";
 
 const EDIT_ROLES = new Set(["owner","admin","editor","writer","illustrator","designer"]);
@@ -198,6 +198,13 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       try {
         const scope = { userId, bookId, chapterId };
         setManualSave(parseChapterSave(window.sessionStorage.getItem(chapterSaveKey(scope)), scope));
+        const restore = readChapterRestore(window.sessionStorage, scope);
+        if (restore) {
+          setPendingRestore({
+            owner: userId, chapterId, versionId: restore.versionId, draftRevision: draftRevision.current,
+            body: { operationId: restore.operationId, expectedVersion: restore.expectedVersion },
+          });
+        }
         setSaveRecoveryReady(true);
       } catch (reason) { setError(reason instanceof Error ? reason.message : "Browser recovery could not be read. Saving is paused; the saved chapter remains available."); }
     } catch (reason) {
@@ -330,7 +337,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       const titleAtConfirmation = titleRevision.current;
       const flightsAtConfirmation = JSON.stringify(flights());
       const setupsBefore = JSON.stringify(Array.from(chapterSetups.current.entries()));
-      const confirmed = window.confirm(manualSave || saveFlight.current !== null ? "Leave with an unconfirmed save? Its recovery record does not contain draft text. Any optional tab draft is separate and may be incomplete. Download your draft first if needed." : pendingCreation.current || creatingChapter.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder || structureFlight.current ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : pendingRestore || restoring.current ? "Leave with an unconfirmed restore? Keep this page open to recover the original request." : aiDecisionFlight.current ? "Leave while an AI decision is being processed? Keep this page open to check its outcome." : hasChapterSetup && !hasLiveDraft() && !hasLiveTitle() ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?");
+      const confirmed = window.confirm(manualSave || saveFlight.current !== null ? "Leave with an unconfirmed save? Its recovery record does not contain draft text. Any optional tab draft is separate and may be incomplete. Download your draft first if needed." : pendingCreation.current || creatingChapter.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder || structureFlight.current ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : pendingRestore || restoring.current ? "Leave with an unconfirmed restore? Reopen this chapter in the same tab to recover the request. Download your draft before leaving." : aiDecisionFlight.current ? "Leave while an AI decision is being processed? Keep this page open to check its outcome." : hasChapterSetup && !hasLiveDraft() && !hasLiveTitle() ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?");
       if (!confirmed || revision !== draftRevision.current || titleAtConfirmation !== titleRevision.current || flightsAtConfirmation !== JSON.stringify(flights()) || setupsBefore !== JSON.stringify(Array.from(chapterSetups.current.entries()))) {
         event.preventDefault(); event.stopPropagation();
         if (confirmed) setError("Your draft changed while confirming navigation. Review it before leaving.");
@@ -706,15 +713,18 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
     const request = pendingRestore ?? { owner: saveAccount, chapterId: document.chapterId, versionId, draftRevision: draftRevision.current, body: { expectedVersion: document.version, operationId: crypto.randomUUID() } };
     if (request.owner !== saveAccount) return;
     const sequence = loadSequence.current, accountEpoch = passiveEpoch.current;
+    const pointer = { schema: 1 as const, userId: request.owner, bookId, chapterId: request.chapterId, versionId: request.versionId, ...request.body };
     restoring.current = true;
-    setPendingRestore(request); setSaving(true); setError(null); setNotice(null);
+    setSaving(true); setError(null); setNotice(null);
     try {
       await editorAccount(request.owner);
       if (sequence !== loadSequence.current) return;
       if (passiveLocked.current || accountEpoch !== passiveEpoch.current) {
-        if (!pendingRestore) setPendingRestore(null);
         setError("Account verification interrupted this restore action. Try again after checking your account."); return;
       }
+      if (pendingRestore) checkChapterRestore(window.sessionStorage, pointer);
+      else persistChapterRestore(window.sessionStorage, pointer);
+      setPendingRestore(request);
       const result = await (action === "check"
         ? api.getDocumentRestoreStatus(request.chapterId, request.versionId, request.body, request.owner)
         : api.restoreDocumentVersion(request.chapterId, request.versionId, request.body, request.owner));
@@ -725,7 +735,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
         if (!("status" in result) || result.chapterId !== request.chapterId || result.targetVersionId !== request.versionId
           || result.operationId !== request.body.operationId || result.expectedVersion !== request.body.expectedVersion
           || (result.status !== "not_found" && result.status !== "saved")) {
-          throw new Error("The service did not verify the original restore request. Keep this page open to check again.");
+          throw new Error("The service did not verify the original restore request. Check the saved request again.");
         }
         if (result.status === "not_found") {
           setNotice("No saved restore was found for this request yet. You can check again or retry the original restore.");
@@ -746,6 +756,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       }
       await editorAccount(request.owner);
       if (sequence !== loadSequence.current) return;
+      clearChapterRestore(window.sessionStorage, pointer);
       stopTabDraftForVersion(current.document.version);
       // Adopt the confirmed receipt before refreshing history. A failed history
       // request must not leave the old draft marked as the restored manuscript.
@@ -776,6 +787,31 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       setError(reason instanceof Error ? reason.message : "Could not confirm restore. Check its status or reload saved content.");
     }
     finally { if (sequence === loadSequence.current) { restoring.current = false; setSaving(false); } }
+  };
+
+  const reloadSavedVersion = () => {
+    if (!document || !editorInteractionAvailable.current || saving || loading || aiDecisionBusy) return;
+    const revision = draftRevision.current;
+    const prompt = pendingRestore
+      ? "Reload saved content and discard this tab's restore recovery record? This does not cancel the original restore. Download your draft first if you need it."
+      : "Reload saved content and replace this unsaved draft?";
+    if (!window.confirm(prompt)) return;
+    if (revision !== draftRevision.current) {
+      setError("Your draft changed while confirming the reload. Review it before trying again.");
+      return;
+    }
+    if (pendingRestore) {
+      try {
+        clearChapterRestore(window.sessionStorage, {
+          schema: 1, userId: pendingRestore.owner, bookId, chapterId: pendingRestore.chapterId,
+          versionId: pendingRestore.versionId, ...pendingRestore.body,
+        });
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Could not clear this tab's restore recovery record.");
+        return;
+      }
+    }
+    void loadChapter(document.chapterId);
   };
 
   const downloadDraft = (format: "json" | "txt" = "json") => {
@@ -988,7 +1024,7 @@ export default function BookEditorClient({ bookId: requestedBookId, initialChapt
       {pendingOrder.observed && <p role="status" className="mt-2">{pendingOrder.observed}</p>}
       <button type="button" disabled={saving || loading} className="mt-3 underline" onClick={() => void checkPendingOrder()}>Check saved chapter order</button>
     </section>}
-    {conflict && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>The saved chapter may have changed. Your draft is still here; saving and AI requests are paused until you reload. Download the JSON backup before reloading if you need to merge changes. It preserves artwork references, not image files.</p><button className="mr-4 mt-3 underline" onClick={() => downloadDraft()}>Download my draft</button><button className="underline" disabled={saving || loading || aiDecisionBusy} onClick={() => { if (!document || !editorInteractionAvailable.current || saving || loading || aiDecisionBusy) return; const revision = draftRevision.current; if (!window.confirm("Reload saved content and replace this unsaved draft?")) return; if (revision !== draftRevision.current) { setError("Your draft changed while confirming the reload. Review it before trying again."); return; } void loadChapter(document.chapterId); }}>Reload saved version</button></div>}
+    {conflict && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>The saved chapter may have changed. Your draft is still here; saving and AI requests are paused until you reload. Download the JSON backup before reloading if you need to merge changes. It preserves artwork references, not image files.</p><button className="mr-4 mt-3 underline" onClick={() => downloadDraft()}>Download my draft</button><button className="underline" disabled={saving || loading || aiDecisionBusy} onClick={reloadSavedVersion}>Reload saved version</button></div>}
     <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_260px]">
       <aside className="self-start rounded-2xl border border-white/10 p-2">
         <button type="button" className="flex min-h-11 w-full items-center justify-between px-3 text-sm text-white/75 lg:hidden" aria-expanded={structureOpen} aria-controls="chapter-structure" onClick={() => setStructureOpen((open) => !open)}><span>Chapters · {chapters.length}</span><span>{structureOpen ? "Hide" : "Show"}</span></button>

@@ -1,7 +1,8 @@
 // Real editor, synthetic restore transport. No production backend mutations.
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
-assert.equal((await fetch('http://127.0.0.1:4399/health').then(r => r.json())).fixture, true);
+const fixturePort = Number(process.env.RESTORE_FIXTURE_PORT ?? 4399);
+assert.equal((await fetch(`http://127.0.0.1:${fixturePort}/health`).then(r => r.json())).fixture, true);
 const browser = await chromium.launch({ headless: true, channel: process.env.BROWSER_TEST_CHANNEL || 'msedge' });
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -40,19 +41,31 @@ try {
   await page.getByRole('button', { name: 'Retry original restore' }).waitFor();
   assert.match(await editor.innerText(), /unsaved draft survives/);
   assert.equal(await editor.getAttribute('contenteditable'), 'false');
+  const recoveryKey = await page.evaluate(() => Object.keys(sessionStorage).find(key => key.startsWith('bookworm:chapter-restore:v1:')));
+  assert.ok(recoveryKey, 'restore identity must be stored before dispatch');
+  await page.reload();
+  await page.getByRole('button', { name: 'Retry original restore' }).waitFor();
+  assert.equal(requests.length, 1, 'reload must not submit a restore');
   await page.getByRole('button', { name: 'Retry original restore' }).click();
   await page.getByText('Restored as version 2.', { exact: true }).waitFor();
   await page.getByText('Restore succeeded, but version history could not refresh. Reload the chapter to refresh history.').waitFor();
   assert.equal((await editor.innerText()).trim(), 'Confirmed restored manuscript.');
   assert.deepEqual(requests[0], requests[1]); assert.equal(receipts.size, 1);
   assert.equal(await page.getByRole('button', { name: 'Retry original restore' }).count(), 0);
+  assert.equal(await page.evaluate(key => sessionStorage.getItem(key), recoveryKey), null);
   conflict = true;
   await editor.fill('Keep this draft after a restore conflict.');
   await page.getByRole('button', { name: 'Restore version 1', exact: true }).click();
-  await page.getByRole('button', { name: 'Reload saved version', exact: true }).waitFor();
+  const reloadConflict = page.getByRole('button', { name: 'Reload saved version', exact: true });
+  await reloadConflict.waitFor();
   assert.match(await editor.innerText(), /Keep this draft/);
-  assert.equal(await page.getByRole('button', { name: 'Download my draft', exact: true }).count(), 1);
+  assert.equal(await reloadConflict.locator('..').getByRole('button', { name: 'Download my draft', exact: true }).count(), 1);
   assert.equal(await page.getByRole('button', { name: 'Save chapter', exact: true }).isDisabled(), true);
+  const attempts = requests.length;
+  failHistory = false;
+  await reloadConflict.click();
+  await page.waitForFunction(key => sessionStorage.getItem(key) === null, recoveryKey);
+  assert.equal(requests.length, attempts, 'discarding the local recovery record must not submit a restore');
   assert.deepEqual(errors, []);
   console.log('PASS restore: lost response retry identity, one accepted version, draft protection, confirmed receipt despite history outage and conflict recovery.');
 } finally { await browser.close(); }
