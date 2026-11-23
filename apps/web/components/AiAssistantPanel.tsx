@@ -45,6 +45,7 @@ export default function AiAssistantPanel({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [recent, setRecent] = useState<AiJobReview[]>([]);
+  const [recentStatus, setRecentStatus] = useState<"loading" | "ready" | "unavailable">("loading");
   const [userId, setUserId] = useState<string | null>(null);
   const [recoveryReady, setRecoveryReady] = useState(false);
   const [recoveryAttempt, setRecoveryAttempt] = useState(0);
@@ -69,8 +70,20 @@ export default function AiAssistantPanel({
 
   const loadRecent = useCallback(async () => {
     const scope = reviewScope.current;
-    try { const result = await api.listAiJobs(bookId); if (reviewScope.current === scope) setRecent(result.jobs); }
-    catch { if (reviewScope.current === scope) setRecent([]); }
+    setRecentStatus("loading");
+    try {
+      const result = await api.listAiJobs(bookId);
+      if (reviewScope.current !== scope) return;
+      if (!Array.isArray(result.jobs) || result.jobs.some(review => review?.book_id !== bookId || !Array.isArray(review.chapter_ids))) {
+        throw new Error("Saved review history could not be verified.");
+      }
+      setRecent(result.jobs);
+      setRecentStatus("ready");
+    } catch {
+      if (reviewScope.current !== scope) return;
+      setRecent([]);
+      setRecentStatus("unavailable");
+    }
   }, [api, bookId, chapterId]);
 
   const remember = useCallback((next: AiJobReview) => {
@@ -445,14 +458,14 @@ export default function AiAssistantPanel({
   };
 
   const restore = async (review: AiJobReview) => {
-    if (processing || reviewing || draftIsDirty() || pendingRequest || !reviewTargetsChapter(review, chapterId)) return;
+    if (!recoveryReady || processing || draftIsDirty() || pendingRequest || review.book_id !== bookId || !reviewTargetsChapter(review, chapterId)) return;
     const scope = reviewScope.current;
     setBusy(true); setError(null); setNotice(null);
     try {
       const result = await api.getAiJob(review.id);
       if (reviewScope.current !== scope) return;
-      if (!reviewTargetsChapter(result, chapterId)) {
-        setError("This saved review belongs to a different chapter. Select that chapter before opening it.");
+      if (result.id !== review.id || result.book_id !== bookId || !reviewTargetsChapter(result, chapterId)) {
+        setError("The saved review response did not match this request. Open the review again to verify it.");
         return;
       }
       setJob(result); setLastAppliedVersion(null); remember(result);
@@ -589,6 +602,12 @@ export default function AiAssistantPanel({
     {unconfirmed && <p role="alert" className="mt-3 rounded-lg border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">The paid provider response for request {job?.id} is unconfirmed. No second generation will start automatically. Your credit remains reserved while support checks the provider result; do not start a new review for this book yet.</p>}
     {notice && <p role="status" className="mt-3 text-xs leading-5 text-emerald-200">{notice}</p>}
     {job && <p className="mt-3 text-[11px] text-white/35">{job.model ?? "provider"} · {Number((job.usage_json as { inputTokens?: number })?.inputTokens ?? 0) + Number((job.usage_json as { outputTokens?: number })?.outputTokens ?? 0)} tokens</p>}
+    {recentStatus === "loading" && !recent.length && <p role="status" className="mt-4 text-xs text-white/55">Checking saved reviews…</p>}
+    {recentStatus === "ready" && !recent.length && <p role="status" className="mt-4 text-xs text-white/55">No saved reviews for this book.</p>}
+    {recentStatus === "unavailable" && <div className="mt-4 text-xs text-amber-100">
+      <p role="status">Saved reviews are temporarily unavailable.</p>
+      <button type="button" onClick={() => void loadRecent()} className="mt-2 min-h-11 underline underline-offset-4">Retry loading saved reviews</button>
+    </div>}
     {recent.filter((review) => review.id !== job?.id).length > 0 && <details className="mt-4 rounded-xl border border-white/10 bg-white/[0.025] p-3">
       <summary className="cursor-pointer text-xs font-medium text-white/75">Recent saved reviews</summary>
       <p className="mt-2 text-[11px] leading-5 text-white/40">Reviews stay with this book. Open only a review made for the chapter currently selected.</p>
@@ -597,7 +616,7 @@ export default function AiAssistantPanel({
           const targetsCurrent = reviewTargetsChapter(review, chapterId);
           return <div key={review.id} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 px-3 py-2">
             <div className="min-w-0"><p className="truncate text-xs text-white/75">{modeLabel(review.agent_type)} · {review.status}</p><p className="mt-0.5 text-[10px] text-white/35">{review.context_source_count} related saved source{review.context_source_count === 1 ? "" : "s"}</p></div>
-            {targetsCurrent ? <button type="button" disabled={processing || !!reviewing || dirty || !!pendingRequest} onClick={() => void restore(review)} className="shrink-0 rounded-md border border-white/15 px-2 py-1 text-[11px] disabled:opacity-40">Open</button> : <span className="shrink-0 text-[10px] text-white/30">Other chapter</span>}
+            {targetsCurrent ? <button type="button" disabled={!recoveryReady || processing || dirty || !!pendingRequest} onClick={() => void restore(review)} className="shrink-0 rounded-md border border-white/15 px-2 py-1 text-[11px] disabled:opacity-40">Open</button> : <span className="shrink-0 text-[10px] text-white/30">Other chapter</span>}
           </div>;
         })}
       </div>

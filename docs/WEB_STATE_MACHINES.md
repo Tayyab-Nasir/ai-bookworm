@@ -228,6 +228,10 @@ the allowlist without starting a worker.
 - A saved EPUB section or resource 404 removes that unavailable reader source;
   when it is the selected packaging proof, its preflight is invalidated. A
   temporary reader failure keeps the existing proof available for retry.
+- Saved AI review history offers a read-only retry after an unavailable or
+  invalid list response. Opening a review waits for recovery initialization and
+  checks its exact job, book and chapter before displaying suggestions.
+  Regression: `apps/web/tests/quote-recovery-mounted.mjs`.
 - Retailer request initialization remains closed if account or session-storage
   reads fail. A read-only retry rechecks account ownership and the current book
   before restoring the original pointer; stale attempts cannot replace a new book.

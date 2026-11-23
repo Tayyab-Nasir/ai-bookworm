@@ -613,6 +613,50 @@ test("late restore success cannot open a review in another chapter", async () =>
   } finally { await page.close(); }
 });
 
+test("saved AI review history can retry a failed read and only reopen the exact review", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(() => {
+      window.historyReads = 0;
+      window.reviewReads = [];
+      window.api.listAiJobs = async () => {
+        const attempt = ++window.historyReads;
+        if (attempt === 1) throw new Error("Temporary history failure");
+        const review = window.job("a-job", "a-chapter");
+        return { jobs: [attempt === 2 ? { ...review, book_id: "b-book" } : review] };
+      };
+      window.api.getAiJob = async id => {
+        window.reviewReads.push(id);
+        const review = window.job(id, "a-chapter");
+        if (window.reviewReads.length === 1) return { ...review, book_id: "b-book" };
+        if (window.reviewReads.length === 2) return { ...review, id: "different-job" };
+        return review;
+      };
+    });
+    await page.evaluate(input => window.renderPanel(input), props());
+    const retry = page.getByRole("button", { name: "Retry loading saved reviews", exact: true });
+    await expect(retry).toBeEnabled();
+    await retry.click();
+    await expect.poll(() => page.evaluate(() => window.historyReads)).toBe(2);
+    await expect(retry).toBeEnabled();
+    await expect(page.getByText("Recent saved reviews")).toHaveCount(0);
+    await retry.click();
+    await page.getByText("Recent saved reviews").click();
+    const open = page.getByRole("button", { name: "Open", exact: true });
+    const mismatched = page.getByRole("alert").filter({ hasText: "did not match this request" });
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await open.click();
+      await expect.poll(() => page.evaluate(() => window.reviewReads.length)).toBe(attempt);
+      await expect(mismatched).toBeVisible();
+      await expect(page.getByText("a-job proposal", { exact: true })).toHaveCount(0);
+    }
+    await open.click();
+    await expect(page.getByText("a-job proposal", { exact: true })).toBeVisible();
+    assert.deepEqual(await page.evaluate(() => window.reviewReads), ["a-job", "a-job", "a-job"]);
+    assert.equal(await page.evaluate(() => window.calls.some(call => call.method !== "GET") || sessionStorage.length > 0), false);
+  } finally { await page.close(); }
+});
+
 test("late Apply success cannot refresh or change a newly selected chapter", async () => {
   const page = await fixture();
   try {
