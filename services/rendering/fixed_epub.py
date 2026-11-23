@@ -75,7 +75,7 @@ def render_fixed_epub(book: dict, edition: EbookEdition, cover: bytes | None,
     package_edition = edition.model_copy(update={"include_title_page": False,
         "front_matter": edition.front_matter.model_copy(update={"copyright_notice": "", "publisher": ""})})
     page_entries = [(f"page{index:04d}", {"title": f"Page {index + 1}"}) for index in range(len(pages))]
-    opf = ET.fromstring(_opf(model, package_edition, page_entries, lang, None, [slug for slug, _ in page_entries]))
+    opf = ET.fromstring(_opf(model, package_edition, page_entries, lang, False, [slug for slug, _ in page_entries]))
     ns = "{http://www.idpf.org/2007/opf}"
     ET.register_namespace("", ns[1:-1])
     ET.register_namespace("dc", "http://purl.org/dc/elements/1.1/")

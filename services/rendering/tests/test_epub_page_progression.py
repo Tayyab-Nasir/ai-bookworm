@@ -46,7 +46,7 @@ def test_package_page_progression_follows_effective_language_and_explicit_prefer
 
 def test_fixed_layout_package_direction_is_unchanged():
     edition = EbookEdition(flow="fixed", text_direction="rtl")
-    opf = ET.fromstring(_opf(BOOK, edition, [], "ar", None, []))
+    opf = ET.fromstring(_opf(BOOK, edition, [], "ar", False, []))
     assert opf.find("o:spine", NS).get("page-progression-direction") is None
 
 
@@ -59,5 +59,5 @@ def test_real_fixed_layout_output_retains_spine_direction_and_records_renderer_v
         opf = ET.fromstring(archive.read("OEBPS/content.opf"))
         assert opf.find("o:spine", NS).get("page-progression-direction") is None
         meta = opf.find("o:metadata/o:meta[@property='bookworm:renderer']", NS)
-        assert meta is not None and meta.text == RENDERER_VERSION == "epub-1.14.0"
+        assert meta is not None and meta.text == RENDERER_VERSION == "epub-1.15.0"
         assert any(name.startswith("OEBPS/images/page") for name in archive.namelist())

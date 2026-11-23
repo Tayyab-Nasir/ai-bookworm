@@ -262,7 +262,7 @@ def test_cover_typography_qr_and_epub_manifest_are_deterministic():
     assert b'<meta name="cover" content="cover-image"/>' in opf
     assert b'<itemref idref="cover-page"/>' in opf
     assert "OEBPS/cover.xhtml" in zf.namelist()
-    assert "OEBPS/images/11111111-1111-1111-1111-111111111111.png" in zf.namelist()
+    assert zf.read("OEBPS/cover.png") == cover1
 
 
 def test_cover_qr_rejects_non_https_and_missing_artwork():
@@ -270,6 +270,33 @@ def test_cover_qr_rejects_non_https_and_missing_artwork():
         parse_edition({"kind": "ebook", "cover": {"asset_id": "cover", "qr_code": {"enabled": True, "url": "http://unsafe.example"}}})
     with pytest.raises(Exception):
         parse_edition({"kind": "ebook", "cover": {"qr_code": {"enabled": True, "url": "https://safe.example"}}})
+
+
+def test_reusing_cover_artwork_in_a_chapter_keeps_the_illustration_uncomposed(publication_date_render_client):
+    asset_id = "11111111-1111-1111-1111-111111111111"
+    book = copy.deepcopy(VALID)
+    book["assets"] = [{"id": asset_id, "role": "illustration", "altText": "Original artwork"}]
+    book["chapters"][0]["nodes"].append({"id": "shared-artwork", "type": "image", "assetId": asset_id, "altText": "Original artwork"})
+    artwork = _artwork()
+    encoded = base64.b64encode(artwork).decode()
+    config = {"kind": "ebook", "cover": {"asset_id": asset_id,
+              "qr_code": {"enabled": True, "url": "https://author.example/extras"}}}
+    reply = publication_date_render_client.post("/render", headers={"x-service-token": "publication-date-fixture"},
+        json={"bookModel": book, "editionConfig": config, "coverBase64": encoded, "assetImagesBase64": {asset_id: encoded}})
+    assert reply.status_code == 200, reply.text
+    result = reply.json()
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(result["artifactBase64"]))) as archive:
+        manifest = ET.fromstring(archive.read("OEBPS/content.opf"))
+        items = {item.attrib["id"]: item.attrib["href"] for item in manifest.findall(".//{http://www.idpf.org/2007/opf}item")}
+        assert items["cover-image"] == "cover.png"
+        assert items[f"image-{asset_id}"] == f"images/{asset_id}.png"
+        assert archive.read("OEBPS/cover.png") == base64.b64decode(result["coverArtifactBase64"])
+        chapter = next(name for name in archive.namelist() if name.startswith("OEBPS/ch") and name.endswith(".xhtml"))
+        assert f'src="images/{asset_id}.png"'.encode() in archive.read(chapter)
+        assert b'src="cover.png"' in archive.read("OEBPS/cover.xhtml")
+        with Image.open(io.BytesIO(artwork)) as original, Image.open(io.BytesIO(archive.read(f"OEBPS/images/{asset_id}.png"))) as illustration:
+            assert illustration.size == original.size
+            assert illustration.tobytes() == original.tobytes()
 
 
 @pytest.mark.parametrize("url", [
@@ -325,7 +352,7 @@ def test_effective_ebook_cover_http_png_matches_listing_and_exact_embedded_epub(
     epub = base64.b64decode(result["artifactBase64"])
     assert (epub, result["sha256"]) == render_epub(control_book, control_edition, expected_png)
     with zipfile.ZipFile(io.BytesIO(epub)) as archive:
-        assert archive.read("OEBPS/images/11111111-1111-1111-1111-111111111111.png") == png
+        assert archive.read("OEBPS/cover.png") == png
         metadata = ET.fromstring(archive.read("OEBPS/content.opf"))
         ns = {"dc": "http://purl.org/dc/elements/1.1/"}
         assert metadata.find(".//dc:title", ns).text == "The edition title"

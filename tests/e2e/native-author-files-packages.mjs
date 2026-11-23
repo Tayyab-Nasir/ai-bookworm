@@ -115,6 +115,14 @@ with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as archive:
   import subprocess
   import zxingcpp
   from PIL import Image
+  from xml.etree import ElementTree
+  if 'book.epub' in files and 'cover.png' in files:
+   with zipfile.ZipFile(io.BytesIO(files['book.epub'])) as epub:
+    opf = ElementTree.fromstring(epub.read('OEBPS/content.opf'))
+    covers = [item for item in opf.findall('.//{http://www.idpf.org/2007/opf}item')
+              if 'cover-image' in item.attrib.get('properties', '').split()]
+    assert len(covers) == 1
+    assert epub.read('OEBPS/' + covers[0].attrib['href']) == files['cover.png']
   for name in ('cover.png', 'cover.jpg', 'cover.pdf'):
    if name not in files:
     continue

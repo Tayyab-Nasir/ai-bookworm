@@ -241,6 +241,10 @@ the allowlist without starting a worker.
   Regression: `apps/web/tests/retailer-init-retry-mounted.mjs`,
   `apps/web/tests/private-artifact-mounted.mjs`, and the lost package response
   scenario in `tests/e2e/native-author-files-publishing.mjs`.
+- Reflowable EPUBs keep the composed cover (including its QR code) separate
+  from chapter illustrations, even when both use the same source artwork.
+  Native package verification checks that the embedded PNG matches the cover
+  proof included in the retailer ZIP.
 - Saved EPUB proofs can be selected for packaging after reopening Publishing
   Studio. Retailer preflight checks the stored EPUB and cover through the
   private publishing service. It requires the saved render to match the

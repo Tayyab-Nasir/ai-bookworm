@@ -13,10 +13,11 @@ from editions import EbookEdition, resolve_text_direction
 from manuscript import block_tree, image_width, inline_markup, table_header_rows, table_rows, table_spans
 from publication_metadata import effective_publication_metadata
 
-RENDERER_VERSION = "epub-1.14.0"
+RENDERER_VERSION = "epub-1.15.0"
 SOURCE_DATE_EPOCH = (1980, 1, 1, 0, 0, 0)  # zip epoch minimum; fixed for reproducibility
 
 _OEBPS = "OEBPS"
+_COVER_IMAGE = "cover.png"
 
 _CONTAINER_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
@@ -143,18 +144,18 @@ def _nav_xhtml(book: dict, chapters: list[tuple[str, dict]], lang: str, directio
     )
 
 
-def _cover_xhtml(asset_id: str, title: str, lang: str, direction: str) -> str:
+def _cover_xhtml(title: str, lang: str, direction: str) -> str:
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE html>\n'
         f'<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{escape(lang)}" lang="{escape(lang)}" dir="{direction}">\n'
         f'<head><title>{escape(title)} — Cover</title><link rel="stylesheet" type="text/css" href="style.css"/></head>\n'
-        f'<body class="cover"><img alt="Cover of {escape(title)}" src="images/{escape(asset_id)}.png"/></body></html>'
+        f'<body class="cover"><img alt="Cover of {escape(title)}" src="{_COVER_IMAGE}"/></body></html>'
     )
 
 
 def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], lang: str,
-         cover_asset_id: str | None, image_asset_ids: list[str]) -> str:
+         has_cover: bool, image_asset_ids: list[str]) -> str:
     md = effective_publication_metadata(book["metadata"], edition.metadata_overrides)
     uid = f"urn:uuid:{book['bookId']}"
     manifest_items = [
@@ -167,16 +168,16 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
     manifest_items += [
         f'<item href="{slug}.xhtml" id="{slug}" media-type="application/xhtml+xml"/>'
         for slug, _ in chapters]
-    if cover_asset_id:
+    if has_cover:
         manifest_items += [
-            f'<item href="images/{escape(cover_asset_id)}.png" id="cover-image" media-type="image/png" properties="cover-image"/>',
+            f'<item href="{_COVER_IMAGE}" id="cover-image" media-type="image/png" properties="cover-image"/>',
             '<item href="cover.xhtml" id="cover-page" media-type="application/xhtml+xml"/>',
         ]
     manifest_items += [
         f'<item href="images/{escape(asset_id)}.png" id="image-{escape(asset_id)}" media-type="image/png"/>'
-        for asset_id in image_asset_ids if asset_id != cover_asset_id
+        for asset_id in image_asset_ids
     ]
-    spine = ('<itemref idref="cover-page"/>' if cover_asset_id else "") + "".join(
+    spine = ('<itemref idref="cover-page"/>' if has_cover else "") + "".join(
         f'<itemref idref="{slug}"/>' for slug, _ in _front_pages(book, edition)) + (
         '<itemref idref="nav"/>' if edition.navigation != "none" else "") + "".join(
         f'<itemref idref="{slug}"/>' for slug, _ in chapters)
@@ -201,7 +202,7 @@ def _opf(book: dict, edition: EbookEdition, chapters: list[tuple[str, dict]], la
         meta.append(f"<dc:subject>{escape(kw)}</dc:subject>")
     if md.get("isbn13"):
         meta.append(f"<dc:identifier>{escape(str(md['isbn13']))}</dc:identifier>")
-    if cover_asset_id:
+    if has_cover:
         meta.append('<meta name="cover" content="cover-image"/>')
     progression = f' page-progression-direction="{resolve_text_direction(lang, edition.text_direction)}"' if edition.flow == "reflowable" else ""
     return (
@@ -241,10 +242,11 @@ def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = N
     # fixed entry order: mimetype first (stored), then container, then sorted OEBPS files
     entries: list[tuple[str, bytes, bool]] = [("mimetype", b"application/epub+zip", True)]
     entries.append(("META-INF/container.xml", _CONTAINER_XML.encode(), False))
-    cover_asset_id = edition.cover.asset_id if cover_bytes and edition.cover.asset_id else None
+    has_cover = bool(cover_bytes and edition.cover.asset_id)
     embedded_images = sorted((image_bytes or {}).items())
-    entries.append((f"{_OEBPS}/content.opf", _opf(book, edition, chapters, lang, cover_asset_id, [item[0] for item in embedded_images]).encode(), False))
-    entries.append((f"{_OEBPS}/nav.xhtml", _nav_xhtml(book, chapters, lang, direction, edition, bool(cover_asset_id)).encode(), False))
+    embedded_ids = set(image_bytes or {})
+    entries.append((f"{_OEBPS}/content.opf", _opf(book, edition, chapters, lang, has_cover, [item[0] for item in embedded_images]).encode(), False))
+    entries.append((f"{_OEBPS}/nav.xhtml", _nav_xhtml(book, chapters, lang, direction, edition, has_cover).encode(), False))
     entries.append((f"{_OEBPS}/style.css", _CSS.encode(), False))
     for slug, lines in _front_pages(book, edition):
         body = "".join(f"<p>{escape(line).replace(chr(10), '<br/>')}</p>" for line in lines if line.strip())
@@ -256,13 +258,12 @@ def render_epub(book: dict, edition: EbookEdition, cover_bytes: bytes | None = N
             f'<body epub:type="{semantic}">{body}</body></html>')
         entries.append((f"{_OEBPS}/{slug}.xhtml", document.encode(), False))
     for slug, ch in chapters:
-        entries.append((f"{_OEBPS}/{slug}.xhtml", _chapter_xhtml(book, ch, lang, direction, set(image_bytes or {}) | ({cover_asset_id} if cover_asset_id else set())).encode(), False))
+        entries.append((f"{_OEBPS}/{slug}.xhtml", _chapter_xhtml(book, ch, lang, direction, embedded_ids).encode(), False))
     for asset_id, data in embedded_images:
-        if asset_id != cover_asset_id:
-            entries.append((f"{_OEBPS}/images/{asset_id}.png", data, False))
-    if cover_asset_id and cover_bytes:
-        entries.append((f"{_OEBPS}/cover.xhtml", _cover_xhtml(cover_asset_id, book["metadata"].get("title", ""), lang, direction).encode(), False))
-        entries.append((f"{_OEBPS}/images/{cover_asset_id}.png", cover_bytes, False))
+        entries.append((f"{_OEBPS}/images/{asset_id}.png", data, False))
+    if has_cover and cover_bytes:
+        entries.append((f"{_OEBPS}/cover.xhtml", _cover_xhtml(book["metadata"].get("title", ""), lang, direction).encode(), False))
+        entries.append((f"{_OEBPS}/{_COVER_IMAGE}", cover_bytes, False))
 
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
