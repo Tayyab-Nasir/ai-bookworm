@@ -259,6 +259,9 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
   const [metadataAudience, setMetadataAudience] = useState("");
   const [metadataModels, setMetadataModels] = useState<MetadataModel[] | null>(null);
   const [metadataModelId, setMetadataModelId] = useState("");
+  const metadataModelRef = useRef(metadataModelId); metadataModelRef.current = metadataModelId;
+  const metadataCatalogGeneration = useRef(0);
+  const [metadataCatalogState, setMetadataCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [metadataChapterIds, setMetadataChapterIds] = useState<string[]>([]);
   const [metadataCountConsent, setMetadataCountConsent] = useState(false);
   const [metadataAcceptConsent, setMetadataAcceptConsent] = useState(false);
@@ -399,6 +402,24 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     else if (result.quote?.status === "ready") setBibleQuoteStage("ready");
   }
 
+  async function refreshMetadataModels() {
+    const scope = bookScope.current, identity = manualIdentity.current, epoch = manualEpoch.current;
+    if (!identity || identity.bookId !== bookId || hiddenAccount.current) return;
+    const generation = ++metadataCatalogGeneration.current;
+    const current = () => bookScope.current === scope && manualIdentity.current === identity && manualEpoch.current === epoch && !hiddenAccount.current && metadataCatalogGeneration.current === generation;
+    setMetadataCatalogState("loading");
+    try {
+      const catalog = await boundRequest<{ models: MetadataModel[] }>(`${endpoint}/metadata/models`, "GET", undefined, identity.userId);
+      if (!current()) return;
+      if (!Array.isArray(catalog.models)) throw new Error("Invalid model catalog.");
+      const previous = metadataModelRef.current;
+      setMetadataModels(catalog.models);
+      if (previous && !catalog.models.some(model => model.id === previous)) { setMetadataModelId(""); setMetadataCountConsent(false); }
+      else if (!previous) setMetadataModelId(catalog.models[0]?.id ?? "");
+      setMetadataCatalogState("ready");
+    } catch { if (current()) setMetadataCatalogState("error"); }
+  }
+
   const load = useCallback(async () => {
     const scope = { bookId };
     bookScope.current = scope;
@@ -416,7 +437,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     setPendingBible(null);
     setMetadataFields({ description: "", keywords: "", categories: "" });
     setMetadataCandidate(null); setMetadataGenerationError(null); setMetadataHistory(null);
-    setMetadataModels(null); setMetadataModelId(""); setMetadataQuote(null); setMetadataQuoteIntent(null);
+    metadataCatalogGeneration.current++; setMetadataCatalogState("loading"); setMetadataModels(null); setMetadataModelId(""); setMetadataQuote(null); setMetadataQuoteIntent(null);
     setMetadataQuoteStage("idle"); setMetadataChapterIds([]); setMetadataTone("compelling"); setMetadataAudience("");
     setMetadataCountConsent(false); setMetadataAcceptConsent(false); setMetadataAcceptanceUncertain(false);
     setMetadataRecoveryNotFound(false);
@@ -453,16 +474,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
       setBibleChapterIds(result.chapters.filter((chapter) => chapter.current_document_version_id).slice(0, 3).map((chapter) => chapter.id));
       setFormRevision((value) => value + 1);
       if (result.canEdit) {
-        try {
-          const catalog = await boundRequest<{ models: MetadataModel[] }>(`${endpoint}/metadata/models`);
-          if (bookScope.current !== scope) return;
-          setMetadataModels(catalog.models);
-          setMetadataModelId(catalog.models[0]?.id ?? "");
-        } catch (reason) {
-          if (bookScope.current !== scope) return;
-          setMetadataModels([]);
-          setMetadataGenerationError(messageOf(reason));
-        }
+        await refreshMetadataModels(); if (bookScope.current !== scope) return;
         try {
           const scopedKey = metadataQuoteIntentKey(bookId, userId), legacyKey = metadataQuoteIntentKey(bookId);
           const scoped = window.sessionStorage.getItem(scopedKey), legacy = window.sessionStorage.getItem(legacyKey);
@@ -923,6 +935,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
     let intent = metadataQuoteIntent;
     let createOriginal = retryOriginal;
     if (!intent || ["failed", "expired", "complete"].includes(metadataQuoteStage)) {
+      if (metadataCatalogState !== "ready" || !metadataModels?.some(model => model.id === metadataModelId)) return;
       if (metadataGenerationBlocked(pendingMetadata)) return;
       if (!metadataModelId || !metadataChapterIds.length || !metadataCountConsent) {
         setMetadataGenerationError("Choose a model and saved chapter, then consent to token counting before requesting a quote."); return;
@@ -1353,12 +1366,13 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
           {memory.canEdit && <div className="mt-5 rounded-2xl border border-violet-300/20 bg-violet-300/[0.05] p-4 sm:p-5" aria-labelledby="metadata-draft-title">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div><h3 id="metadata-draft-title" className="font-[family-name:var(--font-instrument-serif)] text-2xl text-violet-50">AI metadata desk</h3><p id="metadata-draft-help" className="mt-1 max-w-xl text-xs leading-5 text-[#aaa]">Build a retailer-neutral proof from saved manuscript evidence. Count first, inspect the exact credit quote, then decide whether to generate. Nothing enters your metadata form without your review.</p></div>
-              {!metadataQuoteIntent && <button type="button" onClick={() => void requestMetadataQuote()} disabled={busy || dirty || metadataRecoveryBlocked || metadataGenerationBlocked(pendingMetadata) || !metadataModels?.length} aria-describedby="metadata-draft-help" className={secondaryClass}>{generatingMetadata ? "Counting exact input…" : metadataQuoteStage === "complete" ? "Request a new quote" : metadataGenerationError ? "Retry quote request" : "Request token quote"}</button>}
+              {!metadataQuoteIntent && <button type="button" onClick={() => void requestMetadataQuote()} disabled={busy || dirty || metadataRecoveryBlocked || metadataGenerationBlocked(pendingMetadata) || metadataCatalogState !== "ready" || !metadataModels?.length} aria-describedby="metadata-draft-help" className={secondaryClass}>{generatingMetadata ? "Counting exact input…" : metadataQuoteStage === "complete" ? "Request a new quote" : metadataGenerationError ? "Retry quote request" : "Request token quote"}</button>}
               {metadataQuoteIntent && !["ready", "queued", "running", "review", "complete"].includes(metadataQuoteStage) && <button type="button" onClick={() => void requestMetadataQuote()} disabled={generatingMetadata || !!saving} aria-describedby="metadata-draft-help" className={secondaryClass}>{generatingMetadata ? "Checking request…" : "Resume same quote request"}</button>}
               {metadataRecoveryNotFound && metadataQuoteIntent && !metadataQuoteIntent.requestId && <button type="button" onClick={() => void requestMetadataQuote(true)} disabled={busy || dirty || metadataRecoveryBlocked} className={secondaryClass}>Retry saving original quote request</button>}
             </div>
+            {metadataCatalogState !== "loading" && (metadataCatalogState === "error" || !metadataModels?.length) && <p role="status" className="mt-3 text-xs text-amber-100">{metadataCatalogState === "error" ? "Metadata models are temporarily unavailable." : "No metadata models are configured."} <button type="button" className="underline" onClick={() => void refreshMetadataModels()}>Retry metadata models</button></p>}
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <label className="text-xs text-[#bbb]">Generation model<select value={metadataModelId} onChange={(event) => setMetadataModelId(event.target.value)} disabled={generatingMetadata || Boolean(metadataQuoteIntent) || !metadataModels?.length} className={inputClass}><option value="">{metadataModels === null ? "Loading approved models…" : metadataModels.length ? "Choose a model" : "No approved pricing configured"}</option>{metadataModels?.map((model) => <option key={model.id} value={model.id}>{model.label} · {model.model}</option>)}</select></label>
+              <label className="text-xs text-[#bbb]">Generation model<select value={metadataModelId} onChange={(event) => { setMetadataModelId(event.target.value); setMetadataCountConsent(false); }} disabled={generatingMetadata || Boolean(metadataQuoteIntent) || metadataCatalogState !== "ready" || !metadataModels?.length} className={inputClass}><option value="">{metadataCatalogState === "loading" ? "Loading approved models…" : metadataCatalogState === "error" ? "Model list unavailable" : metadataModels?.length ? "Choose a model" : "No approved pricing configured"}</option>{metadataModels?.map((model) => <option key={model.id} value={model.id}>{model.label} · {model.model}</option>)}</select></label>
               <label className="text-xs text-[#bbb]">Description tone<select value={metadataTone} onChange={(event) => setMetadataTone(event.target.value)} disabled={generatingMetadata || Boolean(metadataQuoteIntent)} className={inputClass}><option value="compelling">Compelling</option><option value="warm">Warm</option><option value="literary">Literary</option><option value="direct">Direct</option><option value="playful">Playful</option></select></label>
               <label className="text-xs text-[#bbb] sm:col-span-2">Intended audience · optional<input value={metadataAudience} onChange={(event) => setMetadataAudience(event.target.value)} disabled={generatingMetadata || Boolean(metadataQuoteIntent)} maxLength={500} className={inputClass} placeholder="e.g. adult cozy-fantasy readers" /></label>
             </div>
@@ -1368,7 +1382,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               <div className="grid gap-2 sm:grid-cols-2">{memory.chapters.filter((chapter) => chapter.current_document_version_id).map((chapter) => <label key={chapter.id} className="flex min-h-10 items-center gap-2 rounded-lg px-2 text-sm text-[#ddd] hover:bg-white/5"><input type="checkbox" checked={metadataChapterIds.includes(chapter.id)} disabled={!metadataChapterIds.includes(chapter.id) && metadataChapterIds.length >= 5} onChange={(event) => setMetadataChapterIds((current) => event.target.checked ? [...current, chapter.id] : current.filter((id) => id !== chapter.id))} className="size-4 accent-violet-300" /><span className="truncate">{chapter.title}</span></label>)}</div>
               {memory.chapters.filter((chapter) => chapter.current_document_version_id).length > 5 && <p className="mt-2 text-[11px] text-[#888]">The selected passages, book details, style guide, and Book Bible form the bounded quote context.</p>}
             </fieldset>
-            <label className="mt-4 flex gap-3 rounded-xl border border-white/10 p-3 text-xs leading-5 text-[#ccc]"><input type="checkbox" checked={metadataCountConsent} onChange={(event) => setMetadataCountConsent(event.target.checked)} disabled={generatingMetadata || Boolean(metadataQuoteIntent)} className="mt-1 size-4 shrink-0 accent-violet-300" /><span>I agree to send the selected saved chapters, book details, style guide, and Book Bible to OpenAI for input-token counting. This step does not generate metadata. The exact credit quote will be shown before any generation starts.</span></label>
+            <label className="mt-4 flex gap-3 rounded-xl border border-white/10 p-3 text-xs leading-5 text-[#ccc]"><input type="checkbox" checked={metadataCountConsent} onChange={(event) => setMetadataCountConsent(event.target.checked)} disabled={generatingMetadata || Boolean(metadataQuoteIntent) || metadataCatalogState !== "ready" || !metadataModels?.length || !metadataModelId} className="mt-1 size-4 shrink-0 accent-violet-300" /><span>I agree to send the selected saved chapters, book details, style guide, and Book Bible to OpenAI for input-token counting. This step does not generate metadata. The exact credit quote will be shown before any generation starts.</span></label>
             {metadataQuoteIntent && metadataQuoteStage === "counting" && <p role="status" className="mt-3 text-xs text-amber-100">Quote request saved. Resume or check the same request if the response was interrupted; this will not create another generation.</p>}
             {metadataQuote && metadataQuote.status === "ready" && <article className="mt-4 rounded-xl border border-[var(--bookworm-proof-edge)] bg-[var(--bookworm-proof-paper)] p-4 text-[var(--bookworm-proof-ink)]" aria-labelledby="metadata-quote-title">
               <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--bookworm-proof-muted)]">Publisher proof · exact before dispatch</p><h4 id="metadata-quote-title" className="mt-1 font-[family-name:var(--font-instrument-serif)] text-2xl">Review your quote</h4>
