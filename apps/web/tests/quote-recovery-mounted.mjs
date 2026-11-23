@@ -831,6 +831,49 @@ test("a newer committed chapter resolves a pending old Apply through reads witho
   } finally { await page.close(); }
 });
 
+for (const saved of [false, true]) test(`image recovery storage recheck ${saved ? "retains the original request" : "unlocks only after confirming no request"}`, async () => {
+  const page = await fixture();
+  try {
+    await imageFixture(page, saved);
+    const original = await page.evaluate(() => { const key = "bookworm.image-quote.v2:00000000-0000-4000-8000-000000000001:a-workspace"; const value = sessionStorage.getItem(key); const get = Storage.prototype.getItem; window.restoreImageStorage = () => { Storage.prototype.getItem = get; }; Storage.prototype.getItem = function(name) { if (name === key) throw new Error("Storage temporarily unavailable"); return get.call(this, name); }; return value; });
+    await page.evaluate(input => window.renderImage(input), imageProps());
+    await page.getByText("Storage temporarily unavailable", { exact: true }).waitFor();
+    await expect(page.getByRole("button", { name: "Prepare image quote" })).toHaveCount(0);
+    await page.evaluate(() => window.restoreImageStorage());
+    await page.getByRole("button", { name: "Recheck image recovery storage" }).click();
+    if (saved) await page.getByRole("button", { name: "Accept quote · 47 credits" }).waitFor();
+    else await page.getByText("Image recovery storage checked. No saved request was found.").waitFor();
+    assert.equal(await page.evaluate(() => sessionStorage.getItem("bookworm.image-quote.v2:00000000-0000-4000-8000-000000000001:a-workspace")), original);
+    assert.equal(await page.evaluate(() => window.calls.filter(call => ["image-create", "image-accept"].includes(call.operation)).length), 0);
+  } finally { await page.close(); }
+});
+
+test("image recovery recheck preserves a legacy checkpoint and stays blocked", async () => {
+  const page = await fixture(); try {
+    await imageFixture(page, false);
+    await page.evaluate(() => { const key="bookworm.image-quote.v2:00000000-0000-4000-8000-000000000001:a-workspace", get=Storage.prototype.getItem;window.restoreImageStorage=()=>{Storage.prototype.getItem=get};Storage.prototype.getItem=function(name){if(name===key)throw Error("Storage temporarily unavailable");return get.call(this,name)}; });
+    await page.evaluate(input => window.renderImage(input), imageProps()); await page.getByText("Storage temporarily unavailable").waitFor();
+    await page.evaluate(() => { window.restoreImageStorage();sessionStorage.setItem("bookworm.image-quote.v1:a-workspace","legacy"); });
+    await page.getByRole("button",{name:"Recheck image recovery storage"}).click();
+    await page.getByText(/older image request needs manual reconciliation/).waitFor();
+    assert.equal(await page.evaluate(()=>sessionStorage.getItem("bookworm.image-quote.v1:a-workspace")),"legacy");
+    assert.equal(await page.evaluate(()=>window.calls.filter(call=>["image-create","image-accept"].includes(call.operation)).length),0);
+  } finally { await page.close(); }
+});
+
+test("image recovery refuses a different request after an unknown save", async () => {
+  const page = await fixture(); try {
+    await imageFixture(page, false); await page.evaluate(input => window.renderImage(input), imageProps());
+    await page.getByLabel("Describe the scene, characters, mood and visual style").fill("A silver moon over an old market");
+    await page.getByRole("checkbox", { name: /Save this private prompt/ }).check(); await page.getByRole("button", { name: "Prepare image quote" }).click();
+    await page.getByText("Quote-save reply lost").waitFor();
+    await page.evaluate(() => sessionStorage.setItem("bookworm.image-quote.v2:00000000-0000-4000-8000-000000000001:a-workspace",JSON.stringify({idempotencyKey:"different-request"})));
+    await page.getByRole("button", { name: "Recover same quote request" }).click(); await page.getByText(/checkpoint changed/).waitFor();
+    assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.operation==='image-recover').length),0);
+    assert.equal(await page.evaluate(()=>JSON.parse(sessionStorage.getItem("bookworm.image-quote.v2:00000000-0000-4000-8000-000000000001:a-workspace")).idempotencyKey),"different-request");
+  } finally { await page.close(); }
+});
+
 test("image lost-save recovery uses only the persisted key and read-only offer/job requests", async () => {
   const page = await fixture();
   try {

@@ -114,10 +114,18 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
     const valid = scope.begin();
     requestInFlight.current = true; setBusy(true); setRecoveryBlocked(true); setMessage(""); setGenerateConsent(false);
     try {
-      if (sessionStorage.getItem(legacyKey) !== null) throw new Error("An older image request needs manual reconciliation before a new request. Its original account and acceptance state cannot be established safely in this browser.");
-      const raw = sessionStorage.getItem(storageKey);
+      const { raw, legacyRaw } = await scope.checked(async () => ({ raw: sessionStorage.getItem(storageKey), legacyRaw: sessionStorage.getItem(legacyKey) }));
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      if (legacyRaw !== null) throw new Error("An older image request needs manual reconciliation before a new request. Its original account and acceptance state cannot be established safely in this browser.");
+      if (raw === null) {
+        if (idempotencyKey || savedQuoteId || recoveredRequest || quote) throw new Error("The original quote checkpoint is unavailable. No new request was sent.");
+        checkCheckpoint(storageKey, legacyKey, null);
+        setRecoveryBlocked(false); setMessage("Image recovery storage checked. No saved request was found."); return;
+      }
       const pointer = readImageQuotePointer(raw);
-      if (!pointer) throw new Error("The original quote checkpoint is unavailable. No new request was sent.");
+      if (!pointer) throw new Error("The saved image recovery checkpoint is invalid. Contact support before preparing another quote.");
+      if ((idempotencyKey && pointer.idempotencyKey !== idempotencyKey) || (savedQuoteId && pointer.quoteId !== savedQuoteId)) throw new Error("The image recovery checkpoint changed. Recover the original request before continuing.");
+      setIdempotencyKey(pointer.idempotencyKey ?? ""); setSavedQuoteId(pointer.quoteId ?? ""); setRecoveredRequest(true); setAcceptanceUncertain(Boolean(pointer.acceptancePending));
       const saved = await recoverSavedImageQuote(api, workspaceId, pointer);
       if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
       const next = { ...pointer, quoteId: saved.quoteId, ...(saved.job ? { acceptancePending: false } : {}) };
@@ -306,7 +314,7 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
         {references.length > referenceLimit && <p className="mt-2 text-sm text-amber-100" role="status">Choose up to {referenceLimit} references for this model.</p>}
       </fieldset>
     </fieldset>}
-    {!quote && (idempotencyKey || savedQuoteId || recoveryBlocked) ? <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-white/10 pt-5"><button type="button" className={button} disabled={busy} onClick={() => void refresh()}>{busy ? "Recovering status…" : "Recover same quote request"}</button><p className="text-sm text-white/55">Recovery only reads the original offer and generation status. It never saves a new quote or starts generation.</p></div>
+    {!quote && (idempotencyKey || savedQuoteId || recoveryBlocked) ? <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-white/10 pt-5"><button type="button" className={button} disabled={busy} onClick={() => void refresh()}>{busy ? "Recovering status…" : idempotencyKey || savedQuoteId ? "Recover same quote request" : "Recheck image recovery storage"}</button><p className="text-sm text-white/55">Recovery checks this account and workspace for a saved request. It never saves a new quote or starts generation.</p></div>
       : !quote && <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-white/10 pt-5"><label className="flex max-w-xl items-start gap-3 text-sm leading-5 text-white/60"><input type="checkbox" checked={storeConsent} disabled={!canEdit || busy} onChange={event => setStoreConsent(event.target.checked)} /><span>Save this private prompt and selected source references in the quote so I can recover the same offer later.</span></label><button type="button" className={button} disabled={!canEdit || busy || !storeConsent || !modelId || prompt.trim().length < 10 || !referencesReady} onClick={() => void createQuote()}>{busy ? "Preparing quote…" : "Prepare image quote"}</button></div>}
     {quote && <div className="mt-6 rounded-2xl border border-violet-200/20 bg-violet-200/[0.04] p-5" aria-live="polite">
       <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs uppercase tracking-[0.14em] text-violet-100/60">Maximum credit hold</p><p className="mt-1 text-3xl tabular-nums text-white">{Number(quote.quote.reservedCredits).toLocaleString()} <span className="text-sm text-white/55">credits</span></p><p className="mt-2 text-xs text-white/50">{quote.quote.model} · {quote.quote.size} · {quote.quote.quality} · expires {new Date(quote.quote.expiresAt).toLocaleString()}</p></div><button className="min-h-10 rounded-full border border-white/15 px-4 text-sm text-white/75 hover:bg-white/5" disabled={busy} onClick={() => void refresh()} type="button">Refresh status</button></div>

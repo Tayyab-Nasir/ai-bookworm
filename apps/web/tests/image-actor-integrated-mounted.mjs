@@ -267,6 +267,14 @@ test('same-account verification preserves an unsent image prompt and consent', a
  await expect(prompt(page)).toHaveValue('A private unsent illustration prompt');await expect(consent(page)).toBeChecked();
  assert.equal(await page.evaluate(()=>window.calls.filter(x=>x.operation==='quote').length),0);
 }finally{await page.close()}});
+test('silent account change before image recovery storage recheck cannot unlock the old account', async () => {const {page}=await fixture();try{
+ await page.evaluate(()=>window.clearAssets());await expect(page.getByText('Illustrations and cover art')).toHaveCount(0);
+ await page.evaluate(({A})=>{const key=`bookworm.image-quote.v2:${A}:${A}`,get=Storage.prototype.getItem;window.restoreImageStorage=()=>{Storage.prototype.getItem=get};Storage.prototype.getItem=function(name){if(name===key)throw Error('Storage temporarily unavailable');return get.call(this,name)};window.renderAssets();},{A});
+ await expect(page.getByText('Storage temporarily unavailable')).toBeVisible();await page.evaluate(id=>{window.restoreImageStorage();window.actor=id},B);
+ await page.getByRole('button',{name:'Recheck image recovery storage'}).click();
+ await expect.poll(()=>page.evaluate(()=>window.calls.filter(x=>x.operation==='quote'||x.operation==='accept').length)).toBe(0);
+ await expect(page.getByText('Image recovery storage checked. No saved request was found.')).toHaveCount(0);
+}finally{await page.close()}});
 test('silent account change prevents image quote dispatch', async () => {const {page}=await fixture();try{
  await expect(page.getByRole('option',{name:/Test image/})).toHaveCount(1);await prompt(page).fill('Account A private illustration prompt');await consent(page).check();
  await page.evaluate(id=>{window.actor=id},B);await page.getByRole('button',{name:'Prepare image quote'}).click();
