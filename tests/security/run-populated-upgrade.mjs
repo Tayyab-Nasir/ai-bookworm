@@ -1,5 +1,5 @@
 /**
- * Populated historical migration 45 -> migration 145 rehearsal, entirely in memory.
+ * Populated historical migration 45 -> migration 146 rehearsal, entirely in memory.
  * No .env, credentials, connection strings, native ports, hosted services or files written.
  * Keep the existing fresh-schema and native race runners; this is additional coverage.
  */
@@ -24,6 +24,7 @@ const assetGuard = '20261103100000_asset_client_delete_guard.sql';
 const renderClosure = '20261104110000_render_close_request.sql';
 const retailerSubmissions = '20261118013037_retailer_submissions.sql';
 const confirmationInvoker = '20261118165738_data_rights_confirmation_invoker.sql';
+const confirmationCutover = '20261124100000_confirmed_data_rights_cutover.sql';
 const renderProofCompletion = '20261118194054_publishing_render_proof_completion.sql';
 const savedPrintPreflight = '20261119172907_saved_print_preflight_binding.sql';
 const uploadedPaperbackCover = '20261119193430_uploaded_paperback_cover.sql';
@@ -243,7 +244,7 @@ async function expectedInvitationRecoveryGuard(migration, fixture, historical, d
 try {
   assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
   const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
-  assert.equal(names.length, 145, 'This reviewed rehearsal pins the 45 -> 145 target; review before extending');
+  assert.equal(names.length, 146, 'This reviewed rehearsal pins the 45 -> 146 target; review before extending');
   assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
   assert.equal(names[131], assetGuard);
   assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
@@ -266,7 +267,7 @@ try {
   assert.equal(names[44], baselineEnd);
   assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
   assert.equal(names[46], '20260912180000_translation_workflow.sql');
-  assert.deepEqual(names.slice(-13), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure, communityJoinOperations, '20261121090000_managed_publishing_requests.sql', '20261122150000_chapter_creation_recovery.sql']);
+  assert.deepEqual(names.slice(-14), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure, communityJoinOperations, '20261121090000_managed_publishing_requests.sql', '20261122150000_chapter_creation_recovery.sql', confirmationCutover]);
   const migrations = await Promise.all(names.map(async name => {
     const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
     return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
@@ -287,6 +288,9 @@ try {
   assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Pre-upgrade authorization probes are non-mutating');
   console.log(`PASS committed baseline: two tenants, four profiles, historical versions, rich nodes, memberships, quarantined/trusted assets, ledger balances and uncertain Stripe receipts; ${Object.keys(historical).length} preserved relation projections`);
   for (const migration of migrations.slice(45)) {
+    const rightsRows = migration.name === confirmationCutover
+      ? (await db.query('select to_jsonb(r) as value from public.data_rights_requests r order by id')).rows
+      : null;
     if (migration.name === "20261122150000_chapter_creation_recovery.sql") {
       for (const drift of ["body", "privileges", "settings"]) await expectedChapterCreationGuard(migration, fixture, historical, drift);
     }
@@ -429,9 +433,12 @@ try {
       await db.exec(await readFile(join(root,'tests/security/retailer-submissions.test.sql'),'utf8'));
       console.log('PASS retailer tracking assertions on the populated upgraded schema');
     }
-    if (migration.name === confirmationInvoker) {
+    if (rightsRows) {
+      assert.ok(rightsRows.length > 0, 'Account deletion cutover rehearsal requires existing request history');
+      assert.deepEqual((await db.query('select to_jsonb(r) as value from public.data_rights_requests r order by id')).rows,
+        rightsRows, 'Confirmation cutover must preserve existing data-rights requests');
       await db.exec(await readFile(join(root,'tests/security/data-rights-confirmation-rpc.test.sql'),'utf8'));
-      console.log('PASS populated confirmation RPC: authenticated identity, exact confirmation, bounds, duplicates and actor isolation');
+      console.log('PASS populated confirmation cutover: historical requests, export intake, confirmation RPC and actor isolation');
     }
     if (migration.name === assetGuard) {
       await db.exec(await readFile(join(root,'tests/security/asset-client-delete-guard.test.sql'),'utf8'));
