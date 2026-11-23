@@ -13,15 +13,21 @@ const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: "tsx", 
   import {flushSync} from 'react-dom';
   import Request from './apps/web/components/RetailerPackageRequest';
   const root=createRoot(document.getElementById('root'));
-  window.mount=(bookId, request=null)=>root.render(bookId ? <Request bookId={bookId} request={request} canEdit={true} disabled={false} onBusy={()=>{}} onJob={()=>{}}/> : null);
+  window.mount=(bookId, request=null, activeEditionId=null)=>root.render(bookId ? <Request bookId={bookId} request={request}
+    activeEditionId={activeEditionId} onOpenEdition={id=>{window.openedEdition=id;window.mount(bookId,request,id)}}
+    canEdit={true} disabled={false} onBusy={()=>{}} onJob={()=>{}}/> : null);
   window.changeProof=(request)=>flushSync(()=>window.mount(request.bookId, request));
-` }, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", plugins: [{name:"fake-api",setup(b){b.onResolve({filter:/^\.\/api$/},()=>({path:"api",namespace:"fake"}));b.onLoad({filter:/.*/,namespace:"fake"},()=>({contents:"export const apiClient=()=>new Proxy({}, {get:()=>()=>{window.writes++; throw Error('Unexpected API call')}})"}));}}] });
+` }, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", plugins: [{name:"fake-api",setup(b){b.onResolve({filter:/^\.\/api$/},()=>({path:"api",namespace:"fake"}));b.onLoad({filter:/.*/,namespace:"fake"},()=>({contents:`
+  export const apiClient=()=>new Proxy({}, {get:(_,name)=>name==='getPublishingRequest'
+    ? (...args)=>{window.recoveryCalls.push(args);return window.recoveredRequest}
+    : ()=>{window.writes++;throw Error('Unexpected API call')}});
+`}));}}] });
 const server = createServer((req,res) => { res.writeHead(200,{"content-type":"text/html"}); res.end('<div id="root"></div>'); });
 await new Promise(resolve => server.listen(0,"127.0.0.1",resolve));
 const browser = await chromium.launch({headless:true,channel:process.env.BROWSER_TEST_CHANNEL || "chrome"});
 async function fixture() {
   const page = await browser.newPage(); await page.goto(`http://127.0.0.1:${server.address().port}/`);
-  await page.evaluate(({actor}) => { window.writes=0; window.actor=actor; window.fail=1; window.fetch=async()=>{if(window.fail-- > 0) throw Error('Session unavailable'); return {ok:true,json:async()=>({user:{id:window.actor}})};}; },{actor});
+  await page.evaluate(({actor}) => { window.writes=0; window.recoveryCalls=[]; window.actor=actor; window.fail=1; window.fetch=async()=>{if(window.fail-- > 0) throw Error('Session unavailable'); return {ok:true,json:async()=>({user:{id:window.actor}})};}; },{actor});
   await page.addScriptTag({content:bundle.outputFiles[0].text}); return page;
 }
 test.after(async()=>{await browser.close(); await new Promise(resolve=>server.close(resolve));});
@@ -109,6 +115,40 @@ test("changing proof during account verification does not create an export for e
     await expect(page.getByRole("alert")).toContainText("selected proof or preflight changed");
     await expect(create).toBeEnabled();
     assert.deepEqual(await page.evaluate(() => ({ writes: window.writes, storageKeys: sessionStorage.length })), { writes: 0, storageKeys: 0 });
+  } finally {
+    await page.close();
+  }
+});
+
+test("recovering an export offers its exact original edition after the response is verified", async () => {
+  const page = await fixture();
+  try {
+    const request = { bookId: book, editionId: other, channel: "kdp", renderJobId: other, preflightJobId: other, idempotencyKey: other };
+    await page.evaluate(({ request, actor }) => {
+      window.fail = 0;
+      sessionStorage.setItem(`bookworm:package:v1:${actor}:${request.bookId}`, JSON.stringify({ schema: 1, userId: actor, request }));
+      const job = {
+        id: actor, requestId: request.idempotencyKey, bookId: request.bookId, editionId: actor,
+        channel: request.channel, sourceRenderJobId: request.renderJobId, sourcePreflightJobId: request.preflightJobId,
+        status: "succeeded", submissionMode: "manual", createdAt: "2026-11-23T18:00:00Z", package: null,
+      };
+      window.recoveredRequest = { requestId: request.idempotencyKey, job };
+      window.mount(request.bookId, null, actor);
+    }, { request, actor });
+    const recover = page.getByRole("button", { name: "Recover saved export" });
+    const open = page.getByRole("button", { name: "Open the export’s edition" });
+    await recover.click();
+    await expect(page.getByRole("alert")).toContainText("does not match the saved request");
+    await expect(open).toHaveCount(0);
+    assert.equal(await page.evaluate(() => sessionStorage.length), 1);
+    await page.evaluate(editionId => { window.recoveredRequest.job.editionId = editionId; }, request.editionId);
+    await recover.click();
+    await expect(open).toBeEnabled();
+    await open.click();
+    await expect(open).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(() => ({
+      opened: window.openedEdition, writes: window.writes, recovery: window.recoveryCalls, storageKeys: sessionStorage.length,
+    })), { opened: request.editionId, writes: 0, recovery: [[book, other, actor], [book, other, actor]], storageKeys: 0 });
   } finally {
     await page.close();
   }

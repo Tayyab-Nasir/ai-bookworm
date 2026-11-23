@@ -8,6 +8,7 @@ import { clearPackagePointer, packageRecoveryKey, persistPackagePointer, readPac
 type Props = {
   bookId: string; request: Omit<PublishingPackageRequest, "idempotencyKey"> | null;
   canEdit: boolean; disabled: boolean; onBusy: (busy: boolean) => void; onJob: (job: PublishingPackageJob, startedAt: DownloadClock) => void;
+  activeEditionId: string | null; onOpenEdition: (editionId: string) => void;
 };
 const button = "min-h-11 rounded-full border border-white/25 px-4 py-2 text-sm disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white";
 
@@ -20,6 +21,7 @@ export default function RetailerPackageRequest(props: Props) {
   const [ready, setReady] = useState(false), [busy, setBusy] = useState(false);
   const [initializing, setInitializing] = useState(true), [initializationAttempt, setInitializationAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null), [notice, setNotice] = useState<string | null>(null);
+  const [recoveredEditionId, setRecoveredEditionId] = useState<string | null>(null);
   const [closeConfirmed, setCloseConfirmed] = useState(false), [closeUncertain, setCloseUncertain] = useState(false);
   const bookId = props.bookId;
 
@@ -35,7 +37,7 @@ export default function RetailerPackageRequest(props: Props) {
     const version = ++epoch.current;
     const current = () => epoch.current === version && latest.current.bookId === bookId;
     owner.current = null; saved.current = null; locked.current = false;
-    setReady(false); setInitializing(true); setPointer(null); setError(null); setNotice(null); setCloseConfirmed(false); setCloseUncertain(false);
+    setReady(false); setInitializing(true); setPointer(null); setError(null); setNotice(null); setRecoveredEditionId(null); setCloseConfirmed(false); setCloseUncertain(false);
     void (async () => {
       try {
         const userId = await account(); if (!current()) return;
@@ -67,7 +69,7 @@ export default function RetailerPackageRequest(props: Props) {
       }
       return true;
     };
-    locked.current = true; setBusy(true); props.onBusy(true); setError(null); setNotice(null);
+    locked.current = true; setBusy(true); props.onBusy(true); setError(null); setNotice(null); setRecoveredEditionId(null);
     try {
       if (!await verify()) return;
       const active = latest.current;
@@ -119,6 +121,7 @@ export default function RetailerPackageRequest(props: Props) {
       }
       clearPackagePointer(window.sessionStorage, intent);
       saved.current = null; setPointer(null); setCloseUncertain(false);
+      if (confirmed.status !== "cancelled") setRecoveredEditionId(confirmed.editionId);
       setNotice(confirmed.status === "succeeded"
         ? action === "create" && confirmed.package ? `${confirmed.channel} package is ready for manual submission.`
           : "Saved export confirmed in package history for the original request. Unavailable files are not regenerated."
@@ -134,6 +137,10 @@ export default function RetailerPackageRequest(props: Props) {
   return <div className="mt-5 min-w-0" aria-label="Retailer request recovery">
     {error && <p role="alert" className="mb-3 text-sm text-red-100">{error}</p>}
     {notice && <p role="status" className="mb-3 text-sm text-white/75">{notice}</p>}
+    {ready && recoveredEditionId && recoveredEditionId !== props.activeEditionId && (
+      <button type="button" className={`${button} mb-3`} disabled={busy || props.disabled}
+        onClick={() => props.onOpenEdition(recoveredEditionId)}>Open the export’s edition</button>
+    )}
     {!ready && !initializing && !busy && <button type="button" className={`${button} mb-3`} onClick={() => setInitializationAttempt(attempt => attempt + 1)}>Retry loading saved export requests</button>}
     {pointer ? <div className="rounded-xl border border-amber-300/20 bg-amber-300/5 p-4">
       <p className="text-sm font-medium">Saved {pointer.request.channel} export request</p>

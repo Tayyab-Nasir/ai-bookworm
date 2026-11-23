@@ -1229,6 +1229,12 @@ function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, v
               metadata={preflight.listing.metadata} isCurrent={handlerCurrent} />}
           </div>}
           <RetailerPackageRequest key={bookId} bookId={bookId} canEdit={editable} disabled={Boolean(busy) && busy !== "package"}
+            activeEditionId={activeId} onOpenEdition={id => {
+              if (!handlerCurrent()) return;
+              const edition = editions.find(item => item.id === id);
+              if (edition) selectEdition(edition);
+              else setError("This export’s edition is unavailable in the saved edition list. Reload the studio to check access.");
+            }}
             request={activeId && !dirty && !(savedEpub && epubProofChecking) && channel !== "export" && channelCompatible && packageRenderId && preflight && preflight.requestedChannel === channel && preflight.errors === 0
               && (!savedEpub || (preflight.sourceEpub?.jobId === savedEpub.jobId && preflight.sourceEpub.sha256 === savedEpub.sha256))
               && (form.kind !== "print" || (savedPrint && matchesPrintPreflight(savedPrint, preflight.sourcePrint)))

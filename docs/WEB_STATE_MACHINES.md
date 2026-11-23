@@ -231,6 +231,9 @@ the allowlist without starting a worker.
 - Retailer request initialization remains closed if account or session-storage
   reads fail. A read-only retry rechecks account ownership and the current book
   before restoring the original pointer; stale attempts cannot replace a new book.
+  A verified terminal export can offer to open its original edition when the
+  current history belongs to a different edition. The studio's edition selection
+  still checks access and asks before discarding dirty settings.
   Regression: `apps/web/tests/retailer-init-retry-mounted.mjs`.
 - Saved EPUB proofs can be selected for packaging after reopening Publishing
   Studio. Retailer preflight checks the stored EPUB and cover through the
