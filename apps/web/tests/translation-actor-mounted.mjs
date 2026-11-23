@@ -14,6 +14,13 @@ async function fixture(){const p=await browser.newPage();p.setDefaultTimeout(500
 const consent=p=>p.getByLabel('I agree to send the saved chapter text',{exact:false});
 async function ready(p){await expect(p.getByText('ES · 1/1 chapters counted')).toBeVisible()}
 async function openPreview(p){await p.getByRole('button',{name:'Preview',exact:true}).click();await p.getByText('A chapter').click();await expect(p.getByText('A private translated manuscript')).toBeVisible();}
+test('an empty model catalog can be checked again without provider or quote calls',async()=>{const p=await fixture();try{
+ await ready(p);await p.evaluate(()=>{window.api.listTranslationModels=async actor=>{window.calls.push(['empty-models',actor]);return {models:[]}};window.dispatchEvent(new Event('focus'))});
+ await expect(p.getByText('No translation models are available right now.',{exact:false})).toBeVisible();await expect(p.getByLabel('Target language code')).toBeDisabled();
+ await p.evaluate(()=>{window.api.listTranslationModels=async actor=>{window.calls.push(['rechecked-models',actor]);return {models:[{id:'model',label:'Synthetic model'}]}}});await p.getByRole('button',{name:'Check models again'}).click();
+ await expect(p.getByRole('button',{name:'Check models again'})).toHaveCount(0);await expect(p.getByLabel('Target language code')).toBeEnabled();
+ assert.deepEqual(await p.evaluate(()=>window.calls.filter(x=>x[0]==='rechecked-models').map(x=>x[1])),[A]);assert.equal(await p.evaluate(()=>window.calls.filter(x=>x[0]==='prepare'||x[0]==='accept').length),0);
+ }finally{await p.close();}});
 test('model catalog failure retries read-only and clears its error after verified success',async()=>{const p=await fixture();try{
  await ready(p);await p.evaluate(()=>{window.api.listTranslationModels=async actor=>{window.calls.push(['models-failure',actor]);throw Error('unavailable')};window.dispatchEvent(new Event('focus'))});
  await expect(p.getByRole('button',{name:'Retry model list'})).toBeVisible();await expect(p.getByLabel('Target language code')).toBeDisabled();
