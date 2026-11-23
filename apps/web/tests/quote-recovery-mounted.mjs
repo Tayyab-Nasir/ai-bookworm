@@ -1104,6 +1104,34 @@ test("verified metadata pre-dispatch cancellation releases the UI lock and never
   } finally { await page.close(); }
 });
 
+test("AI review source and model changes require fresh counting consent", async () => {
+  const page=await fixture();try{
+    await page.evaluate(input=>{window.api.listAiReviewModels=async()=>({models:[{id:'approved',label:'Approved',model:'approved'},{id:'other',label:'Other',model:'other'}]});window.renderPanel(input)},props());
+    const consent=page.getByRole('checkbox',{name:/I agree to send the selected saved chapter/});const prepare=page.getByRole('button',{name:'Prepare usage quote'});await consent.check();await expect(prepare).toBeEnabled();
+    for(const action of [
+      ()=>page.getByLabel('Include saved Book Bible canon').uncheck(),
+      ()=>page.getByLabel('Include saved style guide').uncheck(),
+      ()=>page.getByLabel('Source context budget').selectOption('8192'),
+      ()=>page.getByLabel('Usage-priced model').selectOption('other'),
+      ()=>page.getByLabel('Task',{exact:true}).selectOption('writer'),
+    ]){await action();await expect(consent).not.toBeChecked();await expect(prepare).toBeDisabled();if(await page.getByRole('textbox',{name:'Drafting instruction',exact:true}).count())await page.getByRole('textbox',{name:'Drafting instruction',exact:true}).fill('A first writing instruction');await consent.check();}
+    await page.getByLabel('Include related saved passages').uncheck();await expect(consent).not.toBeChecked();await consent.check();
+    await page.getByRole('textbox',{name:'Drafting instruction',exact:true}).fill('A changed writing instruction');await expect(consent).not.toBeChecked();await expect(prepare).toBeDisabled();
+    assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.operation==='review-create').length),0);
+  }finally{await page.close()}
+});
+
+test("same-turn AI source change cannot dispatch with old counting consent", async () => {
+  const page=await fixture();try{
+    await page.evaluate(input=>{window.api.createAiReviewQuote=async()=>{window.calls.push({operation:'review-create'});throw Error('unexpected')};window.renderPanel(input)},props());
+    await page.getByRole('checkbox',{name:/I agree to send the selected saved chapter/}).check();
+    await expect(page.getByRole('button',{name:'Prepare usage quote'})).toBeEnabled();
+    await page.evaluate(()=>{const input=[...document.querySelectorAll('input[type=checkbox]')].find(element=>element.parentElement?.textContent?.includes('Include saved Book Bible canon'));input.click();[...document.querySelectorAll('button')].find(button=>button.textContent==='Prepare usage quote').click()});
+    await expect(page.getByRole('checkbox',{name:/I agree to send the selected saved chapter/})).not.toBeChecked();await page.waitForTimeout(150);
+    assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.operation==='review-create').length),0);
+  }finally{await page.close()}
+});
+
 test("AI review uncertain acceptance keeps the original quote locked until read-only recovery", async () => {
   const page = await fixture();
   try {

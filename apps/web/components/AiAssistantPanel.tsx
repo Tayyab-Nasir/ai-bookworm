@@ -232,7 +232,7 @@ export default function AiAssistantPanel({
           return;
         }
         setNotice("Recovered the original drafting brief from the unchanged saved plan. Check the saved quote or request before continuing.");
-      } else setNotice("Saved chapter plan loaded. Review or edit this brief, then request a price; no provider call or credits have started.");
+      } else { setCountingConsent(false); setNotice("Saved chapter plan loaded. Review or edit this brief, then request a price; no provider call or credits have started."); }
       setMode("writer");
       setInstruction(initialDraftInstruction);
     }).catch(() => {
@@ -270,7 +270,7 @@ export default function AiAssistantPanel({
       if (cancelled) return;
       if (result.id !== initialJobId || result.book_id !== bookId || !reviewTargetsChapter(result, chapterId)) { setError("This saved review belongs to a different chapter. Select that chapter before opening it."); return; }
       setJob(result); setLastAppliedVersion(null); remember(result);
-      if (modes.some((item) => item.value === result.agent_type)) setMode(result.agent_type as Mode);
+      if (modes.some((item) => item.value === result.agent_type)) { setMode(result.agent_type as Mode); setCountingConsent(false); }
       if (result.status === "failed") { setError(result.error_message ?? "This AI review did not finish. Start a fresh review."); return; }
       const label = result.agent_type === "writer" ? "draft" : "review";
       setNotice(result.status === "queued" ? `Your ${label} is queued. It will continue if you leave this page.`
@@ -454,7 +454,7 @@ export default function AiAssistantPanel({
         return;
       }
       setJob(result); setLastAppliedVersion(null); remember(result);
-      if (modes.some((item) => item.value === result.agent_type)) setMode(result.agent_type as Mode);
+      if (modes.some((item) => item.value === result.agent_type)) { setMode(result.agent_type as Mode); setCountingConsent(false); }
       if (result.status === "failed") setError(result.error_message ?? "This AI review did not finish. Start a new review with a fresh request.");
       else if (!result.suggestions.length) setNotice("Saved review opened. It had no suggestions.");
       else setNotice("Saved review opened. Apply each suggestion only after checking it against the current chapter.");
@@ -544,28 +544,28 @@ export default function AiAssistantPanel({
     <Link href={`/books/${bookId}/ai`} className="mt-2 inline-block text-xs underline underline-offset-4">Use your own AI connection ↗</Link>
     <p className="mt-1 text-xs leading-5 text-white/45">Saved Book Bible canon and style guide are optional quote sources. Every edit waits for your approval.</p>
     <label className="mt-4 block text-xs text-white/55" htmlFor="ai-mode">Task</label>
-    <select id="ai-mode" value={mode} onChange={(event) => setMode(event.target.value as Mode)} disabled={processing || !!pendingRequest} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
+    <select id="ai-mode" value={mode} onChange={(event) => { setMode(event.target.value as Mode); setCountingConsent(false); }} disabled={processing || !!pendingRequest} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
       {modes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
     </select>
     <label className="mt-3 block text-xs text-white/55" htmlFor="ai-model">Usage-priced model</label>
-    <select id="ai-model" value={selectedModelId} onChange={(event) => { setSelectedModelId(event.target.value); setQuote(null); }} disabled={processing || !!pendingRequest || !models.length} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
+    <select id="ai-model" value={selectedModelId} onChange={(event) => { setSelectedModelId(event.target.value); setCountingConsent(false); setQuote(null); }} disabled={processing || !!pendingRequest || !models.length} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
       {models.length ? models.map((item) => <option key={item.id} value={item.id}>{item.label} · {item.model}</option>) : <option value="">No approved model available</option>}
     </select>
     {pricingError && <p role="status" className="mt-2 text-xs leading-5 text-amber-200">Paid AI review is unavailable: {pricingError} No free generation fallback is offered.</p>}
-    {!pendingRequest && (pricingError || !models.length) && <button type="button" disabled={processing} onClick={() => setModelRefresh(value => value + 1)} className="mt-2 text-xs underline underline-offset-4">Reload approved models</button>}
+    {!pendingRequest && (pricingError || !models.length) && <button type="button" disabled={processing} onClick={() => { setCountingConsent(false); setModelRefresh(value => value + 1); }} className="mt-2 text-xs underline underline-offset-4">Reload approved models</button>}
     <label className="mt-3 block text-xs text-white/55" htmlFor="ai-context-budget">Source context budget</label>
-    <select id="ai-context-budget" value={contextBudget} onChange={(event) => setContextBudget(Number(event.target.value))} disabled={processing || !!pendingRequest} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
+    <select id="ai-context-budget" value={contextBudget} onChange={(event) => { setContextBudget(Number(event.target.value)); setCountingConsent(false); }} disabled={processing || !!pendingRequest} className="mt-1 w-full rounded-lg border border-white/15 bg-black p-2 text-sm">
       <option value={4096}>Compact · about 4K tokens</option><option value={8192}>Balanced · about 8K tokens</option><option value={16000}>Extended · about 16K tokens</option>
     </select>
     <p className="mt-1 text-[11px] leading-5 text-white/40">Estimated input budget, not a charge estimate. Oversized chapters are rejected, never silently cut.</p>
     <fieldset disabled={processing || !!pendingRequest} className="mt-3 space-y-2 rounded-xl border border-white/10 p-3 disabled:opacity-60">
       <legend className="px-1 text-xs text-white/55">Optional saved context</legend>
-      <label className="flex items-start gap-2 text-xs leading-5 text-white/60"><input type="checkbox" checked={includeBookBible} onChange={(event) => setIncludeBookBible(event.target.checked)} />Include saved Book Bible canon</label>
-      <label className="flex items-start gap-2 text-xs leading-5 text-white/60"><input type="checkbox" checked={includeStyleGuide} onChange={(event) => setIncludeStyleGuide(event.target.checked)} />Include saved style guide</label>
+      <label className="flex items-start gap-2 text-xs leading-5 text-white/60"><input type="checkbox" checked={includeBookBible} onChange={(event) => { setIncludeBookBible(event.target.checked); setCountingConsent(false); }} />Include saved Book Bible canon</label>
+      <label className="flex items-start gap-2 text-xs leading-5 text-white/60"><input type="checkbox" checked={includeStyleGuide} onChange={(event) => { setIncludeStyleGuide(event.target.checked); setCountingConsent(false); }} />Include saved style guide</label>
     </fieldset>
-    {["writer", "consistency"].includes(mode) && <label className="mt-3 flex items-start gap-2 text-xs text-white/60"><input type="checkbox" checked={includeRelated} onChange={(event) => setIncludeRelated(event.target.checked)} disabled={processing || !!pendingRequest} /> Include related saved passages</label>}
+    {["writer", "consistency"].includes(mode) && <label className="mt-3 flex items-start gap-2 text-xs text-white/60"><input type="checkbox" checked={includeRelated} onChange={(event) => { setIncludeRelated(event.target.checked); setCountingConsent(false); }} disabled={processing || !!pendingRequest} /> Include related saved passages</label>}
     <label className="mt-3 flex items-start gap-2 text-xs leading-5 text-white/60"><input type="checkbox" checked={countingConsent || pendingRequest?.allowProviderTokenCounting === true} onChange={(event) => setCountingConsent(event.target.checked)} disabled={processing || pendingRequest?.allowProviderTokenCounting === true} /><span>I agree to send {consentSources} to OpenAI for token counting so Bookworm can calculate the exact quote. This does not generate content or reserve credits.</span></label>
-    {mode === "writer" && <><label className="mt-3 block text-xs text-white/55" htmlFor="ai-instruction">Drafting instruction</label><textarea id="ai-instruction" value={instruction} onChange={(event) => setInstruction(event.target.value)} disabled={processing || !!quote || !!quoteRequestId || acceptanceUncertain} maxLength={4000} rows={4} placeholder="Continue this scene with…" className="mt-1 w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm disabled:opacity-60" /></>}
+    {mode === "writer" && <><label className="mt-3 block text-xs text-white/55" htmlFor="ai-instruction">Drafting instruction</label><textarea id="ai-instruction" value={instruction} onChange={(event) => { setInstruction(event.target.value); if (!pendingRequest) setCountingConsent(false); }} disabled={processing || !!quote || !!quoteRequestId || acceptanceUncertain} maxLength={4000} rows={4} placeholder="Continue this scene with…" className="mt-1 w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm disabled:opacity-60" /></>}
     <button type="button" onClick={() => void run()} disabled={!chapterId || !recoveryReady || !models.length || !selectedModelId || unconfirmed || acceptanceUncertain || (!countingConsent && pendingRequest?.allowProviderTokenCounting !== true) || processing || dirty || !editable || !!verifiedStatus || !!quoteRequestId || !!quote || (mode === "writer" && !instruction.trim())} className="mt-3 w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-black disabled:opacity-40">{busy ? "Preparing quote…" : quoteRequestId ? "Counting saved text…" : pendingRequest ? "Recover original quote" : "Prepare usage quote"}</button>
     {quote && pendingRequest && <div className="mt-3 rounded-xl border border-emerald-300/25 bg-emerald-300/[0.06] p-3 text-xs leading-5 text-emerald-50"><p className="font-medium">Exact usage quote · {quote.model}</p><p className="mt-1 text-white/65">{quote.countedInputTokens.toLocaleString()} input tokens counted · up to {quote.maxOutputTokens.toLocaleString()} output tokens</p><p className="mt-2 text-lg font-semibold">{quote.reservedCredits.toLocaleString()} credits on acceptance</p><p className="text-[11px] text-white/45">Expires {new Date(quote.expiresAt).toLocaleString()}. Acceptance starts generation and reserves this exact maximum; results still require your review.</p><button type="button" disabled={!canAcceptReviewQuote(quote, { pending: pendingRequest, bookId, chapterId, editable, dirty, recoveryReady, busy: processing, acceptanceUncertain })} onClick={() => void acceptQuote()} className="mt-3 w-full rounded-lg bg-white px-3 py-2 text-sm font-medium text-black disabled:opacity-40">{busy ? "Accepting…" : `Accept · ${quote.reservedCredits.toLocaleString()} credits`}</button></div>}
     {acceptanceUncertain && <div className="mt-3 text-xs leading-5 text-amber-100"><p role="status">Acceptance is unconfirmed. Read saved status before another decision.</p><button type="button" disabled={busy} onClick={() => void checkPending()} className="mt-2 rounded-md border border-white/15 px-3 py-2">Recover acceptance status</button></div>}

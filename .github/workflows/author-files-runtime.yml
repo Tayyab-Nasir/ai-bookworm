@@ -95,6 +95,10 @@ jobs:
         env:
           BROWSER_TEST_CHANNEL: chromium
         run: node --test --test-name-pattern='Book Bible .*model catalog|Book Bible model retry|changing Book Bible model|interrupted .*catalog' apps/web/tests/quote-recovery-mounted.mjs
+      - name: Verify AI review source consent
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test --test-name-pattern='AI review source and model changes|same-turn AI source change' apps/web/tests/quote-recovery-mounted.mjs
       - name: Verify community directory and discussion account isolation in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium
