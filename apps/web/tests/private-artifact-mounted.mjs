@@ -182,6 +182,49 @@ async function showPackage(page) {
   await expect(history.getByRole("button", { name: "Download private ZIP" })).toBeVisible();
 }
 
+test("recovered retailer export opens its saved edition only after confirming dirty settings", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      const { book, asset, otherEdition, otherJob, job } = window.ids;
+      const request = { bookId: book, editionId: otherEdition, channel: "kdp", renderJobId: otherJob, preflightJobId: otherJob, idempotencyKey: job };
+      const receipt = { ...request, id: otherJob, requestId: job, sourceRenderJobId: otherJob, sourcePreflightJobId: otherJob,
+        status: "succeeded", submissionMode: "manual", createdAt: "2026-11-23T18:00:00Z", package: null };
+      sessionStorage.setItem(`bookworm:package:v1:${asset}:${book}`, JSON.stringify({ schema: 1, userId: asset, request }));
+      window.bookwormApi.getPublishingRequest = async (...args) => {
+        window.requests.push({ method: "GET", action: "package-recovery", args });
+        return { requestId: job, job: receipt };
+      };
+      window.bookwormApi.listPublishingJobs = async (_bookId, { editionId }) => ({ jobs: editionId === otherEdition ? [receipt] : [] });
+      window.showStudio(null);
+    });
+    await expect(page.getByRole("heading", { name: "Saved print proofs", exact: true })).toHaveCount(0);
+    await page.evaluate(bookId => window.showStudio(bookId), ids.book);
+    const imprint = page.getByLabel("Publisher or imprint", { exact: true });
+    await imprint.fill("Unsaved first edition imprint");
+    await page.getByRole("button", { name: "Recover saved export", exact: true }).click();
+    const openEdition = page.getByRole("button", { name: "Open the export’s edition", exact: true });
+    const choose = async (accept) => Promise.all([
+      page.waitForEvent("dialog").then(async dialog => {
+        const message = dialog.message();
+        if (accept) await dialog.accept(); else await dialog.dismiss();
+        assert.equal(message, "Discard unsaved edition settings?");
+      }),
+      openEdition.click(),
+    ]);
+    await choose(false);
+    await expect(imprint).toHaveValue("Unsaved first edition imprint");
+    await expect(page.locator(`#package-${ids.otherJob}`)).toHaveCount(0);
+    await choose(true);
+    await expect(imprint).toHaveValue("");
+    await expect(page.locator(`#package-${ids.otherJob}`)).toBeVisible();
+    await expect(openEdition).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(entry => entry.action === "package-recovery").map(entry => entry.args)), [[ids.book, ids.job, ids.asset]]);
+    assert.equal(await page.evaluate(() => window.requests.some(entry => entry.method === "POST")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
 for (const kind of ["print", "package"]) test(`verified ${kind} download uses attachment without exposing its signed link`, async () => {
   const { page } = await fixture({ parent: true });
   try {

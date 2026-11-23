@@ -305,8 +305,13 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
           assert.deepEqual(Object.keys(pending[0]).sort(), ['request', 'schema', 'userId']);
           onStage('retailer browser lost reply reload');
           await page.reload();
-          onStage('retailer browser lost reply saved edition selection');
-          await select(edition);
+          onStage('retailer browser recovery while another edition has unsaved settings');
+          const otherEdition = retailer.editions.find(value => value.kind !== edition.kind);
+          assert.ok(otherEdition, 'recovery requires a second saved edition of another format');
+          await select(otherEdition);
+          const imprint = page.getByLabel('Publisher or imprint', { exact: true });
+          const unsavedImprint = 'Unsaved recovery fixture imprint';
+          await imprint.fill(unsavedImprint);
           onStage('retailer browser original request status lookup');
           const [recovered] = await Promise.all([
             page.waitForResponse(response => new URL(response.url()).pathname.endsWith(`/publishing/requests/${job.requestId}`) && response.request().method() === 'GET'),
@@ -315,7 +320,26 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
           assert.equal(recovered.status(), 200); assert.equal((await nativeBrowserJson(recovered)).job.id, job.id);
           await expect(page.getByText(/Saved export confirmed/)).toBeVisible();
           assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith('bookworm:package:'))), false);
-          console.log('PASS native browser lost accepted export reply recovered after reload with one original package request');
+          await expect(imprint).toHaveValue(unsavedImprint);
+          const openEdition = history.getByRole('button', { name: 'Open the export’s edition', exact: true });
+          const choose = action => page.evaluate(action => {
+            const original = window.confirm;
+            window.confirm = message => {
+              window.confirm = original;
+              window.recoveryEditionPrompt = message;
+              return action;
+            };
+          }, action);
+          await choose(false);
+          await openEdition.click();
+          await expect(imprint).toHaveValue(unsavedImprint);
+          await expect(page.getByRole('combobox', { name: 'Format', exact: true })).toHaveValue(otherEdition.kind);
+          assert.equal(await page.evaluate(() => window.recoveryEditionPrompt), 'Discard unsaved edition settings?');
+          await choose(true);
+          await openEdition.click();
+          await expect(page.getByRole('combobox', { name: 'Format', exact: true })).toHaveValue(edition.kind);
+          await expect(openEdition).toHaveCount(0);
+          console.log('PASS native browser recovered original package, preserved dirty settings on cancel, and opened its original edition on confirmation');
         } else await expect(page.getByText(`${channel} package is ready for manual submission.`, { exact: true })).toBeVisible();
         onStage(`retailer browser ${channel} ${edition.kind} exact package history row`);
         const row = history.locator(`#package-${job.id}`);

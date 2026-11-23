@@ -234,7 +234,9 @@ the allowlist without starting a worker.
   A verified terminal export can offer to open its original edition when the
   current history belongs to a different edition. The studio's edition selection
   still checks access and asks before discarding dirty settings.
-  Regression: `apps/web/tests/retailer-init-retry-mounted.mjs`.
+  Regression: `apps/web/tests/retailer-init-retry-mounted.mjs`,
+  `apps/web/tests/private-artifact-mounted.mjs`, and the lost package response
+  scenario in `tests/e2e/native-author-files-publishing.mjs`.
 - Saved EPUB proofs can be selected for packaging after reopening Publishing
   Studio. Retailer preflight checks the stored EPUB and cover through the
   private publishing service. It requires the saved render to match the
