@@ -10,9 +10,11 @@ const other = "22222222-2222-4222-8222-222222222222";
 const book = "33333333-3333-4333-8333-333333333333";
 const bundle = await build({ stdin: { resolveDir: process.cwd(), loader: "tsx", contents: `
   import React from 'react'; import {createRoot} from 'react-dom/client';
+  import {flushSync} from 'react-dom';
   import Request from './apps/web/components/RetailerPackageRequest';
   const root=createRoot(document.getElementById('root'));
-  window.mount=(bookId)=>root.render(bookId ? <Request bookId={bookId} request={null} canEdit={true} disabled={false} onBusy={()=>{}} onJob={()=>{}}/> : null);
+  window.mount=(bookId, request=null)=>root.render(bookId ? <Request bookId={bookId} request={request} canEdit={true} disabled={false} onBusy={()=>{}} onJob={()=>{}}/> : null);
+  window.changeProof=(request)=>flushSync(()=>window.mount(request.bookId, request));
 ` }, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic", plugins: [{name:"fake-api",setup(b){b.onResolve({filter:/^\.\/api$/},()=>({path:"api",namespace:"fake"}));b.onLoad({filter:/.*/,namespace:"fake"},()=>({contents:"export const apiClient=()=>new Proxy({}, {get:()=>()=>{window.writes++; throw Error('Unexpected API call')}})"}));}}] });
 const server = createServer((req,res) => { res.writeHead(200,{"content-type":"text/html"}); res.end('<div id="root"></div>'); });
 await new Promise(resolve => server.listen(0,"127.0.0.1",resolve));
@@ -81,4 +83,33 @@ test("late retry results cannot replace the newly selected book", async()=>{
     await page.evaluate(()=>window.finishOld()); await expect(page.getByRole('alert')).toHaveCount(0);
     assert.equal(await page.evaluate(()=>window.writes),0);
   } finally {await page.close();}
+});
+
+test("changing proof during account verification does not create an export for either proof", async () => {
+  const page = await fixture();
+  try {
+    const request = { bookId: book, editionId: other, channel: "kdp", renderJobId: other, preflightJobId: other };
+    await page.evaluate(request => {
+      window.fail = 0;
+      window.mount(request.bookId, request);
+    }, request);
+    const create = page.getByRole("button", { name: "Create retailer package" });
+    await expect(create).toBeEnabled();
+    await page.evaluate(() => {
+      window.fetch = () => new Promise(resolve => {
+        window.finishCheck = () => resolve({ ok: true, json: async () => ({ user: { id: window.actor } }) });
+      });
+    });
+    await create.click();
+    await expect.poll(() => page.evaluate(() => typeof window.finishCheck)).toBe("function");
+    await page.evaluate(request => {
+      window.changeProof(request);
+      window.finishCheck();
+    }, { ...request, renderJobId: actor });
+    await expect(page.getByRole("alert")).toContainText("selected proof or preflight changed");
+    await expect(create).toBeEnabled();
+    assert.deepEqual(await page.evaluate(() => ({ writes: window.writes, storageKeys: sessionStorage.length })), { writes: 0, storageKeys: 0 });
+  } finally {
+    await page.close();
+  }
 });

@@ -70,6 +70,18 @@ export default function RetailerPackageRequest(props: Props) {
     locked.current = true; setBusy(true); props.onBusy(true); setError(null); setNotice(null);
     try {
       if (!await verify()) return;
+      const active = latest.current;
+      if (active.disabled || (action !== "recover" && !active.canEdit)) {
+        throw new Error("Export access changed. Check your permissions and try again.");
+      }
+      if (action === "create") {
+        const selected = props.request;
+        const eligible = active.request;
+        if (!selected || !eligible || selected.bookId !== eligible.bookId || selected.editionId !== eligible.editionId
+          || selected.channel !== eligible.channel || selected.renderJobId !== eligible.renderJobId || selected.preflightJobId !== eligible.preflightJobId) {
+          throw new Error("The selected proof or preflight changed. Review the current edition before creating a package.");
+        }
+      }
       const original = saved.current;
       const intent: PackagePointer = original ? { ...original, ...(action === "close" ? { closing: true as const } : {}) }
         : { schema: 1, userId, request: { ...props.request!, idempotencyKey: crypto.randomUUID() } };
