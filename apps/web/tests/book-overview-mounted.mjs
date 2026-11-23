@@ -43,6 +43,47 @@ async function fixture(mode='normal',width=1280){
 }
 async function ready(page){await expect(page.getByRole('heading',{name:'The Harbor Notebook',exact:true})).toBeVisible();}
 async function screenshot(page,name){await page.evaluate(()=>document.fonts.ready);assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.screenshot({path:resolve(artifacts,`${name}.png`),fullPage:true,animations:'disabled'});}
+test('book desk imports open only the selected verified report without another upload', async () => {
+  const page = await fixture();
+  try {
+    await ready(page);
+    const jobs = [17, 18], sources = [19, 20];
+    await page.evaluate(({ bookId, jobs, sources, now }) => {
+      const job = (index) => ({ id: jobs[index], book_id: bookId, source_asset_id: sources[index],
+        status: "succeeded", created_at: now, attempts: 1 });
+      window.fixtureData[bookId].jobs.push({ id: jobs[0], kind: "import", label: "Manuscript import",
+        status: "succeeded", createdAt: now, completedAt: now, destination: "editor" });
+      window.bookwormApi.listManuscriptImports = async (requestedBook, actor) => {
+        window.reads.push({ kind: "imports", method: "GET", bookId: requestedBook, actor });
+        return { jobs: [job(0), job(1)] };
+      };
+      window.bookwormApi.getManuscriptImport = async (requestedBook, source, actor) => {
+        window.reads.push({ kind: "report", method: "GET", bookId: requestedBook, source, actor });
+        return { import: { sourceAssetId: source === sources[0] && window.badReport ? sources[1] : source,
+          report: { chapterCount: 3, imageCount: 1, warnings: [source === sources[0] ? "Review the first source." : "Review the second source."] } } };
+      };
+    }, { bookId: A, jobs: jobs.map(id), sources: sources.map(id), now });
+    await page.getByRole('button', { name: 'Refresh book desk' }).click();
+    const history = page.getByRole('region', { name: 'Manuscript imports' });
+    const first = history.locator(`#import-job-${id(jobs[0])}`);
+    const second = history.locator(`#import-job-${id(jobs[1])}`);
+    await expect(page.getByRole('link', { name: /Manuscript import Import pipeline succeeded/ })).toHaveAttribute('href', `/books/${A}/overview#import-job-${id(jobs[0])}`);
+    await page.evaluate(() => { window.badReport = true; });
+    await first.getByRole('button', { name: 'Read import report' }).click();
+    await expect(first.getByRole('alert')).toContainText('report is unavailable');
+    await expect(history.getByText('Review the first source.', { exact: true })).toHaveCount(0);
+    await second.getByRole('button', { name: 'Read import report' }).click();
+    await expect(second.getByText('Review the second source.', { exact: true })).toBeVisible();
+    await page.evaluate(() => { window.badReport = false; });
+    await first.getByRole('button', { name: 'Read import report' }).click();
+    await expect(first.getByText('Review the first source.', { exact: true })).toBeVisible();
+    await expect(second.getByText('Review the second source.', { exact: true })).toHaveCount(0);
+    const reads = await page.evaluate(() => window.reads);
+    assert.ok(reads.every(entry => entry.method === 'GET'));
+    assert.deepEqual(reads.filter(entry => entry.kind === 'report').map(entry => [entry.bookId, entry.source, entry.actor]),
+      [[A, id(sources[0]), USER], [A, id(sources[1]), USER], [A, id(sources[0]), USER]]);
+  } finally { await page.close(); }
+});
 test('book desk shows saved facts and exact scoped links without commercial completion claims',async()=>{
   const page=await fixture();try{await ready(page);
     await expect(page.getByRole('definition').first()).toHaveText('1,235');

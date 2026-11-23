@@ -50,7 +50,7 @@ test("dashboard activity uses friendly labels and safe fallbacks", () => {
 test("pipeline links use saved scope, exact AI review IDs, and existing studios without executing work", () => {
   const bookId = "11111111-1111-4111-8111-111111111111", workspace = "22222222-2222-4222-8222-222222222222", id = "33333333-3333-4333-8333-333333333333";
   assert.equal(jobLink({ id, bookId, kind: "ai", destination: "editor" }, workspace), `/books/${bookId}?aiJob=${id}`);
-  assert.equal(jobLink({ id, bookId, kind: "import", destination: "editor" }, workspace), `/books/${bookId}`);
+  assert.equal(jobLink({ id, bookId, kind: "import", destination: "editor" }, workspace), `/books/${bookId}/overview#import-job-${id}`);
   for (const destination of ["memory", "publish", "translate", "plan", "overview"] as const) assert.equal(jobLink({ id, bookId, kind: "ai", destination }, workspace), `/books/${bookId}/${destination}`);
   assert.equal(jobLink({ id, bookId: null, kind: "ai", destination: "assets" }, workspace), `/assets?ws=${workspace}`);
   assert.equal(jobLink({ id, bookId, kind: "audiobook_export", destination: "publish" }, workspace), `/books/${bookId}/publish`);

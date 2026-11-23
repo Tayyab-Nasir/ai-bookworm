@@ -228,6 +228,10 @@ the allowlist without starting a worker.
 - A saved EPUB section or resource 404 removes that unavailable reader source;
   when it is the selected packaging proof, its preflight is invalidated. A
   temporary reader failure keeps the existing proof available for retry.
+- Dashboard import activity opens the book desk history. Each read-only report
+  belongs to the verified book and selected saved source; a different source
+  or a failed read leaves that report unavailable.
+  Regression: `apps/web/tests/book-overview-mounted.mjs`.
 - A resumed manuscript upload checks its saved job list before enabling import
   retry. An unavailable or mismatched list leaves the original upload in place
   and offers a read-only status check.

@@ -7,6 +7,7 @@ import { apiClient } from "./api";
 import styles from "./BookOverview.module.css";
 import { jobLink } from "../lib/job-link";
 import { retailerChannelNames, retailerSubmissionLabels } from "../lib/retailer-portals";
+import BookImportHistory from "./BookImportHistory";
 
 async function viewer() {
   const response = await fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
@@ -151,6 +152,8 @@ export default function BookOverview({ bookId }: { bookId: string }) {
           </section>
         </div>
       </div>
+
+      <BookImportHistory key={`${overview.viewerId}:${bookId}`} bookId={bookId} actor={overview.viewerId} loadOnOpen={overview.jobs.some(job => job.kind === "import")} />
 
       <section className={styles.activity} aria-labelledby="book-jobs-title"><div className={styles.sectionHeading}><p className={styles.eyebrow}>Recent pipeline activity</p><h2 id="book-jobs-title">What’s moving.</h2><p>Newest 12 jobs, sampled from the latest four per pipeline. Opening a workflow starts no job or paid generation.</p></div>
         {overview.jobs.length === 0 ? <p className={styles.note}>No import, AI, publishing, or audiobook export jobs recorded for this book yet.</p> : <ul className={styles.jobs}>{overview.jobs.map(job => <li key={`${job.kind}:${job.id}`}><Link href={jobLink({ ...job, bookId }, overview.workspace.id) ?? `${root}/overview`}><span>{job.label}<small>{job.kind === "import" ? "Import pipeline" : job.kind === "ai" ? "AI pipeline" : job.kind === "audiobook_export" ? "Audiobook export pipeline" : "Publishing pipeline"}</small></span><span className={styles.jobStatus} data-status={job.status}>{job.status}</span><span aria-hidden="true">↗</span></Link></li>)}</ul>}
