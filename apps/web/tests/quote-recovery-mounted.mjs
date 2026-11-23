@@ -938,7 +938,7 @@ test("metadata catalog retry cannot cross an account switch", async () => {
   const page=await fixture();try{
     await memoryFixture(page);await page.evaluate(()=>{window.memoryFetch=async path=>path.endsWith('/metadata/models')?Response.json({error:{message:'unavailable'}},{status:503}):undefined;window.renderMemory({bookId:'11111111-1111-4111-8111-111111111111'})});
     await page.getByRole('button',{name:'Retry metadata models'}).waitFor();
-    await page.evaluate(()=>{const original=window.fetch;window.fetch=(path,init)=>path==='/api/auth/session'?Promise.resolve(Response.json({user:{id:'different-account'}})):original(path,init)});
+    await page.getByRole('button',{name:'Retry metadata models'}).evaluate(button=>button.addEventListener('click',()=>{const original=window.fetch;window.fetch=(path,init)=>path==='/api/auth/session'?Promise.resolve(Response.json({user:{id:'different-account'}})):original(path,init)}, {capture:true,once:true}));
     await page.getByRole('button',{name:'Retry metadata models'}).click();
     await expect(page.getByText(/account changed/i).first()).toBeVisible();
     assert.equal(await page.evaluate(()=>window.calls.filter(call=>call.path.endsWith('/metadata/models')).length),1);
