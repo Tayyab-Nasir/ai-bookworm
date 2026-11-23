@@ -1,5 +1,25 @@
 # Hosted database upgrade review
 
+## Account deletion intake on 2026-11-23 UTC
+
+Supabase project `cyhqtwndadlyzpeatxws` recorded
+`confirmed_data_rights_cutover` as hosted version `20261123194532`.
+The reviewed source is
+`20261124100000_confirmed_data_rights_cutover.sql` at `866c335`,
+with SHA-256 `6b46662d3c12079c16ef1aaac4a5dc9672c67a3bda5efdd3bdf84986326d5aac`.
+[Native database CI](https://github.com/Tayyab-Nasir/ai-bookworm/actions/runs/45251286487)
+passed for that commit.
+
+The migration checked the existing policy and grant fingerprints under a
+table lock. The resulting catalog permits authenticated users to insert
+export requests through four input columns. Account deletion intake uses the
+confirmation RPC. The existing read policies,
+cancellation RPC, and operator privileges remained available. The table had
+zero requests before and after the change.
+
+Hosted versions record application time. Match this migration by its name
+when reconciling the Supabase history with the source filename.
+
 ## Publishing follow-up on 2026-11-18
 
 The hosted project now has retailer submission status and render request

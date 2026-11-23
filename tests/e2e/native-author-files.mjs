@@ -109,6 +109,15 @@ try {
   await request(alice.token, 'POST', accountRequests, { ...deleteInput, confirmation: 'delete my account' }, 422);
   const rejectedIntake = await alice.client.rpc('submit_delete_data_rights_request', { p_confirmation: 'delete my account' });
   assert.equal(rejectedIntake.error?.code, '22023', 'Database accepted an unconfirmed request');
+  const directDeletion = await alice.client.from('data_rights_requests').insert({
+    user_id: alice.userId, request_type: 'delete', status: 'submitted',
+  });
+  assert.equal(directDeletion.error?.code, '42501', 'PostgREST allowed an unconfirmed deletion request');
+  const directCompletedExport = await alice.client.from('data_rights_requests').insert({
+    user_id: alice.userId, request_type: 'export', status: 'submitted', completed_at: new Date().toISOString(),
+  });
+  assert.equal(directCompletedExport.error?.code, '42501', 'PostgREST allowed a server-owned export timestamp');
+  assert.deepEqual((await request(alice.token, 'GET', accountRequests)).requests, [], 'Rejected intake left a request behind');
   const exportRequest = await request(alice.token, 'POST', accountRequests, { type: 'export' }, 201);
   assert.equal(exportRequest.request.request_type, 'export');
   const deletion = await request(alice.token, 'POST', accountRequests, deleteInput, 201);
@@ -126,7 +135,7 @@ try {
   assert.equal(ticket.ticket.status, 'open');
   assert.equal(ticket.ticket.priority, 'normal');
   assert.deepEqual((await request(bob.token, 'GET', '/support/tickets')).tickets, []);
-  console.log('PASS confirmed data-rights intake, duplicate and foreign-account refusal, cancellation and support');
+  console.log('PASS PostgREST direct deletion and timestamp denial, confirmed API intake, duplicate and foreign-account refusal, cancellation and support');
 
   const bookRequest = { workspaceId: alice.workspace.id, requestId: randomUUID(), title: 'Native author manuscript', authorName: 'Synthetic author' };
   const book = await request(alice.token, 'POST', '/books', bookRequest, 201);
