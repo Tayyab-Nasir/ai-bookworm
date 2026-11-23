@@ -1598,3 +1598,52 @@ test("late Book Bible acceptance cannot revoke a newly selected book's explicit 
     assert.equal(await page.evaluate(() => window.calls.filter(call => call.path.endsWith("/accept")).length), 1);
   } finally { await page.close(); }
 });
+
+test("AI initialization retry checks session again before unlocking an empty recovery state", async () => {
+  const page = await fixture();
+  try {
+    await page.evaluate(input => {
+      const base = window.fetch; let account = "offline";
+      window.setAccount = value => { account = value; };
+      window.fetch = (path, init) => path === "/api/auth/session" ? Promise.resolve(account === "offline" ? new Response("offline", {status: 503}) : Response.json({user: {id: account}})) : base(path, init);
+      window.renderPanel({...input, dirty: true});
+    }, props());
+    const retry = page.getByRole("button", {name: "Retry AI recovery checks"});
+    await expect(retry).toBeVisible();
+    await page.evaluate(() => window.setAccount("other-account"));
+    await retry.click();
+    await expect(page.getByText(/Your account changed/)).toBeVisible();
+    await page.evaluate(() => window.setAccount("00000000-0000-4000-8000-000000000001"));
+    await retry.click();
+    await expect(retry).toHaveCount(0);
+    await expect(page.getByRole("button", {name: "Prepare usage quote"})).toBeDisabled();
+    assert.equal(await page.evaluate(() => window.calls.filter(c => c.operation).length), 0);
+  } finally { await page.close(); }
+});
+
+test("AI initialization retry preserves and checks a pending decision after storage failure", async () => {
+  const page = await fixture();
+  try {
+    await decisionFixture(page);
+    await page.evaluate(() => { window.decisionReadOffline = true; });
+    await page.getByRole("button", {name: "Apply", exact: true}).click();
+    await page.getByText("Saved review temporarily unavailable").waitFor();
+    const original = await page.evaluate(() => sessionStorage.getItem(window.decisionKey));
+    assert.ok(original);
+    await page.evaluate(() => { window.clearComponent(); });
+    await page.waitForTimeout(50);
+    await page.evaluate(input => {
+      const get = Storage.prototype.getItem;
+      window.restoreDecisionStorage = () => { Storage.prototype.getItem = get; };
+      Storage.prototype.getItem = function(key) { if (key === window.decisionKey) throw new Error("offline"); return get.call(this, key); };
+      window.renderPanel(input);
+    }, props("a-book", "a-chapter", "a-job"));
+    const retry = page.getByRole("button", {name: "Retry AI recovery checks"});
+    await expect(retry).toBeVisible();
+    await page.evaluate(() => { window.restoreDecisionStorage(); window.decisionReadOffline = true; });
+    await retry.click();
+    await expect(page.getByText("Saved review temporarily unavailable")).toBeVisible();
+    assert.equal(await page.evaluate(() => sessionStorage.getItem(window.decisionKey)), original);
+    assert.equal(await page.evaluate(() => window.calls.filter(c => c.operation === "decision-apply").length), 1);
+  } finally { await page.close(); }
+});

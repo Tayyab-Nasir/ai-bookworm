@@ -98,7 +98,7 @@ jobs:
       - name: Verify AI review source consent
         env:
           BROWSER_TEST_CHANNEL: chromium
-        run: node --test --test-name-pattern='AI review source and model changes|same-turn AI source change' apps/web/tests/quote-recovery-mounted.mjs
+        run: node --test --test-name-pattern='AI review source and model changes|same-turn AI source change|AI initialization retry' apps/web/tests/quote-recovery-mounted.mjs
       - name: Verify community directory and discussion account isolation in full Chromium
         env:
           BROWSER_TEST_CHANNEL: chromium

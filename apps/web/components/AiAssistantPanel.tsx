@@ -47,6 +47,8 @@ export default function AiAssistantPanel({
   const [recent, setRecent] = useState<AiJobReview[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
   const [recoveryReady, setRecoveryReady] = useState(false);
+  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
+  const [recoveryInitializationFailed, setRecoveryInitializationFailed] = useState(false);
   const [restoreInitialReview, setRestoreInitialReview] = useState(false);
   const [pendingRequest, setPendingRequest] = useState<PendingReview | null>(null);
   const [models, setModels] = useState<AiReviewModelChoice[]>([]);
@@ -173,7 +175,7 @@ export default function AiAssistantPanel({
   useEffect(() => {
     if (!chapterId) return;
     let cancelled = false;
-    setRecoveryReady(false); setRestoreInitialReview(false); setPendingRequest(null);
+    setRecoveryReady(false); setRecoveryInitializationFailed(false); setError(null); setRestoreInitialReview(false); setPendingRequest(null);
     void (async () => {
       const session = await fetch("/api/auth/session", { cache: "no-store" });
       if (!session.ok) throw new Error("Sign in again before requesting AI review.");
@@ -215,9 +217,9 @@ export default function AiAssistantPanel({
         }
       }
       if (!cancelled) { setRestoreInitialReview(!saved && !decision); setRecoveryReady(true); }
-    })().catch((reason) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "AI request recovery is unavailable."); setRecoveryReady(false); } });
+    })().catch((reason) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "AI request recovery is unavailable."); setRecoveryReady(false); setRecoveryInitializationFailed(true); } });
     return () => { cancelled = true; };
-  }, [api, actorId, bookId, chapterId, adoptRecovery, readDecision]);
+  }, [api, actorId, bookId, chapterId, adoptRecovery, readDecision, recoveryAttempt]);
   useEffect(() => {
     if (!initialDraftInstruction || !recoveryReady || job || pendingDecision) return;
     if (pendingRequest && (pendingRequest.bookId !== bookId || pendingRequest.chapterId !== chapterId)) return;
@@ -583,6 +585,7 @@ export default function AiAssistantPanel({
       }} className="mt-2 min-h-11 rounded-lg border border-white/20 px-3 py-2 disabled:opacity-40">Retry original {pendingDecision.action === "apply" ? "Apply" : "Reject"}</button>}
     </div>}
     {error && <p role="alert" className="mt-3 text-xs leading-5 text-red-200">{error}</p>}
+    {recoveryInitializationFailed && <button type="button" onClick={() => setRecoveryAttempt((attempt) => attempt + 1)} className="mt-2 rounded-md border border-white/20 px-3 py-2 text-xs text-white">Retry AI recovery checks</button>}
     {unconfirmed && <p role="alert" className="mt-3 rounded-lg border border-amber-300/25 bg-amber-300/10 p-3 text-xs leading-5 text-amber-100">The paid provider response for request {job?.id} is unconfirmed. No second generation will start automatically. Your credit remains reserved while support checks the provider result; do not start a new review for this book yet.</p>}
     {notice && <p role="status" className="mt-3 text-xs leading-5 text-emerald-200">{notice}</p>}
     {job && <p className="mt-3 text-[11px] text-white/35">{job.model ?? "provider"} · {Number((job.usage_json as { inputTokens?: number })?.inputTokens ?? 0) + Number((job.usage_json as { outputTokens?: number })?.outputTokens ?? 0)} tokens</p>}
