@@ -125,6 +125,33 @@ test("Google sign-in retains its retry target after an unreadable response", asy
   }
 });
 
+for (const moveFocus of [false, true]) {
+  test(`email sign-in failure ${moveFocus ? "preserves a new focus target" : "restores keyboard retry focus"}`, async () => {
+    const page = await browser.newPage();
+    try {
+      await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: "<!doctype html><div id='root'></div>" }));
+      await page.goto("http://127.0.0.1/fixture");
+      await page.addScriptTag({ content: script });
+      await page.evaluate(() => {
+        window.fetch = () => new Promise(resolve => { window.finishAuth = () => resolve(new Response("{}", { status: 503 })); });
+        window.mount("login");
+      });
+      await page.getByLabel("Email", { exact: true }).fill("author@example.test");
+      await page.getByLabel("Password", { exact: true }).fill("testpassword");
+      const button = page.getByRole("button", { name: "Sign in", exact: true });
+      await button.focus();
+      await page.keyboard.press("Enter");
+      await page.getByRole("button", { name: "Please wait…" }).waitFor();
+      const forgot = page.getByRole("link", { name: "Forgot?" });
+      if (moveFocus) await forgot.focus();
+      await page.evaluate(() => window.finishAuth());
+      await page.getByRole("alert").waitFor();
+      await (moveFocus ? forgot : button).waitFor({ state: "visible" });
+      await page.waitForFunction((preserve) => preserve ? document.activeElement?.textContent === "Forgot?" : document.activeElement?.textContent?.includes("Sign in"), moveFocus);
+    } finally { await page.close(); }
+  });
+}
+
 test("valid signup confirmation is shown to the author", async () => {
   const page = await browser.newPage();
   try {

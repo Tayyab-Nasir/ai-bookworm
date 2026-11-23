@@ -41,6 +41,8 @@ export function AuthCard({
   const [errorAction, setErrorAction] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const googleButton = useRef<HTMLButtonElement>(null);
+  const submitButton = useRef<HTMLButtonElement>(null);
+  const requestAttempted = useRef(false);
   const passwordOnly = mode === "reset-password";
   const emailOnly = mode === "forgot-password";
 
@@ -59,12 +61,13 @@ export function AuthCard({
   useEffect(() => {
     // A disabled loading button loses browser focus. Restore its retry target
     // after failure, but never steal focus from an email field or another link.
-    if (!busy && error && errorAction === "google" && document.activeElement === document.body) {
-      googleButton.current?.focus({ preventScroll: true });
+    if (!busy && error && (errorAction === "google" || requestAttempted.current) && document.activeElement === document.body) {
+      (errorAction === "google" ? googleButton : submitButton).current?.focus({ preventScroll: true });
     }
   }, [busy, error, errorAction]);
 
   async function submit(action: string, values: Record<string, unknown>) {
+    requestAttempted.current = true;
     setBusy(true);
     setError(null);
     setErrorAction(action);
@@ -110,7 +113,7 @@ export function AuthCard({
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(event.currentTarget));
-    if (passwordOnly && values.password !== values.confirmPassword) { setError("The passwords do not match."); return; }
+    if (passwordOnly && values.password !== values.confirmPassword) { setErrorAction(mode); setError("The passwords do not match."); return; }
     void submit(mode, values);
   }
 
@@ -223,6 +226,7 @@ export function AuthCard({
             )}
 
             <button
+              ref={submitButton}
               type="submit"
               disabled={busy}
               aria-busy={busy}
