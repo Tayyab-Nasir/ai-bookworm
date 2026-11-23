@@ -14,6 +14,26 @@ async function fixture(){const p=await browser.newPage();p.setDefaultTimeout(500
 const consent=p=>p.getByLabel('I agree to send the saved chapter text',{exact:false});
 async function ready(p){await expect(p.getByText('ES · 1/1 chapters counted')).toBeVisible()}
 async function openPreview(p){await p.getByRole('button',{name:'Preview',exact:true}).click();await p.getByText('A chapter').click();await expect(p.getByText('A private translated manuscript')).toBeVisible();}
+test('model catalog failure retries read-only and clears its error after verified success',async()=>{const p=await fixture();try{
+ await ready(p);await p.evaluate(()=>{window.api.listTranslationModels=async actor=>{window.calls.push(['models-failure',actor]);throw Error('unavailable')};window.dispatchEvent(new Event('focus'))});
+ await expect(p.getByRole('button',{name:'Retry model list'})).toBeVisible();await expect(p.getByLabel('Target language code')).toBeDisabled();
+ await p.evaluate(()=>{window.api.listTranslationModels=async actor=>{window.calls.push(['models-retry',actor]);return {models:[{id:'model',label:'Synthetic model'}]}}});await p.getByRole('button',{name:'Retry model list'}).click();
+ await expect(p.getByRole('button',{name:'Retry model list'})).toHaveCount(0);await expect(p.getByLabel('Target language code')).toBeEnabled();
+ assert.deepEqual(await p.evaluate(()=>window.calls.filter(x=>x[0]==='models-retry').map(x=>x[1])),[A]);assert.equal(await p.evaluate(()=>window.calls.filter(x=>x[0]==='prepare'||x[0]==='accept').length),0);
+ }finally{await p.close();}});
+for(const outcome of ['failure','success']) test(`superseded model retry ${outcome} cannot overwrite a later verified catalog`,async()=>{const p=await fixture();try{
+ await ready(p);await p.evaluate(()=>{window.api.listTranslationModels=async()=>{throw Error('unavailable')};window.dispatchEvent(new Event('focus'))});await expect(p.getByRole('button',{name:'Retry model list'})).toBeVisible();
+ await p.evaluate(()=>{window.api.listTranslationModels=()=>window.defer('old-models')});await p.getByRole('button',{name:'Retry model list'}).click();await p.waitForFunction(()=>!!window.gates['old-models']);
+ await p.evaluate(()=>{window.api.listTranslationModels=async()=>({models:[{id:'new-model',label:'New verified model'}]});window.dispatchEvent(new Event('focus'))});await expect(p.getByRole('option',{name:'New verified model'})).toHaveCount(1);
+ await p.evaluate(async outcome=>{if(outcome==='failure')window.gates['old-models'].reject(Error('old failure'));else window.gates['old-models'].resolve({models:[{id:'old-model',label:'Old stale model'}]});await new Promise(resolve=>setTimeout(resolve,30));},outcome);await expect(p.getByRole('button',{name:'Retry model list'})).toHaveCount(0);await expect(p.getByRole('option',{name:'New verified model'})).toHaveCount(1);await expect(p.getByRole('option',{name:'Old stale model'})).toHaveCount(0);
+ assert.equal(await p.evaluate(()=>window.calls.filter(x=>x[0]==='prepare'||x[0]==='accept').length),0);
+ }finally{await p.close();}});
+test('pending model retry cannot cross an account switch',async()=>{const p=await fixture();try{
+ await ready(p);await p.evaluate(()=>{window.api.listTranslationModels=async()=>{throw Error('unavailable')};window.dispatchEvent(new Event('focus'))});await expect(p.getByRole('button',{name:'Retry model list'})).toBeVisible();
+ await p.evaluate(()=>{window.api.listTranslationModels=()=>window.defer('old-models')});await p.getByRole('button',{name:'Retry model list'}).click();await p.waitForFunction(()=>!!window.gates['old-models']);
+ await p.evaluate(()=>{window.actor=window.ids.B;window.api.listTranslationModels=async actor=>({models:[{id:'b-model',label:actor+' model'}]});window.dispatchEvent(new Event('focus'))});await expect(p.getByRole('option',{name:`${B} model`})).toHaveCount(1);
+ await p.evaluate(async()=>{window.gates['old-models'].resolve({models:[{id:'old',label:'Old account model'}]});await new Promise(resolve=>setTimeout(resolve,30))});await expect(p.getByRole('option',{name:'Old account model'})).toHaveCount(0);await expect(p.getByRole('option',{name:`${B} model`})).toHaveCount(1);
+ }finally{await p.close();}});
 for(const stale of ['omitted','queued']) test(`late prior-project refresh preserves newly accepted project billing and ${stale} history`,async()=>{const p=await fixture();try{
  await ready(p);const second='88888888-8888-4888-8888-888888888888';
  await p.evaluate(second=>{window.api.acceptTranslationQuote=()=>window.defer('accept-other');window.otherProject={...window.project(window.ids.A),id:second,chapters:[{...window.project(window.ids.A).chapters[0],chapterTitle:'Other project chapter'}]};window.api.getTranslationBilling=async id=>{window.billingSeen=id;return {reservedCredits:'100',heldCredits:id===second?'99':'8',chargedCredits:'1',returnedCredits:'0',reviewChapters:0}};},second);

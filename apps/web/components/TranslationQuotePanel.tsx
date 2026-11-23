@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { TranslationModelChoice, TranslationProjectResult, TranslationProposalResult, TranslationQuoteRequestResult } from "@bookworm/api-client";
 import { apiClient } from "./api";
 
@@ -79,19 +79,32 @@ export default function TranslationQuotePanel({bookId,scope,active,sourceLanguag
   const [requests,setRequests]=useState<TranslationQuoteRequestResult[]>([]),[historyState,setHistoryState]=useState<"loading"|"ready"|"error">("loading");
   const [proposal,setProposal]=useState<TranslationProposalResult|null>(null);
   const [busy,setBusy]=useState(false),[error,setError]=useState<string|null>(null),[catalogError,setCatalogError]=useState<string|null>(null);
+  const [catalogBusy,setCatalogBusy]=useState(false); const catalogSequence=useRef(0);
   const [notice,setNotice]=useState<string|null>(null),[pending,setPending]=useState<PendingQuote|null>(null),[acceptance,setAcceptance]=useState<PendingAcceptance|null>(null),[recoveryAvailable,setRecoveryAvailable]=useState(false);
   const lock=useRef(false),recoveryLock=useRef(false),mounted=useRef(false);
   const resolvedRequests=useRef(new Set<string>()),resolvedAcceptances=useRef(new Set<string>());
   const [recoveryBusy,setRecoveryBusy]=useState(false);
   useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  const loadCatalog=useCallback(async()=>{
+    if(!scope.current())return;
+    const sequence=++catalogSequence.current, current=scope.begin();setCatalogBusy(true);
+    try{
+      const result=await scope.checked(()=>api.listTranslationModels(scope.actor));
+      if(!mounted.current||sequence!==catalogSequence.current||!current())return;
+      setModels(result.models);setCatalogError(null);
+      setModelId(previous=>previous && result.models.some(model=>model.id===previous) ? previous : previous ? "" : result.models[0]?.id||"");
+      if(modelId && !result.models.some(model=>model.id===modelId))setConsent(false);
+    }catch{if(mounted.current&&sequence===catalogSequence.current&&current())setCatalogError("New usage-priced quotes are currently unavailable. You can still refresh existing requests and accepted translations.");}
+    finally{if(mounted.current&&sequence===catalogSequence.current)setCatalogBusy(false);}
+  },[api,scope,modelId]);
+  const catalogRef=useRef(loadCatalog);catalogRef.current=loadCatalog;
+  useEffect(()=>{if(active)void catalogRef.current();return()=>{catalogSequence.current++;};},[active,api,scope]);
   useEffect(()=>{
     if(!active)return;
     let currentEffect=true;
     let saved:PendingQuote|null;
     try { saved=readPending(scope.actor,bookId); const held=readAcceptance(scope.actor,bookId); setPending(saved);setAcceptance(held);setRecoveryAvailable(true); }
     catch { saved=null; setRecoveryAvailable(false); setError("Quote recovery is unavailable. Check browser storage before requesting another quote."); }
-    void scope.checked(()=>api.listTranslationModels(scope.actor)).then((result)=>{if(currentEffect&&scope.current()){setModels(result.models);setModelId(previous=>previous||result.models[0]?.id||"");}})
-      .catch(()=>{if(currentEffect&&scope.current())setCatalogError("New usage-priced quotes are currently unavailable. You can still refresh existing requests and accepted translations.");});
     void scope.checked(()=>api.listTranslationQuoteRequests(bookId,scope.actor)).then((result)=>{
       if(result.requests.some(item=>item.bookId!==bookId))throw new Error("Quote history mismatch.");
       if(currentEffect&&scope.current()){setRequests(result.requests);setHistoryState("ready");}
@@ -201,10 +214,10 @@ export default function TranslationQuotePanel({bookId,scope,active,sourceLanguag
     </div>}
     {pending&&<div role="status" className="mt-4 text-sm text-amber-100">A previous quote request is unconfirmed. Check the original request without starting another provider call. A missing result does not prove it cannot still arrive.
       <button type="button" className={`${button} ml-3`} disabled={disabled||recoveryBusy||!recoveryAvailable} onClick={()=>void checkPending()}>Check original quote request</button></div>}
-    {catalogError&&<p role="status" className="mt-4 text-sm text-amber-100">{catalogError}</p>}
+    {catalogError&&<p role="status" className="mt-4 text-sm text-amber-100">{catalogError} <button type="button" className="underline disabled:opacity-40" disabled={catalogBusy} onClick={()=>void loadCatalog()}>{catalogBusy?"Checking models…":"Retry model list"}</button></p>}
     {error&&<p role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-400/10 p-3 text-sm text-red-100">{error}</p>}
     {notice&&<p role="status" className="mt-4 text-sm text-emerald-100">{notice}</p>}
-    <fieldset disabled={!editable||locked||!models.length||!recoveryAvailable||Boolean(pending)||Boolean(acceptance)||historyState!=="ready"} className="mt-5 space-y-4">
+    <fieldset disabled={!editable||locked||catalogBusy||Boolean(catalogError)||!models.length||!recoveryAvailable||Boolean(pending)||Boolean(acceptance)||historyState!=="ready"} className="mt-5 space-y-4">
       <div className="grid gap-4 sm:grid-cols-2">
         <label className="text-sm text-white/75">Translation model<select className={input} value={modelId} onChange={(event)=>{setModelId(event.target.value);setConsent(false);}}><option value="" disabled>Select a model</option>{models.map((model)=><option key={model.id} value={model.id}>{model.label}</option>)}</select></label>
         <label className="text-sm text-white/75">Target language code<input className={input} placeholder="es or pt-BR" maxLength={35} value={target} onChange={(event)=>{setTarget(event.target.value);setConsent(false);}} /></label>
