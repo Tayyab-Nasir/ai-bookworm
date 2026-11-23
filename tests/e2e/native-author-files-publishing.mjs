@@ -241,6 +241,12 @@ export async function runNativeRetailerBrowser({ page, retailer, service, screen
         await select(edition);
         const desk = page.getByRole('region', { name: 'Saved EPUB proof', exact: true });
         await desk.getByRole('combobox', { name: 'Saved EPUB export', exact: true }).selectOption(render.jobId);
+        const coverSection = desk.getByRole('combobox', { name: 'Saved EPUB section', exact: true });
+        await expect(coverSection.locator('option[value="0"]')).toHaveText(/— Cover$/);
+        await coverSection.selectOption({ value: '0' });
+        const embeddedCover = desk.frameLocator('iframe').getByRole('img', { name: /^Cover of / });
+        await expect(embeddedCover).toBeVisible();
+        await expect.poll(() => embeddedCover.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
         await desk.getByRole('button', { name: 'Use this EPUB for packaging', exact: true }).click();
         await expect(history.getByText(/Package source · Saved EPUB/)).toContainText(sourceEpub.sha256.slice(0, 12));
         assert.equal(requests.filter(path => path.endsWith(`/editions/${edition.id}/render`)).length, originalCount);

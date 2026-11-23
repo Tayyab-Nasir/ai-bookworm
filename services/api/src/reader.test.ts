@@ -511,7 +511,8 @@ for flow in ("reflowable", "fixed"):
                     name = name.removesuffix(".png") + ".jpg"
                     content = jpeg
                 elif name.endswith((".opf", ".xhtml")):
-                    content = content.replace((art_id + ".png").encode(), (art_id + ".jpg").encode()).replace(b'media-type="image/png"', b'media-type="image/jpeg"')
+                    content = content.replace((art_id + ".png").encode(), (art_id + ".jpg").encode())
+                    content = content.replace(f'id="image-{art_id}" media-type="image/png"'.encode(), f'id="image-{art_id}" media-type="image/jpeg"'.encode())
                 changed.writestr(name, content, compress_type=zipfile.ZIP_STORED if name == "mimetype" else zipfile.ZIP_DEFLATED)
         jpeg_data = saved.getvalue()
         jpeg_first = private_preview(jpeg_data)
@@ -567,7 +568,10 @@ print(json.dumps(output, ensure_ascii=False, separators=(",", ":")))
       assert.equal(JSON.stringify(saved.tables), original); assert.deepEqual(saved.mutations, []);
       if (flow.startsWith("reflowable")) {
         assert.ok(artifact.sections.some(section => section.document.html.includes("Saved &amp; exact &lt;words&gt;")));
-        if (flow === "reflowable-jpeg") assert.ok(artifact.resources.some(resource => resource.resource.mimeType === "image/jpeg"));
+        if (flow === "reflowable-jpeg") {
+          assert.ok(artifact.resources.some(resource => resource.resource.mimeType === "image/jpeg"));
+          assert.ok(artifact.resources.some(resource => resource.resource.mimeType === "image/png"));
+        }
       }
       else { assert.ok(artifact.sections.some(section => section.document.layout === "pre-paginated")); assert.ok(artifact.sections.some(section => section.document.layout === "reflowable")); }
     } finally { await app.close(); }

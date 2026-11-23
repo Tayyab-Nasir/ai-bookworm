@@ -391,8 +391,12 @@ def test_raw_declared_streamed_empty_and_encoding_bounds(client, monkeypatch):
     assert raw_post(client, b"saved", headers={"content-length": "0"}).status_code == 422
 
 
-@pytest.mark.parametrize("image_format,mime", [("PNG", "image/png"), ("JPEG", "image/jpeg")])
-def test_raw_native_document_and_raster_http_preserve_saved_artifact(client, image_format, mime):
+@pytest.mark.parametrize("image_format,mime,href", [
+    ("PNG", "image/png", "cover.png"),
+    ("PNG", "image/png", "images/33333333-3333-4333-8333-333333333333.png"),
+    ("JPEG", "image/jpeg", "cover.jpg"),
+])
+def test_raw_native_document_and_raster_http_preserve_saved_artifact(client, image_format, mime, href):
     import io
     import zipfile
     from PIL import Image
@@ -407,17 +411,17 @@ def test_raw_native_document_and_raster_http_preserve_saved_artifact(client, ima
     png = io.BytesIO()
     Image.new("RGB", (120, 180), "#234567").save(png, "PNG")
     data, digest = render_epub(book, EbookEdition(cover={"asset_id": art_id}), cover_bytes=png.getvalue())
-    if image_format == "JPEG":
-        # The renderer embeds normalized PNG. A standards-valid imported JPEG
-        # EPUB also has matching manifest MIME, href and unchanged raster bytes.
+    if href != "cover.png":
+        # Cover references in prior exports and imported JPEG EPUBs differ from
+        # the current renderer's normalized PNG path.
         saved = io.BytesIO()
         with zipfile.ZipFile(io.BytesIO(data)) as original, zipfile.ZipFile(saved, "w") as changed:
             for item in original.infolist():
                 name, content = item.filename, original.read(item)
-                if name.endswith(art_id + ".png"):
-                    name, content = name.removesuffix(".png") + ".jpg", art
+                if name == "OEBPS/cover.png":
+                    name, content = f"OEBPS/{href}", art
                 elif name.endswith((".opf", ".xhtml")):
-                    content = content.replace((art_id + ".png").encode(), (art_id + ".jpg").encode()).replace(b'media-type="image/png"', b'media-type="image/jpeg"')
+                    content = content.replace(b"cover.png", href.encode()).replace(b'media-type="image/png"', f'media-type="{mime}"'.encode())
                 changed.writestr(name, content, compress_type=zipfile.ZIP_STORED if name == "mimetype" else zipfile.ZIP_DEFLATED)
         data = saved.getvalue()
         digest = hashlib.sha256(data).hexdigest()

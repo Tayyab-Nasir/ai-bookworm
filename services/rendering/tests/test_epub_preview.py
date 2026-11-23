@@ -244,7 +244,7 @@ def test_external_encoded_and_undeclared_resource_paths_rejected(reader, reflow,
 
 
 def test_invalid_raster_signature_mime_truncation_dimensions_and_frames_rejected(reader, reflow, art, monkeypatch):
-    path = "OEBPS/images/" + ART_ID + ".png"
+    path = "OEBPS/cover.png"
     invalids = [b"not a raster", art[:-12]]
     jpeg = io.BytesIO()
     Image.new("RGB", (8, 8)).save(jpeg, "JPEG")
@@ -345,8 +345,7 @@ def test_invalid_source_type_and_zip_rejected(reader, data):
 
 
 def test_jpeg_and_multiple_resource_indices_are_bound_to_manifest_order(reader, art):
-    cover_id = "44444444-4444-4444-8444-444444444444"
-    data = render_epub(BOOK, EbookEdition(cover={"asset_id": cover_id}), cover_bytes=art,
+    data = render_epub(BOOK, EbookEdition(cover={"asset_id": ART_ID}), cover_bytes=art,
                        image_bytes={ART_ID: art})[0]
     cover = reader.preview_epub(data)["document"]["resources"]
     assert [resource["index"] for resource in cover] == [0]
@@ -355,10 +354,15 @@ def test_jpeg_and_multiple_resource_indices_are_bound_to_manifest_order(reader, 
     jpeg = io.BytesIO()
     Image.new("RGB", (12, 18), "blue").save(jpeg, "JPEG")
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        opf = archive.read("OEBPS/content.opf").replace(b'media-type="image/png"', b'media-type="image/jpeg"')
-    changed = repack(data, {"OEBPS/content.opf": opf, "OEBPS/images/" + cover_id + ".png": jpeg.getvalue(),
-                            "OEBPS/images/" + ART_ID + ".png": jpeg.getvalue()})
-    resource = reader.preview_epub(changed, resource_index=1)["resource"]
+        opf = archive.read("OEBPS/content.opf").replace(
+            f'id="image-{ART_ID}" media-type="image/png"'.encode(), f'id="image-{ART_ID}" media-type="image/jpeg"'.encode())
+    changed = repack(data, {"OEBPS/content.opf": opf, f"OEBPS/images/{ART_ID}.png": jpeg.getvalue()})
+    saved_cover = reader.preview_epub(changed, resource_index=0)
+    saved_plate = reader.preview_epub(changed, resource_index=1)
+    assert saved_cover["resource"]["mimeType"] == "image/png"
+    assert base64.b64decode(saved_cover["resource"]["base64"]) == art
+    assert saved_cover["sourceSha256"] == saved_plate["sourceSha256"] == hashlib.sha256(changed).hexdigest()
+    resource = saved_plate["resource"]
     assert resource["mimeType"] == "image/jpeg"
     assert (resource["width"], resource["height"]) == (12, 18)
     assert base64.b64decode(resource["base64"]) == jpeg.getvalue()
