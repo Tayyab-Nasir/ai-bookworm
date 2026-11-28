@@ -172,10 +172,13 @@ export async function runProcessing(plan, { healthIntervalMs = 10_000 } = {}) {
     while (!stopping) {
       await Promise.race([done, delay(healthIntervalMs, undefined, { ref: false })]);
       if (stopping) break;
-      const allReady = (await Promise.all(plan.map(healthy))).every(Boolean);
-      readinessFailures = allReady ? 0 : readinessFailures + 1;
+      const results = await Promise.all(plan.map(healthy));
+      const unavailable = plan.filter((_, index) => !results[index]);
+      readinessFailures = unavailable.length ? readinessFailures + 1 : 0;
       if (!stopping && readinessFailures >= READINESS_FAILURE_LIMIT) {
-        console.error('A private processing service is no longer ready. The local fleet has stopped.'); stop(true);
+        const names = unavailable.map(service => service.role).join(', ');
+        console.error(`Processing services no longer ready (${names}). The owned fleet has stopped.`);
+        stop(true);
       }
     }
   } finally {
@@ -190,10 +193,13 @@ async function main() {
   if (args.length === 1 && args[0] === '--list') {
     console.log(JSON.stringify({ services: Object.entries(roles).map(([role, port]) => ({ role, port })) })); return;
   }
-  if (args[0] !== '--config' || !args[1] || args[1].startsWith('--') || args.length > 3
-    || (args[2] !== undefined && args[2] !== '--check')) throw new Error('invalid_arguments');
-  const plan = createProcessingPlan(await readProcessingConfig(resolve(args[1])));
-  if (args[2] === '--check') {
+  const flags = args.slice(2);
+  if (args[0] !== '--config' || !args[1] || args[1].startsWith('--')
+    || flags.some(flag => flag !== '--check' && flag !== '--scanner-only')
+    || new Set(flags).size !== flags.length) throw new Error('invalid_arguments');
+  const configured = createProcessingPlan(await readProcessingConfig(resolve(args[1])));
+  const plan = flags.includes('--scanner-only') ? configured.filter(service => service.role === 'scanning') : configured;
+  if (flags.includes('--check')) {
     await prerequisites(plan);
     console.log(JSON.stringify({ status: 'configuration-valid', services: plan.map(({ role, port }) => ({ role, port })),
       providerKeysPassed: false, supabaseKeysPassed: false, workersStarted: false })); return;
@@ -202,6 +208,6 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(() => {
-  console.error('Local processing launcher failed. Use --list or --config <private-env-file> [--check]. No workers were started.');
+  console.error('Local processing launcher failed. Use --list or --config <private-env-file> [--scanner-only] [--check]. No workers were started.');
   process.exitCode = 1;
 });

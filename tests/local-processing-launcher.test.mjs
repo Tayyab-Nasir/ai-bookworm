@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { createProcessingPlan, readProcessingConfig } from '../scripts/run-local-processing.mjs';
@@ -132,6 +134,21 @@ test('private configuration loader refuses directories and CLI diagnostics never
   }
 });
 
+test('the scanner-only check selects the scanner without starting services or exposing credentials', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'bookworm-scanner-only-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'processing.env');
+  const settings = { ...config(), BOOKWORM_PYTHON: process.execPath.split(sep).join('/') };
+  await writeFile(file, Object.entries(settings).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join('\n'));
+  const result = run('--config', file, '--scanner-only', '--check');
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.status, 'configuration-valid');
+  assert.deepEqual(report.services, [{ role: 'scanning', port: 8004 }]);
+  assert.equal(report.workersStarted, false);
+  assert.ok(!result.stdout.includes(settings.SCANNING_SERVICE_TOKEN));
+});
+
 async function unusedPorts() {
   const servers = [createServer(), createServer()];
   await Promise.all(servers.map(server => new Promise((yes, no) => {
@@ -252,7 +269,7 @@ for (const misses of [2, 3]) test(`scanner readiness loss for ${misses} probes $
     assert.doesNotMatch(runtime.diagnostics(), /no longer ready/);
   } else {
     assert.equal(await runtime.exited, 1);
-    assert.match(runtime.diagnostics(), /no longer ready/);
+    assert.match(runtime.diagnostics(), /no longer ready \(scanning\)/);
   }
   assert.equal(await closed(ports), true);
 });

@@ -166,6 +166,12 @@ the allowlist without starting a worker.
 
 ## Verified gaps and review limits
 
+When a stale signature database interrupts local scanning, uploads stay
+quarantined. If the other processors remain healthy, the local operator can
+restore the scanner independently after ClamAV updates. The import worker
+starts only after scanner readiness succeeds. See
+[local processing recovery](LOCAL_PROCESSING_RUNTIME.md).
+
 - Workspace creation recovery keeps its opaque pointer in tab session storage;
   closing the tab can lose that pointer, and separate tabs can submit separate
   operations. Legacy callers of the old endpoint do not receive the new durable

@@ -39,6 +39,19 @@ HTTP fleet. There is no hidden respawn. Ctrl+C or `stop` on the launcher's
 standard input stops its children. Windows shutdown includes the virtualenv
 redirector's actual Python child, not just the wrapper PID.
 
+If the other local processors remained available during a scanner outage, bring
+back just the scanner after the configured ClamAV engine has fresh signatures:
+
+```powershell
+npm run services:local -- --config .env.processing.local --scanner-only --check
+npm run services:local -- --config .env.processing.local --scanner-only
+```
+
+This starts only the scanner and still waits for its real `/ready` endpoint.
+Once ready, start the import worker with its existing private configuration.
+A stale or unreachable engine still blocks scanning; quarantined uploads remain
+unavailable until they pass screening.
+
 The launcher passes only an OS-environment allowlist and each service's own
 token. It never forwards Supabase credentials, OpenAI keys, Stripe keys,
 `SERVICE_AUTH_TOKEN`, arbitrary Python paths or Node preload options. Parser
