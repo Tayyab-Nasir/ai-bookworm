@@ -91,7 +91,8 @@ enable a commercial plan in any hosted environment; Stripe remains deferred.
   stale edits and evidence retrieval use the actual API and database.
 - The production Next interface runs against those same real services in
   Playwright: signup/profile/private cookies, workspace onboarding, DOCX
-  upload/import, chapter save/reload, linked Book Bible, publishing metadata,
+  upload/import, chapter save/reload, a saved Book Bible reference opened
+  through the signed Storage route and matched to its asset checksum, publishing metadata,
   mobile containment, logout and a fresh-context returning-author login.
   It does not replace application responses with browser fixtures. The web
   child receives only the disposable anonymous key, not service-role or paid

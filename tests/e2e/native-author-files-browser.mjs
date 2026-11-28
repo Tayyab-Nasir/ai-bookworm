@@ -1,7 +1,7 @@
 /** Production UI, actual SSR cookies/BFF, real native services; no response fixtures. */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { join } from 'node:path';
@@ -256,6 +256,40 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     await expect(form.getByRole('checkbox')).toBeChecked();
     await expect(form.getByRole('combobox', { name: 'Source chapter', exact: true })).toHaveValue(chapter.id);
     succeeded('Book Bible search opens the verified canonical entry with scanned image and version-pinned chapter');
+
+    stage = 'Book Bible opens the saved reference through private Storage';
+    const referenceId = canon.attributes_json.imageAssetIds[0];
+    const reference = await service.from('assets').select('workspace_id,storage_path,checksum').eq('id', referenceId).single();
+    assert.equal(reference.error, null);
+    assert.equal(reference.data.workspace_id, workspace.id);
+    const referencePanel = page.getByRole('region', { name: 'Saved reference images', exact: true });
+    await expect(referencePanel.getByRole('img')).toHaveCount(0);
+    const [previewTicket, previewBytes] = await Promise.all([
+      nativeBrowserStep('Book Bible scoped reference preview ticket', page.waitForResponse(reply => {
+        const url = new URL(reply.url());
+        return url.origin === webOrigin && url.pathname === `/api/backend/v1/assets/${referenceId}/download-url`
+          && reply.request().method() === 'GET';
+      })),
+      nativeBrowserStep('Book Bible signed reference image response', page.waitForResponse(reply => {
+        const url = new URL(reply.url());
+        return url.origin === new URL(setup.url).origin
+          && decodeURIComponent(url.pathname) === `/storage/v1/object/sign/book-assets/${reference.data.storage_path}`
+          && reply.request().resourceType() === 'image';
+      })),
+      referencePanel.getByRole('button', { name: /^Preview / }).click(),
+    ]);
+    assert.equal(previewTicket.status(), 200);
+    assert.equal(previewTicket.request().headers()['x-bookworm-actor'], user.id);
+    assert.equal(previewBytes.status(), 200);
+    assert.equal(previewBytes.request().headers().referer, undefined);
+    assert.equal(createHash('sha256').update(await previewBytes.body()).digest('hex'), reference.data.checksum);
+    const visibleReference = referencePanel.getByRole('img');
+    await expect(visibleReference).toBeVisible();
+    await expect.poll(() => visibleReference.evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
+    await referencePanel.getByRole('button', { name: /^Close / }).click();
+    await expect(visibleReference).toHaveCount(0);
+    await expect(form.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
+    succeeded('saved Book Bible image matches real private Storage bytes and leaves the entry clean');
 
     stage = 'publishing metadata description input';
     const metadata = page.getByRole('region', { name: 'Publishing metadata', exact: true });
