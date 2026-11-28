@@ -761,6 +761,9 @@ test("actual Studio distinguishes unavailable package history and restores its l
     await expect(history.getByRole("button", { name: "Download private ZIP" })).toBeVisible();
     const bookshelf = history.getByRole("link", { name: "KDP Bookshelf", exact: true });
     await expect(bookshelf).toHaveAttribute("href", "https://kdp.amazon.com/en_US/bookshelf");
+    const disclosure = history.getByRole("link", { name: "Read the AI disclosure policy" });
+    await expect(disclosure).toHaveAttribute("href", "https://kdp.amazon.com/en_US/help/topic/G200635600");
+    await expect(history.getByText(/KDP requires disclosure of AI-generated text/)).toBeVisible();
     await expect(bookshelf).toHaveAttribute("target", "_blank");
     await page.evaluate(() => { window.packageJobs[0].package = null; });
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -768,6 +771,7 @@ test("actual Studio distinguishes unavailable package history and restores its l
     await expect(history.getByText("ready", { exact: true })).toHaveCount(0);
     await expect(history.getByRole("button", { name: "Download private ZIP" })).toHaveCount(0);
     await expect(bookshelf).toHaveCount(0);
+    await expect(disclosure).toHaveCount(0);
     await expect(history.getByText(/This job is saved in history, but its file is currently unavailable/)).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 });
     await history.scrollIntoViewIfNeeded();
@@ -775,8 +779,22 @@ test("actual Studio distinguishes unavailable package history and restores its l
     await history.screenshot({ path: resolve(artifacts, "unavailable-retailer-package-mobile.png") });
     await page.evaluate(() => { window.packageJobs = [structuredClone(window.savedPackage)]; });
     await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(bookshelf).toBeVisible();
+    await expect(disclosure).toHaveAttribute("href", "https://kdp.amazon.com/en_US/help/topic/G200635600");
+    await page.evaluate(() => {
+      const saved = structuredClone(window.savedPackage);
+      saved.channel = "barnesnoble";
+      saved.package.asset.storage_path = saved.package.asset.storage_path.replace("kdp-export.zip", "barnesnoble-export.zip");
+      saved.package.download.url = saved.package.download.url.replace("kdp-export.zip", "barnesnoble-export.zip");
+      window.packageJobs = [saved];
+    });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(history.getByText("ready", { exact: true })).toBeVisible();
     await expect(history.getByRole("button", { name: "Download private ZIP" })).toBeVisible();
+    await expect(disclosure).toHaveAttribute("href", "https://help-press.barnesandnoble.com/hc/en-us/articles/28267750176923-Use-of-Generative-AI-in-Your-Project");
+    await expect(history.getByText(/B&N Press AI disclosure under Rights & Other Information/)).toBeVisible();
+    await expect(bookshelf).toHaveCount(0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
     assert.equal(await page.evaluate(() => window.requests.some(request => request.method === "POST")), false);
     assert.deepEqual(errors, []);
   } finally { await page.close(); }

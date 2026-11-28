@@ -1282,6 +1282,13 @@ function PublishingWorkspace({ bookId, packageJobId, editionId, scope, active, v
                 Open <a href={portal.href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">{portal.label}</a> and follow the upload steps in the ZIP.
               </p>
             )}
+            {currentIdentity && job.status === "succeeded" && job.package && portal?.disclosure && (
+              <p className="text-sm text-white/65">
+                {portal.disclosure.guidance}{" "}
+                <a href={portal.disclosure.href} target="_blank" rel="noopener noreferrer"
+                  className="inline-flex min-h-11 items-center underline underline-offset-4">Read the AI disclosure policy</a>
+              </p>
+            )}
             {currentIdentity && job.status === "succeeded" && job.bookId === bookId && job.editionId === activeId && (
               <RetailerSubmission api={api} actor={scope.actor} jobId={job.id} canEdit={editable}
                 isCurrent={() => linkScope() && currentBook.current === bookId && currentEdition.current === activeId
