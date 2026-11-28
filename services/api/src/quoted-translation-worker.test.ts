@@ -85,10 +85,10 @@ test("translation sends the upgraded default and preserves an older pinned quote
   for (const key of keys) delete process.env[key];
   process.env.OPENAI_API_KEY = "fixture-no-network";
   const requests: Array<{ model: string; max_output_tokens: number }> = [];
-  context.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+  context.mock.method(globalThis, "fetch", async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const request = new Request(input, init);
     assert.equal(request.url, "https://api.openai.com/v1/responses");
-    const body = await request.json();
+    const body = await request.json() as (typeof requests)[number];
     requests.push(body);
     return Response.json({ object: "response", status: "completed", model: body.model, output: [
       { type: "message", role: "assistant", content: [{ type: "output_text", text: "Un texto guardado." }] },
