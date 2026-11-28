@@ -894,7 +894,8 @@ test("authors copy the listing from the exact saved package after reopening hist
       window.bookwormApi.getPackageListing = async (jobId, requestedChecksum, actor) => {
         window.requests.push({ method: "GET", action: "packageListing", jobId, checksum: requestedChecksum, actor });
         return { packageJobId: jobId, packageSha256: window.listingMatches ? checksum : "b".repeat(64),
-          metadata: { title: "Original package title", author: "Author", language: "en", description: "First saved description.",
+          metadata: { title: "Original package title", subtitle: "A story of the coast", author: "Author", language: "en-US",
+            edition: "Second edition", publicationDate: "2026-10-18", description: "First saved description.",
             keywords: ["harbor", "letters, lost at sea", "مرسى هادئ"], categories: ["Literary fiction"] } };
       };
       Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
@@ -913,6 +914,10 @@ test("authors copy the listing from the exact saved package after reopening hist
     await page.evaluate(() => { window.listingMatches = true; });
     await history.getByRole("button", { name: "Check again", exact: true }).click();
     for (const [name, value] of [
+      ["subtitle", "A story of the coast"],
+      ["language", "en-US"],
+      ["edition", "Second edition"],
+      ["publication date", "2026-10-18"],
       ["description", "First saved description."],
       ["keywords", "harbor, letters, lost at sea, مرسى هادئ"],
       ["categories", "Literary fiction"],

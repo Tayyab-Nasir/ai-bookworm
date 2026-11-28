@@ -31,7 +31,7 @@ export default function RetailerListingReview({ metadata, isCurrent, inline = fa
         {fields.map(([label, value]) => <div key={label} className="min-w-0">
           <dt className="text-xs text-white/55">{label}</dt>
           <dd className="mt-1 break-words"><span dir="auto">{value || "—"}</span>
-            {value && ["Title", "Author", "ISBN-13"].includes(label) && <button type="button"
+            {value && <button type="button"
               onClick={() => void copyField(label, value)} className="ml-3 min-h-11 text-violet-200 underline underline-offset-4">Copy {label === "ISBN-13" ? label : label.toLowerCase()}</button>}
           </dd>
         </div>)}
