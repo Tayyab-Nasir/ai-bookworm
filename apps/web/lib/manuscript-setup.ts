@@ -1,4 +1,4 @@
-import { ApiClientError, type CreateBookRequest, type createClient } from "@bookworm/api-client";
+import { ApiClientError, type CreateBookRequest, type ManuscriptImportResult, type createClient } from "@bookworm/api-client";
 import { readArtifactSession } from "./browser-session";
 import { privateUploadUrl } from "./private-upload";
 
@@ -56,12 +56,24 @@ export function readSetupCheckpoint(raw: string | null, userId: string, workspac
 type SetupApi = Pick<ReturnType<typeof createClient>, "createBook" | "createAssetUploadUrl" | "confirmAssetUpload"
   | "listAssetVersions" | "importManuscript" | "getAssetUsage">;
 
+export function requireManuscriptReport(receipt: ManuscriptImportResult | null, sourceAssetId: string) {
+  const report = receipt?.report;
+  if (receipt?.sourceAssetId !== sourceAssetId || !report
+    || !Number.isSafeInteger(report.chapterCount) || report.chapterCount < 1 || report.chapterCount > 500
+    || (report.imageCount !== undefined && (!Number.isSafeInteger(report.imageCount) || report.imageCount < 0 || report.imageCount > 100))
+    || !Array.isArray(report.warnings) || report.warnings.length > 100
+    || report.warnings.some(warning => typeof warning !== "string" || warning.length > 2000)) {
+    throw new Error("The report could not be verified for this source.");
+  }
+  return report;
+}
+
 export async function recoverManuscriptReport(api: Pick<ReturnType<typeof createClient>, "getManuscriptImport">, checkpoint: SetupCheckpoint, verifyActor: (userId: string) => Promise<unknown>) {
   if (!checkpoint.importing || !checkpoint.source || checkpoint.source.uploaded === false) return null;
   await verifyActor(checkpoint.userId);
   const result = await api.getManuscriptImport(checkpoint.bookId, checkpoint.source.assetId, checkpoint.userId);
   await verifyActor(checkpoint.userId);
-  return result.import?.report ?? null;
+  return result.import === null ? null : requireManuscriptReport(result.import, checkpoint.source.assetId);
 }
 
 export async function runManuscriptSetup(input: {

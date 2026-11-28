@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { ApiClientError, type AiReviewModelChoice, type AiReviewUsageQuote, type ManuscriptImportJob, type ManuscriptImportResult } from "@bookworm/api-client";
 import { apiClient } from "./api";
 import { AuthorHeader } from "./AuthorShell";
-import { readSetupCheckpoint, recoverManuscriptReport, runManuscriptSetup, setupKey, type SetupCheckpoint, type SetupStage } from "../lib/manuscript-setup";
+import { readSetupCheckpoint, recoverManuscriptReport, requireManuscriptReport, runManuscriptSetup, setupKey, type SetupCheckpoint, type SetupStage } from "../lib/manuscript-setup";
 import { rememberWorkspace, resolveWorkspace } from "../lib/workspace-selection";
 import { editorAccount } from "../lib/manual-chapter-save";
 
@@ -202,10 +202,11 @@ export default function BookSetupClient() {
           await editorAccount(userId);
           if (cancelled) return;
           if (!result.import) throw new Error("The finished import report is not available yet. Checking again.");
+          const verifiedReport = requireManuscriptReport(result.import, sourceId);
           const saved = current.current;
           if (!saved || saved.bookId !== bookId || saved.source?.assetId !== sourceId) return;
           const finished = { ...saved, completed: true, savedAt: Date.now() };
-          current.current = finished; setCheckpoint(finished); setReport(result.import.report);
+          current.current = finished; setCheckpoint(finished); setReport(verifiedReport);
           setError(null); setNotice("Your background import finished. Review the results before editing.");
           try { window.sessionStorage.setItem(setupKey(userId, workspaceId), JSON.stringify(finished)); } catch { /* Server receipt remains durable. */ }
           return;
@@ -557,6 +558,7 @@ export default function BookSetupClient() {
               <h3 className="mt-5 text-sm font-semibold">{report.warnings.length ? "Items to review" : "No parser warnings reported"}</h3>
               {report.warnings.length > 0 && <ul className="mt-3 max-h-64 list-disc space-y-2 overflow-auto break-words pl-5 text-sm leading-6 text-[#bdbdbd]">{report.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
             </> : <p className="mt-4 text-sm leading-6 text-[#bdbdbd]">This import already finished. Its original report is not available in this tab; review the saved chapters in the editor.</p>}
+            <Link href={`/books/${checkpoint.bookId}/overview${importJob ? `#import-job-${importJob.id}` : "#manuscript-imports"}`} className="mt-4 inline-flex min-h-11 items-center text-sm font-medium underline underline-offset-4">View import history in the Book Desk</Link>
             <p className="mt-5 text-sm leading-6 text-[#bdbdbd]">Check chapter order, formatting, tables and image descriptions. Import is not a print or retailer approval.</p>
           </section>}
         </section>

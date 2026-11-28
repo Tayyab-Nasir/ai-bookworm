@@ -264,6 +264,13 @@ test("report recovery uses a read-only receipt for completed and interrupted imp
   assert.equal(await recoverManuscriptReport(api, { ...checkpoint, importing: false }, async () => {}), null);
   assert.equal(calls.length, 2);
   assert.equal(await recoverManuscriptReport({ getManuscriptImport: async () => ({ import: null }) }, checkpoint, async () => {}), null);
+  for (const receipt of [
+    { chapters: [], sourceAssetId: bookId, report },
+    { chapters: [], sourceAssetId: assetId, report: { ...report, chapterCount: 0 } },
+  ]) {
+    await assert.rejects(recoverManuscriptReport({ getManuscriptImport: async () => ({ import: receipt }) }, checkpoint, async () => {}),
+      /report could not be verified/);
+  }
   await assert.rejects(recoverManuscriptReport({ getManuscriptImport: async () => { throw unavailable(); } }, checkpoint, async () => {}), /unavailable/);
 });
 

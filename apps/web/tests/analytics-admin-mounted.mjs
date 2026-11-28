@@ -879,14 +879,14 @@ test("workspace execution ledger shows all queues and safe exact workflow links 
         recentJobs:jobs, pipeline:[{kind:"import",label:"Manuscript imports",pending:1,failed:1},{kind:"ai",label:"AI generation",pending:3,failed:1},
           {kind:"publishing",label:"Publishing",pending:0,failed:0},{kind:"audiobook_export",label:"Audiobook exports",pending:0,failed:1}],
         summary:{...window.overview(workspace).summary,pendingJobs:4,failedJobs:3}});
-      window.renderDashboard();return {workspace,book,writer:id(4)};
+      window.renderDashboard();return {workspace,book,importJob:id(3),writer:id(4)};
     });
     await expect(page.getByRole("heading",{name:"Harbor Notebook",exact:true})).toBeVisible();
     const queues=page.getByRole("definition");assert.equal(await queues.count(),4);
     for(const name of ["Manuscript imports","AI generation","Publishing","Audiobook exports"]) await expect(page.getByRole("term").filter({hasText:name})).toBeVisible();
     const writer=page.getByRole("link",{name:"Open AI writing workflow for Harbor Notebook",exact:true});
     await expect(writer).toHaveAttribute("href",`/books/${scope.book}?aiJob=${scope.writer}`);
-    for(const [label,path] of [["Manuscript import",`/books/${scope.book}`],["Story Blueprint proposal",`/books/${scope.book}/plan`],
+    for(const [label,path] of [["Manuscript import",`/books/${scope.book}/overview#import-job-${scope.importJob}`],["Story Blueprint proposal",`/books/${scope.book}/plan`],
       ["Book Bible extraction",`/books/${scope.book}/memory`],["Translation",`/books/${scope.book}/translate`],
       ["Book cover",`/assets?ws=${scope.workspace}`],["Channel preflight",`/books/${scope.book}/publish`],["Google Play audiobook package",`/books/${scope.book}/publish`]]) {
       await expect(page.getByRole("link",{name:`Open ${label} workflow for Harbor Notebook`,exact:true})).toHaveAttribute("href",path);

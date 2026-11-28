@@ -8,6 +8,44 @@ const bundled=await build({stdin:{contents:`import React from 'react'; import {c
 }}]});
 const browser=await chromium.launch({headless:true,channel:process.env.BROWSER_TEST_CHANNEL||'chromium-headless-shell'}); test.after(()=>browser.close());
 
+test("setup completes only when the background import report matches the saved source", async () => {
+ const page = await browser.newPage();
+ try {
+  await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' }));
+  await page.goto("http://127.0.0.1/books/new");
+  const scope = await page.evaluate(() => {
+   const actor = "11111111-1111-4111-8111-111111111111";
+   const workspace = "22222222-2222-4222-8222-222222222222";
+   const book = "33333333-3333-4333-8333-333333333333";
+   const asset = "44444444-4444-4444-8444-444444444444";
+   const job = "55555555-5555-4555-8555-555555555555";
+   const key = `bookworm:setup:${actor}:${workspace}`;
+   sessionStorage.setItem(key, JSON.stringify({ version: 1, userId: actor, workspaceId: workspace, bookId: book,
+     savedAt: Date.now(), completed: false, importing: true, bookCreated: true, setupMode: "import",
+     source: { assetId: asset, checksumSha256: "a".repeat(64), sizeBytes: 128, uploaded: true } }));
+   window.fetch = async () => Response.json({ user: { id: actor } });
+   window.bookwormApi = {
+    listWorkspaces: async () => ({ workspaces: [{ id: workspace, name: "Workspace" }] }),
+    getBook: async () => ({ book: { id: book, workspace_id: workspace, title: "Saved book", author_name: "Writer", language: "en" } }),
+    listManuscriptImports: async () => ({ jobs: [{ id: job, book_id: book, source_asset_id: asset, status: "succeeded" }] }),
+    getManuscriptImport: async () => ({ import: { sourceAssetId: window.correctSource ? asset : job,
+      report: { chapterCount: 1, warnings: [window.correctSource ? "Check the title." : "Different source warning."] } } }),
+   };
+   return { book, job, key };
+  });
+  await page.addScriptTag({ content: bundled.outputFiles[0].text });
+  await expect(page.getByRole("alert").filter({ hasText: "Status temporarily unavailable" })).toContainText("report could not be verified");
+  await expect(page.getByText("Different source warning.")).toHaveCount(0);
+  assert.equal(await page.evaluate(key => JSON.parse(sessionStorage.getItem(key)).completed, scope.key), false);
+  await page.evaluate(() => { window.correctSource = true; });
+  await page.getByRole("button", { name: "Check saved import status" }).click();
+  await expect(page.getByText("Check the title.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "View import history in the Book Desk" })).toHaveAttribute("href",
+    `/books/${scope.book}/overview#import-job-${scope.job}`);
+  assert.equal(await page.evaluate(key => JSON.parse(sessionStorage.getItem(key)).completed, scope.key), true);
+ } finally { await page.close(); }
+});
+
 test("an existing upload waits for a verified import status before allowing retry", async () => {
  const page = await browser.newPage();
  try {

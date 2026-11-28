@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ManuscriptImportJob, ManuscriptImportResult } from "@bookworm/api-client";
 import { readBrowserSession } from "../lib/browser-session";
+import { requireManuscriptReport } from "../lib/manuscript-setup";
 import { apiClient } from "./api";
 import styles from "./BookOverview.module.css";
 
@@ -24,7 +25,7 @@ export default function BookImportHistory({ bookId, actor, loadOnOpen }: { bookI
   const attempt = useRef(0);
 
   useEffect(() => {
-    if (window.location.hash.startsWith("#import-job-")) setRead(value => value || 1);
+    if (window.location.hash === "#manuscript-imports" || window.location.hash.startsWith("#import-job-")) setRead(value => value || 1);
   }, []);
 
   useEffect(() => {
@@ -70,13 +71,7 @@ export default function BookImportHistory({ bookId, actor, loadOnOpen }: { bookI
       const result = await api.getManuscriptImport(bookId, job.source_asset_id, actor);
       await readBrowserSession(actor);
       if (attempt.current !== revision) return;
-      const report = result.import?.report;
-      if (result.import?.sourceAssetId !== job.source_asset_id || !report
-        || !Number.isSafeInteger(report.chapterCount) || report.chapterCount < 1 || report.chapterCount > 500
-        || report.imageCount !== undefined && (!Number.isSafeInteger(report.imageCount) || report.imageCount < 0 || report.imageCount > 100)
-        || !Array.isArray(report.warnings) || report.warnings.length > 100 || report.warnings.some(item => typeof item !== "string" || item.length > 2000)) {
-        throw Error("The report did not match the saved import.");
-      }
+      const report = requireManuscriptReport(result.import, job.source_asset_id);
       setSelection({ id: job.id, status: "ready", report });
     } catch { if (attempt.current === revision) setSelection({ id: job.id, status: "unavailable" }); }
   }
