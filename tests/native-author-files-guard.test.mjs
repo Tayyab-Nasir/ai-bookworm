@@ -9,7 +9,18 @@ import { runInNewContext } from 'node:vm';
 import { loopbackRelay } from './e2e/native-author-files-relay.mjs';
 import { blockNativeServiceWorkers, browserErrorSummary, nativeBrowserJson, nativeBrowserStep } from './e2e/native-author-files-browser.mjs';
 import { inspectNativePackage } from './e2e/native-author-files-packages.mjs';
-import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, nativeWebEnvironment, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+import { childEnvironment, localFetch, localOrigin, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, nativeReadinessObservation, nativeWebEnvironment, ownedInternalAddress, requireNativeAuthorRunner } from './e2e/native-author-files-guard.mjs';
+
+test('native scanner readiness recognizes only the stale signature code and never reports its body', async () => {
+  const body = JSON.stringify({ error: { code: 'scanner_database_stale', message: 'private diagnostic' } });
+  const reply = length => new Response(body, {
+    status: 503, headers: { 'content-type': 'application/json', 'content-length': String(length) },
+  });
+  assert.equal(await nativeReadinessObservation('scanner', reply(body.length)), 'stale-signatures');
+  assert.equal(await nativeReadinessObservation('document', reply(body.length)), 'HTTP 503');
+  assert.equal(await nativeReadinessObservation('scanner', reply(2048)), 'HTTP 503');
+  assert.equal(await nativeReadinessObservation('scanner', new Response('ok', { status: 200 })), 'ready');
+});
 
 test('native browser response-body reads preserve results and fail within a bounded deadline', async () => {
   assert.deepEqual(await nativeBrowserJson({ json: async () => ({ status: 'succeeded' }) }), { status: 'succeeded' });

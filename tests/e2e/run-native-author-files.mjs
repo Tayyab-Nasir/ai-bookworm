@@ -6,7 +6,7 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { childEnvironment, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, ownedInternalAddress, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
+import { childEnvironment, localStatus, migrationFiles, nativeAuthorEnvironment, nativeProjectId, nativeReadinessObservation, ownedInternalAddress, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
 import { loopbackRelay } from './native-author-files-relay.mjs';
 
 requireNativeAuthorRunner();
@@ -75,16 +75,21 @@ async function containerOrigin(id, port) {
   return relay.origin;
 }
 
-async function waitReady(url, headers = {}) {
+async function waitReady(role, url, headers = {}) {
+  let last = 'no response';
   for (let attempt = 0; attempt < 150; attempt++) {
     try {
       const response = await fetch(url, { headers, redirect: 'error', signal: AbortSignal.timeout(2000) });
-      await response.body?.cancel();
-      if (response.status === 200) return;
-    } catch { /* The owned service may still be starting. */ }
+      last = await nativeReadinessObservation(role, response);
+    } catch { last = 'no response'; }
+    if (last === 'ready') return;
+    // The disposable, internal ClamAV container only has the image's signatures.
+    if (last === 'stale-signatures') {
+      throw new Error('The disposable scanner refused expired ClamAV signatures. Rebuild with a fresh signature set before rerunning native author acceptance.');
+    }
     await new Promise(resolve => setTimeout(resolve, 1000));
   }
-  throw new Error('Owned private service did not become ready.');
+  throw new Error(`Owned ${role} service did not become ready (${last}).`);
 }
 
 try {
@@ -133,10 +138,10 @@ try {
   const documentUrl = await containerOrigin(document, 8000);
   const renderingUrl = await containerOrigin(rendering, 8000);
   const publishingUrl = await containerOrigin(publishing, 8000);
-  await waitReady(`${scannerUrl}/ready`, { authorization: `Bearer ${serviceToken}` });
-  await waitReady(`${documentUrl}/health`);
-  await waitReady(`${renderingUrl}/health`);
-  await waitReady(`${publishingUrl}/health`);
+  await waitReady('scanner', `${scannerUrl}/ready`, { authorization: `Bearer ${serviceToken}` });
+  await waitReady('document', `${documentUrl}/health`);
+  await waitReady('rendering', `${renderingUrl}/health`);
+  await waitReady('publishing', `${publishingUrl}/health`);
   console.log('PASS real ClamAV, document parser, rendering and publishing services ready');
 
   // Generate synthetic DOCX bytes with the parser image's installed libraries.

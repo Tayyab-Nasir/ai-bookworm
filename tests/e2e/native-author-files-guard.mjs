@@ -101,6 +101,19 @@ export function localStatus(raw) {
   return { url: value.API_URL, anonKey: value.ANON_KEY, serviceKey: value.SERVICE_ROLE_KEY };
 }
 
+export async function nativeReadinessObservation(role, response) {
+  if (role === 'scanner' && response.status === 503) {
+    const length = Number(response.headers.get('content-length'));
+    if (Number.isInteger(length) && length > 0 && length <= 1_024
+      && response.headers.get('content-type')?.startsWith('application/json')) {
+      const data = await response.json().catch(() => null);
+      if (data?.error?.code === 'scanner_database_stale') return 'stale-signatures';
+    }
+  }
+  await response.body?.cancel().catch(() => {});
+  return response.status === 200 ? 'ready' : `HTTP ${response.status}`;
+}
+
 export function localFetch(origins, fetcher = fetch) {
   return async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
