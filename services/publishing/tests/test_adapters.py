@@ -66,7 +66,7 @@ def test_bn_preflight_and_package_check_their_exact_epub(monkeypatch, status):
     monkeypatch.setattr(bn_rules, "run_epubcheck", check)
     adapter = get_adapter("barnesnoble")
     report = adapter.validate({**ctx, "_bn_epubcheck_result": EpubCheckResult("valid")})
-    assert report["ruleVersion"].endswith("+barnesnoble-1.4.0")
+    assert report["ruleVersion"].endswith("+barnesnoble-1.5.0")
     if status == "valid":
         result = adapter.build_package({**ctx, "artifact": b"stale proof"}, {"book.epub": epub})[0]
         with zipfile.ZipFile(BytesIO(result.data)) as archive:
@@ -81,6 +81,35 @@ def test_bn_preflight_and_package_check_their_exact_epub(monkeypatch, status):
         with pytest.raises(ValueError, match="unresolved validation errors"):
             adapter.build_package({**ctx, "artifact": b"stale proof"}, {"book.epub": epub})
     assert calls == [epub, epub]
+
+
+@pytest.mark.parametrize(("size", "warning"), [((1399, 2400), True), ((2400, 1399), True), ((1400, 2400), False)])
+def test_bn_ebook_cover_recommendation_uses_saved_cover_bytes(monkeypatch, size, warning):
+    from PIL import Image
+    from epubcheck_runner import EpubCheckResult
+    import rules.bn_v1 as bn_rules
+
+    monkeypatch.setattr(bn_rules, "run_epubcheck", lambda _: EpubCheckResult("valid"))
+    cover = BytesIO()
+    Image.new("RGB", size).save(cover, "PNG")
+    ctx = {**_ctx(), "channel": "barnesnoble", "cover_bytes": cover.getvalue()}
+    adapter = get_adapter("barnesnoble")
+    report = adapter.validate(ctx)
+    package = adapter.build_package({**ctx, "cover_bytes": b"stale cover"},
+                                    {"book.epub": ctx["artifact"], "cover.png": cover.getvalue()})[0]
+    matching = [item for item in report["findings"] if item["code"].startswith("BN-EBOOK-COVER-DIMENSIONS")]
+    assert report["errors"] == 0
+    assert bool(matching) is warning
+    if warning:
+        assert matching[0]["code"] == "BN-EBOOK-COVER-DIMENSIONS"
+        assert matching[0]["severity"] == "warning"
+        assert matching[0]["location"] == "edition.cover"
+        assert f"{size[0]} × {size[1]}" in matching[0]["message"]
+    with zipfile.ZipFile(BytesIO(package.data)) as archive:
+        assert json.loads(archive.read("preflight.json")) == {"schemaVersion": "1.0", **report}
+    assert not bn_rules.check_bn_ebook_cover_size({**ctx, "edition": {"kind": "print"}})
+    assert not bn_rules.check_bn_ebook_cover_size({**ctx, "cover_bytes": None})
+    assert bn_rules.check_bn_ebook_cover_size({**ctx, "cover_bytes": b"broken"})[0].code == "BN-EBOOK-COVER-DIMENSIONS-UNAVAILABLE"
 
 
 def test_bn_applies_strict_epub_size_limit_and_skips_preliminary_and_print_checks(monkeypatch):

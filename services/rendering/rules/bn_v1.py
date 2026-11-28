@@ -1,15 +1,20 @@
 """Barnes & Noble Press ebook and print checks."""
+from io import BytesIO
+
+from PIL import Image
+
 from epubcheck_runner import EpubCheckResult, run_epubcheck
 from preflight import Finding, Rule, _meta, _open_epub
 from rules._channel import (check_print_pdf_geometry, make_ruleset,
                             metadata_rules, print_pdf_page_count)
 
-VERSION = "barnesnoble-1.4.0"
+VERSION = "barnesnoble-1.5.0"
 EFFECTIVE_DATE = "2026-09-18"
 EPUB_CHECK_DATE = "2026-11-20"
 PRINT_PRICE_EFFECTIVE_DATE = "2026-04-22"
 CONTENT_POLICY_REF = "https://press.barnesandnoble.com/bnpress-blog/may-2026-policy-updates/"
 EPUB_LIMIT_BYTES = 20_000_000
+RECOMMENDED_EBOOK_COVER_EDGE = 1400
 SOURCE_REF = "https://help-press.barnesandnoble.com/hc/en-us/articles/46990297345691-B-N-Press-ePub-Formatting-Guide-for-eBooks"
 SIZE_SOURCE_REF = "https://help-press.barnesandnoble.com/hc/en-us/articles/31534821208859-Maximum-File-Size"
 ISBN_SOURCE_REF = "https://help-press.barnesandnoble.com/hc/en-us/articles/5358254743963-ISBN-FAQs"
@@ -76,6 +81,25 @@ def check_bn_epub_size(ctx):
     return []
 
 
+def check_bn_ebook_cover_size(ctx):
+    cover = ctx.get("cover_bytes")
+    if not _ebook(ctx) or cover is None:
+        return []
+    try:
+        with Image.open(BytesIO(cover), formats=["PNG", "JPEG"]) as image:
+            width, height = image.size
+    except (OSError, SyntaxError, Image.DecompressionBombError):
+        return [Finding(code="BN-EBOOK-COVER-DIMENSIONS-UNAVAILABLE",
+                        message="Could not read the ebook cover dimensions. Review or render the cover again.",
+                        location="edition.cover")]
+    if min(width, height) < RECOMMENDED_EBOOK_COVER_EDGE:
+        return [Finding(code="BN-EBOOK-COVER-DIMENSIONS",
+                        message=(f"The ebook cover is {width} × {height} pixels. B&N Press recommends "
+                                 f"at least {RECOMMENDED_EBOOK_COVER_EDGE:,} pixels on each side."),
+                        location="edition.cover")]
+    return []
+
+
 def _epubcheck_result(ctx) -> EpubCheckResult | None:
     artifact = ctx.get("artifact")
     if not _ebook(ctx) or not artifact or len(artifact) >= EPUB_LIMIT_BYTES:
@@ -124,6 +148,8 @@ RULESET = make_ruleset("barnesnoble", VERSION, metadata_rules(
          channels=("barnesnoble",), effective_date=EPUB_CHECK_DATE, source_ref=SOURCE_REF),
     Rule("BN-EPUB-003", "warning", "epub_structure", "W3C EPUBCheck warnings", check_bn_epub_warnings,
          channels=("barnesnoble",), effective_date=EPUB_CHECK_DATE, source_ref=SOURCE_REF),
+    Rule("BN-EBOOK-COVER-001", "warning", "channel", "B&N ebook recommended cover size", check_bn_ebook_cover_size,
+         channels=("barnesnoble",), effective_date="2026-11-28", source_ref=SOURCE_REF),
     Rule("BN-CATALOG-001", "warning", "channel", "B&N catalog and account eligibility", check_bn_catalog_eligibility,
          channels=("barnesnoble",), effective_date="2026-05-15", source_ref=CONTENT_POLICY_REF),
     Rule("BN-PRINT-005", "warning", "channel", "B&N print minimum retail price", check_bn_print_price,
