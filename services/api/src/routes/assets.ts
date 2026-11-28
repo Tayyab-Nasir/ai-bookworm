@@ -13,6 +13,7 @@ import { retrievalQuery, searchBookContext } from "../lib/retrieval.js";
 import { imageCompletionError } from "../lib/image-completion-error.js";
 import {
   AssetInspectionError,
+  StaleScannerDatabaseError,
   MAX_USER_ASSET_BYTES,
   USER_ASSET_MIME_TYPES,
   sniffAssetContent,
@@ -200,7 +201,7 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
         || typeof verdict.signature !== "string" || !verdict.signature.trim() || verdict.signature.length > 200) {
         throw new Error("invalid scanner response");
       }
-    } catch {
+    } catch (error) {
       await persistScanVerdict(input.service, {
         ...baseVerdict,
         detectedMimeType,
@@ -208,6 +209,9 @@ export function assetRoutes(app: FastifyInstance, options: { imageGenerator?: Im
         scanner: assetScanner.name.slice(0, 100) || "unavailable",
         errorCode: "scanner_unavailable",
       });
+      if (error instanceof StaleScannerDatabaseError) {
+        throw new AppError(503, "The scanner's malware signatures are out of date. Your upload remains quarantined. Retry screening after the signatures are updated.");
+      }
       throw new AppError(503, "Malware screening is unavailable; the upload remains quarantined.");
     }
 

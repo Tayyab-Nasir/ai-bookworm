@@ -169,7 +169,9 @@ the allowlist without starting a worker.
 When a stale signature database interrupts local scanning, uploads stay
 quarantined. If the other processors remain healthy, the local operator can
 restore the scanner independently after ClamAV updates. The import worker
-starts only after scanner readiness succeeds. See
+starts only after scanner readiness succeeds. When confirmation receives a stale
+signature response, it explains that screening can be retried after an update.
+The original upload stays quarantined. See
 [local processing recovery](LOCAL_PROCESSING_RUNTIME.md).
 
 - Workspace creation recovery keeps its opaque pointer in tab session storage;

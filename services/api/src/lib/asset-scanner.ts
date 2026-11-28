@@ -52,6 +52,13 @@ export class AssetInspectionError extends Error {
   }
 }
 
+export class StaleScannerDatabaseError extends Error {
+  constructor() {
+    super("The scanner's malware signatures are out of date.");
+    this.name = "StaleScannerDatabaseError";
+  }
+}
+
 export const unavailableAssetScanner: AssetMalwareScanner = {
   name: "unconfigured",
   async scan() {
@@ -135,7 +142,17 @@ export function createHttpAssetScanner(
         redirect: "error",
         signal: AbortSignal.timeout(rawTimeout),
       });
-      if (!response.ok) throw new Error("scanner did not return a verdict");
+      if (!response.ok) {
+        if (response.status === 503) {
+          const failure = await readBoundedJson(response).catch(() => null);
+          const error = failure?.error;
+          if (error && typeof error === "object" && "code" in error && error.code === "scanner_database_stale") {
+            throw new StaleScannerDatabaseError();
+          }
+        }
+        await response.body?.cancel().catch(() => {});
+        throw new Error("scanner did not return a verdict");
+      }
       const body = await readBoundedJson(response);
       const verdict = body.verdict;
       if ((verdict !== "clean" && verdict !== "infected")

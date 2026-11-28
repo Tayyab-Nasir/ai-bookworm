@@ -636,6 +636,45 @@ test("infected uploads remain quarantined and cannot be downloaded", async () =>
   await app.close();
 });
 
+test("stale scanner signatures retain the upload for confirmation after an update", async () => {
+  const store = baseStore();
+  const path = `workspaces/${WORKSPACE}/assets/${EXISTING_ASSET}/v1/file.txt`;
+  const bytes = Buffer.from("synthetic manuscript");
+  const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
+  store.objects.set(path, bytes);
+  store.tables.assets.push({ id: EXISTING_ASSET, workspace_id: WORKSPACE, deleted_at: null, name: "file.txt",
+    storage_path: path, checksum: "pending", mime_type: "text/plain", size_bytes: bytes.length });
+  store.tables.asset_versions.push({ asset_id: EXISTING_ASSET, version_number: 1, storage_path: path,
+    checksum: "pending", mime_type: "text/plain", size_bytes: bytes.length, scan_status: "pending" });
+  let stale = true;
+  const assetScanner = createHttpAssetScanner(async () => stale
+    ? Response.json({ error: { code: "scanner_database_stale", message: "private diagnostic" } }, { status: 503 })
+    : Response.json({ verdict: "clean", clean: true, infected: false, sha256: checksumSha256,
+        mimeType: "text/plain", sizeBytes: bytes.length,
+        engine: { name: "ClamAV", version: "1.5.4", databaseVersion: "28195" } }), {
+    SCANNING_SERVICE_URL: "http://scanner.internal:8004",
+    SCANNING_SERVICE_TOKEN: "scanner-test-token-that-is-at-least-32-characters",
+  });
+  const app = await buildApp((token) => fakeSupabase(store, !token), { assetScanner });
+  const confirm = () => app.inject({ method: "POST", url: `/v1/assets/${EXISTING_ASSET}/confirm`, headers: auth,
+    payload: { checksumSha256, sizeBytes: bytes.length } });
+  try {
+    const rejected = await confirm();
+    assert.equal(rejected.statusCode, 503);
+    assert.match(rejected.json().error.message, /out of date.*remains quarantined.*Retry screening/);
+    assert.doesNotMatch(rejected.body, /private diagnostic/);
+    assert.equal(store.tables.assets[0].checksum, "pending");
+    assert.equal(store.tables.asset_versions[0].scan_status, "error");
+    assert.equal(store.tables.asset_versions[0].scan_error_code, "scanner_unavailable");
+    assert.equal((await app.inject({ method: "GET", url: `/v1/assets/${EXISTING_ASSET}/download-url`, headers: auth })).statusCode, 409);
+    stale = false;
+    assert.equal((await confirm()).statusCode, 200);
+    assert.equal(store.tables.assets.length, 1);
+    assert.equal(store.tables.asset_versions.length, 1);
+    assert.equal(store.tables.asset_versions[0].scan_status, "clean");
+  } finally { await app.close(); }
+});
+
 test("private scanner adapter authenticates and verifies echoed content identity", async () => {
   const bytes = Buffer.from("safe fixture");
   const checksumSha256 = createHash("sha256").update(bytes).digest("hex");
