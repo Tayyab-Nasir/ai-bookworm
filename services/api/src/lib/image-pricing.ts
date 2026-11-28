@@ -40,7 +40,11 @@ export function imageCatalog(raw: string | undefined, now: string) {
       || new Set(catalog.entries.map((entry) => entry.id)).size !== catalog.entries.length) throw new Error("invalid catalog");
     for (const entry of catalog.entries) {
       const rates = entry.price.rates.map((rate) => rate.dimension).sort();
+      const zeroPricedBillableTokens = entry.price.rates.some(rate => rate.microUsdPerMillionTokens === "0"
+        && (rate.dimension === "text_input" || rate.dimension === "image_output"
+          || (rate.dimension === "image_input" && entry.maxReferenceImages > 0)));
       if (JSON.stringify(rates) !== JSON.stringify(dimensions)
+        || zeroPricedBillableTokens
         || (entry.maxReferenceImages > 0 && entry.maximumTokens.image_input === 0)) throw new Error("invalid image dimensions");
     }
     return catalog;

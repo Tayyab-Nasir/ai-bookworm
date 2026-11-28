@@ -24,6 +24,11 @@ The quote creation/recovery/detail responses retain the conservative information
 `purchaseAvailable: false`; current UI eligibility uses model discovery's gated
 flag. Neither projection overrides the server's acceptance catalog, permission,
 expiry, source or exact-credit checks.
+New offers require positive rates for prompt text and generated image tokens.
+Offers that accept reference images also require a positive image input rate
+and token bound. The credit floor and platform fee apply after pricing those
+provider dimensions. Saved quote status and receipt recovery use their pinned
+pricing snapshots.
 The prior flat image-credit POST `/v1/assets/generate` is now retired with 410
 outside test mode unless an explicit legacy operator flag is set. Its method
 was removed from the typed client and OpenAPI documents only the retirement.

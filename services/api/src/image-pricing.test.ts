@@ -50,6 +50,26 @@ test("image quote binds prompt bytes, quality, dimensions and ordered reference 
   assert.notEqual(imageRequestHash({ ...request, references: [ref, second] }), imageRequestHash({ ...request, references: [second, ref] }));
 });
 
+test("new image offers price required billable dimensions even when the fee is nonzero", () => {
+  for (const dimension of ["text_input", "image_output", "image_input"]) {
+    const offers = catalog();
+    const entry = offers.entries[0]!;
+    entry.policy.platformMicroUsd = "100";
+    entry.price.rates.find(rate => rate.dimension === dimension)!.microUsdPerMillionTokens = "0";
+    assert.throws(() => imageCatalog(JSON.stringify(offers), now), /not configured/);
+  }
+  const offers = catalog();
+  const entry = offers.entries[0]!;
+  entry.maxReferenceImages = 0;
+  entry.maximumTokens.image_input = 0;
+  entry.maximumTokens.text_output = 0;
+  for (const rate of entry.price.rates) {
+    if (rate.dimension === "image_input" || rate.dimension === "text_output") rate.microUsdPerMillionTokens = "0";
+  }
+  const { quote } = prepareImageQuote(JSON.stringify(offers), { modelId: "square-low", now, request });
+  assert.equal(quote.reservedCredits, "30");
+});
+
 test("image measured settlement balances credits and refuses ambiguous telemetry", () => {
   const { quote } = prepare();
   const reconcile = (providerUsage: unknown, value = request) => reconcileImageUsage(quote,
