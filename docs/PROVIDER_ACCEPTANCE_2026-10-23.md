@@ -64,3 +64,20 @@ requires the Realtime API for current models. Bookworm already has a separate
 funded Realtime narration path; do not substitute a Realtime model name into
 `/audio/speech`. The old speech-endpoint environment default remains legacy,
 not the current quoted narration transport.
+
+## Rechecking model access after a key rotation
+
+From the repository root, use the ignored environment file for the project key
+and pass the exact model IDs from the proposed test. An existing shell
+OPENAI_API_KEY takes precedence over the file with Node's --env-file flag.
+
+```sh
+node --env-file=.env scripts/check-openai-models.mjs gpt-6.2-astra gpt-image-2.6-sunburst gpt-realtime-2.1
+```
+
+The command makes one read-only request to OpenAI's model inventory and exits
+nonzero if the requested models are not all visible. It reports only the
+check status, missing requested models, or the HTTP status. A visible model
+does not establish billing, quota, modality access, or an accepted usage
+receipt. Reconcile spend and follow the existing provider acceptance gates
+before any generation request.
