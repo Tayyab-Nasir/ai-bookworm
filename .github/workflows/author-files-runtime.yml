@@ -169,7 +169,7 @@ jobs:
           fixture=''
           trap 'if [[ -n "$fixture" ]]; then kill "$fixture" 2>/dev/null || true; fi; kill "$web" 2>/dev/null || true' EXIT
           curl --fail --silent --retry 20 --retry-delay 1 --retry-connrefused --max-time 3 http://127.0.0.1:4398/login >/dev/null
-          for mode in FIXTURE_LOST_UPLOAD_ALLOCATION_REPLY FIXTURE_LOST_UPLOAD_PUT_REPLY; do
+          for mode in FIXTURE_LOST_UPLOAD_ALLOCATION_REPLY FIXTURE_LOST_UPLOAD_PUT_REPLY FIXTURE_STALE_SCANNER; do
             env "$mode=true" node tests/e2e/auth-browser-fixture.mjs &
             fixture=$!
             curl --fail --silent --retry 20 --retry-delay 1 --retry-connrefused --max-time 3 http://127.0.0.1:4399/health >/dev/null

@@ -171,8 +171,10 @@ quarantined. If the other processors remain healthy, the local operator can
 restore the scanner independently after ClamAV updates. The import worker
 starts only after scanner readiness succeeds. When confirmation receives a stale
 signature response, it explains that screening can be retried after an update.
-The original upload stays quarantined. See
-[local processing recovery](LOCAL_PROCESSING_RUNTIME.md).
+The original upload stays quarantined. After a reload, Retry import uses the
+saved upload without requesting a file or creating another asset.
+See [local processing recovery](LOCAL_PROCESSING_RUNTIME.md) and
+[the manuscript upload browser check](../tests/e2e/manuscript-upload-recovery-browser.mjs).
 
 - Workspace creation recovery keeps its opaque pointer in tab session storage;
   closing the tab can lose that pointer, and separate tabs can submit separate

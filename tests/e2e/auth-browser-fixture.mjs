@@ -471,7 +471,12 @@ const server = createServer(async (req, res) => {
     setupCounts.confirmations++;
     if (setupAsset.clean) return json(409, { error: { message: 'asset already confirmed' } });
     if (!setupAsset.uploaded || body.sizeBytes !== setupAsset.sizeBytes) return json(409, { error: { message: 'Upload incomplete' } });
+    const staleScanner = process.env.FIXTURE_STALE_SCANNER === 'true';
+    if (staleScanner && setupCounts.confirmations === 1) {
+      return json(503, { error: { message: "The scanner's malware signatures are out of date. Your upload remains quarantined. Retry screening after the signatures are updated." } });
+    }
     setupAsset.clean = true; setupAsset.checksum = body.checksumSha256;
+    if (staleScanner) return json(200, { ok: true });
     return json(503, { error: { message: 'Fixture lost scan response. Retry to check its saved result.' } });
   }
   if (setupAsset && url.pathname === `/v1/assets/${setupAssetId}/versions`) return json(200, { versions: [{
