@@ -232,7 +232,11 @@ the allowlist without starting a worker.
   Previews are requested on demand for the selected entry, require the
   original account and verified workspace and asset path, and close when the
   entry changes. Previewing requires no edit permission and writes no data.
-  Regression: `apps/web/tests/book-memory-navigation-mounted.mjs`.
+  The Image Studio link offers the book only if it belongs to the verified
+  workspace. Opening the link makes no book-data request or paid action.
+  Authors explicitly choose the book, load references, and select files.
+  Regressions: `apps/web/tests/book-memory-navigation-mounted.mjs`,
+  `apps/web/tests/image-actor-integrated-mounted.mjs`.
 - Dashboard import activity and completed setup link to the book desk history.
   Setup and the book desk verify the report against the selected source and
   reject malformed reports. Setup preserves an unfinished checkpoint when

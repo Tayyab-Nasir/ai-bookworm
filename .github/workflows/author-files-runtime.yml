@@ -88,7 +88,7 @@ jobs:
           BROWSER_TEST_CHANNEL: chromium
         run: |
           node --test --test-name-pattern='image recovery|image lost-save' apps/web/tests/quote-recovery-mounted.mjs
-          node --test --test-name-pattern='silent account change before image recovery' apps/web/tests/image-actor-integrated-mounted.mjs
+          node --test apps/web/tests/image-actor-integrated-mounted.mjs
       - name: Verify metadata model catalog recovery
         env:
           BROWSER_TEST_CHANNEL: chromium

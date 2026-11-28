@@ -46,7 +46,7 @@ const PORTRAIT = "66666666-6666-4666-8666-666666666666";
 const WORKSPACE_IMAGE = "77777777-7777-4777-8777-777777777777";
 const SETTING = "88888888-8888-4888-8888-888888888888";
 const STALE_IMAGE = "99999999-9999-4999-8999-999999999999";
-async function fixture(width = 1280, admin = false, withBookBible = false) {
+async function fixture(width = 1280, admin = false, withBookBible = false, requestedBook = "") {
   const page = await browser.newPage({ viewport: { width, height: 900 } }); page.setDefaultTimeout(6000);
   const signedRequests = [];
   await page.context().route("**/*", route => {
@@ -56,7 +56,7 @@ async function fixture(width = 1280, admin = false, withBookBible = false) {
     }
     return route.fulfill({ contentType: "text/html", body: '<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><div id="root"></div></body></html>' });
   });
-  await page.goto(`http://127.0.0.1/assets?ws=${A}`);
+  await page.goto(`http://127.0.0.1/assets?${new URLSearchParams({ ws: A, ...(requestedBook ? { book: requestedBook } : {}) })}`);
   await page.addStyleTag({ content: styles.css + `
     @font-face {font-family:BookwormInstrument;src:url(data:font/ttf;base64,${instrument});font-style:italic;font-weight:400;font-display:swap}
     :root {--font-inter:Arial,sans-serif;--font-instrument-serif:BookwormInstrument,serif}
@@ -169,6 +169,31 @@ async function openFile(page, name = /^My draft\.pdf/) {
 
 const prompt = p => p.getByLabel('Describe the scene, characters, mood and visual style');
 const consent = p => p.getByLabel(/Save this private prompt/);
+test("a Book Bible handoff offers only a verified book and requires an explicit choice", async () => {
+  const { page } = await fixture(390, false, true, FIRST_BOOK);
+  try {
+    const context = page.getByLabel("Book context");
+    await expect(context).toHaveValue("");
+    await page.getByRole("button", { name: "Use Harbor Letters as book context", exact: true }).click();
+    await expect(context).toHaveValue(FIRST_BOOK);
+    await expect(consent(page)).not.toBeChecked();
+    const references = page.getByRole("group", { name: "Optional clean PNG references", exact: true });
+    await expect(references.getByRole("checkbox", { name: "Mira portrait.png", exact: true })).not.toBeChecked();
+    assert.deepEqual(await page.evaluate(() => window.calls.filter(call => ["quote", "book-memory"].includes(call.operation))), []);
+    await references.getByRole("button", { name: "Show Book Bible references" }).click();
+    await expect(references.getByRole("checkbox", { name: /Mira portrait\.png.*Book Bible · Mira/ })).not.toBeChecked();
+    assert.equal(await page.evaluate(() => window.calls.filter(call => call.operation === "quote").length), 0);
+  } finally { await page.close(); }
+
+  const { page: foreign } = await fixture(390, false, true, B);
+  try {
+    await expect(foreign.getByRole("status").filter({ hasText: "The linked book is unavailable" })).toBeVisible();
+    await expect(foreign.getByLabel("Book context")).toHaveValue("");
+    await expect(foreign.getByRole("button", { name: /as book context/ })).toHaveCount(0);
+    assert.deepEqual(await foreign.evaluate(() => window.calls.filter(call => ["quote", "book-memory"].includes(call.operation))), []);
+  } finally { await foreign.close(); }
+});
+
 test("Image Studio uses explicitly selected Book Bible PNGs and preserves the workspace selection", async () => {
   const { page } = await fixture(390, false, true);
   const references = page.getByRole("group", { name: "Optional clean PNG references", exact: true });
@@ -297,7 +322,9 @@ test('legacy image checkpoint is retained and blocks a different account', async
  await page.evaluate(()=>window.clearAssets());await expect(page.getByText('Illustrations and cover art')).toHaveCount(0);
  await page.evaluate(({A,B})=>{window.actor=B;sessionStorage.setItem(`bookworm.image-quote.v1:${A}`,JSON.stringify({idempotencyKey:'legacy-request-key'}));window.renderAssets();},{A,B});
  await expect(page.getByText('An older image request needs manual reconciliation',{exact:false})).toBeVisible();
- await expect(page.getByRole('button',{name:'Recover same quote request'})).toBeVisible();
+ await page.getByRole('button',{name:'Recheck image recovery storage',exact:true}).click();
+ await expect(page.getByText('An older image request needs manual reconciliation',{exact:false})).toBeVisible();
+ await expect(prompt(page)).toBeDisabled();
  assert.equal(await page.evaluate(({A})=>sessionStorage.getItem(`bookworm.image-quote.v1:${A}`)!==null,{A}),true);
  assert.equal(await page.evaluate(()=>window.calls.filter(x=>x.operation==='quote'||x.operation==='accept').length),0);
 }finally{await page.close()}});

@@ -104,7 +104,9 @@ function ScopedAssetsPage() {
 }
 
 function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope; active: boolean; revision: object; retry: () => Promise<void> }) {
-  const requestedWorkspaceId = useSearchParams().get("ws");
+  const params = useSearchParams();
+  const requestedWorkspaceId = params.get("ws");
+  const requestedBookId = params.get("book");
   const actorApi = useMemo(() => createClient({ baseUrl: "/api/backend", expectedActor: scope.actor }), [scope.actor]);
   const api = useMemo(() => {
     return new Proxy(actorApi, { get(target, key, receiver) { const value = Reflect.get(target, key, receiver); return typeof value === "function" ? (...args: unknown[]) => {
@@ -551,7 +553,8 @@ function AssetsPageInner({ scope, active, revision, retry }: { scope: AssetScope
           </div>
         )}
 
-        {workspaceId && <ImageQuoteStudio key={`image-quote:${workspaceId}`} isWorkspaceCurrent={isWorkspaceCurrent} scope={scope} active={active && verified} workspaceId={workspaceId} books={books} assets={assets} canEdit={Boolean(canEdit)} onCompleted={load} findArtwork={findArtwork} onReviewArtwork={openAsset} />}
+        {workspaceId && <ImageQuoteStudio key={`image-quote:${workspaceId}`} isWorkspaceCurrent={isWorkspaceCurrent} scope={scope} active={active && verified} workspaceId={workspaceId} books={books} assets={assets} canEdit={Boolean(canEdit)} onCompleted={load} findArtwork={findArtwork} onReviewArtwork={openAsset}
+          requestedBookId={dataReady && requestedWorkspaceId === workspaceId ? requestedBookId : null} />}
         {libraryLoading && <p role="status" className="mb-5 text-sm text-[#999]">Loading asset library…</p>}
         <section className="mb-8 rounded-2xl border border-white/10 p-5" aria-labelledby="image-history-title">
           <div className="flex flex-wrap items-center justify-between gap-3">

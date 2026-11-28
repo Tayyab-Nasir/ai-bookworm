@@ -1368,7 +1368,8 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
             </fieldset>
             {selected && manualUserId && !accountHidden && savedImageIds.length > 0 && <BibleReferenceImages
               key={`${manualUserId}:${bookId}:${selected.id}:${selected.updated_at}`} actorId={manualUserId}
-              workspaceId={memory.book.workspace_id} savedIds={savedImageIds} images={memory.imageAssets} />}
+              workspaceId={memory.book.workspace_id} savedIds={savedImageIds} images={memory.imageAssets}
+              studioHref={memory.canEdit ? `/assets?${new URLSearchParams({ ws: memory.book.workspace_id, book: bookId })}#image-quote-title` : undefined} />}
             {draft.sourceRefs.length > 0 && <section aria-label="Saved manuscript evidence" className="mt-6 border-t border-white/10 pt-5">
               <h4 className="text-[11px] uppercase tracking-widest text-[#999]">Saved manuscript evidence</h4>
               <p className="mt-2 text-xs leading-5 text-[#aaa]">Read the exact passage behind an entry, including earlier versions. Reading evidence does not edit your book, generate content, or use credits.</p>

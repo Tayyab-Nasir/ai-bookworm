@@ -29,10 +29,11 @@ function replaceCheckpoint(storageKey: string, legacyKey: string, expected: stri
   if (sessionStorage.getItem(storageKey) !== next) throw new Error("Image recovery storage could not be verified.");
 }
 
-export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, onCompleted, scope, active, isWorkspaceCurrent, findArtwork, onReviewArtwork }: {
+export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, onCompleted, scope, active, isWorkspaceCurrent, findArtwork, onReviewArtwork, requestedBookId }: {
   workspaceId: string; books: Book[]; assets: Asset[]; canEdit: boolean; onCompleted: () => Promise<void>; scope: { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> }; active: boolean; isWorkspaceCurrent: (id: string) => boolean;
   findArtwork?: (id: string, type: "illustration" | "cover") => Asset | undefined;
   onReviewArtwork?: (asset: Asset) => void;
+  requestedBookId?: string | null;
 }) {
   const mounted = useRef(false);
   useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -220,6 +221,7 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
   const artwork = activeJob?.status === "succeeded" && activeJob.assetId && quote
     ? findArtwork?.(activeJob.assetId, quote.quote.kind) : undefined;
   const formLocked = recoveryBlocked || isImageQuoteFormLocked({ canEdit, busy, hasRequestKey: Boolean(idempotencyKey), hasSavedQuote: Boolean(quote) });
+  const requestedBook = requestedBookId ? books.find(book => book.id === requestedBookId && book.workspace_id === workspaceId) : undefined;
   const acceptAllowed = !recoveryBlocked && canAcceptImageQuote({ canEdit, busy, purchaseAvailable, generateConsent, acceptanceUncertain, quote: quote?.quote ?? null, hasJob: Boolean(activeJob) });
 
   const showLibrary = () => {
@@ -279,6 +281,10 @@ export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, 
       <span className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-white/60">Measured usage · private asset</span>
     </div>
     {message && <p role="alert" className="mt-5 rounded-xl border border-amber-200/20 bg-amber-100/5 p-3 text-sm text-amber-100">{message}</p>}
+    {requestedBook && !bookId && !formLocked && <button className={`${button} mt-4`} type="button" onClick={() => selectBook(requestedBook.id)}>
+      Use {requestedBook.title} as book context
+    </button>}
+    {requestedBookId && !requestedBook && <p role="status" className="mt-4 text-sm text-white/60">The linked book is unavailable in this workspace.</p>}
     {recoveredRequest && <p className="mt-5 text-sm leading-6 text-white/60" role="status">Recovered saved request. Its private brief and references remain in the server quote; this browser does not retain their text. Acceptance uses that saved request and the model and maximum credits below.</p>}
     {!recoveredRequest && <fieldset disabled={formLocked} className="mt-6 grid gap-4 md:grid-cols-2">
       <label className="text-sm text-white/70">Artwork type<select className={field} value={kind} onChange={event => setKind(event.target.value as typeof kind)}><option value="illustration">Interior illustration</option><option value="cover">Cover artwork</option></select></label>

@@ -110,7 +110,7 @@ test("read-only Book Bible images open on demand and reject a link to another as
       window.storageOrigin = imageOrigin;
       window.savedMemory = bookId => {
         const memory = oldMemory(bookId);
-        memory.canEdit = false;
+        memory.canEdit = Boolean(window.referenceCanEdit);
         memory.book.workspace_id = workspace;
         memory.items = [{ id: "77777777-7777-4777-8777-777777777777", book_id: bookId,
           name: "Captain Mira", type: "character", attributes_json: { imageAssetIds: [image] },
@@ -129,6 +129,7 @@ test("read-only Book Bible images open on demand and reject a link to another as
     await page.getByRole("button", { name: /Captain Mira/ }).click();
     const references = page.getByRole("region", { name: "Saved reference images" });
     await expect(page.getByRole("button", { name: "Save memory entry" })).toHaveCount(0);
+    await expect(references.getByRole("link", { name: "Open this book in Image Studio" })).toHaveCount(0);
     await expect(references.getByRole("button", { name: "Preview Harbor study" })).toHaveCount(0);
     assert.deepEqual(await page.evaluate(() => window.readPreviews), []);
     await references.getByRole("button", { name: "Preview Mira portrait", exact: true }).click();
@@ -143,6 +144,11 @@ test("read-only Book Bible images open on demand and reject a link to another as
     await expect(thumbnail).toHaveCount(0);
     assert.deepEqual(storageReads, [`/storage/v1/object/sign/book-assets/workspaces/${workspace}/assets/${image}/v1/reference.png`]);
     assert.deepEqual(await page.evaluate(() => [window.readPreviews, window.writes]), [[image, image], []]);
+    await page.evaluate(() => { window.referenceCanEdit = true; });
+    await page.getByRole("button", { name: "Reload saved data", exact: true }).click();
+    await page.getByRole("button", { name: /Captain Mira/ }).click();
+    await expect(references.getByRole("link", { name: "Open this book in Image Studio" })).toHaveAttribute("href",
+      `/assets?ws=${workspace}&book=11111111-1111-4111-8111-111111111111#image-quote-title`);
   } finally { await page.close(); }
 });
 

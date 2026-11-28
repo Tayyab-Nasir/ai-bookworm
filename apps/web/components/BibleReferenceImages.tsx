@@ -1,15 +1,17 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { usePrivateImage } from "./usePrivateImage";
 
 type ReferenceImage = { id: string; name: string };
 
-export default function BibleReferenceImages({ actorId, workspaceId, savedIds, images }: {
+export default function BibleReferenceImages({ actorId, workspaceId, savedIds, images, studioHref }: {
   actorId: string;
   workspaceId: string;
   savedIds: string[];
   images: ReferenceImage[];
+  studioHref?: string;
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
   const available = images.filter(image => savedIds.includes(image.id));
@@ -34,5 +36,8 @@ export default function BibleReferenceImages({ actorId, workspaceId, savedIds, i
         <p role="status">{preview.error ? "The private image preview is unavailable." : "Loading private image…"}</p>
         {preview.error && <button type="button" onClick={preview.retry} className="min-h-11 text-xs underline underline-offset-4">Retry image preview</button>}
       </div>)}
+    {studioHref && available.length > 0 && <Link href={studioHref} className="mt-2 inline-flex min-h-11 items-center text-sm underline underline-offset-4">
+      Open this book in Image Studio
+    </Link>}
   </section>;
 }
