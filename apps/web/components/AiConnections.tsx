@@ -9,7 +9,7 @@ import { readBrowserSession } from "../lib/browser-session";
 import { clearPendingConnection, readPendingConnection, savePendingConnection } from "../lib/ai-connection-recovery";
 
 const providers: Record<AiProvider, { name: string; initials: string; description: string }> = {
-  openai: { name: "OpenAI", initials: "O", description: "OpenAI API billing is separate from ChatGPT subscriptions." },
+  openai: { name: "OpenAI", initials: "O", description: "Connect a project API key from your OpenAI organization." },
   anthropic: { name: "Anthropic", initials: "A", description: "Use a Claude API key. A Claude chat subscription is separate." },
   google: { name: "Google Gemini", initials: "G", description: "Use a Gemini API key. Google sign-in does not grant model access." },
   openrouter: { name: "OpenRouter", initials: "OR", description: "Requests use your OpenRouter API credits." },
@@ -165,7 +165,9 @@ export default function AiConnections() {
       })}
     </div>
     <section className="mt-12 grid gap-5 sm:grid-cols-[1fr_1.5fr]" aria-label="Existing subscriptions"><h2 className="text-xl font-medium tracking-tight">Already paying for an AI plan?</h2>
-      <div className="space-y-3 text-sm leading-7 text-white/60"><p>Chat subscriptions and API credits usually have separate billing. Subscription connections will be offered only where the provider supports access through Bookworm.</p>
+      <div className="space-y-3 text-sm leading-7 text-white/60">
+        <p>Eligible ChatGPT Pro and Business subscribers can claim API credits for an OpenAI organization. After claiming, use a project API key from that organization.</p>
+        <p><a href="https://developers.openai.com/api/docs/guides/chatgpt-api-credits" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">How to claim OpenAI API credits</a></p>
         <p>Subscription sign-in and OpenRouter’s one-click API connection are not available here yet. You do not need to share your chat password, browser cookies, or an installed agent’s credentials.</p></div>
     </section>
   </main></AuthorPage>;
