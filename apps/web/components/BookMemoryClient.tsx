@@ -5,6 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEve
 import type { Book, BookBibleItem, BookMetadata } from "@bookworm/types";
 import BookSearchPanel from "./BookSearchPanel";
 import BibleSourcePassage from "./BibleSourcePassage";
+import BibleReferenceImages from "./BibleReferenceImages";
 import {
   clearManualBiblePointer, manualBibleIntentDigest, manualBibleRecoveryKey, manualBibleRetryAllowed, parseManualBiblePointer,
   persistManualBiblePointer, validateManualBibleResult, type ManualBibleAction, type ManualBiblePointer,
@@ -219,8 +220,12 @@ export function parseBookBibleCandidates(value: unknown): BookBibleCandidate[] {
   });
 }
 
+function imageReferences(item?: BookBibleItem): string[] {
+  const images = item?.attributes_json?.imageAssetIds;
+  return Array.isArray(images) ? images.filter((value): value is string => typeof value === "string") : [];
+}
+
 function entryDraft(item: BookBibleItem): EntryDraft {
-  const images = item.attributes_json?.imageAssetIds;
   return {
     id: item.id, expectedUpdatedAt: item.updated_at, expectedIncarnationId: item.mutation_incarnation_id, type: item.type, name: item.name,
     description: item.description ?? "",
@@ -228,7 +233,7 @@ function entryDraft(item: BookBibleItem): EntryDraft {
       const text = typeof value === "string" ? value : JSON.stringify(value);
       return { key, value: text, original: value, originalText: text };
     }),
-    imageAssetIds: Array.isArray(images) ? images.filter((value): value is string => typeof value === "string") : [],
+    imageAssetIds: imageReferences(item),
     sourceRefs: (item.source_refs_json ?? []).filter((ref): ref is SourceRef => !!ref && typeof ref === "object" && "chapterId" in ref && typeof ref.chapterId === "string"),
   };
 }
@@ -1175,6 +1180,7 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
 
   const visibleItems = (memory?.items ?? []).filter((item) => (filter === "all" || item.type === filter) && `${item.name} ${item.description ?? ""}`.toLowerCase().includes(query.toLowerCase()));
   const selected = memory?.items.find((item) => item.id === draft?.id);
+  const savedImageIds = imageReferences(selected);
 
   return <main className="mx-auto max-w-7xl px-4 pb-16 pt-8 sm:px-6 lg:px-8">
     {accountHidden && <section role="alert" className="rounded-xl border border-amber-200/30 p-4 text-amber-100">
@@ -1360,6 +1366,9 @@ export default function BookMemoryClient({ bookId }: { bookId: string }) {
               </div>
               {memory.canEdit && <div className="flex flex-wrap items-center gap-3 border-t border-white/10 pt-5"><button type="submit" className={primaryClass}>{manualStage === "reenter" && manualPointer ? "Check original details" : manualBusy ? "Saving…" : "Save memory entry"}</button>{entryDirty && <span className="text-xs text-amber-200">Unsaved changes</span>}{selected && !manualPointer && <button type="button" onClick={() => setDeleting(selected.id)} className="ml-auto text-sm text-red-200 underline underline-offset-4">Delete entry</button>}</div>}
             </fieldset>
+            {selected && manualUserId && !accountHidden && savedImageIds.length > 0 && <BibleReferenceImages
+              key={`${manualUserId}:${bookId}:${selected.id}:${selected.updated_at}`} actorId={manualUserId}
+              workspaceId={memory.book.workspace_id} savedIds={savedImageIds} images={memory.imageAssets} />}
             {draft.sourceRefs.length > 0 && <section aria-label="Saved manuscript evidence" className="mt-6 border-t border-white/10 pt-5">
               <h4 className="text-[11px] uppercase tracking-widest text-[#999]">Saved manuscript evidence</h4>
               <p className="mt-2 text-xs leading-5 text-[#aaa]">Read the exact passage behind an entry, including earlier versions. Reading evidence does not edit your book, generate content, or use credits.</p>

@@ -27,10 +27,12 @@ jobs:
         run: node --test tests/local-import-worker.test.mjs
       - name: Install isolated browser runtime
         run: node node_modules/playwright/cli.js install --with-deps chromium
-      - name: Verify Book Bible source evidence and account access
+      - name: Verify Book Bible evidence and private artwork previews
         env:
           BROWSER_TEST_CHANNEL: chromium
-        run: npm run test:bible-evidence
+        run: |
+          npm run test:bible-evidence
+          node --test apps/web/tests/artwork-private-mounted.mjs
       - name: Verify Story Blueprint account and quote recovery
         env:
           BROWSER_TEST_CHANNEL: chromium

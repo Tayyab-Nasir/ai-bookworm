@@ -59,7 +59,7 @@ async function fixture(fragment = "") {
       items: [], chapters: [], imageAssets: [], canEdit: true,
     });
     window.fetch = async (path, init) => {
-      if (path === "/api/auth/session") return Response.json({ user: { id: window.actor, email: "author@example.test" } });
+      if (path === "/api/auth/session") return Response.json({ user: { id: window.actor, email: "author@example.test" }, storageOrigin: window.storageOrigin });
       const method = init?.method ?? "GET";
       const url = new URL(path, window.location.origin);
       const bookId = url.pathname.split("/")[5];
@@ -89,6 +89,62 @@ async function fixture(fragment = "") {
   await expect(page.getByRole("button", { name: "Reload saved data", exact: true })).toBeEnabled();
   return page;
 }
+
+test("read-only Book Bible images open on demand and reject a link to another asset", async () => {
+  const page = await fixture();
+  try {
+    const image = "44444444-4444-4444-8444-444444444444";
+    const other = "55555555-5555-4555-8555-555555555555";
+    const workspace = "66666666-6666-4666-8666-666666666666";
+    const imageOrigin = "https://storage.example.test";
+    const storageReads = [];
+    await page.route(`${imageOrigin}/**`, route => {
+      storageReads.push(new URL(route.request().url()).pathname);
+      assert.equal(route.request().headers().referer, undefined);
+      return route.fulfill({ contentType: "image/png", body: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=", "base64") });
+    });
+    await page.evaluate(({ image, other, workspace, imageOrigin }) => {
+      const oldMemory = window.savedMemory;
+      window.readPreviews = [];
+      window.storageOrigin = imageOrigin;
+      window.savedMemory = bookId => {
+        const memory = oldMemory(bookId);
+        memory.canEdit = false;
+        memory.book.workspace_id = workspace;
+        memory.items = [{ id: "77777777-7777-4777-8777-777777777777", book_id: bookId,
+          name: "Captain Mira", type: "character", attributes_json: { imageAssetIds: [image] },
+          updated_at: "2026-10-13T00:00:00.000Z" }];
+        memory.imageAssets = [{ id: image, name: "Mira portrait", mime_type: "image/png" },
+          { id: other, name: "Harbor study", mime_type: "image/png" }];
+        return memory;
+      };
+      window.bookwormApi.getAssetDownloadUrl = async assetId => {
+        window.readPreviews.push(assetId);
+        return { url: `${imageOrigin}/storage/v1/object/sign/book-assets/workspaces/${workspace}/assets/${window.validPreview ? image : other}/v1/reference.png?token=fixture`,
+          expiresIn: 300 };
+      };
+    }, { image, other, workspace, imageOrigin });
+    await page.getByRole("button", { name: "Reload saved data", exact: true }).click();
+    await page.getByRole("button", { name: /Captain Mira/ }).click();
+    const references = page.getByRole("region", { name: "Saved reference images" });
+    await expect(page.getByRole("button", { name: "Save memory entry" })).toHaveCount(0);
+    await expect(references.getByRole("button", { name: "Preview Harbor study" })).toHaveCount(0);
+    assert.deepEqual(await page.evaluate(() => window.readPreviews), []);
+    await references.getByRole("button", { name: "Preview Mira portrait", exact: true }).click();
+    await expect(references.getByRole("status")).toContainText("preview is unavailable");
+    assert.deepEqual(storageReads, []);
+    await page.evaluate(() => { window.validPreview = true; });
+    await references.getByRole("button", { name: "Retry image preview" }).click();
+    const thumbnail = references.getByRole("img", { name: "Mira portrait" });
+    await expect(thumbnail).toBeVisible();
+    await expect.poll(() => thumbnail.evaluate(img => img.naturalWidth)).toBe(1);
+    await references.getByRole("button", { name: "Close Mira portrait" }).click();
+    await expect(thumbnail).toHaveCount(0);
+    assert.deepEqual(storageReads, [`/storage/v1/object/sign/book-assets/workspaces/${workspace}/assets/${image}/v1/reference.png`]);
+    assert.deepEqual(await page.evaluate(() => [window.readPreviews, window.writes]), [[image, image], []]);
+  } finally { await page.close(); }
+});
 
 test("the listing deep link scrolls to metadata after the book loads", async () => {
   const page = await fixture("#publishing-metadata");

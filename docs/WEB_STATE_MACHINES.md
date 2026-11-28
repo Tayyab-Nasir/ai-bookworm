@@ -228,6 +228,11 @@ the allowlist without starting a worker.
 - A saved EPUB section or resource 404 removes that unavailable reader source;
   when it is the selected packaging proof, its preflight is invalidated. A
   temporary reader failure keeps the existing proof available for retry.
+- Saved Book Bible image references use the editor's private preview checks.
+  Previews are requested on demand for the selected entry, require the
+  original account and verified workspace and asset path, and close when the
+  entry changes. Previewing requires no edit permission and writes no data.
+  Regression: `apps/web/tests/book-memory-navigation-mounted.mjs`.
 - Dashboard import activity and completed setup link to the book desk history.
   Setup and the book desk verify the report against the selected source and
   reject malformed reports. Setup preserves an unfinished checkpoint when
