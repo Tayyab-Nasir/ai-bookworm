@@ -88,7 +88,7 @@ export function imageReconciliationStatus(usage: unknown): "supported" | "requir
 }
 
 function imageRates(model: string) {
-  return /^gpt-image-2\.5-(?:sunburst|flare)(?:-|$)/.test(model)
+  return /^gpt-image-2\.[56]-(?:sunburst|flare)(?:-|$)/.test(model)
     ? { textInput: 5e-6, imageInput: 8e-6, output: 30e-6 }
     : /^gpt-image-2(?:-|$)/.test(model)
       ? { textInput: 2.5e-6, imageInput: 4e-6, output: 15e-6 }
@@ -108,7 +108,7 @@ export function imageCostEstimateBasis(model: string, usage: unknown): "itemized
 
 export function estimatedImageCost(model: string, usage: unknown): number {
   // Diagnostic provider estimate, not the customer credit debit. Prices are
-  // standard Image API USD per token, reviewed against OpenAI on 2026-09-24.
+  // standard Image API USD per token. Quote reservations use a versioned catalogue.
   const rates = imageRates(model);
   const value = usage as ImageUsage;
   if (!rates || !validTokenCount(value?.input_tokens) || !validTokenCount(value?.output_tokens)) return 0;
@@ -142,7 +142,7 @@ export const openAiImageGenerator: ImageGenerator = async ({ prompt, size, quali
   if (quotedModel !== undefined && (!quotedModel.trim() || quotedModel !== quotedModel.trim() || quotedModel.length > 128)) {
     throw new AppError(422, "The accepted image model is invalid.");
   }
-  const model = quotedModel ?? (process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2.5-sunburst");
+  const model = quotedModel ?? (process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-2.6-sunburst");
   // An automatic retry after a lost response can generate and bill twice.
   // The caller holds an unresolved job for recovery instead of redispatching.
   const client = new OpenAI({ apiKey, timeout: 130_000, maxRetries: 0 });

@@ -1,5 +1,23 @@
 # OpenAI model and pricing checkpoint — 2026-09-24
 
+## Source defaults and Standard diagnostics — checked 2026-11-28
+
+New requests without a model override default to
+[GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra)
+for text and [GPT-Image-2.6 Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.6-sunburst)
+for image generation and edits. Both use the existing API request shapes.
+The text estimate uses $8 input and $40 output per million tokens, rising to
+$16 and $60 respectively above 272,000 input tokens. Sunburst's diagnostic
+rates remain $5 per million text input, $8 image input and $30 image output.
+See [OpenAI pricing](https://developers.openai.com/api/docs/pricing).
+
+Environment overrides and accepted quotes retain their selected model.
+Provider diagnostic estimates apply to Standard processing and do not update
+the versioned paid offer catalogue or activate purchases. Verify model access
+with a current project credential and measure a funded provider run before
+activating a new paid offer. Quoted Realtime narration continues on its
+published GPT-Realtime 2.1 model family.
+
 ## Current speech deprecation — checked 2026-11-03
 
 OpenAI has deprecated `gpt-4o-mini-tts` and scheduled its shutdown for
@@ -18,7 +36,7 @@ provider, funding, cost and hosted acceptance described in
 [`NARRATION_TRANSPORT_CHECKPOINT.md`](NARRATION_TRANSPORT_CHECKPOINT.md).
 No provider request or account availability check was made in this review.
 
-Current official references continue to list
+At the November 3 review, official references listed
 [`gpt-6-astra`](https://developers.openai.com/api/docs/models/gpt-6-astra)
 and [`gpt-image-2.5-sunburst`](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst).
 Model listings do not establish account access or approve commercial prices.
@@ -34,7 +52,7 @@ billing acceptance test. Official sources consulted:
 - Text-to-speech model and endpoint: https://developers.openai.com/api/docs/guides/text-to-speech
 - TTS model token prices: https://developers.openai.com/api/docs/models/gpt-4o-mini-tts
 
-The configured defaults remain `gpt-6-astra` for text, `gpt-image-2.5-sunburst`
+The September defaults were `gpt-6-astra` for text, `gpt-image-2.5-sunburst`
 for images, and `gpt-4o-mini-tts` for speech. Official documentation identifies
 all three, with Mini TTS as the current speech endpoint model. Availability
 for this OpenAI account was **not** verified; no API key or paid request was

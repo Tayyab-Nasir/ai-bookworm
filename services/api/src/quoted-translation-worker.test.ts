@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { runOneQuotedTranslationJob } from "./lib/quoted-translation-worker.js";
 import { quoteUsage } from "./lib/usage-pricing.js";
-import { translationRequestHash, measuredTranslationTokens, translationProviderRequest } from "./lib/translation-generation.js";
+import { translationRequestHash, measuredTranslationTokens, openAiTranslationGenerator, translationProviderRequest } from "./lib/translation-generation.js";
 import type { SupabaseClient } from "./lib/supabase.js";
 const ids = Array.from({ length: 8 }, (_, i) => `c8000000-0000-4000-8000-${String(i + 1).padStart(12,"0")}`);
 const [job, workspace, user, lease, project, chapter, document, translatedChapter] = ids;
@@ -73,6 +73,34 @@ test("token normalization splits cached usage and never treats missing counters 
   const f = fixture(); assert.equal(translationProviderRequest(f.request).max_output_tokens, 1000);
   assert.notEqual(translationRequestHash(f.request), translationRequestHash({ ...f.request, targetLanguage: "fr" }));
   assert.notEqual(translationRequestHash(f.request), translationRequestHash({ ...f.request, maxOutputTokens: 999 }));
+});
+
+test("translation sends the upgraded default and preserves an older pinned quote model", async (context) => {
+  const keys = ["OPENAI_API_KEY", "DEFAULT_AI_MODEL", "OPENAI_TRANSLATION_MODEL"];
+  const original = keys.map(key => [key, process.env[key]] as const);
+  context.after(() => { for (const [key, value] of original) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  } });
+  for (const key of keys) delete process.env[key];
+  process.env.OPENAI_API_KEY = "fixture-no-network";
+  const requests: Array<{ model: string; max_output_tokens: number }> = [];
+  context.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    assert.equal(request.url, "https://api.openai.com/v1/responses");
+    const body = await request.json();
+    requests.push(body);
+    return Response.json({ object: "response", status: "completed", model: body.model, output: [
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "Un texto guardado." }] },
+    ], usage: { input_tokens: 100, output_tokens: 20, input_tokens_details: { cached_tokens: 0 } } });
+  });
+  const input = { text, sourceLanguage: "en", targetLanguage: "es", maxOutputTokens: 1000 };
+  const current = await openAiTranslationGenerator(input);
+  const pinned = await openAiTranslationGenerator({ ...input, model: "gpt-6-astra" });
+  assert.deepEqual(requests.map(({ model, max_output_tokens }) => [model, max_output_tokens]),
+    [["gpt-6.2-astra", 1000], ["gpt-6-astra", 1000]]);
+  assert.equal(current.usage.estimatedCostUsd, 0.0016);
+  assert.equal(pinned.usage.estimatedCostUsd, 0.002);
 });
 
 test("over-bound measured usage keeps its hold for review without completing translation", async () => {

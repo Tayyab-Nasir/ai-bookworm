@@ -74,8 +74,11 @@ def test_openai_missing_or_invalid_usage_remains_unknown_not_zero(usage):
 def test_astra_cost_uses_published_long_context_multiplier():
     assert _cost("gpt-6-astra", 100, 20) == 0.002
     assert _cost("gpt-6-astra-2026-09-03", 300_000, 100) == 6.0075
+    assert _cost("gpt-6.2-astra", 100, 20) == 0.0016
+    assert _cost("gpt-6.2-astra", 272_000, 100) == 2.18
+    assert _cost("gpt-6.2-astra", 300_000, 100) == 4.806
     assert _cost("unknown-model", 100, 20) == 0
-    assert default_model("openai") == "gpt-6-astra"
+    assert default_model("openai") == "gpt-6.2-astra"
 
 
 def test_paid_openai_provider_disables_sdk_retries_and_preserves_unknown_outcome(monkeypatch):

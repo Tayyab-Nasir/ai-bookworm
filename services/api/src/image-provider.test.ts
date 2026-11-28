@@ -42,6 +42,9 @@ test("image usage provenance distinguishes missing and partial provider telemetr
 });
 
 test("current OpenAI image pricing distinguishes text, image input and output tokens", () => {
+  assert.equal(estimatedImageCost("gpt-image-2.6-sunburst", {
+    input_tokens: 300, input_tokens_details: { text_tokens: 100, image_tokens: 200 }, output_tokens: 1_000,
+  }), 0.0321);
   assert.equal(estimatedImageCost("gpt-image-2.5-sunburst", {
     input_tokens: 300,
     input_tokens_details: { text_tokens: 100, image_tokens: 200 },
@@ -83,7 +86,7 @@ test("image adapter submits reference bytes as multipart edits and unconditioned
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const paths: string[] = [];
   process.env.OPENAI_API_KEY = "fixture-no-network";
-  process.env.OPENAI_IMAGE_MODEL = "gpt-image-2.5-sunburst";
+  delete process.env.OPENAI_IMAGE_MODEL;
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
     // SDK probes native FormData support with a local data URL.
@@ -95,6 +98,7 @@ test("image adapter submits reference bytes as multipart edits and unconditioned
       assert.equal(files.length, 1);
       assert.deepEqual(Buffer.from(await files[0].arrayBuffer()), png);
       assert.equal(body.get("prompt"), "Same character in a new scene");
+      assert.equal(body.get("model"), "gpt-image-2.6-sunburst");
     } else {
       const body = await request.json() as { prompt?: unknown; model?: unknown }; assert.equal(body.prompt, "Same character in a new scene");
       assert.equal(body.model, "fixture-pinned-image");

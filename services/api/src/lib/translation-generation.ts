@@ -29,9 +29,13 @@ export type TranslationGenerator = (input: TranslationGenerationInput) => Promis
 
 function estimateCost(model: string, inputTokens: number, outputTokens: number) {
   // Matches the server-side text model estimate in services/ai/gateway.py.
-  if (!model.startsWith("gpt-6-astra")) return 0;
   const longContext = inputTokens > 272_000;
-  return Number((inputTokens * 10e-6 * (longContext ? 2 : 1) + outputTokens * 50e-6 * (longContext ? 1.5 : 1)).toFixed(6));
+  const rates = /^gpt-6\.2-astra(?:-|$)/.test(model)
+    ? (longContext ? [16, 60] : [8, 40])
+    : /^gpt-6-astra(?:-|$)/.test(model)
+      ? (longContext ? [20, 75] : [10, 50])
+      : null;
+  return rates ? Number(((inputTokens * rates[0] + outputTokens * rates[1]) / 1e6).toFixed(6)) : 0;
 }
 
 const translationInstruction = "Translate the supplied manuscript chapter faithfully. Preserve paragraph breaks, dialogue, names, numbers, and intentional style. Return only the translated manuscript text; do not add commentary, notes, labels, or Markdown fences.";
@@ -57,7 +61,7 @@ export const openAiTranslationGenerator: TranslationGenerator = async (input) =>
   const apiKey = process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) throw new AppError(503, "Translation is not configured.", undefined, "translation_provider_not_configured");
   if (!text.trim() || Array.from(text).length > 32_000) throw new AppError(422, "Translation input is unavailable or too large.");
-  const model = input.model ?? (process.env.OPENAI_TRANSLATION_MODEL?.trim() || process.env.DEFAULT_AI_MODEL?.trim() || "gpt-6-astra");
+  const model = input.model ?? (process.env.OPENAI_TRANSLATION_MODEL?.trim() || process.env.DEFAULT_AI_MODEL?.trim() || "gpt-6.2-astra");
   if (input.maxOutputTokens !== undefined && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 1 || input.maxOutputTokens > 128000)) {
     throw new AppError(422, "Invalid translation output limit.");
   }

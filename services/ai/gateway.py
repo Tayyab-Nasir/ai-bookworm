@@ -51,22 +51,19 @@ class Provider(Protocol):
         ...
 
 
-# Official OpenAI price snapshot, 2026-09-12. Values are dollars per token.
-# Keep this deliberately exact: an unknown model records zero rather than being
-# silently billed with a stale prefix-wide estimate.
-_TEXT_PRICES: dict[str, tuple[float, float]] = {
-    "gpt-6-astra": (10.0e-6, 50.0e-6),
+# Diagnostic Standard rates in dollars per token. Paid quotes use their own
+# versioned provider price catalogue. Retain the original Astra rates for old jobs.
+_TEXT_PRICES: dict[str, tuple[float, float, float, float]] = {
+    "gpt-6.2-astra": (8.0e-6, 40.0e-6, 16.0e-6, 60.0e-6),
+    "gpt-6-astra": (10.0e-6, 50.0e-6, 20.0e-6, 75.0e-6),
 }
 
 
 def _cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    canonical = "gpt-6-astra" if model.startswith("gpt-6-astra") else model
-    if canonical in _TEXT_PRICES:
-        pi, po = _TEXT_PRICES[canonical]
-        # Astra requests above 272K input tokens use the published long-context
-        # multipliers for the entire request.
-        if canonical == "gpt-6-astra" and tokens_in > 272_000:
-            pi, po = pi * 2, po * 1.5
+    rates = next((rates for name, rates in _TEXT_PRICES.items()
+                  if model == name or model.startswith(name + "-")), None)
+    if rates is not None:
+        pi, po = rates[2:] if tokens_in > 272_000 else rates[:2]
         return round(tokens_in * pi + tokens_out * po, 6)
     return 0.0
 
@@ -173,7 +170,7 @@ def openai_tools(tools: list[dict]) -> list[dict]:
 
 
 _REGISTRY = {"openai": OpenAIProvider, "mock": MockProvider}
-_DEFAULT_MODELS = {"openai": "gpt-6-astra", "mock": "mock-1"}
+_DEFAULT_MODELS = {"openai": "gpt-6.2-astra", "mock": "mock-1"}
 
 
 def get_provider(name: str | None = None) -> Provider:
