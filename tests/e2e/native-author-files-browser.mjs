@@ -370,13 +370,35 @@ export async function runNativeAuthorBrowser({ setup, service, apiOrigin, origin
     }
     assert(dashboard.recentJobs.some(job => job.kind === 'import' && job.id === queuedJob.id));
     const imports = page.getByRole('link', { name: 'Open Manuscript import workflow for Native browser manuscript', exact: true });
-    await expect(imports).toHaveAttribute('href', `/books/${bookId}`);
+    const importHistoryPath = `/books/${bookId}/overview#import-job-${queuedJob.id}`;
+    await expect(imports).toHaveAttribute('href', importHistoryPath);
     await expect(page.getByRole('definition')).toHaveCount(4);
     await screenshot('workspace-pipeline-mobile');
     await page.setViewportSize({ width: 1280, height: 900 }); await screenshot('workspace-pipeline-desktop');
-    await imports.click(); await page.waitForURL(`${webOrigin}/books/${bookId}`);
+    stage = 'workspace pipeline opens the native manuscript import receipt';
+    await imports.click();
+    await page.waitForURL(`${webOrigin}${importHistoryPath}`);
+    const importHistory = page.getByRole('region', { name: 'Manuscript imports', exact: true });
+    const importRow = importHistory.locator(`#import-job-${queuedJob.id}`);
+    await expect(importRow).toContainText('Completed');
+    const sourceReportPath = `/api/backend/v1/books/${bookId}/imports/${queuedJob.source_asset_id}`;
+    const [reportResponse] = await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === sourceReportPath && response.request().method() === 'GET'),
+      importRow.getByRole('button', { name: 'Read import report', exact: true }).click(),
+    ]);
+    assert.equal(reportResponse.status(), 200);
+    const { import: savedImport } = await reportResponse.json();
+    assert.equal(savedImport.sourceAssetId, queuedJob.source_asset_id);
+    assert.ok(savedImport.report.chapterCount > 0);
+    await expect(importRow.getByText(new RegExp(`^${savedImport.report.chapterCount} chapters? imported`))).toBeVisible();
+    const importStatus = await service.from('manuscript_import_jobs').select('id,status,attempts')
+      .eq('book_id', bookId).eq('source_asset_id', queuedJob.source_asset_id).single();
+    assert.equal(importStatus.error, null);
+    assert.deepEqual(importStatus.data, { id: queuedJob.id, status: 'succeeded', attempts: queuedJob.attempts + 1 });
+    await page.getByRole('region', { name: 'Keep the whole book in view.' }).getByRole('link', { name: /Open editor/ }).click();
+    await page.waitForURL(`${webOrigin}/books/${bookId}`);
     await expect(page.locator('.tiptap')).toContainText('Captain');
-    succeeded('workspace pipeline matches all four native queues and opens saved import without retrying it');
+    succeeded('workspace pipeline matches all four native queues and reopens the exact saved import before returning to the editor');
 
     stage = 'private AI connection lifecycle';
     const { runNativeAiConnections } = await import('./native-ai-connections.mjs');
