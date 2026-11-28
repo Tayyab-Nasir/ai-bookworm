@@ -1,0 +1,608 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { BookMetadataSchema, Isbn13Schema } from "@bookworm/book-model";
+import { AppError } from "../errors.js";
+import { assembleBookModel, bookModelFingerprint, loadBook } from "../lib/authoring.js";
+import { logActivity } from "../lib/activity.js";
+import type { SupabaseClient } from "../lib/supabase.js";
+import { requireEntitlement } from "../lib/entitlements.js";
+import { loadRenderImages, renderImagesFingerprint, assertRenderImagesCurrent } from "../lib/render-images.js";
+import { boundedServiceText } from "../lib/bounded-service-response.js";
+import { coverQrRendererFailure, savedCoverQrCorrection } from "../lib/cover-qr-failure.js";
+import { nextEditionTimestamp } from "../lib/edition-timestamp.js";
+export { loadRenderImages } from "../lib/render-images.js";
+
+const BUCKET = "book-assets";
+
+const httpsUrl = z.string().trim().refine(value => value.length <= 2_048, "QR destination must be at most 2048 characters.").refine((value) => {
+  try { return /^https:\/\/[^/?#\s\\]+/i.test(value) && !/[\x00-\x20\x7f\\]/.test(value) && new URL(value).protocol === "https:"; } catch { return false; }
+}, "QR destination must use HTTPS.");
+const qrSchema = z.object({
+  enabled: z.boolean().default(false),
+  url: httpsUrl.nullable().default(null),
+  label: z.string().trim().max(120).nullable().default(null),
+  position: z.enum(["bottom-left", "bottom-right"]).default("bottom-right"),
+  size_px: z.number().int().min(96).max(512).default(180),
+}).strict().superRefine((value, ctx) => {
+  if (value.enabled && !value.url) ctx.addIssue({ code: "custom", path: ["url"], message: "Add an HTTPS destination when QR is enabled." });
+});
+
+const coverSchema = z.object({
+  asset_id: z.guid().nullable().default(null),
+  title_on_cover: z.boolean().default(true),
+  subtitle_on_cover: z.boolean().default(true),
+  author_on_cover: z.boolean().default(true),
+  text_color: z.string().regex(/^#[0-9a-f]{6}$/i).default("#ffffff"),
+  overlay_opacity: z.number().min(0).max(0.9).default(0.28),
+  qr_code: qrSchema.prefault({}),
+}).strict().superRefine((value, ctx) => {
+  if (value.qr_code.enabled && !value.asset_id) ctx.addIssue({ code: "custom", path: ["asset_id"], message: "Choose cover art before enabling QR." });
+}).prefault({});
+
+const frontMatterSchema = z.object({
+  copyright_notice: z.string().max(3000).default(""),
+  publisher: z.string().max(200).default(""),
+}).strict().prefault({});
+
+const ebookSchema = z.object({
+  fixed_layout: z.lazy(() => fixedLayoutSchema).prefault({}),
+  include_title_page: z.boolean().default(false),
+  kind: z.literal("ebook"),
+  schema_version: z.enum(["1.0.0", "1.1.0"]).default("1.1.0"),
+  text_direction: z.enum(["auto", "ltr", "rtl"]).default("auto"),
+  flow: z.enum(["reflowable", "fixed"]).default("reflowable"),
+  navigation: z.enum(["toc", "toc+landmarks", "none"]).default("toc"),
+  cover: coverSchema,
+  metadata_overrides: z.record(z.string(), z.string().max(2_000)).default({}),
+  front_matter: frontMatterSchema,
+  image_policy: z.object({
+    max_width_px: z.number().int().min(320).max(6_000).default(1_600),
+    max_bytes: z.number().int().min(100_000).max(25 * 1024 * 1024).default(5 * 1024 * 1024),
+    embed: z.boolean().default(true),
+    allowed_formats: z.array(z.enum(["jpeg", "png", "gif", "webp"])).min(1).max(4).default(["jpeg", "png", "gif"]),
+  }).strict().prefault({}),
+}).strict();
+
+const marginsSchema = z.object({
+  top: z.number().min(0.25).max(2).default(0.75),
+  bottom: z.number().min(0.25).max(2).default(0.75),
+  inner: z.number().min(0.25).max(2).default(0.75),
+  outer: z.number().min(0.25).max(2).default(0.5),
+}).strict().prefault({});
+
+const amiriFonts = ["BookwormAmiri", "BookwormAmiri-Bold"] as const;
+const fontSchema = z.enum(["Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold", "BookwormVera", "BookwormVera-Bold", ...amiriFonts]);
+const isAmiriFont = (font: string) => amiriFonts.some(candidate => candidate === font);
+const typographySchema = z.object({
+  body_font: fontSchema.default("Times-Roman"),
+  body_size_pt: z.number().min(7).max(24).default(11),
+  heading_font: fontSchema.default("Helvetica-Bold"),
+  heading_size_pt: z.number().min(10).max(48).default(16),
+  leading: z.number().min(8).max(36).default(14),
+  paragraph_spacing_pt: z.number().min(0).max(36).default(6),
+  first_line_indent_in: z.number().min(0).max(1).default(0.25),
+  text_align: z.enum(["left", "justify"]).default("justify"),
+}).strict().superRefine((value, ctx) => {
+  if (value.leading < value.body_size_pt) ctx.addIssue({ code: "custom", path: ["leading"], message: "Line spacing must be at least the body font size." });
+  if (isAmiriFont(value.body_font) !== isAmiriFont(value.heading_font)) ctx.addIssue({ code: "custom", path: ["heading_font"], message: "Choose Amiri for both the body and the headings." });
+}).prefault({});
+
+const fixedLayoutSchema = z.object({
+  trim_size: z.enum(["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"]).default("6x9"),
+  margins: marginsSchema,
+  typography: typographySchema.prefault({ body_font: "BookwormVera", heading_font: "BookwormVera-Bold" }),
+}).strict().refine(value => !isAmiriFont(value.typography.body_font), { path: ["typography"], message: "Choose a different font for fixed-layout EPUB. Amiri is available for print PDF." });
+
+const printSchema = z.object({
+  include_table_of_contents: z.boolean().default(false),
+  kind: z.literal("print"),
+  isbn13: Isbn13Schema.nullable().optional(),
+  schema_version: z.enum(["1.0.0", "1.1.0"]).default("1.1.0"),
+  text_direction: z.enum(["auto", "ltr", "rtl"]).default("auto"),
+  trim_size: z.enum(["5x8", "5.5x8.5", "6x9", "7x10", "8.5x11"]).default("6x9"),
+  bleed_in: z.number().min(0).max(0.25).default(0),
+  bleed_edges: z.enum(["all", "outer"]).default("all"),
+  margins: marginsSchema,
+  front_matter: frontMatterSchema,
+  typography: typographySchema,
+  page_numbering: z.object({
+    style: z.enum(["arabic", "roman", "none"]).default("arabic"),
+    start_at: z.number().int().min(1).max(10_000).default(1),
+    position: z.enum(["bottom-center", "bottom-outer", "top-center"]).default("bottom-center"),
+  }).strict().prefault({}),
+  cover: coverSchema,
+  wrap_cover: z.object({
+    enabled: z.boolean().default(false),
+    barcode: z.enum(["kdp", "lulu"]).optional(),
+    source_pdf_version: z.number().int().min(1).max(2147483647).optional(),
+    lulu_rtl: z.literal(true).optional(),
+    profile: z.enum(["kdp-white", "kdp-cream", "kdp-standard-color", "kdp-premium-color", "custom"]).default("kdp-white"),
+    spine_width_in: z.number().min(0.01).max(3).default(0.25),
+    expected_page_count: z.number().int().min(1).max(2000).nullable().default(null),
+    back_text: z.string().max(3000).default(""), spine_text: z.string().max(200).default(""),
+    background_color: z.string().regex(/^#[0-9a-f]{6}$/i).default("#182528"),
+    text_color: z.string().regex(/^#[0-9a-f]{6}$/i).default("#ffffff"),
+  }).strict().prefault({}),
+}).strict();
+
+const audiobookSchema = z.object({
+  kind: z.literal("audiobook"),
+  schema_version: z.literal("1.0.0").default("1.0.0"),
+  voice: z.enum(["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"]).default("marin"),
+  instructions: z.string().trim().min(1).max(2_000).nullable().default(null),
+  speed: z.number().min(0.25).max(4).default(1),
+}).strict();
+
+export const editionConfigSchema = z.discriminatedUnion("kind", [ebookSchema, printSchema, audiobookSchema]).superRefine((config, ctx) => {
+  if (config.kind === "ebook" && Object.hasOwn(config.metadata_overrides, "publicationDate")
+    && !BookMetadataSchema.shape.publicationDate.safeParse(config.metadata_overrides.publicationDate).success) {
+    ctx.addIssue({ code: "custom", path: ["metadata_overrides", "publicationDate"], message: "Enter a valid YYYY-MM-DD publication date." });
+  }
+  if (config.kind === "print" && config.wrap_cover.enabled) {
+    if (!config.cover.asset_id) ctx.addIssue({ code: "custom", path: ["cover", "asset_id"], message: "Choose front cover artwork or a finished PDF for the full paperback cover." });
+    if (config.wrap_cover.profile === "custom" && !config.wrap_cover.expected_page_count) ctx.addIssue({ code: "custom", path: ["wrap_cover", "expected_page_count"], message: "Enter the printer template's page count." });
+  }
+  if (config.kind === "print" && config.wrap_cover.barcode) {
+    if (!config.wrap_cover.enabled || !config.isbn13) {
+      ctx.addIssue({ code: "custom", path: ["wrap_cover", "barcode"], message: "Enable the full cover and enter this print edition's ISBN-13 for a barcode." });
+    }
+    if (config.wrap_cover.barcode === "lulu" && config.wrap_cover.profile !== "custom") {
+      ctx.addIssue({ code: "custom", path: ["wrap_cover", "profile"], message: "Use the matching Lulu template with a Lulu barcode." });
+    }
+  }
+  if (config.kind === "print" && config.wrap_cover.source_pdf_version !== undefined
+    && (!config.wrap_cover.enabled || config.wrap_cover.barcode || config.cover.qr_code.enabled)) {
+    ctx.addIssue({ code: "custom", path: ["wrap_cover", "source_pdf_version"], message: "An uploaded cover PDF requires a full cover with generated QR and barcode disabled." });
+  }
+  if (config.kind === "print" && config.wrap_cover.lulu_rtl
+    && (config.text_direction !== "rtl" || config.wrap_cover.source_pdf_version === undefined || config.wrap_cover.profile !== "custom")) {
+    ctx.addIssue({ code: "custom", path: ["wrap_cover", "lulu_rtl"], message: "A Lulu right-to-left cover requires right-to-left text and an uploaded Lulu template PDF." });
+  }
+});
+
+export function uploadedCoverVersion(config: z.infer<typeof editionConfigSchema>) {
+  return config.kind === "print" ? config.wrap_cover.source_pdf_version : undefined;
+}
+
+export function withEditionLanguage<T extends { metadata: { language: string } }>(model: T, language: unknown): T {
+  const editionLanguage = typeof language === "string" ? language.trim() : "";
+  if (editionLanguage.length < 2 || editionLanguage.length > 35) return model;
+  return { ...model, metadata: { ...model.metadata, language: editionLanguage } };
+}
+
+const createSchema = z.object({
+  config: editionConfigSchema,
+  language: z.string().trim().min(2).max(35).default("en"),
+}).strict();
+
+const updateSchema = z.object({
+  config: editionConfigSchema.optional(),
+  language: z.string().trim().min(2).max(35).optional(),
+  status: z.enum(["draft", "in_review", "approved", "archived"]).optional(),
+  expectedUpdatedAt: z.string().datetime({ offset: true }),
+}).strict().refine((value) => value.config || value.language || value.status, "nothing to update");
+
+const renderSchema = z.object({ idempotencyKey: z.string().trim().min(8).max(200) }).strict();
+export const renderResponseSchema = z.object({
+  format: z.enum(["epub", "pdf"]),
+  artifactBase64: z.string().min(4).max(210_000_000),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+  rendererVersion: z.string().min(1).max(200),
+  coverArtifactBase64: z.string().min(4).max(40_000_000).nullable().optional(),
+  coverFormat: z.enum(["png", "pdf"]).nullable().optional(),
+  coverSha256: z.string().regex(/^[a-f0-9]{64}$/i).nullable().optional(),
+  coverRendererVersion: z.string().min(1).max(200).nullable().optional(),
+}).strict();
+
+export const EFFECTIVE_EBOOK_COVER_POLICY = "effective-ebook-metadata-v1";
+export const EFFECTIVE_EBOOK_COVER_RENDERER_VERSION = "cover-1.4.0";
+export const UPLOADED_WRAP_RENDERER_VERSION = "uploaded-paperback-cover-1.0.0";
+
+export function requiresEffectiveEbookCoverPolicy(config: z.infer<typeof editionConfigSchema>) {
+  if (config.kind !== "ebook" || !config.cover.asset_id) return false;
+  const overlays = [
+    [config.cover.title_on_cover, "title"],
+    [config.cover.subtitle_on_cover, "subtitle"],
+    [config.cover.author_on_cover, "author"],
+  ] as const;
+  // An explicit empty override removes visible text; it is not an absent override.
+  return overlays.some(([enabled, key]) => enabled && Object.hasOwn(config.metadata_overrides, key))
+    || (Object.hasOwn(config.metadata_overrides, "language") && overlays.some(([enabled]) => enabled));
+}
+
+export function decodeRenderedCover(config: z.infer<typeof editionConfigSchema>, rendered: z.infer<typeof renderResponseSchema>,
+  uploadedChecksum?: string) {
+  const expected = config.kind === "print" && config.wrap_cover.enabled ? "pdf" : "png";
+  if (Boolean(rendered.coverArtifactBase64) !== Boolean(rendered.coverSha256)) throw new AppError(503, "The renderer returned incomplete cover output.");
+  if (!rendered.coverArtifactBase64 || !rendered.coverSha256) {
+    if (config.kind !== "audiobook" && config.cover.asset_id) throw new AppError(503, "The renderer omitted the selected cover.");
+    return null;
+  }
+  if ((rendered.coverFormat ?? "png") !== expected) throw new AppError(503, "The renderer returned the wrong cover format.");
+  if (uploadedCoverVersion(config) !== undefined && (!uploadedChecksum || rendered.coverSha256.toLowerCase() !== uploadedChecksum
+    || rendered.coverRendererVersion !== UPLOADED_WRAP_RENDERER_VERSION)) {
+    throw new AppError(503, "The renderer did not confirm the exact uploaded cover PDF.");
+  }
+  const affected = requiresEffectiveEbookCoverPolicy(config);
+  if (affected && rendered.coverRendererVersion !== EFFECTIVE_EBOOK_COVER_RENDERER_VERSION) {
+    throw new AppError(503, "The renderer does not support this edition's cover metadata. Update the renderer, then render again with a new request key.",
+      undefined, "cover_metadata_policy_unsupported");
+  }
+  return {
+    bytes: decodeArtifact(rendered.coverArtifactBase64, rendered.coverSha256, 25 * 1024 * 1024,
+      expected === "pdf" ? Buffer.from("%PDF-") : Buffer.from([0x89, 0x50, 0x4e, 0x47]), `cover ${expected}`),
+    filename: `cover.${expected}`, mimeType: expected === "pdf" ? "application/pdf" : "image/png",
+    checksum: rendered.coverSha256.toLowerCase(),
+    usage: {
+      ...(rendered.coverRendererVersion ? { coverRendererVersion: rendered.coverRendererVersion } : {}),
+      ...(affected ? { coverMetadataPolicy: EFFECTIVE_EBOOK_COVER_POLICY } : {}),
+    },
+  };
+}
+
+export function decodeArtifact(encoded: string, checksum: string, maxBytes: number, signature: Buffer, label: string) {
+  if (encoded.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(encoded)) {
+    throw new AppError(503, `The renderer returned invalid ${label} data.`);
+  }
+  const bytes = Buffer.from(encoded, "base64");
+  if (!bytes.length || bytes.length > maxBytes || !bytes.subarray(0, signature.length).equals(signature)) {
+    throw new AppError(503, `The renderer returned an invalid ${label}.`);
+  }
+  if (createHash("sha256").update(bytes).digest("hex") !== checksum.toLowerCase()) {
+    throw new AppError(503, `The renderer returned a ${label} with the wrong checksum.`);
+  }
+  return bytes;
+}
+
+async function failRenderJob(sb: SupabaseClient, jobId: string, message: string) {
+  await sb.from("publishing_jobs").update({
+    status: "failed", response_json: { error: message.slice(0, 500) }, completed_at: new Date().toISOString(),
+  }).eq("id", jobId).in("status", ["queued", "running"]);
+}
+
+async function hydrateRenderResult(sb: SupabaseClient, job: Record<string, unknown>) {
+  const response = job.response_json as { artifacts?: { assetId?: unknown; role?: unknown }[] } | null;
+  const descriptors = Array.isArray(response?.artifacts) ? response.artifacts : [];
+  const artifacts = [];
+  for (const descriptor of descriptors) {
+    if (typeof descriptor.assetId !== "string") continue;
+    const { data: asset } = await sb.from("assets").select("*").eq("id", descriptor.assetId).maybeSingle();
+    if (!asset) continue;
+    const { data: signed, error } = await sb.storage.from(BUCKET).createSignedUrl(asset.storage_path, 300);
+    if (error || !signed?.signedUrl) throw new AppError(503, "A rendered artifact link could not be created.");
+    artifacts.push({ asset, role: descriptor.role, download: { url: signed.signedUrl, expiresIn: 300 } });
+  }
+  if (!artifacts.length) throw new AppError(500, "The render job has no stored artifacts.");
+  return { jobId: job.id, status: job.status, artifacts };
+}
+
+async function loadEdition(sb: SupabaseClient, editionId: string) {
+  const { data, error } = await sb.from("editions").select("*").eq("id", editionId).maybeSingle();
+  if (error) throw new AppError(500, "Could not load edition.");
+  if (!data) throw new AppError(404, "Edition not found.");
+  return data;
+}
+
+async function requireCurrentArtworkApproval(
+  sb: SupabaseClient,
+  asset: {
+    id: string;
+    storage_path: string;
+    mime_type: string;
+    size_bytes: number;
+    checksum: string;
+    status: string;
+    requires_approval?: boolean;
+  },
+  sourcePdfVersion?: number,
+) {
+  if (asset.requires_approval !== true && sourcePdfVersion === undefined) return;
+  if (asset.requires_approval === true && asset.status !== "approved") {
+    throw new AppError(422, "Artwork must be approved for its exact current version before rendering.");
+  }
+
+  const { data: version, error: versionError } = await sb.from("asset_versions")
+    .select("version_number,storage_path,checksum,mime_type,size_bytes,scan_status,detected_mime_type")
+    .eq("asset_id", asset.id).eq("storage_path", asset.storage_path).maybeSingle();
+  if (versionError) throw new AppError(503, "Artwork version approval could not be verified.");
+  const versionNumber = Number(version?.version_number);
+  if (!version || !Number.isSafeInteger(versionNumber) || versionNumber < 1
+    || typeof version.checksum !== "string" || version.checksum.toLowerCase() !== asset.checksum.toLowerCase()
+    || version.mime_type !== asset.mime_type || Number(version.size_bytes) !== Number(asset.size_bytes)
+    || !["clean", "trusted_generated"].includes(String(version.scan_status))) {
+    throw new AppError(422, "Artwork must be a clean, current image version before rendering.");
+  }
+  if (sourcePdfVersion !== undefined && (versionNumber !== sourcePdfVersion || version.scan_status !== "clean"
+    || version.detected_mime_type !== "application/pdf")) {
+    throw new AppError(422, "Choose the current clean version of the uploaded cover PDF.");
+  }
+  if (asset.requires_approval !== true) return;
+
+  const { data: approval, error: approvalError } = await sb.from("approvals")
+    .select("id")
+    .eq("entity_type", "asset").eq("entity_id", asset.id)
+    .eq("entity_version_number", versionNumber).eq("status", "approved")
+    .is("superseded_at", null).maybeSingle();
+  if (approvalError) throw new AppError(503, "Artwork approval could not be verified.");
+  if (!approval) throw new AppError(422, "Artwork must be approved for its exact current version before rendering.");
+}
+
+async function validateCover(sb: SupabaseClient, workspaceId: string, config: z.infer<typeof editionConfigSchema>) {
+  if (config.kind === "audiobook") return;
+  const assetId = config.cover.asset_id;
+  if (!assetId) return;
+  const sourcePdfVersion = uploadedCoverVersion(config);
+  const { data, error } = await sb.from("assets").select("id,storage_path,mime_type,size_bytes,checksum,status,requires_approval,deleted_at")
+    .eq("id", assetId).eq("workspace_id", workspaceId).maybeSingle();
+  if (error || !data || data.deleted_at || data.checksum === "pending"
+    || (sourcePdfVersion === undefined ? !String(data.mime_type).startsWith("image/") : (
+      data.mime_type !== "application/pdf" || !/^[a-f0-9]{64}$/iu.test(data.checksum)
+      || !Number.isSafeInteger(Number(data.size_bytes)) || Number(data.size_bytes) < 1 || Number(data.size_bytes) > 25 * 1024 * 1024
+      || ["archived", "rejected"].includes(data.status)
+    ))) {
+    throw new AppError(422, sourcePdfVersion === undefined ? "Choose a confirmed image from this workspace for the cover."
+      : "Choose a confirmed cover PDF of up to 25 MB from this workspace.");
+  }
+  await requireCurrentArtworkApproval(sb, data, sourcePdfVersion);
+}
+
+export function editionRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
+  const fetcher = options.fetcher ?? fetch;
+  app.get("/books/:bookId/editions", async (req) => {
+    const { bookId } = req.params as { bookId: string };
+    const sb = app.supabaseFactory(req.userToken);
+    await loadBook(sb, bookId, req.userId);
+    const { data, error } = await sb.from("editions").select("*").eq("book_id", bookId).order("created_at", { ascending: false });
+    if (error) throw new AppError(500, "Could not load editions.");
+    return { editions: data ?? [] };
+  });
+
+  app.post("/books/:bookId/editions", async (req, reply) => {
+    const { bookId } = req.params as { bookId: string };
+    const parsed = createSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "Check the edition settings.", { issues: parsed.error.issues });
+    const sb = app.supabaseFactory(req.userToken);
+    const { book } = await loadBook(sb, bookId, req.userId, true);
+    await validateCover(sb, book.workspace_id, parsed.data.config);
+    const { data, error } = await sb.from("editions").insert({
+      book_id: bookId,
+      type: parsed.data.config.kind,
+      trim_size: parsed.data.config.kind === "print" ? parsed.data.config.trim_size : null,
+      language: parsed.data.language,
+      edition_metadata_json: parsed.data.config,
+      status: "draft",
+    }).select("*").single();
+    if (error || !data) throw new AppError(500, "Could not create edition.");
+    await logActivity(sb, { workspaceId: book.workspace_id, actorId: req.userId, eventType: "edition_created", entityType: "edition", entityId: data.id, payload: { type: data.type } });
+    return reply.status(201).send(data);
+  });
+
+  app.get("/editions/:editionId", async (req) => {
+    const { editionId } = req.params as { editionId: string };
+    const sb = app.supabaseFactory(req.userToken);
+    const edition = await loadEdition(sb, editionId);
+    await loadBook(sb, edition.book_id, req.userId);
+    return edition;
+  });
+
+  app.patch("/editions/:editionId", async (req) => {
+    const { editionId } = req.params as { editionId: string };
+    const parsed = updateSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "Check the edition settings.", { issues: parsed.error.issues });
+    const sb = app.supabaseFactory(req.userToken);
+    const edition = await loadEdition(sb, editionId);
+    const { book } = await loadBook(sb, edition.book_id, req.userId, true);
+    if (parsed.data.config) await validateCover(sb, book.workspace_id, parsed.data.config);
+    let updatedAt: string;
+    try { updatedAt = nextEditionTimestamp(parsed.data.expectedUpdatedAt, Date.now()); }
+    catch { throw new AppError(422, "The saved edition timestamp is invalid. Reload before saving."); }
+    const update: Record<string, unknown> = { updated_at: updatedAt };
+    if (parsed.data.config) {
+      update.type = parsed.data.config.kind;
+      update.trim_size = parsed.data.config.kind === "print" ? parsed.data.config.trim_size : null;
+      update.edition_metadata_json = parsed.data.config;
+    }
+    if (parsed.data.language) update.language = parsed.data.language;
+    if (parsed.data.status) update.status = parsed.data.status;
+    const { data, error } = await sb.from("editions").update(update).eq("id", editionId)
+      .eq("updated_at", parsed.data.expectedUpdatedAt).select("*").maybeSingle();
+    if (error) throw new AppError(500, "Could not update edition.");
+    if (!data) throw new AppError(409, "This edition changed. Reload before saving.");
+    await logActivity(sb, { workspaceId: book.workspace_id, actorId: req.userId, eventType: "edition_updated", entityType: "edition", entityId: editionId, payload: { status: data.status, type: data.type } });
+    return data;
+  });
+
+  app.post("/editions/:editionId/render", async (req, reply) => {
+    const { editionId } = req.params as { editionId: string };
+    const parsed = renderSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "Add a valid render request key.", { issues: parsed.error.issues });
+
+    const user = app.supabaseFactory(req.userToken);
+    const edition = await loadEdition(user, editionId);
+    const { book } = await loadBook(user, edition.book_id, req.userId, true);
+    const configResult = editionConfigSchema.safeParse(edition.edition_metadata_json);
+    if (!configResult.success || configResult.data.kind !== edition.type) {
+      throw new AppError(422, "This edition has invalid settings. Save the edition before rendering.");
+    }
+    const config = configResult.data;
+    if (config.kind === "audiobook") {
+      throw new AppError(422, "Use audiobook generation for narration editions.", undefined, "audiobook_render_not_supported");
+    }
+    const service = app.supabaseFactory();
+    const { data: workspace, error: workspaceError } = await service.from("workspaces")
+      .select("organization_id").eq("id", book.workspace_id).maybeSingle();
+    if (workspaceError || !workspace) throw new AppError(404, "workspace not found");
+    const entitlement = await requireEntitlement(service, workspace.organization_id, "rendering");
+    if (entitlement.entitlements.rendering !== true) {
+      throw new AppError(422, "Your current plan does not include book rendering.", undefined, "rendering_not_in_plan");
+    }
+
+    const model = withEditionLanguage(await assembleBookModel(user, book), edition.language);
+    const modelSha256 = bookModelFingerprint(model);
+    const loadedImages = await loadRenderImages(
+      service,
+      book.workspace_id,
+      model.assets.map((asset) => asset.id),
+      config.cover.asset_id,
+      model.chapters.flatMap((chapter) => chapter.nodes),
+      uploadedCoverVersion(config),
+    );
+    const { artworkSnapshot, ...images } = loadedImages;
+    const imageSha256 = renderImagesFingerprint(loadedImages);
+    const jobId = randomUUID();
+    const { data: inserted, error: insertError } = await service.from("publishing_jobs").insert({
+      id: jobId,
+      book_id: book.id,
+      edition_id: editionId,
+      channel: "render",
+      status: "running",
+      request_json: { action: "render", editionUpdatedAt: edition.updated_at, bookModelSha256: modelSha256, imageSha256, artworkSnapshot },
+      idempotency_key: parsed.data.idempotencyKey,
+      created_by: req.userId,
+      started_at: new Date().toISOString(),
+    }).select("*").single();
+
+    if (insertError?.code === "23505") {
+      const { data: existing } = await service.from("publishing_jobs").select("*")
+        .eq("idempotency_key", parsed.data.idempotencyKey).eq("book_id", book.id)
+        .eq("created_by", req.userId).maybeSingle();
+      if (!existing) throw new AppError(409, "That render request key is already in use.");
+      const request = existing.request_json && typeof existing.request_json === "object" && !Array.isArray(existing.request_json)
+        ? existing.request_json as Record<string, unknown> : {};
+      if (request.action !== "render" || existing.edition_id !== editionId
+        || request.editionUpdatedAt !== edition.updated_at || request.bookModelSha256 !== modelSha256 || request.imageSha256 !== imageSha256) {
+        throw new AppError(409, "That render request key belongs to different saved book content or edition settings.");
+      }
+      if (existing.status !== "succeeded") throw new AppError(409, `That render request is already ${existing.status}.`);
+      reply.header("cache-control", "private, no-store");
+      return reply.status(200).send(await hydrateRenderResult(service, existing));
+    }
+    if (insertError || !inserted) throw new AppError(500, "Could not create the render job.");
+
+    const uploadedPaths: string[] = [];
+    let completionPersisted = false;
+    let completionAttempted = false;
+    try {
+      const baseUrl = (process.env.RENDERING_SERVICE_URL
+        ?? `http://127.0.0.1:${process.env.RENDERING_SERVICE_PORT ?? "8002"}`).replace(/\/$/u, "");
+      const response = await fetcher(`${baseUrl}/render`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(process.env.RENDERING_SERVICE_TOKEN || process.env.SERVICE_AUTH_TOKEN
+            ? { "x-service-token": process.env.RENDERING_SERVICE_TOKEN || process.env.SERVICE_AUTH_TOKEN! }
+            : {}),
+        },
+        body: JSON.stringify({ editionConfig: config, bookModel: model, ...images }),
+        redirect: "error",
+        signal: AbortSignal.timeout(150_000),
+      });
+      if (response.status === 422) {
+        const rejection = await boundedServiceText(response, 64_000, "The renderer rejection exceeded the supported size.").catch(() => "");
+        const qrFailure = config.cover.qr_code.enabled ? coverQrRendererFailure(rejection) : undefined;
+        if (qrFailure) throw new AppError(422, qrFailure.message, undefined, qrFailure.code);
+        if (uploadedCoverVersion(config) !== undefined) throw new AppError(422, "The print edition or uploaded cover could not be rendered. Run preflight for details.");
+        throw new AppError(422, "This saved edition needs a supported typography configuration. Run preflight to review the required changes.");
+      }
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => {});
+        throw new AppError(503, "The renderer could not complete this edition.");
+      }
+      const responseText = await boundedServiceText(response, 220_000_000, "The renderer response exceeded the supported size.");
+      let raw: unknown;
+      try { raw = JSON.parse(responseText); } catch { throw new AppError(503, "The renderer returned an invalid response."); }
+      const renderedResult = renderResponseSchema.safeParse(raw);
+      if (!renderedResult.success) throw new AppError(503, "The renderer returned an invalid response.");
+      const rendered = renderedResult.data;
+      const expectedFormat = config.kind === "ebook" ? "epub" : "pdf";
+      if (rendered.format !== expectedFormat) throw new AppError(503, "The renderer returned the wrong edition format.");
+
+      const primary = decodeArtifact(
+        rendered.artifactBase64,
+        rendered.sha256,
+        150 * 1024 * 1024,
+        expectedFormat === "epub" ? Buffer.from("PK") : Buffer.from("%PDF-"),
+        expectedFormat.toUpperCase(),
+      );
+      const artifacts: Record<string, unknown>[] = [];
+      const primaryId = randomUUID();
+      const primaryFilename = `book.${expectedFormat}`;
+      const primaryPath = `workspaces/${book.workspace_id}/assets/${primaryId}/v1/${primaryFilename}`;
+      artifacts.push({
+        assetId: primaryId,
+        storagePath: primaryPath,
+        filename: primaryFilename,
+        type: "rendered_book",
+        role: config.kind === "ebook" ? "rendered_ebook" : "rendered_print",
+        name: `${String(book.title).slice(0, 240)}.${expectedFormat}`,
+        mimeType: expectedFormat === "epub" ? "application/epub+zip" : "application/pdf",
+        sizeBytes: primary.length,
+        checksum: rendered.sha256.toLowerCase(),
+      });
+      const decodedCover = decodeRenderedCover(config, rendered, artworkSnapshot.assets.find(asset => asset.assetId === config.cover.asset_id)?.checksum);
+      if (decodedCover) {
+        const cover = decodedCover.bytes;
+        const coverId = randomUUID();
+        const coverPath = `workspaces/${book.workspace_id}/assets/${coverId}/v1/${decodedCover.filename}`;
+        artifacts.push({
+          assetId: coverId, storagePath: coverPath, filename: decodedCover.filename, type: "rendered_cover",
+          role: "rendered_cover", name: `${String(book.title).slice(0, 238)} cover`, mimeType: decodedCover.mimeType,
+          sizeBytes: cover.length, checksum: decodedCover.checksum,
+        });
+        (artifacts[1] as Record<string, unknown>).bytes = cover;
+      }
+      artifacts[0].bytes = primary;
+
+      for (const artifact of artifacts) {
+        const bytes = artifact.bytes as Buffer;
+        const { error: uploadError } = await service.storage.from(BUCKET).upload(String(artifact.storagePath), bytes, {
+          contentType: String(artifact.mimeType), upsert: false,
+        });
+        if (uploadError) throw new AppError(503, "A rendered artifact could not be stored.");
+        uploadedPaths.push(String(artifact.storagePath));
+        delete artifact.bytes;
+      }
+
+      const usage = {
+        renderedBytes: artifacts.reduce((sum, artifact) => sum + Number(artifact.sizeBytes), 0),
+        illustrationCount: model.assets.length,
+        ...decodedCover?.usage,
+      };
+      await assertRenderImagesCurrent(service, book.workspace_id, model.assets.map(asset => asset.id), config.cover.asset_id,
+        model.chapters.flatMap(chapter => chapter.nodes), imageSha256, uploadedCoverVersion(config));
+      completionAttempted = true;
+      const { data: completed, error: completeError } = await service.rpc("complete_render_job", {
+        p_job_id: jobId,
+        p_artifacts: artifacts,
+        p_renderer_version: rendered.rendererVersion,
+        p_usage: usage,
+      });
+      let completedJob = Array.isArray(completed) ? completed[0] : completed;
+      if (completeError || !completedJob) {
+        const { data: recovered, error: recoveryError } = await service.from("publishing_jobs").select("*").eq("id", jobId).maybeSingle();
+        if (!recoveryError && recovered?.status === "succeeded") completedJob = recovered;
+        else {
+          throw new AppError(503, "Render completion is unconfirmed. Output files are retained; avoid starting another render until its status is resolved.");
+        }
+      }
+
+      completionPersisted = true;
+      reply.header("cache-control", "private, no-store");
+      return reply.status(201).send(await hydrateRenderResult(service, completedJob));
+    } catch (error) {
+      if (!completionPersisted && !completionAttempted) {
+        // Once completion has been dispatched, retain these private objects:
+        // a concurrent or delayed completion may still reference them.
+        if (uploadedPaths.length) await service.storage.from(BUCKET).remove(uploadedPaths);
+        const code = error instanceof AppError && savedCoverQrCorrection(error.code) ? error.code : "render_failed";
+        await failRenderJob(service, jobId, code);
+      }
+      if (completionAttempted && !completionPersisted) {
+        throw new AppError(503, "Render completion is unconfirmed. Output files are retained; avoid starting another render until its status is resolved.");
+      }
+      if (error instanceof AppError) throw error;
+      throw new AppError(503, "The renderer could not complete this edition. Nothing was saved or charged.");
+    }
+  });
+}

@@ -1,0 +1,104 @@
+{
+  "reviewedAt": "2026-11-19T20:55:19.892Z",
+  "releaseCommit": "a372c9335aadd0c03d684a5b52ddfdee812d4767",
+  "previousReleaseCommit": "5ea3281fdf453667601b9b7fc1d3c3def3a7f28d",
+  "publicDeployment": false,
+  "runtime": {
+    "url": "http://localhost:3001/",
+    "verifiedArchivePaths": 1301,
+    "verifiedFallbackPaths": 1293,
+    "liveBuildIdMatched": true,
+    "importWorkerOnSameCommit": true,
+    "priorSupervisorsExited": true,
+    "providerKeysPassed": false,
+    "assetLifecycleEnabled": false
+  },
+  "queues": {
+    "activeManuscriptImportsBeforeSwitch": 0,
+    "activePublishingBeforeSwitch": 0,
+    "activeAiBeforeSwitch": 0,
+    "activeAudiobookExportsBeforeSwitch": 0,
+    "localRedisKeysBeforeSwitch": 0
+  },
+  "normalPortHealthChecks": {
+    "signIn": 200,
+    "processor8001": 200,
+    "processor8003": 200,
+    "processor8002": 200,
+    "processor8004": 200,
+    "apiHealth": 200,
+    "landing": 200,
+    "noSession": 401,
+    "workspaceRequiresAuth": 401,
+    "compiledJs": 200,
+    "apiReady1": 200,
+    "apiReady2": 200,
+    "apiReady3": 200,
+    "apiRemovedRequiresAuth": 401,
+    "webRemovedRequiresAuth": 401,
+    "apiGetStatusRequiresAuth": 401,
+    "apiSaveStatusRequiresAuth": 401,
+    "apiCloseRenderRequiresAuth": 401,
+    "webGetStatusRequiresAuth": 401,
+    "webSaveStatusRequiresAuth": 401,
+    "webCloseRenderRequiresOrigin": 403,
+    "webCloseRenderRequiresAuth": 401
+  },
+  "browser": [
+    {
+      "viewportWidth": 390,
+      "landing": true,
+      "signupLink": true,
+      "loginControls": true,
+      "pageContained": true,
+      "scriptErrors": 0
+    },
+    {
+      "viewportWidth": 1280,
+      "landing": true,
+      "signupLink": true,
+      "loginControls": true,
+      "pageContained": true,
+      "scriptErrors": 0
+    }
+  ],
+  "googleOAuth": {
+    "bookwormOAuthRoute": 200,
+    "supabaseAuthorization": 302,
+    "registeredGoogleOrigin": true,
+    "googleReturnsToSupabase": true,
+    "pkce": true,
+    "localReturn": "/dashboard",
+    "signedInHostedAcceptance": "pending"
+  },
+  "syntheticPrivateProcessing": {
+    "syntheticManuscriptScan": "clean",
+    "documentParser": "passed",
+    "privateAuthDenials": 4,
+    "paperbackPackages": [
+      {
+        "channel": "kdp",
+        "verifiedPageCount": 33,
+        "coverUnchanged": true,
+        "interiorUnchanged": true,
+        "wrongDimensionsRejected": true,
+        "preflightErrors": 0
+      },
+      {
+        "channel": "barnesnoble",
+        "verifiedPageCount": 33,
+        "coverUnchanged": true,
+        "interiorUnchanged": true,
+        "wrongDimensionsRejected": true,
+        "preflightErrors": 0
+      }
+    ]
+  },
+  "nativeSignedInWorkflow": {
+    "runId": 44605616778,
+    "environment": "disposable services",
+    "conclusion": "success",
+    "retailerPackages": 8
+  },
+  "publishBoundary": "Retailer ZIP generation verified. Retailer account submission and acceptance remain separate."
+}

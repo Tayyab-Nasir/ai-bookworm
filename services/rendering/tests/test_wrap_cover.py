@@ -1,0 +1,290 @@
+import base64
+import copy
+import hashlib
+import importlib.util
+import io
+import json
+import sys
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from PIL import Image
+from pypdf import PdfReader, PdfWriter
+from reportlab.pdfgen.canvas import Canvas
+
+RENDERING = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RENDERING))
+from editions import PrintEdition
+from wrap_cover import UPLOADED_VERSION, prepare_wrap_cover, render_wrap_cover, validate_wrap_pdf, wrap_geometry
+from preflight import run_preflight
+from rules import load_ruleset
+
+BOOK = json.loads((RENDERING.parents[1] / "tests/fixtures/books/valid_book.json").read_text())
+COVER_ID = "77777777-7777-4777-8777-777777777777"
+
+
+def interior(count=100):
+    writer = PdfWriter()
+    for _ in range(count):
+        writer.add_blank_page(432, 648)
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+def artwork():
+    output = io.BytesIO()
+    Image.new("RGB", (1800, 2700), "#235763").save(output, "PNG")
+    return output.getvalue()
+
+
+def edition(**settings):
+    return PrintEdition.model_validate({"kind": "print", "cover": {"asset_id": COVER_ID},
+        "wrap_cover": {"enabled": True, "back_text": "A story about caf\u00e9s & friendship.", **settings}})
+
+
+def finished_cover(config, count):
+    output = io.BytesIO()
+    width, height, _ = wrap_geometry(config, count)
+    canvas = Canvas(output, pagesize=(width * 72, height * 72), invariant=1)
+    canvas.setTitle("Author's original cover")
+    canvas.setFillColorCMYK(0.3, 0, 0, 0.6)
+    canvas.rect(0, 0, width * 72, height * 72, stroke=0, fill=1)
+    canvas.showPage()
+    canvas.save()
+    return output.getvalue()
+
+
+def test_finished_cover_keeps_original_bytes_and_requires_current_page_count():
+    config = edition(source_pdf_version=2)
+    source = finished_cover(config, 100)
+    assert prepare_wrap_cover(source, interior(), config) == (source, hashlib.sha256(source).hexdigest())
+    with pytest.raises(ValueError, match="cover dimensions"):
+        prepare_wrap_cover(source, interior(110), config)
+    with pytest.raises(ValueError, match="readable paperback cover PDF"):
+        prepare_wrap_cover(artwork(), interior(), config)
+
+
+@pytest.mark.parametrize("change, message", [
+    (lambda writer: writer.add_attachment("proof-notes.txt", b"Fixture notes"), "without forms"),
+    (lambda writer: writer.encrypt("test-password"), "one unencrypted page"),
+    (lambda writer: writer.add_blank_page(432, 648), "one unencrypted page"),
+    (lambda writer: writer.pages[0].pop("/Contents"), "no print content"),
+])
+def test_finished_cover_requires_a_flattened_single_page(change, message):
+    config = edition(source_pdf_version=2)
+    writer = PdfWriter(clone_from=io.BytesIO(finished_cover(config, 100)))
+    change(writer)
+    output = io.BytesIO()
+    writer.write(output)
+    with pytest.raises(ValueError, match=message):
+        validate_wrap_pdf(output.getvalue(), interior(), config)
+
+
+def test_wrap_dimensions_fonts_color_text_and_checksum():
+    config = edition(profile="kdp-cream", spine_text="The Fixture")
+    pdf, checksum = render_wrap_cover(artwork(), interior(), config)
+    assert render_wrap_cover(artwork(), interior(), config) == (pdf, checksum)
+    reader = PdfReader(io.BytesIO(pdf))
+    assert len(reader.pages) == 1 and not reader.is_encrypted
+    page = reader.pages[0]
+    assert float(page.mediabox.width) == pytest.approx((12 + 0.25 + 0.25) * 72)
+    assert float(page.mediabox.height) == pytest.approx(9.25 * 72)
+    assert "caf\u00e9s & friendship" in page.extract_text()
+    assert "The Fixture" in page.extract_text()
+    for ref in page["/Resources"]["/Font"].values():
+        assert "/FontFile2" in ref.get_object()["/FontDescriptor"]
+    for ref in page["/Resources"]["/XObject"].values():
+        assert ref.get_object()["/ColorSpace"] == "/DeviceCMYK"
+    validate_wrap_pdf(pdf, interior(), config)
+
+
+@pytest.mark.parametrize("channel", ["kdp", "lulu"])
+def test_assigned_isbn_barcode_has_the_expected_modules_in_the_printed_cover(channel):
+    import pypdfium2 as pdfium
+
+    config = edition(profile="custom", expected_page_count=100).model_dump()
+    config["isbn13"] = "978-0-000-00000-2"
+    config["wrap_cover"]["barcode"] = channel
+    edition_config = PrintEdition.model_validate(config)
+    pages = interior()
+    pdf, checksum = render_wrap_cover(artwork(), pages, edition_config)
+    assert render_wrap_cover(artwork(), pages, edition_config) == (pdf, checksum)
+    validate_wrap_pdf(pdf, pages, edition_config)
+
+    # Sample the EAN-13 modules at print scale using an independent PDF renderer.
+    box_width, box_height = (2.5, 1.7) if channel == "lulu" else (2, 1.2)
+    module = (144 / 113) if channel == "lulu" else (0.33 * 72 / 25.4)
+    left = (0.125 + 6 - box_width - 0.25) * 72
+    first_bar = left + (box_width * 72 - 113 * module) / 2 + 9 * module
+    bottom = (0.125 + 0.25) * 72
+    with pdfium.PdfDocument(pdf) as document:
+        proof = document[0].render(scale=4).to_pil().convert("L")
+    y = round(proof.height - (bottom + box_height * 36) * 4)
+    bits = "".join("1" if proof.getpixel((round((first_bar + (i + 0.5) * module) * 4), y)) < 128 else "0"
+                   for i in range(95))
+    expected = "101" "0111011" "0001001" "0100111" "0001101" "0100111" "0001101" "01010" + "1110010" * 5 + "1101100" "101"
+    assert bits == expected
+    assert proof.getpixel((round((left + 1) * 4), y)) > 245  # White quiet area, inside the trim.
+
+
+def test_page_count_controls_spine_and_custom_template_cannot_go_stale():
+    assert wrap_geometry(edition(profile="kdp-white"), 100)[2] == pytest.approx(0.2252)
+    assert wrap_geometry(edition(profile="kdp-premium-color"), 200)[2] == pytest.approx(0.4694)
+    custom = edition(profile="custom", expected_page_count=100, spine_width_in=0.4)
+    assert wrap_geometry(custom, 100)[2] == 0.4
+    with pytest.raises(ValueError, match="expects 100 pages"):
+        wrap_geometry(custom, 102)
+    with pytest.raises(ValueError, match="24-828"):
+        wrap_geometry(edition(), 10)
+    with pytest.raises(ValueError, match="template page count"):
+        edition(profile="custom")
+
+
+@pytest.mark.parametrize("profile,trim,minimum,maximum", [
+    ("kdp-white", "6x9", 24, 828),
+    ("kdp-cream", "6x9", 24, 776),
+    ("kdp-standard-color", "6x9", 72, 600),
+    ("kdp-premium-color", "6x9", 24, 828),
+    ("kdp-white", "8.5x11", 24, 590),
+    ("kdp-cream", "8.5x11", 24, 550),
+    ("kdp-standard-color", "8.5x11", 72, 600),
+    ("kdp-premium-color", "8.5x11", 24, 590),
+])
+def test_cover_rendering_applies_stock_limits_including_rounding(profile, trim, minimum, maximum):
+    config = edition(profile=profile)
+    config.trim_size = trim
+    assert wrap_geometry(config, minimum - 1) == wrap_geometry(config, minimum)
+    assert wrap_geometry(config, maximum - 1) == wrap_geometry(config, maximum)
+    for count in (minimum - 2, maximum + 1):
+        with pytest.raises(ValueError, match=f"{minimum}-{maximum} pages"):
+            wrap_geometry(config, count)
+
+
+def test_odd_manuscript_cover_uses_manufacturing_count_and_rejects_old_spine():
+    config = edition(profile="kdp-cream")
+    odd = interior(25)
+    cover, checksum = render_wrap_cover(artwork(), odd, config)
+    page = PdfReader(io.BytesIO(cover)).pages[0]
+    assert float(page.mediabox.width) == pytest.approx((12.25 + 26 * 0.0025) * 72)
+    assert render_wrap_cover(artwork(), interior(26), config) == (cover, checksum)
+    validate_wrap_pdf(cover, odd, config)
+    # Simulate an old artifact whose spine was calculated from 25 pages.
+    page.mediabox.upper_right = ((12.25 + 25 * 0.0025) * 72, 9.25 * 72)
+    writer = PdfWriter()
+    writer.add_page(page)
+    old = io.BytesIO()
+    writer.write(old)
+    with pytest.raises(ValueError, match="dimensions"):
+        validate_wrap_pdf(old.getvalue(), odd, config)
+
+
+def test_custom_printer_template_preserves_exact_odd_count():
+    config = edition(profile="custom", expected_page_count=25, spine_width_in=0.3)
+    assert wrap_geometry(config, 25)[2] == 0.3
+    with pytest.raises(ValueError, match="expects 25 pages"):
+        wrap_geometry(config, 26)
+
+
+@pytest.mark.parametrize("settings, message", [
+    ({"spine_text": "Title", "profile": "custom", "expected_page_count": 100, "spine_width_in": 0.05}, "too narrow"),
+    ({"back_text": "word " * 600}, "does not fit"),
+    ({"back_text": "\u6f22"}, "unsupported"),
+])
+def test_layout_refuses_unreadable_or_overflowing_text(settings, message):
+    with pytest.raises(ValueError, match=message):
+        render_wrap_cover(artwork(), interior(), edition(**settings))
+
+
+def test_stale_wrong_size_rotated_or_multi_page_cover_cannot_validate():
+    config = edition()
+    cover, _ = render_wrap_cover(artwork(), interior(), config)
+    with pytest.raises(ValueError, match="dimensions"):
+        validate_wrap_pdf(cover, interior(120), config)
+    with pytest.raises(ValueError, match="one unencrypted page"):
+        validate_wrap_pdf(interior(2), interior(), config)
+    writer = PdfWriter()
+    page = PdfReader(io.BytesIO(cover)).pages[0]
+    page.rotate(90)
+    writer.add_page(page)
+    rotated = io.BytesIO()
+    writer.write(rotated)
+    with pytest.raises(ValueError, match="dimensions"):
+        validate_wrap_pdf(rotated.getvalue(), interior(), config)
+    writer = PdfWriter()
+    page = PdfReader(io.BytesIO(cover)).pages[0]
+    page.cropbox.lower_left = (10, 10)
+    writer.add_page(page)
+    cropped = io.BytesIO()
+    writer.write(cropped)
+    with pytest.raises(ValueError, match="crop box"):
+        validate_wrap_pdf(cropped.getvalue(), interior(), config)
+
+
+def test_retail_preflight_requires_full_cover_and_matching_printer():
+    ctx = {"book": BOOK, "edition": {"kind": "print"}, "channel": "kdp"}
+    assert "PRINT_WRAP_REQUIRED" in {f.code for f in run_preflight(ctx, load_ruleset("kdp"))}
+    ctx["edition"] = edition().model_dump()
+    ctx["channel"] = "barnesnoble"
+    assert "PRINT_WRAP_PROFILE" in {f.code for f in run_preflight(ctx, load_ruleset("barnesnoble"))}
+
+
+def test_front_cover_checks_only_visible_glyphs_and_uses_print_resolution():
+    from cover_renderer import compose_front_cover
+    config = edition()
+    book = copy.deepcopy(BOOK)
+    book["metadata"]["title"] = "\u6f22"
+    with pytest.raises(ValueError, match="unsupported"):
+        compose_front_cover(artwork(), book, config)
+    config.cover.title_on_cover = False
+    rendered, _ = compose_front_cover(artwork(), book, config)
+    with Image.open(io.BytesIO(rendered)) as image:
+        assert image.size == (round(6.125 * 300), round(9.25 * 300))
+
+
+def test_render_service_returns_pdf_cover_and_preflight_returns_template_mismatch(monkeypatch):
+    spec = importlib.util.spec_from_file_location("bookworm_wrap_service", RENDERING / "main.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("RENDERING_SERVICE_TOKEN", "fixture-wrap-token")
+    config = edition(profile="custom", expected_page_count=3).model_dump()
+    from pdf_renderer import render_pdf
+    actual = len(PdfReader(io.BytesIO(render_pdf(BOOK, PrintEdition.model_validate(config))[0])).pages)
+    config["wrap_cover"]["expected_page_count"] = actual
+    payload = {"bookModel": BOOK, "editionConfig": config, "coverBase64": base64.b64encode(artwork()).decode()}
+    with TestClient(module.app) as client:
+        response = client.post("/render", headers={"x-service-token": "fixture-wrap-token"}, json=payload)
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["coverFormat"] == "pdf"
+        validate_wrap_pdf(base64.b64decode(result["coverArtifactBase64"]), base64.b64decode(result["artifactBase64"]), PrintEdition.model_validate(config))
+        config["wrap_cover"]["expected_page_count"] += 1
+        preflight = client.post("/preflight", headers={"x-service-token": "fixture-wrap-token"}, json=payload)
+        assert preflight.status_code == 200, preflight.text
+        assert "PRINT_WRAP_LAYOUT" in {f["code"] for f in preflight.json()["findings"]}
+
+
+def test_render_and_preflight_use_the_exact_uploaded_cover_pdf(monkeypatch):
+    from pdf_renderer import render_pdf
+
+    spec = importlib.util.spec_from_file_location("bookworm_uploaded_wrap_service", RENDERING / "main.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("RENDERING_SERVICE_TOKEN", "fixture-wrap-token")
+    print_pdf, _ = render_pdf(BOOK, PrintEdition())
+    pages = len(PdfReader(io.BytesIO(print_pdf)).pages)
+    config = edition(profile="custom", expected_page_count=pages, source_pdf_version=3)
+    cover = finished_cover(config, pages)
+    payload = {"bookModel": BOOK, "editionConfig": config.model_dump(), "coverBase64": base64.b64encode(cover).decode()}
+    headers = {"x-service-token": "fixture-wrap-token"}
+    with TestClient(module.app) as client:
+        rendered = client.post("/render", json=payload, headers=headers)
+        assert rendered.status_code == 200, rendered.text
+        assert rendered.json()["coverRendererVersion"] == UPLOADED_VERSION
+        assert base64.b64decode(rendered.json()["coverArtifactBase64"]) == cover
+        assert rendered.json()["coverSha256"] == hashlib.sha256(cover).hexdigest()
+        payload["editionConfig"]["wrap_cover"]["spine_width_in"] = 0.3
+        report = client.post("/preflight", json=payload, headers=headers)
+        assert report.status_code == 200, report.text
+        assert "PRINT_WRAP_LAYOUT" in {f["code"] for f in report.json()["findings"]}

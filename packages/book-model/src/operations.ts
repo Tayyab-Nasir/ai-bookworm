@@ -61,7 +61,7 @@ export const AttachAssetOp = z.object({
   type: z.literal("attach_asset"),
   payload: z.object({
     nodeId: z.string().min(1),
-    assetId: z.string().uuid(),
+    assetId: z.guid(),
     role: z.string(),
   }),
 });
@@ -69,7 +69,7 @@ export const AttachAssetOp = z.object({
 export const DetachAssetOp = z.object({
   ...envelope,
   type: z.literal("detach_asset"),
-  payload: z.object({ nodeId: z.string().min(1), assetId: z.string().uuid() }),
+  payload: z.object({ nodeId: z.string().min(1), assetId: z.guid() }),
 });
 
 export const SplitNodeOp = z.object({

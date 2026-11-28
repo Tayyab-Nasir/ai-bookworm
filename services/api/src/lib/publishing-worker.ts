@@ -1,0 +1,327 @@
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { AppError } from "../errors.js";
+import { assembleBookModel, bookModelFingerprint, loadBook } from "./authoring.js";
+import { currentEntitlements } from "./entitlements.js";
+import { boundedServiceText } from "./bounded-service-response.js";
+import { coverQrRendererFailure } from "./cover-qr-failure.js";
+import type { SupabaseClient } from "./supabase.js";
+import { artworkSnapshotSchema, renderImagesFingerprint, assertRenderImagesCurrent, printProofImageInputs } from "./render-images.js";
+import { decodeArtifact, decodeRenderedCover, editionConfigSchema, loadRenderImages, renderResponseSchema, uploadedCoverVersion, withEditionLanguage } from "../routes/editions.js";
+import {
+  assertSourceJob, assertSavedRenderedCoverPolicy, checkRenderedPackageInputs, decodePackage, loadRenderedPackageInputs, packageServiceResponseSchema,
+  PACKAGE_RENDER_PROOF_CHANGE,
+  preflightResponseSchema, readPackagePreflight, readSavedPreflightRender, savedPreflightSourcesSchema, verifyPreflightReport,
+} from "../routes/publishing.js";
+
+export const publishingActions = ["render", "validate", "export_package"] as const;
+export type PublishingAction = typeof publishingActions[number];
+const jobSchema = z.object({
+  id: z.guid(), book_id: z.guid(), edition_id: z.guid(),
+  created_by: z.guid(), channel: z.string(), lease_token: z.guid(),
+  request_json: z.object({
+    action: z.enum(publishingActions), editionUpdatedAt: z.string().datetime({ offset: true }),
+    bookModelSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    imageSha256: z.string().regex(/^[a-f0-9]{64}$/u), artworkSnapshot: artworkSnapshotSchema,
+    sourceRenderJobId: z.guid().optional(), sourcePreflightJobId: z.guid().optional(),
+  }).passthrough(),
+}).passthrough();
+type Job = z.infer<typeof jobSchema>;
+const BUCKET = "book-assets";
+
+export class WorkerFailure extends Error {
+  constructor(readonly code: string, readonly retryable: boolean) { super(code); }
+}
+
+function row(value: unknown): Record<string, unknown> | null {
+  const candidate = Array.isArray(value) ? value[0] : value;
+  return candidate && typeof candidate === "object" ? candidate as Record<string, unknown> : null;
+}
+
+export async function loadPublishingInputs(sb: SupabaseClient, job: Job) {
+  const { book } = await loadBook(sb, job.book_id, job.created_by, true);
+  const { data: edition, error } = await sb.from("editions").select("*")
+    .eq("id", job.edition_id).eq("book_id", job.book_id).maybeSingle();
+  if (error) throw new WorkerFailure("worker_database_unavailable", true);
+  const parsed = editionConfigSchema.safeParse(edition?.edition_metadata_json);
+  if (!edition || !parsed.success || parsed.data.kind !== edition.type
+    || Date.parse(edition.updated_at) !== Date.parse(job.request_json.editionUpdatedAt)) {
+    throw new WorkerFailure("worker_edition_changed", false);
+  }
+  const config = parsed.data;
+  if (config.kind === "audiobook") throw new WorkerFailure("worker_invalid_channel", false);
+  const formatChannels: Record<string, readonly string[]> = {
+    render: ["ebook", "print"], export: ["ebook", "print"], kdp: ["ebook", "print"],
+    apple: ["ebook"], barnesnoble: ["ebook", "print"], lulu: ["print"], googleplay: ["ebook"],
+  };
+  if (!formatChannels[job.channel]?.includes(config.kind)
+    || (job.request_json.action === "render" ? job.channel !== "render" : job.channel === "render")
+    || (job.request_json.action === "export_package" && job.channel === "export")) {
+    throw new WorkerFailure("worker_invalid_channel", false);
+  }
+  const { data: workspace, error: workspaceError } = await sb.from("workspaces").select("organization_id")
+    .eq("id", book.workspace_id).maybeSingle();
+  if (workspaceError) throw new WorkerFailure("worker_database_unavailable", true);
+  if (!workspace) throw new WorkerFailure("worker_workspace_missing", false);
+  const { entitlements } = await currentEntitlements(sb, workspace.organization_id);
+  if (job.request_json.action === "export_package") {
+    const entitlement = { kdp: "kdp", apple: "apple_books", barnesnoble: "barnes_noble", lulu: "lulu", googleplay: "google_play" }[job.channel];
+    if (!entitlement || !entitlements.publishing_channels.includes(entitlement)) throw new WorkerFailure("worker_plan_changed", false);
+  } else if (entitlements.rendering !== true) throw new WorkerFailure("worker_plan_changed", false);
+  const model = withEditionLanguage(await assembleBookModel(sb, book), edition.language);
+  if (bookModelFingerprint(model) !== job.request_json.bookModelSha256) throw new WorkerFailure("worker_book_changed", false);
+  return { book, config, model };
+}
+
+async function serviceRequest(fetcher: typeof fetch, kind: "RENDERING" | "PUBLISHING", path: string,
+  body: unknown, maxBytes: number, signal: AbortSignal, coverQrEnabled = false) {
+  const url = (process.env[`${kind}_SERVICE_URL`] ?? `http://127.0.0.1:${process.env[`${kind}_SERVICE_PORT`] ?? (kind === "RENDERING" ? "8002" : "8003")}`).replace(/\/$/u, "");
+  const token = process.env[`${kind}_SERVICE_TOKEN`] || process.env.SERVICE_AUTH_TOKEN;
+  const response = await fetcher(`${url}${path}`, {
+    method: "POST", headers: { "content-type": "application/json", ...(token ? { "x-service-token": token } : {}) },
+    body: JSON.stringify(body), redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(150_000)]),
+  });
+  if (response.status === 422) {
+    const body = coverQrEnabled ? await boundedServiceText(response, 64_000, "Renderer rejection exceeded the supported size.").catch(() => "") : "";
+    throw new WorkerFailure(coverQrRendererFailure(body)?.code ?? "worker_service_rejected_input", false);
+  }
+  if (!response.ok) throw new WorkerFailure("worker_service_unavailable", true);
+  if (Number(response.headers.get("content-length")) > maxBytes) throw new WorkerFailure("worker_response_too_large", false);
+  if (!response.body) throw new WorkerFailure("worker_invalid_response", true);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.length;
+      if (length > maxBytes) {
+        await reader.cancel();
+        throw new WorkerFailure("worker_response_too_large", false);
+      }
+      chunks.push(next.value);
+    }
+  } finally { reader.releaseLock(); }
+  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; }
+  catch { throw new WorkerFailure("worker_invalid_response", true); }
+}
+
+// This builds actual outputs; status is written only by the fenced SQL wrapper.
+export async function buildPublishingOutput(sb: SupabaseClient, job: Job, fetcher: typeof fetch,
+  signal: AbortSignal, uploadedPaths: string[]) {
+  const { book, config, model } = await loadPublishingInputs(sb, job);
+  let sourceJobs: { render: Record<string, unknown>; preflight: Record<string, unknown> } | undefined;
+  if (job.request_json.action === "export_package") {
+    const { sourceRenderJobId, sourcePreflightJobId } = job.request_json;
+    if (!sourceRenderJobId || !sourcePreflightJobId) throw new WorkerFailure("worker_invalid_source_jobs", false);
+    const [render, preflight] = await Promise.all([
+      sb.from("publishing_jobs").select("*").eq("id", sourceRenderJobId).maybeSingle(),
+      sb.from("publishing_jobs").select("*").eq("id", sourcePreflightJobId).maybeSingle(),
+    ]);
+    if (render.error || preflight.error) throw new WorkerFailure("worker_database_unavailable", true);
+    const source = { bookId: job.book_id, editionId: job.edition_id,
+      editionUpdatedAt: job.request_json.editionUpdatedAt, bookModelSha256: job.request_json.bookModelSha256 };
+    assertSourceJob(render.data, { ...source, action: "render", channel: "render" });
+    assertSourceJob(preflight.data, { ...source, action: "validate", channel: job.channel });
+    assertSavedRenderedCoverPolicy(config, render.data);
+    sourceJobs = { render: render.data!, preflight: preflight.data! };
+  }
+  const imageIds = model.assets.map(asset => asset.id);
+  const imageReferences = model.chapters.flatMap(chapter => chapter.nodes);
+  const sourcePdfVersion = uploadedCoverVersion(config);
+  const loadedImages = await loadRenderImages(sb, book.workspace_id, imageIds, config.cover.asset_id, imageReferences, sourcePdfVersion);
+  const { artworkSnapshot, ...images } = loadedImages;
+  const imageSha256 = renderImagesFingerprint(loadedImages);
+  if (job.request_json.imageSha256 !== imageSha256
+    || renderImagesFingerprint({ ...images, artworkSnapshot: job.request_json.artworkSnapshot }) !== imageSha256) {
+    throw new WorkerFailure("worker_artwork_changed", false);
+  }
+  const recheckImages = () => assertRenderImagesCurrent(sb, book.workspace_id, imageIds, config.cover.asset_id, imageReferences, imageSha256, sourcePdfVersion);
+  const artifacts: Record<string, unknown>[] = [];
+  async function upload(bytes: Buffer, filename: string, type: string, role: string, mimeType: string, checksum: string) {
+    signal.throwIfAborted();
+    const assetId = randomUUID();
+    const storagePath = `workspaces/${book.workspace_id}/assets/${assetId}/v1/${filename}`;
+    const { error } = await sb.storage.from(BUCKET).upload(storagePath, bytes, { contentType: mimeType, upsert: false });
+    if (error) throw new WorkerFailure("worker_storage_unavailable", true);
+    uploadedPaths.push(storagePath);
+    signal.throwIfAborted();
+    const artifact = {
+      assetId, storagePath, filename, type, role, name: `${String(book.title).slice(0, 220)} ${filename}`,
+      mimeType, sizeBytes: bytes.length, checksum: checksum.toLowerCase(),
+    };
+    artifacts.push(artifact);
+    return artifact;
+  }
+  const source = { bookId: job.book_id, editionId: job.edition_id,
+    editionUpdatedAt: job.request_json.editionUpdatedAt, bookModelSha256: job.request_json.bookModelSha256, imageSha256 };
+  if (job.request_json.action === "export_package") {
+    const { render, preflight } = sourceJobs!;
+    assertSourceJob(render, { ...source, action: "render", channel: "render" });
+    assertSourceJob(preflight, { ...source, action: "validate", channel: job.channel });
+    const validation = readPackagePreflight(preflight, job.channel);
+    if (!validation) throw new WorkerFailure("worker_preflight_failed", false);
+    const proof = validation.sourcePrint ?? validation.sourceEpub;
+    const artifactsBase64 = await loadRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, proof);
+    const raw = await serviceRequest(fetcher, "PUBLISHING", "/v1/publishing/package",
+      { channel: job.channel, editionConfig: config, bookModel: model, artifactsBase64,
+        ...printProofImageInputs(config.kind, model.chapters, images.assetImagesBase64),
+      }, 280_000_000, signal);
+    const parsed = packageServiceResponseSchema.safeParse(raw);
+    if (!parsed.success || parsed.data.channel !== job.channel || parsed.data.packages[0].path !== `${job.channel}-export.zip`) {
+      throw new WorkerFailure("worker_invalid_response", true);
+    }
+    const pkg = parsed.data.packages[0];
+    await recheckImages();
+    await checkRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, proof);
+    const artifact = await upload(decodePackage(pkg.dataBase64, pkg.sha256), pkg.path, "publishing_package", "publishing_package", "application/zip", pkg.sha256);
+    return { artifact, ruleVersion: parsed.data.ruleVersion, imageSha256 };
+  }
+  if (job.request_json.action === "validate") {
+    const sources = savedPreflightSourcesSchema.safeParse(job.request_json);
+    if (!sources.success) throw new WorkerFailure("worker_invalid_input", false);
+    const proof = sources.data.sourcePrint ?? sources.data.sourceEpub;
+    if (proof) {
+      if (job.channel === "export") throw new WorkerFailure("worker_invalid_channel", false);
+      const render = await readSavedPreflightRender(sb, source, proof);
+      const artifactsBase64 = await loadRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, proof);
+      const raw = await serviceRequest(fetcher, "PUBLISHING", "/v1/publishing/validate", {
+        channel: job.channel, editionConfig: config, bookModel: model, artifactsBase64,
+        ...printProofImageInputs(config.kind, model.chapters, images.assetImagesBase64),
+      }, 2_000_000, signal);
+      const report = verifyPreflightReport(raw, job.channel, sources.data);
+      await recheckImages();
+      await checkRenderedPackageInputs(sb, book.workspace_id, config.kind, render, config, proof);
+      return { ...report, imageSha256 };
+    }
+    const raw = await serviceRequest(fetcher, "RENDERING", "/preflight", {
+      editionConfig: config, bookModel: model, channel: job.channel === "export" ? null : job.channel, includeArtifact: true, ...images,
+    }, 2_000_000, signal);
+    const parsed = preflightResponseSchema.safeParse(raw);
+    if (!parsed.success || parsed.data.channel !== (job.channel === "export" ? null : job.channel)) throw new WorkerFailure("worker_invalid_response", true);
+    await recheckImages();
+    return { ...parsed.data, requestedChannel: job.channel, imageSha256 };
+  }
+  const raw = await serviceRequest(fetcher, "RENDERING", "/render", { editionConfig: config, bookModel: model, ...images },
+    220_000_000, signal, config.cover.qr_code.enabled);
+  const parsed = renderResponseSchema.safeParse(raw);
+  const format = config.kind === "ebook" ? "epub" : "pdf";
+  if (!parsed.success || parsed.data.format !== format) throw new WorkerFailure("worker_invalid_response", true);
+  const rendered = parsed.data;
+  const decodedCover = decodeRenderedCover(config, rendered, artworkSnapshot.assets.find(asset => asset.assetId === config.cover.asset_id)?.checksum);
+  const primary = decodeArtifact(rendered.artifactBase64, rendered.sha256, 150 * 1024 * 1024,
+    Buffer.from(format === "epub" ? "PK" : "%PDF-"), format);
+  await recheckImages();
+  await upload(primary, `book.${format}`, "rendered_book", config.kind === "ebook" ? "rendered_ebook" : "rendered_print",
+    format === "epub" ? "application/epub+zip" : "application/pdf", rendered.sha256);
+  if (decodedCover) {
+    await upload(decodedCover.bytes, decodedCover.filename, "rendered_cover", "rendered_cover", decodedCover.mimeType, decodedCover.checksum);
+  }
+  return { artifacts, rendererVersion: rendered.rendererVersion, imageSha256, usage: {
+    renderedBytes: artifacts.reduce((total, artifact) => total + Number(artifact.sizeBytes), 0), illustrationCount: model.assets.length,
+    ...decodedCover?.usage,
+  } };
+}
+
+export type WorkerOutcome = { status: "idle" | "succeeded" | "queued" | "failed" | "lease_lost" | "completion_unknown"; jobId?: string };
+
+export async function runOnePublishingJob(sb: SupabaseClient, options: {
+  actions?: PublishingAction[]; leaseSeconds?: number; fetcher?: typeof fetch;
+} = {}): Promise<WorkerOutcome> {
+  const leaseSeconds = options.leaseSeconds ?? 180;
+  const { data, error } = await sb.rpc("claim_publishing_job", {
+    p_actions: options.actions ?? [...publishingActions], p_lease_seconds: leaseSeconds,
+  });
+  if (error) throw new WorkerFailure("worker_claim_failed", true);
+  const claimed = row(data);
+  if (!claimed) return { status: "idle" };
+  const jobId = String(claimed.id);
+  const token = String(claimed.lease_token);
+  const abort = new AbortController();
+  let renewal: Promise<void> | undefined;
+  const heartbeat = setInterval(() => {
+    if (renewal) return;
+    renewal = (async () => {
+      try {
+        const result = await sb.rpc("renew_publishing_job_lease", { p_job_id: jobId, p_lease_token: token, p_lease_seconds: leaseSeconds });
+        if (result.error || result.data !== true) abort.abort(new WorkerFailure("worker_lease_lost", true));
+      } catch { abort.abort(new WorkerFailure("worker_lease_lost", true)); }
+    })().finally(() => { renewal = undefined; });
+  }, Math.floor(leaseSeconds * 1000 / 3));
+  heartbeat.unref();
+  const uploadedPaths: string[] = [];
+  let completionAttempted = false;
+  try {
+    const parsed = jobSchema.safeParse(claimed);
+    if (!parsed.success) throw new WorkerFailure("worker_invalid_input", false);
+    const { imageSha256, ...output } = await buildPublishingOutput(sb, parsed.data, options.fetcher ?? fetch, abort.signal, uploadedPaths);
+    // A long renderer call must not publish a stale current-edition result.
+    const current = await loadPublishingInputs(sb, parsed.data);
+    await assertRenderImagesCurrent(sb, current.book.workspace_id, current.model.assets.map(asset => asset.id), current.config.cover.asset_id,
+      current.model.chapters.flatMap(chapter => chapter.nodes), imageSha256, uploadedCoverVersion(current.config));
+    abort.signal.throwIfAborted();
+    completionAttempted = true;
+    const completed = await sb.rpc("complete_leased_publishing_job", { p_job_id: jobId, p_lease_token: token, p_result: output });
+    if (completed.error || row(completed.data)?.status !== "succeeded") {
+      // Only the guard's allowlisted detail distinguishes stale inputs from
+      // lease fencing. Never expose or classify using arbitrary SQL messages.
+      if (completed.error?.code === "42501") throw new WorkerFailure("worker_permission_changed", false);
+      if (completed.error?.code === "22023") throw new WorkerFailure("worker_invalid_input", false);
+      if (completed.error?.code === "40001" && ["bookworm_publishing_snapshot_changed", PACKAGE_RENDER_PROOF_CHANGE].includes(completed.error.details ?? "")) {
+        throw new WorkerFailure("worker_inputs_changed", false);
+      }
+      throw new WorkerFailure(completed.error?.code === "40001" ? "worker_lease_lost" : "worker_completion_failed", true);
+    }
+    return { status: "succeeded", jobId };
+  } catch (error) {
+    if (completionAttempted) {
+      // A lost HTTP reply may follow a committed transaction. Never remove its
+      // objects unless a subsequent authoritative read proves they are unused.
+      try {
+        const recovered = await sb.from("publishing_jobs").select("status,lease_token,response_json").eq("id", jobId).maybeSingle();
+        if (recovered.error || !recovered.data) return { status: "completion_unknown", jobId };
+        if (recovered.data.status === "succeeded" && recovered.data.lease_token === token) return { status: "succeeded", jobId };
+      } catch { return { status: "completion_unknown", jobId }; }
+    }
+    if (abort.signal.aborted || (error instanceof WorkerFailure && error.code === "worker_lease_lost")) {
+      // A delayed completion may still be in flight. Leave its bytes for reconciliation.
+      if (!completionAttempted && uploadedPaths.length) {
+        try { await sb.storage.from(BUCKET).remove(uploadedPaths); } catch { /* Private orphan cleanup is operational maintenance. */ }
+      }
+      return { status: "lease_lost", jobId };
+    }
+    const failure = error instanceof WorkerFailure ? error
+      : error instanceof AppError && error.code === "cover_metadata_policy_unsupported" ? new WorkerFailure("worker_cover_policy_unsupported", false)
+      : error instanceof AppError ? new WorkerFailure(error.status < 500 ? "worker_input_rejected" : "worker_dependency_failed", error.status >= 500)
+        : new WorkerFailure("worker_execution_failed", true);
+    const failed = await sb.rpc("fail_leased_publishing_job", {
+      p_job_id: jobId, p_lease_token: token, p_error_code: failure.code, p_retryable: failure.retryable,
+    });
+    if (failed.error?.code === "40001") {
+      // The completion may have won the row lock after our earlier read.
+      if (completionAttempted) {
+        try {
+          const recovered = await sb.from("publishing_jobs").select("status,lease_token,response_json").eq("id", jobId).maybeSingle();
+          if (!recovered.error && recovered.data?.status === "succeeded" && recovered.data.lease_token === token) {
+            return { status: "succeeded", jobId };
+          }
+        } catch { /* Lease loss still requires reconciliation. */ }
+      }
+      return { status: "lease_lost", jobId };
+    }
+    const failedJob = row(failed.data);
+    if (failed.error || !failedJob || failedJob.id !== jobId || !["queued", "failed"].includes(String(failedJob.status))) {
+      throw new WorkerFailure("worker_failure_persistence_failed", true);
+    }
+    // The failure transaction fences the lease before cleanup. A delayed
+    // completion can no longer commit after this successful transition.
+    if (uploadedPaths.length) {
+      try { await sb.storage.from(BUCKET).remove(uploadedPaths); } catch { /* Private orphan cleanup is operational maintenance. */ }
+    }
+    return { status: failedJob.status === "queued" ? "queued" : "failed", jobId };
+  } finally {
+    clearInterval(heartbeat);
+    await renewal;
+  }
+}

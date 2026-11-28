@@ -15,7 +15,7 @@
             "operationId": "op-1",
             "type": "replace_text",
             "target": {"chapterId": "00000000-0000-0000-0000-000000000001", "nodeId": "n1"},
-            "payload": {"from": 15, "to": 19, "text": "its"},
+            "payload": {"nodeId": "n1", "from": 15, "to": 19, "text": "its"},
             "expectedVersion": 1
           },
           "rationale": "Possessive 'its' takes no apostrophe.",

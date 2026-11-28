@@ -1,0 +1,694 @@
+import assert from "node:assert/strict";
+import { afterEach, beforeEach, test } from "node:test";
+import { NextRequest, type NextResponse } from "next/server";
+import { POST } from "../app/api/auth/[action]/route";
+import { GET as session } from "../app/api/auth/session/route";
+import { GET as backendGet, POST as backendPost, PUT as backendPut, PATCH as backendPatch, DELETE as backendDelete } from "../app/api/backend/[...path]/route";
+import { GET as callback } from "../app/auth/callback/route";
+import { safeNext, sameOrigin } from "../lib/auth/policy";
+import { appOrigin } from "../lib/auth/server";
+
+const originalFetch = globalThis.fetch;
+const originalEnv = { ...process.env };
+const user = { id: "11111111-1111-4111-8111-111111111111", aud: "authenticated", role: "authenticated", email: "author@example.test", app_metadata: {}, user_metadata: { display_name: "Test author" }, created_at: "2026-01-01T00:00:00Z" };
+const token = (expires = 3600) => `${Buffer.from('{"alg":"HS256","typ":"JWT"}').toString("base64url")}.${Buffer.from(JSON.stringify({ sub: user.id, exp: Math.floor(Date.now() / 1000) + expires, aud: "authenticated" })).toString("base64url")}.fixture-signature`;
+const authSession = (expires = 3600) => ({ access_token: token(expires), refresh_token: "fixture-refresh-token", token_type: "bearer", expires_in: expires, expires_at: Math.floor(Date.now() / 1000) + expires, user });
+let provider: (url: URL, init?: RequestInit) => Response | Promise<Response>;
+const calls: { url: string; headers: Headers }[] = [];
+
+beforeEach(() => {
+  Object.assign(process.env, { NODE_ENV: "test", APP_URL: "http://localhost:3000", SUPABASE_URL: "http://auth.example.test", SUPABASE_ANON_KEY: "fixture-anon-key", API_URL: "https://api.example.test" });
+  delete process.env.SUPABASE_PUBLISHABLE_KEY;
+  calls.length = 0;
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/settings") return Response.json({ external: { google: true } });
+    if (url.pathname === "/auth/v1/token") return Response.json(authSession());
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    if (url.pathname === "/auth/v1/logout") return new Response(null, { status: 204 });
+    if (url.pathname === "/auth/v1/recover") return Response.json({});
+    throw new Error(`Unexpected fixture request: ${url.pathname}`);
+  };
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    calls.push({ url: url.href, headers: new Headers(init?.headers) });
+    return provider(url, init);
+  };
+});
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
+  Object.assign(process.env, originalEnv);
+});
+
+function request(action: string, body: unknown, cookie?: string, origin = "http://localhost:3000") {
+  return new NextRequest(`http://localhost:3000/api/auth/${action}`, { method: "POST", headers: { origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+}
+const invoke = (action: string, body: unknown, cookie?: string) => POST(request(action, body, cookie), { params: Promise.resolve({ action }) });
+const cookies = (response: NextResponse) => response.cookies.getAll().map(({ name, value }) => `${name}=${value}`).join("; ");
+const login = () => invoke("login", { email: user.email, password: "fixture-password" });
+
+test("session preserves its public identity and reports only a safe configured Storage origin", async () => {
+  process.env.SUPABASE_URL = "https://auth.example.test";
+  const signedIn = await login();
+  const response = await session(new NextRequest("http://localhost:3000/api/auth/session", { headers: { cookie: cookies(signedIn) } }));
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.deepEqual(result.user, { id: user.id, email: user.email, displayName: "Test author" });
+  assert.equal(result.storageOrigin, "https://auth.example.test");
+  assert.doesNotMatch(JSON.stringify(result), /fixture-anon-key|access_token|refresh_token/);
+});
+
+test("workspace reads, creation and admin access preserve optional actor fences before forwarding", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const upstream = "https://api.example.test/v1/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  for (const [path, method, handler] of [
+    [["v1", "workspaces"], "GET", backendGet], [["v1", "workspaces"], "POST", backendPost],
+    [["v1", "workspaces", "invitations", "accept"], "POST", backendPost],
+    [["v1", "referrals", "code"], "GET", backendGet], [["v1", "referrals"], "GET", backendGet],
+    [["v1", "referrals", "ledger"], "GET", backendGet], [["v1", "referrals", "claim"], "POST", backendPost],
+    [["v1", "dashboard"], "GET", backendGet], [["v1", "admin", "access"], "GET", backendGet],
+    [["v1", "books", "11111111-1111-4111-8111-111111111111", "editions"], "POST", backendPost],
+    [["v1", "books", "11111111-1111-4111-8111-111111111111", "editions"], "GET", backendGet],
+    [["v1", "editions", "11111111-1111-4111-8111-111111111111"], "PATCH", backendPatch],
+  ] as const) {
+    for (const [actor, status] of [[undefined, 200], ["", 422], ["invalid", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor === undefined ? {} : { "x-bookworm-actor": actor }) },
+      }), { params: Promise.resolve({ path: [...path] }) });
+      assert.equal(response.status, status);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + (status === 200 ? 1 : 0));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), actor ?? null);
+      assert.match(response.headers.get("cache-control")!, /no-store/);
+    }
+  }
+});
+
+test("actor-bound logout refuses a different account without invoking sign-out", async () => {
+  const signedIn = await login();
+  for (const [actor, status] of [["invalid", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+    const before = calls.filter(call => new URL(call.url).pathname === "/auth/v1/logout").length;
+    const input = request("logout", {}, cookies(signedIn)); input.headers.set("x-bookworm-actor", actor);
+    const response = await POST(input, { params: Promise.resolve({ action: "logout" }) });
+    assert.equal(response.status, status);
+    assert.equal(calls.filter(call => new URL(call.url).pathname === "/auth/v1/logout").length, before + (status === 200 ? 1 : 0));
+    if (status !== 200) assert.equal(response.cookies.getAll().some(cookie => cookie.maxAge === 0), false);
+  }
+});
+
+test("AI connection reads, writes and recovery always require the original actor at the cookie proxy", async () => {
+  process.env.API_URL = "https://api.example.test";
+  const signedIn = await login(), authProvider = provider, upstream = "https://api.example.test/v1/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  for (const [suffix, method, handler] of [[[], "GET", backendGet], [["openai"], "PUT", backendPut], [["openai"], "DELETE", backendDelete], [["openai", "check"], "POST", backendPost], [["openai", "close"], "POST", backendPost]] as const) {
+    const path = ["v1", "account", "ai-connections", ...suffix];
+    for (const [actor, status] of [[undefined, 422], ["invalid", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, { method,
+        headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) } }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, status); const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + (status === 200 ? 1 : 0));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+      assert.match(response.headers.get("cache-control")!, /no-store/);
+    }
+  }
+});
+
+test("AI keys are never forwarded to a non-loopback plaintext API service", async () => {
+  process.env.API_URL = "http://api.example.test";
+  const signedIn = await login();
+  const response = await backendPut(new NextRequest("http://localhost:3000/api/backend/v1/account/ai-connections/openai", { method: "PUT",
+    headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", "x-bookworm-actor": user.id, "content-type": "application/json" },
+    body: JSON.stringify({ apiKey: "synthetic-private-api-key" }) }), { params: Promise.resolve({ path: ["v1", "account", "ai-connections", "openai"] }) });
+  assert.equal(response.status, 503); assert.match((await response.json()).error.message, /require HTTPS/);
+  assert.equal(calls.some(call => new URL(call.url).hostname === "api.example.test"), false);
+});
+
+test("customer AI preparation, confirmation and recovery require actor and HTTPS before forwarding", async () => {
+  const signedIn = await login(), authProvider = provider;
+  provider = (url, init) => url.hostname === "api.example.test" ? Response.json({ accepted: true }) : authProvider(url, init);
+  for (const action of ["options", "prepare", "status", "confirm", "cancel", "recover", "close"]) {
+    const path = ["v1", "account", "customer-ai", action];
+    for (const [actor, status] of [[undefined, 422], ["invalid", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      process.env.API_URL = "https://api.example.test";
+      const before = calls.filter(c => new URL(c.url).hostname === "api.example.test").length;
+      const req = () => new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, { method: "POST",
+        headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) } });
+      assert.equal((await backendPost(req(), { params: Promise.resolve({ path }) })).status, status);
+      assert.equal(calls.filter(c => new URL(c.url).hostname === "api.example.test").length, before + (status === 200 ? 1 : 0));
+      if (actor === user.id) {
+        process.env.API_URL = "http://api.example.test";
+        assert.equal((await backendPost(req(), { params: Promise.resolve({ path }) })).status, 503);
+        assert.equal(calls.filter(c => new URL(c.url).hostname === "api.example.test").length, before + 1);
+      }
+    }
+  }
+});
+
+test("source passage proxy requires a current session and same-origin request and keeps text private", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const path = ["v1", "books", "88888888-8888-4888-8888-888888888888", "search", "evidence"];
+  const upstream = `https://api.example.test/${path.join("/")}`;
+  const citation = { chapterId: user.id, documentVersionId: user.id, nodeId: "p1", chunkIndex: 0, textHash: "a".repeat(32) };
+  let forwarded = 0;
+  provider = (url, init) => {
+    if (url.href !== upstream) return authProvider(url, init);
+    forwarded++; assert.equal(init?.method, "POST");
+    const body = init?.body instanceof Uint8Array ? new TextDecoder().decode(init.body) : String(init?.body);
+    assert.deepEqual(JSON.parse(body), citation);
+    assert.match(new Headers(init?.headers).get("authorization")!, /^Bearer /);
+    return Response.json({ text: "Saved source" });
+  };
+  for (const [cookie, origin, status] of [[undefined, "http://localhost:3000", 401],
+    [cookies(signedIn), "https://foreign.example", 403], [cookies(signedIn), "http://localhost:3000", 200]] as const) {
+    const response = await backendPost(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+      method: "POST", headers: { origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(citation),
+    }), { params: Promise.resolve({ path }) });
+    assert.equal(response.status, status); assert.match(response.headers.get("cache-control")!, /no-store/);
+  }
+  assert.equal(forwarded, 1);
+});
+
+test("manual Book Bible requests preserve their expected actor and reject account crossover before forwarding", async () => {
+  const signedIn = await login();
+  const authProvider = provider;
+  const upstream = "https://api.example.test/v1/books/88888888-8888-4888-8888-888888888888/bible";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  const cases = [
+    { method: "POST", suffix: "", handler: backendPost },
+    { method: "PUT", suffix: "/33333333-3333-4333-8333-333333333333", handler: backendPut },
+    { method: "DELETE", suffix: "/33333333-3333-4333-8333-333333333333", handler: backendDelete },
+    { method: "GET", suffix: "/requests/22222222-2222-4222-8222-222222222222", handler: backendGet },
+    { method: "POST", suffix: "/requests/22222222-2222-4222-8222-222222222222/close", handler: backendPost },
+  ];
+  for (const current of cases) {
+    const path = ["v1", "books", "88888888-8888-4888-8888-888888888888", "bible", ...current.suffix.split("/").filter(Boolean)];
+    for (const [actor, status] of [[undefined, 422], ["not-an-id", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await current.handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method: current.method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) },
+      }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, status);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + (status === 200 ? 1 : 0));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+      assert.match(response.headers.get("cache-control")!, /no-store/);
+    }
+  }
+});
+
+test("manual manuscript recovery and actor-bound saves refuse account crossover", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const upstream = "https://api.example.test/v1/chapters/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  const root = ["v1", "chapters", "88888888-8888-4888-8888-888888888888"];
+  const operation = "22222222-2222-4222-8222-222222222222";
+  for (const [suffix, method, handler, missingStatus] of [
+    [["manual-saves", operation], "GET", backendGet, 422],
+    [["manual-saves", operation, "close"], "POST", backendPost, 422],
+    [["title"], "GET", backendGet, 422],
+    [["title-changes", operation], "GET", backendGet, 422],
+    [["title-changes", operation], "PUT", backendPut, 422],
+    [["title-changes", operation, "close"], "POST", backendPost, 422],
+    [["versions", operation, "restore"], "GET", backendGet, 422],
+    [["versions", operation, "restore"], "POST", backendPost, 422],
+    [["document"], "PUT", backendPut, 200],
+  ] as const) {
+    const path = [...root, ...suffix];
+    for (const [actor, expected] of [[undefined, missingStatus], ["bad", 422], [operation, 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, { method,
+        headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) } }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, expected);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + Number(expected === 200));
+      if (expected === 200 && actor) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), actor);
+    }
+  }
+});
+
+test("web chapter creation and reorder require the original actor", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const upstream = "https://api.example.test/v1/books/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  const root = ["v1", "books", "88888888-8888-4888-8888-888888888888", "chapters"];
+  for (const [suffix, method, handler] of [[[], "POST", backendPost], [["order"], "PUT", backendPut]] as const) {
+    const path = [...root, ...suffix];
+    for (const [actor, expected] of [[undefined, 422], ["bad", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, { method,
+        headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) } }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, expected);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + Number(expected === 200));
+      if (expected === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+    }
+  }
+});
+
+test("redirects stay inside author routes and same-origin is required", () => {
+  for (const path of ["https://evil.test", "//evil.test", "/\\evil.test", "/%5cevil.test", "/%0aevil", "/auth/callback", "/api/backend/v1/books"]) assert.equal(safeNext(path), "/dashboard");
+  assert.equal(safeNext("/books/123?tab=writing"), "/books/123?tab=writing");
+  assert.equal(safeNext("/admin"), "/admin");
+  assert.equal(sameOrigin(request("login", {}), "http://localhost:3000"), true);
+  assert.equal(sameOrigin(request("login", {}, undefined, "http://evil.test"), "http://localhost:3000"), false);
+});
+
+test("retailer create, recovery and closure bind the original account before forwarding", async () => {
+  const signedIn = await login(); const authProvider = provider;
+  const upstream = "https://api.example.test/v1/publishing/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ job: null }) : authProvider(url, init);
+  for (const [suffix, method, handler] of [["jobs", "POST", backendPost], ["requests/22222222-2222-4222-8222-222222222222", "GET", backendGet], ["requests/close", "POST", backendPost]] as const) {
+    const path = ["v1", "publishing", ...suffix.split("/")];
+    for (const [actor, status] of [[undefined, 422], ["bad", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) },
+      }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, status);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + (status === 200 ? 1 : 0));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+    }
+  }
+});
+
+test("chapter creation recovery proxy requires the original actor", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const upstream = "https://api.example.test/v1/books/";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ status: "not_found" }) : authProvider(url, init);
+  const root = ["v1", "books", "88888888-8888-4888-8888-888888888888", "chapter-creation", "99999999-9999-4999-8999-999999999999"];
+  for (const [suffix, method, handler] of [[[], "GET", backendGet], [["close"], "POST", backendPost]] as const) {
+    const path = [...root, ...suffix];
+    for (const [actor, status] of [[undefined, 422], ["bad", 422], ["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", ...(actor ? { "x-bookworm-actor": actor } : {}) },
+      }), { params: Promise.resolve({ path }) });
+      assert.equal(response.status, status);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + Number(status === 200));
+      if (status === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+    }
+  }
+});
+
+test("local auth keeps the active development origin instead of a stale APP_URL port", () => {
+  for (const host of ["localhost:3001", "127.0.0.1:3001", "[::1]:3001"]) {
+    assert.equal(appOrigin(new NextRequest(`http://${host}/books/new`, { headers: { host } })), `http://${host}`);
+  }
+});
+
+test("development origin recovery ignores untrusted hosts, forwarded hosts and port changes", () => {
+  for (const host of ["evil.test:3001", "localhost.evil.test:3001", "127.0.0.1:9999", "localhost:3001@evil.test", "localhost:3001,evil.test"]) {
+    assert.equal(appOrigin(new NextRequest("http://localhost:3001/books/new", { headers: { host, "x-forwarded-host": "evil.test:3001" } })), "http://localhost:3001");
+  }
+});
+
+test("production ignores loopback Host and uses the configured application origin", () => {
+  Object.assign(process.env, { NODE_ENV: "production", APP_URL: "https://books.example.test" });
+  assert.equal(appOrigin(new NextRequest("http://localhost:3001/", { headers: { host: "127.0.0.1:3001" } })), "https://books.example.test");
+});
+
+test("login returns minimal identity, HttpOnly cookies, no tokens in JSON, no caching", async () => {
+  const response = await login();
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.user.id, user.id);
+  assert.equal(body.redirectTo, "/dashboard");
+  assert.ok(!JSON.stringify(body).includes("token"));
+  assert.ok(response.cookies.getAll().length > 0);
+  for (const cookie of response.cookies.getAll()) { assert.equal(cookie.httpOnly, true); assert.equal(cookie.sameSite, "lax"); }
+  assert.match(response.headers.get("cache-control")!, /no-store/);
+});
+
+test("production cookies are Secure and redirect origin is configured", async () => {
+  Object.assign(process.env, { NODE_ENV: "production" });
+  const response = await login();
+  assert.equal(response.status, 200);
+  assert.ok(response.cookies.getAll().every((cookie) => cookie.secure));
+  delete process.env.APP_URL;
+  assert.equal((await login()).status, 503);
+});
+
+test("session endpoint verifies identity with provider and rejects an anonymous request", async () => {
+  assert.equal((await session(new NextRequest("http://localhost:3000/api/auth/session"))).status, 401);
+  const response = await login();
+  const verified = await session(new NextRequest("http://localhost:3000/api/auth/session", { headers: { cookie: cookies(response) } }));
+  assert.equal(verified.status, 200);
+  assert.ok(calls.some((call) => call.url.endsWith("/auth/v1/user")));
+  assert.deepEqual((await verified.json()).user, { id: user.id, email: user.email, displayName: "Test author" });
+});
+
+test("cross-site and malformed credentials are rejected before contacting the provider", async () => {
+  assert.equal((await POST(request("login", {}, undefined, "https://evil.test"), { params: Promise.resolve({ action: "login" }) })).status, 403);
+  assert.equal((await invoke("signup", { email: "bad", password: "short" })).status, 422);
+  assert.equal(calls.length, 0);
+});
+
+test("confirmation-required signup never pretends the user has signed in", async () => {
+  provider = () => Response.json({ ...user, identities: [] });
+  const response = await invoke("signup", { name: "Test author", email: user.email, password: "fixture-password" });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.confirmationRequired, true);
+  assert.equal(body.redirectTo, undefined);
+});
+
+test("BFF forwards only the verified session token, not caller authorization or service secrets", async () => {
+  const signedIn = await login();
+  provider = (url, init) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    assert.equal(url.href, "https://api.example.test/v1/books?workspaceId=fixture");
+    const headers = new Headers(init?.headers);
+    assert.match(headers.get("authorization")!, /^Bearer /);
+    assert.notEqual(headers.get("authorization"), "Bearer forged");
+    assert.equal(headers.get("x-service-token"), null);
+    assert.equal(headers.get("cookie"), null);
+    return Response.json({ books: [] });
+  };
+  const response = await backendGet(new NextRequest("http://localhost:3000/api/backend/v1/books?workspaceId=fixture", { headers: { cookie: cookies(signedIn), authorization: "Bearer forged", "x-service-token": "forged" } }), { params: Promise.resolve({ path: ["v1", "books"] }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { books: [] });
+  assert.match(response.headers.get("cache-control")!, /no-store/);
+});
+
+test("BFF fails closed when production has no separate API URL", async () => {
+  const signedIn = await login();
+  Object.assign(process.env, { NODE_ENV: "production", APP_URL: "http://localhost:3001" });
+  delete process.env.API_URL;
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    return new Response("private-upstream-html", { status: 404, headers: { "content-type": "text/html" } });
+  };
+  const response = await backendGet(new NextRequest("http://localhost:3001/api/backend/v1/workspaces", {
+    headers: { cookie: cookies(signedIn) },
+  }), { params: Promise.resolve({ path: ["v1", "workspaces"] }) });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, "dependency_unavailable");
+  assert.equal(calls.filter((call) => new URL(call.url).pathname === "/v1/workspaces").length, 0);
+});
+
+test("BFF cannot send a verified token back to the web server, including loopback aliases", async () => {
+  const signedIn = await login();
+  Object.assign(process.env, { APP_URL: "http://localhost:3001" });
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    return Response.json({ workspaces: [] });
+  };
+  for (const apiUrl of ["http://localhost:3001", "http://127.0.0.1:3001", "http://[::1]:3001"]) {
+    process.env.API_URL = apiUrl;
+    const response = await backendGet(new NextRequest("http://localhost:3001/api/backend/v1/workspaces", {
+      headers: { cookie: cookies(signedIn) },
+    }), { params: Promise.resolve({ path: ["v1", "workspaces"] }) });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error.message, /separate/i);
+  }
+  assert.equal(calls.filter((call) => new URL(call.url).pathname === "/v1/workspaces").length, 0);
+});
+
+test("BFF preserves the development API-port fallback when the ports are separate", async () => {
+  const signedIn = await login();
+  delete process.env.API_URL;
+  process.env.API_PORT = "3002";
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    assert.equal(url.href, "http://127.0.0.1:3002/v1/workspaces");
+    return Response.json({ workspaces: [] });
+  };
+  const response = await backendGet(new NextRequest("http://localhost:3001/api/backend/v1/workspaces", {
+    headers: { cookie: cookies(signedIn) },
+  }), { params: Promise.resolve({ path: ["v1", "workspaces"] }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { workspaces: [] });
+});
+
+test("BFF converts HTML dependency responses to private JSON errors, never raw HTML", async () => {
+  const signedIn = await login();
+  for (const status of [200, 404, 503]) {
+    provider = (url) => {
+      if (url.pathname === "/auth/v1/user") return Response.json(user);
+      return new Response("private-upstream-html", { status, headers: { "content-type": "text/html; charset=utf-8" } });
+    };
+    const response = await backendGet(new NextRequest("http://localhost:3000/api/backend/v1/workspaces", {
+      headers: { cookie: cookies(signedIn) },
+    }), { params: Promise.resolve({ path: ["v1", "workspaces"] }) });
+    assert.equal(response.status, 502);
+    assert.match(response.headers.get("content-type")!, /application\/json/);
+    assert.match(response.headers.get("cache-control")!, /no-store/);
+    const body = await response.json();
+    assert.equal(body.error.code, "dependency_unavailable");
+    assert.ok(!JSON.stringify(body).includes("private-upstream-html"));
+  }
+});
+
+test("BFF forwards only validated audiobook QC metadata with the private MP3", async () => {
+  const signedIn = await login();
+  const reportId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const audioHash = "a".repeat(64);
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    return new Response("ID3fixture", { status: 200, headers: {
+      "content-type": "audio/mpeg", "content-disposition": 'attachment; filename="chapter.mp3"',
+      "x-bookworm-audio-qc": '{"schemaVersion":1}', "x-bookworm-audio-sha256": audioHash,
+      "x-bookworm-audio-qc-report-id": reportId, "x-bookworm-audio-qc-history": "unavailable",
+      "x-internal-secret": "must-not-cross-the-proxy",
+    } });
+  };
+  const response = await backendGet(new NextRequest("http://localhost:3000/api/backend/v1/audiobook-jobs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/audio-download", {
+    headers: { cookie: cookies(signedIn) },
+  }), { params: Promise.resolve({ path: ["v1", "audiobook-jobs", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "audio-download"] }) });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="chapter.mp3"');
+  assert.equal(response.headers.get("x-bookworm-audio-qc"), '{"schemaVersion":1}');
+  assert.equal(response.headers.get("x-bookworm-audio-sha256"), audioHash);
+  assert.equal(response.headers.get("x-bookworm-audio-qc-report-id"), reportId);
+  assert.equal(response.headers.get("x-bookworm-audio-qc-history"), "unavailable");
+  assert.equal(response.headers.get("x-internal-secret"), null);
+});
+
+test("BFF forwards a sanitized Google Play audiobook ZIP attachment and disclosure marker only", async () => {
+  const signedIn = await login();
+  provider = (url) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    return new Response("PKfixture", { status: 200, headers: {
+      "content-type": "application/zip", "content-disposition": 'attachment; filename="9780306406157.zip"',
+      "x-bookworm-audio-disclosure": "synthesized-voice-required", "x-internal-secret": "must-not-cross-the-proxy",
+    } });
+  };
+  const response = await backendPost(new NextRequest("http://localhost:3000/api/backend/v1/editions/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/audiobook-google-play-export", {
+    method: "POST", headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", "content-type": "application/json" }, body: JSON.stringify({ identifier: "9780306406157" }),
+  }), { params: Promise.resolve({ path: ["v1", "editions", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "audiobook-google-play-export"] }) });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-disposition"), 'attachment; filename="9780306406157.zip"');
+  assert.equal(response.headers.get("x-bookworm-audio-disclosure"), "synthesized-voice-required");
+  assert.equal(response.headers.get("x-internal-secret"), null);
+  assert.equal(await response.text(), "PKfixture");
+});
+
+test("BFF rejects anonymous writes, cross-site writes and service-only routes", async () => {
+  const context = { params: Promise.resolve({ path: ["v1", "books"] }) };
+  assert.equal((await backendPost(request("x", {}), context)).status, 401);
+  assert.equal((await backendPost(request("x", {}, undefined, "https://evil.test"), context)).status, 403);
+  assert.equal((await backendGet(new NextRequest("http://localhost:3000/api/backend/v1/credits/deduct"), { params: Promise.resolve({ path: ["v1", "credits", "deduct"] }) })).status, 404);
+});
+
+test("Google sign-in uses the active app origin and Supabase callback flow", async () => {
+  const response = await invoke("google", { next: "/dashboard" });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  const redirect = new URL(body.redirectTo);
+  assert.equal(redirect.origin, "http://auth.example.test");
+  assert.equal(redirect.pathname, "/auth/v1/authorize");
+  assert.equal(redirect.searchParams.get("provider"), "google");
+  assert.equal(redirect.searchParams.get("redirect_to"), "http://localhost:3000/auth/callback?next=%2Fdashboard&from=google");
+});
+
+test("disabled Google stays in the app without creating OAuth cookies or a redirect", async () => {
+  provider = () => Response.json({ external: { google: false } });
+  const response = await invoke("google", { next: "/books/new" });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).redirectTo, undefined);
+  assert.equal(response.cookies.getAll().length, 0);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/auth/v1/settings"]);
+  assert.match(response.headers.get("cache-control")!, /no-store/);
+});
+
+test("unknown or failed Google settings cannot authorize an OAuth redirect", async () => {
+  for (const settings of [null, {}, { external: { google: "true" } }, { external: { google: 1 } }]) {
+    provider = () => Response.json(settings);
+    const response = await invoke("google", {});
+    assert.equal(response.status, 503);
+    assert.equal(response.cookies.getAll().length, 0);
+  }
+  for (const status of [302, 401, 429, 503]) {
+    provider = () => new Response("private-provider-detail", { status, headers: { location: "https://evil.test" } });
+    const response = await invoke("google", {});
+    assert.equal(response.status, 503);
+    assert.ok(!(await response.text()).includes("private-provider-detail"));
+    assert.equal(response.cookies.getAll().length, 0);
+  }
+});
+
+test("Google settings use only the public key, no cookies, no redirects and a deadline", async () => {
+  process.env.SUPABASE_PUBLISHABLE_KEY = "sb_publishable_fixture";
+  provider = (url, init) => {
+    assert.equal(url.pathname, "/auth/v1/settings");
+    assert.equal(init?.method, "GET");
+    assert.equal(init?.cache, "no-store");
+    assert.equal(init?.redirect, "error");
+    assert.ok(init?.signal instanceof AbortSignal);
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("apikey"), "sb_publishable_fixture");
+    assert.equal(headers.get("authorization"), null);
+    assert.equal(headers.get("cookie"), null);
+    return Response.json({ external: { google: true } });
+  };
+  const response = await invoke("google", {});
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+});
+
+test("Google settings network failures return a neutral retryable app error", async () => {
+  provider = () => { throw new Error("private-provider-detail"); };
+  const response = await invoke("google", {});
+  assert.equal(response.status, 503);
+  assert.ok(!(await response.text()).includes("private-provider-detail"));
+  assert.equal(response.cookies.getAll().length, 0);
+});
+
+test("Gmail email signup does not depend on Google OAuth availability", async () => {
+  provider = (url, init) => {
+    assert.equal(url.pathname, "/auth/v1/signup");
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.email, "reader@gmail.com");
+    assert.deepEqual(body.data, { display_name: "Reader" });
+    return Response.json({ ...user, identities: [] });
+  };
+  const response = await invoke("signup", { name: "Reader", email: " READER@gmail.com ", password: "fixture-password" });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).confirmationRequired, true);
+  assert.deepEqual(calls.map((call) => new URL(call.url).pathname), ["/auth/v1/signup"]);
+});
+
+test("BFF accepts empty streamed actions but rejects non-JSON payloads", async () => {
+  const signedIn = await login();
+  let forwards = 0;
+  provider = (url, init) => {
+    if (url.pathname === "/auth/v1/user") return Response.json(user);
+    forwards++;
+    assert.equal(init?.body, undefined);
+    assert.equal(new Headers(init?.headers).get("content-type"), null);
+    return Response.json({ status: "accepted" });
+  };
+  const context = { params: Promise.resolve({ path: ["v1", "ai", "suggestions", "fixture", "apply"] }) };
+  const headers = { cookie: cookies(signedIn), origin: "http://localhost:3000" };
+  const empty = new NextRequest("http://localhost:3000/api/backend/v1/ai/suggestions/fixture/apply", {
+    method: "POST", headers, body: new Uint8Array(0),
+  });
+  assert.ok(empty.body, "exercise a present but empty request stream");
+  assert.equal((await backendPost(empty, context)).status, 200);
+  const invalid = new NextRequest(empty.url, { method: "POST", headers, body: "not json" });
+  assert.equal((await backendPost(invalid, context)).status, 415);
+  assert.equal(forwards, 1);
+});
+
+test("expired sessions refresh in the server and return replacement HttpOnly cookies", async () => {
+  provider = () => Response.json(authSession(-10));
+  const signedIn = await login();
+  provider = (url) => url.pathname === "/auth/v1/token" ? Response.json(authSession()) : Response.json(user);
+  const response = await session(new NextRequest("http://localhost:3000/api/auth/session", { headers: { cookie: cookies(signedIn) } }));
+  assert.equal(response.status, 200);
+  assert.ok(calls.some((call) => call.url.includes("grant_type=refresh_token")));
+  assert.ok(response.cookies.getAll().some((cookie) => cookie.httpOnly && cookie.value));
+});
+
+test("logout revokes the local provider session and clears the auth cookies", async () => {
+  const signedIn = await login();
+  const response = await invoke("logout", {}, cookies(signedIn));
+  assert.equal(response.status, 200);
+  assert.ok(calls.some((call) => call.url.includes("/auth/v1/logout")));
+  assert.ok(response.cookies.getAll().some((cookie) => cookie.maxAge === 0));
+});
+
+test("reset requires an authenticated session and recovery response does not enumerate accounts", async () => {
+  assert.equal((await invoke("reset-password", { password: "fixture-new-password" })).status, 401);
+  const response = await invoke("forgot-password", { email: "unknown@example.test" });
+  assert.equal(response.status, 200);
+  assert.match((await response.json()).message, /^If this address/);
+});
+
+test("callback failure is a fixed login URL, never an external next target", async () => {
+  const response = await callback(new NextRequest("http://localhost:3000/auth/callback?next=https://evil.test"));
+  assert.equal(response.headers.get("location"), "http://localhost:3000/login?error=confirmation");
+});
+
+test("Google OAuth callback errors use a fixed recovery state and never reflect provider text", async () => {
+  const response = await callback(new NextRequest("http://localhost:3000/auth/callback?from=google&error=server_error&error_code=provider_disabled&error_description=secret-provider-detail&next=https://evil.test"));
+  assert.equal(response.headers.get("location"), "http://localhost:3000/login?error=oauth&next=%2Fdashboard");
+  assert.equal(calls.length, 0);
+});
+
+test("non-Google auth callback errors retain the email-confirmation recovery flow", async () => {
+  const response = await callback(new NextRequest("http://localhost:3000/auth/callback?error=access_denied&error_code=expired_confirmation"));
+  assert.equal(response.headers.get("location"), "http://localhost:3000/login?error=confirmation");
+});
+
+
+test("workspace proxy forwards bearer only over HTTPS or local loopback", async () => {
+  const signedIn = await login(), authProvider = provider;
+  let forwarded = 0;
+  provider = (url, init) => {
+    if (url.pathname === "/v1/dashboard") {
+      forwarded++;
+      assert.match(new Headers(init?.headers).get("authorization")!, /^Bearer /);
+      return Response.json({ ok: true });
+    }
+    return authProvider(url, init);
+  };
+  for (const environment of ["test", "production"]) {
+    Object.assign(process.env, { NODE_ENV: environment });
+    for (const base of ["http://api.example.test", "http://192.0.2.1:3001"]) {
+      process.env.API_URL = base;
+      for (const [method, handler] of [["GET", backendGet], ["POST", backendPost]] as const) {
+        const before = forwarded;
+        const response = await handler(new NextRequest("http://localhost:3000/api/backend/v1/dashboard", {
+          method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000" },
+        }), { params: Promise.resolve({ path: ["v1", "dashboard"] }) });
+        assert.equal(response.status, 503); assert.equal(forwarded, before);
+      }
+    }
+    for (const base of ["https://api.example.test", "http://localhost:3001", "http://127.0.0.1:3001", "http://[::1]:3001"]) {
+      process.env.API_URL = base;
+      const before = forwarded;
+      const response = await backendGet(new NextRequest("http://localhost:3000/api/backend/v1/dashboard", {
+        headers: { cookie: cookies(signedIn) },
+      }), { params: Promise.resolve({ path: ["v1", "dashboard"] }) });
+      assert.equal(response.status, 200, base); assert.equal(forwarded, before + 1);
+    }
+  }
+});
+
+test("community directory forwards actor-bound reads and joins only for the verified account", async () => {
+  const signedIn = await login(), authProvider = provider;
+  const upstream = "https://api.example.test/v1/communities";
+  provider = (url, init) => url.href.startsWith(upstream) ? Response.json({ accepted: true }) : authProvider(url, init);
+  const community = "33333333-3333-4333-8333-333333333333";
+  for (const [method, path, handler] of [
+    ["GET", ["v1", "communities"], backendGet],
+    ["POST", ["v1", "communities", community, "join"], backendPost],
+  ] as const) {
+    for (const [actor, expected] of [["22222222-2222-4222-8222-222222222222", 409], [user.id, 200]] as const) {
+      const before = calls.filter(call => call.url.startsWith(upstream)).length;
+      const response = await handler(new NextRequest(`http://localhost:3000/api/backend/${path.join("/")}`, {
+        method, headers: { cookie: cookies(signedIn), origin: "http://localhost:3000", "x-bookworm-actor": actor },
+      }), { params: Promise.resolve({ path: [...path] }) });
+      assert.equal(response.status, expected);
+      const forwarded = calls.filter(call => call.url.startsWith(upstream));
+      assert.equal(forwarded.length, before + Number(expected === 200));
+      if (expected === 200) assert.equal(forwarded.at(-1)!.headers.get("x-bookworm-actor"), user.id);
+    }
+  }
+});

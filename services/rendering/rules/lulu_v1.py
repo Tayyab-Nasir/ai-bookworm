@@ -1,29 +1,118 @@
-"""Lulu channel rules v1. PLACEHOLDER — verify against current official docs at release:
-https://developers.lulu.com/ (Lulu Print API) and Lulu xPress publishing guides.
-"""
-from preflight import Finding, Rule
-from rules._channel import make_ruleset, metadata_rules
+"""Lulu print rules verified against first-party help on 2026-09-18."""
+from editions import resolve_text_direction
+from lulu_print import lulu_rtl_page_count
+from preflight import Finding, Rule, _meta
+from rules._channel import (check_print_pdf_geometry, make_ruleset,
+                            metadata_rules, print_pdf_page_count)
 
-VERSION = "lulu-1.0.0"
-EFFECTIVE_DATE = "2026-08-10"  # placeholder authored; NOT yet verified
-SOURCE_REF = "https://developers.lulu.com/"  # verify at release
+VERSION = "lulu-1.6.0"
+EFFECTIVE_DATE = "2026-09-18"
+SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255584"
+PAGE_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255583"
+MARGIN_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255590-interior-formatting-the-basics"
+DISTRIBUTION_SOURCE_REF = "https://help.lulu.com/en/support/solutions/articles/64000255462"
+GLOBAL_DISTRIBUTION_SOURCE = "https://help.lulu.com/en/support/solutions/articles/64000255456-global-distribution-the-basics"
 
 
 def check_lulu_bleed(ctx):
-    """Lulu print: bleed 0.125in for full-bleed interiors (placeholder)."""
     edition = ctx.get("edition") or {}
     if edition.get("kind") == "print":
         bleed = edition.get("bleed_in", 0.0)
-        if bleed not in (0.0, 0.125):
+        if bleed != 0.125 or edition.get("bleed_edges", "all") != "all":
             return [Finding(code="LULU-BLEED",
-                            message=f"Lulu placeholder: bleed should be 0 or 0.125in, got {bleed}",
+                            message="Lulu print-ready PDFs require 0.125in bleed on all four edges; select all-edge bleed and render again",
                             location="edition.bleed_in")]
     return []
+
+
+def check_lulu_barcode(ctx):
+    edition = ctx.get("edition") or {}
+    wrap = edition.get("wrap_cover") or {}
+    if edition.get("kind") == "print" and not wrap.get("lulu_rtl") and wrap.get("barcode") != "lulu":
+        return [Finding(code="LULU-DISTRIBUTION-BARCODE",
+                        message="Lulu Global Distribution requires the assigned print ISBN in the copyright page and back-cover barcode. Choose the Lulu barcode when preparing your own distribution cover.",
+                        location="edition.wrap_cover.barcode")]
+    return []
+
+
+def check_lulu_page_count(ctx):
+    count = print_pdf_page_count(ctx)
+    wrap = (ctx.get("edition") or {}).get("wrap_cover") or {}
+    if count is not None and wrap.get("lulu_rtl"):
+        count = lulu_rtl_page_count(count)
+    if count is not None and not 32 <= count <= 800:
+        return [Finding(code="LULU-PRINT-PAGE-COUNT",
+                        message=f"Lulu perfect-bound paperbacks require 32-800 pages. The upload would have {count}.",
+                        location="interior.pages")]
+    return []
+
+
+def check_lulu_safe_margins(ctx):
+    if print_pdf_page_count(ctx) is None:
+        return []
+    margins = ((ctx.get("edition") or {}).get("margins") or {})
+    failures = []
+    for edge in ("top", "bottom", "inner", "outer"):
+        actual = margins.get(edge, 0.75 if edge != "outer" else 0.5)
+        if actual < 0.5:
+            failures.append(f"{edge} {actual:g}in")
+    if failures:
+        return [Finding(code="LULU-PRINT-SAFE-MARGIN",
+                        message="Lulu recommends keeping important text and images at least 0.5in from trim; increase " + ", ".join(failures),
+                        location="edition.margins")]
+    return []
+
+
+def check_lulu_recommended_gutter(ctx):
+    count = print_pdf_page_count(ctx)
+    if count is None or count > 600:
+        return []
+    recommended = 0.5 if count <= 60 else 0.625 if count <= 150 else 1.0 if count <= 400 else 1.125
+    inner = (((ctx.get("edition") or {}).get("margins") or {}).get("inner", 0.75))
+    if inner < recommended:
+        return [Finding(code="LULU-PRINT-GUTTER-RECOMMENDED",
+                        message=(f"Lulu recommends a {recommended:g}in inner margin for a {count}-page book; "
+                                 f"the edition uses {inner:g}in"),
+                        location="edition.margins.inner")]
+    return []
+
+
+def check_lulu_binding(ctx):
+    edition = ctx.get("edition") or {}
+    if edition.get("kind") == "print" and resolve_text_direction(_meta(ctx).get("language"), edition.get("text_direction")) == "rtl":
+        if (edition.get("wrap_cover") or {}).get("lulu_rtl") is not True:
+            return [Finding(code="LULU-RTL-PAGE-ORDER", location="edition.wrap_cover",
+                            message="Upload a Lulu template PDF with the front cover on the left, confirm its orientation, then save and render again.")]
+    return []
+
+
+def check_lulu_rtl_handoff(ctx):
+    if not ((ctx.get("edition") or {}).get("wrap_cover") or {}).get("lulu_rtl"):
+        return []
+    count = print_pdf_page_count(ctx)
+    padding = (f" The {lulu_rtl_page_count(count)}-page upload starts with one blank for binding." if count and count % 2 else "")
+    return [Finding(code="LULU-RTL-UPLOAD", location="book.pdf",
+                    message="The package reverses the interior for Lulu Print and Bookstore." + padding
+                    + " Global Distribution has separate language requirements.")]
 
 
 RULESET = make_ruleset("lulu", VERSION, metadata_rules(
     "lulu", "LULU", ["title", "author", "language"],
     EFFECTIVE_DATE, SOURCE_REF) + [
-    Rule("LULU-PRINT-001", "warning", "channel", "Lulu bleed value", check_lulu_bleed,
+    Rule("LULU-PRINT-001", "error", "channel", "Lulu bleed value", check_lulu_bleed,
          channels=("lulu",), effective_date=EFFECTIVE_DATE, source_ref=SOURCE_REF),
+    Rule("LULU-PRINT-002", "error", "channel", "Lulu actual interior geometry", check_print_pdf_geometry,
+         channels=("lulu",), effective_date=EFFECTIVE_DATE, source_ref=SOURCE_REF),
+    Rule("LULU-PRINT-003", "error", "channel", "Lulu perfect-bound page range", check_lulu_page_count,
+         channels=("lulu",), effective_date=EFFECTIVE_DATE, source_ref=PAGE_SOURCE_REF),
+    Rule("LULU-PRINT-004", "warning", "channel", "Lulu print-safe margins", check_lulu_safe_margins,
+         channels=("lulu",), effective_date=EFFECTIVE_DATE, source_ref=MARGIN_SOURCE_REF),
+    Rule("LULU-PRINT-005", "warning", "channel", "Lulu recommended gutter", check_lulu_recommended_gutter,
+         channels=("lulu",), effective_date=EFFECTIVE_DATE, source_ref=MARGIN_SOURCE_REF),
+    Rule("LULU-PRINT-006", "warning", "channel", "Lulu distribution barcode", check_lulu_barcode,
+         channels=("lulu",), effective_date="2026-11-19", source_ref=DISTRIBUTION_SOURCE_REF),
+    Rule("LULU-PRINT-007", "error", "channel", "Lulu right-to-left print file order", check_lulu_binding,
+         channels=("lulu",), effective_date="2026-11-20", source_ref=MARGIN_SOURCE_REF),
+    Rule("LULU-PRINT-008", "warning", "channel", "Lulu right-to-left print handoff", check_lulu_rtl_handoff,
+         channels=("lulu",), effective_date="2026-11-20", source_ref=GLOBAL_DISTRIBUTION_SOURCE),
 ])

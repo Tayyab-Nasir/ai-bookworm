@@ -1,0 +1,193 @@
+# Pricing and plan release controls
+
+AI Bookworm does not include complimentary AI, image, translation, or audio
+generation. Account creation may be available without charge, but every
+provider-backed generation must have prepaid credit or an explicitly funded
+plan allowance before the provider call starts.
+
+## Publication gate
+
+`plans.is_active` is the commercial publication switch. New plan rows are
+inactive by default. The public plans API and database policy expose only
+active rows, and checkout independently refuses inactive and zero-price rows.
+
+Do not activate a paid plan until all of the following are complete:
+
+1. The owner approves the retail price, included usage, target gross margin,
+   overage behavior, taxes, refunds, and regional availability.
+2. A matching Stripe Price exists and its ID is present in
+   `STRIPE_PRICE_IDS_JSON` for the same database plan ID.
+3. Worst-case provider costs have been modelled for text input/output, image
+   input/output, speech output, retries, moderation, storage, and platform fees.
+4. Credit reservation and final usage reconciliation are tested for every
+   provider-backed workflow included by the plan.
+5. Checkout and webhook acceptance tests pass in Stripe test mode.
+
+The seeded Pro and Team values are planning placeholders and remain inactive.
+They are not approved commercial offers.
+
+The current `price_cents` display interprets the stored amount as hundredths of
+the plan's stated currency. The web UI blocks checkout when the price or
+currency is malformed, or when the currency normally uses a different number
+of fractional digits. Currency-specific settlement and price matching still
+require provider verification before any plan is published.
+
+## Credit accounting direction
+
+### Metadata quote and generation status
+
+Local source now connects metadata token counting to explicit author consent,
+server-owned expiring price quotes, exact-credit acceptance, a transactional
+hold, source-revalidated one-way worker dispatch, measured usage settlement and
+read-only recovery. The author UI reviews the returned candidate and requires
+a separate Save action. The former operational one-credit endpoint returns
+410 by default; only legacy regression tests opt in to its compatibility code.
+No customer-facing price is configured or commercially approved, so no
+metadata model is purchasable. The quote/worker migrations remain unapplied to
+hosted Supabase and OpenAI credentials/provider acceptance are outstanding.
+See [Metadata token quotes](METADATA_TOKEN_QUOTES.md).
+
+### Exact request preparation for remaining text agents
+
+Private quote/hash endpoints now support writer, proofreader, copyeditor,
+consistency, metadata and Book Bible, sharing the exact gateway payload with
+dispatch. Supplied hashes are checked before receipt reservation, and the
+checked prompt is dispatched without rebuilding it. Book Bible's effective
+6,000-token cap is returned explicitly. These preparation endpoints do not
+grant funds by themselves; separate author flows implement paid quotes for
+metadata, Story Blueprint, translation, Book Bible and manuscript review
+(writer/proofreader/copyeditor/consistency). Their legacy unquoted dispatch
+paths are retired by default. Local implementation and disposable verification
+do not approve a catalog or prove live provider reconciliation.
+See [Text quote preparation](TEXT_QUOTE_PREPARATION.md) for the remaining gates.
+
+### Cross-service receipt compatibility
+
+Metadata, Book Bible and manuscript-review consumers now preserve and validate
+the Python gateway's optional measured token split instead of rejecting valid
+provider successes. Missing provider usage is not fabricated as measured zero.
+See [AI usage receipts](AI_USAGE_RECEIPTS.md). This does not convert existing
+operational units into approved retail token pricing or activate any plan.
+
+### Server-owned translation catalog
+
+`TRANSLATION_PRICING_CATALOG_JSON` is optional server-only deployment configuration.
+When absent, invalid, not effective or expired, `/v1/translations/models` returns
+503. It must not be populated from a browser payload or exposed in `NEXT_PUBLIC_*`.
+`translation-catalog.ts` validates catalog version, approval reference, validity
+window, quote lifetime, unique model IDs and version-consistent price/policy
+snapshots. Text entries require cached-input, input and output rates, positive
+uncached/output rates and dated model snapshot names. No real offers are seeded.
+The model list exposes labels/model/version IDs, not rates or approval metadata.
+
+The internal quote helper takes trusted server-counted input bounds, pins rates
+and policy, caps output, clips quote expiry to catalog expiry and checks ledger
+capacity. It conservatively reserves both cached and uncached input bounds;
+final mutually exclusive provider counts release the surplus. It does not count
+tokens, persist an accepted quote, enqueue jobs, or grant dispatch permission.
+Those steps must be wired transactionally before switching public creation.
+`translation-quote.ts` now prepares a per-chapter proposal using OpenAI's
+`responses.inputTokens.count` for the exact model/system/user messages produced
+by the generation payload builder. It binds the full generation request hash
+(including output cap), rejects malformed counts and rechecks catalog validity
+after counting. SDK retries are disabled. This sends manuscript text to OpenAI
+when invoked: require authenticated chapter access and explicit quote intent,
+rate limits and privacy disclosure before exposing it in the customer flow.
+It does not generate text, reserve credits, persist a quote or enqueue a job.
+Documentation: https://developers.openai.com/api/docs/guides/token-counting
+Approval flags/references are operator audit metadata, not evidence that the
+owner actually approved a price. Verify official model/rate data and obtain the
+commercial decision before configuring this on a deployed system.
+
+### Server-owned Story Blueprint proposal catalog
+
+`STORY_BLUEPRINT_PRICING_CATALOG_JSON` is a separate, optional server-only
+catalog for the paid, review-only Story Blueprint proposal flow. When it is
+absent, invalid, not yet effective, or expired, the model-list endpoint fails
+closed and the product offers no paid Blueprint generation. It must never be
+sent to a browser or stored as a `NEXT_PUBLIC_*` variable.
+
+Each selected entry pins the OpenAI model, uncached/cached input and output
+rates, customer-credit policy, maximum input/output token bounds, catalog
+approval reference, and quote lifetime. After explicit consent, the API stores
+one immutable source snapshot and queues a leased `--prepare-quotes` worker to
+count the exact saved Blueprint input and output cap. A payer-scoped status
+endpoint recovers the queue. One active count is allowed per author/book, with
+a five-per-hour ceiling. An expired count lease is terminalized as unknown and
+never automatically re-counted. Counting produces one immutable maximum-credit
+quote; it does not generate content or hold a credit balance.
+
+After the author explicitly confirms the exact credit hold, the separate
+`--quoted` leased worker
+can make one hash-bound OpenAI request. It saves the provider request ID,
+measured token split, and private candidate before settling credits. The
+candidate becomes reviewable only after the hold has settled and the job has
+completed. Applying it is a separate revision-checked author action; it never
+automatically changes a manuscript chapter, materializes a chapter, or
+publishes a book.
+
+Do not seed an offer from an example or stale rate table. Verify the model
+availability and current official rate data, decide the credit conversion and
+margin, set a dated catalog version/expiry, then run the local quote, worker,
+and reconciliation tests before setting this environment variable in an
+operator-controlled secret store.
+
+### Versioned calculation component
+
+`services/api/src/lib/usage-pricing.ts` provides pure quote/reconciliation math.
+Rates are integer micro-USD per million tokens; quantities and money remain
+decimal strings and BigInt internally. Customer credits round up once after
+platform cost and an explicit markup multiplier. Cached/uncached and modality
+dimensions must be supplied separately with complete, non-overlapping counts.
+Missing dimensions, unknown models relative to the quote, duplicate counters,
+estimated receipts and changed scope cannot settle a quote. Usage above any
+quoted dimension retains the hold for review, even when its total cost is lower.
+
+The fingerprint is an integrity checksum, NOT authentication or a signature.
+Only server-owned persisted price/policy snapshots may be trusted; a caller
+setting `approved: true` is not commercial approval. The component does not
+reserve funds, authenticate provider receipts, persist idempotency, or connect
+to generation endpoints yet. Before using it for charges: persist scoped quotes,
+reserve funded balances transactionally before dispatch, normalize actual usage
+without double-counting cached tokens/retries, and settle/release once against
+the saved quote. Speech estimates remain non-billable until reconciled.
+All calculator test rates are synthetic, not OpenAI prices or retail offers.
+
+Local migration `20260919050000_metadata_credit_reservations.sql` adds a
+database-side hold for the historical one-unit metadata operation. That direct
+generation endpoint is now closed by default; token-priced metadata instead
+uses the later quote/accept/settlement migrations, which remain source-only.
+The older one-unit reservation is not a retail token-to-customer-credit policy.
+Other text-generation paths sharing `ai_credits` must participate in approved
+reservation and settlement controls before paid launch; do not interpret a
+single workflow's local checks as full billing readiness.
+
+Follow-up local migration `20260919060000_shared_text_credit_reservations.sql`
+extends that hold across writer, proofreader, copyeditor, consistency, bookbible
+and metadata jobs. Completion usage takes the same organization lock as new
+reservations. Native multi-connection acceptance remains required, and this
+still uses operational units rather than an approved retail token conversion.
+
+The existing `ai_credits`, `image_credits`, `audio_credits`, and
+`translation_credits` meters are operational units, not provider tokens.
+Metadata, editor AI review, Book Bible, Story Blueprint and translation flows convert a saved,
+server-approved provider/model price and customer policy snapshot to an exact
+maximum credit reservation, then reconcile measured provider usage. Neither
+commercial catalog nor plan is approved or active, so no offer is purchasable.
+Audio still reserves operational credits per started 1,000 source characters
+in version-pinned jobs; its retail token/usage migration remains open.
+Before launch, approve and configure each versioned price/policy
+catalog, validate live measured receipts and margins, and migrate the remaining
+meters. Reserve a conservative maximum before dispatch, reconcile against the
+provider receipt after success, and release unused credit. Never rely on a
+front-end balance check as the spending boundary.
+
+Provider pricing changes over time. Store the model, price version, measured
+usage, provider cost estimate, customer debit, job ID, and idempotency key with
+each completed billable job so historical margins remain auditable.
+
+The Speech endpoint returns audio bytes without an inline token receipt. The
+worker therefore labels its cost as an estimate based on a versioned word-rate
+method; reconcile exact speech spend through OpenAI organization usage before
+margin reporting or customer invoicing. Do not present the estimate as a
+provider invoice.

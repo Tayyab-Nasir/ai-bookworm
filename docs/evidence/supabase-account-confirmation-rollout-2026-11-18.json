@@ -1,0 +1,69 @@
+{
+  "projectRef": "cyhqtwndadlyzpeatxws",
+  "checkedAt": "2026-11-18T17:06:58.411Z",
+  "migrationSourceCommit": "de1de8582fc706a32585ec51e8f56300382e34d2",
+  "populatedUpgradeProofCommit": "762662eabe48d4eac73ff3345319f5e16806cba3",
+  "history": {
+    "before": 114,
+    "after": 116,
+    "oldEntriesPreserved": true,
+    "localSources": 135,
+    "unmatchedSourceNames": 19,
+    "versionOrderReconciliationPending": true
+  },
+  "installed": [
+    {
+      "name": "data_rights_confirmation_rpc",
+      "hostedVersion": "20261118170506",
+      "sourceFile": "supabase/migrations/20261102170000_data_rights_confirmation_rpc.sql",
+      "sourceSha256": "ec3b1e2be664ffebe79a2bdb422acd797c7c815a983a4b987328532407fc2434",
+      "recordedSqlSha256": "ee050dff9e2d366ef5869c85a5c6d947239166786cef3e244aab34d4698ace35",
+      "atomicStatements": 1
+    },
+    {
+      "name": "data_rights_confirmation_invoker",
+      "hostedVersion": "20261118170532",
+      "sourceFile": "supabase/migrations/20261118165738_data_rights_confirmation_invoker.sql",
+      "sourceSha256": "0c11d3fd62b1f0490e01adf70ac378afa04ca5bc53630e36f97c95b9b5504074",
+      "recordedSqlSha256": "6669390d432cc3a5c7b5791b6af8c3e1ac96fa167d9b4982823465bfb2744eb0",
+      "atomicStatements": 1
+    }
+  ],
+  "rehearsal": {
+    "mappedHostedSourceFiles": 114,
+    "injectedRollback": true,
+    "replayPreservedFunctions": true,
+    "localMigrations": 135,
+    "localSqlAssertionFiles": 98,
+    "populatedUpgrade": {
+      "historical": 45,
+      "additional": 90
+    },
+    "nativeDatabaseRun": 44353779283,
+    "exactUpgradeCommitNativeDatabaseRun": 44354424437,
+    "nativeAuthorRun": 44353780479,
+    "nativeAuthorVerified": [
+      "confirmed intake and export through Auth, API and PostgREST",
+      "unconfirmed, duplicate and foreign-account denial",
+      "owner cancellation and support intake",
+      "saved proofs and private retailer packages"
+    ]
+  },
+  "databaseVerification": {
+    "publicInvoker": true,
+    "privateDefiner": true,
+    "authenticatedExecuteOnly": true,
+    "functionsStayedIdenticalAfterReplay": true,
+    "identityMissingDenied": true,
+    "unconfirmedRequestDenied": true,
+    "anonymousHttpStatus": 401,
+    "privateSchemaHttpStatus": 406,
+    "newRoutineSecurityAdvisories": 0,
+    "requestRowsBefore": 0,
+    "requestRowsAfter": 0,
+    "supportRowsBefore": 0,
+    "supportRowsAfter": 0,
+    "tableGrantsAndPoliciesSha256": "39e1e31a6c81ad37f72fcd203505553a0358f8984a5d4b396aad2712d642bb34"
+  },
+  "rolloutBoundary": "Installation creates the confirmed intake route for submitted requests. The restrictive policy for legacy direct intake is a separate staged cutover. No hosted deletion request or account deletion was executed."
+}

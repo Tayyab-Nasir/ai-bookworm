@@ -1,0 +1,448 @@
+"use client";
+
+import Link from "next/link";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiClientError } from "@bookworm/api-client";
+import { readBrowserSession } from "../lib/browser-session";
+import { retailerPortal } from "../lib/retailer-portals";
+import { apiClient } from "./api";
+
+const tabs = ["users", "jobs", "managed publishing", "moderation", "flags", "support", "audit", "usage"] as const;
+type Tab = typeof tabs[number];
+type Row = Record<string, unknown>;
+type TicketStatus = "open" | "pending" | "resolved" | "closed";
+type ModerationAction = "remove" | "dismiss";
+type AdminSnapshot =
+  | { kind: "loading" | "denied" }
+  | { kind: "ready"; actor: string; query: string; version: number; rows: Row[]; documentHealth: Row | null;
+      managedPublishing: boolean; managedNextOffset: number | null }
+  | { kind: "unavailable"; actor: string | null; message: string };
+type AdminOutcome = { kind: "confirmed" | "rejected" | "unconfirmed"; actor: string; message: string };
+const ticketStatuses: TicketStatus[] = ["open", "pending", "resolved", "closed"];
+const input = "rounded-xl border border-white/15 bg-[#101010] px-3 py-2.5 text-sm text-white outline-none focus-visible:ring-2 focus-visible:ring-white";
+const button = "rounded-full border border-white/15 px-4 py-2 text-sm text-white/80 hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white disabled:opacity-40";
+const value = (row: Row, key: string, fallback = "—") => typeof row[key] === "string" || typeof row[key] === "number" ? String(row[key]) : fallback;
+function date(value: unknown) {
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return "Date unavailable";
+  return new Date(value).toLocaleString();
+}
+
+export default function AdminConsole() {
+  const [tab, setTab] = useState<Tab>("users");
+  const [offset, setOffset] = useState(0);
+  const [jobType, setJobType] = useState<"ai" | "publishing" | "document">("ai");
+  const [status, setStatus] = useState("");
+  const [reportStatus, setReportStatus] = useState<"open" | "actioned" | "dismissed" | "all">("open");
+  const [reportType, setReportType] = useState<"all" | "post" | "comment">("all");
+  const [pendingModeration, setPendingModeration] = useState<{ reportId: string; action: ModerationAction } | null>(null);
+  const [search, setSearch] = useState("");
+  const [searchDraft, setSearchDraft] = useState("");
+  const [snapshot, setSnapshot] = useState<AdminSnapshot>({ kind: "loading" });
+  const [outcome, setOutcome] = useState<AdminOutcome | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [holdJobId, setHoldJobId] = useState<string | null>(null);
+  const [incidentRef, setIncidentRef] = useState("");
+  const [storageChecked, setStorageChecked] = useState(false);
+  const [receiptReviewed, setReceiptReviewed] = useState(false);
+  const [reviewHoldAction, setReviewHoldAction] = useState<"settle" | "release">("settle");
+  const [providerReviewed, setProviderReviewed] = useState(false);
+  const requestId = useRef(0);
+  const account = useRef<string | null>(null);
+  const pendingAction = useRef<object | null>(null);
+  const query = JSON.stringify([tab, offset, jobType, status, search, reportStatus, reportType]);
+  const ready = snapshot.kind === "ready" && snapshot.query === query ? snapshot : null;
+  const loading = snapshot.kind === "loading" || (snapshot.kind === "ready" && !ready);
+  const visibleActor = ready?.actor ?? (snapshot.kind === "unavailable" ? snapshot.actor : null);
+  const visibleOutcome = outcome?.actor === visibleActor ? outcome : null;
+  const notice = visibleOutcome?.kind === "confirmed" ? visibleOutcome.message : null;
+  const error = [visibleOutcome?.kind !== "confirmed" ? visibleOutcome?.message : null,
+    snapshot.kind === "unavailable" ? snapshot.message : null].filter(Boolean).join(" ");
+  const rows = ready?.rows ?? [];
+  const documentHealth = ready?.documentHealth;
+
+  const load = useCallback(async (reasonForRead: "reload" | "foreground" = "reload") => {
+    const current = ++requestId.current;
+    const isCurrent = () => current === requestId.current;
+    setSnapshot({ kind: "loading" });
+    const closeReview = () => { setPendingModeration(null); setHoldJobId(null); };
+    if (reasonForRead === "reload") closeReview();
+    let verifiedActor: string | null = null;
+    try {
+      const { id: actor } = await readBrowserSession();
+      if (!isCurrent()) return;
+      const switched = account.current !== null && account.current !== actor;
+      account.current = actor;
+      if (switched) {
+        closeReview();
+        pendingAction.current = null;
+        setBusy(null);
+        setOutcome(null);
+        setSearchDraft("");
+        if (search || offset !== 0) {
+          // The next read uses fresh filters for the replacement account.
+          setSearch("");
+          setOffset(0);
+          return;
+        }
+      }
+      const api = apiClient(actor);
+      let managedNextOffset: number | null = null;
+      const records = tab === "usage"
+        ? api.adminUsageSummary(30).then(result => result.orgs as unknown as Row[])
+        : tab === "managed publishing"
+          ? api.adminManagedPublishingQueue(offset, actor).then(result => {
+            managedNextOffset = result.nextOffset === offset + 50 ? result.nextOffset : null;
+            return result.requests;
+          })
+        : tab === "moderation"
+          ? api.adminModerationReports({
+            limit: 50, offset, status: reportStatus,
+            ...(reportType === "all" ? {} : { entityType: reportType }),
+          }).then(result => result.reports as unknown as Row[])
+        : api.adminList(tab, {
+          limit: 50, offset,
+          ...(tab === "jobs" ? { type: jobType, status } : {}),
+          ...(tab === "support" ? { status } : {}),
+          ...(tab === "users" ? { search } : {}),
+        });
+      const health = tab === "jobs" && jobType === "document"
+        ? api.adminDocumentJobHealth().then(result => result.health as unknown as Row)
+        : Promise.resolve(null);
+      const [result, queueHealth] = await Promise.allSettled([records, health]);
+      if (!isCurrent()) return;
+      const access = await api.adminAccess();
+      if (!isCurrent()) return;
+      if (access.viewerId !== actor || access.admin !== true) {
+        closeReview();
+        setSnapshot({ kind: "denied" });
+        return;
+      }
+      verifiedActor = actor;
+      if (tab === "managed publishing" && access.managedPublishing !== true) {
+        setTab("users");
+        setOffset(0);
+        return;
+      }
+      if (result.status === "rejected") throw result.reason;
+      if (queueHealth.status === "rejected") throw queueHealth.reason;
+      if (!Array.isArray(result.value)) throw new Error("The service did not return the requested records.");
+      setSnapshot({ kind: "ready", actor, query, version: current, rows: result.value, documentHealth: queueHealth.value,
+        managedPublishing: access.managedPublishing === true, managedNextOffset });
+    } catch (reason) {
+      if (!isCurrent()) return;
+      if (reason instanceof ApiClientError && reason.status === 403) {
+        closeReview();
+        setSnapshot({ kind: "denied" });
+      } else {
+        setSnapshot({ kind: "unavailable", actor: verifiedActor, message: reason instanceof Error ? reason.message : "Unable to load the admin console." });
+      }
+    }
+  }, [query, tab, offset, jobType, status, search, reportStatus, reportType]);
+
+  useEffect(() => {
+    void load();
+    const recheck = () => { if (document.visibilityState !== "hidden") void load("foreground"); };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      requestId.current++;
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    };
+  }, [load]);
+  useEffect(() => () => { pendingAction.current = null; account.current = null; }, []);
+
+  async function update(id: string, action: (api: ReturnType<typeof apiClient>) => Promise<unknown>, message: string) {
+    if (!ready || ready.version !== requestId.current || pendingAction.current) return;
+    const { actor } = ready;
+    const operation = {};
+    pendingAction.current = operation;
+    const isCurrent = () => pendingAction.current === operation;
+    setBusy(id);
+    setOutcome(null);
+    try {
+      await action(apiClient(actor));
+      if (!isCurrent()) return;
+      setOutcome({ kind: "confirmed", actor, message });
+      await load();
+    } catch (reason) {
+      if (!isCurrent()) return;
+      const problem = reason instanceof Error ? reason.message : "The change could not be confirmed.";
+      const accessChanged = reason instanceof ApiClientError && (reason.status === 401 || reason.status === 403
+        || (reason.status === 409 && reason.code === "auth_error"));
+      const rejection = reason instanceof ApiClientError && reason.status >= 400 && reason.status < 500
+        && reason.status !== 408 && reason.status !== 409 && reason.code !== "invalid_response";
+      if (accessChanged) {
+        setOutcome({ kind: "rejected", actor, message: problem });
+        await load();
+        return;
+      }
+      if (rejection) {
+        setOutcome({ kind: "rejected", actor, message: problem });
+      } else {
+        requestId.current++;
+        setPendingModeration(null);
+        setHoldJobId(null);
+        setSnapshot({ kind: "unavailable", actor, message: "" });
+        setOutcome({ kind: "unconfirmed", actor, message: `${problem} Refresh to check the current state before trying again.` });
+      }
+    } finally {
+      if (isCurrent()) { pendingAction.current = null; setBusy(null); }
+    }
+  }
+
+  async function downloadManagedPackage(row: Row) {
+    if (!ready || ready.version !== requestId.current || pendingAction.current || typeof row.claimedAt !== "string") return;
+    const { actor, version } = ready;
+    const jobId = value(row, "jobId"), checksum = value(row, "packageSha256"), channel = value(row, "channel");
+    if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(jobId) || !/^[a-f0-9]{64}$/.test(checksum)
+      || !/^(kdp|apple|barnesnoble|lulu|googleplay)$/.test(channel)) return;
+    const operation = {};
+    pendingAction.current = operation;
+    const isCurrent = () => pendingAction.current === operation && requestId.current === version;
+    const filename = `${channel}-export.zip`;
+    setBusy(jobId);
+    setOutcome(null);
+    try {
+      await readBrowserSession(actor);
+      if (!isCurrent()) return;
+      const response = await fetch(`/api/backend/v1/admin/managed-publishing/${jobId}/package?checksum=${checksum}`, {
+        credentials: "same-origin", redirect: "error", cache: "no-store",
+        headers: { "x-bookworm-actor": actor }, signal: AbortSignal.timeout(120_000),
+      });
+      const size = Number(response.headers.get("content-length"));
+      if (!response.ok || response.headers.get("content-type") !== "application/zip"
+        || response.headers.get("content-disposition") !== `attachment; filename="${filename}"`
+        || !Number.isSafeInteger(size) || size < 1 || size > 200 * 1024 * 1024) {
+        await response.body?.cancel().catch(() => {});
+        throw new Error("The assigned package could not be downloaded. Refresh to check its current status.");
+      }
+      const blob = await response.blob();
+      if (blob.size !== size) throw new Error("The package download was incomplete.");
+      await readBrowserSession(actor);
+      if (!isCurrent()) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      try { link.click(); } finally {
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (reason) {
+      if (isCurrent()) {
+        try { await readBrowserSession(actor); }
+        catch { if (isCurrent()) await load(); return; }
+        if (isCurrent()) setOutcome({ kind: "rejected", actor, message: reason instanceof Error ? reason.message : "Package download failed." });
+      }
+    } finally {
+      if (pendingAction.current === operation) { pendingAction.current = null; setBusy(null); }
+    }
+  }
+
+  function changeTab(next: Tab) {
+    if (pendingAction.current) return;
+    setTab(next); setOffset(0); setStatus(""); setReportStatus("open"); setReportType("all");
+    setPendingModeration(null); setSearch(""); setSearchDraft(""); setOutcome(null); setHoldJobId(null);
+  }
+
+  if (snapshot.kind === "denied") return <main className="mx-auto max-w-3xl px-6 py-20">
+    <p className="text-xs uppercase tracking-[0.18em] text-white/40">Platform administration</p>
+    <h1 className="mt-4 text-4xl font-medium tracking-tight">Administrator access required</h1>
+    <p className="mt-5 text-sm leading-6 text-white/60">This account does not have platform administrator access. Workspace owner and team roles do not grant access to this console.</p>
+    <div className="mt-8 flex flex-wrap gap-3"><Link href="/dashboard" className={button}>Back to dashboard</Link><button type="button" onClick={() => void load()} className={button}>Recheck access</button></div>
+  </main>;
+
+  return <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8 lg:py-12">
+    <div className="flex flex-wrap items-end justify-between gap-5 border-b border-white/10 pb-8">
+      <div><p className="text-[11px] font-medium uppercase tracking-[0.18em] text-white/40">Platform operations</p><h1 className="mt-3 text-4xl font-medium tracking-[-0.055em]">Admin console</h1><p className="mt-3 max-w-xl text-sm leading-6 text-white/55">Manage platform settings and support, inspect jobs, and review activity across accounts.</p></div>
+      <button type="button" disabled={loading || !!busy} onClick={() => void load()} className={button}>Refresh</button>
+    </div>
+
+    <nav aria-label="Administration sections" className="mt-6 flex flex-wrap gap-2">
+      {tabs.filter(item => item !== "managed publishing" || ready?.managedPublishing || tab === item).map((item) => <button type="button" key={item} disabled={!!busy} onClick={() => changeTab(item)} aria-current={tab === item ? "page" : undefined} className={`rounded-full px-4 py-2.5 text-sm capitalize outline-none focus-visible:ring-2 focus-visible:ring-white disabled:opacity-40 ${tab === item ? "bg-white font-semibold text-black" : "border border-white/15 text-white/60 hover:text-white"}`}>{item === "flags" ? "Feature flags" : item}</button>)}
+    </nav>
+    {error && <p role="alert" className="mt-6 rounded-xl border border-red-400/20 bg-red-400/10 p-4 text-sm text-red-100">{error}</p>}
+    {notice && <p role="status" className="mt-6 rounded-xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">{notice}</p>}
+
+    <div className="mt-8 flex flex-wrap items-end justify-between gap-4">
+      {tab === "moderation" && <div className="flex flex-wrap gap-3">
+        <label className="text-xs text-white/50">Report status<select value={reportStatus} disabled={!!busy} onChange={(event) => { setReportStatus(event.target.value as typeof reportStatus); setOffset(0); setPendingModeration(null); }} className={input + " mt-2 block"}><option value="open">Open</option><option value="actioned">Actioned</option><option value="dismissed">Dismissed</option><option value="all">All reports</option></select></label>
+        <label className="text-xs text-white/50">Content type<select value={reportType} disabled={!!busy} onChange={(event) => { setReportType(event.target.value as typeof reportType); setOffset(0); setPendingModeration(null); }} className={input + " mt-2 block"}><option value="all">Posts and comments</option><option value="post">Posts</option><option value="comment">Comments</option></select></label>
+      </div>}
+      <div><h2 className="text-xl font-medium capitalize">{tab === "flags" ? "Feature flags" : tab === "usage" ? "Usage by organization" : tab === "moderation" ? "Community report review" : tab}</h2><p className="mt-1 text-xs text-white/40">{tab === "usage" ? "Last 30 days · up to 10,000 usage events · top 50 organizations" : tab === "flags" ? "Changes apply only to the selected scope and are recorded in the audit log." : tab === "moderation" ? "Platform-wide post and comment reports · soft removal preserves an auditable record." : tab === "managed publishing" ? "Active requests and your claims · oldest first" : "50 records per page · newest first"}</p></div>
+      {tab === "users" && <form onSubmit={(event) => { event.preventDefault(); setOffset(0); setSearch(searchDraft.trim()); }} className="flex flex-wrap items-end gap-2">
+        <label className="text-xs text-white/50">Find a user<input value={searchDraft} disabled={!!busy} onChange={(event) => setSearchDraft(event.target.value)} maxLength={200} placeholder="Display name or full user ID" className={`${input} mt-2 block w-64 max-w-full`} /></label><button disabled={!!busy} className={button}>Search</button>
+      </form>}
+      {(tab === "jobs" || tab === "support") && <div className="flex gap-3">
+        {tab === "jobs" && <label className="text-xs text-white/50">Job type<select value={jobType} disabled={!!busy} onChange={(event) => { setJobType(event.target.value as "ai" | "publishing" | "document"); setOffset(0); }} className={`${input} mt-2 block`}><option value="ai">AI generation</option><option value="publishing">Publishing packages</option><option value="document">Manuscript imports</option></select></label>}
+        <label className="text-xs text-white/50">Status<select value={status} disabled={!!busy} onChange={(event) => { setStatus(event.target.value); setOffset(0); }} className={`${input} mt-2 block`}><option value="">All statuses</option>{(tab === "support" ? ticketStatuses : ["queued", "running", "succeeded", "failed", "cancelled"]).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+      </div>}
+    </div>
+
+    {tab === "jobs" && jobType === "document" && documentHealth && <section aria-label="Document queue health" className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {[["Ready now", "due_queued"], ["Running", "running"], ["Expired leases", "expired_running"], ["Dead letters", "dead_letters"]].map(([label, key]) => <div key={key} className="rounded-2xl border border-white/10 bg-white/[0.025] p-5"><p className="text-xs text-white/45">{label}</p><p className="mt-2 text-2xl font-medium tabular-nums">{Number(documentHealth[key] ?? 0).toLocaleString()}</p></div>)}
+      <p className="sm:col-span-2 lg:col-span-4 text-xs text-white/35">Snapshot {date(documentHealth.generated_at)}. Expired leases and dead letters require operator investigation; recovery remains book-scoped.</p>
+    </section>}
+
+    <section aria-label={`${tab} records`} aria-busy={loading} className="mt-5 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.025]">
+      {loading ? <p role="status" className="p-12 text-center text-sm text-white/45">Loading {tab}…</p> : !rows.length ? <div className="p-12 text-center"><p className="text-base text-white/80">{!ready ? "Data unavailable" : tab === "moderation" ? "No reports match these filters" : "No matching records"}</p><p className="mt-2 text-sm text-white/40">{!ready ? "Use Refresh to check the latest records." : tab === "moderation" ? "The queue is clear for this filter. Check another status or content type." : "Records will appear here when there is activity. Adjust filters or check another page."}</p></div> : <div className="divide-y divide-white/10">
+        {rows.map((row, index) => {
+          const id = tab === "managed publishing" ? value(row, "jobId") : value(row, "id", String(index));
+          const stamp = date(row.created_at);
+          const listingUrl = value(row, "listingUrl", "");
+          const portal = retailerPortal(value(row, "channel", ""));
+          const target = row.target && typeof row.target === "object" ? row.target as Row : null;
+          const pendingAction = pendingModeration?.reportId === id ? pendingModeration.action : null;
+          return <article key={id} className="p-5 sm:p-6">
+            {tab === "managed publishing" && <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0"><h3 className="break-words font-medium">{value(row, "title")}</h3>
+                <p className="mt-2 text-xs text-white/60">{value(row, "channel")} · Requested {date(row.requestedAt)}</p>
+                <p className="mt-2 break-all font-mono text-xs text-white/45">SHA-256 {value(row, "packageSha256")}</p></div>
+              {typeof row.confirmedAt === "string" ? <div className="space-y-2 text-sm">
+                <p className="text-emerald-100">Publication confirmed · {date(row.confirmedAt)}</p>
+                {/^https:\/\/[a-z0-9.]+\/[A-Za-z0-9/_~.%+?=-]+$/.test(listingUrl) && <a href={listingUrl} target="_blank"
+                  rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline">Open retailer listing</a>}
+              </div> : typeof row.claimedAt === "string" ? <div className="w-full max-w-md space-y-2">
+                <p className="text-sm text-emerald-100">Claimed by you</p>
+                <button type="button" disabled={!!busy || !ready} className={button} onClick={() => void downloadManagedPackage(row)}>
+                  {busy === id ? "Verifying ZIP…" : "Download private ZIP"}
+                </button>
+                {portal && <p className="text-sm text-white/75">Follow the upload steps in the ZIP at{" "}
+                  <a href={portal.href} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center underline underline-offset-4">{portal.label}</a>.
+                </p>}
+                <details className="mt-2 rounded-xl border border-white/15 p-3">
+                  <summary className="cursor-pointer py-2 text-sm">Confirm publication</summary>
+                  <form className="mt-2 space-y-3" onSubmit={event => {
+                    event.preventDefault();
+                    if (!ready || busy) return;
+                    const form = new FormData(event.currentTarget);
+                    const url = String(form.get("listingUrl") ?? "").trim();
+                    if (form.get("verified") !== "on") return;
+                    void update(id, async api => {
+                      await readBrowserSession(ready.actor);
+                      await api.adminConfirmManagedPublishing(id, value(row, "packageSha256"), url, ready.actor);
+                      await readBrowserSession(ready.actor);
+                    }, "Publication confirmation saved.");
+                  }}>
+                    <label className="block text-sm">Retailer listing URL
+                      <input name="listingUrl" type="url" pattern="https://.*" required maxLength={1024} disabled={!!busy}
+                        placeholder="https://…" className={`${input} mt-2 block w-full`} />
+                    </label>
+                    <label className="flex items-start gap-2 text-sm"><input name="verified" type="checkbox" required disabled={!!busy} />
+                      I verified this listing in the retailer account.</label>
+                    <button type="submit" disabled={!!busy || !ready} className={button}>Save confirmation</button>
+                  </form>
+                </details>
+              </div>
+                : <button type="button" disabled={!!busy || !ready} className={button}
+                  onClick={() => ready && void update(id, api => api.adminClaimManagedPublishing(id, value(row, "packageSha256"), ready.actor), "Publishing request claimed.")}>
+                  {busy === id ? "Claiming…" : "Claim request"}
+                </button>}
+            </div>}
+            {tab === "moderation" && <div className="space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div><p className="text-xs uppercase tracking-[0.14em] text-white/40">{value(row, "entity_type", "community")} report · {value(target ?? {}, "communityName", "Community unavailable")}</p><h3 className="mt-2 text-lg font-medium">{target?.type === "post" ? value(target, "title", "Untitled post") : target?.type === "comment" ? value(target, "parentTitle", "Comment report") : "Reported content unavailable"}</h3><p className="mt-2 text-xs text-white/40">{stamp} · {value(row, "status")}{row.resolution_action ? " · " + value(row, "resolution_action") : ""}</p></div>
+                <span className="h-fit rounded-full border border-white/15 px-3 py-1.5 text-xs capitalize text-white/70">{value(row, "status")}</span>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/20 p-4">
+                <p className="text-[11px] uppercase tracking-[0.14em] text-white/40">Report reason</p>
+                <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-white/80">{value(row, "reason", "No reason supplied.")}</p>
+              </div>
+              {target && <div className="rounded-xl border border-white/10 bg-white/[0.025] p-4">
+                <p className="text-[11px] uppercase tracking-[0.14em] text-white/40">Community content · {value(target, "type")}</p>
+                {target.type === "comment" && typeof target.parentBody === "string" && <p className="mt-3 whitespace-pre-wrap break-words border-l border-white/15 pl-3 text-sm leading-6 text-white/45">{target.parentBody}</p>}
+                <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-white/80">{value(target, "body", "Content unavailable.")}</p>
+                {target.type === "comment" && <p className="mt-3 text-xs text-white/40">Comment visibility: {value(target, "moderationState")}</p>}
+                {target.type === "post" && <p className="mt-3 text-xs text-white/40">Post visibility: {value(target, "status")}</p>}
+              </div>}
+              {row.status === "open" && <div>
+                {pendingAction ? <div role="group" aria-labelledby={"moderation-confirm-" + id} className="rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4">
+                  <p id={"moderation-confirm-" + id} className="text-sm text-amber-100">{pendingAction === "remove" ? "Remove this community content from ordinary readers? The content is soft-hidden and retained for audit." : "Dismiss this report without changing the community content?"}</p>
+                  <div className="mt-4 flex flex-wrap gap-2"><button type="button" className={button} disabled={!!busy} onClick={() => setPendingModeration(null)}>Cancel</button><button type="button" className={button} disabled={!!busy || (pendingAction === "remove" && !target)} onClick={() => void update(id,
+                    api => api.adminResolveModerationReport(id, pendingAction),
+                    "Moderation outcome saved or recovered. Use the status filter to review closed reports.")}>{busy === id ? "Saving…" : pendingAction === "remove" ? "Confirm removal" : "Confirm dismissal"}</button></div>
+                </div> : <div className="flex flex-wrap gap-2">
+                  <button type="button" className={button} disabled={!!busy || !target} onClick={() => setPendingModeration({ reportId: id, action: "remove" })}>Review removal</button>
+                  <button type="button" className={button} disabled={!!busy} onClick={() => setPendingModeration({ reportId: id, action: "dismiss" })}>Dismiss report</button>
+                </div>}
+              </div>}
+            </div>}
+            {tab === "users" && <div><h3 className="font-medium">{value(row, "display_name", "Unnamed author")}</h3><p className="mt-2 break-all font-mono text-xs text-white/45">{id}</p><p className="mt-2 text-xs text-white/40">Joined {stamp}</p></div>}
+            {tab === "jobs" && <div><div className="flex flex-wrap justify-between gap-4"><div><h3 className="text-sm font-medium">{value(row, "job_type", value(row, "channel", jobType === "ai" ? value(row, "agent_type", "AI generation") : "Publishing package"))}</h3><p className="mt-2 break-all font-mono text-xs text-white/40">{id}</p><p className="mt-2 text-xs text-white/40">{stamp} · Attempts: {value(row, "attempts", "0")}</p>{typeof row.error_code === "string" && row.error_code && <p className="mt-2 text-xs text-amber-200">{row.error_code}</p>}</div><span className="h-fit rounded-full border border-white/15 px-3 py-1.5 text-xs capitalize text-white/70">{value(row, "status")}</span></div>
+              {jobType === "ai" && row.status === "running" && ["illustrator", "cover_designer"].includes(String(row.agent_type)) && <div className="mt-4">
+                <button type="button" className={button} disabled={!!busy} onClick={() => {
+                  setHoldJobId(holdJobId === id ? null : id); setIncidentRef(""); setStorageChecked(false); setReceiptReviewed(false); setProviderReviewed(false);
+                }}>{holdJobId === id ? "Close hold review" : "Review unresolved image hold"}</button>
+                {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4" onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!storageChecked || !providerReviewed) return;
+                  void update(id, api => api.adminReleaseImageHold(id, { incidentRef, storageChecked: true, providerReviewed: true }),
+                    "Unresolved image hold released without a customer debit. Audit the incident record.");
+                }}>
+                  <p className="text-sm text-amber-100">Only release an aged job with no saved output after reviewing provider usage and private storage. Bookworm may still have been billed; this action never charges the author.</p>
+                  <label className="block text-xs text-white/70">Incident reference
+                    <input required pattern="[A-Z0-9][A-Z0-9-]{5,63}" maxLength={64} value={incidentRef} onChange={(event) => setIncidentRef(event.target.value.toUpperCase())} placeholder="INC-123456" className={`${input} mt-2 block w-full`} />
+                  </label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={storageChecked} onChange={(event) => setStorageChecked(event.target.checked)} className="mt-0.5" />I checked private storage and found no delivered asset or recoverable completion receipt.</label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={providerReviewed} onChange={(event) => setProviderReviewed(event.target.checked)} className="mt-0.5" />I reviewed provider usage or support evidence and recorded this incident; I am not asserting zero provider cost.</label>
+                  <button type="submit" disabled={!!busy || !storageChecked || !providerReviewed || !/^[A-Z0-9][A-Z0-9-]{5,63}$/.test(incidentRef)} className={button}>{busy === id ? "Releasing…" : "Release held image credit"}</button>
+                </form>}
+              </div>}
+              {jobType === "ai" && row.status === "running" && row.agent_type === "bookbible" && <div className="mt-4">
+                <button type="button" className={button} disabled={!!busy} onClick={() => {
+                  setHoldJobId(holdJobId === id ? null : id); setIncidentRef(""); setReceiptReviewed(false); setProviderReviewed(false);
+                }}>{holdJobId === id ? "Close hold review" : "Review Book Bible hold"}</button>
+                {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 p-4" onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!receiptReviewed || !providerReviewed) return;
+                  void update(id, api => api.adminReleaseBibleHold(id, { incidentRef, receiptReviewed: true, providerReviewed: true }),
+                    "Book Bible hold released without a customer debit. Audit the incident record.");
+                }}>
+                  <p className="text-sm text-amber-100">Release only a request and receipt at least 15 minutes old with no saved result, output or debit. Age alone does not prove failure. Recover saved results from the author’s Book Bible; malformed saved results require separate investigation. Bookworm may still have provider costs.</p>
+                  <label className="block text-xs text-white/70">Incident reference<input required pattern="[A-Z0-9][A-Z0-9-]{5,63}" maxLength={64} value={incidentRef} onChange={(event) => setIncidentRef(event.target.value)} className={`${input} mt-2 block w-full`} placeholder="INC-BIBLE-123" /></label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={receiptReviewed} onChange={(event) => setReceiptReviewed(event.target.checked)} />I checked the private Book Bible receipt and found no saved result to recover.</label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={providerReviewed} onChange={(event) => setProviderReviewed(event.target.checked)} />I reviewed provider usage and recorded the outcome in the incident.</label>
+                  <button type="submit" disabled={!!busy || !receiptReviewed || !providerReviewed || !/^[A-Z0-9][A-Z0-9-]{5,63}$/.test(incidentRef)} className={button}>{busy === id ? "Releasing…" : "Release held Book Bible credit"}</button>
+                </form>}
+              </div>}
+              {jobType === "ai" && row.status === "running" && row.error_code === "ai_provider_outcome_unconfirmed" && <div className="mt-4">
+                <button type="button" className={button} disabled={!!busy} onClick={() => {
+                  setHoldJobId(holdJobId === id ? null : id); setIncidentRef(""); setReceiptReviewed(false); setProviderReviewed(false); setReviewHoldAction("settle");
+                }}>{holdJobId === id ? "Close hold review" : "Review unresolved text hold"}</button>
+                {holdJobId === id && <form className="mt-4 max-w-xl space-y-3 rounded-xl border border-amber-200/20 bg-amber-200/[0.04] p-4" onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!receiptReviewed || !providerReviewed) return;
+                  void update(id, api => reviewHoldAction === "settle"
+                    ? api.adminSettleReviewReceipt(id, { incidentRef, receiptReviewed: true, providerReviewed: true })
+                    : api.adminReleaseReviewHold(id, { incidentRef, receiptReviewed: true, providerReviewed: true }),
+                  reviewHoldAction === "settle"
+                    ? "Saved AI review result settled without regeneration. Audit the incident and customer usage."
+                    : "Unresolved AI review hold released without a customer debit. Audit the incident record.");
+                }}>
+                  <p className="text-sm text-amber-100">Settle a saved result without another AI call, or release only an aged request with no saved result. Review the private receipt and provider usage first. Release does not charge the author; settlement records the original usage.</p>
+                  <fieldset className="space-y-2 text-xs text-white/70"><legend className="mb-2">Resolution</legend>
+                    <label className="flex items-center gap-2"><input type="radio" name={`review-hold-${id}`} checked={reviewHoldAction === "settle"} onChange={() => { setReviewHoldAction("settle"); setReceiptReviewed(false); }} />Settle the saved result</label>
+                    <label className="flex items-center gap-2"><input type="radio" name={`review-hold-${id}`} checked={reviewHoldAction === "release"} onChange={() => { setReviewHoldAction("release"); setReceiptReviewed(false); }} />Release with no saved result</label>
+                  </fieldset>
+                  <label className="block text-xs text-white/70">Incident reference
+                    <input required pattern="[A-Z0-9][A-Z0-9-]{5,63}" maxLength={64} value={incidentRef} onChange={(event) => setIncidentRef(event.target.value.toUpperCase())} placeholder="INC-123456" className={`${input} mt-2 block w-full`} />
+                  </label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={receiptReviewed} onChange={(event) => setReceiptReviewed(event.target.checked)} className="mt-0.5" />{reviewHoldAction === "settle" ? "I checked the private receipt and confirmed a matching saved result for this job." : "I checked the private receipt and found no saved result to recover."}</label>
+                  <label className="flex items-start gap-2 text-xs text-white/70"><input type="checkbox" checked={providerReviewed} onChange={(event) => setProviderReviewed(event.target.checked)} className="mt-0.5" />I reviewed provider usage or support evidence and recorded this incident; I am not asserting zero provider cost.</label>
+                  <button type="submit" disabled={!!busy || !receiptReviewed || !providerReviewed || !/^[A-Z0-9][A-Z0-9-]{5,63}$/.test(incidentRef)} className={button}>{busy === id ? "Resolving…" : reviewHoldAction === "settle" ? "Settle saved AI result" : "Release held text credit"}</button>
+                </form>}
+              </div>}
+            </div>}
+            {tab === "flags" && <div className="flex flex-wrap items-center justify-between gap-4"><div><h3 className="font-medium">{value(row, "key")}</h3><p className="mt-2 break-all text-xs text-white/45">{value(row, "scope_type", "global")} {row.scope_id ? `· ${value(row, "scope_id")}` : ""}</p></div><button type="button" role="switch" aria-checked={row.enabled === true} aria-label={`Enable ${value(row, "key")} for ${value(row, "scope_type", "global")} ${value(row, "scope_id", "")}`} disabled={loading || !!busy} onClick={() => void update(id, api => api.adminToggleFlag(String(row.key), row.enabled !== true, { scopeType: value(row, "scope_type", "global"), scopeId: typeof row.scope_id === "string" ? row.scope_id : null }), "Feature flag saved.")} className={button}>{busy === id ? "Saving…" : row.enabled === true ? "Enabled" : "Disabled"}</button></div>}
+            {tab === "support" && <div><div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-medium">{value(row, "subject", "Support request")}</h3><p className="mt-2 text-xs capitalize text-white/45">{value(row, "category", "general")} · {value(row, "priority", "normal")} priority · {stamp}</p><p className="mt-2 break-all text-xs text-white/35">User {value(row, "user_id")}</p></div><label className="text-xs text-white/50">Ticket status<select value={value(row, "status", "open")} disabled={loading || !!busy} onChange={(event) => void update(id, api => api.adminUpdateTicket(id, event.target.value as TicketStatus), "Ticket status saved.")} className={`${input} mt-2 block`}>{ticketStatuses.map((item) => <option key={item} value={item}>{item}</option>)}</select></label></div><details className="mt-4 text-sm text-white/60"><summary className="w-fit cursor-pointer rounded focus-visible:outline focus-visible:outline-white">Read request</summary><p className="mt-3 whitespace-pre-wrap break-words leading-6">{value(row, "body", "No message supplied.")}</p></details></div>}
+            {tab === "audit" && <div><h3 className="text-sm font-medium">{value(row, "action")}</h3><p className="mt-2 break-all text-xs text-white/45">{value(row, "entity_type")} · {value(row, "entity_id")}</p><p className="mt-2 break-all text-xs text-white/35">Actor {value(row, "actor_id", "System")} · {stamp}</p></div>}
+            {tab === "usage" && <div><h3 className="break-all text-sm font-medium">{value(row, "organizationId")}</h3><dl className="mt-4 flex flex-wrap gap-6">{Object.entries(row.byMeter && typeof row.byMeter === "object" ? row.byMeter : {}).map(([meter, quantity]) => <div key={meter}><dt className="text-xs capitalize text-white/45">{meter.replaceAll("_", " ")}</dt><dd className="mt-1 text-lg">{Number(quantity).toLocaleString()}</dd></div>)}</dl></div>}
+          </article>;
+        })}
+      </div>}
+    </section>
+    {tab !== "flags" && tab !== "usage" && <div className="mt-5 flex items-center justify-between gap-3"><button type="button" disabled={offset === 0 || loading || !!busy} onClick={() => setOffset((page) => Math.max(0, page - 50))} className={button}>Previous</button><p className="text-xs text-white/40">Page {Math.floor(offset / 50) + 1}</p><button type="button" disabled={(tab === "managed publishing" ? ready?.managedNextOffset == null : rows.length < 50) || loading || !!busy} onClick={() => setOffset((page) => page + 50)} className={button}>Next</button></div>}
+  </main>;
+}

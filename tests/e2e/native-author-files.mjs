@@ -1,0 +1,357 @@
+/** Real API/SDK calls against the runner-owned native services; no injected fakes. */
+import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { localFetch, localOrigin, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
+
+requireNativeAuthorRunner();
+assert.equal(process.env.NODE_ENV, 'production', 'Never load the developer .env.local');
+let input = '';
+for await (const chunk of process.stdin) {
+  input += chunk;
+  assert.ok(input.length < 2 * 1024 * 1024, 'Native fixture input exceeds its limit');
+}
+const setup = JSON.parse(input);
+const origins = new Set([setup.url, setup.scannerUrl, setup.documentUrl, setup.renderingUrl, setup.publishingUrl].map(localOrigin));
+assert.equal(setup.url, 'http://127.0.0.1:55321');
+assert.equal(process.env.SUPABASE_URL, setup.url);
+assert.ok(process.env.SUPABASE_ANON_KEY === setup.anonKey, 'Disposable anonymous key mismatch');
+assert.ok(process.env.SUPABASE_SERVICE_ROLE_KEY === setup.serviceKey, 'Disposable service key mismatch');
+globalThis.fetch = localFetch(origins);
+const { createClient } = await import('@supabase/supabase-js');
+const { buildApp } = await import('../../services/api/src/app.ts');
+const { runOneDocumentJob } = await import('../../services/api/src/lib/document-worker.ts');
+const { bookNodesPlainText, bookNodesWordCount } = await import('../../packages/book-model/src/plain-text.ts');
+const options = { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }, global: { fetch } };
+const service = createClient(setup.url, setup.serviceKey, options);
+const app = await buildApp();
+const address = await app.listen({ host: '127.0.0.1', port: 0 });
+origins.add(localOrigin(address));
+// Invitation links stay on this owned origin; the fixture uses only their
+// one-time fragment through the real acceptance API, never an email sender.
+process.env.APP_URL = address;
+const clients = [];
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+function data(result, label) {
+  assert.ok(!result.error, `${label}: ${result.error?.code ?? ''} ${result.error?.message ?? ''}`);
+  assert.ok(result.data != null, `${label}: no data returned`);
+  return result.data;
+}
+async function request(token, method, path, body, expected = 200, headers = {}) {
+  const response = await fetch(address + '/v1' + path, { method,
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body ? { 'content-type': 'application/json' } : {}), ...headers },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (response.ok && response.headers.get('content-type') === 'application/zip') {
+    assert.equal(response.status, expected, `${method} ${path}: unexpected ZIP response`);
+    return { bytes: Buffer.from(await response.arrayBuffer()), disposition: response.headers.get('content-disposition') };
+  }
+  const result = await response.json();
+  assert.equal(response.status, expected, `${method} ${path}: ${result.error?.message ?? 'unexpected response'}`);
+  return result;
+}
+async function author(label) {
+  const client = createClient(setup.url, setup.anonKey, options);
+  clients.push(client);
+  const password = `Bwk-${randomUUID()}!`;
+  const identity = data(await client.auth.signUp({ email: `${randomUUID()}@bookworm.local.test`,
+    password, options: { data: { full_name: label, role: 'admin' } } }), 'native signup');
+  assert.ok(identity.session?.access_token, 'Local email signup did not return a session');
+  const profile = data(await client.from('profiles').select('id').eq('id', identity.user.id).single(), 'Auth profile trigger');
+  assert.equal(profile.id, identity.user.id);
+  const token = identity.session.access_token;
+  const workspace = await request(token, 'POST', '/workspaces', { name: label, slug: `native-${randomUUID()}` }, 201);
+  assert.ok(workspace.id && workspace.organization_id);
+  return { client, token, workspace, userId: identity.user.id, email: identity.user.email, password };
+}
+async function upload(author, name, mimeType, bytes, type = 'manuscript') {
+  const declaration = { workspaceId: author.workspace.id, requestId: randomUUID(), filename: name,
+    mimeType, sizeBytes: bytes.length, type };
+  const ticket = await request(author.token, 'POST', '/assets/upload-url', declaration);
+  const replay = await request(author.token, 'POST', '/assets/upload-url', declaration);
+  assert.equal(replay.assetId, ticket.assetId);
+  assert.equal(replay.path, ticket.path);
+  const stored = await fetch(ticket.uploadUrl, { method: 'PUT', headers: { 'content-type': mimeType }, body: bytes });
+  assert.ok(stored.ok, 'Native signed upload failed');
+  await stored.body?.cancel();
+  return { ...ticket, bytes, checksum: hash(bytes) };
+}
+async function confirm(author, asset, expected = 200, checksum = asset.checksum) {
+  return request(author.token, 'POST', `/assets/${asset.assetId}/confirm`, { checksumSha256: checksum, sizeBytes: asset.bytes.length }, expected);
+}
+async function download(author, asset) {
+  const result = await request(author.token, 'GET', `/assets/${asset.assetId}/download-url`);
+  const response = await fetch(result.url);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), asset.bytes, 'Original stored bytes changed');
+}
+async function quarantined(author, asset) {
+  await request(author.token, 'GET', `/assets/${asset.assetId}/download-url`, undefined, 409);
+  assert.ok((await author.client.storage.from('book-assets').download(asset.path)).error,
+    'Storage exposed a quarantined object to its owner');
+  assert.ok((await author.client.storage.from('book-assets').createSignedUrl(asset.path, 60)).error,
+    'Storage signed a quarantined object for its owner');
+}
+
+try {
+  await request(null, 'GET', '/workspaces', undefined, 401);
+  await request('not-a-valid-token', 'GET', '/workspaces', undefined, 401);
+  const alice = await author('Native author Alice');
+  const bob = await author('Native author Bob');
+  const workspaces = await request(alice.token, 'GET', '/workspaces');
+  assert.deepEqual(workspaces.workspaces.map(value => value.id), [alice.workspace.id]);
+  assert.deepEqual(data(await bob.client.from('workspaces').select('id').eq('id', alice.workspace.id), 'foreign workspace read'), []);
+  console.log('PASS native Auth signup, automatic profiles, API authentication and tenant isolation');
+
+  const accountRequests = '/account/data-requests';
+  const deleteInput = { type: 'delete', confirmation: 'DELETE MY ACCOUNT', reason: 'Synthetic privacy request' };
+  await request(null, 'POST', accountRequests, deleteInput, 401);
+  await request(alice.token, 'POST', accountRequests, { ...deleteInput, confirmation: 'delete my account' }, 422);
+  const rejectedIntake = await alice.client.rpc('submit_delete_data_rights_request', { p_confirmation: 'delete my account' });
+  assert.equal(rejectedIntake.error?.code, '22023', 'Database accepted an unconfirmed request');
+  const directDeletion = await alice.client.from('data_rights_requests').insert({
+    user_id: alice.userId, request_type: 'delete', status: 'submitted',
+  });
+  assert.equal(directDeletion.error?.code, '42501', 'PostgREST allowed an unconfirmed deletion request');
+  const directCompletedExport = await alice.client.from('data_rights_requests').insert({
+    user_id: alice.userId, request_type: 'export', status: 'submitted', completed_at: new Date().toISOString(),
+  });
+  assert.equal(directCompletedExport.error?.code, '42501', 'PostgREST allowed a server-owned export timestamp');
+  assert.deepEqual((await request(alice.token, 'GET', accountRequests)).requests, [], 'Rejected intake left a request behind');
+  const exportRequest = await request(alice.token, 'POST', accountRequests, { type: 'export' }, 201);
+  assert.equal(exportRequest.request.request_type, 'export');
+  const deletion = await request(alice.token, 'POST', accountRequests, deleteInput, 201);
+  assert.equal(deletion.viewerId, alice.userId);
+  assert.equal(deletion.request.user_id, alice.userId);
+  assert.equal(deletion.request.request_type, 'delete');
+  assert.equal(deletion.request.status, 'submitted');
+  await request(alice.token, 'POST', accountRequests, deleteInput, 409);
+  assert.deepEqual((await request(bob.token, 'GET', accountRequests)).requests, []);
+  await request(bob.token, 'DELETE', accountRequests + '/' + deletion.request.id, undefined, 404);
+  const cancelled = await request(alice.token, 'DELETE', accountRequests + '/' + deletion.request.id);
+  assert.equal(cancelled.request.status, 'cancelled');
+  const ticket = await request(alice.token, 'POST', '/support/tickets',
+    { category: 'technical', subject: 'Synthetic support request', body: 'Native fixture for the account intake boundary.' }, 201);
+  assert.equal(ticket.ticket.status, 'open');
+  assert.equal(ticket.ticket.priority, 'normal');
+  assert.deepEqual((await request(bob.token, 'GET', '/support/tickets')).tickets, []);
+  console.log('PASS PostgREST direct deletion and timestamp denial, confirmed API intake, duplicate and foreign-account refusal, cancellation and support');
+
+  const bookRequest = { workspaceId: alice.workspace.id, requestId: randomUUID(), title: 'Native author manuscript', authorName: 'Synthetic author' };
+  const book = await request(alice.token, 'POST', '/books', bookRequest, 201);
+  assert.equal((await request(alice.token, 'POST', '/books', bookRequest)).id, book.id);
+  await request(alice.token, 'POST', '/books', { ...bookRequest, title: 'Changed replay' }, 409);
+  await request(bob.token, 'GET', `/books/${book.id}`, undefined, 404);
+  console.log('PASS real book creation, durable replay and foreign-book refusal');
+
+  const text = await upload(alice, 'original.txt', 'text/plain', Buffer.from('Original manuscript. Captain Mira reaches the harbor.'));
+  await quarantined(alice, text);
+  await request(bob.token, 'POST', `/assets/${text.assetId}/confirm`, { checksumSha256: text.checksum, sizeBytes: text.bytes.length }, 404);
+  await confirm(alice, text, 422, '0'.repeat(64));
+  await quarantined(alice, text);
+  // Reach a real owned service with no scanner route: a dependency error must
+  // persist quarantine, not convert an outage into a clean verdict.
+  try {
+    process.env.SCANNING_SERVICE_URL = setup.documentUrl;
+    await confirm(alice, text, 503);
+    await quarantined(alice, text);
+  } finally { process.env.SCANNING_SERVICE_URL = setup.scannerUrl; }
+  assert.equal((await confirm(alice, text)).scanStatus, 'clean');
+  await download(alice, text);
+  await request(bob.token, 'GET', `/assets/${text.assetId}/download-url`, undefined, 404);
+  assert.ok((await bob.client.storage.from('book-assets').download(text.path)).error, 'Foreign tenant read private bytes');
+  assert.ok((await bob.client.storage.from('book-assets').createSignedUploadUrl(text.path)).error, 'Foreign tenant acquired upload authority');
+  console.log('PASS native signed upload, quarantine, checksum/scanner failure recovery, real clean scan and byte-exact download');
+
+  // Exact harmless bytes in the test-only ClamAV signature database, not malware.
+  const rejected = await upload(alice, 'harmless-rejection.txt', 'text/plain', Buffer.from('Bookworm harmless infected-verdict acceptance fixture.'));
+  await confirm(alice, rejected, 422);
+  await quarantined(alice, rejected);
+  const rejectedVersion = data(await service.from('asset_versions').select('scan_status').eq('asset_id', rejected.assetId).single(), 'rejected scan row');
+  assert.equal(rejectedVersion.scan_status, 'infected');
+  console.log('PASS real infected verdict keeps harmless test object quarantined');
+
+  const docx = await upload(alice, 'table-and-image.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', Buffer.from(setup.docx, 'base64'));
+  await confirm(alice, docx);
+  const { withAutomaticNativeImport } = await import('./native-author-files-import-worker.mjs');
+  const queued = await withAutomaticNativeImport(async waitFor => {
+    const created = await request(alice.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 202);
+    const replay = await request(alice.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 202);
+    assert.equal(replay.job.id, created.job.id);
+    await request(bob.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: docx.assetId }, 404);
+    await waitFor(created.job.id);
+
+    const scanAuthor = await author('Native scan author');
+    for (const [language, filename, expectedText] of [
+      ['en', 'scanned_manuscript.pdf', 'The harbor lantern guided the crew safely home'],
+      ['fr', 'scanned_manuscript_fr.pdf', 'La bibliothèque était fermée ce matin.'],
+    ]) {
+      const scanBook = await request(scanAuthor.token, 'POST', '/books', {
+        workspaceId: scanAuthor.workspace.id, requestId: randomUUID(), title: `Scanned manuscript (${language})`, authorName: 'Synthetic author', language,
+      }, 201);
+      const scanBytes = await readFile(new URL(`../fixtures/books/${filename}`, import.meta.url));
+      const scan = await upload(scanAuthor, filename, 'application/pdf', scanBytes);
+      await quarantined(scanAuthor, scan);
+      const scanJobsPath = `/books/${scanBook.id}/import-jobs`;
+      await request(scanAuthor.token, 'POST', scanJobsPath, { assetId: scan.assetId }, 422);
+      assert.deepEqual((await request(scanAuthor.token, 'GET', scanJobsPath)).jobs, []);
+      assert.equal((await confirm(scanAuthor, scan)).scanStatus, 'clean');
+      const scanJob = await request(scanAuthor.token, 'POST', scanJobsPath, { assetId: scan.assetId }, 202);
+      await waitFor(scanJob.job.id);
+      const { import: scanReceipt } = await request(scanAuthor.token, 'GET', `/books/${scanBook.id}/imports/${scan.assetId}`);
+      assert.equal(scanReceipt.report.confidence, 'low');
+      assert.ok(scanReceipt.report.warnings.some(warning => warning.includes('OCR recovered text from PDF pages: 1.')));
+      assert.equal(scanReceipt.chapters.length, 1);
+      assert.deepEqual(scanReceipt.assetIds, []);
+      const scanChapter = await request(scanAuthor.token, 'GET', `/chapters/${scanReceipt.chapters[0].id}/document`);
+      assert.equal(scanChapter.document.version, 1);
+      assert.ok(bookNodesPlainText(scanChapter.document.nodes).includes(expectedText), `Missing OCR text for ${language}`);
+      assert.deepEqual(await request(scanAuthor.token, 'POST', `/books/${scanBook.id}/import`, { assetId: scan.assetId }), scanReceipt);
+      await download(scanAuthor, scan);
+      console.log(`PASS native scanned PDF (${language}): quarantine, local OCR, saved editable text and byte-exact original`);
+    }
+    return created;
+  });
+  assert.equal((await runOneDocumentJob(service)).status, 'idle');
+  const recovered = await request(alice.token, 'GET', `/books/${book.id}/imports/${docx.assetId}`);
+  const receipt = recovered.import;
+  assert.ok(receipt.chapters.length > 0);
+  assert.equal(receipt.assetIds.length, 1, 'Embedded image did not become a scanned private asset');
+  const chapter = receipt.chapters[0];
+  const saved = await request(alice.token, 'GET', `/chapters/${chapter.id}/document`);
+  assert.equal(saved.document.version, 1);
+  assert.ok(saved.document.nodes.some(node => node.type === 'table'));
+  assert.ok(saved.document.nodes.some(node => node.assetId === receipt.assetIds[0]));
+  const versions = await request(alice.token, 'GET', `/chapters/${chapter.id}/versions`);
+  assert.equal(versions.versions.length, 1);
+  assert.equal(versions.versions[0].plain_text, bookNodesPlainText(saved.document.nodes));
+  assert.equal(versions.versions[0].word_count, bookNodesWordCount(saved.document.nodes));
+  assert.match(versions.versions[0].plain_text, /Captain\tMira/);
+  const embedded = data(await service.from('assets').select('storage_path,checksum').eq('id', receipt.assetIds[0]).single(), 'embedded asset');
+  const embeddedVersion = data(await service.from('asset_versions').select('scan_status').eq('asset_id', receipt.assetIds[0]).single(), 'embedded scan');
+  assert.equal(embeddedVersion.scan_status, 'clean');
+  const image = data(await alice.client.storage.from('book-assets').download(embedded.storage_path), 'embedded image download');
+  assert.equal(hash(Buffer.from(await image.arrayBuffer())), embedded.checksum);
+  assert.ok((await bob.client.storage.from('book-assets').download(embedded.storage_path)).error);
+  await download(alice, docx);
+  const recoveredAgain = await request(alice.token, 'POST', `/books/${book.id}/import`, { assetId: docx.assetId });
+  assert.deepEqual(recoveredAgain, receipt, 'Import replay did not reuse the durable receipt');
+  const jobs = await request(alice.token, 'GET', `/books/${book.id}/import-jobs`);
+  assert.equal(jobs.jobs.length, 1);
+  assert.equal(jobs.jobs[0].status, 'succeeded');
+  console.log('PASS native queued DOCX import, real parser/scanner, canonical table text, embedded image, durable receipt and original preservation');
+
+  const rows = [{ id: randomUUID(), type: 'table', rows: [['Direct', 'table'], ['one', 'two']] }];
+  const created = await request(alice.token, 'POST', `/books/${book.id}/chapters`, { title: 'Manual table', nodes: rows, idempotencyKey: randomUUID() }, 201);
+  const initial = await request(alice.token, 'GET', `/chapters/${created.chapter.id}/versions`);
+  assert.equal(initial.versions[0].plain_text, bookNodesPlainText(rows));
+  assert.equal(initial.versions[0].word_count, 4);
+  const edit = { expectedVersion: 1, operationId: randomUUID(), nodes: [...saved.document.nodes,
+    { id: randomUUID(), type: 'paragraph', text: 'Author reviewed and revised this manuscript.' }] };
+  await request(alice.token, 'PUT', `/chapters/${chapter.id}/document`, edit);
+  await request(alice.token, 'PUT', `/chapters/${chapter.id}/document`, { ...edit, operationId: randomUUID() }, 409);
+  await request(bob.token, 'PUT', `/chapters/${chapter.id}/document`, { ...edit, expectedVersion: 2 }, 404);
+  const reloaded = await request(alice.token, 'GET', `/chapters/${chapter.id}/document`);
+  assert.equal(reloaded.document.version, 2);
+  assert.deepEqual(reloaded.document.nodes, edit.nodes);
+
+  const actor = { 'x-bookworm-actor': alice.userId };
+  const memoryPath = `/books/${book.id}`;
+  const memory = await request(alice.token, 'GET', `${memoryPath}/memory`);
+  assert.equal(memory.canEdit, true);
+  assert.equal(memory.items.length, 0);
+  assert.ok(memory.imageAssets.some(asset => asset.id === receipt.assetIds[0]), 'Scanned import image missing from Book Bible choices');
+  const currentVersions = await request(alice.token, 'GET', `/chapters/${chapter.id}/versions`);
+  const currentVersion = currentVersions.versions.find(version => version.version_number === 2);
+  assert.ok(currentVersion);
+  const historyPath = `/chapters/${chapter.id}/versions/${versions.versions[0].id}`;
+  const historical = await request(alice.token, 'GET', historyPath);
+  assert.deepEqual(historical.document, saved.document, 'Historical blocks must stay immutable after later edits');
+  assert.equal(historical.version.id, versions.versions[0].id);
+  const exactCurrent = await request(alice.token, 'GET', `/chapters/${chapter.id}/versions/${currentVersion.id}`);
+  assert.deepEqual(exactCurrent.document, reloaded.document);
+  await request(null, 'GET', historyPath, undefined, 401);
+  await request(bob.token, 'GET', historyPath, undefined, 404);
+  await request(alice.token, 'GET', `/chapters/${created.chapter.id}/versions/${currentVersion.id}`, undefined, 404);
+  await request(alice.token, 'GET', `/chapters/${chapter.id}/versions/${randomUUID()}`, undefined, 404);
+  await request(alice.token, 'GET', `/chapters/${chapter.id}/versions/not-a-uuid`, undefined, 422);
+  assert.deepEqual((await request(alice.token, 'GET', `/chapters/${chapter.id}/versions`)).versions, currentVersions.versions,
+    'Historical comparisons do not append or modify any revision');
+  console.log('PASS native immutable canonical revision reads, exact identity, authentication, cross-chapter/tenant isolation and no extra versions');
+
+  const restoreChapter = `/chapters/${created.chapter.id}`;
+  const editedRows = [...rows, { id: randomUUID(), type: 'paragraph', text: 'Later edits to the manual chapter.' }];
+  const appendManualRevision = expectedVersion => request(alice.token, 'PUT', `${restoreChapter}/document`, {
+    expectedVersion, operationId: randomUUID(), nodes: editedRows,
+  });
+  const laterTarget = await appendManualRevision(1);
+  const restoreTarget = initial.versions[0].id;
+  const restorePath = `${restoreChapter}/versions/${restoreTarget}/restore`;
+  const restore = { expectedVersion: 2, operationId: randomUUID() };
+  const restoreQuery = new URLSearchParams({ ...restore, expectedVersion: String(restore.expectedVersion) });
+  const restoreStatus = `${restorePath}?${restoreQuery}`;
+  const restoreIdentity = { chapterId: created.chapter.id, targetVersionId: restoreTarget, ...restore };
+  assert.deepEqual(await request(alice.token, 'GET', restoreStatus, undefined, 200, actor), { ...restoreIdentity, status: 'not_found' });
+  const restoreReceipt = await request(alice.token, 'POST', restorePath, restore, 200, actor);
+  assert.equal(restoreReceipt.version, 3);
+  assert.deepEqual(restoreReceipt.document.nodes, rows);
+  assert.equal((await appendManualRevision(3)).version, 4);
+  assert.deepEqual(await request(alice.token, 'GET', restoreStatus, undefined, 200, actor), { ...restoreIdentity, status: 'saved', ...restoreReceipt });
+  await request(alice.token, 'GET', `${restoreChapter}/versions/${laterTarget.versionId}/restore?${restoreQuery}`, undefined, 409, actor);
+  await request(alice.token, 'GET', restoreStatus, undefined, 422);
+  await request(alice.token, 'GET', restoreStatus, undefined, 409, { 'x-bookworm-actor': bob.userId });
+  await request(bob.token, 'GET', restoreStatus, undefined, 404, { 'x-bookworm-actor': bob.userId });
+  assert.equal((await request(alice.token, 'GET', `${restoreChapter}/versions`)).versions.length, 4);
+  console.log('PASS native read-only chapter restore recovery, same-request receipt, target and actor binding, and preservation of newer history');
+
+  const passage = edit.nodes.at(-1);
+  const source = { chapterId: chapter.id, documentVersionId: currentVersion.id, nodeId: passage.id, textHash: hash(passage.text) };
+  const intent = { requestId: randomUUID(), type: 'character', name: 'Captain Mira', description: 'An author-reviewed character.',
+    attributes: { role: 'Captain' }, imageAssetIds: [receipt.assetIds[0]], sourceRefs: [source] };
+  await request(alice.token, 'POST', `${memoryPath}/bible`, intent, 422);
+  await request(alice.token, 'POST', `${memoryPath}/bible`, intent, 409, { 'x-bookworm-actor': bob.userId });
+  const canon = await request(alice.token, 'POST', `${memoryPath}/bible`, intent, 201, actor);
+  assert.equal(canon.replayed, false);
+  assert.equal(canon.item.name, intent.name);
+  assert.deepEqual(canon.item.attributes_json.imageAssetIds, intent.imageAssetIds);
+  assert.deepEqual(canon.item.source_refs_json, [source]);
+  const repeatedCanon = await request(alice.token, 'POST', `${memoryPath}/bible`, intent, 200, actor);
+  assert.equal(repeatedCanon.replayed, true); assert.deepEqual(repeatedCanon.receipt, canon.receipt);
+  const recoveredCanon = await request(alice.token, 'GET', `${memoryPath}/bible/requests/${intent.requestId}`, undefined, 200, actor);
+  assert.deepEqual(recoveredCanon.receipt, canon.receipt);
+  await request(alice.token, 'POST', `${memoryPath}/bible`, { ...intent, name: 'Changed replay' }, 409, actor);
+  await request(bob.token, 'GET', `${memoryPath}/bible/requests/${intent.requestId}`, undefined, 404, { 'x-bookworm-actor': bob.userId });
+  const update = { ...intent, requestId: randomUUID(), description: 'A saved, revised character with a persistent image and citation.',
+    expectedUpdatedAt: canon.item.updated_at, expectedIncarnationId: canon.item.mutation_incarnation_id };
+  const changedCanon = await request(alice.token, 'PUT', `${memoryPath}/bible/${canon.item.id}`, update, 200, actor);
+  assert.equal(changedCanon.item.id, canon.item.id);
+  assert.equal(changedCanon.item.description, update.description);
+  await request(alice.token, 'PUT', `${memoryPath}/bible/${canon.item.id}`, { ...update, requestId: randomUUID() }, 409, actor);
+  const reloadedMemory = await request(alice.token, 'GET', `${memoryPath}/memory`);
+  assert.equal(reloadedMemory.items.length, 1);
+  assert.deepEqual(reloadedMemory.items[0], changedCanon.item);
+  assert.deepEqual(data(await bob.client.from('book_bible_items').select('id').eq('book_id', book.id), 'foreign canon read'), []);
+  const evidence = await request(alice.token, 'POST', `${memoryPath}/bible/evidence`, source);
+  assert.equal(evidence.text, passage.text); assert.equal(evidence.isCurrentVersion, true);
+  console.log('PASS native Book Bible character/image/citation persistence, durable replay/recovery, actor/tenant isolation and stale-edit refusal');
+
+  assert.equal(data(await service.from('ai_jobs').select('id'), 'AI jobs').length, 0);
+  assert.equal(data(await service.from('usage_events').select('id'), 'provider usage').length, 0);
+  console.log('PASS native initial table creation, edit/reload, stale-write refusal and zero AI jobs/usage');
+
+  const { runNativeAuthorBrowser } = await import('./native-author-files-browser.mjs');
+  await runNativeAuthorBrowser({ setup, service, apiOrigin: address, origins, foreignBookId: book.id,
+    prepareRetailer: async () => {
+      const { runNativeAuthorRenders } = await import('./native-author-files-render.mjs');
+      await runNativeAuthorRenders({ request, service, alice, bob, book, chapter: reloaded.document });
+      const { runNativeRetailerPackages } = await import('./native-author-files-packages.mjs');
+      const retailer = await runNativeRetailerPackages({ request, service, alice, bob, author, upload, confirm, runOneDocumentJob,
+        artwork: Buffer.from(setup.packageArtwork, 'base64') });
+      // Synthetic credentials stay in this process and the actual login form.
+      // Never persist them in screenshots, artifacts, notes or logs.
+      return { ...retailer, email: alice.email, password: alice.password };
+    } });
+} finally {
+  for (const client of clients) await client.auth.signOut().catch(() => {});
+  await app.close();
+}

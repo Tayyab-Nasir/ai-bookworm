@@ -9,22 +9,64 @@
     "packages/*"
   ],
   "scripts": {
+    "services:local": "node scripts/run-local-processing.mjs",
+    "imports:local": "node scripts/run-local-import-worker.mjs",
+    "publishing:local": "node scripts/run-local-publishing-worker.mjs",
+    "test:local-processing-launcher": "node --test tests/local-processing-launcher.test.mjs",
+    "test:local-import-worker": "node --test tests/local-import-worker.test.mjs",
+    "worker": "node --import tsx workers/run.mjs",
+    "test:worker-launcher": "node --test tests/worker-launcher.test.mjs",
+    "test:native-author-guard": "node --test tests/native-author-files-guard.test.mjs",
+    "test:migrations:inventory": "node --test tests/migration-inventory.test.mjs tests/sql-line-endings.test.mjs",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && npm run typecheck:workers",
+    "typecheck:workers": "tsc -p workers/tsconfig.json --noEmit",
     "test:unit": "npm test -w @bookworm/book-model -w @bookworm/config -w @bookworm/validation -w @bookworm/api -w @bookworm/types --if-present",
-    "test:services": "python -m pytest services/ai services/document services/rendering services/publishing -q",
-    "test:e2e": "python -m pytest tests/e2e -q",
-    "test:security": "python -m pytest tests/security -q",
+    "test:web": "node --import tsx --test apps/web/tests/*.test.ts",
+    "test:bible-evidence": "node --import tsx --test apps/web/tests/bible-source-passage-mounted.mjs apps/web/tests/bible-source-passage-api-mounted.mjs apps/web/tests/book-memory-navigation-mounted.mjs",
+    "test:db": "node tests/security/run-local-postgres.mjs",
+    "test:db:upgrade": "node tests/security/run-populated-upgrade.mjs",
+    "test:db:crypto": "node tests/security/pgcrypto-digest-compatibility.mjs",
+    "test:asset-cutover": "node tests/security/asset-lifecycle-cutover-pglite.mjs",
+    "test:customer-catalog": "node --import tsx --test tests/security/customer-ai-catalog-collector.test.mjs tests/security/customer-ai-catalog-migrations.test.mjs tests/security/customer-ai-catalog-full.test.mjs tests/security/customer-ai-catalog-artifact.test.mjs",
+    "test:services": "node scripts/run-python.mjs -m pytest services/ai services/document services/rendering services/publishing services/scanning tests/integration/test_google_play_cover_transport.py -q",
+    "test:e2e": "node scripts/run-python.mjs -m pytest tests/e2e -q",
+    "test:security": "node scripts/run-python.mjs -m pytest tests/security -q",
     "test:load": "npm exec tsx tests/load/load-smoke.mjs",
-    "evals": "python tests/ai-evals/evals/run_evals.py",
-    "verify": "npm run typecheck && npm run test:unit && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
+    "evals": "node scripts/run-python.mjs tests/ai-evals/evals/run_evals.py",
+    "worker:publishing": "npm run worker:publishing -w @bookworm/api --",
+    "worker:publication-email": "node --import tsx workers/run.mjs publication-email",
+    "worker:document": "npm run worker:document -w @bookworm/api --",
+    "worker:ai": "npm run worker:ai -w @bookworm/api --",
+    "worker:audiobook": "npm run worker:audiobook -w @bookworm/api --",
+    "worker:audiobook-export": "npm run worker:audiobook-export -w @bookworm/api --",
+    "worker:translation": "npm run worker:translation -w @bookworm/api --",
+    "worker:story-blueprint": "npm run worker:story-blueprint -w @bookworm/api --",
+    "worker:metadata-quotes": "npm run worker:metadata-quotes -w @bookworm/api --",
+    "worker:ai-review-quotes": "npm run worker:ai-review-quotes -w @bookworm/api --",
+    "worker:book-bible-quotes": "npm run worker:book-bible-quotes -w @bookworm/api --",
+    "worker:image-quotes": "npm run worker:image-quotes -w @bookworm/api --",
+    "worker:narration-quotes": "npm run worker:narration-quotes -w @bookworm/api --",
+    "storage:orphan-report": "npm run storage:orphan-report -w @bookworm/api --",
+    "verify": "node scripts/run-python.mjs scripts/check-verification-epubcheck.py && npm run typecheck && npm run test:local-processing-launcher && npm run test:local-import-worker && npm run test:worker-launcher && npm run test:native-author-guard && npm run test:migrations:inventory && npm run test:unit && npm run test:web && npm run test:db && npm run test:asset-cutover && npm run test:db:crypto && npm run test:customer-catalog && npm run test:db:upgrade && npm run test:services && npm run test:e2e && npm run test:security && npm run test:load && npm run evals"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
+  },
+  "dependencies": {
+    "fast-uri": "^3.1.9"
+  },
+  "overrides": {
+    "fast-uri@<3.1.9": "3.1.9",
+    "next": {
+      "postcss": "^8.5.33"
+    }
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^26.2.0"
   }
 }

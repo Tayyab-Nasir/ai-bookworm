@@ -1,0 +1,49 @@
+{
+  "projectRef": "cyhqtwndadlyzpeatxws",
+  "reviewedAt": "2026-11-18 15:43:04 UTC",
+  "applicationSourceCommit": "336726ab656d04505f46f33bbcdd00ffe29b18ae",
+  "migrationHistory": {
+    "before": 112,
+    "after": 114,
+    "priorEntriesPreserved": true,
+    "localSourceFiles": 134,
+    "mappedByName": 114,
+    "missingFromHistory": 20,
+    "sourceOrderMismatch": true
+  },
+  "applied": [
+    {
+      "name": "retailer_submissions",
+      "sourceFile": "supabase/migrations/20261118013037_retailer_submissions.sql",
+      "sourceSha256": "925aa1b459de8c6038a03d9bb081e3de1965b08f9d636a169446966babb1b32b",
+      "hostedVersion": "20261118020611",
+      "recordedSqlSha256": "1bceca7848c5c8650870f27dbe57701b4431b46dbdcfa2b85d158e6bf3158b4c",
+      "rehearsalBaseline": 112,
+      "forcedRollbackVerified": true
+    },
+    {
+      "name": "render_close_request",
+      "sourceFile": "supabase/migrations/20261104110000_render_close_request.sql",
+      "sourceSha256": "07bd9fbbe0f93e969400ac43a7f3c5d4673b55f775d6db6ee08d437a6dd96c57",
+      "hostedVersion": "20261118021048",
+      "recordedSqlSha256": "bfccee498fb56b19a1200b440ce7f24cd4b57e96211dcddbb796c9c9725f78f5",
+      "rehearsalBaseline": 113,
+      "forcedRollbackVerified": true
+    }
+  ],
+  "recovery": {
+    "scope": "public.publishing_jobs",
+    "encryptedLocalCopy": true,
+    "typedRestoreMatchedLive": true,
+    "existingRowsMatchedAfterBoth": true
+  },
+  "verification": {
+    "rowLevelSecurityEnabled": true,
+    "anonymousDataAndRpcDenied": true,
+    "authenticatedDirectStatusWritesDenied": true,
+    "privateDefinersWithInvokerWrappers": true,
+    "renderClosureIndexValid": true,
+    "securityAdvisorRelatedNotices": 0
+  },
+  "rolloutBoundary": "Independent additive installation with a two-second lock timeout per acquisition. Broader hosted history reconciliation and project recovery remain open."
+}

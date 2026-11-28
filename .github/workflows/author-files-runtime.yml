@@ -1,0 +1,209 @@
+name: Native author files acceptance
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['package.json', 'package-lock.json', 'apps/web/**', 'services/api/**', 'packages/**', 'workers/**', 'scripts/run-local-import-worker.mjs', 'scripts/run-local-processing.mjs', 'tests/local-import-worker.test.mjs', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'services/rendering/**', 'services/publishing/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/e2e/manuscript-upload-recovery-browser.mjs', 'tests/e2e/auth-browser-fixture.mjs', 'tests/e2e/illustration-review-browser.mjs', 'tests/fixtures/books/scanned_manuscript*.pdf', 'tests/e2e/chapter-tab-recovery-browser.mjs', 'tests/e2e/publishing-edition-tab-recovery-browser.mjs', 'tests/e2e/edition-create-fence-history.mjs', 'tests/e2e/fixtures/book-editor-history/**', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
+  push:
+    branches: [main, master, 'codex/**']
+    paths: ['package.json', 'package-lock.json', 'apps/web/**', 'services/api/**', 'packages/**', 'workers/**', 'scripts/run-local-import-worker.mjs', 'scripts/run-local-processing.mjs', 'tests/local-import-worker.test.mjs', 'supabase/migrations/**', 'services/document/**', 'services/scanning/**', 'services/rendering/**', 'services/publishing/**', 'ops/native-author-files/**', 'ops/scanner-test/**', 'ops/processing.Dockerfile', 'tests/e2e/*native-author-files*', 'tests/e2e/manuscript-upload-recovery-browser.mjs', 'tests/e2e/auth-browser-fixture.mjs', 'tests/e2e/illustration-review-browser.mjs', 'tests/fixtures/books/scanned_manuscript*.pdf', 'tests/e2e/chapter-tab-recovery-browser.mjs', 'tests/e2e/publishing-edition-tab-recovery-browser.mjs', 'tests/e2e/edition-create-fence-history.mjs', 'tests/e2e/fixtures/book-editor-history/**', 'tests/native-author-files-guard.test.mjs', '.github/workflows/author-files-runtime.yml']
+permissions:
+  contents: read
+jobs:
+  author-files:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: supabase/setup-cli@45a513f8c64c0bc8e0e3dfe572b5c95be85f6359 # v3
+        with:
+          version: 2.120.0
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node --test tests/native-author-files-guard.test.mjs
+      - name: Verify non-provider import supervision without credentials
+        run: node --test tests/local-import-worker.test.mjs
+      - name: Install isolated browser runtime
+        run: node node_modules/playwright/cli.js install --with-deps chromium
+      - name: Verify Book Bible evidence and private artwork previews
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: |
+          npm run test:bible-evidence
+          node --test apps/web/tests/artwork-private-mounted.mjs
+      - name: Verify Story Blueprint account and quote recovery
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/story-blueprint-actor-mounted.mjs
+      - name: Verify manuscript setup and first-draft quote recovery
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/manuscript-account-mounted.mjs
+      - name: Verify inert reader and browser-worker isolation
+        run: node tests/e2e/native-author-files-browser-guard.mjs
+      - name: Verify invitation account changes in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/invitation-mounted.mjs
+      - name: Verify referral account and recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/referral-center-mounted.mjs
+      - name: Verify authentication recovery from unreadable replies
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/auth-card-response-mounted.mjs
+      - name: Verify private AI connection recovery and account changes in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/ai-connections-mounted.mjs
+      - name: Verify customer-key source review, exact consent and recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/customer-ai-mounted.mjs
+      - name: Verify inline previews and attachment downloads in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/saved-print-mounted.mjs
+      - name: Verify retailer recovery initialization retry and account fencing
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/retailer-init-retry-mounted.mjs
+      - name: Verify private artifact downloads and saved EPUB proof invalidation
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/private-artifact-mounted.mjs
+      - name: Verify audiobook QC history retry
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/audio-qc-retry-mounted.mjs
+      - name: Verify translation account and draft isolation
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/translation-actor-mounted.mjs
+      - name: Verify image quote recovery storage and account fencing
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: |
+          node --test --test-name-pattern='image recovery|image lost-save' apps/web/tests/quote-recovery-mounted.mjs
+          node --test apps/web/tests/image-actor-integrated-mounted.mjs
+      - name: Verify metadata model catalog recovery
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test --test-name-pattern='metadata .*model catalog|metadata catalog retry|delayed metadata catalog|changing metadata model' apps/web/tests/quote-recovery-mounted.mjs
+      - name: Verify Book Bible model catalog recovery
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test --test-name-pattern='Book Bible .*model catalog|Book Bible model retry|changing Book Bible model|interrupted .*catalog' apps/web/tests/quote-recovery-mounted.mjs
+      - name: Verify AI review source consent and saved history recovery
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test --test-name-pattern='AI review source and model changes|same-turn AI source change|AI initialization retry|saved AI review history' apps/web/tests/quote-recovery-mounted.mjs
+      - name: Verify community directory and discussion account isolation in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        # Node applies this timeout to each test file, including all its browser cases.
+        run: node --test --test-timeout=60000 apps/web/tests/community-directory-mounted.mjs apps/web/tests/community-discussion-mounted.mjs
+      - name: Verify removal history and file recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/asset-library-mounted.mjs apps/web/tests/removed-assets-mounted.mjs
+      - name: Verify manuscript recovery and imported structure in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --import tsx --test apps/web/tests/editor-numbering-mounted.mjs
+      - name: Verify opt-in chapter recovery across browser history
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node tests/e2e/chapter-tab-recovery-browser.mjs
+      - name: Verify edition settings recovery across browser history
+        run: node tests/e2e/publishing-edition-tab-recovery-browser.mjs
+      - name: Verify uncertain edition creation across browser history
+        run: node tests/e2e/edition-create-fence-history.mjs
+      - name: Verify chapter title editing and recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/chapter-title-mounted.mjs
+      - name: Verify canonical search source reading in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/book-search-mounted.mjs
+      - name: Verify book workspace navigation in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/book-workspace-navigation-mounted.mjs
+      - name: Verify saved book desk and identity recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/book-overview-mounted.mjs
+      - name: Verify execution queues and workspace recovery in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/analytics-admin-mounted.mjs
+      - name: Verify account-bound dashboard, administration and workspace creation in full Chromium
+        env:
+          BROWSER_TEST_CHANNEL: chromium
+        run: node --test apps/web/tests/session-safety-mounted.mjs
+      - name: Build production author interface
+        env:
+          NODE_ENV: production
+          NEXT_TELEMETRY_DISABLED: '1'
+          BOOKWORM_DIST_DIR: .next-native-author
+        run: node node_modules/next/dist/bin/next build apps/web
+      - name: Verify manuscript recovery and artwork review against the production build
+        env:
+          NODE_ENV: production
+          NEXT_TELEMETRY_DISABLED: '1'
+          BOOKWORM_DIST_DIR: .next-native-author
+          BROWSER_TEST_CHANNEL: chromium
+          API_URL: http://127.0.0.1:4399
+          SUPABASE_URL: http://127.0.0.1:4399
+          SUPABASE_PUBLISHABLE_KEY: fixture-key
+          SUPABASE_ANON_KEY: fixture-key
+          APP_URL: http://localhost:4398
+        run: |
+          node node_modules/next/dist/bin/next start apps/web -H 127.0.0.1 -p 4398 &
+          web=$!
+          fixture=''
+          trap 'if [[ -n "$fixture" ]]; then kill "$fixture" 2>/dev/null || true; fi; kill "$web" 2>/dev/null || true' EXIT
+          curl --fail --silent --retry 20 --retry-delay 1 --retry-connrefused --max-time 3 http://127.0.0.1:4398/login >/dev/null
+          for mode in FIXTURE_LOST_UPLOAD_ALLOCATION_REPLY FIXTURE_LOST_UPLOAD_PUT_REPLY; do
+            env "$mode=true" node tests/e2e/auth-browser-fixture.mjs &
+            fixture=$!
+            curl --fail --silent --retry 20 --retry-delay 1 --retry-connrefused --max-time 3 http://127.0.0.1:4399/health >/dev/null
+            env "$mode=true" node tests/e2e/manuscript-upload-recovery-browser.mjs
+            kill "$fixture"
+            wait "$fixture" || true
+            fixture=''
+          done
+          node tests/e2e/auth-browser-fixture.mjs &
+          fixture=$!
+          curl --fail --silent --retry 20 --retry-delay 1 --retry-connrefused --max-time 3 http://127.0.0.1:4399/health >/dev/null
+          node tests/e2e/illustration-review-browser.mjs
+      - name: Build existing private scanner, document, rendering and publishing runtimes
+        run: |
+          docker build -t bookworm-ci-scanner services/scanning
+          docker build -t bookworm-ci-clamd ops/scanner-test
+          docker build -f ops/processing.Dockerfile --target document -t bookworm-ci-document .
+          docker build -f ops/processing.Dockerfile --target rendering -t bookworm-ci-rendering .
+          docker build -f ops/processing.Dockerfile --target publishing -t bookworm-ci-publishing .
+      - name: Install test-only decoders for QR checks on exported covers
+        run: |
+          command -v pdftoppm || (sudo apt-get update && sudo apt-get install -y poppler-utils)
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --only-binary=:all: Pillow==12.3.0 zxing-cpp==3.1.1
+      - name: Verify native authoring, saved proofs and private retailer packages
+        env:
+          BOOKWORM_NATIVE_AUTHOR_TEST: '1'
+        run: node tests/e2e/run-native-author-files.mjs
+      - name: Retain synthetic browser screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-author-browser-${{ github.sha }}
+          path: .git/bookworm-native-browser/*.png
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

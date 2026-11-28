@@ -1,9 +1,10 @@
 node_modules/
 dist/
 build/
-.next/
+.next*/
 .turbo/
 coverage/
+*.tsbuildinfo
 *.log
 .env
 .env.local
@@ -23,3 +24,10 @@ venv/
 .vscode/
 .DS_Store
 Thumbs.db
+
+.vercel
+
+# Shared Graphify graph is committed; local cost/cache data is not.
+graphify-out/cost.json
+graphify-out/cache/
+graphify-out/20*/

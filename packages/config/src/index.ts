@@ -1,4 +1,18 @@
+import { existsSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+// Next.js loads `.env.local` for the web app automatically, while the
+// standalone Fastify process does not. Load the repository-local development
+// file once for Node services, without replacing environment values supplied
+// by Docker, Railway, CI, or another process manager. Production deployments
+// should use their configured environment/secret store instead of a file.
+if (process.env.NODE_ENV !== "production") {
+  const configDirectory = dirname(fileURLToPath(import.meta.url));
+  const localEnvFile = resolve(configDirectory, "../../..", ".env.local");
+  if (existsSync(localEnvFile)) process.loadEnvFile(localEnvFile);
+}
 
 const envSchema = z.object({
   SUPABASE_URL: z.string().url(),
@@ -8,15 +22,17 @@ const envSchema = z.object({
   QDRANT_URL: z.string().url(),
   QDRANT_API_KEY: z.string().optional().default(""),
   OPENAI_API_KEY: z.string().optional().default(""),
-  ANTHROPIC_API_KEY: z.string().optional().default(""),
-  DEFAULT_AI_PROVIDER: z.enum(["anthropic", "openai"]).default("anthropic"),
-  DEFAULT_AI_MODEL: z.string().default("claude-sonnet-4-6"),
+  DEFAULT_AI_PROVIDER: z.literal("openai").default("openai"),
+  DEFAULT_AI_MODEL: z.string().default("gpt-6.2-astra"),
+  OPENAI_IMAGE_MODEL: z.string().default("gpt-image-2.6-sunburst"),
+  OPENAI_TTS_MODEL: z.string().default("gpt-4o-mini-tts"),
   STRIPE_SECRET_KEY: z.string().optional().default(""),
   STRIPE_WEBHOOK_SECRET: z.string().optional().default(""),
   STRIPE_PRICE_IDS_JSON: z.string().optional().default("{}"),
   SERVICE_AUTH_TOKEN: z.string().optional().default(""),
   SENTRY_DSN: z.string().optional().default(""),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional().default(""),
+  API_HOST: z.string().trim().min(1).default("0.0.0.0"),
   API_PORT: z.coerce.number().int().positive().default(3001),
   WEB_PORT: z.coerce.number().int().positive().default(3000),
   AI_SERVICE_PORT: z.coerce.number().int().positive().default(8000),

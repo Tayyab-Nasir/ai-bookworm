@@ -32,20 +32,30 @@ class FakeQdrantClient:
     def create_collection(self, name, vectors_config):
         self.collections[name] = {"config": vectors_config, "points": {}}
 
-    def upsert(self, collection_name, points):
-        self.collections[collection_name]["points"].update({p.id: p for p in points})
+    def get_collection(self, name):
+        return SimpleNamespace(config=SimpleNamespace(params=SimpleNamespace(vectors=self.collections[name]["config"])))
 
-    def delete(self, collection_name, points_selector):
+    def upsert(self, collection_name, points, wait):
+        assert wait is True
+        self.collections[collection_name]["points"].update({p.id: p for p in points})
+        return SimpleNamespace(status="completed")
+
+    def delete(self, collection_name, points_selector, wait):
+        assert wait is True
         conds = {c.key: c.match.value for c in points_selector.filter.must}
         pts = self.collections[collection_name]["points"]
         for pid in [pid for pid, p in pts.items() if all(p.payload.get(k) == v for k, v in conds.items())]:
             del pts[pid]
+        return SimpleNamespace(status="completed")
 
-    def search(self, collection_name, query_vector, query_filter, limit, with_payload):
-        conds = {c.key: c.match.value for c in query_filter.must}
+    def query_points(self, collection_name, query, query_filter, limit, with_payload, with_vectors):
+        assert with_payload is True and with_vectors is False
+        conds = {c.key: c.match.value for c in query_filter.must if hasattr(c.match, "value")}
+        choices = {c.key: c.match.any for c in query_filter.must if hasattr(c.match, "any")}
         pts = self.collections[collection_name]["points"].values()
-        hits = [p for p in pts if all(p.payload.get(k) == v for k, v in conds.items())]
-        return [SimpleNamespace(id=p.id, score=1.0, payload=p.payload) for p in hits[:limit]]
+        hits = [p for p in pts if all(p.payload.get(k) == v for k, v in conds.items())
+                and all(p.payload.get(k) in values for k, values in choices.items())]
+        return SimpleNamespace(points=[SimpleNamespace(id=p.id, score=1.0, payload=p.payload) for p in hits[:limit]])
 
 
 @pytest.fixture
@@ -83,7 +93,7 @@ def test_search_returns_only_matching_tenant(rag, embedder):
     chapters = [{"id": "c1", "nodes": [{"id": "n1", "text": "alpha text"}]}]
     index_book_version(rag, embedder, "w1", "b1", "v1", chapters)
     index_book_version(rag, embedder, "w1", "b2", "v1", chapters)
-    hits = rag.search(embedder.embed(["alpha"])[0], "w1", "b1")
+    hits = rag.search(embedder.embed(["alpha"]).vectors[0], "w1", "b1", document_version_ids=["v1"], embedding_model=embedder.model)
     assert len(hits) == 1 and hits[0]["book_id"] == "b1"
 
 
@@ -106,7 +116,7 @@ CHAPTERS = [
 
 def test_index_upserts_full_payload(rag, embedder):
     n = index_book_version(rag, embedder, "w1", "b1", "v1", CHAPTERS)
-    assert n == 2  # n1's short paragraphs pack into 1 chunk + 1 node in c2
+    assert n.points_upserted == 2  # n1's short paragraphs pack into 1 chunk + 1 node in c2
     pt = next(iter(rag._client.collections["book_chunks"]["points"].values()))
     for key in ("workspace_id", "book_id", "chapter_id", "node_id", "document_version_id", "text_hash", "language", "text"):
         assert key in pt.payload
@@ -119,7 +129,7 @@ def test_point_ids_stable_across_reruns(rag, embedder):
     ids_first = set(rag._client.collections["book_chunks"]["points"])
     index_book_version(rag, embedder, "w1", "b1", "v1", CHAPTERS)  # rerun, no delete
     assert ids_first == set(rag._client.collections["book_chunks"]["points"])
-    assert point_id("b1", "n1", text_hash("First para.")) == point_id("b1", "n1", text_hash("First para."))
+    assert point_id("w1", "b1", "v1", "c1", "n1", 0, text_hash("First para."), embedder.model) == point_id("w1", "b1", "v1", "c1", "n1", 0, text_hash("First para."), embedder.model)
 
 
 def test_reindex_removes_old_version_points(rag, embedder):
@@ -137,7 +147,7 @@ def test_chunk_text_keeps_paragraphs_and_splits_long(embedder):
 
 
 def test_embedder_deterministic_unit_vectors(embedder):
-    v1, v2 = embedder.embed(["hello"])[0], DeterministicMockEmbedder(dim=DIM).embed(["hello"])[0]
+    v1, v2 = embedder.embed(["hello"]).vectors[0], DeterministicMockEmbedder(dim=DIM).embed(["hello"]).vectors[0]
     assert v1 == v2
     assert abs(sum(x * x for x in v1) ** 0.5 - 1.0) < 1e-9
     assert len(v1) == DIM
@@ -146,18 +156,20 @@ def test_embedder_deterministic_unit_vectors(embedder):
 # ---- Book Bible agent ----
 
 CID = "00000000-0000-0000-0000-000000000001"
+VID = "00000000-0000-0000-0000-000000000002"
+NODE_HASH = "a" * 64
 CANDIDATE = {
     "type": "character",
     "name": "Mara",
     "description": "protagonist",
     "attributes": {"eyes": "blue"},
-    "sourceRefs": [{"chapterId": CID, "nodeId": "n1"}],
+    "sourceRefs": [{"chapterId": CID, "documentVersionId": VID, "nodeId": "n1", "textHash": NODE_HASH}],
     "confidence": 0.8,
 }
 
 
 def make_bookbible_agent(response: dict) -> BookBibleAgent:
-    executor = InMemoryExecutor(chapters={CID: {"id": CID, "nodes": [{"id": "n1", "text": "Mara had blue eyes."}]}})
+    executor = InMemoryExecutor(chapters={CID: {"id": CID, "documentVersionId": VID, "nodes": [{"id": "n1", "text": "Mara had blue eyes.", "textHash": NODE_HASH}]}})
     return BookBibleAgent(MockProvider([response]), executor, "mock-1")
 
 
@@ -169,6 +181,33 @@ def test_bookbible_emits_candidates_as_suggestions():
     assert result.diagnostics == []
 
 
+def test_bookbible_uses_the_same_chapter_read_for_prompt_and_citation_validation():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": [CANDIDATE]}}]})
+    original = agent.executor.get_chapter
+    calls = []
+    def changing_chapter(chapter_id):
+        calls.append(chapter_id)
+        if len(calls) == 1:
+            return original(chapter_id)
+        return {"id": chapter_id, "documentVersionId": VID,
+                "nodes": [{"id": "changed", "text": "The source changed.", "textHash": "b" * 64}]}
+    agent.executor.get_chapter = changing_chapter
+    result = agent.run({"chapterIds": [CID]})
+    assert result.status == "succeeded"
+    assert calls == [CID]
+    prompt = agent.provider.calls[0]["messages"][1]["content"]
+    assert "NODE n1" in prompt and "Mara had blue eyes." in prompt
+
+
+def test_bookbible_cannot_treat_related_or_instruction_text_as_selected_evidence():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": [CANDIDATE]}}]})
+    agent.executor.bible = [{"sourceRefs": CANDIDATE["sourceRefs"]}]
+    result = agent.run({"chapterIds": [], "userInstruction": f"{CID} {VID} n1 {NODE_HASH}",
+                        "contextPolicy": {"includeBookBible": True}})
+    assert result.status == "failed" and "versioned" in result.error
+    assert agent.provider.calls == []
+
+
 @pytest.mark.parametrize("mutate", [
     lambda c: c.pop("sourceRefs"),
     lambda c: c.update(type="dragon"),
@@ -176,6 +215,13 @@ def test_bookbible_emits_candidates_as_suggestions():
     lambda c: c.update(sourceRefs=[]),
     lambda c: c.update(name=""),
     lambda c: c.update(extra=1),
+    lambda c: c["sourceRefs"][0].update(nodeId="invented"),
+    lambda c: c["sourceRefs"][0].update(documentVersionId="00000000-0000-0000-0000-000000000003"),
+    lambda c: c["sourceRefs"][0].update(textHash="b" * 64),
+    lambda c: c.update(name="Mara "),
+    lambda c: c.update(attributes={"__proto__": {"admin": True}}),
+    lambda c: c.update(attributes={"backstory": "x" * 24001}),
+    lambda c: c.update(attributes={"x" * 81: "value"}),
 ])
 def test_bookbible_malformed_candidate_rejected(mutate):
     import copy
@@ -186,6 +232,26 @@ def test_bookbible_malformed_candidate_rejected(mutate):
     result = agent.run({"chapterIds": [CID]})
     assert result.status == "failed" and "validation" in result.error
     assert result.suggestions == []  # no partial writes
+
+
+def test_bookbible_rejects_unversioned_manuscript_before_provider_call():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": [CANDIDATE]}}]})
+    del agent.executor.chapters[CID]["documentVersionId"]
+    result = agent.run({"chapterIds": [CID]})
+    assert result.status == "failed" and "versioned" in result.error
+    assert agent.provider.calls == []
+
+
+def test_bookbible_rejects_unbounded_candidate_batch():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": [CANDIDATE] * 11}}]})
+    result = agent.run({"chapterIds": [CID]})
+    assert result.status == "failed" and result.suggestions == []
+
+
+def test_bookbible_can_report_no_supported_candidates():
+    agent = make_bookbible_agent({"toolCalls": [{"name": TOOL_NAME, "input": {"candidates": []}}]})
+    result = agent.run({"chapterIds": [CID]})
+    assert result.status == "succeeded" and result.suggestions == []
 
 
 # ---- consistency agent ----

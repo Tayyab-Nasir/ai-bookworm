@@ -1,0 +1,141 @@
+"""Fixed font inventory and glyph checks for deterministic print output.
+
+Bitstream Vera ships with ReportLab, including its redistribution license.
+DejaVu Sans Mono is vendored with its license for embedded-edition inline code.
+No machine fonts or author-supplied font paths are loaded.
+"""
+from pathlib import Path
+
+import reportlab
+from reportlab.lib.fonts import ps2tt, tt2ps
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+from editions import AMIRI_FONTS
+from manuscript import inline_runs, table_rows
+from rtl_text import has_direction_controls, requires_bidi_layout
+
+BASE_FONTS = {"Times-Roman", "Times-Bold", "Helvetica", "Helvetica-Bold", "Courier", "Courier-Bold"}
+EMBEDDED_FONTS = {"BookwormVera", "BookwormVera-Bold"} | AMIRI_FONTS
+_FONT_DIR = Path(reportlab.__file__).resolve().parent / "fonts"
+for _name, _file in (
+    ("BookwormVera", "Vera.ttf"), ("BookwormVera-Bold", "VeraBd.ttf"),
+    ("BookwormVera-Italic", "VeraIt.ttf"), ("BookwormVera-BoldItalic", "VeraBI.ttf"),
+):
+    pdfmetrics.registerFont(TTFont(_name, str(_FONT_DIR / _file)))
+pdfmetrics.registerFontFamily("BookwormVera", normal="BookwormVera", bold="BookwormVera-Bold",
+                              italic="BookwormVera-Italic", boldItalic="BookwormVera-BoldItalic")
+for _name, _file in (
+    ("BookwormDejaVuSansMono", "DejaVuSansMono.ttf"),
+    ("BookwormDejaVuSansMono-Bold", "DejaVuSansMono-Bold.ttf"),
+    ("BookwormDejaVuSansMono-Italic", "DejaVuSansMono-Oblique.ttf"),
+    ("BookwormDejaVuSansMono-BoldItalic", "DejaVuSansMono-BoldOblique.ttf"),
+):
+    pdfmetrics.registerFont(TTFont(_name, str(Path(__file__).resolve().parent / "fonts" / _file)))
+pdfmetrics.registerFontFamily("BookwormDejaVuSansMono", normal="BookwormDejaVuSansMono",
+    bold="BookwormDejaVuSansMono-Bold", italic="BookwormDejaVuSansMono-Italic",
+    boldItalic="BookwormDejaVuSansMono-BoldItalic")
+for _name, _tone in (("BookwormAmiri", "Regular"), ("BookwormAmiri-Bold", "Bold"),
+                     ("BookwormAmiri-Italic", "Italic"), ("BookwormAmiri-BoldItalic", "BoldItalic")):
+    pdfmetrics.registerFont(TTFont(_name, str(Path(__file__).resolve().parent / "fonts" / f"Amiri-{_tone}.ttf")))
+pdfmetrics.registerFontFamily("BookwormAmiri", normal="BookwormAmiri", bold="BookwormAmiri-Bold",
+                              italic="BookwormAmiri-Italic", boldItalic="BookwormAmiri-BoldItalic")
+
+
+def code_font(base: str) -> str:
+    """Embedded editions use actual embedded monospace; legacy choices stay Courier."""
+    return "BookwormDejaVuSansMono" if base in EMBEDDED_FONTS else "Courier"
+
+
+def page_number_font(body: str, heading: str) -> str:
+    if {body, heading} <= AMIRI_FONTS:
+        return "BookwormAmiri"
+    return "BookwormVera" if {body, heading} <= EMBEDDED_FONTS else "Helvetica"
+
+
+def _run_font(base: str, marks: list[str]) -> str:
+    if "code" in marks:
+        base = code_font(base)
+    family, bold, italic = ps2tt(base)
+    return tt2ps(family, bold or "bold" in marks, italic or "italic" in marks)
+
+
+def _missing(text: str, font_name: str) -> list[str]:
+    font = pdfmetrics.getFont(font_name)
+    missing = []
+    for char in sorted(set(text) - {"\r", "\n", "\t"}):
+        if hasattr(font.face, "charToGlyph"):
+            supported = bool(font.face.charToGlyph.get(ord(char)))
+        else:
+            try:
+                encoded = char.encode(font.encName)
+                supported = len(encoded) == 1 and font.encoding.vector[encoded[0]] in font.face.glyphWidths
+            except UnicodeEncodeError:
+                supported = False
+        if not supported:
+            missing.append(f"U+{ord(char):04X}")
+    return missing
+
+
+def print_font_issues(book: dict, edition: dict) -> list[dict[str, str]]:
+    """Check only text the print renderer emits, using its effective marked font."""
+    if edition.get("kind") == "ebook" and edition.get("flow", "reflowable") == "fixed":
+        from editions import FixedLayout
+        from publication_metadata import effective_publication_metadata
+        layout = FixedLayout.model_validate(edition.get("fixed_layout") or {}).model_dump()
+        book = {**book, "metadata": effective_publication_metadata(book.get("metadata") or {}, edition.get("metadata_overrides") or {})}
+        edition = {**layout, "kind": "print", "front_matter": edition.get("front_matter") or {}}
+    elif edition.get("kind") != "print":
+        return []
+    typography = edition.get("typography") or {}
+    body = typography.get("body_font", "Times-Roman")
+    heading = typography.get("heading_font", "Helvetica-Bold")
+    if body not in BASE_FONTS | EMBEDDED_FONTS or heading not in BASE_FONTS | EMBEDDED_FONTS:
+        return []  # Invalid font names are handled by config validation/preflight.
+    shaping = {body, heading} <= AMIRI_FONTS
+    issues = []
+
+    def check(text, font, location):
+        if shaping and has_direction_controls(text):
+            issues.append({"code": "PRINT_DIRECTION_CONTROL_UNSUPPORTED", "location": location,
+                           "message": "Print direction controls need review. Remove them or use reflowable EPUB."})
+        elif not shaping and requires_bidi_layout(text):
+            issues.append({"code": "RTL_TEXT_UNSUPPORTED", "location": location, "message": "Text requires bidirectional shaping, which is not available for print or fixed-layout EPUB."})
+        if "\u2011" in (text or ""):
+            issues.append({"code": "PRINT_NONBREAKING_HYPHEN_UNSUPPORTED", "location": location,
+                "message": "Print cannot guarantee nonbreaking hyphen U+2011 layout. Use reflowable EPUB or review and replace it before print."})
+        missing = [code for code in _missing(text or "", font) if code != "U+2011"]
+        if missing:
+            codes = ", ".join(missing[:8]) + (" …" if len(missing) > 8 else "")
+            issues.append({"location": location, "message":
+                f"{font} cannot print {codes}. Choose a font covering these characters or use EPUB."})
+
+    check((book.get("metadata") or {}).get("title"), heading, "book.metadata.title")
+    for key in ("subtitle", "author"):
+        check((book.get("metadata") or {}).get(key), body, f"book.metadata.{key}")
+    front = edition.get("front_matter") or {}
+    for key in ("copyright_notice", "publisher"):
+        check(front.get(key), body, f"edition.front_matter.{key}")
+    if edition.get("isbn13"):
+        check((book.get("metadata") or {}).get("title"), body, "book.metadata.title")
+    elif "isbn13" not in edition and any(str(value).strip() for value in front.values()):
+        check((book.get("metadata") or {}).get("isbn13"), body, "book.metadata.isbn13")
+    for chapter in book.get("chapters", []):
+        location = f"chapter:{chapter['id']}"
+        check(chapter.get("title"), heading, location)
+        if edition.get("include_table_of_contents"):
+            check(chapter.get("title"), body, f"{location} contents")
+        for node in chapter.get("nodes", []):
+            node_location = f"{location} node:{node['id']}"
+            kind = node.get("type")
+            if kind == "image":
+                check(node.get("caption"), body, node_location)
+            elif kind == "table" and table_rows(node):
+                for row in table_rows(node):
+                    for cell in row:
+                        check(cell, body, node_location)
+            elif kind in {"heading", "paragraph", "quote", "footnote", "caption", "listItem", "table"}:
+                for run in inline_runs(node):
+                    check(run["text"], _run_font(heading if kind == "heading" else body, run["marks"]), node_location)
+    # Multiple marked runs/cells can share the same missing glyph and location.
+    return [dict(item) for item in dict.fromkeys(tuple(issue.items()) for issue in issues)]

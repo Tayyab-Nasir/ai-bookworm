@@ -1,9 +1,16 @@
 """Adapter tests: channel rules wired, export package deterministic, submit not supported."""
 import json
+import base64
+import copy
+import hashlib
+import importlib.util
+import struct
 import sys
 import zipfile
+import zlib
 from io import BytesIO
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import pytest
 
@@ -14,6 +21,14 @@ sys.path.insert(0, str(ROOT / "rendering"))
 from adapters import NotSupportedError, get_adapter  # noqa: E402
 from editions import parse_edition  # noqa: E402
 from epub_renderer import render_epub  # noqa: E402
+
+_MAIN_SPEC = importlib.util.spec_from_file_location("bookworm_publishing_main", ROOT / "publishing" / "main.py")
+assert _MAIN_SPEC and _MAIN_SPEC.loader
+_PUBLISHING_MAIN = importlib.util.module_from_spec(_MAIN_SPEC)
+_MAIN_SPEC.loader.exec_module(_PUBLISHING_MAIN)
+PackageRequest = _PUBLISHING_MAIN.PackageRequest
+build_package = _PUBLISHING_MAIN.build_package
+require_service_token = _PUBLISHING_MAIN.require_service_token
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "books"
 VALID = json.loads((FIXTURES / "valid_book.json").read_text())
@@ -29,19 +44,143 @@ def _ctx(artifact=True):
 
 
 def test_all_channels_registered():
-    for ch in ("kdp", "apple", "barnesnoble", "lulu"):
+    for ch in ("kdp", "apple", "barnesnoble", "lulu", "googleplay"):
         assert get_adapter(ch).channel() == ch
     with pytest.raises(KeyError):
         get_adapter("smashwords")
 
 
+@pytest.mark.parametrize("status", ["valid", "invalid", "unavailable"])
+def test_bn_preflight_and_package_check_their_exact_epub(monkeypatch, status):
+    from epubcheck_runner import EpubCheckResult
+    import rules.bn_v1 as bn_rules
+
+    ctx = {**_ctx(), "channel": "barnesnoble"}
+    epub = ctx["artifact"]
+    calls = []
+
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult(status, errors=int(status == "invalid"), warnings=int(status == "valid"))
+
+    monkeypatch.setattr(bn_rules, "run_epubcheck", check)
+    adapter = get_adapter("barnesnoble")
+    report = adapter.validate({**ctx, "_bn_epubcheck_result": EpubCheckResult("valid")})
+    assert report["ruleVersion"].endswith("+barnesnoble-1.4.0")
+    if status == "valid":
+        result = adapter.build_package({**ctx, "artifact": b"stale proof"}, {"book.epub": epub})[0]
+        with zipfile.ZipFile(BytesIO(result.data)) as archive:
+            assert archive.read("book.epub") == epub
+            assert json.loads(archive.read("preflight.json")) == {"schemaVersion": "1.0", **report}
+            assert "Answer the B&N Press generative AI questions" in archive.read("README.txt").decode()
+        assert any(item["code"] == "BN-EPUBCHECK-WARNING" and item["severity"] == "warning"
+                   for item in report["findings"])
+    else:
+        code = "BN-EPUBCHECK-ERROR" if status == "invalid" else "BN-EPUBCHECK-UNAVAILABLE"
+        assert any(item["code"] == code and item["severity"] == "error" for item in report["findings"])
+        with pytest.raises(ValueError, match="unresolved validation errors"):
+            adapter.build_package({**ctx, "artifact": b"stale proof"}, {"book.epub": epub})
+    assert calls == [epub, epub]
+
+
+def test_bn_applies_strict_epub_size_limit_and_skips_preliminary_and_print_checks(monkeypatch):
+    from epubcheck_runner import EpubCheckResult
+    import rules.bn_v1 as bn_rules
+
+    adapter = get_adapter("barnesnoble")
+    ctx = {**_ctx(), "channel": "barnesnoble"}
+    epub = ctx["artifact"]
+    assert bn_rules.EPUB_LIMIT_BYTES == 20_000_000
+    calls = []
+
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult("valid")
+
+    monkeypatch.setattr(bn_rules, "run_epubcheck", check)
+    monkeypatch.setattr(bn_rules, "EPUB_LIMIT_BYTES", len(epub) + 1)
+    assert adapter.validate(ctx)["errors"] == 0
+    monkeypatch.setattr(bn_rules, "EPUB_LIMIT_BYTES", len(epub))
+    oversize = adapter.validate(ctx)
+    assert any(item["code"] == "BN-EPUB-SIZE" and item["severity"] == "error" for item in oversize["findings"])
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        adapter.build_package(ctx, {"book.epub": epub})
+    preliminary = adapter.validate({**ctx, "artifact": None})
+    assert any(item["code"] == "BN-EPUBCHECK-NO-ARTIFACT" and item["severity"] == "warning"
+               for item in preliminary["findings"])
+    print_report = adapter.validate({**ctx, "edition": {"kind": "print"}, "artifact": None})
+    assert not any(item["code"].startswith("BN-EPUB") for item in print_report["findings"])
+    assert calls == [epub]
+
+
+@pytest.mark.parametrize(("kind", "expected"), [
+    ("ebook", {"BN-CATALOG-ELIGIBILITY"}),
+    ("print", {"BN-CATALOG-ELIGIBILITY", "BN-PRINT-MINIMUM-PRICE"}),
+])
+def test_bn_retailer_policy_checks_are_manual_and_format_specific(kind, expected):
+    codes = {"BN-CATALOG-ELIGIBILITY", "BN-PRINT-MINIMUM-PRICE"}
+    context = {**_ctx(artifact=False), "edition": {"kind": kind}, "channel": "barnesnoble"}
+    findings = get_adapter("barnesnoble").validate(context)["findings"]
+    assert {item["code"] for item in findings if item["code"] in codes} == expected
+    assert all(item["severity"] == "warning" for item in findings if item["code"] in codes)
+    other = get_adapter("kdp").validate({**context, "channel": "kdp"})["findings"]
+    assert not any(item["code"] in codes for item in other)
+
+def test_bn_package_endpoint_runs_epubcheck_once(monkeypatch):
+    from epubcheck_runner import EpubCheckResult
+    import rules.bn_v1 as bn_rules
+
+    epub = _ctx()["artifact"]
+    calls = []
+
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult("valid")
+
+    monkeypatch.setattr(bn_rules, "run_epubcheck", check)
+    result = build_package(PackageRequest(channel="barnesnoble", editionConfig=EBOOK, bookModel=VALID,
+        artifactsBase64={"book.epub": base64.b64encode(epub).decode()}))
+    assert result["errors"] == 0
+    assert calls == [epub]
+
+
 def test_kdp_validate_uses_kdp_rules():
     result = get_adapter("kdp").validate(_ctx())
-    assert result["ruleVersion"] == "core-1.0.0+kdp-1.0.0"
+    assert result["ruleVersion"] == "core-1.0.17+kdp-1.8.0"
     ids = {f["rule_id"] for f in result["findings"]}
     assert not result["findings"] or all(
         rid.startswith(("CORE-", "KDP-")) for rid in ids)
     assert result["errors"] == 0  # valid fixture has all KDP-required metadata
+    assert any(f["code"] == "KDP-EBOOK-COVER-MISSING" and f["severity"] == "warning" for f in result["findings"])
+
+
+@pytest.mark.parametrize(("keyword_count", "category_count", "expected"), [
+    (7, 3, set()),
+    (8, 3, {"KDP-LISTING-KEYWORDS"}),
+    (7, 4, {"KDP-LISTING-CATEGORIES"}),
+])
+def test_kdp_listing_selection_warnings_preserve_saved_metadata(keyword_count, category_count, expected):
+    book = copy.deepcopy(VALID)
+    book["metadata"]["keywords"] = [f"keyword {i}" for i in range(keyword_count)]
+    book["metadata"]["categories"] = [f"category {i}" for i in range(category_count)]
+    before = copy.deepcopy(book)
+    result = get_adapter("kdp").validate({**_ctx(artifact=False), "book": book})
+    findings = [f for f in result["findings"] if f["code"].startswith("KDP-LISTING-")]
+    assert {f["code"] for f in findings} == expected
+    assert all(f["severity"] == "warning" for f in findings)
+    assert book == before
+
+
+@pytest.mark.parametrize(("length", "warns"), [(4000, False), (4001, True)])
+def test_kdp_description_limit_counts_literal_markup(length, warns):
+    book = copy.deepcopy(VALID)
+    description = "<b>" + "a" * (length - 7) + "</b>"
+    book["metadata"]["description"] = description
+    result = get_adapter("kdp").validate({**_ctx(artifact=False), "book": book})
+    findings = [item for item in result["findings"] if item["code"] == "KDP-LISTING-DESCRIPTION-LENGTH"]
+    assert bool(findings) == warns
+    assert all(item["severity"] == "warning" and f"{length:,}" in item["message"] for item in findings)
+    assert book["metadata"]["description"] == description
 
 
 def test_kdp_validate_flags_missing_description():
@@ -52,6 +191,343 @@ def test_kdp_validate_flags_missing_description():
     result = get_adapter("kdp").validate(ctx)
     assert result["errors"] >= 1
     assert any(f["rule_id"] == "KDP-META-001" for f in result["findings"])
+
+
+def test_kdp_ebook_package_preserves_proofs_and_includes_a_marketing_jpeg():
+    from PIL import Image
+
+    edition = {"kind": "ebook", "cover": {"asset_id": "marketing-cover"}}
+    artwork = BytesIO()
+    Image.new("RGB", (1600, 2400), "#29486a").save(artwork, "PNG")
+    cover = artwork.getvalue()
+    epub, _ = render_epub(VALID, parse_edition(edition), cover)
+    request = PackageRequest(channel="kdp", editionConfig=edition, bookModel=VALID,
+        artifactsBase64={name: base64.b64encode(blob).decode() for name, blob in
+                         {"book.epub": epub, "cover.png": cover}.items()})
+    package = build_package(request)["packages"][0]
+    assert package == build_package(request)["packages"][0]
+    with zipfile.ZipFile(BytesIO(base64.b64decode(package["dataBase64"]))) as archive:
+        assert archive.read("book.epub") == epub
+        assert archive.read("cover.png") == cover
+        jpeg = archive.read("cover.jpg")
+        with Image.open(BytesIO(jpeg)) as image:
+            assert (image.format, image.mode, image.size) == ("JPEG", "RGB", (1600, 2400))
+            assert image.info["dpi"] == (300, 300)
+            image.load()
+        assert len(jpeg) < 50_000_000
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["files"]["cover.jpg"] == hashlib.sha256(jpeg).hexdigest()
+        assert "Upload book.epub and cover.jpg" in archive.read("README.txt").decode()
+
+
+@pytest.mark.parametrize("case", ["undersized", "corrupt"])
+def test_kdp_ebook_preflight_and_package_reject_an_unusable_cover(case):
+    from PIL import Image
+
+    edition = {"kind": "ebook", "cover": {"asset_id": "marketing-cover"}}
+    artwork = BytesIO()
+    Image.new("RGB", (624, 1000), "#29486a").save(artwork, "PNG")
+    cover = artwork.getvalue() if case == "undersized" else b"\x89PNG\r\n\x1a\n"
+    valid_epub, _ = render_epub(VALID, parse_edition(EBOOK))
+    request = PackageRequest(channel="kdp", editionConfig=edition, bookModel=VALID,
+        artifactsBase64={name: base64.b64encode(blob).decode() for name, blob in
+                         {"book.epub": valid_epub, "cover.png": cover}.items()})
+    report = _PUBLISHING_MAIN.validate(request)
+    assert any(finding["code"] == "KDP-EBOOK-COVER-INVALID" and finding["severity"] == "error"
+               for finding in report["findings"])
+    with pytest.raises(_PUBLISHING_MAIN.HTTPException) as error:
+        build_package(request)
+    assert error.value.status_code == 422
+
+
+def test_saved_epub_preflight_uses_the_exact_artifact_and_checks_its_listing(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    artifact, _ = render_epub(VALID, parse_edition(EBOOK))
+    request = {"channel": "kdp", "editionConfig": EBOOK, "bookModel": VALID,
+               "artifactsBase64": {"book.epub": base64.b64encode(artifact).decode("ascii")}}
+    monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", "saved-epub-fixture-only")
+
+    def unexpected_render(*_args):
+        pytest.fail("saved EPUB validation must not regenerate the book")
+
+    monkeypatch.setattr(_PUBLISHING_MAIN, "render_epub", unexpected_render)
+    endpoint = "/v1/publishing/validate"
+    headers = {"x-service-token": "saved-epub-fixture-only"}
+    with TestClient(_PUBLISHING_MAIN.app) as client:
+        assert client.post(endpoint, json=request).status_code == 401
+        valid = client.post(endpoint, headers=headers, json=request)
+        assert valid.status_code == 200, valid.text
+        assert valid.json()["errors"] == 0
+        assert valid.json()["artifactSha256"] == hashlib.sha256(artifact).hexdigest()
+        changed = {**VALID, "metadata": {**VALID["metadata"], "title": "A later listing title"}}
+        stale = client.post(endpoint, headers=headers, json={**request, "bookModel": changed})
+        assert stale.status_code == 200
+        assert stale.json()["errors"] == 1
+        assert any(f["code"] == "SAVED_EPUB_METADATA" for f in stale.json()["findings"])
+        missing = client.post(endpoint, headers=headers, json={**request, "artifactsBase64": {}})
+        assert missing.status_code == 422
+
+
+def test_google_play_requires_embedded_front_cover_and_builds_single_title_handoff(monkeypatch):
+    from PIL import Image
+    from epubcheck_runner import EpubCheckResult
+    import rules.google_play_v1 as google_rules
+    monkeypatch.setattr(google_rules, "run_epubcheck", lambda _epub: EpubCheckResult("valid"))
+    adapter = get_adapter("googleplay")
+    assert adapter.capabilities().formats == ("epub",)
+    assert adapter.capabilities().can_submit is False
+    missing = adapter.validate({**_ctx(), "channel": "googleplay"})
+    assert any(item["code"] == "GOOGLE-EPUB-COVER" for item in missing["findings"])
+
+    cover_id = "google-test-cover"
+    edition = {"kind": "ebook", "cover": {"asset_id": cover_id}}
+    cover = BytesIO()
+    Image.new("RGB", (800, 1200), "#43536a").save(cover, "PNG")
+    epub, _ = render_epub(VALID, parse_edition(edition), cover.getvalue())
+    ctx = {"book": VALID, "edition": edition, "artifact": epub, "channel": "googleplay",
+           "cover_bytes": cover.getvalue()}
+    result = adapter.validate(ctx)
+    assert result["errors"] == 0, result["findings"]
+    assert result["ruleVersion"] == "core-1.0.17+google-play-1.2.0"
+    exported = adapter.build_package(ctx, {"book.epub": epub})[0]
+    assert exported.path == "googleplay-export.zip"
+    with zipfile.ZipFile(BytesIO(exported.data)) as archive:
+        assert archive.read("book.epub") == epub
+        assert b"Partner Center Content tab" in archive.read("README.txt")
+        assert json.loads(archive.read("manifest.json"))["channel"] == "googleplay"
+
+    too_small = BytesIO()
+    Image.new("RGB", (320, 480), "#43536a").save(too_small, "PNG")
+    small_epub, _ = render_epub(VALID, parse_edition(edition), too_small.getvalue())
+    small = adapter.validate({**ctx, "artifact": small_epub})
+    assert any(item["code"] == "GOOGLE-EPUB-COVER" for item in small["findings"])
+    print_only = adapter.validate({**ctx, "edition": {"kind": "print"}})
+    assert any(item["code"] == "GOOGLE-EPUB-ONLY" for item in print_only["findings"])
+
+
+def test_google_play_fails_closed_when_epubcheck_is_unavailable(monkeypatch):
+    import rules.google_play_v1 as google_rules
+    from epubcheck_runner import EpubCheckResult
+    monkeypatch.setattr(google_rules, "run_epubcheck", lambda _epub: EpubCheckResult("unavailable"))
+    result = get_adapter("googleplay").validate({**_ctx(), "channel": "googleplay"})
+    assert any(item["code"] == "GOOGLE-EPUBCHECK-UNAVAILABLE" for item in result["findings"])
+
+
+def test_google_metadata_only_preflight_marks_epub_unchecked(monkeypatch):
+    import rules.google_play_v1 as google_rules
+    def unexpected(_epub):
+        raise AssertionError("preliminary preflight has no EPUB to validate")
+    monkeypatch.setattr(google_rules, "run_epubcheck", unexpected)
+    result = get_adapter("googleplay").validate({**_ctx(artifact=False), "channel": "googleplay"})
+    assert any(item["code"] == "GOOGLE-EPUBCHECK-NO-ARTIFACT" and item["severity"] == "warning"
+               for item in result["findings"])
+
+
+def _google_saved_epub():
+    from PIL import Image
+    edition = {"kind": "ebook", "cover": {"asset_id": "google-test-cover"}}
+    cover = BytesIO()
+    Image.new("RGB", (800, 1200), "#43536a").save(cover, "PNG")
+    epub, _ = render_epub(VALID, parse_edition(edition), cover.getvalue())
+    return edition, epub
+
+
+@pytest.mark.parametrize("status", ["valid", "invalid", "unavailable"])
+def test_google_package_endpoint_checks_exact_saved_epub_once(monkeypatch, status):
+    from fastapi import HTTPException
+    from epubcheck_runner import EpubCheckResult
+    import rules.google_play_v1 as google_rules
+    edition, epub = _google_saved_epub()
+    calls = []
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult(status, 1 if status == "invalid" else 0, 2 if status == "valid" else 0)
+    monkeypatch.setattr(google_rules, "run_epubcheck", check)
+    request = PackageRequest(channel="googleplay", editionConfig=edition, bookModel=VALID,
+                             artifactsBase64={"book.epub": base64.b64encode(epub).decode()})
+    if status == "valid":
+        result = build_package(request)
+        assert result["errors"] == 0
+        with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.epub") == epub
+            report = json.loads(archive.read("preflight.json"))
+            assert any(item["code"] == "GOOGLE-EPUBCHECK-WARNING" for item in report["findings"])
+    else:
+        with pytest.raises(HTTPException) as exc:
+            build_package(request)
+        assert exc.value.status_code == 422
+    assert calls == [epub]
+
+
+def test_google_ignores_stale_validation_and_checks_packaged_bytes(monkeypatch):
+    from epubcheck_runner import EpubCheckResult
+    import rules.google_play_v1 as google_rules
+    edition, epub = _google_saved_epub()
+    calls = []
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult("invalid", 1)
+    monkeypatch.setattr(google_rules, "run_epubcheck", check)
+    ctx = {"book": VALID, "edition": edition, "artifact": epub, "channel": "googleplay",
+           "_google_epubcheck_result": EpubCheckResult("valid")}
+    result = get_adapter("googleplay").validate(ctx)
+    assert any(item["code"] == "GOOGLE-EPUBCHECK-ERROR" for item in result["findings"])
+    ctx["artifact"] = b"stale proof"
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        get_adapter("googleplay").build_package(ctx, {"book.epub": epub})
+    assert calls == [epub, epub]
+
+
+def test_google_package_rejects_missing_embedded_cover_despite_stale_context(monkeypatch):
+    from epubcheck_runner import EpubCheckResult
+    import rules.google_play_v1 as google_rules
+    monkeypatch.setattr(google_rules, "run_epubcheck", lambda _epub: EpubCheckResult("valid"))
+    edition, valid_epub = _google_saved_epub()
+    no_cover, _ = render_epub(VALID, parse_edition(EBOOK))
+    ctx = {"book": VALID, "edition": edition, "artifact": valid_epub, "channel": "googleplay",
+           "_google_epubcheck_result": EpubCheckResult("valid")}
+    actual = get_adapter("googleplay").validate({**ctx, "artifact": no_cover})
+    assert any(item["code"] == "GOOGLE-EPUB-COVER" for item in actual["findings"])
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        get_adapter("googleplay").build_package(ctx, {"book.epub": no_cover})
+
+
+@pytest.mark.parametrize(("status", "code"), [
+    ("invalid", "APPLE-EPUBCHECK-ERROR"),
+    ("unavailable", "APPLE-EPUBCHECK-UNAVAILABLE"),
+])
+def test_apple_epubcheck_blocks_invalid_and_unavailable_saved_artifacts(monkeypatch, status, code):
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    calls = []
+    def check(epub):
+        calls.append(epub)
+        return EpubCheckResult(status, 1 if status == "invalid" else 0)
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    ctx = {**_ctx(), "channel": "apple"}
+    result = get_adapter("apple").validate(ctx)
+    assert calls == [ctx["artifact"]]  # Both findings share one validation per run.
+    assert any(f["code"] == code and f["severity"] == "error" for f in result["findings"])
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        get_adapter("apple").build_package(ctx, {"book.epub": ctx["artifact"]})
+
+
+def test_apple_validates_packaged_bytes_and_records_manual_handoff(monkeypatch):
+    import hashlib
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    ctx = {**_ctx(), "channel": "apple"}
+    ctx["book"] = copy.deepcopy(VALID)
+    ctx["book"]["metadata"]["description"] = "A" * 60
+    saved_epub, _ = render_epub(ctx["book"], parse_edition(EBOOK))
+    # The stale proof context must never determine which bytes are validated.
+    ctx["artifact"] = b"not the saved EPUB"
+    seen = []
+    def check(epub):
+        seen.append(epub)
+        return EpubCheckResult("valid", 0, 2)
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    package = get_adapter("apple").build_package(ctx, {"book.epub": saved_epub})[0]
+    assert seen == [saved_epub]
+    assert get_adapter("apple").capabilities().can_submit is False
+    with zipfile.ZipFile(BytesIO(package.data)) as archive:
+        assert archive.read("book.epub") == saved_epub
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["files"]["book.epub"] == hashlib.sha256(saved_epub).hexdigest()
+        report = json.loads(archive.read("preflight.json"))
+        assert any(f["code"] == "APPLE-EPUBCHECK-WARNING" for f in report["findings"])
+        readme = archive.read("README.txt").decode()
+        assert "not a Transporter .itmsp package" in readme
+        assert "Apple Books Publishing Portal" in readme
+        assert "not Apple approval" in readme
+
+
+def test_apple_package_rejects_invalid_saved_bytes_despite_valid_stale_proof(monkeypatch):
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    ctx = {**_ctx(), "channel": "apple"}
+    ctx["book"] = copy.deepcopy(VALID)
+    ctx["book"]["metadata"]["description"] = "A" * 60
+    saved_epub = ctx["artifact"]
+    ctx["artifact"] = b"different proof"
+    ctx["_apple_epubcheck_result"] = EpubCheckResult("valid")
+    seen = []
+    def check(epub):
+        seen.append(epub)
+        return EpubCheckResult("invalid", 1) if epub == saved_epub else EpubCheckResult("valid")
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    with pytest.raises(ValueError, match="unresolved validation errors"):
+        get_adapter("apple").build_package(ctx, {"book.epub": saved_epub})
+    assert seen == [saved_epub]
+
+
+def test_apple_preflight_never_accepts_a_caller_supplied_cached_result(monkeypatch):
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    ctx = {**_ctx(), "channel": "apple", "_apple_epubcheck_result": EpubCheckResult("valid")}
+    seen = []
+    def check(epub):
+        seen.append(epub)
+        return EpubCheckResult("invalid", 1)
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    result = get_adapter("apple").validate(ctx)
+    assert seen == [ctx["artifact"]]
+    assert any(item["code"] == "APPLE-EPUBCHECK-ERROR" for item in result["findings"])
+
+
+def test_apple_metadata_only_preflight_warns_that_epub_was_not_checked(monkeypatch):
+    import rules.apple_v1 as apple_rules
+    def unexpected(_epub):
+        raise AssertionError("preliminary preflight has no EPUB to validate")
+    monkeypatch.setattr(apple_rules, "run_epubcheck", unexpected)
+    result = get_adapter("apple").validate({**_ctx(artifact=False), "channel": "apple"})
+    assert any(item["code"] == "APPLE-EPUBCHECK-NO-ARTIFACT" and item["severity"] == "warning"
+               for item in result["findings"])
+
+
+@pytest.mark.parametrize("status", ["valid", "invalid", "unavailable"])
+def test_apple_package_endpoint_checks_exact_saved_epub_once(monkeypatch, status):
+    from fastapi import HTTPException
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    book = copy.deepcopy(VALID)
+    book["metadata"]["description"] = "A" * 60
+    epub, _ = render_epub(book, parse_edition(EBOOK))
+    calls = []
+    def check(data):
+        calls.append(data)
+        return EpubCheckResult(status, 1 if status == "invalid" else 0)
+    monkeypatch.setattr(apple_rules, "run_epubcheck", check)
+    request = PackageRequest(channel="apple", editionConfig=EBOOK, bookModel=book,
+                             artifactsBase64={"book.epub": base64.b64encode(epub).decode()})
+    if status == "valid":
+        result = build_package(request)
+        assert result["errors"] == 0
+        assert result["ruleVersion"] == "core-1.0.17+apple-1.2.0"
+        with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.epub") == epub
+    else:
+        with pytest.raises(HTTPException) as exc:
+            build_package(request)
+        assert exc.value.status_code == 422
+    assert calls == [epub]
+
+
+def test_apple_preflight_uses_effective_edition_description_and_identifier(monkeypatch):
+    import rules.apple_v1 as apple_rules
+    from epubcheck_runner import EpubCheckResult
+    monkeypatch.setattr(apple_rules, "run_epubcheck", lambda _epub: EpubCheckResult("valid"))
+    ctx = {**_ctx(), "channel": "apple"}
+    ctx["book"] = copy.deepcopy(VALID)
+    ctx["book"]["metadata"].update(description="A" * 60, isbn13="9780306406157")
+    ctx["edition"] = {"kind": "ebook", "metadata_overrides": {"description": "short", "isbn13": ""}}
+    codes = {f["code"] for f in get_adapter("apple").validate(ctx)["findings"]}
+    assert {"APPLE-DESCRIPTION-LENGTH", "APPLE-VENDOR-ID"} <= codes
+    ctx["book"]["metadata"].update(description="short", isbn13="")
+    ctx["edition"]["metadata_overrides"] = {"description": "B" * 60, "isbn13": "9780306406157"}
+    codes = {f["code"] for f in get_adapter("apple").validate(ctx)["findings"]}
+    assert not {"APPLE-DESCRIPTION-LENGTH", "APPLE-VENDOR-ID"} & codes
 
 
 def test_build_package_deterministic_export_zip():
@@ -74,3 +550,827 @@ def test_submit_and_status_not_supported():
         adapter.get_status("job-1")
     caps = adapter.capabilities()
     assert caps.can_submit is False and caps.can_check_status is False
+
+
+def test_export_preserves_located_preflight_warnings_and_binds_report_checksum(monkeypatch):
+    import hashlib
+    adapter = get_adapter("kdp")
+    ctx = _ctx()
+    report = {"channel": "kdp", "ruleVersion": "fixture-rule-1", "errors": 0, "warnings": 1,
+              "findings": [{"code": "FIXTURE-WARNING", "message": "Review café artwork",
+                            "location": "chapters/1/nodes/2", "severity": "warning",
+                            "category": "images", "rule_id": "fixture.image", "rule_version": "fixture-rule-1"}]}
+    monkeypatch.setattr(adapter, "validate", lambda _: report)
+    first = adapter.build_package(ctx, {"book.epub": ctx["artifact"]})[0]
+    assert first.data == adapter.build_package(ctx, {"book.epub": ctx["artifact"]})[0].data
+    with zipfile.ZipFile(BytesIO(first.data)) as archive:
+        saved = archive.read("preflight.json")
+        assert json.loads(saved) == {"schemaVersion": "1.0", **report}
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["files"]["preflight.json"] == hashlib.sha256(saved).hexdigest()
+        assert manifest["warnings"] == 1
+        assert b"review all warnings" in archive.read("README.txt")
+
+
+def test_package_metadata_is_exact_allowlisted_unicode_and_checksum_bound():
+    import hashlib
+    ctx = _ctx()
+    book = copy.deepcopy(VALID)
+    book["metadata"].update(title="Le voyage — 帰郷", description="First line\nSecond line: café",
+                            keywords=["cozy fantasy", "帰郷"], subtitle="A saved subtitle",
+                            privateToken="DO-NOT-EXPORT", internalNotes={"secret": "DO-NOT-EXPORT"})
+    book["bookBible"] = {"entities": [{"description": "DO-NOT-EXPORT"}]}
+    ctx["book"] = book
+    ctx["artifact"], _ = render_epub(book, parse_edition(EBOOK))
+    adapter = get_adapter("kdp")
+    artifacts = {"book.epub": ctx["artifact"]}
+    first = adapter.build_package(ctx, artifacts)[0]
+    assert first.data == adapter.build_package(ctx, artifacts)[0].data
+    assert list(artifacts) == ["book.epub"], "caller artifacts mutated"
+    with zipfile.ZipFile(BytesIO(first.data)) as archive:
+        listing = json.loads(archive.read("metadata.json"))
+        assert listing["schemaVersion"] == "1.0"
+        assert listing["metadata"] == {key: value for key, value in book["metadata"].items()
+                                       if key not in {"privateToken", "internalNotes"}}
+        assert b"DO-NOT-EXPORT" not in archive.read("metadata.json")
+        assert b"not a retailer import schema" in archive.read("README.txt")
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["packageVersion"] == "2.0"
+        assert set(manifest["files"]) == set(archive.namelist()) - {"manifest.json"}
+        for name, checksum in manifest["files"].items():
+            assert hashlib.sha256(archive.read(name)).hexdigest() == checksum
+
+
+@pytest.mark.parametrize("name", ["manifest.json", "metadata.json", "preflight.json", "README.txt"])
+def test_package_rejects_reserved_artifact_names(name):
+    ctx = _ctx()
+    with pytest.raises(ValueError, match="reserved"):
+        get_adapter("kdp").build_package(ctx, {"book.epub": ctx["artifact"], name: b"spoofed"})
+
+
+@pytest.mark.parametrize("field,value", [("description", {"secret": "hidden"}), ("keywords", [{"secret": "hidden"}])])
+def test_metadata_projection_rejects_nested_values(field, value):
+    from adapters import publishing_metadata
+    book = copy.deepcopy(VALID)
+    book["metadata"][field] = value
+    with pytest.raises(ValueError, match="must be"):
+        publishing_metadata(book)
+
+
+def test_export_preserves_publication_date_and_date_only_changes_package_identity(monkeypatch):
+    import hashlib
+    adapter = get_adapter("kdp")
+    ctx = _ctx(artifact=False)
+    ctx["book"] = copy.deepcopy(VALID)
+    ctx["book"]["metadata"].update(publicationDate="2024-02-29", privateNotes="DO-NOT-EXPORT")
+    monkeypatch.setattr(adapter, "validate", lambda _: {"channel": "kdp", "ruleVersion": "fixture-rule",
+        "errors": 0, "warnings": 0, "findings": []})
+    artifacts = {"book.epub": render_epub(ctx["book"], parse_edition(EBOOK))[0]}
+    first = adapter.build_package(ctx, artifacts)[0]
+    assert adapter.build_package(ctx, artifacts)[0].data == first.data
+    with zipfile.ZipFile(BytesIO(first.data)) as archive:
+        listing_bytes = archive.read("metadata.json")
+        assert json.loads(listing_bytes)["metadata"]["publicationDate"] == "2024-02-29"
+        assert b"DO-NOT-EXPORT" not in listing_bytes
+        assert json.loads(archive.read("manifest.json"))["files"]["metadata.json"] == hashlib.sha256(listing_bytes).hexdigest()
+        assert archive.read("book.epub") == artifacts["book.epub"]
+    ctx["book"]["metadata"]["publicationDate"] = "2026-11-01"
+    artifacts["book.epub"] = render_epub(ctx["book"], parse_edition(EBOOK))[0]
+    second = adapter.build_package(ctx, artifacts)[0]
+    assert first.sha256 != second.sha256
+
+
+@pytest.mark.parametrize("value", ["2026-02-30", "1900-02-29", "2026-1-01", "0000-01-01", "2026-01-01T00:00:00Z", "", 20260101])
+def test_metadata_projection_rejects_invalid_publication_dates(value):
+    from adapters import publishing_metadata
+    book = copy.deepcopy(VALID)
+    book["metadata"]["publicationDate"] = value
+    with pytest.raises(ValueError, match="publicationDate"):
+        publishing_metadata(book)
+
+
+def test_metadata_projection_preserves_optional_and_null_publication_date():
+    from adapters import publishing_metadata
+    book = copy.deepcopy(VALID)
+    assert "publicationDate" not in publishing_metadata(book)["metadata"]
+    book["metadata"]["publicationDate"] = None
+    assert "publicationDate" not in publishing_metadata(book)["metadata"]
+
+
+def test_package_endpoint_uses_the_exact_saved_artifact_deterministically():
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    request = PackageRequest(channel="kdp", editionConfig=EBOOK, bookModel=VALID,
+                             artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
+    first = build_package(request)
+    second = build_package(request)
+    assert first["ruleVersion"] == "core-1.0.17+kdp-1.8.0"
+    assert first["packages"][0]["sha256"] == second["packages"][0]["sha256"]
+    package = base64.b64decode(first["packages"][0]["dataBase64"])
+    with zipfile.ZipFile(BytesIO(package)) as archive:
+        assert archive.read("book.epub") == blob
+
+
+@pytest.fixture
+def publication_date_publishing_client(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", "publication-date-fixture")
+    with TestClient(_PUBLISHING_MAIN.app, raise_server_exceptions=False) as client:
+        yield client
+
+
+@pytest.mark.parametrize("channel", ["kdp", "apple", "googleplay"])
+@pytest.mark.parametrize("member", ["mimetype", "OEBPS/nav.xhtml", "OEBPS/content.opf", "OEBPS/ch0000.xhtml"])
+def test_corrupt_saved_epub_is_rejected_by_package_http(publication_date_publishing_client, monkeypatch, channel, member):
+    import rules.apple_v1 as apple_rules
+    import rules.google_play_v1 as google_rules
+    def no_checker(_):
+        raise AssertionError("corrupt EPUB must not reach EPUBCheck")
+    monkeypatch.setattr(apple_rules, "run_epubcheck", no_checker)
+    monkeypatch.setattr(google_rules, "run_epubcheck", no_checker)
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    damaged = bytearray(blob)
+    with zipfile.ZipFile(BytesIO(blob)) as archive:
+        item = archive.getinfo(member)
+        offset = item.header_offset + 30 + len(item.filename.encode("utf-8")) + len(item.extra)
+    damaged[offset + item.compress_size // 2] ^= 1
+    response = publication_date_publishing_client.post("/v1/publishing/package",
+        headers={"x-service-token": "publication-date-fixture"},
+        json={"channel": channel, "editionConfig": EBOOK, "bookModel": VALID,
+              "artifactsBase64": {"book.epub": base64.b64encode(damaged).decode()}})
+    assert response.status_code == 422, response.text
+    assert "packages" not in response.json()
+
+
+def test_kdp_package_rejects_missing_toc_destination(publication_date_publishing_client):
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(blob)) as source, zipfile.ZipFile(output, "w") as target:
+        for item in source.infolist():
+            data = source.read(item)
+            if item.filename == "OEBPS/nav.xhtml":
+                assert b'href="ch0000.xhtml"' in data
+                data = data.replace(b'href="ch0000.xhtml"', b'href="missing.xhtml"', 1)
+            target.writestr(item, data)
+    response = publication_date_publishing_client.post("/v1/publishing/package",
+        headers={"x-service-token": "publication-date-fixture"},
+        json={"channel": "kdp", "editionConfig": EBOOK, "bookModel": VALID,
+              "artifactsBase64": {"book.epub": base64.b64encode(output.getvalue()).decode()}})
+    assert response.status_code == 422, response.text
+    assert "packages" not in response.json()
+
+
+def test_kdp_package_rejects_toc_token_hidden_in_comment(publication_date_publishing_client):
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(blob)) as source, zipfile.ZipFile(output, "w") as target:
+        for item in source.infolist():
+            data = (b'<html xmlns="http://www.w3.org/1999/xhtml"><body><!-- epub:type="toc" --></body></html>'
+                    if item.filename == "OEBPS/nav.xhtml" else source.read(item))
+            target.writestr(item, data)
+    response = publication_date_publishing_client.post("/v1/publishing/package",
+        headers={"x-service-token": "publication-date-fixture"},
+        json={"channel": "kdp", "editionConfig": EBOOK, "bookModel": VALID,
+              "artifactsBase64": {"book.epub": base64.b64encode(output.getvalue()).decode()}})
+    assert response.status_code == 422
+    assert "packages" not in response.json()
+
+
+def test_kdp_package_rejects_mimetype_that_is_only_first_in_central_directory(publication_date_publishing_client):
+    original, _ = render_epub(VALID, parse_edition(EBOOK))
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(original)) as source, zipfile.ZipFile(output, "w") as target:
+        target.writestr("unexpected-first.txt", b"content")
+        for info in source.infolist():
+            target.writestr(info, source.read(info))
+    data = output.getvalue()
+    end = data.rfind(b"PK\x05\x06")
+    size, offset = struct.unpack_from("<II", data, end + 12)
+    position, entries = offset, []
+    while position < offset + size:
+        name, extra, comment = struct.unpack_from("<HHH", data, position + 28)
+        length = 46 + name + extra + comment
+        entries.append(data[position:position + length])
+        position += length
+    assert len(entries) >= 2
+    data = data[:offset] + entries[1] + entries[0] + b"".join(entries[2:]) + data[end:]
+    with zipfile.ZipFile(BytesIO(data)) as result:
+        assert result.infolist()[0].filename == "mimetype"
+        assert min(result.infolist(), key=lambda item: item.header_offset).filename == "unexpected-first.txt"
+    response = publication_date_publishing_client.post("/v1/publishing/package",
+        headers={"x-service-token": "publication-date-fixture"},
+        json={"channel": "kdp", "editionConfig": EBOOK, "bookModel": VALID,
+              "artifactsBase64": {"book.epub": base64.b64encode(data).decode()}})
+    assert response.status_code == 422
+    assert "packages" not in response.json()
+
+
+@pytest.mark.parametrize("channel", ["apple", "googleplay"])
+def test_preflight_does_not_trust_caller_supplied_epubcheck_cache(monkeypatch, channel):
+    import rules.apple_v1 as apple_rules
+    import rules.google_play_v1 as google_rules
+    from epubcheck_runner import EpubCheckResult
+    from preflight import run_preflight
+    from rules import load_ruleset
+    module, key = (apple_rules, "_apple_epubcheck_result") if channel == "apple" else (google_rules, "_google_epubcheck_result")
+    calls = []
+    def checker(blob):
+        calls.append(blob)
+        return EpubCheckResult("invalid", errors=1)
+    monkeypatch.setattr(module, "run_epubcheck", checker)
+    ctx = {**_ctx(), "channel": channel, key: EpubCheckResult("valid")}
+    findings = run_preflight(ctx, load_ruleset(channel))
+    assert len(calls) == 1
+    assert any(item.code.endswith("EPUBCHECK-ERROR") and item.severity == "error" for item in findings)
+
+
+@pytest.mark.parametrize("value", ["0000-01-01", "2026-02-30"])
+@pytest.mark.parametrize("source", ["base", "override"])
+@pytest.mark.parametrize("route", ["validate", "package"])
+def test_publishing_http_rejects_malformed_effective_publication_dates(publication_date_publishing_client, route, source, value):
+    book = copy.deepcopy(VALID)
+    config = copy.deepcopy(EBOOK)
+    book["metadata"]["publicationDate"] = value if source == "base" else "2024-02-29"
+    if source == "override":
+        config["metadata_overrides"] = {"publicationDate": value}
+    payload = {"channel": "kdp", "bookModel": book, "editionConfig": config}
+    if route == "package":
+        saved, _ = render_epub(VALID, parse_edition(EBOOK))
+        payload["artifactsBase64"] = {"book.epub": base64.b64encode(saved).decode()}
+    response = publication_date_publishing_client.post(f"/v1/publishing/{route}",
+        headers={"x-service-token": "publication-date-fixture"}, json=payload)
+    assert response.status_code == 422, response.text
+    assert response.json() == {"detail": "publicationDate must be a valid YYYY-MM-DD calendar date."}
+
+
+@pytest.mark.parametrize("case", ["absent", "null", "base", "override", "override-masks-base"])
+@pytest.mark.parametrize("route", ["validate", "package"])
+def test_publishing_http_preserves_valid_effective_publication_dates(publication_date_publishing_client, route, case):
+    book = copy.deepcopy(VALID)
+    config = copy.deepcopy(EBOOK)
+    if case != "absent":
+        book["metadata"]["publicationDate"] = None if case == "null" else (
+            "0000-01-01" if case == "override-masks-base" else "2024-02-29")
+    if case.startswith("override"):
+        config["metadata_overrides"] = {"publicationDate": "2026-11-01"}
+    payload = {"channel": "kdp", "bookModel": book, "editionConfig": config}
+    saved, _ = render_epub(book, parse_edition(config))
+    if route == "package":
+        payload["artifactsBase64"] = {"book.epub": base64.b64encode(saved).decode()}
+    original = copy.deepcopy(payload)
+    response = publication_date_publishing_client.post(f"/v1/publishing/{route}",
+        headers={"x-service-token": "publication-date-fixture"}, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["errors"] == 0
+    assert payload == original
+    if route == "package":
+        with zipfile.ZipFile(BytesIO(base64.b64decode(response.json()["packages"][0]["dataBase64"]))) as package:
+            assert package.read("book.epub") == saved
+            listing = json.loads(package.read("metadata.json"))["metadata"]
+            with zipfile.ZipFile(BytesIO(package.read("book.epub"))) as epub:
+                opf = ET.fromstring(epub.read("OEBPS/content.opf"))
+            date = opf.find("{http://www.idpf.org/2007/opf}metadata/{http://purl.org/dc/elements/1.1/}date")
+            if case in ("absent", "null"):
+                assert "publicationDate" not in listing and date is None
+            else:
+                expected = "2026-11-01" if case.startswith("override") else "2024-02-29"
+                assert listing["publicationDate"] == expected and date.text == expected
+    if case in ("absent", "null"):
+        baseline_payload = {"channel": "kdp", "bookModel": VALID, "editionConfig": EBOOK}
+        if route == "package":
+            legacy, _ = render_epub(VALID, parse_edition(EBOOK))
+            assert legacy == saved
+            baseline_payload["artifactsBase64"] = {"book.epub": base64.b64encode(legacy).decode()}
+        baseline = publication_date_publishing_client.post(f"/v1/publishing/{route}",
+            headers={"x-service-token": "publication-date-fixture"}, json=baseline_payload)
+        assert baseline.status_code == 200, baseline.text
+        assert response.json() == baseline.json()
+
+
+@pytest.mark.parametrize("flow", ["reflowable", "fixed"])
+@pytest.mark.parametrize("saved_date", [None, "2024-02-29"])
+def test_effective_publication_metadata_matches_real_epub_and_package(flow, saved_date):
+    import hashlib
+    book = copy.deepcopy(VALID)
+    book["metadata"].update(publicationDate=saved_date, privateNotes="DO-NOT-EXPORT")
+    config = {"kind": "ebook", "flow": flow, "metadata_overrides": {
+        "publicationDate": "2026-11-01", "title": "Edition & listing title",
+        "author": "Edition Author", "description": "Saved edition description.", "language": "fr",
+        "privateNotes": "DO-NOT-EXPORT"}}
+    original = copy.deepcopy((book, config))
+    blob, render_sha = render_epub(book, parse_edition(config))
+    request = PackageRequest(channel="kdp", editionConfig=config, bookModel=book,
+                             artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
+    first = build_package(request)
+    assert build_package(request) == first
+    assert render_epub(book, parse_edition(config)) == (blob, render_sha)
+    ns = {"o": "http://www.idpf.org/2007/opf", "dc": "http://purl.org/dc/elements/1.1/"}
+    with zipfile.ZipFile(BytesIO(base64.b64decode(first["packages"][0]["dataBase64"]))) as archive:
+        assert archive.read("book.epub") == blob
+        listing_bytes = archive.read("metadata.json")
+        listing = json.loads(listing_bytes)["metadata"]
+        with zipfile.ZipFile(BytesIO(archive.read("book.epub"))) as epub:
+            opf = ET.fromstring(epub.read("OEBPS/content.opf"))
+            for field, element in (("publicationDate", "date"), ("title", "title"),
+                                   ("author", "creator"), ("description", "description"), ("language", "language")):
+                assert listing[field] == config["metadata_overrides"][field]
+                assert opf.find(f"o:metadata/dc:{element}", ns).text == listing[field]
+        assert b"DO-NOT-EXPORT" not in listing_bytes
+        assert json.loads(archive.read("manifest.json"))["files"]["metadata.json"] == hashlib.sha256(listing_bytes).hexdigest()
+    assert (book, config) == original, "effective metadata mutated saved source or edition"
+    config["metadata_overrides"]["publicationDate"] = "2027-01-01"
+    revised, revised_sha = render_epub(book, parse_edition(config))
+    second = build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=book,
+                           artifactsBase64={"book.epub": base64.b64encode(revised).decode()}))
+    assert revised_sha != render_sha
+    assert second["packages"][0]["sha256"] != first["packages"][0]["sha256"]
+
+
+def test_effective_null_saved_date_clearing_preserves_legacy_render_and_package_identity():
+    book = copy.deepcopy(VALID)
+    blob, render_sha = render_epub(book, parse_edition(EBOOK))
+    request = lambda: PackageRequest(channel="kdp", editionConfig=EBOOK, bookModel=book,
+                      artifactsBase64={"book.epub": base64.b64encode(blob).decode()})
+    legacy = build_package(request())
+    book["metadata"]["publicationDate"] = "2024-02-29"
+    dated, dated_sha = render_epub(book, parse_edition(EBOOK))
+    assert dated_sha != render_sha
+    dated_package = build_package(PackageRequest(channel="kdp", editionConfig=EBOOK, bookModel=book,
+                                 artifactsBase64={"book.epub": base64.b64encode(dated).decode()}))
+    assert dated_package["packages"][0]["sha256"] != legacy["packages"][0]["sha256"]
+    book["metadata"]["publicationDate"] = None
+    assert render_epub(book, parse_edition(EBOOK)) == (blob, render_sha)
+    assert build_package(request()) == legacy
+
+
+@pytest.mark.parametrize("value", ["0000-01-01", "2026-02-30", "2026-1-01", ""])
+def test_effective_publication_metadata_rejects_malformed_supported_override(value):
+    from adapters import publishing_metadata
+    config = {"kind": "ebook", "metadata_overrides": {"publicationDate": value}}
+    with pytest.raises(ValueError, match="publicationDate"):
+        render_epub(VALID, parse_edition(config))
+    with pytest.raises(ValueError, match="publicationDate"):
+        publishing_metadata(VALID, config)
+
+
+@pytest.mark.parametrize("flow", ["reflowable", "fixed"])
+@pytest.mark.parametrize("change", ["date-added", "date-replaced", "date-cleared", "language"])
+def test_effective_publication_metadata_rejects_old_saved_epub_before_packaging(flow, change):
+    from fastapi import HTTPException
+    book = copy.deepcopy(VALID)
+    config = {"kind": "ebook", "flow": flow}
+    if change in ("date-replaced", "date-cleared"):
+        book["metadata"]["publicationDate"] = "2024-02-29"
+    old_artifact, _ = render_epub(book, parse_edition(config))
+    if change == "date-cleared":
+        book["metadata"]["publicationDate"] = None
+    else:
+        config["metadata_overrides"] = ({"language": "fr"} if change == "language"
+                                        else {"publicationDate": "2026-11-01"})
+    with pytest.raises(HTTPException) as caught:
+        build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=book,
+                      artifactsBase64={"book.epub": base64.b64encode(old_artifact).decode()}))
+    assert caught.value.status_code == 422
+    assert "Render again" in caught.value.detail
+
+
+@pytest.mark.parametrize("flow", ["reflowable", "fixed"])
+@pytest.mark.parametrize("field,value", [
+    ("title", "A different title"), ("author", "A different author"),
+    ("description", "A different description"), ("keywords", ["other", "keywords"]),
+    ("isbn13", "9780306406157"),
+])
+def test_package_rejects_saved_epub_with_stale_listing_metadata(flow, field, value):
+    from fastapi import HTTPException
+    book = copy.deepcopy(VALID)
+    config = {"kind": "ebook", "flow": flow}
+    old_artifact, _ = render_epub(book, parse_edition(config))
+    book["metadata"][field] = value
+    with pytest.raises(HTTPException) as caught:
+        build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=book,
+                      artifactsBase64={"book.epub": base64.b64encode(old_artifact).decode()}))
+    assert caught.value.status_code == 422
+    assert "Render again" in caught.value.detail
+
+
+def test_matching_epub_metadata_accepts_xml_normalized_line_endings():
+    from adapters import _assert_saved_epub_metadata, publishing_metadata
+    book = copy.deepcopy(VALID)
+    book["metadata"].update(title="Title\r\nSecond line", author="Name\rSurname",
+                            description="First\r\nSecond", keywords=["one\r\ntwo"])
+    artifact, _ = render_epub(book, parse_edition(EBOOK))
+    _assert_saved_epub_metadata(artifact, publishing_metadata(book)["metadata"])
+
+
+@pytest.mark.parametrize("malformation", ["oversize", "doctype", "non-utf8", "broken-xml",
+                                          "duplicate-opf", "duplicate-date", "duplicate-language", "missing-metadata"])
+def test_effective_publication_metadata_saved_opf_inspection_is_bounded_and_unambiguous(malformation, monkeypatch):
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    with zipfile.ZipFile(BytesIO(blob)) as archive:
+        entries = [(info, archive.read(info)) for info in archive.infolist()]
+    original = next(data for info, data in entries if info.filename == "OEBPS/content.opf")
+    replacement = {
+        "oversize": b"x" * 1_000_001,
+        "doctype": original.replace(b"<package ", b'<!DOCTYPE package [<!ENTITY x "denied">]><package ', 1),
+        "non-utf8": b"\xff",
+        "broken-xml": b"<package>",
+        "duplicate-date": original.replace(b"</metadata>", b"<dc:date>2024-02-29</dc:date><dc:date>2026-11-01</dc:date></metadata>"),
+        "duplicate-language": original.replace(b"</metadata>", b"<dc:language>en</dc:language></metadata>"),
+        "missing-metadata": b'<package xmlns="http://www.idpf.org/2007/opf" />',
+    }.get(malformation, original)
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        for info, data in entries:
+            archive.writestr(info, replacement if info.filename == "OEBPS/content.opf" else data)
+        if malformation == "duplicate-opf":
+            with pytest.warns(UserWarning, match="Duplicate name"):
+                archive.writestr("OEBPS/content.opf", replacement)
+    corrupted = output.getvalue()
+    adapter = get_adapter("kdp")
+    monkeypatch.setattr(adapter, "validate", lambda _: {"channel": "kdp", "ruleVersion": "fixture-rule",
+        "errors": 0, "warnings": 0, "findings": []})
+    with pytest.raises(ValueError, match="Render again"):
+        adapter.build_package({"book": VALID, "edition": EBOOK, "artifact": corrupted}, {"book.epub": corrupted})
+
+
+@pytest.mark.parametrize("failure", ["invalid-deflate", "eof"])
+def test_saved_opf_compressed_read_failures_are_safe_package_rejections(failure, monkeypatch):
+    from fastapi import HTTPException
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    if failure == "invalid-deflate":
+        with zipfile.ZipFile(BytesIO(blob)) as archive:
+            info = archive.getinfo("OEBPS/content.opf")
+        assert info.compress_type == zipfile.ZIP_DEFLATED
+        header = info.header_offset
+        data_offset = header + 30 + int.from_bytes(blob[header + 26:header + 28], "little") + int.from_bytes(
+            blob[header + 28:header + 30], "little")
+        corrupted = bytearray(blob)
+        # BTYPE=11 is an invalid DEFLATE block; leave the other ZIP entries intact.
+        corrupted[data_offset] = (corrupted[data_offset] & ~6) | 6
+        blob = bytes(corrupted)
+        with zipfile.ZipFile(BytesIO(blob)) as archive:
+            with pytest.raises(zlib.error):
+                archive.read("OEBPS/content.opf")
+    else:
+        read = zipfile.ZipExtFile.read
+
+        def truncated_opf_read(stream, *args, **kwargs):
+            if stream.name == "OEBPS/content.opf":
+                raise EOFError("truncated OPF compressed stream")
+            return read(stream, *args, **kwargs)
+
+        monkeypatch.setattr(zipfile.ZipExtFile, "read", truncated_opf_read)
+    # Exercise the real preflight and HTTP boundary, not a mocked validation result.
+    with pytest.raises(HTTPException) as caught:
+        build_package(PackageRequest(channel="kdp", editionConfig=EBOOK, bookModel=VALID,
+                      artifactsBase64={"book.epub": base64.b64encode(blob).decode()}))
+    assert caught.value.status_code == 422
+    assert "Render again" in caught.value.detail
+
+
+@pytest.mark.parametrize("encoding", ["x-bookworm-unknown", "ISO-8859-1"])
+def test_saved_opf_encoding_declaration_must_match_validated_utf8(encoding):
+    from fastapi import HTTPException
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(blob)) as source, zipfile.ZipFile(output, "w") as target:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename == "OEBPS/content.opf":
+                assert b'encoding="UTF-8"' in data
+                data = data.replace(b'encoding="UTF-8"', f'encoding="{encoding}"'.encode(), 1)
+                data.decode("utf-8")  # These are UTF-8 bytes with a conflicting declaration.
+            target.writestr(info, data)
+    with pytest.raises(HTTPException) as caught:
+        build_package(PackageRequest(channel="kdp", editionConfig=EBOOK, bookModel=VALID,
+                      artifactsBase64={"book.epub": base64.b64encode(output.getvalue()).decode()}))
+    assert caught.value.status_code == 422
+    assert "Render again" in caught.value.detail
+
+
+@pytest.mark.parametrize("field", ["date", "language"])
+@pytest.mark.parametrize("content", ["child", "tail"])
+def test_saved_opf_matching_prefix_with_nested_or_trailing_content_is_rejected(field, content):
+    from fastapi import HTTPException
+    book = copy.deepcopy(VALID)
+    book["metadata"]["publicationDate"] = "2024-02-29"
+    blob, _ = render_epub(book, parse_edition(EBOOK))
+    output = BytesIO()
+    closing = f"</dc:{field}>".encode()
+    with zipfile.ZipFile(BytesIO(blob)) as source, zipfile.ZipFile(output, "w") as target:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename == "OEBPS/content.opf":
+                assert closing in data
+                addition = b"<nested>unexpected</nested>" + closing if content == "child" else closing + b"unexpected"
+                data = data.replace(closing, addition, 1)
+            target.writestr(info, data)
+    # Real preflight must still lead to a safe HTTP rejection for these XML bytes.
+    with pytest.raises(HTTPException) as caught:
+        build_package(PackageRequest(channel="kdp", editionConfig=EBOOK, bookModel=book,
+                      artifactsBase64={"book.epub": base64.b64encode(output.getvalue()).decode()}))
+    assert caught.value.status_code == 422
+    assert "Render again" in caught.value.detail
+
+
+def test_saved_opf_plain_leaf_metadata_allows_whitespace_tail_without_rewriting_bytes():
+    book = copy.deepcopy(VALID)
+    book["metadata"]["publicationDate"] = "2024-02-29"
+    blob, _ = render_epub(book, parse_edition(EBOOK))
+    output = BytesIO()
+    with zipfile.ZipFile(BytesIO(blob)) as source, zipfile.ZipFile(output, "w") as target:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename == "OEBPS/content.opf":
+                for field in ("date", "language"):
+                    closing = f"</dc:{field}>".encode()
+                    data = data.replace(closing, closing + b" \n  ", 1)
+            target.writestr(info, data)
+    saved = output.getvalue()
+    result = build_package(PackageRequest(channel="kdp", editionConfig=EBOOK, bookModel=book,
+                          artifactsBase64={"book.epub": base64.b64encode(saved).decode()}))
+    with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as package:
+        assert package.read("book.epub") == saved
+
+
+def test_package_endpoint_rejects_wrong_channel_format_and_untrusted_names():
+    pdf = b"%PDF-1.4\nrendered"
+    with pytest.raises(Exception, match="does not accept pdf"):
+        build_package(PackageRequest(channel="apple", editionConfig={"kind": "print"},
+                                     bookModel=VALID,
+                                     artifactsBase64={"book.pdf": base64.b64encode(pdf).decode()}))
+    blob, _ = render_epub(VALID, parse_edition(EBOOK))
+    with pytest.raises(Exception, match="artifacts must contain"):
+        build_package(PackageRequest(channel="kdp", editionConfig=EBOOK, bookModel=VALID,
+                                     artifactsBase64={"../book.epub": base64.b64encode(blob).decode()}))
+
+
+def test_internal_package_endpoint_checks_its_service_token(monkeypatch):
+    monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", "publishing-secret")
+    with pytest.raises(Exception, match="invalid service token"):
+        require_service_token("wrong")
+    require_service_token("publishing-secret")
+
+
+@pytest.mark.parametrize("configured", [None, "", "   "])
+def test_private_publishing_routes_fail_closed_without_configuration(monkeypatch, configured):
+    from fastapi.testclient import TestClient
+    monkeypatch.delenv("SERVICE_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("PUBLISHING_SERVICE_TOKEN", raising=False)
+    if configured is not None:
+        monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", configured)
+    with TestClient(_PUBLISHING_MAIN.app) as client:
+        for route in ("validate", "package", "jobs"):
+            result = client.post(f"/v1/publishing/{route}", headers={"x-service-token": "guessed"}, json={})
+            assert result.status_code == 503, result.text
+            assert result.json() == {"detail": "Publishing service authentication is not configured."}
+        assert client.get("/health").status_code == 200
+        assert client.get("/v1/publishing/channels").status_code == 200
+
+
+def test_publishing_token_fallback_and_dedicated_precedence(monkeypatch):
+    from fastapi import HTTPException
+    monkeypatch.delenv("PUBLISHING_SERVICE_TOKEN", raising=False)
+    monkeypatch.setenv("SERVICE_AUTH_TOKEN", "shared-fixture")
+    require_service_token("shared-fixture")
+    monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", "dedicated-fixture")
+    for token in (None, "", "wrong", "shared-fixture", "non-ascii-é"):
+        with pytest.raises(HTTPException) as caught:
+            require_service_token(token)
+        assert caught.value.status_code == 401
+    require_service_token("dedicated-fixture")
+
+
+def test_retired_local_job_never_renders_reads_or_writes_a_job(monkeypatch):
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("PUBLISHING_SERVICE_TOKEN", "retirement-fixture")
+    def forbidden(*args, **kwargs):
+        pytest.fail("retired route attempted rendering or local-file work")
+    monkeypatch.setattr(_PUBLISHING_MAIN, "render_epub", forbidden)
+    monkeypatch.setattr(_PUBLISHING_MAIN, "build_package", forbidden)
+    monkeypatch.setattr(Path, "read_text", forbidden)
+    monkeypatch.setattr(Path, "write_text", forbidden)
+    assert not hasattr(_PUBLISHING_MAIN, "_JOBS_DIR")
+    with TestClient(_PUBLISHING_MAIN.app) as client:
+        url = "/v1/publishing/jobs"
+        assert client.post(url, json={}).status_code == 401
+        for payload in ({}, {"idempotencyKey": "../../old", "bookModel": VALID},
+                        {"idempotencyKey": "previously-succeeded"}):
+            response = client.post(url, headers={"x-service-token": "retirement-fixture"}, json=payload)
+            assert response.status_code == 410, response.text
+            assert "durable publishing queue" in response.json()["detail"]
+            assert "dataBase64" not in response.text
+
+
+def test_print_package_contains_exact_full_cover_pdf_and_rejects_mismatched_geometry():
+    from PIL import Image
+    from pypdf import PdfWriter
+    from wrap_cover import render_wrap_cover
+    config = {"kind": "print", "cover": {"asset_id": "77777777-7777-4777-8777-777777777777"},
+              "wrap_cover": {"enabled": True, "profile": "kdp-cream", "back_text": "Back cover copy"}}
+    writer = PdfWriter()
+    for _ in range(100):
+        writer.add_blank_page(432, 648)
+    output = BytesIO()
+    writer.write(output)
+    interior = output.getvalue()
+    image = BytesIO()
+    Image.new("RGB", (1800, 2700), "#204050").save(image, "PNG")
+    cover, _ = render_wrap_cover(image.getvalue(), interior, parse_edition(config))
+    artifacts = {"book.pdf": base64.b64encode(interior).decode(), "cover.pdf": base64.b64encode(cover).decode()}
+    request = PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts)
+    report = _PUBLISHING_MAIN.validate(request)
+    assert report["errors"] == 0, [(f["code"], f["message"]) for f in report["findings"]]
+    assert report["artifactSha256"] == hashlib.sha256(interior).hexdigest()
+    assert report["coverSha256"] == hashlib.sha256(cover).hexdigest()
+    result = build_package(request)
+    assert build_package(request) == result
+    with zipfile.ZipFile(BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
+        assert archive.read("book.pdf") == interior
+        assert archive.read("cover.pdf") == cover
+        assert set(json.loads(archive.read("manifest.json"))["files"]) == {"book.pdf", "cover.pdf", "metadata.json", "preflight.json", "README.txt"}
+    config["wrap_cover"]["profile"] = "kdp-white"
+    report = _PUBLISHING_MAIN.validate(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts))
+    assert report["errors"] > 0 and report["coverSha256"] == hashlib.sha256(cover).hexdigest()
+    with pytest.raises(Exception, match="no longer pass"):
+        build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID, artifactsBase64=artifacts))
+    with pytest.raises(Exception, match="no longer pass"):
+        build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID,
+                                     artifactsBase64={"book.pdf": artifacts["book.pdf"]}))
+
+
+def test_print_edition_isbn_is_bound_to_the_interior_cover_and_listing():
+    from fastapi.testclient import TestClient
+    from PIL import Image
+    from adapters import publishing_metadata
+    from pdf_renderer import render_pdf
+    from pypdf import PdfReader
+    from wrap_cover import render_wrap_cover
+
+    book = copy.deepcopy(VALID)
+    book["metadata"]["isbn13"] = "9780000000002"
+    book["chapters"] = [{**copy.deepcopy(VALID["chapters"][0]), "id": f"chapter-{i}", "order": i} for i in range(24)]
+    isbn = "9780000000019"
+    config = {"kind": "print", "isbn13": isbn, "cover": {"asset_id": "77777777-7777-4777-8777-777777777777"},
+              "wrap_cover": {"enabled": True, "profile": "kdp-cream", "barcode": "kdp"},
+              "front_matter": {"copyright_notice": "Synthetic example for testing."}}
+    parsed = parse_edition(config)
+    interior, _ = render_pdf(book, parsed)
+    assert f"ISBN: {isbn}" in PdfReader(BytesIO(interior)).pages[1].extract_text()
+    image = BytesIO()
+    Image.new("RGB", (1800, 2700), "#204050").save(image, "PNG")
+    cover, _ = render_wrap_cover(image.getvalue(), interior, parsed)
+    artifacts = {"book.pdf": base64.b64encode(interior).decode(), "cover.pdf": base64.b64encode(cover).decode()}
+    request = PackageRequest(channel="kdp", editionConfig=config, bookModel=book, artifactsBase64=artifacts)
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv("PUBLISHING_SERVICE_TOKEN", "fixture-publisher-token")
+        with TestClient(_PUBLISHING_MAIN.app) as client:
+            old = client.post("/v1/publishing/validate", json=request.model_dump(), headers={"x-service-token": "fixture-publisher-token"})
+            assert old.status_code == 200 and "listing" not in old.json()
+            response = client.post("/v1/publishing/validate", json=request.model_dump(), headers={
+                "x-service-token": "fixture-publisher-token", "x-bookworm-include-listing": "true",
+            })
+    assert response.status_code == 200
+    report = response.json()
+    assert report["errors"] == 0, report["findings"]
+    package = build_package(request)["packages"][0]
+    with zipfile.ZipFile(BytesIO(base64.b64decode(package["dataBase64"]))) as archive:
+        assert report["listing"]["metadata"]["isbn13"] == isbn
+        assert json.loads(archive.read("metadata.json")) == report["listing"]
+        assert (archive.read("book.pdf"), archive.read("cover.pdf")) == (interior, cover)
+    wrong_retailer = request.model_copy(update={"channel": "barnesnoble"})
+    assert any(item["code"] == "PRINT_BARCODE_CHANNEL" for item in _PUBLISHING_MAIN.validate(wrong_retailer)["findings"])
+
+    # An older proof can have valid PDF geometry but a different ISBN. A null
+    # edition ISBN deliberately leaves assignment to the retailer.
+    no_barcode = {**config, "wrap_cover": {"enabled": True, "profile": "kdp-cream"}}
+    legacy = parse_edition({key: value for key, value in no_barcode.items() if key != "isbn13"})
+    legacy_pdf, _ = render_pdf(book, legacy)
+    assert "9780000000002" in PdfReader(BytesIO(legacy_pdf)).pages[1].extract_text()
+    unassigned_pdf, _ = render_pdf(book, parse_edition({**no_barcode, "isbn13": None}))
+    assert "9780000000002" not in PdfReader(BytesIO(unassigned_pdf)).pages[1].extract_text()
+    assert publishing_metadata(book, {**no_barcode, "isbn13": None})["metadata"]["isbn13"] is None
+    swapped = request.model_copy(update={"artifactsBase64": {**artifacts, "book.pdf": base64.b64encode(legacy_pdf).decode()}})
+    assert any(item["code"] == "PRINT_ISBN_MISMATCH" for item in _PUBLISHING_MAIN.validate(swapped)["findings"])
+    with pytest.raises(Exception, match="no longer pass"):
+        build_package(swapped)
+    blank_wrap, _ = render_wrap_cover(image.getvalue(), interior, parse_edition(no_barcode))
+    swapped = request.model_copy(update={"artifactsBase64": {**artifacts, "cover.pdf": base64.b64encode(blank_wrap).decode()}})
+    assert any("cover ISBN barcode" in item["message"] for item in _PUBLISHING_MAIN.validate(swapped)["findings"])
+
+
+def test_kdp_package_retains_a_finished_cover_pdf():
+    from pypdf import PdfWriter
+    from reportlab.pdfgen.canvas import Canvas
+    from wrap_cover import wrap_geometry
+
+    config = {"kind": "print", "cover": {"asset_id": "77777777-7777-4777-8777-777777777777"},
+              "wrap_cover": {"enabled": True, "source_pdf_version": 3, "profile": "kdp-white"}}
+    writer = PdfWriter()
+    for _ in range(32):
+        writer.add_blank_page(432, 648)
+    interior = BytesIO()
+    writer.write(interior)
+    width, height, _ = wrap_geometry(parse_edition(config), 32)
+    cover = BytesIO()
+    canvas = Canvas(cover, pagesize=(width * 72, height * 72), invariant=1)
+    canvas.setFillColorCMYK(0.3, 0.1, 0, 0.5)
+    canvas.rect(0, 0, width * 72, height * 72, stroke=0, fill=1)
+    canvas.showPage()
+    canvas.save()
+    request = PackageRequest(channel="kdp", editionConfig=config, bookModel=VALID,
+        artifactsBase64={name: base64.b64encode(stream.getvalue()).decode() for name, stream in
+                         {"book.pdf": interior, "cover.pdf": cover}.items()})
+    report = _PUBLISHING_MAIN.validate(request)
+    assert report["errors"] == 0, report["findings"]
+    assert any(item["code"] == "PRINT_UPLOADED_COVER_REVIEW" for item in report["findings"])
+    package = build_package(request)["packages"][0]
+    with zipfile.ZipFile(BytesIO(base64.b64decode(package["dataBase64"]))) as archive:
+        assert archive.read("cover.pdf") == cover.getvalue()
+        assert archive.read("book.pdf") == interior.getvalue()
+
+
+def test_saved_print_preflight_and_package_use_original_full_bleed_resolution():
+    from PIL import Image
+    from pypdf import PdfWriter
+    from wrap_cover import render_wrap_cover
+
+    image_id = "77777777-7777-4777-8777-777777777777"
+    book = copy.deepcopy(VALID)
+    book["assets"].append({"id": image_id, "altText": "A lighthouse"})
+    book["chapters"][0]["nodes"].append({"id": "full-bleed", "type": "image", "assetId": image_id,
+        "attributes": {"printPlacement": "fullBleed"}})
+    config = {"kind": "print", "bleed_in": 0.125, "bleed_edges": "outer", "cover": {"asset_id": image_id},
+              "wrap_cover": {"enabled": True, "profile": "kdp-cream"}}
+    writer = PdfWriter()
+    for _ in range(24):
+        writer.add_blank_page(441, 666)
+    interior = BytesIO()
+    writer.write(interior)
+    artifacts = {"book.pdf": base64.b64encode(interior.getvalue()).decode()}
+    images = {}
+    for width, height in [(1800, 2700), (1838, 2775)]:
+        image = BytesIO()
+        Image.new("RGB", (width, height), "#204050").save(image, "PNG")
+        images[width] = {image_id: base64.b64encode(image.getvalue()).decode()}
+    cover, _ = render_wrap_cover(image.getvalue(), interior.getvalue(), parse_edition(config))
+    artifacts["cover.pdf"] = base64.b64encode(cover).decode()
+    request = PackageRequest(channel="kdp", editionConfig=config, bookModel=book, artifactsBase64=artifacts,
+                             assetImagesBase64=images[1838])
+    report = _PUBLISHING_MAIN.validate(request)
+    assert report["errors"] == 0, [(f["code"], f["message"]) for f in report["findings"]]
+    assert report["coverSha256"] == hashlib.sha256(cover).hexdigest()
+    coverless = request.model_copy(update={"artifactsBase64": {"book.pdf": artifacts["book.pdf"]}})
+    assert _PUBLISHING_MAIN.validate(coverless)["coverSha256"] is None
+    package = build_package(request)
+    with zipfile.ZipFile(BytesIO(base64.b64decode(package["packages"][0]["dataBase64"]))) as archive:
+        assert archive.read("book.pdf") == interior.getvalue()
+    for illustration_bytes, code in [({}, "PRINT_FULL_BLEED_IMAGE_MISSING"), (images[1800], "PRINT_FULL_BLEED_RESOLUTION")]:
+        invalid = request.model_copy(update={"assetImagesBase64": illustration_bytes})
+        report = _PUBLISHING_MAIN.validate(invalid)
+        assert any(f["code"] == code and f["severity"] == "error" for f in report["findings"]), report
+        with pytest.raises(Exception, match="no longer pass"):
+            build_package(invalid)
+
+
+def test_odd_book_renders_preflights_and_packages_without_manual_blank_page(monkeypatch):
+    from fastapi.testclient import TestClient
+    from PIL import Image
+    from pypdf import PdfReader
+
+    spec = importlib.util.spec_from_file_location("bookworm_odd_render", ROOT / "rendering" / "main.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setenv("RENDERING_SERVICE_TOKEN", "odd-book-fixture")
+    book = copy.deepcopy(VALID)
+    book["chapters"] = []
+    for index in range(24):
+        chapter = copy.deepcopy(VALID["chapters"][0])
+        chapter.update(id=f"chapter-{index}", order=index, title=f"Chapter {index + 1}")
+        book["chapters"].append(chapter)
+    config = {"kind": "print", "cover": {"asset_id": "77777777-7777-4777-8777-777777777777"},
+              "wrap_cover": {"enabled": True, "profile": "kdp-cream"}}
+    artwork = BytesIO()
+    Image.new("RGB", (1800, 2700), "#204050").save(artwork, "PNG")
+    payload = {"bookModel": book, "editionConfig": config,
+               "coverBase64": base64.b64encode(artwork.getvalue()).decode()}
+    with TestClient(module.app) as client:
+        headers = {"x-service-token": "odd-book-fixture"}
+        response = client.post("/render", headers=headers, json=payload)
+        assert response.status_code == 200, response.text
+        rendered = response.json()
+        assert rendered["coverRendererVersion"] == "paperback-cover-1.2.0"
+        interior = base64.b64decode(rendered["artifactBase64"])
+        cover = base64.b64decode(rendered["coverArtifactBase64"])
+        assert len(PdfReader(BytesIO(interior)).pages) == 25
+        assert float(PdfReader(BytesIO(cover)).pages[0].mediabox.width) == pytest.approx((12.25 + 26 * 0.0025) * 72)
+        response = client.post("/preflight", headers=headers, json={**payload, "channel": "kdp"})
+        assert response.status_code == 200, response.text
+        check = response.json()
+        assert check["errors"] == 0, check
+        rounding = next(f for f in check["findings"] if f["code"] == "KDP-PRINT-ROUNDED-COUNT")
+        assert rounding["severity"] == "info"
+        package = build_package(PackageRequest(channel="kdp", editionConfig=config, bookModel=book,
+            artifactsBase64={"book.pdf": rendered["artifactBase64"], "cover.pdf": rendered["coverArtifactBase64"]}))
+        with zipfile.ZipFile(BytesIO(base64.b64decode(package["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.pdf") == interior
+            assert archive.read("cover.pdf") == cover

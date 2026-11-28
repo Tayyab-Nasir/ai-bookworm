@@ -6,9 +6,10 @@ book_bible_items. The caller persists them after human approval.
 """
 from __future__ import annotations
 
+import json
 import jsonschema
 
-from agents.base import AgentValidationError, BaseAgent
+from agents.base import AgentValidationError, BaseAgent, sanitize
 
 TOOL_NAME = "propose_book_bible_candidates"
 
@@ -17,19 +18,21 @@ ENTITY_CANDIDATE_SCHEMA: dict = {
     "required": ["type", "name", "description", "attributes", "sourceRefs", "confidence"],
     "properties": {
         "type": {"type": "string", "enum": ["character", "place", "organization", "object", "event", "term"]},
-        "name": {"type": "string", "minLength": 1},
-        "description": {"type": "string"},
-        "attributes": {"type": "object"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 160},
+        "description": {"type": "string", "maxLength": 12000},
+        "attributes": {"type": "object", "maxProperties": 40, "propertyNames": {"minLength": 1, "maxLength": 80}},
         "sourceRefs": {
             "type": "array",
             "minItems": 1,
+            "maxItems": 30,
             "items": {
                 "type": "object",
-                "required": ["chapterId", "nodeId"],
+                "required": ["chapterId", "documentVersionId", "nodeId", "textHash"],
                 "properties": {
                     "chapterId": {"type": "string", "format": "uuid"},
-                    "nodeId": {"type": "string"},
-                    "textHash": {"type": "string"},
+                    "documentVersionId": {"type": "string", "format": "uuid"},
+                    "nodeId": {"type": "string", "minLength": 1, "maxLength": 200},
+                    "textHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
                 },
                 "additionalProperties": False,
             },
@@ -48,7 +51,7 @@ TOOL_SCHEMA = {
     "input_schema": {
         "type": "object",
         "required": ["candidates"],
-        "properties": {"candidates": {"type": "array", "items": ENTITY_CANDIDATE_SCHEMA}},
+        "properties": {"candidates": {"type": "array", "maxItems": 10, "items": ENTITY_CANDIDATE_SCHEMA}},
         "additionalProperties": False,
     },
 }
@@ -56,8 +59,36 @@ TOOL_SCHEMA = {
 
 class BookBibleAgent(BaseAgent):
     agent_type = "book_bible"
-    prompt_version = "v1"
-    allowed_tools = ["get_chapter", "search_book", TOOL_NAME]
+    prompt_version = "v2"
+    allowed_tools = [TOOL_NAME]
+    max_output_tokens = 6000
+
+    def __init__(self, provider, executor, model: str = "mock-1"):
+        super().__init__(provider, executor, model)
+        self._evidence_refs: set[tuple[str, str, str, str]] = set()
+        self.allow_quoted_context = False
+
+    def required_context_budget(self, budget: int) -> int:
+        # Only the managed quote path may admit extra provenance. Its API
+        # counts the exact prompt before paid acceptance and pins the hash.
+        # Customer-key and unquoted jobs keep their original ceiling.
+        return budget * 4 // 3 if self.allow_quoted_context else budget
+
+    def build_user_message(self, request: dict) -> str:
+        self._evidence_refs = set()
+        message = super().build_user_message(request)
+        # Related search and existing Bible entries may inform wording, but
+        # generated facts must cite the selected, version-pinned manuscript.
+        if not self._evidence_refs:
+            raise AgentValidationError("Book Bible extraction needs versioned, hashed manuscript nodes")
+        return message
+
+    def on_context_source(self, kind: str, value: dict) -> None:
+        if kind != "chapter":
+            return
+        ref = (value.get("chapterId"), value.get("documentVersionId"), value.get("nodeId"), value.get("textHash"))
+        if all(isinstance(part, str) and part and sanitize(part) == part for part in ref):
+            self._evidence_refs.add(ref)
 
     def tool_schemas(self) -> list[dict]:
         return [*super().tool_schemas(), TOOL_SCHEMA]
@@ -66,9 +97,21 @@ class BookBibleAgent(BaseAgent):
         if call.get("name") == TOOL_NAME:
             payload = call.get("input") or {}
             try:
-                jsonschema.validate(payload, TOOL_SCHEMA["input_schema"])
+                jsonschema.validate(payload, TOOL_SCHEMA["input_schema"], format_checker=jsonschema.FormatChecker())
             except jsonschema.ValidationError as e:
                 raise AgentValidationError(f"{TOOL_NAME}: {e.message}") from e
+            for candidate in payload["candidates"]:
+                if candidate["name"] != candidate["name"].strip() or candidate["description"] != candidate["description"].strip():
+                    raise AgentValidationError(f"{TOOL_NAME}: name and description must be trimmed")
+                attrs = candidate["attributes"]
+                if len(json.dumps(attrs, ensure_ascii=False)) > 24000 or any(
+                    key in attrs for key in ("imageAssetIds", "__proto__", "constructor", "prototype")
+                ):
+                    raise AgentValidationError(f"{TOOL_NAME}: attributes exceed the Book Bible storage contract")
+                for ref in candidate["sourceRefs"]:
+                    cited = (ref["chapterId"], ref["documentVersionId"], ref["nodeId"], ref["textHash"])
+                    if cited not in self._evidence_refs:
+                        raise AgentValidationError(f"{TOOL_NAME}: sourceRef was not present in the selected manuscript evidence")
             return payload
         return super().validate_tool_call(call)
 

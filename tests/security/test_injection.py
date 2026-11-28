@@ -84,7 +84,7 @@ def test_injection_manuscript_still_yields_valid_job(evil: str):
             "operation": {
                 "operationId": "op-1", "type": "replace_text",
                 "target": {"chapterId": CHAPTER_ID, "nodeId": "n1"},
-                "payload": {"from": 0, "to": 3, "text": "The"},
+                    "payload": {"nodeId": "n1", "from": 0, "to": 3, "text": "The"},
                 "expectedVersion": 1,
             },
             "rationale": "r", "confidence": 0.9,
@@ -123,7 +123,9 @@ def test_hostile_model_output_fails_job_wholesale(output: dict):
 
 # ---- service level ----
 
-def test_service_rejects_injection_via_user_instruction():
+def test_service_rejects_injection_via_user_instruction(monkeypatch):
+    monkeypatch.setenv("DEFAULT_AI_PROVIDER", "mock")
+    monkeypatch.setenv("DEFAULT_AI_MODEL", "mock-1")
     client = TestClient(app)
     res = client.post("/v1/ai/jobs", json={
         "workspaceId": "w", "bookId": "b", "agentType": "proofreader",

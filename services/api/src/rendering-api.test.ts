@@ -1,0 +1,1391 @@
+import { createHash } from "node:crypto";
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { strToU8, zipSync } from "fflate";
+import { readPackageListing } from "./lib/package-listing.js";
+
+process.env.SUPABASE_URL ??= "http://localhost:54321";
+process.env.SUPABASE_ANON_KEY ??= "test-anon";
+process.env.SUPABASE_SERVICE_ROLE_KEY ??= "test-service";
+process.env.REDIS_URL ??= "redis://localhost:6379";
+process.env.QDRANT_URL ??= "http://localhost:6333";
+process.env.NODE_ENV = "test";
+process.env.LOG_LEVEL = "error";
+
+const { buildApp } = await import("./app.js");
+
+type Row = Record<string, unknown>;
+interface Store {
+  tables: Record<string, Row[]>;
+  objects: Map<string, Buffer>;
+  downloads?: string[];
+  signedPaths?: string[];
+  queryErrors?: Record<string, { code: string }>;
+  signError?: boolean;
+  downloadBarrier?: () => Promise<void>;
+  rpcError?: { code: string; message?: string; details?: string };
+  completionHook?: (name: string, args: Row) => Promise<{ data: null; error: { code: string } | null }>;
+}
+
+function fakeSupabase(store: Store) {
+  return {
+    auth: { getUser: async (token: string) => token === "good"
+      ? { data: { user: { id: USER } }, error: null }
+      : { data: { user: null }, error: { message: "bad" } } },
+    storage: { from: () => ({
+      upload: async (path: string, bytes: Buffer) => {
+        if (store.objects.has(path)) return { data: null, error: { message: "exists" } };
+        store.objects.set(path, Buffer.from(bytes));
+        return { data: { path }, error: null };
+      },
+      download: async (path: string) => {
+        const barrier = store.downloadBarrier; store.downloadBarrier = undefined; await barrier?.();
+        store.downloads?.push(path);
+        const bytes = store.objects.get(path);
+        return bytes
+          ? { data: new Blob([new Uint8Array(bytes)]), error: null }
+          : { data: null, error: { message: "missing" } };
+      },
+      createSignedUrl: async (path: string, seconds: number) => {
+        store.signedPaths?.push(path);
+        if (store.signError) return { data: null, error: { message: "private signing diagnostic" } };
+        return { data: { signedUrl: `signed:${seconds}:${path}` }, error: null };
+      },
+      remove: async (paths: string[]) => { paths.forEach((path) => store.objects.delete(path)); return { data: paths, error: null }; },
+    }) },
+    from: (table: string) => {
+      const rows = (store.tables[table] ??= []);
+      const filters: [string, unknown][] = [];
+      const containsFilters: [string, Record<string, unknown>][] = [];
+      const orders: {key:string; ascending:boolean}[] = [];
+      let before: { createdAt: string; id: string } | null = null;
+      let limit: number | null = null;
+      let descending = false;
+      let pendingInsert: Row | null = null;
+      let pendingUpdate: Row | null = null;
+      let insertError: { code: string } | null = null;
+      const selected = () => {
+        let result = rows.filter((row) => filters.every(([key, value]) => Array.isArray(value) ? value.includes(row[key]) : row[key] === value));
+        result = result.filter(row => containsFilters.every(([key, expected]) => {
+          const value = row[key];
+          return value !== null && typeof value === "object" && !Array.isArray(value)
+            && Object.entries(expected).every(([field, expectedValue]) => (value as Row)[field] === expectedValue);
+        }));
+        if (before) {
+          const { createdAt, id } = before;
+          result = result.filter(row => String(row.created_at) < createdAt
+            || (row.created_at === createdAt && String(row.id) < id));
+        }
+        if (descending) result = [...result].reverse();
+        if (orders.length > 1) result.sort((a,b) => {
+          for (const order of orders) {
+            const x = String(a[order.key] ?? ""), y = String(b[order.key] ?? "");
+            if (x !== y) return (x < y ? -1 : 1) * (order.ascending ? 1 : -1);
+          }
+          return 0;
+        });
+        return limit == null ? result : result.slice(0, limit);
+      };
+      const mutate = () => {
+        if (pendingInsert) {
+          if (table === "publishing_jobs" && rows.some((row) => row.idempotency_key === pendingInsert?.idempotency_key)) {
+            pendingInsert = null;
+            insertError = { code: "23505" };
+            return [];
+          }
+          const row = { created_at: new Date().toISOString(), updated_at: new Date().toISOString(), ...pendingInsert };
+          rows.push(row); pendingInsert = null; return [row];
+        }
+        if (pendingUpdate) {
+          const result = selected();
+          result.forEach((row) => Object.assign(row, pendingUpdate));
+          pendingUpdate = null; return result;
+        }
+        return selected();
+      };
+      const result = () => { const data = mutate(); return { data, error: store.queryErrors?.[table] ?? insertError }; };
+      const builder: Record<string, unknown> = {};
+      builder.select = () => builder;
+      builder.eq = (key: string, value: unknown) => { filters.push([key, value]); return builder; };
+      builder.in = (key: string, value: unknown[]) => { filters.push([key, value]); return builder; };
+      builder.contains = (key: string, value: Record<string, unknown>) => { containsFilters.push([key, value]); return builder; };
+      builder.is = (key: string, value: unknown) => { filters.push([key, value]); return builder; };
+      builder.gte = () => builder;
+      builder.or = (expression: string) => {
+        const match = /^created_at\.lt\.([^,]+),and\(created_at\.eq\.([^,]+),id\.lt\.([^,]+)\)$/.exec(expression);
+        assert.ok(match && match[1] === match[2], "history uses the same timestamp for both cursor branches");
+        before = { createdAt: match[1], id: match[3] };
+        return builder;
+      };
+      builder.order = (key: string, options?: { ascending?: boolean }) => { descending ||= options?.ascending === false; orders.push({key, ascending: options?.ascending !== false}); return builder; };
+      builder.limit = (value: number) => { limit = value; return builder; };
+      builder.insert = (row: Row) => { pendingInsert = row; return builder; };
+      builder.update = (row: Row) => { pendingUpdate = row; return builder; };
+      builder.single = async () => { const value = result(); return { data: value.data[0] ?? null, error: value.error }; };
+      builder.maybeSingle = async () => { const value = result(); return { data: value.data[0] ?? null, error: value.error }; };
+      builder.then = (resolve: (value: unknown) => unknown) => resolve(result());
+      return builder;
+    },
+    rpc: async (name: string, args: Row) => {
+      if (store.completionHook && ["complete_render_job", "complete_publishing_package_job"].includes(name)) {
+        return store.completionHook(name, args);
+      }
+      if (name === "complete_publishing_package_job") {
+        if (store.rpcError) return { data: null, error: store.rpcError };
+        const job = store.tables.publishing_jobs.find((row) => row.id === args.p_job_id);
+        if (!job) return { data: null, error: { code: "P0002" } };
+        const artifact = args.p_artifact as Row;
+        store.tables.assets.push({
+          id: artifact.assetId, workspace_id: WORKSPACE, type: artifact.type, name: artifact.name,
+          storage_path: artifact.storagePath, mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes,
+          checksum: artifact.checksum, status: "draft", deleted_at: null, created_by: USER,
+        });
+        store.tables.asset_versions.push({ asset_id: artifact.assetId, version_number: 1, storage_path: artifact.storagePath,
+          checksum: artifact.checksum, mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes, scan_status: "trusted_generated" });
+        store.tables.asset_links.push({ asset_id: artifact.assetId, entity_type: "edition", entity_id: EDITION, usage_role: artifact.role });
+        store.tables.usage_events.push({ publishing_job_id: job.id, organization_id: ORG, workspace_id: WORKSPACE, user_id: USER, meter: "publishing", quantity: 1 });
+        Object.assign(job, {
+          status: "succeeded", response_json: {
+            artifact, ruleVersion: args.p_rule_version, sourceRenderJobId: args.p_source_render_job_id,
+            sourcePreflightJobId: args.p_source_preflight_job_id, submissionMode: "manual",
+          }, completed_at: new Date().toISOString(),
+        });
+        return { data: job, error: null };
+      }
+      if (name === "complete_preflight_job") {
+        if (store.rpcError) return { data: null, error: store.rpcError };
+        const job = store.tables.publishing_jobs.find((row) => row.id === args.p_job_id);
+        if (!job) return { data: null, error: { code: "P0002" } };
+        const result = args.p_result as { findings: Row[] } & Row;
+        for (const finding of result.findings) {
+          store.tables.publishing_validations.push({
+            publishing_job_id: job.id, rule_version: finding.rule_version, severity: finding.severity,
+            code: finding.code, message: finding.message, location_json: { path: finding.location },
+          });
+        }
+        Object.assign(job, { status: "succeeded", response_json: result, completed_at: new Date().toISOString() });
+        return { data: job, error: null };
+      }
+      if (name !== "complete_render_job") return { data: null, error: { code: "42883" } };
+      if (store.rpcError) return { data: null, error: store.rpcError };
+      const job = store.tables.publishing_jobs.find((row) => row.id === args.p_job_id);
+      if (!job) return { data: null, error: { code: "P0002" } };
+      for (const artifact of args.p_artifacts as Row[]) {
+        store.tables.assets.push({
+          id: artifact.assetId, workspace_id: WORKSPACE, type: artifact.type, name: artifact.name,
+          storage_path: artifact.storagePath, mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes,
+          checksum: artifact.checksum, status: "draft", deleted_at: null, created_by: USER,
+        });
+        store.tables.asset_versions.push({ asset_id: artifact.assetId, version_number: 1, storage_path: artifact.storagePath,
+          checksum: artifact.checksum, mime_type: artifact.mimeType, size_bytes: artifact.sizeBytes, scan_status: "trusted_generated" });
+        store.tables.asset_links.push({ asset_id: artifact.assetId, entity_type: "book", entity_id: BOOK, usage_role: artifact.role });
+      }
+      store.tables.usage_events.push({ publishing_job_id: job.id, organization_id: ORG, workspace_id: WORKSPACE, user_id: USER, meter: "rendering", quantity: 1 });
+      Object.assign(job, {
+        status: "succeeded", response_json: { artifacts: args.p_artifacts, rendererVersion: args.p_renderer_version, usage: args.p_usage },
+        completed_at: new Date().toISOString(),
+      });
+      return { data: job, error: null };
+    },
+  } as never;
+}
+
+const USER = "d0000000-0000-4000-8000-000000000001";
+const ORG = "d0000000-0000-4000-8000-000000000002";
+const WORKSPACE = "d0000000-0000-4000-8000-000000000003";
+const BOOK = "d0000000-0000-4000-8000-000000000004";
+const EDITION = "d0000000-0000-4000-8000-000000000005";
+const CHAPTER = "d0000000-0000-4000-8000-000000000006";
+const COVER = "d0000000-0000-4000-8000-000000000007";
+const ILLUSTRATION = "d0000000-0000-4000-8000-000000000008";
+const auth = { authorization: "Bearer good" };
+
+function sha(bytes: Buffer) { return createHash("sha256").update(bytes).digest("hex"); }
+
+function baseStore(role = "editor"): Store {
+  const cover = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]);
+  const illustration = Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]);
+  const coverPath = `workspaces/${WORKSPACE}/assets/${COVER}/v1/cover.png`;
+  const illustrationPath = `workspaces/${WORKSPACE}/assets/${ILLUSTRATION}/v1/scene.png`;
+  return {
+    objects: new Map([[coverPath, cover], [illustrationPath, illustration]]),
+    tables: {
+      workspaces: [{ id: WORKSPACE, organization_id: ORG }],
+      workspace_members: [{ workspace_id: WORKSPACE, user_id: USER, role, status: "active" }],
+      books: [{ id: BOOK, workspace_id: WORKSPACE, title: "River Moon", subtitle: null, author_name: "A. Writer", genre: "fantasy", language: "en" }],
+      editions: [{ id: EDITION, book_id: BOOK, type: "ebook", updated_at: "2026-09-03T00:00:00.000Z", edition_metadata_json: { kind: "ebook", cover: { asset_id: COVER } } }],
+      chapters: [{ id: CHAPTER, book_id: BOOK, title: "The Bridge", order_index: 0 }],
+      document_versions: [{ id: crypto.randomUUID(), chapter_id: CHAPTER, version_number: 1, content_json: { schemaVersion: "1.0", nodes: [
+        { id: "p1", type: "paragraph", text: "Mira crossed the moonlit bridge." },
+        { id: "i1", type: "image", assetId: ILLUSTRATION },
+      ] } }],
+      assets: [
+        { id: COVER, workspace_id: WORKSPACE, storage_path: coverPath, mime_type: "image/png", size_bytes: cover.length, checksum: sha(cover), status: "approved", deleted_at: null },
+        { id: ILLUSTRATION, workspace_id: WORKSPACE, storage_path: illustrationPath, mime_type: "image/png", size_bytes: illustration.length, checksum: sha(illustration), status: "approved", deleted_at: null },
+      ],
+      book_metadata: [], style_guides: [], book_bible_items: [], subscriptions: [], plans: [],
+      publishing_jobs: [], publishing_validations: [], asset_versions: [
+        { asset_id: COVER, version_number: 1, storage_path: coverPath, checksum: sha(cover), scan_status: "clean", mime_type: "image/png", size_bytes: cover.length },
+        { asset_id: ILLUSTRATION, version_number: 1, storage_path: illustrationPath, checksum: sha(illustration), scan_status: "clean", mime_type: "image/png", size_bytes: illustration.length },
+      ], asset_links: [], usage_events: [], activity_events: [],
+    },
+  };
+}
+
+function successfulRenderer(requests: unknown[], coverRendererVersion: string | null = "cover-test") {
+  return async (_input: string | URL | Request, init?: RequestInit) => {
+    requests.push(JSON.parse(String(init?.body)));
+    const artifact = Buffer.from("PK\u0003\u0004deterministic-epub");
+    const cover = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]);
+    return new Response(JSON.stringify({
+      format: "epub", artifactBase64: artifact.toString("base64"), sha256: sha(artifact), rendererVersion: "epub-test",
+      coverArtifactBase64: cover.toString("base64"), coverSha256: sha(cover), coverRendererVersion,
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+}
+
+test("QR renderer correction survives exact-request recovery without exposing service diagnostics", async () => {
+  const known = "QR size is too small for this destination; increase QR size or shorten the HTTPS URL";
+  for (const [qrEnabled, detail, isQrError] of [[true, known, true], [false, known, false], [true, "private renderer diagnostic", false]] as const) {
+    const store = baseStore();
+    const qr = { enabled: qrEnabled, url: qrEnabled ? "https://example.test/book" : null, size_px: 96 };
+    store.tables.editions[0].edition_metadata_json = { kind: "ebook", cover: { asset_id: COVER, qr_code: qr } };
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: async () =>
+      Response.json({ detail, privateField: "private source data" }, { status: 422 }),
+    });
+    try {
+      const requestId = crypto.randomUUID();
+      const result = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: requestId } });
+      assert.equal(result.statusCode, 422, result.body);
+      assert.equal(result.json().error.code === "cover_qr_too_small", isQrError, result.body);
+      assert.doesNotMatch(result.body, /private (renderer|source)/);
+      const recovery = await app.inject({ method: "GET", url: `/v1/editions/${EDITION}/render-requests/${requestId}?bookId=${BOOK}`, headers: auth });
+      assert.equal(recovery.statusCode, 200, recovery.body);
+      assert.equal(recovery.json().job.status, "failed");
+      assert.equal(recovery.json().job.coverQrCorrection, isQrError ? result.json().error.message : undefined);
+      assert.doesNotMatch(recovery.body, /private (renderer|source)|response_json/);
+      assert.equal(store.tables.publishing_jobs.length, 1);
+      assert.equal(store.objects.size, 2);
+      assert.equal(store.tables.usage_events.length, 0);
+    } finally { await app.close(); }
+  }
+});
+
+function enableRetailerPackages(store: Store) {
+  const planId = "d0000000-0000-4000-8000-000000000009";
+  store.tables.subscriptions.push({ id: crypto.randomUUID(), organization_id: ORG, plan_id: planId, status: "active", created_at: "2026-09-04T00:00:00Z", current_period_end: null });
+  store.tables.plans.push({ id: planId, name: "team", entitlements_json: { publishing_channels: ["export", "kdp", "apple_books", "barnes_noble", "lulu", "google_play"] } });
+}
+
+function successfulRenderAndPreflight(requests: unknown[], channel = "kdp", coverRendererVersion = "cover-test") {
+  return async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+    if (String(input).endsWith("/preflight")) {
+      return new Response(JSON.stringify({
+        ruleVersion: `core-test+${channel}-test`, channel, errors: 0, warnings: 1, findings: [],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return successfulRenderer([], coverRendererVersion)(input, init);
+  };
+}
+
+function successfulPackager(requests: unknown[], channel = "kdp") {
+  return async (_input: string | URL | Request, init?: RequestInit) => {
+    requests.push(JSON.parse(String(init?.body)));
+    const packageBytes = Buffer.from("PK\u0003\u0004deterministic-channel-package");
+    return new Response(JSON.stringify({
+      channel, ruleVersion: `core-test+${channel}-test`, errors: 0,
+      packages: [{ path: `${channel}-export.zip`, sha256: sha(packageBytes), dataBase64: packageBytes.toString("base64") }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+}
+
+async function createReadySources(app: Awaited<ReturnType<typeof buildApp>>, channel = "kdp") {
+  const render = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: crypto.randomUUID() } });
+  assert.equal(render.statusCode, 201, render.body);
+  const preflight = await app.inject({ method: "POST", url: "/v1/publishing/validate", headers: auth, payload: {
+    bookId: BOOK, editionId: EDITION, channel, idempotencyKey: crypto.randomUUID(),
+  } });
+  assert.equal(preflight.statusCode, 201, preflight.body);
+  return { renderJobId: render.json().jobId as string, preflightJobId: preflight.json().jobId as string };
+}
+
+for (const action of ["render", "package"] as const) {
+  for (const transport of ["error", "throw"] as const) {
+    test(`${action} retains uploaded bytes while a ${transport} completion can still commit`, async () => {
+      const store = baseStore();
+      enableRetailerPackages(store);
+      const app = await buildApp(() => fakeSupabase(store), {
+        renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager([]),
+      });
+      try {
+        const sources = action === "package" ? await createReadySources(app) : {};
+        const before = store.objects.size;
+        let pending: { name: string; args: Row } | undefined;
+        store.completionHook = async (name, args) => {
+          pending = { name, args };
+          if (transport === "throw") throw new Error("synthetic lost reply");
+          return { data: null, error: { code: "08006" } };
+        };
+        const response = await app.inject({ method: "POST", headers: auth,
+          url: action === "render" ? `/v1/editions/${EDITION}/render` : "/v1/publishing/jobs",
+          payload: { idempotencyKey: crypto.randomUUID(), ...(action === "package" ? { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources } : {}) },
+        });
+        assert.equal(response.statusCode, 503, response.body);
+        assert.match(response.body, /completion is unconfirmed/iu);
+        assert.equal(store.objects.size, before + (action === "render" ? 2 : 1));
+        const job = store.tables.publishing_jobs.at(-1)!;
+        assert.equal(job.status, "running", "uncertain completion must not be failed");
+        assert.ok(pending);
+        store.completionHook = undefined;
+        // The delayed transaction commits only after the HTTP reply was lost.
+        const completion = await (fakeSupabase(store) as { rpc: (name: string, args: Row) => Promise<{ error: unknown }> }).rpc(pending.name, pending.args);
+        assert.equal(completion.error, null);
+        assert.equal(job.status, "succeeded");
+        const artifacts = action === "render" ? (pending.args.p_artifacts as Row[]) : [pending.args.p_artifact as Row];
+        for (const artifact of artifacts) assert.ok(store.objects.has(String(artifact.storagePath)), "committed artifact bytes were removed");
+      } finally { await app.close(); }
+    });
+  }
+}
+
+test("invalid publication-date overrides fail before edition creation or replacement", async (t) => {
+  const store = baseStore();
+  let dispatches = 0;
+  const forbidden = async () => { dispatches++; throw new Error("Saving metadata must not dispatch processing"); };
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: forbidden, publishingFetch: forbidden });
+  t.after(() => app.close());
+  const saved = structuredClone(store.tables.editions);
+  for (const publicationDate of ["0000-01-01", "2026-02-30", "1900-02-29", "2026-1-01", "", "2026-01-01T00:00:00Z", null]) {
+    const config = { kind: "ebook", metadata_overrides: { publicationDate } };
+    const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: { config } });
+    assert.equal(created.statusCode, 422, created.body);
+    const updated = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth,
+      payload: { expectedUpdatedAt: saved[0].updated_at, config } });
+    assert.equal(updated.statusCode, 422, updated.body);
+    assert.deepEqual(store.tables.editions, saved, "invalid override mutated editions");
+  }
+  assert.equal(store.tables.activity_events.length, 0);
+  assert.equal(store.tables.publishing_jobs.length, 0);
+  assert.equal(store.tables.usage_events.length, 0);
+  assert.equal(store.objects.size, 2);
+  assert.equal(dispatches, 0);
+  const overrides = { publicationDate: "2024-02-29", title: "Edition title", customNote: "Generic text remains supported" };
+  const updated = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth,
+    payload: { expectedUpdatedAt: saved[0].updated_at, config: { kind: "ebook", metadata_overrides: overrides } } });
+  assert.equal(updated.statusCode, 200, updated.body);
+  assert.deepEqual(updated.json().edition_metadata_json.metadata_overrides, overrides);
+  assert.equal(dispatches, 0);
+});
+
+test("editor renders the saved edition into private durable artifacts and one usage event", async () => {
+  const store = baseStore();
+  store.tables.editions[0].language = "ar";
+  const requests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderer(requests) });
+  const response = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: "render-request-0001" } });
+  assert.equal(response.statusCode, 201, response.body);
+  const body = response.json();
+  assert.equal(body.status, "succeeded");
+  assert.equal(body.artifacts.length, 2);
+  assert.ok(body.artifacts.every((item: Row) => String((item.download as Row).url).startsWith("signed:300:")));
+  assert.equal(store.tables.usage_events.length, 1);
+  assert.equal(store.tables.asset_versions.length, 4);
+  assert.equal(store.tables.asset_links.length, 2);
+  assert.equal(store.objects.size, 4);
+  const request = requests[0] as { bookModel: { metadata: { title: string; language: string }; assets: Row[] }; coverBase64: string; assetImagesBase64: Record<string, string> };
+  assert.equal(request.bookModel.metadata.title, "River Moon");
+  assert.equal(request.bookModel.metadata.language, "ar");
+  assert.equal(request.bookModel.assets[0].id, ILLUSTRATION);
+  assert.ok(request.coverBase64);
+  assert.ok(request.assetImagesBase64[ILLUSTRATION]);
+  assert.equal(response.body.includes("Mira crossed"), false);
+  await app.close();
+});
+
+test("render and preflight preserve saved illustration pins and reject a later revision before dispatch", async () => {
+  for (const action of ["render", "validate"] as const) {
+    const store = baseStore();
+    const document = store.tables.document_versions[0].content_json as { nodes: Row[] };
+    document.nodes[1].assetVersionNumber = 1;
+    const requests: unknown[] = [];
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight(requests) });
+    try {
+      const request = () => app.inject({ method: "POST", headers: auth,
+        url: action === "render" ? `/v1/editions/${EDITION}/render` : "/v1/publishing/validate",
+        payload: { idempotencyKey: crypto.randomUUID(), ...(action === "validate" ? { bookId: BOOK, editionId: EDITION, channel: "kdp" } : {}) },
+      });
+      const good = await request();
+      assert.equal(good.statusCode, 201, good.body);
+      const sent = (requests[0] as { body: { assetImagesBase64: Record<string, string> } }).body;
+      assert.equal(sent.assetImagesBase64[ILLUSTRATION], store.objects.get(String(store.tables.assets[1].storage_path))!.toString("base64"));
+      const jobs = store.tables.publishing_jobs.length;
+      const usage = store.tables.usage_events.length;
+      const calls = requests.length;
+      store.tables.asset_versions.find(row => row.asset_id === ILLUSTRATION)!.version_number = 2;
+      const stale = await request();
+      assert.equal(stale.statusCode, 422, stale.body);
+      assert.match(stale.body, /placed illustration version has changed/u);
+      assert.equal(requests.length, calls, "stale placement must not dispatch rendering");
+      assert.equal(store.tables.publishing_jobs.length, jobs);
+      assert.equal(store.tables.usage_events.length, usage);
+    } finally { await app.close(); }
+  }
+});
+
+test("quarantine during render, preflight or packaging prevents completion and charges", async () => {
+  for (const action of ["render", "validate", "export_package"] as const) {
+    const store = baseStore();
+    enableRetailerPackages(store);
+    const app = await buildApp(() => fakeSupabase(store), {
+      renderFetch: action === "export_package" ? successfulRenderAndPreflight([]) : async (url, init) => {
+        store.tables.asset_versions[0].scan_status = "infected";
+        return successfulRenderAndPreflight([])(url, init);
+      },
+      publishingFetch: async (url, init) => {
+        store.tables.asset_versions[0].scan_status = "infected";
+        return successfulPackager([])(url, init);
+      },
+    });
+    try {
+      const ready = action === "export_package" ? await createReadySources(app) : null;
+      const usage = store.tables.usage_events.length;
+      const objects = store.objects.size;
+      const response = await app.inject({ method: "POST", headers: auth,
+        url: action === "render" ? `/v1/editions/${EDITION}/render` : action === "validate" ? "/v1/publishing/validate" : "/v1/publishing/jobs",
+        payload: { idempotencyKey: crypto.randomUUID(), ...(action === "render" ? {} : { bookId: BOOK, editionId: EDITION, channel: "kdp" }), ...ready },
+      });
+      assert.equal(response.statusCode, 422, response.body);
+      assert.match(response.body, /clean.*confirmed current version/u);
+      assert.equal(store.tables.usage_events.length, usage);
+      assert.equal(store.objects.size, objects, "failed proof must remove only new attempt artifacts");
+      assert.equal(store.tables.publishing_jobs.at(-1)?.status, "failed");
+    } finally { await app.close(); }
+  }
+});
+
+test("changed cover bytes invalidate stored render/preflight before package dispatch", async () => {
+  const store = baseStore();
+  enableRetailerPackages(store);
+  const requests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(requests) });
+  try {
+    const ready = await createReadySources(app);
+    const cover = store.tables.assets.find(asset => asset.id === COVER)!;
+    const revised = Buffer.from([0x89, 0x50, 0x4e, 0x47, 25]);
+    const path = String(cover.storage_path).replace("/v1/", "/v2/");
+    Object.assign(cover, { storage_path: path, checksum: sha(revised), size_bytes: revised.length });
+    store.objects.set(path, revised);
+    store.tables.asset_versions.push({ asset_id: COVER, version_number: 2, storage_path: path, checksum: sha(revised), mime_type: "image/png", size_bytes: revised.length, scan_status: "clean" });
+    const usage = store.tables.usage_events.length;
+    const response = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth,
+      payload: { bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: crypto.randomUUID(), ...ready } });
+    assert.equal(response.statusCode, 422, response.body);
+    assert.match(response.body, /fresh successful render/u);
+    assert.equal(requests.length, 0);
+    assert.equal(store.tables.usage_events.length, usage);
+  } finally { await app.close(); }
+});
+
+test("viewer cannot render or call the renderer", async () => {
+  const store = baseStore("viewer");
+  const requests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderer(requests) });
+  const response = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: "render-request-0002" } });
+  assert.equal(response.statusCode, 403);
+  assert.equal(requests.length, 0);
+  assert.equal(store.tables.publishing_jobs.length, 0);
+  await app.close();
+});
+
+test("renderer failure records failure without artifacts or rendering usage", async () => {
+  const store = baseStore();
+  const originalObjects = store.objects.size;
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: async () => new Response("provider detail", { status: 500 }) });
+  const response = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: "render-request-0003" } });
+  assert.equal(response.statusCode, 503);
+  assert.equal(store.tables.publishing_jobs[0].status, "failed");
+  assert.equal(store.tables.usage_events.length, 0);
+  assert.equal(store.objects.size, originalObjects);
+  assert.equal(response.body.includes("provider detail"), false);
+  await app.close();
+});
+
+test("renderer typography rejection remains actionable and never creates artifacts or usage", async () => {
+  const store = baseStore();
+  const originalObjects = store.objects.size;
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: async () => new Response("renderer detail", { status: 422 }) });
+  const response = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: "render-request-rtl-422" } });
+  assert.equal(response.statusCode, 422, response.body);
+  assert.match(response.body, /Run preflight/u);
+  assert.equal(response.body.includes("renderer detail"), false);
+  assert.equal(store.tables.publishing_jobs[0].status, "failed");
+  assert.equal(store.tables.usage_events.length, 0);
+  assert.equal(store.objects.size, originalObjects);
+  await app.close();
+});
+
+test("database completion rejection retains the request and private uploads for reconciliation", async () => {
+  const store = baseStore();
+  store.rpcError = { code: "42883" };
+  const originalObjects = store.objects.size;
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderer([]) });
+  const response = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth, payload: { idempotencyKey: "render-request-0004" } });
+  assert.equal(response.statusCode, 503);
+  assert.equal(store.tables.publishing_jobs[0].status, "running");
+  assert.equal(store.tables.usage_events.length, 0);
+  assert.equal(store.objects.size, originalObjects + 2);
+  await app.close();
+});
+
+test("atomic completion refusals retain uncertain files and never publish artifacts or usage", async () => {
+  for (const action of ["render", "validate", "export_package"] as const) {
+    for (const code of ["40001", "22023", "42501"]) {
+      const store = baseStore();
+      enableRetailerPackages(store);
+      const requests: unknown[] = [];
+      const app = await buildApp(() => fakeSupabase(store), {
+        renderFetch: successfulRenderAndPreflight(requests), publishingFetch: successfulPackager(requests),
+      });
+      try {
+        const sources = action === "export_package" ? await createReadySources(app) : {};
+        const counts = [store.objects.size, store.tables.assets.length, store.tables.usage_events.length, store.tables.publishing_validations.length];
+        store.rpcError = { code, message: "private SQL detail", details: "bookworm_publishing_snapshot_changed" };
+        const response = await app.inject({ method: "POST", headers: auth,
+          url: action === "render" ? `/v1/editions/${EDITION}/render` : action === "validate" ? "/v1/publishing/validate" : "/v1/publishing/jobs",
+          payload: { idempotencyKey: crypto.randomUUID(), ...(action === "render" ? {} : { bookId: BOOK, editionId: EDITION, channel: "kdp" }), ...sources },
+        });
+        assert.equal(response.statusCode, action === "validate" ? (code === "42501" ? 403 : 422) : 503, `${action}/${code}: ${response.body}`);
+        assert.match(response.body, action === "validate" ? (code === "42501" ? /permission|access/iu : /again/iu) : /completion is unconfirmed/iu);
+        assert.equal(response.body.includes("private SQL detail"), false);
+        assert.equal(response.body.includes("bookworm_publishing_snapshot_changed"), false);
+        assert.equal(store.objects.size, counts[0] + (action === "render" ? 2 : action === "export_package" ? 1 : 0));
+        assert.deepEqual([store.tables.assets.length, store.tables.usage_events.length, store.tables.publishing_validations.length], counts.slice(1));
+        const failed = store.tables.publishing_jobs.at(-1)!;
+        assert.equal(failed.status, action === "validate" ? "failed" : "running");
+        const snapshot = (failed.request_json as Row).artworkSnapshot as Row;
+        assert.equal(snapshot.schemaVersion, 1);
+        assert.equal((snapshot.assets as Row[]).length, 2);
+        for (const sent of requests) {
+          const request = sent as Row;
+          assert.equal(((request.body as Row | undefined) ?? request).artworkSnapshot, undefined);
+        }
+      } finally { await app.close(); }
+    }
+  }
+});
+
+test("preflight validates saved content and persists deterministic findings", async () => {
+  const store = baseStore();
+  store.tables.editions[0].language = "he";
+  const listing = { schemaVersion: "1.0", metadata: { title: "River Moon", author: "Test Author", language: "he",
+    description: "A saved description.", keywords: ["fantasy"], categories: [], isbn13: null } };
+  const requests: unknown[] = [];
+  const preflightFetch = async (_input: string | URL | Request, init?: RequestInit) => {
+    assert.equal(new Headers(init?.headers).get("x-bookworm-include-listing"), "true");
+    requests.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({
+      ruleVersion: "core-1.0.0+kdp-1.1.0",
+      channel: "kdp",
+      errors: 1,
+      warnings: 0,
+      listing,
+      findings: [{
+        code: "NO_ALT_TEXT", message: "image lacks alt text", location: `chapter:${CHAPTER} node:i1`, severity: "error",
+        category: "accessibility", rule_id: "CORE-A11Y-001", rule_version: "core-1.0.0+kdp-1.1.0",
+      }],
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: preflightFetch });
+  const response = await app.inject({ method: "POST", url: "/v1/publishing/validate", headers: auth, payload: {
+    bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: "preflight-request-0001",
+  } });
+  assert.equal(response.statusCode, 201, response.body);
+  const body = response.json();
+  assert.equal(body.requestedChannel, "kdp");
+  assert.deepEqual(body.listing, listing);
+  assert.equal(Object.hasOwn(store.tables.publishing_jobs[0].response_json as object, "listing"), false);
+  assert.equal(body.errors, 1);
+  assert.equal(store.tables.publishing_validations.length, 1);
+  assert.equal(store.tables.publishing_jobs[0].status, "succeeded");
+  const request = requests[0] as { channel: string; bookModel: { metadata: { title: string; language: string } } };
+  assert.equal(request.channel, "kdp");
+  assert.equal(request.bookModel.metadata.title, "River Moon");
+  assert.equal(request.bookModel.metadata.language, "he");
+  await app.close();
+});
+
+test("saved EPUB preflight verifies the stored bytes and binds packaging to the selected render", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const downloads: string[] = []; store.downloads = downloads;
+  const rendering: unknown[] = [], packages: unknown[] = [];
+  const validated: { artifactsBase64: Record<string, string> }[] = [];
+  let returnDigest = true;
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight(rendering),
+    publishingFetch: async (url, init) => {
+      if (!String(url).endsWith("/v1/publishing/validate")) return successfulPackager(packages)(url, init);
+      const body = JSON.parse(String(init?.body)); validated.push(body);
+      const digest = sha(Buffer.from(body.artifactsBase64["book.epub"], "base64"));
+      return Response.json({ channel: "kdp", ruleVersion: "core-test+kdp-test", errors: 0, warnings: 0, findings: [],
+        ...(returnDigest ? { artifactSha256: digest } : {}) });
+    },
+  });
+  const request = (url: string, payload: object) => app.inject({ method: "POST", url: `/v1/${url}`, headers: auth, payload });
+  const render = async () => {
+    const result = await request(`editions/${EDITION}/render`, { idempotencyKey: crypto.randomUUID() });
+    assert.equal(result.statusCode, 201, result.body); return result.json();
+  };
+  try {
+    const saved = await render(), other = await render();
+    const asset = saved.artifacts.find((entry: { role: string }) => entry.role === "rendered_ebook").asset;
+    const coverId = saved.artifacts.find((entry: { role: string }) => entry.role === "rendered_cover").asset.id;
+    const epubVersion = store.tables.asset_versions.find(row => row.asset_id === asset.id)!;
+    const coverVersion = store.tables.asset_versions.find(row => row.asset_id === coverId)!;
+    const sourceEpub = { jobId: saved.jobId, sha256: asset.checksum };
+    const preflight = { bookId: BOOK, editionId: EDITION, channel: "kdp", sourceEpub, idempotencyKey: crypto.randomUUID() };
+    const wrongDigest = await request("publishing/validate", { ...preflight, sourceEpub: { ...sourceEpub, sha256: "0".repeat(64) } });
+    assert.equal(wrongDigest.statusCode, 409, wrongDigest.body);
+    assert.equal(validated.length, 0);
+    epubVersion.scan_status = "infected";
+    const quarantined = await request("publishing/validate", preflight);
+    assert.equal(quarantined.statusCode, 422, quarantined.body);
+    assert.equal(validated.length, 0);
+    assert.equal(downloads.includes(asset.storage_path), false);
+    epubVersion.scan_status = "trusted_generated";
+    const result = await request("publishing/validate", preflight);
+    assert.equal(result.statusCode, 201, result.body);
+    assert.deepEqual(result.json().sourceEpub, sourceEpub);
+    assert.deepEqual(Buffer.from(validated[0].artifactsBase64["book.epub"], "base64"), store.objects.get(asset.storage_path));
+    assert.equal(rendering.length, 2, "saved preflight must not regenerate an EPUB");
+    const rebound = await request("publishing/validate", { ...preflight, sourceEpub: { ...sourceEpub, jobId: other.jobId } });
+    assert.equal(rebound.statusCode, 409, rebound.body);
+    assert.equal(validated.length, 1);
+    const preview = { bookId: BOOK, editionId: EDITION, channel: "kdp", preflightJobId: result.json().jobId };
+    const wrongRender = await request("publishing/jobs", { ...preview, renderJobId: other.jobId, idempotencyKey: crypto.randomUUID() });
+    assert.equal(wrongRender.statusCode, 422, wrongRender.body);
+    assert.equal(packages.length, 0);
+    const exportRequest = { ...preview, renderJobId: saved.jobId, idempotencyKey: crypto.randomUUID() };
+    downloads.length = 0;
+    coverVersion.scan_status = "infected";
+    const refused = await request("publishing/jobs", exportRequest);
+    assert.equal(refused.statusCode, 422, refused.body);
+    assert.equal(packages.length, 0);
+    assert.equal(downloads.includes(asset.storage_path), false);
+    coverVersion.scan_status = "trusted_generated";
+    const created = await request("publishing/jobs", exportRequest);
+    assert.equal(created.statusCode, 201, created.body);
+    assert.equal(created.json().sourceRenderJobId, saved.jobId);
+
+    returnDigest = false;
+    const unverified = await request("publishing/validate", { ...preflight, idempotencyKey: crypto.randomUUID() });
+    assert.equal(unverified.statusCode, 503, unverified.body);
+    store.tables.editions[0].updated_at = "2026-09-04T00:00:00.000Z";
+    const stale = await request("publishing/validate", { ...preflight, idempotencyKey: crypto.randomUUID() });
+    assert.equal(stale.statusCode, 422, stale.body);
+    assert.equal(validated.length, 2);
+  } finally { await app.close(); }
+});
+
+test("saved print preflight binds the exact interior and cover to the retailer package", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  Object.assign(store.tables.editions[0], { type: "print", edition_metadata_json: {
+    kind: "print", cover: { asset_id: COVER }, wrap_cover: { enabled: true },
+  } });
+  const validated: Record<string, string>[] = [], packages: unknown[] = [];
+  let renders = 0;
+  let coverDigest: "correct" | "wrong" | "missing" = "correct";
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: async (url) => {
+      assert.match(String(url), /\/render$/u, "saved preflight must not regenerate a print proof");
+      const interior = Buffer.from(`%PDF-1.4 interior ${++renders}`), cover = Buffer.from(`%PDF-1.4 cover ${renders}`);
+      return Response.json({ format: "pdf", artifactBase64: interior.toString("base64"), sha256: sha(interior), rendererVersion: "print-test",
+        coverFormat: "pdf", coverArtifactBase64: cover.toString("base64"), coverSha256: sha(cover), coverRendererVersion: "wrap-test" });
+    },
+    publishingFetch: async (url, init) => {
+      if (!String(url).endsWith("/v1/publishing/validate")) return successfulPackager(packages)(url, init);
+      const { artifactsBase64 } = JSON.parse(String(init?.body));
+      validated.push(artifactsBase64);
+      return Response.json({ channel: "kdp", ruleVersion: "core-test+kdp-test", errors: 0, warnings: 0, findings: [],
+        artifactSha256: sha(Buffer.from(artifactsBase64["book.pdf"], "base64")),
+        ...(coverDigest === "missing" ? {} : { coverSha256: coverDigest === "wrong" ? "0".repeat(64)
+          : sha(Buffer.from(artifactsBase64["cover.pdf"], "base64")) }),
+      });
+    },
+  });
+  const request = (path: string, payload: object) => app.inject({ method: "POST", url: `/v1/${path}`, headers: auth, payload });
+  const render = async () => {
+    const result = await request(`editions/${EDITION}/render`, { idempotencyKey: crypto.randomUUID() });
+    assert.equal(result.statusCode, 201, result.body); return result.json();
+  };
+  try {
+    const saved = await render(), other = await render();
+    const interior = saved.artifacts.find((entry: { role: string }) => entry.role === "rendered_print").asset;
+    const cover = saved.artifacts.find((entry: { role: string }) => entry.role === "rendered_cover").asset;
+    const sourcePrint = { jobId: saved.jobId, sha256: interior.checksum, coverSha256: cover.checksum };
+    const intent = { bookId: BOOK, editionId: EDITION, channel: "kdp", sourcePrint, idempotencyKey: crypto.randomUUID() };
+    const wrongCover = await request("publishing/validate", { ...intent, sourcePrint: { ...sourcePrint, coverSha256: null } });
+    assert.equal(wrongCover.statusCode, 409, wrongCover.body);
+    assert.equal(validated.length, 0);
+    const result = await request("publishing/validate", intent);
+    assert.equal(result.statusCode, 201, result.body);
+    assert.deepEqual(result.json().sourcePrint, sourcePrint);
+    assert.deepEqual(Buffer.from(validated[0]["book.pdf"], "base64"), store.objects.get(interior.storage_path));
+    assert.deepEqual(Buffer.from(validated[0]["cover.pdf"], "base64"), store.objects.get(cover.storage_path));
+    assert.equal(renders, 2);
+    const next = other.artifacts.find((entry: { role: string }) => entry.role === "rendered_print").asset;
+    const nextCover = other.artifacts.find((entry: { role: string }) => entry.role === "rendered_cover").asset;
+    const rebound = await request("publishing/validate", { ...intent,
+      sourcePrint: { jobId: other.jobId, sha256: next.checksum, coverSha256: nextCover.checksum } });
+    assert.equal(rebound.statusCode, 409, rebound.body);
+    assert.equal(validated.length, 1);
+    const exportIntent = { bookId: BOOK, editionId: EDITION, channel: "kdp", preflightJobId: result.json().jobId, idempotencyKey: crypto.randomUUID() };
+    const mismatched = await request("publishing/jobs", { ...exportIntent, renderJobId: other.jobId });
+    assert.equal(mismatched.statusCode, 422, mismatched.body);
+    assert.equal(packages.length, 0);
+    const created = await request("publishing/jobs", { ...exportIntent, renderJobId: saved.jobId });
+    assert.equal(created.statusCode, 201, created.body);
+    assert.equal(created.json().sourceRenderJobId, saved.jobId);
+    for (const mode of ["wrong", "missing"] as const) {
+      coverDigest = mode;
+      const unverified = await request("publishing/validate", { ...intent, idempotencyKey: crypto.randomUUID() });
+      assert.equal(unverified.statusCode, 503, unverified.body);
+    }
+  } finally { await app.close(); }
+});
+
+test("preflight rejects a validator response for another channel", async () => {
+  const store = baseStore();
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: async () => new Response(JSON.stringify({
+    ruleVersion: "core-1.0.0", channel: "apple", errors: 0, warnings: 0, findings: [],
+  }), { status: 200 }) });
+  const response = await app.inject({ method: "POST", url: "/v1/publishing/validate", headers: auth, payload: {
+    bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: "preflight-request-0002",
+  } });
+  assert.equal(response.statusCode, 503);
+  assert.equal(store.tables.publishing_jobs[0].status, "failed");
+  assert.equal(store.tables.publishing_validations.length, 0);
+  await app.close();
+});
+
+test("preflight stops an oversized streamed validator response without saving findings", async () => {
+  const store = baseStore();
+  let cancelled = false;
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: async () => new Response(new ReadableStream<Uint8Array>({
+    pull(controller) { controller.enqueue(new Uint8Array(1_000_001)); },
+    cancel() { cancelled = true; },
+  }), { headers: { "content-length": "1" } }) });
+  try {
+    const response = await app.inject({ method: "POST", url: "/v1/publishing/validate", headers: auth, payload: {
+      bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: "preflight-oversized-stream-1",
+    } });
+    assert.equal(response.statusCode, 503);
+    assert.match(response.body, /exceeded the supported size/);
+    assert.equal(cancelled, true);
+    assert.equal(store.tables.publishing_jobs[0].status, "failed");
+    assert.equal(store.tables.publishing_validations.length, 0);
+  } finally { await app.close(); }
+});
+
+test("editor creates a durable private retailer package and can list, read, and replay it", async () => {
+  const store = baseStore();
+  store.tables.editions[0].language = "fa";
+  enableRetailerPackages(store);
+  const renderRequests: unknown[] = [];
+  const packageRequests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight(renderRequests), publishingFetch: successfulPackager(packageRequests),
+  });
+  const sources = await createReadySources(app);
+  const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: "package-request-0001" };
+  const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+  assert.equal(created.statusCode, 201, created.body);
+  const body = created.json();
+  assert.equal(body.status, "succeeded");
+  assert.equal(body.submissionMode, "manual");
+  assert.equal(body.package.asset.mime_type, "application/zip");
+  assert.match(body.package.download.url, /^signed:300:/u);
+  assert.equal(store.tables.usage_events.filter((row) => row.meter === "publishing").length, 1);
+  assert.equal(store.objects.size, 5);
+  const sent = packageRequests[0] as { channel: string; artifactsBase64: Record<string, string>; bookModel: { metadata: { title: string; language: string } } };
+  assert.equal(sent.channel, "kdp");
+  assert.equal(Buffer.from(sent.artifactsBase64["book.epub"], "base64").subarray(0, 2).toString(), "PK");
+  assert.equal(sent.bookModel.metadata.title, "River Moon");
+  assert.equal(sent.bookModel.metadata.language, "fa");
+  assert.equal(created.body.includes("Mira crossed"), false);
+
+  const listed = await app.inject({ method: "GET", url: `/v1/publishing/jobs?bookId=${BOOK}`, headers: auth });
+  assert.equal(listed.statusCode, 200, listed.body);
+  assert.equal(listed.json().jobs.length, 1);
+  assert.equal(listed.json().jobs[0].id, body.id);
+  const detail = await app.inject({ method: "GET", url: `/v1/publishing/jobs/${body.id}`, headers: auth });
+  assert.equal(detail.statusCode, 200, detail.body);
+  assert.equal(detail.json().package.asset.id, body.package.asset.id);
+
+  const reportUrl = `/v1/publishing/jobs/${body.id}/preflight`;
+  const report = await app.inject({ method: "GET", url: reportUrl, headers: { ...auth, "x-bookworm-actor": USER } });
+  assert.equal(report.statusCode, 200, report.body);
+  assert.equal(report.headers["cache-control"], "private, no-store");
+  assert.deepEqual(report.json(), { packageJobId: body.id, preflightJobId: sources.preflightJobId,
+    ruleVersion: "core-test+kdp-test", warnings: 1, findings: [] });
+  assert.equal((await app.inject({ method: "GET", url: reportUrl, headers: { ...auth, "x-bookworm-actor": BOOK } })).statusCode, 409);
+  const originalProof = store.tables.publishing_jobs.find(job => job.id === sources.preflightJobId)!;
+  const savedProofRequest = originalProof.request_json;
+  originalProof.request_json = { ...(savedProofRequest as Row), imageSha256: "1".repeat(64) };
+  assert.equal((await app.inject({ method: "GET", url: reportUrl, headers: auth })).statusCode, 404);
+  originalProof.request_json = savedProofRequest;
+  assert.equal((await app.inject({ method: "GET", url: `/v1/publishing/jobs/${sources.renderJobId}/preflight`, headers: auth })).statusCode, 404);
+  store.tables.workspace_members[0].status = "suspended";
+  assert.equal((await app.inject({ method: "GET", url: reportUrl, headers: auth })).statusCode, 403);
+  store.tables.workspace_members[0].status = "active";
+  assert.equal(renderRequests.length, 2);
+  assert.equal(packageRequests.length, 1);
+
+  const replay = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(replay.json().id, body.id);
+  assert.equal(packageRequests.length, 1);
+  assert.equal(store.tables.usage_events.filter((row) => row.meter === "publishing").length, 1);
+  await app.close();
+});
+
+test("package listing reads the original archive and refuses changed bytes or revoked access", async () => {
+  const store = baseStore();
+  enableRetailerPackages(store);
+  const metadata = { title: "Original title", author: "A. Writer", language: "en", description: "Saved description", keywords: ["letters"] };
+  const archive = Buffer.from(zipSync({
+    "metadata.json": strToU8(JSON.stringify({ schemaVersion: "1.0", metadata })),
+    "private-fixture.txt": strToU8("Do not return this file"),
+  }));
+  const packageChecksum = sha(archive);
+  let exports = 0;
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([]), publishingFetch: async () => {
+      exports++;
+      return Response.json({ channel: "kdp", ruleVersion: "fixture", errors: 0,
+        packages: [{ path: "kdp-export.zip", dataBase64: archive.toString("base64"), sha256: packageChecksum }] });
+    },
+  });
+  try {
+    const sources = await createReadySources(app);
+    const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth,
+      payload: { ...sources, bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: crypto.randomUUID() } });
+    assert.equal(created.statusCode, 201, created.body);
+    const job = created.json();
+    const url = `/v1/publishing/jobs/${job.id}/listing?checksum=${packageChecksum}`;
+    store.tables.books[0].title = "Later title";
+    store.signedPaths = [];
+    const get = (path = url, headers: Record<string, string> = auth) => app.inject({ method: "GET", url: path, headers });
+    const result = await get();
+    assert.equal(result.statusCode, 200, result.body);
+    assert.equal(result.headers["cache-control"], "private, no-store");
+    assert.deepEqual(result.json(), { packageJobId: job.id, packageSha256: packageChecksum, metadata });
+    assert.equal((await get(url.replace(packageChecksum, "a".repeat(64)))).statusCode, 404);
+    assert.equal((await get(url, { ...auth, "x-bookworm-actor": BOOK })).statusCode, 409);
+    const storagePath = job.package.asset.storage_path as string;
+    const altered = Buffer.from(archive);
+    altered[altered.length - 1] ^= 1;
+    store.objects.set(storagePath, altered);
+    assert.equal((await get()).statusCode, 409);
+    store.objects.set(storagePath, archive);
+    store.downloadBarrier = async () => { store.tables.workspace_members[0].status = "suspended"; };
+    assert.equal((await get()).statusCode, 403);
+    store.tables.workspace_members[0].status = "active";
+    assert.equal((await get()).statusCode, 200);
+    assert.deepEqual(store.signedPaths, []);
+    assert.equal(exports, 1);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 1);
+  } finally { await app.close(); }
+});
+
+test("listing extraction rejects missing, oversized and non-listing metadata", () => {
+  assert.equal(readPackageListing(zipSync({ "elsewhere/metadata.json": strToU8("{}") })), null);
+  assert.equal(readPackageListing(zipSync({ "metadata.json": strToU8("x".repeat(131_073)) })), null);
+  assert.equal(readPackageListing(zipSync({ "metadata.json": strToU8(JSON.stringify({
+    schemaVersion: "1.0", metadata: { title: "Fixture", author: "Author", language: "en", privateContext: "draft" },
+  })) })), null);
+});
+
+test("unbound package preflight cannot use a quarantined render or an unavailable cover", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const downloads: string[] = [], packages: unknown[] = []; store.downloads = downloads;
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(packages),
+  });
+  try {
+    const sources = await createReadySources(app);
+    const receipt = store.tables.publishing_jobs.find(row => row.id === sources.renderJobId)!.response_json as { artifacts: Row[] };
+    const [interior, cover] = receipt.artifacts;
+    const version = store.tables.asset_versions.find(row => row.asset_id === interior.assetId)!;
+    const coverAsset = store.tables.assets.find(row => row.id === cover.assetId)!;
+    const payload = { ...sources, bookId: BOOK, editionId: EDITION, channel: "kdp", idempotencyKey: crypto.randomUUID() };
+    const request = () => app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+    downloads.length = 0;
+    version.scan_status = "infected";
+    assert.equal((await request()).statusCode, 422);
+    version.scan_status = "trusted_generated";
+    coverAsset.status = "archived";
+    assert.equal((await request()).statusCode, 422);
+    assert.equal(downloads.includes(String(interior.storagePath)), false);
+    assert.equal(packages.length, 0);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+    coverAsset.status = "draft";
+    const created = await request();
+    assert.equal(created.statusCode, 201, created.body);
+  } finally { await app.close(); }
+});
+
+test("package refuses a proof removed during packaging before saving or charging", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const packageBytes = successfulPackager([]);
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([]),
+    publishingFetch: async (input, init) => {
+      const proof = store.tables.assets.find(row => row.type === "rendered_book")!;
+      proof.deleted_at = new Date().toISOString();
+      return packageBytes(input, init);
+    },
+  });
+  try {
+    const sources = await createReadySources(app);
+    const before = store.objects.size;
+    const response = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: {
+      bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID(),
+    } });
+    assert.equal(response.statusCode, 422, response.body);
+    assert.match(response.body, /choose a current proof or render again/i);
+    assert.equal(store.objects.size, before);
+    assert.equal(store.tables.publishing_jobs.at(-1)?.status, "failed");
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+  } finally { await app.close(); }
+});
+
+test("package proof refusal cleans up its ZIP only after failure is confirmed", async (t) => {
+  for (const confirmFailure of [true, false]) {
+    await t.test(confirmFailure ? "confirmed failure" : "lost failure acknowledgement", async () => {
+      const store = baseStore(); enableRetailerPackages(store);
+      const app = await buildApp(() => fakeSupabase(store), {
+        renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager([]),
+      });
+      try {
+        const sources = await createReadySources(app);
+        const before = store.objects.size;
+        let refusedPath: string | undefined;
+        store.completionHook = async (_name, args) => {
+          refusedPath = String((args.p_artifact as Row).storagePath);
+          assert.ok(store.objects.has(refusedPath));
+          if (!confirmFailure) store.queryErrors = { publishing_jobs: { code: "08006" } };
+          return { data: null, error: { code: "40001", details: "bookworm_publishing_render_proof_changed" } };
+        };
+        const response = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: {
+          bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID(),
+        } });
+        assert.equal(response.statusCode, confirmFailure ? 422 : 503, response.body);
+        assert.ok(refusedPath);
+        assert.equal(store.objects.has(refusedPath), !confirmFailure);
+        assert.equal(store.objects.size, before + Number(!confirmFailure));
+        assert.equal(store.tables.assets.some(row => row.type === "publishing_package"), false);
+        assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+        if (confirmFailure) {
+          const job = store.tables.publishing_jobs.at(-1)!;
+          assert.equal(job.status, "failed");
+          assert.deepEqual(job.response_json, { error: "package_render_proof_changed" });
+        } else {
+          assert.match(response.body, /completion is unconfirmed/i);
+        }
+      } finally { await app.close(); }
+    });
+  }
+});
+
+test("package request recovery survives changed sources and plan loss without a second export", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const sent: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(sent) });
+  try {
+    const sources = await createReadySources(app);
+    const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+    const headers = { ...auth, "idempotency-key": payload.idempotencyKey };
+    const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers, payload });
+    assert.equal(created.statusCode, 201, created.body);
+    const original = created.json();
+    store.tables.books[0].title = "Changed after accepted export";
+    store.tables.subscriptions.length = 0;
+    const recovered = await app.inject({ method: "GET", url: `/v1/publishing/requests/${payload.idempotencyKey}?bookId=${BOOK}`, headers: auth });
+    assert.equal(recovered.statusCode, 200, recovered.body);
+    assert.equal(recovered.json().job.id, original.id);
+    assert.equal(recovered.headers["cache-control"], "private, no-store");
+    const replay = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers, payload });
+    assert.equal(replay.statusCode, 200, replay.body);
+    assert.equal(replay.json().id, original.id);
+    const mismatch = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers,
+      payload: { ...payload, renderJobId: crypto.randomUUID() } });
+    assert.equal(mismatch.statusCode, 409, mismatch.body);
+    const closed = await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers, payload });
+    assert.equal(closed.statusCode, 200, closed.body);
+    assert.equal(closed.json().job.id, original.id);
+    assert.equal(closed.json().job.status, "succeeded");
+    assert.equal(sent.length, 1);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 1);
+    store.tables.publishing_jobs.find(row => row.id === original.id)!.created_by = crypto.randomUUID();
+    const foreign = await app.inject({ method: "GET", url: `/v1/publishing/requests/${payload.idempotencyKey}?bookId=${BOOK}`, headers: auth });
+    assert.equal(foreign.statusCode, 200); assert.equal(foreign.json().job, null);
+  } finally { await app.close(); }
+});
+
+test("expired paid period blocks new retailer packages while preserving existing recovery", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  store.tables.subscriptions[0].current_period_end = new Date(Date.now() + 60_000).toISOString();
+  const sent: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(sent) });
+  try {
+    const sources = await createReadySources(app);
+    const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+    const headers = { ...auth, "idempotency-key": payload.idempotencyKey };
+    const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers, payload });
+    assert.equal(created.statusCode, 201, created.body);
+    store.tables.subscriptions[0].current_period_end = new Date(Date.now() - 60_000).toISOString();
+    const recovered = await app.inject({ method: "GET", url: `/v1/publishing/requests/${payload.idempotencyKey}?bookId=${BOOK}`, headers: auth });
+    assert.equal(recovered.statusCode, 200, recovered.body);
+    assert.equal(recovered.json().job.id, created.json().id);
+    const replay = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers, payload });
+    assert.equal(replay.statusCode, 200, replay.body);
+    const newKey = crypto.randomUUID();
+    const refused = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: { ...auth, "idempotency-key": newKey }, payload: { ...payload, idempotencyKey: newKey } });
+    assert.equal(refused.statusCode, 422, refused.body);
+    assert.equal(sent.length, 1);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 1);
+  } finally { await app.close(); }
+});
+
+test("closing an unaccepted package request blocks delayed dispatch and never changes accepted work", async () => {
+  const store = baseStore(); enableRetailerPackages(store);
+  const sent: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(sent) });
+  try {
+    const sources = await createReadySources(app);
+    const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+    const url = `/v1/publishing/requests/${payload.idempotencyKey}?bookId=${BOOK}`;
+    for (const route of [{ method: "GET" as const, url }, { method: "POST" as const, url: "/v1/publishing/jobs", payload }, { method: "POST" as const, url: "/v1/publishing/requests/close", payload }]) {
+      const changedActor = await app.inject({ ...route, headers: { ...auth, "x-bookworm-actor": crypto.randomUUID() } });
+      assert.equal(changedActor.statusCode, 409);
+    }
+    const missing = await app.inject({ method: "GET", url, headers: auth });
+    assert.equal(missing.statusCode, 200); assert.equal(missing.json().job, null);
+    const count = store.tables.publishing_jobs.length;
+    const closed = await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers: auth, payload });
+    assert.equal(closed.statusCode, 200, closed.body); assert.equal(closed.json().job.status, "cancelled");
+    const late = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+    assert.equal(late.statusCode, 409, late.body);
+    const again = await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers: auth, payload });
+    assert.equal(again.json().job.id, closed.json().job.id);
+    assert.equal(store.tables.publishing_jobs.length, count + 1);
+    assert.equal((await app.inject({ method: "GET", url, headers: auth })).json().job.status, "cancelled");
+    assert.equal(sent.length, 0);
+    assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+    store.tables.workspace_members[0].role = "viewer";
+    assert.equal((await app.inject({ method: "GET", url, headers: auth })).statusCode, 200);
+    assert.equal((await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers: auth, payload })).statusCode, 403);
+  } finally { await app.close(); }
+});
+
+test("package closure wins a create already validating sources without dispatch or usage", async () => {
+  const store = baseStore(); enableRetailerPackages(store); const sent: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(sent) });
+  let release!: () => void, entered!: () => void;
+  const arrived = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const sources = await createReadySources(app);
+    const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+    store.downloadBarrier = async () => { entered(); await gate; };
+    const creating = app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload }).then(result => result);
+    await arrived;
+    const closed = await app.inject({ method: "POST", url: "/v1/publishing/requests/close", headers: auth, payload });
+    assert.equal(closed.statusCode, 200, closed.body); assert.equal(closed.json().job.status, "cancelled");
+    release();
+    const late = await creating; assert.equal(late.statusCode, 409, late.body);
+    assert.equal(sent.length, 0); assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 0);
+    assert.equal(store.tables.publishing_jobs.filter(row => row.idempotency_key === payload.idempotencyKey).length, 1);
+  } finally { release?.(); await app.close(); }
+});
+
+test("package history and replay never renew deleted, foreign, changed or quarantined ZIPs", async () => {
+  const cases: [string, (asset: Row, version: Row, descriptor: Row) => void][] = [
+    ["deleted", asset => { asset.deleted_at = "2026-10-17T00:00:00Z"; }],
+    ["archived", asset => { asset.status = "archived"; }],
+    ["foreign workspace", asset => { asset.workspace_id = crypto.randomUUID(); }],
+    ["changed path", asset => { asset.storage_path = "another/private/file.zip"; }],
+    ["changed checksum", asset => { asset.checksum = "0".repeat(64); }],
+    ["changed size", asset => { asset.size_bytes = Number(asset.size_bytes) + 1; }],
+    ["wrong type", asset => { asset.type = "manuscript"; }],
+    ["wrong MIME", asset => { asset.mime_type = "text/html"; }],
+    ["quarantined version", (_asset, version) => { version.scan_status = "infected"; }],
+    ["changed version checksum", (_asset, version) => { version.checksum = "0".repeat(64); }],
+    ["changed version path", (_asset, version) => { version.storage_path = "another/private/file.zip"; }],
+    ["unscanned version", (_asset, version) => { version.scan_status = "pending"; }],
+    ["changed version MIME", (_asset, version) => { version.mime_type = "text/html"; }],
+    ["changed version size", (_asset, version) => { version.size_bytes = Number(version.size_bytes) + 1; }],
+    ["missing asset", asset => { asset.id = crypto.randomUUID(); }],
+    ["missing original version", (_asset, version) => { version.version_number = 2; }],
+    ["invalid descriptor ID", (_asset, _version, descriptor) => { descriptor.assetId = "invalid"; }],
+    ["invalid descriptor hash", (_asset, _version, descriptor) => { descriptor.checksum = "invalid"; }],
+    ["wrong descriptor channel", (_asset, _version, descriptor) => { descriptor.filename = "apple-export.zip"; }],
+    ["wrong descriptor path", (_asset, _version, descriptor) => { descriptor.storagePath = "another/private/file.zip"; }],
+  ];
+  for (const [label, mutate] of cases) {
+    const store = baseStore(); enableRetailerPackages(store);
+    const requests: unknown[] = [];
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(requests) });
+    try {
+      const sources = await createReadySources(app);
+      const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() };
+      const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+      assert.equal(created.statusCode, 201, created.body);
+      const job = created.json();
+      const asset = store.tables.assets.find(value => value.id === job.package.asset.id)!;
+      const version = store.tables.asset_versions.find(value => value.asset_id === asset.id)!;
+      const descriptor = (store.tables.publishing_jobs.find(value => value.id === job.id)!.response_json as { artifact: Row }).artifact;
+      const originalAsset = { ...asset }, originalVersion = { ...version }, originalDescriptor = { ...descriptor };
+      mutate(asset, version, descriptor); store.signedPaths = [];
+      const history = structuredClone(store.tables.publishing_jobs);
+      const usage = structuredClone(store.tables.usage_events);
+      for (const request of [
+        { method: "GET" as const, url: `/v1/publishing/jobs?bookId=${BOOK}` },
+        { method: "GET" as const, url: `/v1/publishing/jobs/${job.id}` },
+        { method: "POST" as const, url: "/v1/publishing/jobs", payload },
+      ]) {
+        const response = await app.inject({ ...request, headers: auth });
+        assert.equal(response.statusCode, 200, `${label}: ${response.body}`);
+        const result = response.json().jobs?.[0] ?? response.json();
+        assert.equal(result.id, job.id); assert.equal(result.status, "succeeded");
+        assert.equal(result.package, null, `${label}: unavailable snapshot must have no download link`);
+        assert.equal(response.headers["cache-control"], "private, no-store");
+      }
+      assert.deepEqual(store.signedPaths, [], `${label}: private signing must not run`);
+      assert.deepEqual(store.tables.publishing_jobs, history); assert.deepEqual(store.tables.usage_events, usage);
+      assert.equal(requests.length, 1, "recovery must not rebuild or charge for the package");
+      Object.assign(asset, originalAsset); Object.assign(version, originalVersion); Object.assign(descriptor, originalDescriptor);
+      const restored = await app.inject({ method: "GET", url: `/v1/publishing/jobs/${job.id}`, headers: auth });
+      assert.equal(restored.statusCode, 200, restored.body);
+      assert.equal(restored.json().package.asset.id, asset.id);
+    } finally { await app.close(); }
+  }
+});
+
+test("package history fails closed on availability or signing outages without changing the saved job", async () => {
+  for (const unavailable of ["assets", "asset_versions", "signing"]) {
+    const store = baseStore(); enableRetailerPackages(store);
+    const requests: unknown[] = [];
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(requests) });
+    try {
+      const sources = await createReadySources(app);
+      const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth,
+        payload: { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID() } });
+      assert.equal(created.statusCode, 201, created.body);
+      const job = created.json(), history = structuredClone(store.tables.publishing_jobs), usage = structuredClone(store.tables.usage_events);
+      store.signedPaths = [];
+      if (unavailable === "signing") store.signError = true;
+      else store.queryErrors = { [unavailable]: { code: "08006" } };
+      for (const url of [`/v1/publishing/jobs?bookId=${BOOK}`, `/v1/publishing/jobs/${job.id}`]) {
+        const response = await app.inject({ method: "GET", url, headers: auth });
+        assert.equal(response.statusCode, 503, response.body);
+        assert.equal(response.headers["cache-control"], "private, no-store");
+        assert.equal(response.body.includes("signed:300:"), false);
+        assert.equal(response.body.includes("private signing diagnostic"), false);
+      }
+      if (unavailable !== "signing") assert.deepEqual(store.signedPaths, []);
+      assert.deepEqual(store.tables.publishing_jobs, history); assert.deepEqual(store.tables.usage_events, usage);
+      assert.equal(requests.length, 1);
+    } finally { await app.close(); }
+  }
+});
+
+test("Google Play ebook preflight and private package remain manual and plan-gated", async () => {
+  const store = baseStore();
+  const packageRequests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([], "googleplay"),
+    publishingFetch: successfulPackager(packageRequests, "googleplay"),
+  });
+  const sources = await createReadySources(app, "googleplay");
+  const payload = { bookId: BOOK, editionId: EDITION, channel: "googleplay", ...sources,
+    idempotencyKey: "google-play-package-0001" };
+  const denied = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+  assert.equal(denied.statusCode, 422, denied.body);
+  assert.equal(packageRequests.length, 0);
+  enableRetailerPackages(store);
+  const created = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(created.json().submissionMode, "manual");
+  assert.equal(created.json().channel, "googleplay");
+  assert.equal((packageRequests[0] as Row).channel, "googleplay");
+  assert.equal(store.tables.usage_events.filter(row => row.meter === "publishing").length, 1);
+  await app.close();
+});
+
+test("package creation requires a plan channel and fresh matching manuscript fingerprints", async () => {
+  const store = baseStore();
+  const packageRequests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager(packageRequests),
+  });
+  const sources = await createReadySources(app);
+  const payload = { bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: "package-request-0002" };
+  const blockedPlan = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload });
+  assert.equal(blockedPlan.statusCode, 422, blockedPlan.body);
+  assert.equal(packageRequests.length, 0);
+
+  enableRetailerPackages(store);
+  const version = store.tables.document_versions[0];
+  version.content_json = { schemaVersion: "1.0", nodes: [{ id: "p1", type: "paragraph", text: "The manuscript changed." }] };
+  const stale = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: { ...payload, idempotencyKey: "package-request-0003" } });
+  assert.equal(stale.statusCode, 422, stale.body);
+  assert.match(stale.body, /fresh successful render/u);
+  assert.equal(packageRequests.length, 0);
+  await app.close();
+});
+
+test("package persistence rejection retains the request and private ZIP for reconciliation", async () => {
+  const store = baseStore();
+  enableRetailerPackages(store);
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([]), publishingFetch: successfulPackager([]),
+  });
+  const sources = await createReadySources(app);
+  const objectCount = store.objects.size;
+  store.rpcError = { code: "42883" };
+  const response = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: {
+    bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: "package-request-0004",
+  } });
+  assert.equal(response.statusCode, 503, response.body);
+  assert.equal(store.objects.size, objectCount + 1);
+  assert.equal(store.tables.usage_events.filter((row) => row.meter === "publishing").length, 0);
+  assert.equal(store.tables.publishing_jobs.at(-1)?.status, "running");
+  await app.close();
+});
+
+test("synchronous ebook rendering retains verified cover policy and rejects unsupported completion versions", async (t) => {
+  for (const coverRendererVersion of ["cover-1.4.0", "cover-1.3.0", null]) {
+    const store = baseStore();
+    store.tables.editions[0].edition_metadata_json = { kind: "ebook", cover: { asset_id: COVER }, metadata_overrides: { title: "" } };
+    const app = await buildApp(() => fakeSupabase(store), { renderFetch: successfulRenderer([], coverRendererVersion) });
+    t.after(() => app.close());
+    const initialObjects = store.objects.size;
+    const response = await app.inject({ method: "POST", url: `/v1/editions/${EDITION}/render`, headers: auth,
+      payload: { idempotencyKey: crypto.randomUUID() } });
+    if (coverRendererVersion === "cover-1.4.0") {
+      assert.equal(response.statusCode, 201, response.body);
+      const usage = (store.tables.publishing_jobs[0].response_json as Row).usage as Row;
+      assert.equal(usage.coverRendererVersion, coverRendererVersion);
+      assert.equal(usage.coverMetadataPolicy, "effective-ebook-metadata-v1");
+      assert.equal(store.tables.usage_events.length, 1);
+    } else {
+      assert.equal(response.statusCode, 503, response.body);
+      assert.match(response.body, /cover metadata.*render again/iu);
+      assert.equal(store.objects.size, initialObjects);
+      assert.equal(store.tables.usage_events.length, 0);
+      assert.equal(store.tables.publishing_jobs[0].status, "failed");
+    }
+  }
+});
+
+test("saved ebook cover policy blocks package dispatch and private bytes without rewriting history", async (t) => {
+  const store = baseStore();
+  store.tables.editions[0].edition_metadata_json = { kind: "ebook", cover: { asset_id: COVER }, metadata_overrides: { author: "" } };
+  enableRetailerPackages(store);
+  const packageRequests: unknown[] = [];
+  const app = await buildApp(() => fakeSupabase(store), {
+    renderFetch: successfulRenderAndPreflight([], "kdp", "cover-1.4.0"), publishingFetch: successfulPackager(packageRequests),
+  });
+  t.after(() => app.close());
+  const sources = await createReadySources(app);
+  const sourceJob = store.tables.publishing_jobs.find(row => row.id === sources.renderJobId)!;
+  const sourceResponse = sourceJob.response_json as Row;
+  const originalUsage = sourceResponse.usage as Row;
+  // A synthetic reviewed receipt isolates package enforcement from completion retention.
+  sourceResponse.usage = { ...originalUsage, coverRendererVersion: "cover-1.4.0", coverMetadataPolicy: "effective-ebook-metadata-v1" };
+  const good = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: {
+    bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID(),
+  } });
+  assert.equal(good.statusCode, 201, good.body);
+  const packageId = good.json().id;
+  const sent = packageRequests[0] as { artifactsBase64: Record<string, string> };
+  const coverDescriptor = (sourceResponse.artifacts as Row[]).find(artifact => artifact.role === "rendered_cover")!;
+  assert.equal(sent.artifactsBase64["cover.png"], store.objects.get(String(coverDescriptor.storagePath))!.toString("base64"));
+  const legacyUsage = { ...originalUsage };
+  delete legacyUsage.coverRendererVersion;
+  delete legacyUsage.coverMetadataPolicy;
+  for (const usage of [legacyUsage, { ...originalUsage, coverRendererVersion: "cover-1.3.0", coverMetadataPolicy: "effective-ebook-metadata-v1" },
+    { ...originalUsage, coverRendererVersion: "cover-1.4.0", coverMetadataPolicy: "old-policy" }]) {
+    sourceResponse.usage = usage;
+    store.downloads = [];
+    const history = structuredClone(store.tables.publishing_jobs);
+    const objects = [...store.objects].map(([path, value]) => [path, value.toString("base64")]);
+    const calls = packageRequests.length;
+    const response = await app.inject({ method: "POST", url: "/v1/publishing/jobs", headers: auth, payload: {
+      bookId: BOOK, editionId: EDITION, channel: "kdp", ...sources, idempotencyKey: crypto.randomUUID(),
+    } });
+    assert.equal(response.statusCode, 422, response.body);
+    assert.match(response.body, /cover metadata.*render again/iu);
+    assert.deepEqual(store.downloads, [], "an unsupported saved cover must fail before any private byte read");
+    assert.equal(packageRequests.length, calls);
+    assert.deepEqual(store.tables.publishing_jobs, history);
+    assert.deepEqual([...store.objects].map(([path, value]) => [path, value.toString("base64")]), objects);
+    const historicalPackage = await app.inject({ method: "GET", url: `/v1/publishing/jobs/${packageId}`, headers: auth });
+    assert.equal(historicalPackage.statusCode, 200, historicalPackage.body);
+    assert.equal(historicalPackage.json().id, packageId, "existing package recovery must remain available");
+  }
+});
+
+test("package history filters action, edition and channel before limiting and keeps tenant scope", async () => {
+  const store = baseStore();
+  const old = "d0000000-0000-4000-8000-000000000010";
+  const newer = "d0000000-0000-4000-8000-000000000011";
+  const otherEdition = "d0000000-0000-4000-8000-000000000012";
+  const otherBook = "d0000000-0000-4000-8000-000000000013";
+  const otherWorkspace = "d0000000-0000-4000-8000-000000000014";
+  const fixture = (id:string, editionId:string, channel:string, action:string, time:string, bookId=BOOK) => ({
+    id, book_id:bookId, edition_id:editionId, channel, status:"failed", idempotency_key:`key-${id}`,
+    request_json:{ action }, response_json:{ error:"test_failure" }, created_at:time,
+  });
+  const sameTime="2020-01-01T00:00:00Z";
+  store.tables.publishing_jobs.push(fixture(old,EDITION,"kdp","export_package",sameTime),fixture(newer,EDITION,"kdp","export_package",sameTime));
+  for (let i=0;i<105;i++) {
+    const time=`2021-01-01T00:00:${String(i%60).padStart(2,"0")}Z`;
+    store.tables.publishing_jobs.push(fixture(crypto.randomUUID(),EDITION,"kdp","validate",time));
+    store.tables.publishing_jobs.push(fixture(crypto.randomUUID(),otherEdition,"kdp","export_package",time));
+    store.tables.publishing_jobs.push(fixture(crypto.randomUUID(),EDITION,"lulu","export_package",time));
+    store.tables.publishing_jobs.push(fixture(crypto.randomUUID(),EDITION,"kdp","export_package",time,otherBook));
+  }
+  store.tables.books.push({id:otherBook,workspace_id:otherWorkspace,title:"Private other book",author_name:"Other",language:"en"});
+  const app=await buildApp(()=>fakeSupabase(store));
+  try {
+    const url=`/v1/publishing/jobs?bookId=${BOOK}&editionId=${EDITION}&channel=kdp&limit=2`;
+    const result=await app.inject({method:"GET",url,headers:auth});
+    assert.equal(result.statusCode,200,result.body);
+    assert.deepEqual(result.json().jobs.map((job:Row)=>job.id),[newer,old],"equal timestamps use stable id tiebreak");
+    assert.equal(result.json().nextCursor, null);
+    assert.equal(result.json().jobs[0].requestId,`key-${newer}`);
+    assert.equal(result.json().jobs[0].failureCode,"test_failure");
+    assert.equal(result.headers["cache-control"],"private, no-store");
+    const pageUrl = `/v1/publishing/jobs?bookId=${BOOK}&editionId=${EDITION}&channel=kdp&limit=1`;
+    const one=await app.inject({method:"GET",url:pageUrl,headers:auth});
+    assert.equal(one.statusCode,200,one.body);assert.deepEqual(one.json().jobs.map((job:Row)=>job.id),[newer]);
+    assert.deepEqual(one.json().nextCursor, { createdAt: sameTime, id: newer });
+    const cursor = new URLSearchParams({ beforeCreatedAt: sameTime, beforeId: newer });
+    const two = await app.inject({ method: "GET", url: `${pageUrl}&${cursor}`, headers: auth });
+    assert.equal(two.statusCode, 200, two.body);
+    assert.deepEqual(two.json().jobs.map((job: Row) => job.id), [old]);
+    assert.equal(two.json().nextCursor, null);
+    const incomplete = await app.inject({ method: "GET", url: `${pageUrl}&beforeId=${newer}`, headers: auth });
+    assert.equal(incomplete.statusCode, 422);
+    const channelOnly=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${BOOK}&channel=kdp&limit=1`,headers:auth});
+    assert.equal(channelOnly.statusCode,200,channelOnly.body);assert.equal(channelOnly.json().jobs[0].editionId,otherEdition);
+    const unfiltered=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${BOOK}&limit=1`,headers:auth});
+    assert.equal(unfiltered.statusCode,200,unfiltered.body);assert.equal(unfiltered.json().jobs.length,1);assert.equal(unfiltered.json().jobs[0].bookId,BOOK);
+    const forbidden=await app.inject({method:"GET",url:`/v1/publishing/jobs?bookId=${otherBook}`,headers:auth});
+    assert.ok([403,404].includes(forbidden.statusCode),forbidden.body);
+    assert.equal(forbidden.body.includes("Private other book"),false);
+  } finally { await app.close(); }
+});

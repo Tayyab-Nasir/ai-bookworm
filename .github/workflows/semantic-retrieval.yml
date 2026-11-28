@@ -1,0 +1,27 @@
+name: Semantic retrieval adapter acceptance
+on:
+  pull_request:
+    paths: ['services/ai/rag/**', 'services/ai/tests/test_rag.py', 'services/ai/tests/test_semantic_index_local.py', 'services/ai/tests/test_embedding_boundaries.py', 'services/ai/requirements.txt', '.github/workflows/semantic-retrieval.yml']
+  push:
+    branches: [main, master, 'codex/**']
+    paths: ['services/ai/rag/**', 'services/ai/tests/test_rag.py', 'services/ai/tests/test_semantic_index_local.py', 'services/ai/tests/test_embedding_boundaries.py', 'services/ai/requirements.txt', '.github/workflows/semantic-retrieval.yml']
+permissions:
+  contents: read
+jobs:
+  local-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: services/ai/requirements.txt
+      - name: Install the reviewed client and service dependencies
+        run: python -m pip install -r services/ai/requirements.txt
+      - name: Verify local Qdrant and synthetic OpenAI boundaries
+        run: python -m pytest services/ai/tests/test_rag.py services/ai/tests/test_semantic_index_local.py services/ai/tests/test_embedding_boundaries.py -q
+        env:
+          NODE_ENV: test
+          EMBEDDING_API_ENABLED: 'false'

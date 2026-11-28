@@ -7,6 +7,27 @@ export type MemberRole =
 export type BookStatus = "draft" | "in_review" | "approved" | "published" | "archived";
 export type AssetStatus = "draft" | "in_review" | "approved" | "rejected" | "archived";
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export const RETAILER_SUBMISSION_STATUSES = [
+  "not_submitted", "submitted", "in_review", "changes_requested", "published", "withdrawn",
+] as const;
+export type RetailerSubmissionStatus = typeof RETAILER_SUBMISSION_STATUSES[number];
+export interface RetailerSubmission {
+  jobId: string;
+  status: RetailerSubmissionStatus;
+  revision: string;
+  updatedAt: string;
+}
+export interface ManagedPublishingRequest {
+  jobId: string;
+  workspaceId: string;
+  requestedBy: string | null;
+  packageSha256: string;
+  requestedAt: string;
+  withdrawnAt: string | null;
+  claimedAt?: string | null;
+  confirmedAt: string | null;
+  listingUrl: string | null;
+}
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type TaskStatus = "todo" | "in_progress" | "blocked" | "done" | "cancelled";
 
@@ -121,6 +142,7 @@ export interface StyleGuide extends Timestamps {
 export interface BookBibleItem extends Timestamps {
   id: string;
   book_id: string;
+  mutation_incarnation_id: string;
   type: string;
   name: string;
   description: string | null;
@@ -150,7 +172,11 @@ export interface Asset extends Timestamps {
   size_bytes: number;
   checksum: string;
   status: AssetStatus;
+  requires_approval?: boolean;
+  current_version_number?: number | null;
+  current_scan_status?: string | null;
   deleted_at?: string | null;
+  lifecycle_revision?: string | null;
   created_by: string;
 }
 
@@ -177,6 +203,12 @@ export interface Approval extends Timestamps {
   reviewer_id: string | null;
   status: ApprovalStatus;
   comment: string | null;
+  entity_version_number?: number | null;
+  request_key?: string | null;
+  resolved_by?: string | null;
+  resolved_at?: string | null;
+  resolution_note?: string | null;
+  superseded_at?: string | null;
 }
 
 export interface AiJob {
@@ -219,7 +251,9 @@ export interface AiRun {
   model: string;
   tokens_in: number;
   tokens_out: number;
-  estimated_cost: number;
+  /** Customer-owned API costs are unknown, not free. Never coerce null to zero. */
+  estimated_cost: number | null;
+  cost_payer: "platform" | "customer";
   latency_ms: number | null;
   status: string;
   created_at: string;

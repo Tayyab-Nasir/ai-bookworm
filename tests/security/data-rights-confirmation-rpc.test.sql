@@ -1,0 +1,62 @@
+-- The confirmation RPC and export-only direct intake work together.
+begin;
+insert into auth.users(id,email) values
+ ('a8940000-0000-4000-8000-000000000001','confirm-owner@invalid.test'),
+ ('a8940000-0000-4000-8000-000000000002','confirm-other@invalid.test');
+do $$
+declare
+ entrypoint constant regprocedure := 'public.submit_delete_data_rights_request(text,text)'::regprocedure;
+ implementation constant regprocedure := 'private.submit_delete_data_rights_request_internal(text,text)'::regprocedure;
+begin
+ assert (select not prosecdef from pg_proc where oid=entrypoint),'RPC must use caller privileges';
+ assert (select prosecdef from pg_proc where oid=implementation),'expected private implementation';
+ assert not has_schema_privilege('anon','private','usage'),'anonymous schema usage';
+ assert has_schema_privilege('authenticated','private','usage'),'authenticated wrapper cannot reach implementation';
+ assert not has_function_privilege('anon',entrypoint,'execute') and not has_function_privilege('anon',implementation,'execute'),
+   'anonymous execution is granted';
+ assert not has_function_privilege('service_role',entrypoint,'execute') and not has_function_privilege('service_role',implementation,'execute'),
+   'service execution is granted';
+ assert has_function_privilege('authenticated',entrypoint,'execute') and has_function_privilege('authenticated',implementation,'execute'),
+   'authenticated execution is missing';
+ assert not exists(select 1 from pg_proc p, lateral aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+   where p.oid in (entrypoint,implementation) and a.grantee=0),'PUBLIC can execute';
+end $$;
+set local role authenticated;
+select set_config('request.jwt.claim.sub','',true);
+do $$ begin
+ begin perform public.submit_delete_data_rights_request('DELETE MY ACCOUNT',null); assert false,'null identity accepted'; exception when insufficient_privilege then null; end;
+end $$;
+select set_config('request.jwt.claim.sub','a8940000-0000-4000-8000-000000000001',true);
+do $$ declare v public.data_rights_requests; begin
+ begin
+  insert into public.data_rights_requests(user_id,request_type,status)
+   values('a8940000-0000-4000-8000-000000000001','delete','submitted');
+  assert false,'direct delete intake bypassed confirmation';
+ exception when insufficient_privilege then null; end;
+ begin
+  insert into public.data_rights_requests(user_id,request_type,status,completed_at)
+   values('a8940000-0000-4000-8000-000000000001','export','submitted',now());
+  assert false,'direct export wrote a server-owned column';
+ exception when insufficient_privilege then null; end;
+ insert into public.data_rights_requests(user_id,request_type,status)
+  values('a8940000-0000-4000-8000-000000000001','export','submitted') returning * into v;
+ assert v.request_type='export' and v.completed_at is null,'direct export failed';
+ begin perform public.submit_delete_data_rights_request(null,null); assert false,'null confirmation accepted'; exception when invalid_parameter_value then null; end;
+ begin perform public.submit_delete_data_rights_request('delete my account',null); assert false,'inexact confirmation accepted'; exception when invalid_parameter_value then null; end;
+ begin perform public.submit_delete_data_rights_request('DELETE MY ACCOUNT',repeat(chr(128512),1001)); assert false,'overlong reason accepted'; exception when invalid_parameter_value then null; end;
+ v:=public.submit_delete_data_rights_request('DELETE MY ACCOUNT',chr(160)||repeat(chr(128512),1000)||chr(65279));
+ assert v.user_id='a8940000-0000-4000-8000-000000000001' and v.request_type='delete' and v.status='submitted','request identity or status invalid';
+ assert v.reason=repeat(chr(128512),1000), 'ECMAScript trim mismatch';
+ assert v.id is not null and v.requested_at is not null and v.due_at is not null and v.completed_at is null,'server defaults missing';
+ perform set_config('test.confirm_request',v.id::text,true);
+ begin perform public.submit_delete_data_rights_request('DELETE MY ACCOUNT','different'); assert false,'duplicate open delete accepted'; exception when unique_violation then null; end;
+end $$;
+select set_config('request.jwt.claim.sub','a8940000-0000-4000-8000-000000000002',true);
+do $$ declare v public.data_rights_requests; begin
+ assert not exists(select 1 from public.data_rights_requests where id=current_setting('test.confirm_request')::uuid),'other account saw request';
+ v:=public.submit_delete_data_rights_request('DELETE MY ACCOUNT',null);
+ assert v.user_id='a8940000-0000-4000-8000-000000000002','RPC actor overridden';
+ begin perform public.cancel_data_rights_request(current_setting('test.confirm_request')::uuid); assert false,'other actor cancelled request'; exception when no_data_found then null; end;
+end $$;
+reset role;
+rollback;

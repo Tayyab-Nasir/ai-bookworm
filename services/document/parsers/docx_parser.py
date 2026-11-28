@@ -4,11 +4,95 @@ import io
 import zipfile
 
 from docx import Document
+from docx.oxml.ns import qn
+from docx.text.run import Run
+from docx.table import Table
 
 from . import (ParseError, check_size, make_book, make_report, new_chapter,
                node, safe_zip_members)
+from .embedded_images import EmbeddedImages
+from .table_grid import span_attributes
+from .docx_numbering import WordNumbering
+from .docx_flow import heading_level, page_break_before, run_content
 
-_HEADING_LEVELS = {f"Heading {i}": i for i in range(1, 7)}
+MAX_TABLE_IMAGE_OCCURRENCES = 10_000
+
+
+def _is_marked_header(row) -> bool:
+    """Only an explicit Word repeating-header flag supplies table semantics."""
+    properties = row._tr.trPr
+    flag = properties.find(qn("w:tblHeader")) if properties is not None else None
+    return flag is not None and flag.get(qn("w:val"), "1").lower() not in {"0", "false", "off"}
+
+
+def _paragraph_runs(para, warnings) -> list[dict]:
+    """Keep text and supported marks, including hyperlink labels but never URLs."""
+    result = []
+    for content in para.iter_inner_content():
+        for run in [content] if isinstance(content, Run) else content.runs:
+            marks = []
+            for prop, mark in (("bold", "bold"), ("italic", "italic"),
+                               ("underline", "underline"), ("strike", "strike")):
+                value = getattr(run.font, prop)
+                for initial in (run.style, para.style):
+                    style, seen = initial, set()
+                    while value is None and style is not None and style.style_id not in seen:
+                        seen.add(style.style_id)
+                        value = getattr(style.font, prop)
+                        style = style.base_style
+                if value:
+                    marks.append({"type": mark})
+            for content_item in run_content(run, warnings):
+                if isinstance(content_item, str):
+                    for i, text in enumerate(content_item.split("\n")):
+                        if i:
+                            result.append({"type": "hardBreak"})
+                        if text:
+                            result.append({"type": "text", "text": text, **({"marks": marks} if marks else {})})
+                else:
+                    result.append(content_item)
+    return result
+
+
+def _cell_text(cell, warnings, drawings, depth=0) -> str:
+    """Keep cell content in document order, flattening nested tables as text."""
+    parts = []
+    for paragraph in cell.iter_inner_content():
+        if isinstance(paragraph, Table):
+            if depth >= 16:
+                raise ParseError("DOCX nested tables exceed the supported depth; review the original manuscript")
+            warning = "DOCX nested tables were flattened to text; review their layout against the original."
+            if warning not in warnings:
+                warnings.append(warning)
+            seen_cells = set()
+            rows = []
+            for row in paragraph.rows:
+                values = []
+                for nested in row.cells:
+                    if nested._tc in seen_cells:
+                        values.append("")
+                    else:
+                        seen_cells.add(nested._tc)
+                        values.append(_cell_text(nested, warnings, drawings, depth + 1))
+                rows.append("\t".join(values))
+            parts.append("\n".join(rows))
+            continue
+        pieces = []
+        for content in paragraph.iter_inner_content():
+            for run in [content] if isinstance(content, Run) else content.runs:
+                for item in run_content(run, warnings):
+                    if isinstance(item, str):
+                        pieces.append(item)
+                    elif item.get("type") == "pageBreak":
+                        warning = "DOCX page breaks inside table cells require review against the original."
+                        if warning not in warnings:
+                            warnings.append(warning)
+                    elif item.get("type") == "drawing":
+                        if len(drawings) >= MAX_TABLE_IMAGE_OCCURRENCES:
+                            raise ParseError("DOCX table contains too many image occurrences; split the table before importing")
+                        drawings.append(item["element"])
+        parts.append("".join(pieces))
+    return "\n".join(parts)
 
 
 def _extract_images(doc) -> tuple[dict[str, dict], list[str]]:
@@ -20,9 +104,9 @@ def _extract_images(doc) -> tuple[dict[str, dict], list[str]]:
             continue
         try:
             part = rel.target_part
-            ext = part.partname.ext or ".bin"
+            ext = (part.partname.ext or "bin").lstrip(".")
             images[rel_id] = {
-                "filename": f"image-{len(images) + 1}{ext}",
+                "filename": f"image-{len(images) + 1}.{ext}",
                 "contentType": part.content_type,
                 "bytes": part.blob,
             }
@@ -31,7 +115,7 @@ def _extract_images(doc) -> tuple[dict[str, dict], list[str]]:
     return images, warnings
 
 
-def parse_docx(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
+def parse_docx(data: bytes, title: str = "Untitled", *, embedded_assets: list[dict] | None = None) -> tuple[dict, dict]:
     check_size(data)
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -43,55 +127,157 @@ def parse_docx(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
         raise ParseError(f"not a readable DOCX: {e}") from e
 
     images, warnings = _extract_images(doc)
+    numbering = WordNumbering(doc, warnings)
     chapters: list[dict] = []
     current: dict | None = None
     assets: list[dict] = []
-    used_images: set[str] = set()
+    transferred = EmbeddedImages(embedded_assets)
 
-    for para in doc.paragraphs:
-        style = para.style.name if para.style else ""
-        level = _HEADING_LEVELS.get(style)
-        if level == 1:
-            current = new_chapter(para.text.strip() or f"Chapter {len(chapters) + 1}", len(chapters))
-            chapters.append(current)
-            current["nodes"].append(node("heading", para.text, level=1))
+    def drawing_nodes(drawing):
+        """Transfer supported images through the regular bounded asset path."""
+        result = []
+        doc_pr = drawing.find(".//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr")
+        alt = (doc_pr.get("descr") or doc_pr.get("title") or "")[:1000] if doc_pr is not None else ""
+        blips = drawing.findall(".//{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
+        for blip in blips:
+            rel_id = blip.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
+            image = images.get(rel_id)
+            asset_id = image.get("assetId") if image else None
+            if image and not asset_id:
+                asset_id = transferred.add(image["bytes"], image["contentType"])
+                image["assetId"] = asset_id
+            if asset_id:
+                if not any(a["id"] == asset_id for a in assets):
+                    assets.append({"id": asset_id, "role": "illustration", "caption": image["filename"]})
+                result.append(node("image", assetId=asset_id, altText=alt))
+            else:
+                warnings.append("An unsupported or external embedded image remains in the original DOCX; upload a PNG, JPEG, GIF or WebP replacement.")
+                result.append(node("caption", alt or "[Embedded illustration — retained in original DOCX]"))
+        if not blips:
+            warnings.append("An unsupported or external embedded image remains in the original DOCX; upload a PNG, JPEG, GIF or WebP replacement.")
+            result.append(node("caption", alt or "[Embedded illustration — retained in original DOCX]"))
+        return result
+
+    for para in doc.iter_inner_content():
+        if isinstance(para, Table):
+            if current is None:
+                current = new_chapter(title, 0)
+                chapters.append(current)
+            rows = []
+            header_rows = 0
+            seen_cells = set()
+            table_drawings = []
+            positions = {}
+            for row in para.rows:
+                if header_rows == len(rows) and _is_marked_header(row):
+                    header_rows += 1
+                cells = []
+                for cell in row.cells:
+                    positions.setdefault(cell._tc, []).append((len(rows), len(cells)))
+                    # Word exposes a merged cell multiple times in its grid.
+                    # Keep its text once; don't invent repeated manuscript content.
+                    if cell._tc in seen_cells:
+                        cells.append("")
+                    else:
+                        seen_cells.add(cell._tc)
+                        cells.append(_cell_text(cell, warnings, table_drawings))
+                rows.append(cells)
+            spans = []
+            for locations in positions.values():
+                if len(locations) < 2:
+                    continue
+                top = min(r for r, _ in locations)
+                left = min(c for _, c in locations)
+                height = max(r for r, _ in locations) - top + 1
+                width = max(c for _, c in locations) - left + 1
+                # Only a complete rectangle can be represented safely.
+                if len(locations) == height * width and (top, left) in locations:
+                    spans.append({"row": top, "col": left, "rowspan": height, "colspan": width})
+            spans.sort(key=lambda span: (span["row"], span["col"]))
+            attributes = span_attributes(rows, header_rows, spans)
+            current["nodes"].append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows,
+                                         **({"attributes": attributes} if attributes else {})))
+            if table_drawings:
+                # One drawing can contain multiple blips, each of which emits
+                # an image or caption. Count emitted occurrences, not just
+                # drawing containers, before processing any table artwork.
+                occurrences = 0
+                for drawing in table_drawings:
+                    found = False
+                    for _ in drawing.iter("{http://schemas.openxmlformats.org/drawingml/2006/main}blip"):
+                        found = True
+                        occurrences += 1
+                        if occurrences > MAX_TABLE_IMAGE_OCCURRENCES:
+                            raise ParseError("DOCX table contains too many image occurrences; split the table before importing")
+                    if not found:
+                        occurrences += 1
+                        if occurrences > MAX_TABLE_IMAGE_OCCURRENCES:
+                            raise ParseError("DOCX table contains too many image occurrences; split the table before importing")
+                warnings.append("DOCX table images were moved after the table; review their original placement.")
+                for drawing in table_drawings:
+                    current["nodes"].extend(drawing_nodes(drawing))
+            warnings.append("DOCX table text, row order, any explicitly marked header rows and rectangular merged cells were preserved; complex merged-cell layout, cell formatting and nested tables require review against the original.")
             continue
+        style = para.style.name if para.style else ""
+        level = heading_level(para, warnings)
+        list_attributes = numbering.attributes(para)
+        rich_text = _paragraph_runs(para, warnings)
+        text = "".join("\n" if r["type"] in {"hardBreak", "pageBreak"} else r.get("text", "") for r in rich_text)
+        if level == 1:
+            current = new_chapter(text.strip() or f"Chapter {len(chapters) + 1}", len(chapters))
+            chapters.append(current)
         if current is None:
             # content before the first Heading 1
             current = new_chapter(title, 0)
             chapters.append(current)
 
-        text = para.text
-        # images embedded in this paragraph's runs
-        for blip in para._p.findall(
-                ".//{http://schemas.openxmlformats.org/drawingml/2006/main}blip"):
-            rel_id = blip.get(
-                "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed")
-            if rel_id and rel_id in images:
-                asset_id = images[rel_id].setdefault("assetId")
-                if asset_id is None:
-                    import uuid
-                    asset_id = images[rel_id]["assetId"] = str(uuid.uuid4())
-                    assets.append({"id": asset_id, "role": "illustration",
-                                   "caption": images[rel_id]["filename"]})
-                    used_images.add(rel_id)
-                current["nodes"].append(node("image", assetId=asset_id))
+        # Chapters already start on a fresh page. Formatting is an 'at least'
+        # boundary; unlike authored consecutive breaks it must not add a blank.
+        if page_break_before(para) and current["nodes"] and current["nodes"][-1]["type"] != "pageBreak":
+            current["nodes"].append(node("pageBreak"))
 
-        if not text.strip():
-            continue
-        if level:
-            current["nodes"].append(node("heading", text, level=level))
-        elif style.lower().startswith("quote") or style.lower().startswith("block"):
-            current["nodes"].append(node("quote", text))
-        elif style.lower().startswith("list"):
-            current["nodes"].append(node("listItem", text,
-                                         attributes={"listStyle": style}))
-        else:
-            current["nodes"].append(node("paragraph", text))
+        pending = []
+        text_blocks = 0
+
+        def flush_text():
+            nonlocal text_blocks
+            value = "".join("\n" if r["type"] == "hardBreak" else r["text"] for r in pending)
+            if value.strip():
+                attrs = {"richText": list(pending)}
+                kind = "paragraph"
+                if not text_blocks:
+                    if level:
+                        kind = "heading"
+                    elif style.lower().startswith(("quote", "block")):
+                        kind = "quote"
+                    elif list_attributes or (list_attributes is None and style.lower().startswith("list")):
+                        kind = "listItem"
+                        if list_attributes:
+                            attrs.update(list_attributes)
+                        else:
+                            suffix = style.rsplit(" ", 1)[-1]
+                            attrs.update(listStyle="ordered" if "number" in style.lower() else "bullet",
+                                         listDepth=min(6, max(0, int(suffix) - 1)) if suffix.isdigit() else 0)
+                current["nodes"].append(node(kind, value, attributes=attrs, **({"level": level} if kind == "heading" else {})))
+                text_blocks += 1
+            pending.clear()
+
+        for part in rich_text:
+            if part["type"] == "pageBreak":
+                flush_text()
+                current["nodes"].append(node("pageBreak"))
+                continue
+            if part["type"] != "drawing":
+                pending.append(part)
+                continue
+            flush_text()
+            current["nodes"].extend(drawing_nodes(part["element"]))
+        flush_text()
+
 
     if not chapters:
         raise ParseError("DOCX contains no readable paragraphs")
 
     book = make_book(chapters, assets, title=title)
-    report = make_report(chapters, warnings, image_count=len(used_images))
+    report = make_report(chapters, list(dict.fromkeys(warnings)), image_count=len(assets))
     return book, report

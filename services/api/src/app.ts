@@ -7,7 +7,12 @@ import { defaultSupabaseFactory, type SupabaseFactory } from "./lib/supabase.js"
 import { workspaceRoutes } from "./routes/workspaces.js";
 import { bookRoutes } from "./routes/books.js";
 import { chapterRoutes } from "./routes/chapters.js";
+import { bookMemoryRoutes } from "./routes/book-memory.js";
+import { storyBlueprintRoutes } from "./routes/story-blueprints.js";
+import { storyBlueprintProposalRoutes } from "./routes/story-blueprint-proposals.js";
 import { assetRoutes } from "./routes/assets.js";
+import { assetLifecycleRoutes } from "./routes/asset-lifecycle.js";
+import { imageQuoteRoutes } from "./routes/image-quotes.js";
 import { folderRoutes } from "./routes/folders.js";
 import { collabRoutes } from "./routes/collab.js";
 import { teamRoutes } from "./routes/team.js";
@@ -16,21 +21,53 @@ import { communityRoutes } from "./routes/community.js";
 import { referralRoutes } from "./routes/referrals.js";
 import { adminRoutes } from "./routes/admin.js";
 import { healthRoutes } from "./routes/health.js";
+import { aiRoutes } from "./routes/ai.js";
+import { editionRoutes } from "./routes/editions.js";
+import { publishingRoutes } from "./routes/publishing.js";
+import { readerRoutes } from "./routes/reader.js";
+import { savedPrintRoutes } from "./routes/saved-print.js";
+import { renderRequestRoutes } from "./routes/render-requests.js";
+import { accountRoutes } from "./routes/account.js";
+import { aiConnectionRoutes } from "./routes/ai-connections.js";
+import { customerAiRoutes, type CustomerAiPreparation } from "./routes/customer-ai.js";
+import { isAiConnectionPath, safeRequestLog } from "./lib/redact.js";
+import { metadataGenerationRoutes } from "./routes/metadata-generation.js";
+import { metadataQuoteRoutes } from "./routes/metadata-quotes.js";
+import { aiReviewQuoteRoutes } from "./routes/ai-review-quotes.js";
+import { bookBibleGenerationRoutes } from "./routes/book-bible-generation.js";
+import { bookBibleQuoteRoutes } from "./routes/book-bible-quotes.js";
+import { audiobookRoutes } from "./routes/audiobooks.js";
+import { narrationQuoteRoutes } from "./routes/narration-quotes.js";
+import { translationRoutes } from "./routes/translations.js";
+import { dashboardRoutes } from "./routes/dashboard.js";
+import { bookOverviewRoutes } from "./routes/book-overview.js";
+import { salesRoutes } from "./routes/sales.js";
 import { adminPlugin } from "./plugins/admin.js";
 import { redactObject } from "./lib/redact.js";
 import type { StripeFactory } from "./lib/stripe.js";
+import type { ImageGenerator } from "./lib/image-generation.js";
+import type { AssetMalwareScanner } from "./lib/asset-scanner.js";
+import type { CustomerAiReadiness } from "./lib/customer-ai-readiness.js";
 
 export async function buildApp(
   supabaseFactory: SupabaseFactory = defaultSupabaseFactory,
-  opts: { stripeFactory?: StripeFactory } = {},
+  opts: { stripeFactory?: StripeFactory; aiFetch?: typeof fetch; renderFetch?: typeof fetch; publishingFetch?: typeof fetch; imageGenerator?: ImageGenerator; assetScanner?: AssetMalwareScanner; customerAiPreparation?: CustomerAiPreparation; customerAiReadiness?: CustomerAiReadiness; enableLegacyMetadataGenerationForTests?: boolean; enableLegacyAiReviewForTests?: boolean } = {},
 ): Promise<FastifyInstance> {
   const env = loadEnv();
-  const app = Fastify({ logger: { level: env.LOG_LEVEL } });
+  // All instances must cut over together after database and writer preflight.
+  const assetLifecycleEnabled = process.env.ASSET_LIFECYCLE_ENABLED === "true";
+  const app = Fastify({ logger: { level: env.LOG_LEVEL, serializers: { req: safeRequestLog } } });
+
+  app.addHook("onRequest", async (req, reply) => {
+    if (!isAiConnectionPath(req.url)) return;
+    reply.header("cache-control", "private, no-store");
+    reply.header("pragma", "no-cache");
+  });
 
   // Scrub logs (MASTER-BUILD-SPEC 17): never log manuscript text, tokens,
   // secrets, signed URLs. Applies to Fastify's own req/res log lines.
   app.addHook("onSend", async (req) => {
-    req.log.info({ req: redactObject({ method: req.method, url: req.url, headers: req.headers }) }, "request");
+    req.log.info({ req: isAiConnectionPath(req.url) ? safeRequestLog(req) : redactObject({ method: req.method, url: req.url, headers: req.headers }) }, "request");
   });
 
   healthRoutes(app, supabaseFactory);
@@ -41,17 +78,42 @@ export async function buildApp(
     await v1.register(idempotencyPlugin);
     await v1.register(adminPlugin);
     workspaceRoutes(v1);
-    bookRoutes(v1);
+    dashboardRoutes(v1);
+    bookOverviewRoutes(v1);
+    salesRoutes(v1);
+    bookRoutes(v1, { assetScanner: opts.assetScanner });
     chapterRoutes(v1);
-    assetRoutes(v1);
+    bookMemoryRoutes(v1);
+    bookBibleQuoteRoutes(v1, { fetcher: opts.aiFetch });
+    storyBlueprintRoutes(v1);
+    storyBlueprintProposalRoutes(v1);
+    metadataGenerationRoutes(v1, { fetcher: opts.aiFetch, enableLegacyGeneration: opts.enableLegacyMetadataGenerationForTests === true });
+    metadataQuoteRoutes(v1, { fetcher: opts.aiFetch });
+    aiReviewQuoteRoutes(v1, { fetcher: opts.aiFetch });
+    bookBibleGenerationRoutes(v1, { fetcher: opts.aiFetch });
+    aiRoutes(v1, { fetcher: opts.aiFetch, enableLegacyGeneration: opts.enableLegacyAiReviewForTests === true });
+    audiobookRoutes(v1, { fetcher: opts.renderFetch });
+    narrationQuoteRoutes(v1);
+    translationRoutes(v1);
+    assetRoutes(v1, { imageGenerator: opts.imageGenerator, assetScanner: opts.assetScanner, assetLifecycleEnabled });
+    assetLifecycleRoutes(v1, assetLifecycleEnabled);
+    imageQuoteRoutes(v1);
+    editionRoutes(v1, { fetcher: opts.renderFetch });
+    renderRequestRoutes(v1);
+    publishingRoutes(v1, { renderFetcher: opts.renderFetch, publishingFetcher: opts.publishingFetch });
+    readerRoutes(v1, { fetcher: opts.renderFetch });
+    savedPrintRoutes(v1, { fetcher: opts.renderFetch });
     folderRoutes(v1);
     collabRoutes(v1);
     teamRoutes(v1);
     billingRoutes(v1, opts);
     communityRoutes(v1);
     referralRoutes(v1);
+    accountRoutes(v1);
+    aiConnectionRoutes(v1, { preparationAvailable: !!opts.customerAiPreparation, readiness: opts.customerAiReadiness });
+    customerAiRoutes(v1, { preparation: opts.customerAiPreparation, readiness: opts.customerAiReadiness });
     adminRoutes(v1);
-    stripeWebhookRoutes(v1); // own JSON parser keeps raw body for sig check
+    stripeWebhookRoutes(v1, opts); // own JSON parser keeps raw body for sig check
   }, { prefix: "/v1" });
 
   return app;

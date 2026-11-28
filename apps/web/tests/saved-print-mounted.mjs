@@ -1,0 +1,2733 @@
+// Real React components and compiled project CSS; all API/PDF responses are in-memory fixtures.
+// Run with installed Chrome: node --test apps/web/tests/saved-print-mounted.mjs
+// CI sets BROWSER_TEST_CHANNEL=chromium for its downloaded full browser.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createServer } from "node:http";
+import { readFile, mkdtemp } from "node:fs/promises";
+import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { build } from "esbuild";
+import { chromium, expect } from "@playwright/test";
+import postcss from "postcss";
+import tailwind from "@tailwindcss/postcss";
+
+const ids = { book: "11111111-1111-4111-8111-111111111111", edition: "22222222-2222-4222-8222-222222222222",
+  job: "33333333-3333-4333-8333-333333333333", asset: "44444444-4444-4444-8444-444444444444",
+  cover: "55555555-5555-4555-8555-555555555555", workspace: "66666666-6666-4666-8666-666666666666",
+  otherEdition: "77777777-7777-4777-8777-777777777777", otherJob: "88888888-8888-4888-8888-888888888888",
+  otherAsset: "99999999-9999-4999-8999-999999999999" };
+const stream = "BT /F1 18 Tf 54 570 Td (Saved print proof) Tj ET\n";
+const pdfObjects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+  "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 432 648] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+  "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>", `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream`];
+let pdfSource = "%PDF-1.4\n"; const pdfOffsets = [0];
+for (const [index, object] of pdfObjects.entries()) { pdfOffsets.push(Buffer.byteLength(pdfSource)); pdfSource += `${index + 1} 0 obj\n${object}\nendobj\n`; }
+const pdfXref = Buffer.byteLength(pdfSource);
+pdfSource += `xref\n0 ${pdfOffsets.length}\n0000000000 65535 f \n${pdfOffsets.slice(1).map(offset => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}trailer\n<< /Size ${pdfOffsets.length} /Root 1 0 R >>\nstartxref\n${pdfXref}\n%%EOF\n`;
+const pdfBytes = Buffer.from(pdfSource);
+const pngBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==", "base64");
+const zipBytes = Buffer.from("PKsynthetic-retailer-package");
+const audioBytes = Buffer.from("ID3synthetic-private-segment"); // Transport fixture only, not a narration-quality test.
+const primaryDigest = createHash("sha256").update(pdfBytes).digest("hex");
+const coverDigest = createHash("sha256").update(pngBytes).digest("hex");
+const bundles = await Promise.all([false, true].map(parent => build({ stdin: { contents: parent
+  ? `import React from "react"; import { createRoot } from "react-dom/client";
+     import Studio from "./apps/web/components/PublishingStudio"; import { ApiClientError } from "@bookworm/api-client";
+     window.ApiClientError = ApiClientError; const root = createRoot(document.getElementById("root"));
+     window.showStudio = (bookId, packageJobId, managedPublishingEnabled) => root.render(bookId ? React.createElement(Studio, {bookId, packageJobId, managedPublishingEnabled}) : null);`
+  : `import React, { useCallback, useState } from "react"; import { createRoot } from "react-dom/client";
+     import Library from "./apps/web/components/SavedPrintLibrary"; import { ApiClientError } from "@bookworm/api-client";
+     window.ApiClientError = ApiClientError;
+     function Parent() {
+       const [props, setProps] = useState(window.initialProps); const [selected, setSelected] = useState(null);
+       window.setProofProps = patch => setProps(current => ({...current, ...patch}));
+       const select = useCallback(value => { window.selected.push(value); setSelected(value); }, []);
+       const invalidate = useCallback(jobId => { window.invalidated.push(jobId); setSelected(current => current?.jobId === jobId ? null : current); }, []);
+       return React.createElement("main", {className: "mx-auto max-w-5xl p-4 sm:p-8"},
+         React.createElement("output", {"aria-label":"Committed proof settings"}, props.dirty ? "Dirty" : "Saved"),
+         React.createElement(Library, {...props, onSelect: select, onInvalidate: invalidate}),
+         React.createElement("output", {"aria-label":"Selected print source"}, selected?.jobId ?? "No selected print"),
+         selected && React.createElement("div", null, selected.artifacts.map(artifact => React.createElement("a", {key: artifact.asset.id,
+           href: artifact.download.url, download: true}, artifact.role === "rendered_print" ? "Download exact saved interior" : "Download exact saved cover"))));
+     }
+     const root = createRoot(document.getElementById("root")); window.mountLibrary = () => root.render(React.createElement(Parent)); window.unmountLibrary = () => root.render(null);`,
+  loader: "tsx", resolveDir: process.cwd() }, bundle: true, write: false, platform: "browser", format: "iife", jsx: "automatic",
+  outfile: parent ? "saved-print-studio.js" : "saved-print-library.js",
+  plugins: [{ name: "synthetic-print-transports", setup(builder) {
+    builder.onResolve({ filter: /^(\.\/api|next\/link)$/ }, args => ({ path: args.path, namespace: "print-fixture" }));
+    builder.onLoad({ filter: /.*/, namespace: "print-fixture" }, args => ({ resolveDir: process.cwd(), contents: args.path === "./api"
+      ? "const clients = new Map(); export const apiClient = actor => { if (!actor) return window.bookwormApi; if (!clients.has(actor)) clients.set(actor, new Proxy({}, { get: (_, key) => (...args) => { if (window.enforceFixtureActor && actor !== window.fixtureActor) throw new window.ApiClientError(409, \"auth_error\", \"Account changed\", \"fixture\"); return window.bookwormApi[key](...args); } })); return clients.get(actor); };"
+      : 'import React from "react"; export default function Link({children,...props}) {return React.createElement("a", props, children);}' }));
+  } }],
+})));
+const stylePath = resolve("apps/web/styles/globals.css");
+const styles = await postcss([tailwind({ base: resolve("apps/web"), optimize: false })]).process(await readFile(stylePath, "utf8"), { from: stylePath });
+const browser = await chromium.launch({ headless: true, channel: process.env.BROWSER_TEST_CHANNEL || "chrome" });
+const artifacts = await mkdtemp(resolve(tmpdir(), "bookworm-saved-print-mounted-"));
+const storage = createServer((request, response) => {
+  const url = new URL(request.url, "http://127.0.0.1");
+  if (url.pathname === "/api/auth/session") {
+    response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    response.end(JSON.stringify({ user: { id: ids.asset }, storageOrigin })); return;
+  }
+  if (url.pathname === `/api/private-audio/${ids.asset}/segments/${ids.job}/0`) {
+    response.writeHead(200, { "content-type": "audio/mpeg", "content-length": audioBytes.length, "cache-control": "no-store",
+      "content-disposition": url.searchParams.get("download") === "1" ? 'attachment; filename="narration-part-1.mp3"' : "inline" });
+    response.end(audioBytes); return;
+  }
+  if (url.pathname === "/bookworm-saved-print-fixture") {
+    response.writeHead(200, { "content-type": "text/html", "content-security-policy":
+      `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src ${storageOrigin} data:; frame-src ${storageOrigin}; media-src ${storageOrigin}; connect-src 'self'; font-src 'self' data:` });
+    response.end('<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body><div id="root"></div></body></html>'); return;
+  }
+  if (!url.pathname.startsWith("/storage/v1/object/sign/book-assets/workspaces/") || url.searchParams.get("token") !== "synthetic") {
+    response.writeHead(404); response.end(); return;
+  }
+  const filename = url.searchParams.get("download");
+  const bytes = url.pathname.endsWith(".zip") ? zipBytes : url.pathname.endsWith(".mp3") ? audioBytes : url.pathname.endsWith(".png") ? pngBytes : pdfBytes;
+  response.writeHead(200, {
+    "content-type": url.pathname.endsWith(".zip") ? "application/zip" : url.pathname.endsWith(".mp3") ? "audio/mpeg" : url.pathname.endsWith(".png") ? "image/png" : "application/pdf",
+    "content-length": bytes.length, "cache-control": "no-store",
+    // Real HTTP lets full Chrome load its PDF viewer. Only Download gets attachment disposition.
+    "content-disposition": filename ? `attachment; filename*=UTF-8''${encodeURIComponent(filename)}` : "inline",
+  });
+  response.end(bytes);
+});
+test.after(async () => {
+  try { await browser.close(); }
+  finally { storage.closeAllConnections(); await new Promise(resolve => storage.close(resolve)); }
+});
+await new Promise((resolve, reject) => { storage.once("error", reject); storage.listen(0, "127.0.0.1", resolve); });
+const storageOrigin = `http://127.0.0.1:${storage.address().port}`;
+
+async function fixture({ parent = false, width = 1280, disabled = false, audio = false, audioFailure = null, coverArtwork = false } = {}) {
+  const page = await browser.newPage({ viewport: { width, height: 980 } }); page.setDefaultTimeout(6000);
+  const errors = []; page.on("pageerror", error => errors.push(error.message));
+  // Different hosts enforce cross-origin download behavior without intercepting Chrome's PDF viewer.
+  await page.goto(`http://localhost:${storage.address().port}/bookworm-saved-print-fixture`);
+  await page.addStyleTag({ content: styles.css + "body { background: #050505; color: white; } output { display: block; margin-top: 16px; }" });
+  await page.evaluate(({ ids, disabled, primaryDigest, primarySize, coverDigest, coverSize, audio, storageOrigin, coverArtwork }) => {
+    window.ids = ids; window.fixtureActor = ids.asset; window.fixtureStoragePort = new URL(storageOrigin).port; window.requests = []; window.selected = []; window.invalidated = []; window.historyWaiters = []; window.downloadWaiters = []; window.pageWaiters = [];
+    window.initialProps = { actor: ids.asset, bookId: ids.book, workspaceId: ids.workspace, editionId: ids.edition, disabled };
+    const proof = (editionId, jobId, assetId, letter) => ({ jobId, createdAt: "2026-10-13T12:00:00.000Z", fingerprint: letter.repeat(64),
+      source: { bookId: ids.book, editionId, jobId, assetId, version: 1, sha256: primaryDigest, sizeBytes: primarySize } });
+    window.proofs = [proof(ids.edition, ids.job, ids.asset, "b"), proof(ids.otherEdition, ids.otherJob, ids.otherAsset, "c")];
+    const result = entry => ({ jobId: entry.jobId, status: "succeeded", artifacts: [
+      { asset: { id: entry.source.assetId, workspace_id: ids.workspace, type: "rendered_book", name: "Saved interior.pdf",
+          storage_path: `workspaces/${ids.workspace}/assets/${entry.source.assetId}/v1/book.pdf`, mime_type: "application/pdf", size_bytes: primarySize,
+          checksum: primaryDigest, deleted_at: null, status: "draft" }, role: "rendered_print",
+        download: { url: `${storageOrigin}/storage/v1/object/sign/book-assets/workspaces/${ids.workspace}/assets/${entry.source.assetId}/v1/book.pdf?token=synthetic`, expiresIn: 300 } },
+      { asset: { id: ids.cover, workspace_id: ids.workspace, type: "rendered_cover", name: "Saved cover.png",
+          storage_path: `workspaces/${ids.workspace}/assets/${ids.cover}/v1/cover.png`, mime_type: "image/png", size_bytes: coverSize,
+          checksum: coverDigest, deleted_at: null, status: "draft" }, role: "rendered_cover",
+        download: { url: `${storageOrigin}/storage/v1/object/sign/book-assets/workspaces/${ids.workspace}/assets/${ids.cover}/v1/cover.png?token=synthetic`, expiresIn: 300 } },
+    ] });
+    window.results = Object.fromEntries(window.proofs.map(entry => [entry.jobId, result(entry)]));
+    const editions = [ids.edition, ids.otherEdition].map(id => ({ id, book_id: ids.book, type: audio ? "audiobook" : "print", language: "en", status: "draft",
+      updated_at: "2026-10-13T00:00:00.000Z", edition_metadata_json: { kind: audio ? "audiobook" : "print", cover: { asset_id: null } } }));
+    window.bookwormApi = {
+      getBook: async bookId => ({ book: { id: bookId, workspace_id: ids.workspace, title: "Saved author manuscript", language: "en" }, role: "owner" }),
+      getDashboardOverview: async workspaceId => { window.planCalls = (window.planCalls ?? 0) + 1;
+        if (window.holdPlan) await new Promise(resolve => { window.releasePlan = resolve; });
+        if (window.planError) throw Error("Plan temporarily unavailable");
+        return { viewerId: window.planViewer ?? ids.asset, workspace: { id: window.planWorkspace ?? workspaceId }, usage: { entitlements: { entitlements: { rendering: window.planRendering ?? true, publishing_channels: window.planChannels ?? ["export"] } } } }; },
+      listEditions: async () => ({ editions }), listPublishingJobs: async () => ({ jobs: [] }),
+      listAssets: async () => ({ assets: coverArtwork ? [{ ...window.results[ids.job].artifacts[1].asset, name: "Cover artwork.png", type: "illustration" }] : [] }),
+      listChapters: async () => ({ chapters: [] }),
+      listNarrationModels: async () => ({ models: [] }), listAudiobookGooglePlayExports: async () => ({ jobs: [] }),
+      listPrivateAudiobookProjects: async editionId => ({ projects: [{ id: ids.job, editionId, chapterId: ids.asset, status: "running", segmentCount: 1,
+        billingMode: "quoted", creditUnits: 1, voice: "marin", segments: [{ index: 0, status: "succeeded", audioAvailable: true }] }] }),
+      listPrintRenders: async editionId => {
+        window.requests.push({ method: "GET", action: "history", editionId });
+        const response = { renders: structuredClone(window.proofs.filter(proof => proof.source.editionId === editionId)) };
+        if (window.holdHistory) await new Promise(resolve => window.historyWaiters.push(resolve));
+        if (window.historyError) throw new window.ApiClientError(window.historyError, "access_denied", "Print history access revoked", "fixture");
+        return response;
+      },
+      downloadPrintRender: async (editionId, jobId, sha256, fingerprint) => {
+        window.requests.push({ method: "GET", action: "download", editionId, jobId, sha256, fingerprint });
+        const response = structuredClone(window.results[jobId]);
+        if (window.holdDownload) await new Promise(resolve => window.downloadWaiters.push(resolve));
+        if (window.downloadError) throw new window.ApiClientError(window.downloadError, "access_denied", "Print proof access revoked", "fixture");
+        return response;
+      },
+      readPrintPage: async (editionId, jobId, pageNumber, source, signal) => {
+        window.requests.push({ method: "GET", action: "page", editionId, jobId, pageNumber, source });
+        const proof = structuredClone(window.proofs.find(item => item.jobId === jobId));
+        const image = { mimeType: "image/png", width: 1, height: 1, sizeBytes: coverSize, sha256: coverDigest,
+          base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==" };
+        if (window.holdPage) await new Promise(resolve => window.pageWaiters.push(resolve));
+        if (window.pageError) throw new window.ApiClientError(window.pageError, "access_denied", "Saved PDF page access revoked", "fixture");
+        if (window.corruptPage) image.sha256 = "d".repeat(64);
+        return { formatVersion: "pdf-proof-1.0.0", source: { ...proof.source, role: "rendered_print" }, fingerprint: proof.fingerprint,
+          sourceSha256: primaryDigest, sourceSizeBytes: primarySize, pageNumber, pageCount: 4, requestedWidth: source.width,
+          pageWidthPoints: 432, pageHeightPoints: 648, text: `Saved page ${pageNumber} <script>literal, never executed</script>`, textTruncated: false, image };
+      },
+      runPreflight: async body => { window.requests.push({ method: "POST", action: "preflight", body });
+        if (window.holdPreflight) await new Promise(resolve => { window.releasePreflight = resolve; });
+        const findings = window.preflightFindings ?? [];
+        return { jobId: ids.otherJob, requestedChannel: window.preflightChannel ?? body.channel, channel: body.channel, ruleVersion: "fixture-print-rules", errors: 0, warnings: findings.length, findings, sourcePrint: body.sourcePrint }; },
+      renderEdition: async () => { window.requests.push({ method: "POST", action: "render" }); throw new Error("Unexpected rendering request"); },
+      createPublishingJob: async () => { window.requests.push({ method: "POST", action: "package" }); throw new Error("Unexpected package request"); },
+    };
+  }, { ids, disabled, primaryDigest, primarySize: pdfBytes.length, coverDigest, coverSize: pngBytes.length, audio, storageOrigin, coverArtwork });
+  if (audioFailure) await page.evaluate(kind => { window.bookwormApi[kind] = async () => { throw new Error(`Initial ${kind} failure`); }; }, audioFailure);
+  for (const file of bundles[parent ? 1 : 0].outputFiles.filter(file => file.path.endsWith(".css"))) await page.addStyleTag({ content: file.text });
+  await page.addScriptTag({ content: bundles[parent ? 1 : 0].outputFiles.find(file => file.path.endsWith(".js")).text });
+  await page.evaluate(({ parent, book }) => parent ? window.showStudio(book) : window.mountLibrary(), { parent, book: ids.book });
+  await page.getByRole("heading", { name: audio ? "Saved audio & delivery" : "Saved print proofs", exact: true }).waitFor();
+  return { page, errors };
+}
+async function open(page) { await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled(); await page.getByRole("button", { name: "Open saved print", exact: true }).click(); await page.getByRole("button", { name: "Renew private links", exact: true }).waitFor(); }
+
+test("studio shows verified retailer plan access and refreshes after a plan change", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.getByLabel("Preflight target").selectOption("kdp");
+    const access = page.getByLabel("Plan publishing access");
+    await expect(access).toContainText("The selected retailer package is not included in the current plan.");
+    await expect(access).toContainText("EPUB/PDF rendering is included in the current plan.");
+    await page.evaluate(() => { window.planChannels = ["export", "kdp"]; window.planRendering = false; });
+    await access.getByRole("button", { name: "Refresh access" }).click();
+    await expect(access).toContainText("The selected retailer package is included in the current plan.");
+    await expect(access).toContainText("EPUB/PDF rendering is not included in the current plan.");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("studio reports unavailable access for errors or mismatched account and workspace", async () => {
+  for (const failure of ["error", "account", "workspace"]) {
+    const { page, errors } = await fixture({ parent: true });
+    try {
+      const access = page.getByLabel("Plan publishing access");
+      await expect(access.getByRole("button", { name: "Refresh access" })).toBeVisible();
+      await page.evaluate(kind => { if (kind === "error") window.planError = true; else if (kind === "account") window.planViewer = window.ids.otherAsset; else window.planWorkspace = window.ids.otherEdition; }, failure);
+      await access.getByRole("button", { name: "Refresh access" }).click();
+      await expect(access).toContainText("Publishing access could not be checked.");
+      await page.evaluate(() => { window.planError = false; window.planViewer = null; window.planWorkspace = null; });
+      await access.getByRole("button", { name: "Try again" }).click();
+      await expect(access).toContainText("EPUB/PDF rendering is included in the current plan.");
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
+
+test("late plan access cannot appear after the signed-in account changes", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    const access = page.getByLabel("Plan publishing access");
+    await expect(access.getByRole("button", { name: "Refresh access" })).toBeVisible();
+    await page.evaluate(() => {
+      window.holdPlan = true;
+      const original = window.fetch.bind(window);
+      window.fetch = async (url, options) => String(url) === "/api/auth/session"
+        ? Response.json({ user: { id: window.fixtureActor }, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}` }) : original(url, options);
+    });
+    await access.getByRole("button", { name: "Refresh access" }).click();
+    await page.waitForFunction(() => typeof window.releasePlan === "function");
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.dispatchEvent(new Event("focus")); window.releasePlan(); });
+    await expect(page.getByText("Checking your account…")).toHaveCount(0);
+    await expect(access.getByText("EPUB/PDF rendering is included in the current plan.")).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("late plan access cannot overwrite the next book workspace", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    let access = page.getByLabel("Plan publishing access");
+    await expect(access.getByRole("button", { name: "Refresh access" })).toBeVisible();
+    await page.evaluate(() => {
+      window.bookwormApi.getDashboardOverview = async workspaceId => {
+        if (workspaceId === window.ids.workspace) await new Promise(resolve => { window.releaseOldPlan = resolve; });
+        return { viewerId: window.ids.asset, workspace: { id: workspaceId }, usage: { entitlements: { entitlements: {
+          rendering: true, publishing_channels: workspaceId === window.ids.otherEdition ? ["kdp"] : ["export"] } } } };
+      };
+      window.bookwormApi.getBook = async bookId => ({ book: { id: bookId, workspace_id: bookId === window.ids.otherJob ? window.ids.otherEdition : window.ids.workspace, title: "Book", language: "en" }, role: "owner" });
+      window.bookwormApi.listEditions = async () => ({ editions: [] });
+    });
+    await access.getByRole("button", { name: "Refresh access" }).click();
+    await page.waitForFunction(() => typeof window.releaseOldPlan === "function");
+    await page.evaluate(() => window.showStudio(window.ids.otherJob));
+    await page.getByLabel("Preflight target").selectOption("kdp");
+    access = page.getByLabel("Plan publishing access");
+    await expect(access).toContainText("The selected retailer package is included in the current plan.");
+    await page.evaluate(() => window.releaseOldPlan());
+    await expect(access).toContainText("The selected retailer package is included in the current plan.");
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Arabic print typography enables a proof after saving and reopening the edition", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const list = window.bookwormApi.listEditions;
+      window.printTypographySaves = [];
+      window.bookwormApi.updateEdition = async (id, body, actor) => {
+        window.printTypographySaves.push({ id, body, actor });
+        const { editions } = await list();
+        const edition = editions.find(item => item.id === id);
+        Object.assign(edition, { language: body.language, edition_metadata_json: body.config,
+          updated_at: "2026-11-20T00:00:00.000Z" });
+        return structuredClone(edition);
+      };
+    });
+    const language = page.getByRole("textbox", { name: "Language", exact: true });
+    const direction = page.getByRole("combobox", { name: "Text direction", exact: true });
+    const bodyFont = page.getByRole("combobox", { name: "Body font", exact: true });
+    const headingFont = page.getByRole("combobox", { name: "Heading font", exact: true });
+    const useAmiri = page.getByRole("button", { name: "Use Amiri for Arabic print", exact: true });
+    const render = page.getByRole("button", { name: "Render PDF", exact: true });
+    await language.fill("ar");
+    await direction.selectOption("rtl");
+    await expect(useAmiri).toBeVisible();
+    await expect(render).toBeDisabled();
+    await useAmiri.click();
+    await expect(bodyFont).toHaveValue("BookwormAmiri");
+    await expect(headingFont).toHaveValue("BookwormAmiri-Bold");
+    await page.getByRole("button", { name: "Save edition", exact: true }).click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    const [saved] = await page.evaluate(() => window.printTypographySaves);
+    assert.deepEqual([saved.id, saved.actor, saved.body.language, saved.body.config.text_direction],
+      [ids.edition, ids.asset, "ar", "rtl"]);
+    assert.deepEqual([saved.body.config.typography.body_font, saved.body.config.typography.heading_font],
+      ["BookwormAmiri", "BookwormAmiri-Bold"]);
+
+    await page.evaluate(() => window.showStudio(null));
+    await expect(render).toHaveCount(0);
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(render).toBeEnabled();
+    await expect(language).toHaveValue("ar");
+    await expect(direction).toHaveValue("rtl");
+    await expect(bodyFont).toHaveValue("BookwormAmiri");
+    await expect(headingFont).toHaveValue("BookwormAmiri-Bold");
+    await expect(useAmiri).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.printTypographySaves.length), 1);
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.method === "POST").length), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Lulu orientation confirmation follows the exact finished cover version", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const list = window.bookwormApi.listEditions;
+      const { ids } = window;
+      const covers = [3, 4].map((version, index) => ({ id: index === 0 ? ids.cover : ids.otherAsset,
+        workspace_id: ids.workspace, name: `Lulu template ${version}.pdf`, mime_type: "application/pdf",
+        size_bytes: 1000, checksum: "e".repeat(64), status: "approved", current_scan_status: "clean",
+        current_version_number: version, deleted_at: null }));
+      window.bookwormApi.listAssets = async () => ({ assets: covers });
+      window.luluCoverSaves = [];
+      window.bookwormApi.updateEdition = async (id, body, actor) => {
+        window.luluCoverSaves.push({ id, body, actor });
+        const { editions } = await list();
+        const edition = editions.find(item => item.id === id);
+        const revision = new Date(Date.parse(edition.updated_at) + 1000).toISOString();
+        Object.assign(edition, { language: body.language, edition_metadata_json: body.config, updated_at: revision });
+        return structuredClone(edition);
+      };
+      window.showStudio(null);
+    });
+    const direction = page.getByRole("combobox", { name: "Text direction", exact: true });
+    await expect(direction).toHaveCount(0);
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await page.getByRole("textbox", { name: "Language", exact: true }).fill("ar");
+    await direction.selectOption("rtl");
+    await page.getByRole("button", { name: "Use Amiri for Arabic print", exact: true }).click();
+    await page.getByRole("checkbox", { name: "Create full cover PDF", exact: true }).check();
+    await page.getByRole("combobox", { name: "Cover source", exact: true }).selectOption("uploaded");
+    const confirm = page.getByRole("checkbox", { name: "I used a Lulu template with the front cover on the left", exact: true });
+    const cover = page.getByRole("combobox", { name: "Finished paperback cover PDF", exact: true });
+    const save = page.getByRole("button", { name: "Save edition", exact: true });
+    await expect(confirm).toBeDisabled();
+    await cover.selectOption(`${ids.cover}:3`);
+    await confirm.check();
+    await expect(page.getByRole("combobox", { name: "Paper and printer", exact: true })).toHaveValue("custom");
+    await page.getByRole("spinbutton", { name: "Template page count", exact: true }).fill("34");
+    await save.click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    const [first] = await page.evaluate(() => window.luluCoverSaves);
+    assert.deepEqual([first.id, first.actor, first.body.config.cover.asset_id, first.body.config.text_direction],
+      [ids.edition, ids.asset, ids.cover, "rtl"]);
+    assert.equal(first.body.config.wrap_cover.source_pdf_version, 3);
+    assert.equal(first.body.config.wrap_cover.expected_page_count, 34);
+    assert.equal(first.body.config.wrap_cover.lulu_rtl, true);
+
+    await page.evaluate(() => window.showStudio(null));
+    await expect(confirm).toHaveCount(0);
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(cover).toHaveValue(`${ids.cover}:3`);
+    await expect(confirm).toBeChecked();
+    await cover.selectOption(`${ids.otherAsset}:4`);
+    await expect(confirm).not.toBeChecked();
+    await save.click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    const [, second] = await page.evaluate(() => window.luluCoverSaves);
+    assert.equal(second.body.config.cover.asset_id, ids.otherAsset);
+    assert.equal(second.body.config.wrap_cover.source_pdf_version, 4);
+    assert.equal(second.body.config.wrap_cover.lulu_rtl, undefined);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("studio validates and saves a print edition ISBN before another proof can be used", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.isbnSaves = [];
+      window.bookwormApi.updateEdition = async (id, body, actor) => {
+        window.isbnSaves.push({ id, body, actor });
+        return { id, book_id: window.ids.book, type: "print", language: body.language,
+          edition_metadata_json: body.config, updated_at: "2026-11-19T10:00:00.000Z", status: "draft" };
+      };
+    });
+    await open(page);
+    await page.getByRole("button", { name: "Enable edition recovery", exact: true }).click();
+    await expect(page.getByText("Recovery is on for this saved edition.", { exact: true })).toBeVisible();
+    const field = page.getByRole("textbox", { name: "Print ISBN-13", exact: true });
+    const save = page.getByRole("button", { name: "Save edition", exact: true });
+    await field.fill("9780000000010");
+    await save.click();
+    await expect(page.getByRole("alert")).toContainText("Enter a valid ISBN-13");
+    assert.equal(await page.evaluate(() => window.isbnSaves.length), 0);
+    await field.fill("978-0-000-00001-9");
+    const storedIsbn = await page.evaluate(() => {
+      const key = Object.keys(sessionStorage).find(key => key.startsWith("bookworm-edition-tab-v1:"));
+      return key ? JSON.parse(sessionStorage.getItem(key)).form.printIsbn : null;
+    });
+    assert.equal(storedIsbn, "978-0-000-00001-9");
+    await save.click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    await expect(field).toHaveValue("9780000000019");
+    await expect(page.getByText(/Package source · Saved print PDF/)).toHaveCount(0);
+    const saved = await page.evaluate(() => window.isbnSaves);
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].body.config.isbn13, "9780000000019");
+    assert.equal(saved[0].actor, ids.asset);
+    await page.getByRole("checkbox", { name: "Create full cover PDF", exact: true }).check();
+    await page.getByRole("combobox", { name: "ISBN barcode", exact: true }).selectOption("lulu");
+    await save.click();
+    await expect(page.getByRole("alert").filter({ hasText: "Use the matching Lulu template" })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.isbnSaves.length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("studio saves cover QR size and placement and restores them when reopening the edition", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390, coverArtwork: true });
+  try {
+    await page.evaluate(() => {
+      window.qrSaves = [];
+      window.bookwormApi.updateEdition = async (id, body, actor) => {
+        window.qrSaves.push({ id, body, actor });
+        return { id, book_id: window.ids.book, type: "print", language: body.language,
+          edition_metadata_json: body.config, updated_at: "2026-11-20T12:00:00.000Z", status: "draft" };
+      };
+    });
+    await open(page);
+    const enabled = page.getByRole("checkbox", { name: "Add QR code", exact: true });
+    const placement = page.getByRole("combobox", { name: "QR placement", exact: true });
+    const size = page.getByRole("slider", { name: "QR size", exact: true });
+    await expect(size).toHaveCount(0);
+    await page.getByRole("combobox", { name: "Cover artwork", exact: true }).selectOption(ids.cover);
+    await enabled.check();
+    await expect(placement).toHaveValue("bottom-right");
+    await expect(size).toHaveValue("180");
+    const destination = "https://author.example/books/harbor?campaign=" + "long-reader-campaign-abcdefghijklmnop".repeat(6);
+    await page.getByRole("textbox", { name: "HTTPS destination", exact: true }).fill(destination);
+    await page.getByRole("textbox", { name: "QR label", exact: true }).fill("Reader extras");
+    await placement.selectOption("bottom-left");
+    await size.fill("320");
+    await expect(size).toHaveAttribute("aria-valuetext", "320 pixels");
+    assert.equal(await page.getByRole("region", { name: "Cover composition" })
+      .evaluate((section) => section.scrollWidth <= section.clientWidth + 1), true);
+    await expect(page.getByText(/Package source · Saved print PDF/)).toHaveCount(0);
+    await page.getByRole("button", { name: "Save edition", exact: true }).click();
+    await expect(page.getByText("Edition settings saved.", { exact: true })).toBeVisible();
+    const saves = await page.evaluate(() => window.qrSaves);
+    assert.equal(saves.length, 1);
+    assert.equal(saves[0].id, ids.edition);
+    assert.equal(saves[0].actor, ids.asset);
+    assert.deepEqual(saves[0].body.config.cover.qr_code, {
+      enabled: true, url: destination, label: "Reader extras", position: "bottom-left", size_px: 320,
+    });
+
+    const editions = page.getByRole("button", { name: /^print en · draft$/i });
+    await editions.nth(1).click();
+    await expect(enabled).not.toBeChecked();
+    await expect(size).toHaveCount(0);
+    await editions.first().click();
+    await expect(enabled).toBeChecked();
+    await expect(placement).toHaveValue("bottom-left");
+    await expect(size).toHaveValue("320");
+    await expect(page.getByRole("textbox", { name: "HTTPS destination", exact: true })).toHaveValue(destination);
+    const correction = "Increase QR size or shorten the HTTPS destination in Cover composition.";
+    await page.evaluate(correction => {
+      window.qrRenderCount = 0;
+      window.bookwormApi.renderEdition = async () => {
+        window.qrRenderCount++;
+        throw new window.ApiClientError(422, "cover_qr_too_small", correction, "fixture");
+      };
+      window.bookwormApi.getRenderRequest = async (bookId, editionId, requestId) => ({
+        bookId, editionId, requestId, job: { id: window.ids.job, status: "failed", coverQrCorrection: correction },
+      });
+    }, correction);
+    const render = page.getByRole("button", { name: "Render PDF", exact: true });
+    const correctionLink = page.getByRole("link", { name: "Edit cover QR settings", exact: true });
+    await render.click();
+    await expect(page.getByRole("alert").filter({ hasText: correction })).toBeVisible();
+    await expect(correctionLink).toHaveAttribute("href", "#cover-settings");
+    await expect(render).toBeDisabled();
+    await page.getByRole("button", { name: "Check original render" }).click();
+    await expect(correctionLink).toBeVisible();
+    await expect(render).toBeEnabled();
+    assert.equal(await page.evaluate(() => window.qrRenderCount), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Studio waits for the selected print proof before running preflight", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.getByLabel("Preflight target").selectOption("barnesnoble");
+    await page.evaluate(() => { window.holdDownload = true; });
+    const preflight = page.getByRole("button", { name: "Run preflight", exact: true });
+    await page.getByRole("button", { name: "Open saved print", exact: true }).click();
+    await page.waitForFunction(() => window.downloadWaiters.length === 1);
+    await expect(preflight).toBeDisabled({ timeout: 1200 });
+    await expect(page.getByText("Opening the selected print proof…", { exact: true })).toBeVisible();
+    await page.evaluate(() => window.downloadWaiters[0]());
+    await expect(page.getByText(/Package source · Saved print PDF/)).toContainText(primaryDigest.slice(0, 12));
+    await preflight.click();
+    await expect(page.getByText("Preflight results · Barnes & Noble Press", { exact: true })).toBeVisible();
+    const calls = await page.evaluate(() => window.requests.filter(request => request.action === "preflight"));
+    assert.deepEqual(calls.map(call => call.body.sourcePrint), [
+      { jobId: ids.job, sha256: primaryDigest, coverSha256: coverDigest },
+    ]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio requires preflight for the opened print interior and its cover", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await open(page);
+    const packageButton = page.getByRole("button", { name: "Create retailer package", exact: true });
+    const validate = page.getByRole("button", { name: "Run preflight", exact: true });
+    await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await expect(page.getByText(/Package source · Saved print PDF/)).toContainText(primaryDigest.slice(0, 12));
+    await expect(packageButton).toBeDisabled();
+    await page.evaluate(() => {
+      const original = window.bookwormApi.runPreflight;
+      window.bookwormApi.runPreflight = async body => {
+        const report = await original(body);
+        const listing = { schemaVersion: "1.0", metadata: { title: "Harbor Letters", author: "An author", language: "en",
+          description: "The first line.\nUne deuxième ligne.", isbn13: "9780306406157", keywords: ["coast", "letter"], categories: [] } };
+        return window.badCover ? { ...report, listing, sourcePrint: { ...body.sourcePrint, coverSha256: null } } : { ...report, listing };
+      };
+      Object.defineProperty(navigator, "clipboard", { value: { writeText: async value => { window.copiedDescription = value; } }, configurable: true });
+      window.badCover = true;
+    });
+    await validate.click();
+    await expect(page.getByRole("alert")).toContainText("Preflight did not confirm this saved print interior and cover.");
+    await expect(packageButton).toBeDisabled();
+    await expect(page.getByText("Review retailer listing", { exact: true })).toHaveCount(0);
+    await page.evaluate(() => { window.badCover = false; });
+    await validate.click();
+    await expect(packageButton).toBeEnabled();
+    await page.getByText("Review retailer listing", { exact: true }).click();
+    await expect(page.getByText("Harbor Letters", { exact: true })).toBeVisible();
+    await expect(page.getByText("9780306406157", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Copy description", exact: true }).click();
+    await expect(page.getByText("Description copied.", { exact: true })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.copiedDescription), "The first line.\nUne deuxième ligne.");
+    for (const [label, value] of [["title", "Harbor Letters"], ["author", "An author"], ["ISBN-13", "9780306406157"]]) {
+      await page.getByRole("button", { name: `Copy ${label}`, exact: true }).click();
+      await expect.poll(() => page.evaluate(() => window.copiedDescription)).toBe(value);
+    }
+    await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error("Clipboard denied"); }; });
+    await page.getByRole("button", { name: "Copy title", exact: true }).click();
+    await expect(page.getByText("Select the title to copy it.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Edit book listing", exact: true })).toHaveAttribute("href", `/books/${ids.book}/memory#publishing-metadata`);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("barnesnoble");
+    await expect(page.getByText("Review retailer listing", { exact: true })).toHaveCount(0);
+    const writes = await page.evaluate(() => window.requests.filter(row => row.method === "POST"));
+    assert.deepEqual(writes.map(row => [row.action, row.body.sourcePrint]), Array(2).fill(["preflight", {
+      jobId: ids.job, sha256: primaryDigest, coverSha256: coverDigest,
+    }]));
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio recovers a lost export reply after remount without submitting another package", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.createPublishingJob = async body => {
+        window.requests.push({ method: "POST", action: "package", body });
+        window.acceptedPackage = { id: window.ids.otherAsset, requestId: body.idempotencyKey, bookId: body.bookId,
+          editionId: body.editionId, channel: body.channel, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+          status: "succeeded", submissionMode: "manual", package: null, createdAt: new Date().toISOString() };
+        throw new Error("The reply was lost");
+      };
+      window.bookwormApi.getPublishingRequest = async (bookId, requestId) => {
+        window.requests.push({ method: "GET", action: "recover-package", bookId, requestId });
+        return { requestId, job: structuredClone(window.acceptedPackage) };
+      };
+    });
+    await open(page);
+    await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+    await expect(page.getByText(/The reply was lost/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Recover saved export", exact: true })).toBeEnabled();
+    const saved = await page.evaluate(() => Object.entries(sessionStorage).filter(([key]) => key.startsWith("bookworm:package:")));
+    assert.equal(saved.length, 1); assert.equal(saved[0][1].includes("Saved author manuscript"), false);
+    // Unmount/remount the real component; sessionStorage survives exactly as on reload.
+    await page.evaluate(() => window.showStudio(null));
+    await page.getByRole("heading", { name: "Saved print proofs", exact: true }).waitFor({ state: "hidden" });
+    await page.evaluate(() => {
+      const original = window.bookwormApi.getBook;
+      window.bookwormApi.getBook = async bookId => ({ ...await original(bookId), role: "viewer" });
+    });
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(page.getByRole("button", { name: "Retry original export", exact: true })).toBeDisabled();
+    await page.getByRole("button", { name: "Recover saved export", exact: true }).click();
+    await expect(page.getByText(/Saved export confirmed/)).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 1);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:package:"))), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio retries the exact original export even after another edition is selected", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.createPublishingJob = async body => {
+        window.requests.push({ method: "POST", action: "package", body });
+        if (window.requests.filter(row => row.action === "package").length === 1) throw new Error("Unknown export outcome");
+        return { id: window.ids.otherAsset, requestId: body.idempotencyKey, bookId: body.bookId, editionId: body.editionId,
+          channel: body.channel, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+          status: "succeeded", submissionMode: "manual", package: null, createdAt: new Date().toISOString() };
+      };
+    });
+    await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+    await expect(page.getByText(/Unknown export outcome/)).toBeVisible();
+    await page.locator("aside").getByRole("button", { name: "print en · draft" }).nth(1).click();
+    await page.getByRole("button", { name: "Retry original export", exact: true }).click();
+    await expect(page.getByText(/Saved export confirmed/)).toBeVisible();
+    const bodies = await page.evaluate(() => window.requests.filter(row => row.action === "package").map(row => row.body));
+    assert.equal(bodies.length, 2); assert.deepEqual(bodies[0], bodies[1]);
+    assert.equal(bodies[1].editionId, ids.edition); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio retains a lost closure across remount and cannot retry the original export", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.createPublishingJob = async body => { window.requests.push({ method: "POST", action: "package", body }); throw new Error("No accepted reply"); };
+      window.bookwormApi.closePublishingRequest = async body => {
+        window.requests.push({ method: "POST", action: "close", body });
+        window.closedPackage = { id: window.ids.otherAsset, requestId: body.idempotencyKey, bookId: body.bookId, editionId: body.editionId,
+          channel: body.channel, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+          status: "cancelled", submissionMode: "manual", package: null, createdAt: new Date().toISOString() };
+        throw new Error("Closure reply lost");
+      };
+      window.bookwormApi.getPublishingRequest = async (_book, requestId) => ({ requestId, job: window.closedPackage ?? null });
+    });
+    await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+    await page.getByRole("button", { name: "Recover saved export", exact: true }).click();
+    await expect(page.getByText(/No saved export was found/)).toBeVisible();
+    await page.getByRole("checkbox", { name: /Close this request only/ }).check();
+    await page.getByRole("button", { name: "Close unaccepted export request", exact: true }).click();
+    await expect(page.getByText(/Closure reply lost/)).toBeVisible();
+    await page.evaluate(() => window.showStudio(null)); await page.getByRole("heading", { name: "Saved print proofs", exact: true }).waitFor({ state: "hidden" });
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(page.getByRole("button", { name: "Recover saved export", exact: true })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Retry original export", exact: true })).toBeDisabled();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    await page.getByLabel("Retailer request recovery").screenshot({ path: resolve(artifacts, "saved-export-recovery-mobile.png") });
+    await page.getByRole("button", { name: "Recover saved export", exact: true }).click();
+    await expect(page.getByText(/Saved request closed/)).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 1);
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "close").length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("switching accounts during preflight invalidates the old proof without creating an export", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+    await page.evaluate(() => { window.holdPreflight = true; });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => Boolean(window.releasePreflight))).toBe(true);
+    await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: ids.otherAsset } } }));
+    await page.evaluate(() => window.releasePreflight());
+    await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled();
+    await assert.rejects(page.getByRole("button", { name: "Create retailer package", exact: true }).click({ timeout: 1500 }), /Timeout/);
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio sends no export when storage cannot persist or the signed-in account changes", async () => {
+  for (const failure of ["storage", "account"]) {
+    const { page, errors } = await fixture({ parent: true });
+    try {
+      await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+      await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+      // The two failures below are meant to occur at export creation, after a
+      // successful preflight. Changing sessions while preflight is still in
+      // flight correctly invalidates its proof and is tested separately.
+      await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeEnabled();
+      if (failure === "storage") await page.evaluate(() => { Storage.prototype.setItem = () => { throw new Error("blocked"); }; });
+      else await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: ids.otherAsset } } }));
+      await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+      await expect(page.getByRole("alert")).toContainText(failure === "storage" ? "session recovery is unavailable" : "account changed");
+      assert.equal(await page.evaluate(() => window.requests.some(row => row.action === "package")), false);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
+
+test("actual Studio retains the original request after a mismatched receipt or a late account change", async () => {
+  for (const failure of ["source", "account"]) {
+    const { page, errors } = await fixture({ parent: true });
+    try {
+      await page.evaluate(() => {
+        window.bookwormApi.createPublishingJob = async body => {
+          window.requests.push({ method: "POST", action: "package", body });
+          window.acceptedPackage = { id: window.ids.otherAsset, requestId: body.idempotencyKey, bookId: body.bookId,
+            editionId: body.editionId, channel: body.channel, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+            status: "succeeded", submissionMode: "manual", package: null, createdAt: new Date().toISOString() };
+          return new Promise(resolve => { window.releasePackage = resolve; });
+        };
+        window.bookwormApi.getPublishingRequest = async (_book, requestId) => ({ requestId, job: window.acceptedPackage });
+      });
+      await open(page); await page.getByRole("combobox", { name: "Preflight target", exact: true }).selectOption("kdp");
+      await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+      await page.getByRole("button", { name: "Create retailer package", exact: true }).click();
+      await expect.poll(() => page.evaluate(() => Boolean(window.releasePackage))).toBe(true);
+      if (failure === "account") await page.route("**/api/auth/session", route => route.fulfill({ json: { user: { id: ids.otherAsset } } }));
+      await page.evaluate(failure => window.releasePackage({ ...window.acceptedPackage,
+        ...(failure === "source" ? { sourceRenderJobId: window.ids.otherJob } : {}) }), failure);
+      await expect(page.getByRole("alert")).toContainText(failure === "source" ? "does not match" : "account changed");
+      await expect(page.getByText("unavailable", { exact: true })).toHaveCount(0);
+      const pending = await page.evaluate(() => Object.values(sessionStorage).map(value => JSON.parse(value)));
+      assert.equal(pending.length, 1); assert.equal(pending[0].userId, ids.asset);
+      if (failure === "account") await page.unroute("**/api/auth/session");
+      await page.evaluate(() => window.showStudio(null)); await page.getByRole("heading", { name: "Saved print proofs", exact: true }).waitFor({ state: "hidden" });
+      await page.evaluate(() => window.showStudio(window.ids.book));
+      await page.getByRole("button", { name: "Recover saved export", exact: true }).click();
+      await expect(page.getByText(/Saved export confirmed/)).toBeVisible();
+      assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "package").length), 1);
+      assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:package:"))), false);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  }
+});
+
+test("actual Studio distinguishes unavailable package history and restores its link without another export", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.savedPackage = { id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
+        createdAt: "2026-10-17T00:00:00Z", ruleVersion: "fixture-rules", package: {
+          asset: { id: window.ids.asset, workspace_id: window.ids.workspace, storage_path: `workspaces/${window.ids.workspace}/assets/${window.ids.asset}/v1/kdp-export.zip`, size_bytes: 1024, checksum: "a".repeat(64) },
+          download: { url: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 300 },
+        } };
+      window.packageJobs = [structuredClone(window.savedPackage)];
+      window.bookwormApi.listPublishingJobs = async () => {
+        window.requests.push({ method: "GET", action: "packages" });
+        return { jobs: structuredClone(window.packageJobs) };
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText("ready", { exact: true })).toBeVisible();
+    await expect(history.getByRole("button", { name: "Download private ZIP" })).toBeVisible();
+    const bookshelf = history.getByRole("link", { name: "KDP Bookshelf", exact: true });
+    await expect(bookshelf).toHaveAttribute("href", "https://kdp.amazon.com/en_US/bookshelf");
+    await expect(bookshelf).toHaveAttribute("target", "_blank");
+    await page.evaluate(() => { window.packageJobs[0].package = null; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText("unavailable", { exact: true })).toBeVisible();
+    await expect(history.getByText("ready", { exact: true })).toHaveCount(0);
+    await expect(history.getByRole("button", { name: "Download private ZIP" })).toHaveCount(0);
+    await expect(bookshelf).toHaveCount(0);
+    await expect(history.getByText(/This job is saved in history, but its file is currently unavailable/)).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await history.scrollIntoViewIfNeeded();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+    await history.screenshot({ path: resolve(artifacts, "unavailable-retailer-package-mobile.png") });
+    await page.evaluate(() => { window.packageJobs = [structuredClone(window.savedPackage)]; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText("ready", { exact: true })).toBeVisible();
+    await expect(history.getByRole("button", { name: "Download private ZIP" })).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method === "POST")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("author can open an operator-confirmed retailer listing from package history", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    const listing = "https://www.amazon.com/dp/B000000001";
+    await page.evaluate(listingUrl => {
+      const { job, book, edition, workspace, asset } = window.ids;
+      const requestedAt = "2026-10-18T00:00:00Z";
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{
+        id: job, bookId: book, editionId: edition, channel: "kdp", status: "succeeded", createdAt: requestedAt, package: null,
+      }] });
+      window.bookwormApi.getManagedPublishingRequest = async () => ({
+        jobId: job, workspaceId: workspace, packageSha256: "a".repeat(64), requestedBy: asset,
+        requestedAt, confirmedAt: "2026-10-18T00:01:00Z", listingUrl, withdrawnAt: null,
+      });
+      window.showStudio(book, undefined, true);
+    }, listing);
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await history.getByText("Managed publishing request", { exact: true }).click();
+    await expect(history.getByRole("status").filter({ hasText: "Operator confirmed publication" })).toBeVisible();
+    await expect(history.getByRole("link", { name: "Open retailer listing" })).toHaveAttribute("href", listing);
+    await expect(history.getByRole("button", { name: "Withdraw consent" })).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("managed publishing requires exact package consent and recovers a lost reply with a read", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const { job, book, edition, workspace, asset } = window.ids;
+      const checksum = "a".repeat(64);
+      const storagePath = `workspaces/${workspace}/assets/${asset}/v1/kdp-export.zip`;
+      const packageJob = (expiresIn) => ({
+        id: job, bookId: book, editionId: edition, channel: "kdp", status: "succeeded", createdAt: "2026-10-18T00:00:00Z",
+        package: window.consentPackageUnavailable ? null : { asset: { id: asset, workspace_id: workspace, storage_path: storagePath, size_bytes: 1024, checksum },
+          download: { url: window.results[job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn } },
+      });
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [packageJob(1)] });
+      window.bookwormApi.getPublishingJob = async () => packageJob(300);
+      window.consentWrites = [];
+      window.bookwormApi.getManagedPublishingRequest = async () => {
+        if (!window.firstConsentRead) await new Promise(resolve => { window.firstConsentRead = resolve; });
+        return window.consentReceipt ?? null;
+      };
+      window.bookwormApi.requestManagedPublishing = async (jobId, workspaceId, packageSha256, requestedBy) => {
+        window.consentWrites.push({ jobId, workspaceId, packageSha256, requestedBy });
+        window.consentReceipt = { jobId, workspaceId, packageSha256, requestedBy, requestedAt: "2026-10-18T00:00:00Z", withdrawnAt: null, confirmedAt: null, listingUrl: null };
+        throw new Error("Fixture lost reply");
+      };
+      window.bookwormApi.withdrawManagedPublishing = async (jobId, workspaceId, packageSha256, requestedBy) => {
+        window.consentWithdrawals = [{ jobId, workspaceId, packageSha256, requestedBy }];
+        window.consentReceipt.withdrawnAt = "2026-10-18T00:01:00Z";
+        throw new Error("Fixture lost withdrawal reply");
+      };
+      window.showStudio(book, undefined, true);
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await expect(history.getByText("To have a BookieWookie operator handle submission", { exact: false })).toBeVisible();
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await history.getByText("Managed publishing request", { exact: true }).click();
+    const consent = history.locator("details").filter({ hasText: "Managed publishing request" });
+    await expect(consent.getByRole("status")).toContainText("Checking the saved request");
+    await history.getByRole("button", { name: "Renew private link" }).click();
+    await expect(history.getByRole("button", { name: "Download private ZIP" })).toBeVisible();
+    await page.evaluate(() => window.firstConsentRead());
+    const record = consent.getByRole("button", { name: "Record consent" });
+    await expect(record).toBeDisabled();
+    await consent.getByRole("checkbox").check();
+    await record.click();
+    await expect(consent.getByRole("alert")).toContainText("could not be confirmed");
+    await consent.getByRole("button", { name: "Check saved request" }).click();
+    await expect(consent.getByRole("status")).toContainText("Consent recorded");
+    assert.deepEqual(await page.evaluate(() => window.consentWrites), [{
+      jobId: ids.job, workspaceId: ids.workspace, packageSha256: "a".repeat(64), requestedBy: ids.asset,
+    }]);
+    await page.evaluate(() => { window.consentReceipt.claimedAt = "2026-10-18T00:00:30Z"; });
+    await consent.getByRole("button", { name: "Refresh request status" }).click();
+    await expect(consent.getByRole("status")).toContainText("A publishing operator claimed this package");
+    await expect(consent.getByRole("status")).toContainText("Awaiting retailer confirmation");
+    assert.equal(await page.evaluate(() => window.consentWrites.length), 1);
+    await page.evaluate(() => {
+      window.consentPackageUnavailable = true;
+      window.showStudio(window.ids.book, undefined, false);
+    });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText("This job is saved in history, but its file is currently unavailable.", { exact: false })).toBeVisible();
+    await history.getByText("Managed publishing request", { exact: true }).click();
+    await consent.getByRole("button", { name: "Withdraw consent" }).click();
+    await expect(consent.getByRole("alert")).toContainText("could not be confirmed");
+    await consent.getByRole("button", { name: "Check saved request" }).click();
+    await expect(consent.getByRole("status")).toContainText("Consent withdrawn");
+    assert.deepEqual(await page.evaluate(() => window.consentWithdrawals), await page.evaluate(() => window.consentWrites));
+    await expect(record).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("authors copy the listing from the exact saved package after reopening history", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const { job, book, edition, workspace, asset } = window.ids;
+      const checksum = "a".repeat(64);
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{
+        id: job, bookId: book, editionId: edition, channel: "kdp", status: "succeeded", createdAt: "2026-10-18T00:00:00Z",
+        package: { asset: { id: asset, workspace_id: workspace, storage_path: `workspaces/${workspace}/assets/${asset}/v1/kdp-export.zip`,
+          size_bytes: 1024, checksum }, download: { url: "https://storage.example/package", expiresIn: 300 } },
+      }] });
+      window.bookwormApi.getPackageListing = async (jobId, requestedChecksum, actor) => {
+        window.requests.push({ method: "GET", action: "packageListing", jobId, checksum: requestedChecksum, actor });
+        return { packageJobId: jobId, packageSha256: window.listingMatches ? checksum : "b".repeat(64),
+          metadata: { title: "Original package title", author: "Author", language: "en", description: "First saved description.",
+            keywords: ["harbor", "letters, lost at sea", "مرسى هادئ"], categories: ["Literary fiction"] } };
+      };
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
+        writeText: async value => { window.copiedListing = value; },
+      } });
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const toggle = history.getByText("Copy package listing", { exact: true });
+    await expect(toggle).toBeVisible();
+    const requests = () => page.evaluate(() => window.requests.filter(row => row.action === "packageListing"));
+    assert.deepEqual(await requests(), []);
+    await toggle.click();
+    await expect(history.getByRole("alert").filter({ hasText: "The listing is unavailable here." })).toBeVisible();
+    await expect(history.getByText("Original package title", { exact: true })).toHaveCount(0);
+    await page.evaluate(() => { window.listingMatches = true; });
+    await history.getByRole("button", { name: "Check again", exact: true }).click();
+    for (const [name, value] of [
+      ["description", "First saved description."],
+      ["keywords", "harbor, letters, lost at sea, مرسى هادئ"],
+      ["categories", "Literary fiction"],
+      ["keyword 2", "letters, lost at sea"],
+      ["keyword 3", "مرسى هادئ"],
+      ["category 1", "Literary fiction"],
+    ]) {
+      await history.getByRole("button", { name: `Copy ${name}`, exact: true }).click();
+      await expect.poll(() => page.evaluate(() => window.copiedListing)).toBe(value);
+    }
+    await expect(history.getByRole("status").filter({ hasText: "Category 1 copied." })).toBeVisible();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.deepEqual(await requests(), Array.from({ length: 2 }, () =>
+      ({ method: "GET", action: "packageListing", jobId: ids.job, checksum: "a".repeat(64), actor: ids.asset })));
+    await toggle.click();
+    await expect(history.getByText("Original package title", { exact: true })).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("package preflight reads only on demand and refuses a mismatched saved report", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const { job, book, edition, otherAsset, cover } = window.ids;
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{ id: job, bookId: book, editionId: edition,
+        channel: "kdp", status: "succeeded", sourcePreflightJobId: otherAsset, createdAt: "2026-10-18T00:00:00Z", package: null }] });
+      window.preflightMatches = false;
+      window.bookwormApi.getPackagePreflight = async (jobId, actor) => {
+        window.requests.push({ method: "GET", action: "packagePreflight", jobId, actor });
+        return { packageJobId: jobId, preflightJobId: window.preflightMatches ? otherAsset : cover,
+          ruleVersion: "fixture-rules-v1", warnings: 1,
+          findings: [{ code: "FILE_REVIEW", message: "Review the printed cover before approving.", location: "cover.pdf" }] };
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const label = "Review package preflight";
+    await expect(history.getByText(label, { exact: true })).toBeVisible();
+    const requests = () => page.evaluate(() => window.requests.filter(row => row.action === "packagePreflight"));
+    assert.deepEqual(await requests(), []);
+    await history.getByText(label, { exact: true }).click();
+    await expect(history.getByRole("alert").filter({ hasText: "The saved preflight is unavailable here" })).toBeVisible();
+    await expect(history.getByText("Review the printed cover before approving.")).toHaveCount(0);
+    await page.evaluate(() => { window.preflightMatches = true; });
+    await history.getByRole("button", { name: "Check again", exact: true }).click();
+    await expect(history.getByText("Review the printed cover before approving.")).toBeVisible();
+    assert.deepEqual(await requests(), Array.from({ length: 2 }, () =>
+      ({ method: "GET", action: "packagePreflight", jobId: ids.job, actor: ids.asset })));
+    await history.getByText(label, { exact: true }).click();
+    await expect(history.getByText("Review the printed cover before approving.")).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("retailer submission status handles collapse, unavailable reads, lost replies and stale edits", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      const { job, book, edition, otherAsset, cover } = window.ids;
+      const jobRecord = { id: job, bookId: book, editionId: edition, channel: "kdp", status: "succeeded",
+        createdAt: "2026-10-18T00:00:00Z", package: null };
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [jobRecord] });
+      window.statusUnavailable = true;
+      window.submission = null;
+      window.bookwormApi.getRetailerSubmission = async (jobId, actor) => {
+        window.requests.push({ method: "GET", action: "submission", jobId, actor });
+        if (window.statusUnavailable) throw new Error("Status service unavailable");
+        return structuredClone(window.submission);
+      };
+      window.bookwormApi.saveRetailerSubmission = async (jobId, body, actor) => {
+        window.requests.push({ method: "PUT", action: "submission", jobId, actor, body });
+        if (window.holdSubmission) await new Promise(resolve => { window.releaseSubmission = resolve; });
+        if (body.expectedRevision !== (window.submission?.revision ?? null)) {
+          throw new window.ApiClientError(409, "conflict", "Status changed", "fixture");
+        }
+        window.submission = { jobId, status: body.status, revision: window.submission ? cover : otherAsset,
+          updatedAt: "2026-10-18T01:00:00Z" };
+        if (window.loseSubmissionReply) throw new Error("Lost save reply");
+        return structuredClone(window.submission);
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const status = history.locator("details").filter({ has: page.getByText("Retailer submission status", { exact: true }) });
+    assert.equal(await page.evaluate(() => window.requests.some(row => row.action === "submission")), false);
+    await status.getByText("Retailer submission status", { exact: true }).click();
+    await expect(status.getByRole("alert")).toHaveText("Submission status could not be loaded.");
+    await expect(status.getByText(/No status recorded/)).toHaveCount(0);
+    await page.evaluate(() => { window.statusUnavailable = false; });
+    await status.getByRole("button", { name: "Check saved status" }).click();
+    await expect(status.getByText("Author-reported status · No status recorded")).toBeVisible();
+    await status.getByRole("combobox", { name: "Update status" }).selectOption("submitted");
+    await page.evaluate(() => { window.holdSubmission = true; });
+    await status.getByRole("button", { name: "Save status" }).click();
+    await expect(status.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    await page.waitForFunction(() => typeof window.releaseSubmission === "function");
+    const readsBeforeCollapse = await page.evaluate(() => window.requests.filter(row => row.method === "GET" && row.action === "submission").length);
+    const summary = status.getByText("Retailer submission status", { exact: true });
+    await summary.click();
+    await expect(status.getByRole("combobox", { name: "Update status" })).toHaveCount(0);
+    await summary.click();
+    await expect(status.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.method === "GET" && row.action === "submission").length), readsBeforeCollapse);
+    await page.evaluate(() => { window.holdSubmission = false; window.releaseSubmission(); });
+    await expect(status.getByText("Author-reported status · Submitted")).toBeVisible();
+    await expect(status.getByRole("status")).toHaveText("Submission status saved.");
+
+    await page.evaluate(() => { window.loseSubmissionReply = true; });
+    await status.getByRole("combobox", { name: "Update status" }).selectOption("in_review");
+    await status.getByRole("button", { name: "Save status" }).click();
+    await expect(status.getByRole("alert")).toContainText("The save could not be confirmed.");
+    await expect(status.getByRole("button", { name: "Save status" })).toHaveCount(0);
+    await status.getByRole("button", { name: "Check saved status" }).click();
+    await expect(status.getByText("Author-reported status · In review")).toBeVisible();
+    await expect(status.getByText("Submission status saved.")).toHaveCount(0);
+
+    await page.evaluate(() => {
+      window.submission = { ...window.submission, status: "published", revision: window.ids.otherJob };
+    });
+    await status.getByRole("combobox", { name: "Update status" }).selectOption("withdrawn");
+    await status.getByRole("button", { name: "Save status" }).click();
+    await expect(status.getByRole("alert")).toContainText("Someone changed the status.");
+    await status.getByRole("button", { name: "Check saved status" }).click();
+    await expect(status.getByText("Author-reported status · Published")).toBeVisible();
+    await summary.click();
+    await expect(status.getByRole("combobox", { name: "Update status" })).toHaveCount(0);
+    await page.evaluate(() => {
+      window.submission = { ...window.submission, status: "withdrawn", revision: window.ids.cover };
+    });
+    await summary.click();
+    await expect(status.getByText("Author-reported status · Withdrawn")).toBeVisible();
+    const operations = await page.evaluate(() => window.requests.filter(row => row.action === "submission"));
+    assert.ok(operations.every(row => row.jobId === ids.job && row.actor === ids.asset));
+    assert.deepEqual(operations.filter(row => row.method === "PUT").map(row => row.body), [
+      { status: "submitted", expectedRevision: null },
+      { status: "in_review", expectedRevision: ids.otherAsset },
+      { status: "withdrawn", expectedRevision: ids.cover },
+    ]);
+    assert.equal(await page.evaluate(() => window.requests.some(row => row.method === "POST")), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+    await status.screenshot({ path: resolve(artifacts, "retailer-submission-status-mobile.png") });
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("retailer download uses attachment, expires and refreshes without creating another package", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.packageJobs = [{ id: window.ids.job, bookId: window.ids.book, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
+        createdAt: "2026-10-13T12:00:00.000Z", ruleVersion: "test-rules", package: {
+          asset: { id: window.ids.asset, workspace_id: window.ids.workspace, storage_path: `workspaces/${window.ids.workspace}/assets/${window.ids.asset}/v1/kdp-export.zip`, size_bytes: 1024, checksum: "a".repeat(64) },
+          download: { url: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 1 },
+        } }];
+      window.bookwormApi.listPublishingJobs = async () => { window.requests.push({method: "GET", action: "packages"}); return {jobs: structuredClone(window.packageJobs)}; };
+      window.bookwormApi.getPublishingJob = async (jobId, actor) => {
+        window.requests.push({method: "GET", action: "renew-package", jobId, actor});
+        return structuredClone(window.packageJobs[0]);
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const link = history.getByRole("button", { name: "Download private ZIP" });
+    await expect(link).toBeVisible();
+    assert.equal(await link.getAttribute("href"), null);
+    const appUrl = page.url();
+    const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
+    assert.equal(download.suggestedFilename(), "kdp-export.zip");
+    assert.deepEqual(await readFile(await download.path()), zipBytes);
+    assert.equal(page.url(), appUrl);
+    await expect(link).toHaveCount(0, { timeout: 5000 });
+    await expect(history.getByText(/Private link expired or could not be verified/)).toBeVisible();
+    await page.evaluate(() => { window.packageJobs[0].package.download.expiresIn = 300; });
+    const pageReads = await page.evaluate(() => window.requests.filter(row => row.action === "packages").length);
+    await history.getByRole("button", { name: "Renew private link" }).click();
+    await expect(link).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.filter(row => row.action === "packages").length), pageReads);
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.action === "renew-package")),
+      [{method: "GET", action: "renew-package", jobId: ids.job, actor: ids.asset}]);
+    // A suspended tab may not fire its timer before the user's click.
+    await page.evaluate(() => { const now = Date.now; Date.now = () => now() + 301_000; });
+    await link.click();
+    await expect(link).toHaveCount(0);
+    assert.equal(page.url(), appUrl);
+    await page.evaluate(() => { window.packageJobs[0].package.download.url = "javascript:alert(1)"; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(link).toHaveCount(0);
+    await expect(history.getByText(/Private link expired or could not be verified/)).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method === "POST")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("Google Play audiobook archive expires and renews separately from retailer packages", async () => {
+  const { page, errors } = await fixture({ parent: true, audio: true });
+  try {
+    await page.evaluate(() => {
+      window.audioExports = [{ id: window.ids.job, editionId: window.ids.edition, status: "succeeded", progressChapters: 1, progressTotal: 1,
+        createdAt: "2026-10-13T12:00:00.000Z", synthesizedVoiceDisclosureRequired: true, downloadExpiresIn: 1,
+        downloadUrl: `http://127.0.0.1:${window.fixtureStoragePort}/storage/v1/object/sign/book-assets/workspaces/${window.ids.workspace}/audiobook-exports/${window.ids.job}/${window.ids.otherJob}.zip?token=synthetic` }];
+      window.bookwormApi.listAudiobookGooglePlayExports = async () => { window.requests.push({method: "GET", action: "audio-exports"}); return {jobs: structuredClone(window.audioExports)}; };
+    });
+    const history = page.getByRole("heading", {name: "Export history", exact: true}).locator("..");
+    await history.getByRole("button", {name: "Refresh", exact: true}).click();
+    const section = page.getByText("Google Play · 1 chapters").locator("../..").locator("..");
+    const link = page.getByRole("button", { name: "Download private ZIP", exact: true});
+    await expect(link).toBeVisible();
+    assert.equal(await link.getAttribute("href"), null);
+    const appUrl = page.url();
+    const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
+    assert.equal(download.suggestedFilename(), "googleplay-audiobook.zip");
+    assert.deepEqual(await readFile(await download.path()), zipBytes);
+    assert.equal(page.url(), appUrl);
+    await expect(link).toHaveCount(0, {timeout: 5000});
+    await expect(page.getByText(/Private link expired or could not be verified. Refresh export history/)).toBeVisible();
+    await page.evaluate(() => {window.audioExports[0].downloadExpiresIn = 300; window.audioExports[0].downloadUrl += "&download=Book-123.zip";});
+    await history.getByRole("button", {name: "Refresh", exact: true}).click();
+    await expect(link).toBeVisible();
+    assert.equal(await link.getAttribute("href"), null);
+    await page.evaluate(() => { window.originalNow = Date.now; Date.now = () => window.originalNow() + 301_000; });
+    await link.click(); await expect(link).toHaveCount(0); assert.equal(page.url(), appUrl);
+    await page.evaluate(() => {
+      Date.now = window.originalNow; window.audioExports[0].downloadExpiresIn = 1;
+      window.bookwormApi.listAudiobookGooglePlayExports = async () => { window.requests.push({method: "GET", action: "audio-exports"}); await new Promise(resolve => setTimeout(resolve, 1200)); return {jobs: structuredClone(window.audioExports)}; };
+    });
+    await history.getByRole("button", {name: "Refresh", exact: true}).click();
+    await expect(link).toHaveCount(0);
+    await expect(page.getByText("Device clock moved backwards. Reload this page before renewing private links.")).toBeVisible();
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method === "POST")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a private archive link already expired when its slow response arrives is never offered", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.listPublishingJobs = async () => {
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        return { jobs: [{ id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
+          createdAt: "2026-10-13T12:00:00Z", package: { asset: { id: window.ids.asset, workspace_id: window.ids.workspace, storage_path: `workspaces/${window.ids.workspace}/assets/${window.ids.asset}/v1/kdp-export.zip`, size_bytes: 1024, checksum: "a".repeat(64) },
+            download: { url: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 1 } } }] };
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(history.getByText(/Private link expired or could not be verified/)).toBeVisible();
+    await expect(history.getByRole("button", { name: "Download private ZIP" })).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a backwards clock withdraws archive links until the page is reloaded", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      const job = { id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded",
+        createdAt: "2026-10-13T12:00:00Z", package: { asset: { id: window.ids.asset, workspace_id: window.ids.workspace, storage_path: `workspaces/${window.ids.workspace}/assets/${window.ids.asset}/v1/kdp-export.zip`, size_bytes: 1024, checksum: "a".repeat(64) },
+          download: { url: window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip"), expiresIn: 300 } } };
+      window.bookwormApi.listPublishingJobs = async () => ({ jobs: [job] });
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    const link = history.getByRole("button", { name: "Download private ZIP" });
+    await expect(link).toBeVisible();
+    await page.evaluate(() => { window.originalNow = Date.now; Date.now = () => window.originalNow() - 60_000; });
+    await link.click();
+    await expect(link).toHaveCount(0);
+    await expect(history.getByText("Device clock moved backwards. Reload this page before renewing private links.")).toBeVisible();
+    await page.evaluate(() => { Date.now = window.originalNow; });
+    await history.getByRole("button", { name: "Refresh", exact: true }).click();
+    await expect(link).toHaveCount(0);
+    await expect(history.getByText("Device clock moved backwards. Reload this page before renewing private links.")).toBeVisible();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const audio of [false, true]) test(`switching books hides previous ${audio ? "audiobook" : "retailer"} archive links before the new load`, async () => {
+  const { page, errors } = await fixture({ parent: true, audio });
+  try {
+    await page.evaluate(({ audio }) => {
+      const url = audio ? `http://127.0.0.1:${window.fixtureStoragePort}/storage/v1/object/sign/book-assets/workspaces/${window.ids.workspace}/audiobook-exports/${window.ids.job}/${window.ids.otherJob}.zip?token=synthetic` : window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf", "kdp-export.zip");
+      if (audio) window.bookwormApi.listAudiobookGooglePlayExports = async () => ({ jobs: [{ id: window.ids.job, editionId: window.ids.edition, status: "succeeded", progressChapters: 1, progressTotal: 1, createdAt: "2026-10-13T12:00:00Z", synthesizedVoiceDisclosureRequired: true, downloadExpiresIn: 300, downloadUrl: url }] });
+      else window.bookwormApi.listPublishingJobs = async () => ({ jobs: [{ id: window.ids.job, editionId: window.ids.edition, channel: "kdp", status: "succeeded", createdAt: "2026-10-13T12:00:00Z", package: { asset: { id: window.ids.asset, workspace_id: window.ids.workspace, storage_path: `workspaces/${window.ids.workspace}/assets/${window.ids.asset}/v1/kdp-export.zip`, size_bytes: 1024, checksum: "a".repeat(64) }, download: { url, expiresIn: 300 } } }] });
+    }, { audio });
+    const header = page.getByRole("heading", { name: audio ? "Export history" : "Package history", exact: true }).locator("..");
+    await header.getByRole("button", { name: "Refresh", exact: true }).click();
+    const link = page.getByRole("button", { name: "Download private ZIP" });
+    await expect(link).toBeVisible();
+    await page.evaluate(() => {
+      const old = window.bookwormApi.getBook;
+      window.bookwormApi.getBook = bookId => bookId === window.ids.otherAsset ? new Promise(() => {}) : old(bookId);
+      window.showStudio(window.ids.otherAsset);
+    });
+    await expect(link).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("actual Studio downloads a private audio segment without replacing its player or leaving the app", async () => {
+  const { page, errors } = await fixture({ parent: true, audio: true });
+  try {
+    const appUrl = page.url(), player = page.locator("audio"), link = page.getByRole("link", { name: "Download private MP3", exact: true });
+    const filename = "narration-part-1.mp3";
+    await expect(link).toBeVisible();
+    const previewUrl = await player.getAttribute("src");
+    assert.equal(new URL(previewUrl, appUrl).searchParams.has("download"), false);
+    assert.equal(new URL(await link.getAttribute("href"), appUrl).searchParams.get("download"), "1");
+    assert.match(previewUrl, /^\/api\/private-audio\//); assert(!previewUrl.includes("token="));
+    const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
+    assert.equal(download.suggestedFilename(), filename); assert.equal(await download.failure(), null);
+    assert.deepEqual(await readFile(await download.path()), audioBytes);
+    assert.equal(page.url(), appUrl); await expect(player).toHaveAttribute("src", previewUrl);
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(request => request.method !== "GET")), []);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const source of ["saved", "new"]) test(`actual Studio downloads ${source} cross-origin PDF and cover without leaving inert page previews`, async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    const appUrl = page.url();
+    let downloads = 0; page.on("download", () => { downloads++; });
+    if (source === "saved") await open(page);
+    else {
+      await page.evaluate(() => { window.bookwormApi.renderEdition = async () => {
+        window.requests.push({ method: "POST", action: "render" }); return structuredClone(window.results[window.ids.job]);
+      }; });
+      await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    }
+    const links = page.getByRole("button", { name: "Download private file", exact: true });
+    await expect(links).toHaveCount(2);
+    const preview = page.getByAltText("Saved interior, page 1 of 4", { exact: true });
+    await expect(preview).toBeVisible();
+    const previewUrl = await preview.getAttribute("src");
+    assert(previewUrl.startsWith("data:image/png;base64,"));
+    const cover = page.getByAltText("Rendered book cover", { exact: true });
+    await expect(cover).toBeVisible();
+    assert.equal(await cover.getAttribute("referrerpolicy"), "no-referrer");
+    const coverUrl = await cover.getAttribute("src");
+    assert.equal(new URL(coverUrl).searchParams.has("download"), false);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const enlarge = page.getByRole("button", { name: "Enlarge cover", exact: true });
+    await enlarge.focus();
+    await enlarge.press("Enter");
+    await expect(enlarge).toHaveAttribute("aria-pressed", "true");
+    const enlarged = page.getByRole("region", { name: "Enlarged cover preview", exact: true });
+    await expect(enlarged).toBeVisible();
+    await enlarge.press("Tab");
+    await expect(enlarged).toBeFocused();
+    assert.equal(await enlarged.evaluate(node => node.scrollWidth > node.clientWidth), true);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await expect(cover).toHaveAttribute("src", coverUrl);
+    await enlarge.click();
+    await expect(enlarge).toHaveAttribute("aria-pressed", "false");
+    await expect(enlarged).toHaveCount(0);
+    await page.setViewportSize({ width: 1280, height: 980 });
+    await expect.poll(() => preview.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
+    assert.equal(await page.locator('iframe[title="Rendered print edition preview"]').count(), 0);
+    await preview.screenshot({ path: resolve(artifacts, `${source}-print-inline-preview.png`) });
+    assert.equal(downloads, 0, "Opening previews must not download files");
+    for (const [index, filename, digest] of [[0, "Saved interior.pdf", primaryDigest], [1, "Saved cover.png", coverDigest]]) {
+      const link = links.nth(index);
+      assert.equal(await link.getAttribute("href"), null);
+      const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
+      assert.equal(await download.failure(), null); assert.equal(download.suggestedFilename(), filename);
+      assert.equal(createHash("sha256").update(await readFile(await download.path())).digest("hex"), digest);
+      assert.equal(page.url(), appUrl); await expect(preview).toHaveAttribute("src", previewUrl);
+    }
+    assert.equal(downloads, 2);
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(request => request.method === "POST").map(request => request.action)), source === "new" ? ["render"] : []);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const failure of ["origin", "path", "token"]) test(`new render refuses a cover preview with invalid ${failure}`, async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(failure => { window.bookwormApi.renderEdition = async () => {
+      const result = structuredClone(window.results[window.ids.job]);
+      const cover = result.artifacts.find(artifact => artifact.role === "rendered_cover");
+      if (failure === "origin") cover.download.url = cover.download.url.replace("127.0.0.1", "localhost");
+      if (failure === "path") cover.download.url = cover.download.url.replace("cover.png", "other.png");
+      if (failure === "token") cover.download.url += "&token=other";
+      return result;
+    }; }, failure);
+    await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    await expect(page.getByText("Cover preview could not be verified.", { exact: false })).toBeVisible();
+    await expect(page.getByAltText("Rendered book cover", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(2);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a delayed cover session check cannot reveal a previous account's preview", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      const original = window.fetch; let checks = 0;
+      window.fetch = async (...args) => {
+        if (args[0] === "/api/auth/session" && window.delayCoverCheck) {
+          checks++;
+          if (checks === 2) await new Promise(resolve => { window.releaseCoverCheck = resolve; });
+          return Response.json({ user: { id: window.fixtureActor }, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}` });
+        }
+        return original(...args);
+      };
+      window.bookwormApi.renderEdition = async () => { window.delayCoverCheck = true; return structuredClone(window.results[window.ids.job]); };
+    });
+    await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    await page.waitForFunction(() => typeof window.releaseCoverCheck === "function");
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.dispatchEvent(new Event("focus")); window.releaseCoverCheck(); });
+    await expect(page.getByAltText("Rendered book cover", { exact: true })).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("PDF proof page, jump, detail, zoom and escaped text work at mobile width without new renders", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await open(page); const reader = page.getByRole("region", { name: "Saved PDF page proof", exact: true });
+    await expect(reader.getByAltText("Saved interior, page 1 of 4")).toBeVisible();
+    await reader.getByRole("button", { name: "Next page", exact: true }).click();
+    await expect(reader.getByAltText("Saved interior, page 2 of 4")).toBeVisible();
+    await reader.getByLabel("Go to PDF page", { exact: true }).fill("4"); await reader.getByRole("button", { name: "Go", exact: true }).click();
+    await expect(reader.getByAltText("Saved interior, page 4 of 4")).toBeVisible();
+    await expect(reader.getByRole("button", { name: "Next page", exact: true })).toBeDisabled();
+    await reader.getByLabel("PDF detail", { exact: true }).selectOption("720");
+    await expect.poll(() => page.evaluate(() => window.requests.filter(r => r.action === "page").at(-1)?.source.width)).toBe(720);
+    await expect(reader.getByAltText("Saved interior, page 4 of 4")).toBeVisible();
+    await reader.getByLabel("PDF zoom", { exact: true }).selectOption("200");
+    await expect(reader.getByAltText("Saved interior, page 4 of 4")).toHaveAttribute("style", /width: 200%/);
+    await reader.getByText("Page text (reading order may differ)", { exact: true }).click();
+    await expect(reader.getByText("Saved page 4 <script>literal, never executed</script>", { exact: true })).toBeVisible();
+    const region = reader.getByRole("region", { name: "PDF page 4 image", exact: true }); await region.focus();
+    await page.keyboard.press("ArrowRight"); await expect.poll(() => region.evaluate(node => node.scrollLeft)).toBeGreaterThan(0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    await reader.screenshot({ path: resolve(artifacts, "saved-pdf-page-proof-mobile.png") });
+    assert.equal(await page.evaluate(() => window.requests.some(r => r.method !== "GET")), false); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("late PDF pages from a previous edition are ignored and membership failures withdraw pixels", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => { window.holdPage = true; }); await open(page);
+    await page.waitForFunction(() => window.pageWaiters.length === 1);
+    await page.getByRole("button", { name: "print en · draft", exact: true }).nth(1).click();
+    await page.evaluate(() => { window.holdPage = false; window.pageWaiters[0](); });
+    await expect(page.getByAltText("Saved interior, page 1 of 4")).toHaveCount(0);
+    await open(page); await expect(page.getByAltText("Saved interior, page 1 of 4")).toBeVisible();
+    await page.evaluate(() => { window.pageError = 403; }); await page.getByRole("button", { name: "Next page", exact: true }).click();
+    await expect(page.getByAltText(/Saved interior, page/)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(0);
+    await page.evaluate(() => { window.pageError = null; }); await page.getByRole("button", { name: "Renew private links", exact: true }).click();
+    await expect(page.getByAltText("Saved interior, page 1 of 4")).toBeVisible(); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("freshly rendered links and PDF pages are withdrawn at their conservative expiry", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    await page.clock.install({ time: new Date("2026-10-24T00:00:00Z") });
+    await page.evaluate(() => { window.bookwormApi.renderEdition = async () => {
+      window.requests.push({ method: "POST", action: "render" }); const result = structuredClone(window.results[window.ids.job]);
+      result.artifacts.forEach(item => { item.download.expiresIn = 2; }); return result;
+    }; });
+    await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    await expect(page.getByAltText("Saved interior, page 1 of 4")).toBeVisible();
+    await page.clock.fastForward(3000); await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(0);
+    await expect(page.getByAltText(/Saved interior, page/)).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.requests.filter(r => r.action === "render").length), 1);
+    await expect(page.getByText(/Private proof links expired/)).toBeVisible();
+  } finally { await page.close(); }
+});
+
+for (const missing of ["history", "page"]) test(`unavailable print proof clears the open files and preflight after ${missing}`, async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page);
+    const packageButton = page.getByRole("button", { name: "Create retailer package", exact: true });
+    const proof = page.getByRole("region", { name: "Saved PDF page proof", exact: true });
+    await page.getByRole("combobox", { name: /^Preflight target/ }).selectOption("kdp");
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await expect(packageButton).toBeEnabled();
+    await expect(proof.getByAltText("Saved interior, page 1 of 4")).toBeVisible();
+
+    if (missing === "page") {
+      await page.evaluate(() => { window.pageError = 503; });
+      await proof.getByRole("button", { name: "Next page", exact: true }).click();
+      await expect(proof.getByRole("alert")).toBeVisible();
+      await expect(packageButton).toBeEnabled();
+      await page.evaluate(() => { window.pageError = 404; });
+      await proof.getByRole("button", { name: "Retry saved page", exact: true }).click();
+    } else {
+      await page.evaluate(() => { window.proofs = window.proofs.filter(proof => proof.jobId !== window.ids.job); });
+      await proof.getByRole("button", { name: "Next page", exact: true }).click();
+    }
+
+    await expect(page.getByRole("alert").filter({ hasText: "The selected print proof is no longer available." })).toBeVisible();
+    await expect(proof).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(0);
+    await expect(packageButton).toBeDisabled();
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(r => r.method === "POST").map(r => r.action)), ["preflight"]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("initial parent loading waits, then reads history without posting or rendering", async () => {
+  const { page, errors } = await fixture({ disabled: true });
+  try {
+    assert.deepEqual(await page.evaluate(() => window.requests), []);
+    await page.evaluate(() => window.setProofProps({ disabled: false }));
+    await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled();
+    assert.deepEqual(await page.evaluate(() => window.requests.map(request => [request.method, request.action])), [["GET", "history"]]); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("opening and renewing an exact previous print keeps transient parent busy state from discarding it", async () => {
+  const { page, errors } = await fixture();
+  try {
+    await open(page); assert.equal(await page.getByRole("status", { name: "Selected print source" }).textContent(), ids.job);
+    const request = await page.evaluate(() => window.requests.find(request => request.action === "download"));
+    assert.equal(request.sha256, primaryDigest); assert.equal(request.fingerprint, "b".repeat(64));
+    await page.evaluate(() => window.setProofProps({ disabled: true }));
+    await expect(page.getByRole("button", { name: "Renew private links", exact: true })).toBeDisabled();
+    assert.equal(await page.getByRole("link", { name: "Download exact saved interior" }).count(), 1);
+    await page.evaluate(() => window.setProofProps({ disabled: false }));
+    await page.getByRole("button", { name: "Renew private links", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Renew private links", exact: true })).toBeEnabled();
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.action === "download").length), 2);
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method !== "GET")), false);
+    await page.screenshot({ path: resolve(artifacts, "saved-print-library-desktop.png"), fullPage: true }); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("history refresh clears old links, and revoked access clears proofs and the parent selection", async () => {
+  const { page } = await fixture();
+  try {
+    await open(page); await page.evaluate(() => { window.historyError = 403; });
+    await page.getByRole("button", { name: "Refresh print history", exact: true }).click(); await page.getByRole("alert").waitFor();
+    assert.equal(await page.getByRole("link", { name: "Download exact saved interior" }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Open saved print", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("status", { name: "Selected print source" }).textContent(), "No selected print");
+  } finally { await page.close(); }
+});
+test("revoked renewal cannot leave a previously opened print in its parent", async () => {
+  const { page } = await fixture();
+  try {
+    await open(page); await page.evaluate(() => { window.downloadError = 403; });
+    await page.getByRole("button", { name: "Renew private links", exact: true }).click(); await page.getByRole("alert").waitFor();
+    assert.equal(await page.getByRole("link", { name: "Download exact saved interior" }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Open saved print", exact: true }).count(), 0);
+  } finally { await page.close(); }
+});
+test("an old edition history reply cannot appear in the newly selected edition", async () => {
+  const { page } = await fixture({ disabled: true });
+  try {
+    await page.evaluate(() => { window.holdHistory = true; window.setProofProps({ disabled: false }); });
+    await page.waitForFunction(() => window.historyWaiters.length === 1);
+    await page.evaluate(() => { window.holdHistory = false; window.setProofProps({ editionId: window.ids.otherEdition }); });
+    await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled();
+    await page.evaluate(() => window.historyWaiters[0]()); await open(page);
+    assert.equal(await page.getByRole("status", { name: "Selected print source" }).textContent(), ids.otherJob);
+    assert.equal(await page.evaluate(() => window.selected.length), 1);
+  } finally { await page.close(); }
+});
+test("a late old-source download cannot overwrite a new edition proof", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => { window.holdDownload = true; });
+    await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled(); await page.getByRole("button", { name: "Open saved print", exact: true }).click();
+    await page.waitForFunction(() => window.downloadWaiters.length === 1);
+    await page.evaluate(() => { window.holdDownload = false; window.setProofProps({ editionId: window.ids.otherEdition }); });
+    await open(page); await page.evaluate(() => window.downloadWaiters[0]());
+    assert.equal(await page.getByRole("status", { name: "Selected print source" }).textContent(), ids.otherJob);
+    assert.deepEqual(await page.evaluate(() => window.selected.map(result => result.jobId)), [ids.otherJob]);
+  } finally { await page.close(); }
+});
+test("unsaved settings immediately clear saved links and reject an in-flight old proof", async () => {
+  const { page } = await fixture();
+  try {
+    await open(page); await page.evaluate(() => window.setProofProps({ dirty: true, disabled: true }));
+    await expect(page.getByRole("status", { name: "Selected print source" })).toHaveText("No selected print");
+    assert.equal(await page.getByRole("link", { name: "Download exact saved interior" }).count(), 0);
+    await page.evaluate(() => { window.holdDownload = true; window.setProofProps({ dirty: false, disabled: false }); });
+    await page.getByRole("button", { name: "Open saved print", exact: true }).click(); await page.waitForFunction(() => window.downloadWaiters.length === 1);
+    await page.evaluate(() => { window.setProofProps({ dirty: true, disabled: true }); });
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
+    await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeDisabled();
+    await page.evaluate(async () => { window.downloadWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    assert.deepEqual(await page.evaluate(() => window.selected.map(result => result.jobId)), [ids.job]);
+    await expect(page.getByRole("status", { name: "Selected print source" })).toHaveText("No selected print");
+    assert.equal(await page.getByRole("link", { name: "Download exact saved interior" }).count(), 0);
+  } finally { await page.close(); }
+});
+test("five-minute expiry clears parent proof selection without a render request", async () => {
+  const { page } = await fixture();
+  try {
+    await page.clock.install({ time: new Date("2026-10-13T12:00:00Z") }); await open(page);
+    await page.clock.fastForward(301_000); await expect(page.getByRole("status", { name: "Selected print source" })).toHaveText("No selected print");
+    assert.equal(await page.getByRole("link", { name: "Download exact saved interior" }).count(), 0);
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method !== "GET")), false);
+  } finally { await page.close(); }
+});
+test("actual Publishing Studio keeps an opened render through preflight and removes it when edition settings become dirty", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page); await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(2);
+    await page.getByRole("combobox", { name: /^Preflight target/ }).selectOption("kdp");
+    await page.evaluate(() => { window.holdPreflight = true; }); await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.waitForFunction(() => typeof window.releasePreflight === "function");
+    const preflightStatus = page.getByRole("status", { name: "Preflight status" });
+    await expect(preflightStatus).toHaveText("Checking preflight…");
+    assert.equal(await page.getByRole("button", { name: "Download private file", exact: true }).count(), 2);
+    await page.evaluate(() => window.releasePreflight()); await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeEnabled();
+    await expect(preflightStatus).toHaveText(/Preflight complete for Amazon KDP\. Errors: 0\. Warnings: \d+\./);
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.method === "POST").map(request => request.action)).then(actions => actions.join(",")), "preflight");
+    await page.screenshot({ path: resolve(artifacts, "saved-print-studio-desktop.png"), fullPage: true });
+    await page.getByLabel("Language", { exact: true }).fill("fr");
+    await expect(preflightStatus).toBeEmpty();
+    await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled(); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("preflight is labeled and locked to its target; switching targets clears the result", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page);
+    const target = page.getByLabel("Preflight target");
+    await target.selectOption("kdp");
+    await page.evaluate(() => {
+      window.holdPreflight = true;
+      window.preflightFindings = [
+        { rule_id: "A", severity: "warning", location: "book.metadata.description", message: "Shorten the description." },
+        { rule_id: "B", severity: "warning", location: "edition.wrap_cover.barcode", message: "Review the barcode." },
+        { rule_id: "C", severity: "warning", location: "interior.pages", message: "Review the page count." },
+        { rule_id: "D", severity: "warning", location: "https://example.invalid", message: "Unmapped finding." },
+      ];
+    });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.waitForFunction(() => typeof window.releasePreflight === "function");
+    await expect(target).toBeDisabled();
+    await page.evaluate(() => window.releasePreflight());
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Edit listing metadata" })).toHaveAttribute("href", `/books/${ids.book}/memory#publishing-metadata`);
+    await expect(page.getByRole("link", { name: "Review paperback cover" })).toHaveAttribute("href", "#paperback-cover-title");
+    await expect(page.getByRole("link", { name: "Review edition settings" })).toHaveAttribute("href", "#edition-settings");
+    await expect(page.getByRole("listitem").filter({ hasText: "Unmapped finding." }).getByRole("link")).toHaveCount(0);
+    await target.selectOption("lulu");
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("wrong-target preflight is rejected and a failed render removes the earlier result", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page);
+    await page.getByLabel("Preflight target").selectOption("kdp");
+    await page.evaluate(() => { window.preflightChannel = "lulu"; });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await expect(page.getByText("Preflight returned a different target. Please run it again.")).toBeVisible();
+    await expect(page.getByText("No preflight findings for this target.")).toHaveCount(0);
+    await page.evaluate(() => { window.preflightChannel = null; });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Render PDF", exact: true }).click();
+    await expect(page.getByText("Unexpected rendering request")).toBeVisible();
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("preflight completing after its selected proof expires cannot restore stale results", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.clock.install({ time: new Date("2026-10-13T12:00:00Z") });
+    await open(page);
+    await page.getByLabel("Preflight target").selectOption("kdp");
+    await page.evaluate(() => { window.holdPreflight = true; });
+    await page.getByRole("button", { name: "Run preflight", exact: true }).click();
+    await page.waitForFunction(() => typeof window.releasePreflight === "function");
+    await page.clock.fastForward(301_000);
+    await expect(page.getByText("Private proof links expired.", { exact: false })).toBeVisible();
+    await page.evaluate(() => window.releasePreflight());
+    await expect(page.getByRole("button", { name: "Run preflight", exact: true })).toBeEnabled();
+    await expect(page.getByText("Preflight results · Amazon KDP", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Create retailer package", exact: true })).toBeDisabled();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("compiled print proof archive controls and opened source fit a narrow viewport", async () => {
+  const { page, errors } = await fixture({ width: 375 });
+  try {
+    await open(page); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    for (const name of ["Refresh print history", "Renew private links"]) {
+      const box = await page.getByRole("button", { name, exact: true }).boundingBox(); assert(box && box.x >= 0 && box.x + box.width <= 375 && box.height >= 40);
+    }
+    await page.screenshot({ path: resolve(artifacts, "saved-print-library-mobile.png"), fullPage: true }); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test.after(() => { console.log(`Saved-print mounted screenshots: ${artifacts}`); });
+
+test("actual Studio book replacement cannot start an old-edition read or adopt its pending download", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await open(page);
+    await page.evaluate(() => { window.holdDownload = true; });
+    await page.getByRole("button", { name: "Renew private links", exact: true }).click();
+    await page.waitForFunction(() => window.downloadWaiters.length === 1);
+    const reads = await page.evaluate(() => window.requests.length);
+    await page.evaluate(() => {
+      window.bookwormApi.getBook = async () => new Promise(resolve => { window.releaseBook = resolve; });
+      window.showStudio("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    });
+    await page.waitForFunction(() => typeof window.releaseBook === "function");
+    await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Saved print proofs", exact: true })).toHaveCount(0);
+    await page.evaluate(async () => { window.downloadWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    assert.equal(await page.evaluate(() => window.requests.length), reads, "Replacement must not read history of the previous book's edition");
+    await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("links arriving beyond their conservative expiry are never adopted", async () => {
+  const { page } = await fixture();
+  try {
+    await page.evaluate(() => { window.holdDownload = true; });
+    await page.getByRole("button", { name: "Open saved print", exact: true }).click();
+    await page.waitForFunction(() => window.downloadWaiters.length === 1);
+    await page.evaluate(() => { const now = Date.now(); Date.now = () => now + 301000; window.downloadWaiters[0](); });
+    await expect(page.getByRole("alert")).toContainText("expired before they arrived");
+    assert.deepEqual(await page.evaluate(() => window.selected), []);
+    await expect(page.getByRole("link", { name: "Download exact saved interior" })).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
+test("actual Studio blocks an expired print link even before a suspended timer fires", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    let downloads = 0; page.on("download", () => { downloads++; });
+    await open(page);
+    await page.evaluate(() => { const now = Date.now(); Date.now = () => now + 301000; });
+    await page.getByRole("button", { name: "Download private file", exact: true }).first().click();
+    await expect(page.getByRole("alert")).toContainText("This private link expired");
+    await expect(page.getByRole("button", { name: "Download private file", exact: true })).toHaveCount(0);
+    assert.equal(downloads, 0); assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+
+async function seedAudioRace(page) {
+  await page.evaluate(async () => {
+    window.audioReads=[]; window.audioQueueCalls=[]; window.audioCancelCalls=[]; window.audioWaiters=[]; window.holdAudio=false;
+    window.makeAudioJob=(id,status,n)=>({id,editionId:window.ids.edition,status,progressChapters:status==="succeeded"?n:0,progressTotal:n,createdAt:"2026-10-13T12:00:00Z",downloadUrl:null,downloadExpiresIn:null,synthesizedVoiceDisclosureRequired:true});
+    window.audioState=[window.makeAudioJob(window.ids.job,"running",1)];
+    window.bookwormApi.listAssets=async()=>({assets:[{id:window.ids.cover,workspace_id:window.ids.workspace,mime_type:"image/png",name:"Fixture cover",checksum:"a".repeat(64),deleted_at:null}]});
+    window.bookwormApi.listChapters=async()=>({chapters:[{id:window.ids.asset,book_id:window.ids.book,title:"Chapter"}]});
+    window.bookwormApi.listAudiobookGooglePlayExports=async editionId=>{
+      const snapshot=structuredClone(window.audioState);window.audioReads.push({editionId,snapshot});
+      if(window.holdAudio){window.holdAudio=false;await new Promise(resolve=>window.audioWaiters.push(resolve));}
+      return {jobs:snapshot};
+    };
+    window.bookwormApi.createAudiobookGooglePlayExport=async (editionId,body)=>{window.audioQueueCalls.push({editionId,body});
+      const job=window.makeAudioJob(window.ids.otherJob,"queued",2); window.audioState=[job,...window.audioState];return {job};};
+    window.bookwormApi.cancelAudiobookGooglePlayExport=async id=>{window.audioCancelCalls.push(id);const job=window.makeAudioJob(id,"cancelled",1);
+      window.audioState=window.audioState.map(x=>x.id===id?job:x);return {job};};
+    window.showStudio(null); await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));window.showStudio(window.ids.book);
+  });
+  await page.getByRole("heading",{name:"Saved audio & delivery"}).waitFor();
+  await expect(page.getByText("Google Play · 1 chapters")).toBeVisible();
+}
+
+test("audio export history ignores a slower previous manual refresh",async()=>{
+  const {page,errors}=await fixture({parent:true,audio:true});try{
+    await seedAudioRace(page);
+    const section=page.getByRole("heading",{name:"Export history"}).locator("..");
+    await page.evaluate(()=>{window.holdAudio=true});await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>window.audioWaiters.length===1);
+    await page.evaluate(()=>{window.audioState=[window.makeAudioJob(window.ids.job,"succeeded",1)]});await section.getByRole("button",{name:"Refresh"}).click();
+    await expect(page.getByText("succeeded",{exact:true})).toBeVisible();
+    await page.evaluate(async()=>{window.audioWaiters[0]();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+    assert.equal(await page.getByText("succeeded",{exact:true}).count(),1,"older read must not replace newest state");assert.equal(await page.getByRole("button",{name:"Cancel export"}).count(),0);assert.deepEqual(errors,[]);
+  }finally{await page.close()}
+});
+
+test("late audio history cannot erase a confirmed queued export",async()=>{
+  const {page,errors}=await fixture({parent:true,audio:true});try{
+    await seedAudioRace(page);
+    const section=page.getByRole("heading",{name:"Export history"}).locator("..");await page.evaluate(()=>{window.holdAudio=true});
+    await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>window.audioWaiters.length===1);
+    await page.getByLabel("ISBN-13 or publisher book ID").fill("9780306406157");await page.getByLabel("Audiobook cover").selectOption({label:"Fixture cover"});
+    await page.getByRole("button",{name:"Queue Google Play archive"}).click();
+    await expect(page.getByText("Google Play · 2 chapters")).toBeVisible();
+    await page.evaluate(async()=>{window.audioWaiters[0]();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+    assert.equal(await page.getByText("Google Play · 2 chapters").count(),1,"older read must not erase the queued job");assert.equal(await page.evaluate(()=>window.audioQueueCalls.length),1);assert.deepEqual(errors,[]);
+  }finally{await page.close()}
+});
+
+test("late audio history cannot reverse confirmed cancellation",async()=>{
+  const {page,errors}=await fixture({parent:true,audio:true});try{
+    await seedAudioRace(page);const section=page.getByRole("heading",{name:"Export history"}).locator("..");
+    await page.evaluate(()=>{window.holdAudio=true});await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>window.audioWaiters.length===1);
+    await page.getByRole("button",{name:"Cancel export"}).click();await expect(page.getByText("This export was cancelled before completion.")).toBeVisible();
+    await page.evaluate(async()=>{window.audioWaiters[0]();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+    assert.equal(await page.getByText("This export was cancelled before completion.").count(),1,"older read must not reverse cancellation");assert.equal(await page.getByRole("button",{name:"Cancel export"}).count(),0);
+    assert.equal(await page.evaluate(()=>window.audioCancelCalls.length),1);assert.deepEqual(errors,[]);
+  }finally{await page.close()}
+});
+
+
+test("audio polling does not run while a queue mutation is in flight",async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true});try{
+   await page.clock.install({time:new Date("2026-10-13T12:00:00Z")});await seedAudioRace(page);
+   await page.evaluate(()=>{window.bookwormApi.createAudiobookGooglePlayExport=(editionId,body)=>{window.audioQueueCalls.push({editionId,body});return new Promise(resolve=>{window.finishQueue=()=>{const job=window.makeAudioJob(window.ids.otherJob,"queued",2);window.audioState=[job,...window.audioState];resolve({job})}})};});
+   await page.getByLabel("ISBN-13 or publisher book ID").fill("9780306406157");await page.getByLabel("Audiobook cover").selectOption({label:"Fixture cover"});
+   await page.getByRole("button",{name:"Queue Google Play archive"}).click();await page.waitForFunction(()=>typeof window.finishQueue==="function");
+   const before=await page.evaluate(()=>window.audioReads.length);await page.clock.fastForward(4100);
+   assert.equal(await page.evaluate(()=>window.audioReads.length),before,"poll attempted while mutation outcome pending");
+   await page.evaluate(()=>window.finishQueue());await expect(page.getByText("Google Play · 2 chapters")).toBeVisible();assert.deepEqual(errors,[]);
+ }finally{await page.close()}
+});
+
+test("stale audio history failure cannot overwrite a newer success",async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true});try{
+   await seedAudioRace(page);const section=page.getByRole("heading",{name:"Export history"}).locator("..");
+   await page.evaluate(()=>{let first=true;window.bookwormApi.listAudiobookGooglePlayExports=async()=>{if(first){first=false;await new Promise(resolve=>window.finishOldRead=resolve);throw new Error("old failure")}return {jobs:[window.makeAudioJob(window.ids.job,"succeeded",1)]};};});
+   await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>typeof window.finishOldRead==="function");
+   await section.getByRole("button",{name:"Refresh"}).click();await expect(page.getByText("succeeded",{exact:true})).toBeVisible();
+   await page.evaluate(async()=>{window.finishOldRead();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+   assert.equal(await page.getByText("old failure").count(),0);assert.equal(await page.getByText("succeeded",{exact:true}).count(),1);assert.deepEqual(errors,[]);
+ }finally{await page.close()}
+});
+
+
+for(const method of ["listPrivateAudiobookProjects","listAudiobookGooglePlayExports"]) test(`initial audio history failure remains visible: ${method}`,async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true,audioFailure:method});try{
+   await expect(page.getByRole("alert")).toContainText(`Initial ${method} failure`);
+   await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+   assert.equal(await page.getByText(`Initial ${method} failure`).count(),1);assert.deepEqual(errors,[]);
+ }finally{await page.close()}
+});
+
+test("a pending manual history read is not superseded by an automatic poll",async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true});try{
+   await page.clock.install({time:new Date("2026-10-13T12:00:00Z")});await seedAudioRace(page);
+   const section=page.getByRole("heading",{name:"Export history"}).locator("..");
+   await page.evaluate(()=>{window.audioReads=[];window.bookwormApi.listAudiobookGooglePlayExports=async()=>{window.audioReads.push("started");if(window.audioReads.length===1){await new Promise(resolve=>window.failManual=resolve);throw new Error("Manual history failed")}throw new Error("Automatic history failed");};});
+   await section.getByRole("button",{name:"Refresh"}).click();await page.waitForFunction(()=>typeof window.failManual==="function");
+   await page.clock.fastForward(4100);assert.equal(await page.evaluate(()=>window.audioReads.length),1,"poll superseded manual refresh");
+   await page.evaluate(()=>window.failManual());await expect(page.getByRole("alert")).toContainText("Manual history failed");assert.deepEqual(errors,[]);
+ }finally{await page.close()}
+});
+
+
+test("a later narration progress refresh wins over pending edition history",async()=>{
+ const {page,errors}=await fixture({parent:true,audio:true});try{
+   await seedAudioRace(page);
+   await page.evaluate(()=>{let first=true;window.bookwormApi.listPrivateAudiobookProjects=async editionId=>{
+     if(first){first=false;await new Promise(resolve=>window.finishOldProjects=resolve);return {projects:[{id:window.ids.job,editionId,chapterId:window.ids.asset,status:"running",segmentCount:1,billingMode:"quoted",creditUnits:1,voice:"marin",segments:[]}]}}
+     return {projects:[{id:window.ids.job,editionId,chapterId:window.ids.asset,status:"failed",segmentCount:1,billingMode:"quoted",creditUnits:1,voice:"marin",segments:[]}]};};});
+   await page.getByRole("button",{name:/audiobook.*en.*draft/i}).nth(1).click();await page.waitForFunction(()=>typeof window.finishOldProjects==="function");
+   await page.getByRole("button",{name:"Refresh progress"}).click();await expect(page.getByText("failed",{exact:true})).toBeVisible();
+   await page.evaluate(async()=>{window.finishOldProjects();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))});
+   assert.equal(await page.getByText("failed",{exact:true}).count(),1,"older projects history replaced refreshed status");assert.deepEqual(errors,[]);
+ }finally{await page.close()}
+});
+
+test("unconfirmed edition creation keeps settings and blocks duplicate until explicit risk acknowledgment", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => { window.createdEditions = []; window.bookwormApi.createEdition = async (bookId, body, actor) => {
+      window.createdEditions.push({bookId,body,actor});
+      if (window.createdEditions.length === 1) throw new Error("reply lost after commit");
+      return {id:window.ids.otherAsset,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,metadata_overrides:{}},updated_at:new Date().toISOString(),status:"draft"};
+    }; });
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click();
+    await page.getByLabel("Language",{exact:true}).fill("fr");
+    await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    const warning=page.getByText(/A previous new-edition save may have completed/); await expect(warning).toBeVisible();
+    await expect(page.getByLabel("Language",{exact:true})).toHaveValue("fr");
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeDisabled();
+    const permit=page.getByRole("button",{name:"Allow another create despite duplicate risk",exact:true}); await expect(permit).toBeDisabled();
+    assert.equal(await page.evaluate(()=>window.createdEditions.length),1);
+    await page.getByLabel("I understand that another create can duplicate the earlier request.").check();
+    await permit.click(); await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeEnabled();
+    await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    await expect(page.getByText("Edition settings saved.",{exact:true})).toBeVisible();
+    assert.equal(await page.evaluate(()=>window.createdEditions.length),2);
+    assert.deepEqual(await page.evaluate(()=>window.createdEditions.map(call=>call.actor)),[ids.asset,ids.asset]);
+    assert.deepEqual(errors,[]);
+  } finally { await page.close(); }
+});
+
+test("new-edition create warning survives a studio remount and needs explicit acknowledgment", async () => {
+  const {page} = await fixture({parent:true});
+  try {
+    await page.evaluate(() => { window.createCount=0; window.bookwormApi.createEdition=async()=>{window.createCount++;throw Error('reply lost')}; });
+    await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+    await page.getByRole('button',{name:'Save edition',exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    const saved = await page.evaluate(() => Object.entries(sessionStorage).filter(([k]) => k.startsWith('bookworm-edition-create-v1:')));
+    assert.equal(saved.length,1); assert.ok(!saved[0][1].includes('reply lost'));
+    await page.evaluate(() => window.showStudio(null));
+    await page.waitForTimeout(100);
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+    assert.equal(await page.evaluate(()=>window.createCount),1);
+    await page.getByLabel('I understand that another create can duplicate the earlier request.').check();
+    await page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();
+    assert.equal(await page.evaluate(()=>Object.keys(sessionStorage).filter(k=>k.startsWith('bookworm-edition-create-v1:')).length),0);
+  } finally {await page.close();}
+});
+
+test("blocked tab storage prevents non-idempotent edition creation", async () => {
+  const {page} = await fixture({parent:true});
+  try {
+    await page.evaluate(() => {window.createCount=0;window.bookwormApi.createEdition=async()=>{window.createCount++};const original=Storage.prototype.setItem;Storage.prototype.setItem=function(k,v){if(k.startsWith('bookworm-edition-create-v1:'))throw new DOMException('quota','QuotaExceededError');return original.call(this,k,v)}});
+    await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+    await page.getByRole('button',{name:'Save edition',exact:true}).click();
+    await expect(page.getByRole('alert')).toContainText('No edition was sent');
+    assert.equal(await page.evaluate(()=>window.createCount),0);
+  } finally {await page.close();}
+});
+
+test("malformed retained edition warning blocks creating after remount", async () => {
+  const {page}=await fixture({parent:true});
+  try {
+    await page.evaluate(()=>{sessionStorage.setItem(`bookworm-edition-create-v1:${window.ids.book}`,'invalid');window.showStudio(null)});
+    await page.waitForTimeout(100);await page.evaluate(()=>window.showStudio(window.ids.book));
+    await expect(page.getByText(/The edition create warning could not be verified/)).toBeVisible();
+    await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+  } finally {await page.close();}
+});
+
+test("another account cannot acknowledge or bypass a prior account's create warning in this tab", async () => {
+  const {page}=await fixture({parent:true}); let account=ids.asset;
+  try {
+    await page.route('**/api/auth/session',r=>r.fulfill({json:{user:{id:account}}}));
+    await page.evaluate(()=>{window.createCount=0;window.bookwormApi.createEdition=async()=>{window.createCount++;throw Error('reply lost')}});
+    await page.getByRole('button',{name:'New EPUB',exact:true}).click(); await page.getByRole('button',{name:'Save edition',exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await expect.poll(()=>page.evaluate(()=>window.createCount)).toBe(1);
+    account=ids.otherAsset; await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await expect(page.getByText(/unconfirmed edition request from another account/)).toBeVisible();
+    await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+    await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+    assert.equal(await page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true}).count(),0);
+    assert.equal(await page.evaluate(()=>window.createCount),1);
+  } finally {await page.close();}
+});
+
+test("changed tab warning cannot be silently acknowledged", async () => {
+  const {page}=await fixture({parent:true});
+  try {
+    await page.evaluate(()=>{window.bookwormApi.createEdition=async()=>{throw Error('reply lost')}});
+    await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await page.getByLabel('I understand that another create can duplicate the earlier request.').check();
+    await page.evaluate(()=>{const k=Object.keys(sessionStorage).find(k=>k.startsWith('bookworm-edition-create-v1:'));sessionStorage.setItem(k,'altered')});
+    await page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true}).click();
+    await expect(page.getByText('The edition create warning changed. A previous request could still finish. Contact support before creating another edition.',{exact:true})).toBeVisible();
+    await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+  } finally {await page.close();}
+});
+
+test("revoked duplicate-risk consent invalidates an in-flight account check", async () => {
+  const {page}=await fixture({parent:true});
+  try {
+    await page.evaluate(()=>{window.bookwormApi.createEdition=async()=>{throw Error('reply lost')}});
+    await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    const consent=page.getByLabel('I understand that another create can duplicate the earlier request.');await consent.check();
+    let release,started;const gate=new Promise(r=>release=r),seen=new Promise(r=>started=r);
+    await page.route('**/api/auth/session',async route=>{started();await gate;await route.fulfill({json:{user:{id:ids.asset}}})});
+    const permit=page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true});await permit.click();await seen;
+    await consent.uncheck();release();await consent.check();await expect(permit).toBeEnabled();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+    assert.equal(await page.evaluate(()=>Object.keys(sessionStorage).filter(k=>k.startsWith('bookworm-edition-create-v1:')).length),1);
+  } finally {await page.close();}
+});
+
+test("partial failure removing a create warning keeps the in-memory guard", async () => {
+  const {page}=await fixture({parent:true});
+  try {
+    await page.evaluate(()=>{window.bookwormApi.createEdition=async()=>{throw Error('reply lost')}});
+    await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await page.evaluate(()=>{const original=Storage.prototype.removeItem;Storage.prototype.removeItem=function(k){original.call(this,k);if(k.startsWith('bookworm-edition-create-v1:'))throw Error('late failure')}});
+    await page.getByLabel('I understand that another create can duplicate the earlier request.').check();
+    await page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true}).click();
+    await expect(page.getByText(/It may not survive a reload/)).toBeVisible();
+    await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+    assert.equal(await page.evaluate(()=>Object.keys(sessionStorage).filter(k=>k.startsWith('bookworm-edition-create-v1:')).length),1);
+  } finally {await page.close();}
+});
+
+test("an unverified creation reply cannot unlock another edition create", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => { window.editionCreateCalls=0; window.bookwormApi.createEdition = async (_bookId,body) => {window.editionCreateCalls++; return {id:window.ids.asset,book_id:window.ids.otherAsset,type:body.config.kind,language:body.language,edition_metadata_json:body.config};}; });
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click(); await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeDisabled();
+    assert.equal(await page.evaluate(()=>window.editionCreateCalls),1);
+  } finally { await page.close(); }
+});
+
+test("unconfirmed creation remains blocked after changing book within the mounted studio", async () => {
+  const { page } = await fixture({ parent: true });
+  try {
+    await page.evaluate(()=>{window.createCount=0;window.bookwormApi.createEdition=async()=>{window.createCount++;throw new Error("reply lost");}; const old=window.bookwormApi.listEditions;window.bookwormApi.listEditions=async book=>book===window.ids.book?old(book):({editions:[]});});
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click(); await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await page.evaluate(()=>window.showStudio(window.ids.otherAsset));
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeEnabled();
+    await page.evaluate(()=>window.showStudio(window.ids.book));
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    assert.equal(await page.evaluate(()=>window.createCount),1);
+  } finally { await page.close(); }
+});
+
+test("a creation reply missing its saved configuration remains unconfirmed", async () => {
+  const {page}=await fixture({parent:true});try{
+    await page.evaluate(()=>{window.bookwormApi.createEdition=async(bookId,body)=>({id:window.ids.asset,book_id:bookId,type:body.config.kind,language:body.language,updated_at:new Date().toISOString()});});
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click(); await page.getByRole("button",{name:"Save edition",exact:true}).click();
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeDisabled();
+  }finally{await page.close()}
+});
+
+test("original actor owns the unconfirmed edition guard and late account-switch replies cannot adopt", async () => {
+  const {page}=await fixture({parent:true}); let account=ids.asset;
+  try{
+    await page.route("**/api/auth/session",route=>route.fulfill({json:{user:{id:account}}}));
+    await page.evaluate(()=>{window.calls=[];window.bookwormApi.createEdition=async(bookId,body,actor)=>{window.calls.push({bookId,body,actor});await new Promise(resolve=>window.releaseEdition=resolve);return {id:window.ids.otherEdition,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,metadata_overrides:{}},updated_at:new Date().toISOString(),status:"draft"};};});
+    await page.getByRole("button",{name:"New EPUB",exact:true}).click();await page.getByLabel("Language",{exact:true}).fill("fr");
+    await page.getByRole("button",{name:"Save edition",exact:true}).click();await page.waitForFunction(()=>typeof window.releaseEdition==='function');
+    account=ids.otherAsset;await page.evaluate(()=>window.releaseEdition());
+    await expect(page.getByLabel("Language",{exact:true})).not.toHaveValue("fr");
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toHaveCount(0);
+    assert.equal(await page.evaluate(()=>window.calls[0].actor),ids.asset);
+    account=ids.asset;await page.evaluate(()=>window.dispatchEvent(new Event("focus")));
+    await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await expect(page.getByLabel("Language",{exact:true})).toHaveValue("fr");
+    await page.getByLabel("I understand that another create can duplicate the earlier request.").check();
+    await page.getByRole("button",{name:"Allow another create despite duplicate risk",exact:true}).click();
+    await expect(page.getByRole("button",{name:"Save edition",exact:true})).toBeEnabled();
+  }finally{await page.close()}
+});
+
+for(const secondOutcome of ["success","uncertain"]) test(`unconfirmed book A survives book B ${secondOutcome} and return`,async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(mode=>{window.createCount=0;const old=window.bookwormApi.listEditions;window.bookwormApi.listEditions=async book=>book===window.ids.book?old(book):({editions:[]});window.bookwormApi.createEdition=async(bookId,body)=>{window.createCount++;if(bookId===window.ids.book||mode==='uncertain')throw Error('ambiguous');return {id:window.ids.otherEdition,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,metadata_overrides:{}},updated_at:new Date().toISOString(),status:'draft'};};},secondOutcome);
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>window.createCount)).toBe(1);
+  await page.evaluate(()=>window.showStudio(window.ids.otherAsset));await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  if(secondOutcome==='success')await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();else await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>window.createCount)).toBe(2);
+  await page.evaluate(()=>window.showStudio(window.ids.book));await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await page.getByRole('button',{name:'New EPUB',exact:true}).click();await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+  assert.equal(await page.evaluate(()=>window.createCount),2);
+ }finally{await page.close()}
+});
+
+test('a valid-shaped reply with altered edition settings remains unconfirmed',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{window.bookwormApi.createEdition=async(bookId,body)=>({id:window.ids.otherEdition,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,flow:'fixed',metadata_overrides:{}},updated_at:new Date().toISOString(),status:'draft'});});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+ }finally{await page.close()}
+});
+
+test('edition validation detail remains visible alongside uncertainty warning',async()=>{
+ const {page}=await fixture({parent:true});try{await page.evaluate(()=>{window.bookwormApi.createEdition=async()=>{throw Error('Check the cover settings.');};});await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect(page.getByText(/Check the cover settings/)).toBeVisible();await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();}finally{await page.close()}
+});
+
+test('two same-turn saves cannot dispatch twice while account preflight is pending',async()=>{
+ const {page}=await fixture({parent:true});let held=null,sessionCalls=0;
+ try{
+  await page.waitForLoadState('networkidle');
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async(bookId,body)=>{window.creationCalls++;return {id:window.ids.otherEdition,book_id:bookId,type:body.config.kind,language:body.language,edition_metadata_json:{...body.config,metadata_overrides:{}},updated_at:new Date().toISOString(),status:'draft'};};});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+  await page.waitForLoadState('networkidle');
+  await page.route('**/api/auth/session',route=>{sessionCalls++;if(sessionCalls===1){held=route;return;}return route.fulfill({json:{user:{id:ids.asset}}});});
+  await page.evaluate(()=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent?.trim()==='Save edition');b.dispatchEvent(new MouseEvent('click',{bubbles:true}));b.dispatchEvent(new MouseEvent('click',{bubbles:true}));});
+  await expect.poll(()=>sessionCalls).toBeGreaterThan(0);await page.waitForTimeout(200);assert.equal(sessionCalls,1,'duplicate preflight was started');
+  await held.fulfill({json:{user:{id:ids.asset}}});await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();assert.equal(await page.evaluate(()=>window.creationCalls),1);
+ }finally{await page.close()}
+});
+
+test('account preflight failure sends no edition and does not create a false uncertainty warning',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.waitForLoadState('networkidle');
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('must not execute');};});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.waitForLoadState('networkidle');
+  await page.route('**/api/auth/session',route=>route.fulfill({status:503,json:{error:'unavailable'}}));
+  await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await expect(page.getByText(/Your session could not be verified/)).toBeVisible();await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();await expect(page.getByText(/A previous new-edition save may have completed/)).toHaveCount(0);assert.equal(await page.evaluate(()=>window.creationCalls),0);
+  await page.unroute('**/api/auth/session');await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();
+ }finally{await page.close()}
+});
+
+test('book change while account preflight is pending never sends old-book creation',async()=>{
+ const {page}=await fixture({parent:true});let held=null;try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>{if(!held){held=route;return;}return route.fulfill({json:{user:{id:ids.asset}}});});
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('must not execute');};const old=window.bookwormApi.listEditions;window.bookwormApi.listEditions=async book=>book===window.ids.book?old(book):({editions:[]});});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect.poll(()=>held!==null).toBe(true);
+  await page.evaluate(()=>window.showStudio(window.ids.otherAsset));await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();await held.fulfill({json:{user:{id:ids.asset}}});await page.waitForTimeout(250);assert.equal(await page.evaluate(()=>window.creationCalls),0);
+ }finally{await page.close()}
+});
+
+test('account switch before edition save hides original form and sends no write',async()=>{
+ const {page}=await fixture({parent:true});let account=ids.asset;try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('must not execute');};});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+  await page.getByLabel('Language',{exact:true}).fill('fr');
+  await page.waitForLoadState('networkidle');
+  const save=page.getByRole('button',{name:'Save edition',exact:true});
+  await expect(save).toBeEnabled();
+  // The fixture changes accounts at dispatch. A browser focus recheck is a separate transition.
+  account=ids.otherAsset;
+  await save.evaluate(button=>button.click());
+  await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveCount(0);assert.equal(await page.evaluate(()=>window.creationCalls),0);
+  account=ids.asset;await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();
+ }finally{await page.close()}
+});
+
+test('account switch before editing an existing edition sends no update',async()=>{
+ const {page}=await fixture({parent:true});let account=ids.asset;try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
+  await page.evaluate(()=>{window.updateCalls=0;window.bookwormApi.updateEdition=async()=>{window.updateCalls++;throw Error('must not execute');};});
+  await page.getByLabel('Language',{exact:true}).fill('fr');
+  await page.waitForLoadState('networkidle');
+  const save=page.getByRole('button',{name:'Save edition',exact:true});
+  await expect(save).toBeEnabled();
+  account=ids.otherAsset;
+  await save.evaluate(button=>button.click());
+  await expect(page.getByText(/We could not verify the account that loaded/)).toBeVisible();
+  await expect(page.getByLabel('Language',{exact:true})).toHaveCount(0);
+  assert.equal(await page.evaluate(()=>window.updateCalls),0);
+  account=ids.asset;await page.getByRole('button',{name:'Verify original account',exact:true}).click();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');
+ }finally{await page.close()}
+});
+
+test('edition load carries the verified actor on book and edition reads',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{const book=window.bookwormApi.getBook,editions=window.bookwormApi.listEditions,chapters=window.bookwormApi.listChapters;window.actorReads=[];window.bookwormApi.getBook=async(id,actor)=>{window.actorReads.push(['book',actor]);return book(id)};window.bookwormApi.listEditions=async(id,actor)=>{window.actorReads.push(['editions',actor]);return editions(id)};window.bookwormApi.listChapters=async(id,actor)=>{window.actorReads.push(['chapters',actor]);return chapters(id)};window.showStudio(null)});
+  await expect(page.getByRole('heading',{name:'Edition settings',exact:true})).toHaveCount(0);await page.evaluate(()=>window.showStudio(window.ids.book));await expect(page.getByRole('heading',{name:'Edition settings',exact:true})).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>window.actorReads.length)).toBe(4);
+  const reads = await page.evaluate(()=>window.actorReads);
+  assert.deepEqual(reads.sort((a,b)=>a[0].localeCompare(b[0])),[['book',ids.asset],['book',ids.asset],['chapters',ids.asset],['editions',ids.asset]]);
+ }finally{await page.close()}
+});
+
+for (const mismatch of ['wrong-id','wrong-book','wrong-settings','wrong-language','missing-revision','lost-reply']) test(`edition update ${mismatch} leaves edits intact and warns about an uncertain outcome`,async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(mode=>{window.updateCalls=[];window.bookwormApi.updateEdition=async(id,body,actor)=>{window.updateCalls.push({id,body,actor});if(mode==='lost-reply')throw Error('reply lost');const result={id,book_id:window.ids.book,type:body.config.kind,language:body.language,edition_metadata_json:body.config,updated_at:new Date().toISOString(),status:'draft'};if(mode==='wrong-id')result.id=window.ids.otherEdition;if(mode==='wrong-book')result.book_id=window.ids.otherAsset;if(mode==='wrong-settings')result.edition_metadata_json={...body.config,trim_size:'7x10'};if(mode==='wrong-language')result.language='de';if(mode==='missing-revision')result.updated_at='not-a-date';return result;};},mismatch);
+  await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await expect(page.getByText(/The update may have been saved; your edits remain here/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();assert.equal(await page.evaluate(()=>window.updateCalls[0].actor),ids.asset);assert.equal(await page.evaluate(()=>window.updateCalls.length),1);
+ }finally{await page.close()}
+});
+
+test('verified edition update adopts matching settings and carries original actor',async()=>{
+ const {page}=await fixture({parent:true});try{await page.evaluate(()=>{window.updateCalls=[];window.bookwormApi.updateEdition=async(id,body,actor)=>{window.updateCalls.push({id,body,actor});return {id,book_id:window.ids.book,type:body.config.kind,language:body.language,edition_metadata_json:body.config,updated_at:new Date().toISOString(),status:'draft'};};});await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();assert.equal(await page.evaluate(()=>window.updateCalls[0].actor),ids.asset);await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();}finally{await page.close()}
+});
+test('a later edition save uses the confirmed updated revision and original actor',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{window.updateCalls=[];window.bookwormApi.updateEdition=async(id,body,actor)=>{window.updateCalls.push({id,body,actor});return {id,book_id:window.ids.book,type:body.config.kind,language:body.language,edition_metadata_json:body.config,updated_at:`2026-11-03T00:00:0${window.updateCalls.length}.000Z`,status:'draft'};};});
+  await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();
+  await page.getByLabel('Language',{exact:true}).fill('de');await page.getByRole('button',{name:'Save edition',exact:true}).click();await expect.poll(()=>page.evaluate(()=>window.updateCalls.length)).toBe(2);
+  assert.equal(await page.evaluate(()=>window.updateCalls[1].body.expectedUpdatedAt),'2026-11-03T00:00:01.000Z');assert.equal(await page.evaluate(()=>window.updateCalls[1].actor),ids.asset);
+ }finally{await page.close()}
+});
+
+test('same-turn change after save click is kept and aborts before dispatch',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{window.updateCalls=[];window.bookwormApi.updateEdition=async(...args)=>{window.updateCalls.push(args);throw Error('unexpected dispatch')};});
+  await page.getByLabel('Language',{exact:true}).fill('fr');
+  await page.evaluate(()=>{const b=[...document.querySelectorAll('button')].find(e=>e.textContent==='Save edition');const input=[...document.querySelectorAll('input')].find(e=>e.value==='fr');b.click();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'de');input.dispatchEvent(new Event('input',{bubbles:true}));});
+  await expect(page.getByText(/edition settings changed while saving was being prepared/)).toBeVisible();
+  await expect(page.getByLabel('Language',{exact:true})).toHaveValue('de');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeEnabled();assert.equal(await page.evaluate(()=>window.updateCalls.length),0);
+ }finally{await page.close()}
+});
+test('same-turn layout starter after save click is kept and aborts before dispatch',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{window.updateCalls=[];window.bookwormApi.updateEdition=async(...args)=>{window.updateCalls.push(args);throw Error('unexpected dispatch')};});
+  await page.getByLabel('Language',{exact:true}).fill('fr');
+  await page.evaluate(()=>{const b=[...document.querySelectorAll('button')].find(e=>e.textContent==='Save edition');const select=document.querySelector('#layout-preset');b.click();Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,'large-print');select.dispatchEvent(new Event('change',{bubbles:true}));});
+  await expect(page.getByText(/edition settings changed while saving was being prepared/)).toBeVisible();await expect(page.getByLabel('Body size (pt)')).toHaveValue('16');assert.equal(await page.evaluate(()=>window.updateCalls.length),0);
+ }finally{await page.close()}
+});
+test('same-turn new edition action cannot replace a save in preparation',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{window.updateCalls=[];window.bookwormApi.updateEdition=async(id,body)=>{window.updateCalls.push(body);return {id,book_id:window.ids.book,type:body.config.kind,language:body.language,edition_metadata_json:body.config,updated_at:'2026-11-03T00:00:01.000Z',status:'draft'};};});
+  await page.getByLabel('Language',{exact:true}).fill('fr');
+  await page.evaluate(()=>{[...document.querySelectorAll('button')].find(e=>e.textContent==='Save edition').click();[...document.querySelectorAll('button')].find(e=>e.textContent==='New EPUB').click();});
+  await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();assert.equal(await page.evaluate(()=>window.updateCalls.length),1);assert.equal(await page.evaluate(()=>window.updateCalls[0].config.kind),'print');
+  await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');
+ }finally{await page.close()}
+});
+test('same-turn edition selection cannot replace a save in preparation',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{window.updateCalls=[];window.bookwormApi.updateEdition=async(id,body)=>{window.updateCalls.push({id,body});return {id,book_id:window.ids.book,type:body.config.kind,language:body.language,edition_metadata_json:body.config,updated_at:'2026-11-03T00:00:01.000Z',status:'draft'};};});
+  await page.getByLabel('Language',{exact:true}).fill('fr');
+  await page.evaluate(()=>{[...document.querySelectorAll('button')].find(e=>e.textContent==='Save edition').click();[...document.querySelectorAll('button')].filter(e=>e.textContent.includes('print')&&e.textContent.includes('draft'))[1].click();});
+  await expect(page.getByText('Edition settings saved.',{exact:true})).toBeVisible();assert.equal(await page.evaluate(()=>window.updateCalls.length),1);assert.equal(await page.evaluate(()=>window.updateCalls[0].id),ids.edition);
+  await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');
+ }finally{await page.close()}
+});
+
+test('cross-book edition load is rejected before displaying another book settings',async()=>{
+ const {page}=await fixture({parent:true});try{
+  await page.evaluate(()=>{window.bookwormApi.listEditions=async()=>({editions:[{id:window.ids.edition,book_id:window.ids.otherAsset,type:'ebook',language:'foreign-secret',edition_metadata_json:{kind:'ebook'}}]});window.showStudio(null)});
+  await expect(page.getByRole('heading',{name:'Edition settings',exact:true})).toHaveCount(0);await page.evaluate(()=>window.showStudio(window.ids.book));
+  await expect(page.getByText(/saved edition list did not match this book/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).not.toHaveValue('foreign-secret');await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+ }finally{await page.close()}
+});
+
+test('failed create after account switch hides original form and retains uncertainty',async()=>{
+ const {page}=await fixture({parent:true});let account=ids.asset;try{
+  await page.waitForLoadState('networkidle');await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
+  await page.evaluate(()=>{window.bookwormApi.createEdition=async()=>{await new Promise(resolve=>window.releaseCreateFailure=resolve);throw Error('connection lost');};});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByLabel('Language',{exact:true}).fill('fr');await page.getByRole('button',{name:'Save edition',exact:true}).click();await page.waitForFunction(()=>typeof window.releaseCreateFailure==='function');
+  account=ids.otherAsset;await page.evaluate(()=>window.releaseCreateFailure());
+  await expect(page.getByLabel('Language',{exact:true})).not.toHaveValue('fr');await expect(page.getByText(/A previous new-edition save may have completed/)).toHaveCount(0);
+  account=ids.asset;await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+  await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();await expect(page.getByLabel('Language',{exact:true})).toHaveValue('fr');
+ }finally{await page.close()}
+});
+
+test('edition creation uncertainty blocks another account in this tab until the original account resolves it',async()=>{
+ const {page}=await fixture({parent:true});let account=ids.asset;try{
+  await page.route('**/api/auth/session',route=>route.fulfill({json:{user:{id:account}}}));
+  await page.evaluate(()=>{window.creationCalls=0;window.bookwormApi.createEdition=async()=>{window.creationCalls++;throw Error('reply lost')};});
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();await page.getByRole('button',{name:'Save edition',exact:true}).click();
+  await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+  await expect.poll(()=>page.evaluate(()=>window.creationCalls)).toBe(1);
+  account=ids.otherAsset;await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+  await expect(page.getByText(/A previous new-edition save may have completed/)).toHaveCount(0);
+  await page.getByRole('button',{name:'New EPUB',exact:true}).click();
+  await expect(page.getByText(/unconfirmed edition request from another account/)).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+  await expect(page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true})).toHaveCount(0);
+  assert.equal(await page.evaluate(()=>window.creationCalls),1);
+  account=ids.asset;await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+  await expect(page.getByText(/A previous new-edition save may have completed/)).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save edition',exact:true})).toBeDisabled();
+  await page.getByLabel('I understand that another create can duplicate the earlier request.').check();
+  await page.getByRole('button',{name:'Allow another create despite duplicate risk',exact:true}).click();
+  await expect(page.getByText(/A previous new-edition save may have completed/)).toHaveCount(0);
+ }finally{await page.close()}
+});
+
+test('package history uses the selected edition and ignores a late previous edition response', async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.packageReads = [];
+      window.bookwormApi.listPublishingJobs = async (bookId, filter, actor) => {
+        window.packageReads.push({ bookId, filter, actor });
+        if (filter?.editionId === window.ids.otherEdition) {
+          await new Promise(resolve => { window.releaseOldPackageHistory = resolve; });
+          return { jobs: [{ id: window.ids.otherJob, bookId, editionId: window.ids.otherEdition, channel: 'barnesnoble', status: 'failed', createdAt: '2026-10-13T12:00:00Z', package: null }] };
+        }
+        return { jobs: [{ id: window.ids.job, bookId, editionId: window.ids.edition, channel: 'kdp', status: 'failed', createdAt: '2026-10-13T12:00:00Z', package: null }] };
+      };
+    });
+    const editions = page.locator('aside').getByRole('button', { name: /print.*en.*draft/i });
+    await expect(editions).toHaveCount(2);
+    await editions.nth(1).click();
+    await page.waitForFunction(() => typeof window.releaseOldPackageHistory === 'function');
+    await editions.nth(0).click();
+    const history = page.getByRole('region', { name: 'Retailer export packages', exact: true });
+    await expect(history.getByText('kdp package', { exact: true })).toBeVisible();
+    await page.evaluate(() => window.releaseOldPackageHistory());
+    await expect(history.getByText('Barnes & Noble package', { exact: true })).toHaveCount(0);
+    const calls = await page.evaluate(() => window.packageReads);
+    assert.deepEqual(calls.slice(-2).map(call => call.filter.editionId), [ids.otherEdition, ids.edition]);
+    assert(calls.every(call => call.bookId === ids.book && call.actor === ids.asset));
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("a retailer package link selects its edition and exposes the exact job outside the first page", async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.getPublishingJob = async (jobId, actor) => {
+        window.requests.push({ method: "GET", action: "linked-package", jobId, actor });
+        return { id: jobId, bookId: jobId === window.ids.job ? window.ids.otherAsset : window.ids.book, editionId: window.ids.otherEdition,
+          channel: "barnesnoble", status: "succeeded", package: null, createdAt: "2026-10-13T12:00:00Z" };
+      };
+      window.history.replaceState(null, "", `#package-${window.ids.otherJob}`);
+      window.showStudio(window.ids.book, window.ids.otherJob);
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    await expect(history.getByText("Barnes & Noble package", { exact: true })).toBeVisible();
+    await expect(history.locator(`#package-${ids.otherJob}`)).toBeFocused();
+    assert.deepEqual(await page.evaluate(() => window.requests.filter(row => row.action === "linked-package")),
+      [{ method: "GET", action: "linked-package", jobId: ids.otherJob, actor: ids.asset }]);
+    await page.evaluate(() => window.showStudio(window.ids.book, window.ids.job));
+    await expect(page.getByText("The linked retailer package is unavailable for this book.")).toBeVisible();
+    await expect(history.getByText("Barnes & Noble package", { exact: true })).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.requests.some(row => row.method === "POST")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("older retailer packages remain reachable in the selected edition", async () => {
+  const { page, errors } = await fixture({ parent: true, width: 390 });
+  try {
+    await page.evaluate(() => {
+      window.pageReads = [];
+      window.bookwormApi.listPublishingJobs = async (bookId, filter, actor) => {
+        window.pageReads.push({ bookId, filter, actor });
+        const base = { bookId, editionId: filter.editionId, status: "succeeded", package: null };
+        const recent = { ...base, id: window.ids.job, channel: "kdp", createdAt: "2026-10-13T12:00:01Z" };
+        if (!filter.before) return { jobs: [recent], nextCursor: { id: recent.id, createdAt: recent.createdAt } };
+        if (window.repeatPage) return { jobs: [recent], nextCursor: { id: recent.id, createdAt: recent.createdAt } };
+        await new Promise(resolve => { window.releaseOlderPackages = resolve; });
+        return { jobs: [{ ...base, id: window.ids.otherJob, channel: "barnesnoble", createdAt: "2026-10-13T12:00:00Z" }], nextCursor: null };
+      };
+      window.bookwormApi.getRetailerSubmission = async (jobId, actor) => {
+        if (jobId !== window.ids.otherJob || actor !== window.ids.asset) throw new Error("Wrong submission scope");
+        return { jobId, status: "published", revision: window.ids.cover, updatedAt: "2026-10-13T12:20:00Z" };
+      };
+    });
+    const history = page.getByRole("region", { name: "Retailer export packages", exact: true });
+    const older = history.getByRole("button", { name: "Load older packages" });
+    const refresh = history.getByRole("button", { name: "Refresh", exact: true });
+    await refresh.click();
+    await older.click();
+    await page.waitForFunction(() => typeof window.releaseOlderPackages === "function");
+    await expect(history.getByRole("button", { name: "Loading older packages…" })).toBeDisabled();
+    await expect(history.getByText("kdp package", { exact: true })).toBeVisible();
+    await page.evaluate(() => window.releaseOlderPackages());
+    const row = history.getByRole("listitem").filter({ hasText: "Barnes & Noble package" });
+    await expect(row).toBeVisible();
+    await row.getByText("Retailer submission status", { exact: true }).click();
+    await expect(row.getByText("Author-reported status · Published")).toBeVisible();
+    await expect(older).toHaveCount(0);
+    const cursorCalls = await page.evaluate(() => window.pageReads.filter(call => call.filter.before));
+    assert.deepEqual(cursorCalls, [{ bookId: ids.book, actor: ids.asset,
+      filter: { editionId: ids.edition, before: { id: ids.job, createdAt: "2026-10-13T12:00:01Z" } } }]);
+
+    await refresh.click();
+    await expect(row).toHaveCount(0);
+    await page.evaluate(() => { window.repeatPage = true; });
+    await older.click();
+    await expect(history.getByText("Package history is unavailable. Refresh before relying on this list.")).toBeVisible();
+    await expect(history.getByRole("listitem")).toHaveCount(0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test('failed package history refresh withdraws previously signed links', async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.listPublishingJobs = async (bookId, filter) => ({ jobs: [{ id: window.ids.job, bookId, editionId: filter.editionId, channel: 'kdp', status: 'succeeded', createdAt: '2026-10-13T12:00:00Z', package: { asset: { id: window.ids.asset, workspace_id: window.ids.workspace, storage_path: `workspaces/${window.ids.workspace}/assets/${window.ids.asset}/v1/kdp-export.zip`, size_bytes: 1024, checksum: 'a'.repeat(64) }, download: { url: window.results[window.ids.job].artifacts[0].download.url.replace('book.pdf', 'kdp-export.zip'), expiresIn: 300 } } }] });
+    });
+    const history = page.getByRole('region', { name: 'Retailer export packages', exact: true });
+    await history.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(history.getByRole('button', { name: 'Download private ZIP' })).toBeVisible();
+    await page.evaluate(() => { window.bookwormApi.listPublishingJobs = async () => { throw new Error('access unavailable'); }; });
+    await history.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await expect(history.getByText('Package history is unavailable. Refresh before relying on this list.')).toBeVisible();
+    await expect(history.getByRole('button', { name: 'Download private ZIP' })).toHaveCount(0);
+    await expect(history.getByText('No retailer packages for this edition yet.')).toHaveCount(0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test('unsaved editions do not show an endless package history spinner', async () => {
+  const { page, errors } = await fixture({ parent: true });
+  try {
+    await page.getByRole('button', { name: 'New print', exact: true }).click();
+    const history = page.getByRole('region', { name: 'Retailer export packages', exact: true });
+    await expect(history.getByText('Save this edition to view its package history.')).toBeVisible();
+    await expect(history.getByText('Checking package history for this edition…')).toHaveCount(0);
+    await expect(history.getByRole('button', { name: 'Refresh', exact: true })).toBeDisabled();
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("archive activation verifies the original account before exposing the saved download", async () => {
+  const {page, errors} = await fixture({parent:true,audio:true}); let account=ids.asset, downloads=0, checks=0;
+  try {
+    page.on("download",()=>{downloads++});
+    await page.route("**/api/auth/session",route=>{checks++;return route.fulfill({json:{user:{id:account}}});});
+    await page.evaluate(()=>{ const url=window.results[window.ids.job].artifacts[0].download.url.replace("book.pdf","archive.zip");
+      window.bookwormApi.listAudiobookGooglePlayExports=async()=>({jobs:[{id:window.ids.job,editionId:window.ids.edition,status:"succeeded",progressChapters:1,progressTotal:1,
+        createdAt:"2026-10-13T12:00:00.000Z",synthesizedVoiceDisclosureRequired:true,downloadExpiresIn:300,downloadUrl:url}]}); });
+    await page.getByRole("heading",{name:"Export history"}).locator("..").getByRole("button",{name:"Refresh"}).click();
+    const download=page.getByRole("button",{name:"Download private ZIP",exact:true});await expect(download).toBeVisible();
+    assert.equal(await page.locator('a[href*="archive.zip"]').count(),0);
+    const before=checks;account=ids.otherAsset;await download.click();
+    await expect.poll(()=>checks).toBeGreaterThan(before);
+    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,200)));
+    assert.equal(downloads,0);assert.deepEqual(errors,[]);
+  }finally{await page.close()}
+});
+
+test("silent account switch rejects saved history and invalidates selected proof", async () => {
+  const {page} = await fixture(); try {
+    await open(page); await page.evaluate(() => { window.enforceFixtureActor = true; window.fixtureActor = window.ids.otherAsset; });
+    await page.getByRole("button", {name: "Renew private links", exact: true}).click();
+    await expect(page.getByRole("alert")).toContainText("Account changed");
+    await expect(page.getByRole("status", {name: "Selected print source"})).toHaveText("No selected print");
+    await expect(page.getByRole("button", {name: "Open saved print", exact: true})).toHaveCount(0);
+  } finally { await page.close(); }
+});
+test("delayed A print reply cannot replace B or a later A session", async () => {
+  const {page} = await fixture(); try {
+    await page.evaluate(() => { window.holdDownload = true; });
+    await page.getByRole("button", {name: "Open saved print", exact: true}).click();
+    await page.waitForFunction(() => window.downloadWaiters.length === 1);
+    await page.evaluate(() => { window.holdDownload = false; window.setProofProps({actor: window.ids.otherAsset}); });
+    await expect(page.getByRole("button", {name: "Open saved print", exact: true})).toBeEnabled();
+    await page.evaluate(() => window.setProofProps({actor: window.ids.asset}));
+    await expect(page.getByRole("button", {name: "Open saved print", exact: true})).toBeEnabled();
+    await page.evaluate(async () => { window.downloadWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    assert.deepEqual(await page.evaluate(() => window.selected), []);
+    await expect(page.getByRole("status", {name: "Selected print source"})).toHaveText("No selected print");
+    await open(page); await expect(page.getByRole("status", {name: "Selected print source"})).toHaveText(ids.job);
+  } finally { await page.close(); }
+});
+test("silent account switch withdraws saved PDF proof on next page request", async () => {
+  const {page} = await fixture({parent:true}); try {
+    await open(page); await expect(page.getByAltText("Saved interior, page 1 of 4")).toBeVisible();
+    await page.evaluate(() => { window.enforceFixtureActor = true; window.fixtureActor = window.ids.otherAsset; });
+    await page.getByRole("button", {name: "Next page", exact: true}).click();
+    await expect(page.getByAltText(/Saved interior, page/)).toHaveCount(0);
+    await expect(page.getByRole("button", {name: "Download private file", exact: true})).toHaveCount(0);
+  } finally { await page.close(); }
+});
+
+test("lost render reply keeps original identity through remount and read-only recovery", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCalls = [];
+      window.renderStatus = null;
+      window.bookwormApi.renderEdition = async (editionId, body) => {
+        window.renderCalls.push({ editionId, ...body });
+        throw new Error("Lost render reply");
+      };
+      window.bookwormApi.getRenderRequest = async (bookId, editionId, requestId) => ({
+        bookId, editionId, requestId, job: window.renderStatus,
+      });
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await expect(page.getByRole("button", {name: "Check original render"})).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    const first = await page.evaluate(() => ({ calls: window.renderCalls, pointers: Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")) }));
+    assert.equal(first.calls.length, 1); assert.equal(first.pointers.length, 1);
+    await page.evaluate(() => window.showStudio(null));
+    await page.getByRole("heading", {name: "Saved print proofs", exact: true}).waitFor({state: "hidden"});
+    await page.evaluate(() => window.showStudio(window.ids.book));
+    await expect(page.getByRole("button", {name: "Check original render"})).toBeVisible();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("No saved request is visible yet.", {exact: false})).toBeVisible();
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    await page.evaluate(() => { window.renderStatus = { id: window.ids.job, status: "running" }; });
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("The original render is still in progress", {exact: false})).toBeVisible();
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    await page.evaluate(() => { window.renderStatus = { id: window.ids.job, status: "succeeded" }; });
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("The original render completed.", {exact: false})).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeEnabled();
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).some(key => key.startsWith("bookworm:render:v1:"))), false);
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("render recovery refuses mismatched request identity and keeps original pointer", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost reply"); };
+      window.bookwormApi.getRenderRequest = async (bookId, editionId) => ({bookId, editionId, requestId: window.ids.otherJob, job: {id: window.ids.job, status: "succeeded"}});
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("Render status belongs to a different request.")).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("late render recovery cannot clear or display the original account after a switch", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (url, options) => String(url) === "/api/auth/session"
+        ? Response.json({user: {id: window.fixtureActor}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`}) : originalFetch(url, options);
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost reply"); };
+      window.bookwormApi.getRenderRequest = (bookId, editionId, requestId) => new Promise(resolve => {
+        window.releaseRenderStatus = () => resolve({bookId, editionId, requestId, job: {id: window.ids.job, status: "succeeded"}});
+      });
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await page.waitForFunction(() => typeof window.releaseRenderStatus === "function");
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.dispatchEvent(new Event("focus")); window.releaseRenderStatus(); });
+    await expect(page.getByText("The original render completed.", {exact: false})).toHaveCount(0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("revoked render access keeps the original pointer and never dispatches again", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCount = 0;
+      window.bookwormApi.renderEdition = async () => { window.renderCount++; throw new Error("Lost reply"); };
+      window.bookwormApi.getRenderRequest = async () => { throw new window.ApiClientError(403, "forbidden", "Workspace access revoked", "fixture"); };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText("Workspace access revoked")).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    assert.equal(await page.evaluate(() => window.renderCount), 1);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("account switch between the session check and render dispatch rejects the original actor", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCount = 0; window.enforceFixtureActor = true;
+      window.bookwormApi.renderEdition = async () => { window.renderCount++; throw new Error("unexpected dispatch"); };
+      const original = window.fetch.bind(window);
+      window.fetch = async (url, options) => {
+        if (String(url) !== "/api/auth/session") return original(url, options);
+        if (window.renderRaceArmed && Object.keys(sessionStorage).some(key => key.startsWith("bookworm:render:v1:"))) {
+          window.renderRaceArmed = false;
+          window.fixtureActor = window.ids.otherAsset;
+          return Response.json({user: {id: window.ids.asset}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`});
+        }
+        return Response.json({user: {id: window.fixtureActor}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`});
+      };
+      window.renderRaceArmed = true;
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.waitForFunction(() => window.fixtureActor === window.ids.otherAsset);
+    await expect(page.getByText("Checking your account…")).toHaveCount(0);
+    assert.equal(await page.evaluate(() => window.renderCount), 0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("closing an unaccepted render fences its identity before enabling a new request", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCalls = []; window.closeCalls = [];
+      window.bookwormApi.renderEdition = async (editionId, body) => { window.renderCalls.push({editionId, ...body}); throw new Error("Lost reply"); };
+      window.bookwormApi.closeRenderRequest = async (bookId, editionId, requestId, actor) => {
+        window.closeCalls.push({bookId, editionId, requestId, actor});
+        return {bookId, editionId, requestId, job: {id: window.ids.job, status: "cancelled"}, closedBeforeAcceptance: true};
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    // Render dispatch follows asynchronous account verification. Await the
+    // actual synthetic request before asserting which key closure fences.
+    await page.waitForFunction(() => window.renderCalls.length === 1);
+    const render = (await page.evaluate(() => window.renderCalls))[0];
+    await page.evaluate(() => { window.confirm = () => true; });
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText("The original request was closed before it started.", {exact: false})).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeEnabled();
+    const calls = await page.evaluate(() => window.closeCalls);
+    assert.equal(calls.length, 1); assert.equal(calls[0].requestId, render.idempotencyKey);
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("unavailable render closure retains the request and gives an actionable support reference", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCalls = []; window.closeCalls = []; window.confirm = () => true;
+      window.bookwormApi.renderEdition = async (editionId, body) => { window.renderCalls.push({editionId, ...body}); throw new Error("Lost reply"); };
+      window.bookwormApi.getRenderRequest = async (bookId, editionId, requestId) => ({bookId, editionId, requestId, job: null});
+      window.bookwormApi.closeRenderRequest = async (bookId, editionId, requestId) => {
+        window.closeCalls.push({bookId, editionId, requestId});
+        throw new Error("Closing this request is temporarily unavailable. The original render may still finish; check its status again.");
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.waitForFunction(() => window.renderCalls.length === 1);
+    const requestId = await page.evaluate(() => window.renderCalls[0].idempotencyKey);
+    await expect(page.getByText(requestId, {exact: true})).toBeVisible();
+    await expect(page.getByText(/Keep this browser's site data/)).toBeVisible();
+    await page.getByRole("button", {name: "Check original render"}).click();
+    await expect(page.getByText(/original request may still arrive/).first()).toBeVisible();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText(/Closing this request is temporarily unavailable/)).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    assert.equal(await page.evaluate(() => window.closeCalls[0].requestId), requestId);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("render support reference is hidden while the account changes and remains private to its original actor", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.renderCalls = [];
+      window.bookwormApi.renderEdition = async (_editionId, body) => { window.renderCalls.push(body); throw new Error("Lost reply"); };
+      const original = window.fetch.bind(window);
+      window.fetch = async (url, options) => {
+        if (String(url) !== "/api/auth/session") return original(url, options);
+        if (window.holdAccountCheck) await new Promise(resolve => { window.releaseAccountCheck = resolve; });
+        return Response.json({user: {id: window.fixtureActor}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`});
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.waitForFunction(() => window.renderCalls.length === 1);
+    const requestId = await page.evaluate(() => window.renderCalls[0].idempotencyKey);
+    await expect(page.getByText(requestId, {exact: true})).toBeVisible();
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.holdAccountCheck = true; window.dispatchEvent(new Event("focus")); });
+    await page.waitForFunction(() => typeof window.releaseAccountCheck === "function");
+    await expect(page.getByText(requestId, {exact: true})).toHaveCount(0);
+    await page.evaluate(() => { window.holdAccountCheck = false; window.releaseAccountCheck(); });
+    await expect(page.getByRole("heading", {name: "Layout & publishing"})).toBeVisible();
+    await expect(page.getByText(requestId, {exact: true})).toHaveCount(0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.equal(await page.evaluate(() => window.renderCalls.length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("closing cannot cancel an accepted render or forget an uncertain close", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost reply"); };
+      window.closeMode = "running"; window.confirm = () => true;
+      window.bookwormApi.closeRenderRequest = async (bookId, editionId, requestId) => {
+        if (window.closeMode === "lost") throw new Error("Close reply lost");
+        return {bookId, editionId, requestId, job: {id: window.ids.job, status: "running"}, closedBeforeAcceptance: false};
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText("The original render was already accepted", {exact: false})).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    await page.evaluate(() => { window.closeMode = "lost"; });
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText("Close reply lost")).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("declined closure sends nothing; lost close reply keeps the original key for retry", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      window.closeCalls = []; window.acceptClose = false;
+      window.confirm = () => window.acceptClose;
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost render reply"); };
+      window.bookwormApi.closeRenderRequest = async (bookId, editionId, requestId) => {
+        window.closeCalls.push(requestId);
+        if (window.closeCalls.length === 1) throw new Error("Lost close reply");
+        return {bookId, editionId, requestId, job: {id: window.ids.job, status: "cancelled"}, closedBeforeAcceptance: true};
+      };
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    assert.equal(await page.evaluate(() => window.closeCalls.length), 0);
+    await page.evaluate(() => { window.acceptClose = true; });
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByText("Lost close reply")).toBeVisible();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeDisabled();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await expect(page.getByRole("button", {name: "Render PDF", exact: true})).toBeEnabled();
+    const calls = await page.evaluate(() => window.closeCalls);
+    assert.equal(calls.length, 2); assert.equal(calls[0], calls[1]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("late closure response cannot clear the original pointer after an account switch", async () => {
+  const {page, errors} = await fixture({parent: true});
+  try {
+    await page.evaluate(() => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (url, options) => String(url) === "/api/auth/session"
+        ? Response.json({user: {id: window.fixtureActor}, storageOrigin: `http://127.0.0.1:${window.fixtureStoragePort}`}) : originalFetch(url, options);
+      window.bookwormApi.renderEdition = async () => { throw new Error("Lost reply"); };
+      window.confirm = () => true;
+      window.bookwormApi.closeRenderRequest = (bookId, editionId, requestId) => new Promise(resolve => {
+        window.releaseRenderClose = () => resolve({bookId, editionId, requestId, job: {id: window.ids.job, status: "cancelled"}, closedBeforeAcceptance: true});
+      });
+    });
+    await page.getByRole("button", {name: "Render PDF", exact: true}).click();
+    await page.getByRole("button", {name: "Close if not started"}).click();
+    await page.waitForFunction(() => typeof window.releaseRenderClose === "function");
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.dispatchEvent(new Event("focus")); window.releaseRenderClose(); });
+    await expect(page.getByText("The original request was closed before it started.", {exact: false})).toHaveCount(0);
+    assert.equal(await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("bookworm:render:v1:")).length), 1);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+for (const staleOutcome of ["success", "failure"]) test(`saved print history retries after edits supersede a pending ${staleOutcome}`, async () => {
+  const { page, errors } = await fixture({ disabled: true });
+  try {
+    await page.evaluate(outcome => {
+      const original = window.bookwormApi.listPrintRenders;
+      let call = 0;
+      window.bookwormApi.listPrintRenders = async (...args) => {
+        const n = ++call, result = await original(...args);
+        if (n === 1 && outcome === "failure") throw new Error("Stale history error");
+        return result;
+      };
+      window.holdHistory = true;
+      window.setProofProps({ disabled: false });
+    }, staleOutcome);
+    await page.waitForFunction(() => window.historyWaiters.length === 1);
+    await page.evaluate(() => window.setProofProps({ dirty: true, disabled: true }));
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
+    await expect(page.getByText("Save your edition settings to check saved print proofs.", { exact: true })).toBeVisible();
+    await expect(page.getByText(/No verified saved print proofs are available/)).toHaveCount(0);
+    await page.evaluate(() => { window.holdHistory = false; window.setProofProps({ dirty: false, disabled: false }); });
+    await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled();
+    await page.evaluate(async () => { window.historyWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    await expect(page.getByRole("button", { name: "Open saved print", exact: true })).toBeEnabled();
+    assert.equal(await page.getByRole("alert").count(), 0);
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.action === "history").length), 2);
+    assert.equal(await page.evaluate(() => window.requests.some(request => request.method !== "GET")), false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("dirty pending print history remains scoped to the selected edition", async () => {
+  const { page, errors } = await fixture({ disabled: true });
+  try {
+    await page.evaluate(() => { window.holdHistory = true; window.setProofProps({ disabled: false }); });
+    await page.waitForFunction(() => window.historyWaiters.length === 1);
+    await page.evaluate(() => window.setProofProps({ dirty: true, disabled: true, editionId: window.ids.otherEdition }));
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
+    await expect(page.getByText("Save your edition settings to check saved print proofs.", { exact: true })).toBeVisible();
+    await expect(page.getByText(/No verified saved print proofs are available/)).toHaveCount(0);
+    await page.evaluate(() => { window.holdHistory = false; window.setProofProps({ dirty: false, disabled: false }); });
+    await open(page);
+    await page.evaluate(async () => { window.historyWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    assert.equal(await page.getByRole("status", { name: "Selected print source" }).textContent(), ids.otherJob);
+    assert.deepEqual(await page.evaluate(() => window.selected.map(result => result.jobId)), [ids.otherJob]);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+
+test("unmounting during dirty print history never restarts or applies the pending read", async () => {
+  const { page, errors } = await fixture({ disabled: true });
+  try {
+    await page.evaluate(() => { window.holdHistory = true; window.setProofProps({ disabled: false }); });
+    await page.waitForFunction(() => window.historyWaiters.length === 1);
+    await page.evaluate(() => window.setProofProps({ dirty: true, disabled: true }));
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
+    await expect(page.getByText("Save your edition settings to check saved print proofs.", { exact: true })).toBeVisible();
+    await expect(page.getByText(/No verified saved print proofs are available/)).toHaveCount(0);
+    await page.evaluate(async () => { window.unmountLibrary(); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); window.historyWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.action === "history").length), 1);
+    assert.equal(await page.evaluate(() => window.selected.length), 0);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});
+test("dirty pending print history cannot update after the account changes", async () => {
+  const { page, errors } = await fixture({ disabled: true });
+  try {
+    await page.evaluate(() => {
+      const original = window.bookwormApi.listPrintRenders;
+      let call = 0;
+      window.bookwormApi.listPrintRenders = async (...args) => {
+        const n = ++call, result = await original(...args);
+        if (n === 1) throw new Error("Prior account history error");
+        return result;
+      };
+      window.enforceFixtureActor = true; window.holdHistory = true;
+      window.setProofProps({ disabled: false });
+    });
+    await page.waitForFunction(() => window.historyWaiters.length === 1);
+    await page.evaluate(() => { window.fixtureActor = window.ids.otherAsset; window.setProofProps({ actor: window.ids.otherAsset, dirty: true, disabled: true }); });
+    await expect(page.getByRole("status", { name: "Committed proof settings" })).toHaveText("Dirty");
+    await expect(page.getByText("Save your edition settings to check saved print proofs.", { exact: true })).toBeVisible();
+    await expect(page.getByText(/No verified saved print proofs are available/)).toHaveCount(0);
+    await page.evaluate(() => { window.holdHistory = false; window.setProofProps({ dirty: false, disabled: false }); });
+    await open(page);
+    await page.evaluate(async () => { window.historyWaiters[0](); await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    await expect(page.getByRole("status", { name: "Selected print source" })).toHaveText(ids.job);
+    assert.equal(await page.getByRole("alert").count(), 0);
+    assert.equal(await page.evaluate(() => window.requests.filter(request => request.action === "history").length), 2);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});

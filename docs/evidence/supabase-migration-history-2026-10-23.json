@@ -1,0 +1,188 @@
+{
+  "projectRef": "cyhqtwndadlyzpeatxws",
+  "projectName": "AI-BookWorm",
+  "recordedAt": "2026-10-23T09:45:40.731Z",
+  "evidence": "Read-only Supabase migration history. Names identify recorded applications; schema/byte parity is not proven.",
+  "migrations": [
+    {
+      "version": "20260912035021",
+      "name": "0001_extensions"
+    },
+    {
+      "version": "20260912035026",
+      "name": "0002_core"
+    },
+    {
+      "version": "20260912035030",
+      "name": "0003_assets_collaboration"
+    },
+    {
+      "version": "20260912035033",
+      "name": "0004_ai"
+    },
+    {
+      "version": "20260912035036",
+      "name": "0005_community"
+    },
+    {
+      "version": "20260912035039",
+      "name": "0006_billing_publishing"
+    },
+    {
+      "version": "20260912035042",
+      "name": "0007_indexes"
+    },
+    {
+      "version": "20260912035047",
+      "name": "0008_rls"
+    },
+    {
+      "version": "20260912035051",
+      "name": "0009_storage"
+    },
+    {
+      "version": "20260912035054",
+      "name": "0010_step9_collab"
+    },
+    {
+      "version": "20260912035057",
+      "name": "0011_stripe_events"
+    },
+    {
+      "version": "20260912035101",
+      "name": "0012_community_extras"
+    },
+    {
+      "version": "20260912035104",
+      "name": "0013_admin_ops"
+    },
+    {
+      "version": "20260912035108",
+      "name": "20260831022214_rls_tenant_hardening"
+    },
+    {
+      "version": "20260912035111",
+      "name": "20260831023000_workspace_onboarding"
+    },
+    {
+      "version": "20260912035114",
+      "name": "20260831040000_authoring_transactions"
+    },
+    {
+      "version": "20260912035117",
+      "name": "20260901090000_ai_workflow_transactions"
+    },
+    {
+      "version": "20260912035121",
+      "name": "20260903100000_image_asset_workflow"
+    },
+    {
+      "version": "20260912035124",
+      "name": "20260903120000_render_workflow"
+    },
+    {
+      "version": "20260912035128",
+      "name": "20260903130000_preflight_workflow"
+    },
+    {
+      "version": "20260912035131",
+      "name": "20260904100000_publishing_package_workflow"
+    },
+    {
+      "version": "20260912035134",
+      "name": "20260904120000_collaboration_invitations"
+    },
+    {
+      "version": "20260912035138",
+      "name": "20260904130000_collaboration_approval_hardening"
+    },
+    {
+      "version": "20260912035141",
+      "name": "20260905050000_admin_flag_transactions"
+    },
+    {
+      "version": "20260912035144",
+      "name": "20260905060000_book_retrieval"
+    },
+    {
+      "version": "20260912035149",
+      "name": "20260905070000_referral_transactions"
+    },
+    {
+      "version": "20260912035152",
+      "name": "20260905120000_publishing_worker_leases"
+    },
+    {
+      "version": "20260912035155",
+      "name": "20260906100000_account_support_data_rights"
+    },
+    {
+      "version": "20260912035158",
+      "name": "20260907100000_metadata_ai_workflow"
+    },
+    {
+      "version": "20260912035202",
+      "name": "20260907110000_asset_quarantine"
+    },
+    {
+      "version": "20260912035205",
+      "name": "20260909090000_manuscript_image_import"
+    },
+    {
+      "version": "20260912035208",
+      "name": "20260909150000_manuscript_import_receipts"
+    },
+    {
+      "version": "20260912035212",
+      "name": "20260910100000_manuscript_import_jobs"
+    },
+    {
+      "version": "20260912035215",
+      "name": "20260911100000_manuscript_import_health"
+    },
+    {
+      "version": "20260912035218",
+      "name": "20260911110000_ai_review_jobs"
+    },
+    {
+      "version": "20260912035221",
+      "name": "20260911120000_chapter_creation_requests"
+    },
+    {
+      "version": "20260912035224",
+      "name": "20260912090000_image_completion_receipts"
+    },
+    {
+      "version": "20260912035227",
+      "name": "20260912100000_image_completion_credit_guard"
+    },
+    {
+      "version": "20260912035230",
+      "name": "20260912110000_image_credit_reservations"
+    },
+    {
+      "version": "20260912035234",
+      "name": "20260912120000_community_creation"
+    },
+    {
+      "version": "20260912035419",
+      "name": "20260912130000_auth_profile_and_advisor_fixes"
+    },
+    {
+      "version": "20260912035715",
+      "name": "paid_generation_defaults"
+    },
+    {
+      "version": "20260912041804",
+      "name": "plan_publication_controls"
+    },
+    {
+      "version": "20260912043928",
+      "name": "audiobook_workflow"
+    },
+    {
+      "version": "20260912044427",
+      "name": "audiobook_idempotency_hardening"
+    }
+  ]
+}

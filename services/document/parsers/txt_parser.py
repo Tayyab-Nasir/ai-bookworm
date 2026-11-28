@@ -14,7 +14,16 @@ _MIN_ALLCAPS = 3
 def _decode(data: bytes) -> tuple[str, list[str]]:
     warnings: list[str] = []
     if data.startswith(b"\xef\xbb\xbf"):
-        return data.decode("utf-8-sig"), warnings
+        try:
+            return data.decode("utf-8-sig"), warnings
+        except UnicodeDecodeError as error:
+            raise ParseError("UTF-8 manuscript contains invalid text") from error
+    # Statistical detectors can label a short valid UTF-8 file Windows-1252
+    # (notably an isolated em dash). Prefer a lossless Unicode decode first.
+    try:
+        return data.decode("utf-8"), warnings
+    except UnicodeDecodeError:
+        pass
     guess = chardet.detect(data)
     enc = guess.get("encoding") or "utf-8"
     conf = guess.get("confidence") or 0
@@ -40,7 +49,7 @@ def _is_chapter_heading(line: str) -> bool:
 
 def parse_txt(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
     check_size(data)
-    if b"\x00" in data[:4096]:
+    if b"\x00" in data:
         raise ParseError("file looks binary, not text")
     text, warnings = _decode(data)
     lines = text.splitlines()
@@ -50,9 +59,13 @@ def parse_txt(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
     buf: list[str] = []
 
     def flush_para() -> None:
-        if current is not None and buf:
+        if buf:
             t = " ".join(l.strip() for l in buf).strip()
             if t:
+                # Opening prose must survive a later recognized chapter heading.
+                # The previous flush cleared it while current was still None.
+                if current is None:
+                    new_current(title)
                 current["nodes"].append(node("paragraph", t))
         buf.clear()
 
@@ -73,15 +86,7 @@ def parse_txt(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
     flush_para()
 
     if not chapters:
-        # fallback: single chapter
-        new_current(title)
-        paras = re.split(r"\n\s*\n", text)
-        for p in paras:
-            t = " ".join(l.strip() for l in p.splitlines()).strip()
-            if t:
-                current["nodes"].append(node("paragraph", t))
-        if not current["nodes"]:
-            raise ParseError("text file is empty")
+        raise ParseError("text file is empty")
 
     book = make_book(chapters, title=title)
     return book, make_report(chapters, warnings)

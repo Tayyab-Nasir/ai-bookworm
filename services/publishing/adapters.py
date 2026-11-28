@@ -3,20 +3,93 @@ work locally; submit/getStatus raise NotSupportedError until official integratio
 """
 import hashlib
 import json
+import re
 import sys
 import zipfile
+import zlib
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Protocol
+from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rendering"))
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
+from rules._channel import check_print_pdf_geometry  # noqa: E402
+from rules.kdp_v1 import KDP_MARKETING_COVER_BYTES, open_kdp_ebook_cover  # noqa: E402
+from lulu_print import lulu_rtl_page_count, prepare_lulu_rtl_interior  # noqa: E402
+from publication_metadata import edition_publication_metadata, retailer_listing  # noqa: E402
 
 
 class NotSupportedError(Exception):
     """Raised for submit/getStatus: export-first mode, no live retailer integration."""
+
+
+def publishing_metadata(book: dict, edition: dict | None = None) -> dict:
+    """Project public listing fields only; never serialize the full book model."""
+    return retailer_listing(edition_publication_metadata(book.get("metadata", {}), edition or {}))
+
+
+def _assert_saved_epub_metadata(blob: bytes, metadata: dict) -> None:
+    """Check the exact saved artifact, including proofs made before this policy."""
+    unreadable = "Saved EPUB publication metadata cannot be verified. Render again before packaging."
+    mismatch = "Saved EPUB publication metadata does not match this edition. Render again before packaging."
+    max_opf_bytes = 1_000_000  # Same inspection bound used by Google Play OPF checks.
+    try:
+        with zipfile.ZipFile(BytesIO(blob)) as archive:
+            matches = [info for info in archive.infolist() if info.filename == "OEBPS/content.opf"]
+            if len(matches) != 1 or matches[0].file_size > max_opf_bytes:
+                raise ValueError(unreadable)
+            with archive.open(matches[0]) as document:
+                raw = document.read(max_opf_bytes + 1)
+            if len(raw) > max_opf_bytes:
+                raise ValueError(unreadable)
+        text = raw.decode("utf-8-sig")
+        # Worker-generated OPFs are UTF-8 and never need DTD/entity expansion.
+        if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+            raise ValueError(unreadable)
+        declaration = re.match(r"<\?xml\b.*?\?>", text, re.DOTALL)
+        encoding = re.search(r"\bencoding\s*=\s*(['\"])(.*?)\1", declaration.group()) if declaration else None
+        if encoding and encoding.group(2).upper() not in ("UTF-8", "UTF8"):
+            raise ValueError(unreadable)
+        # Parse the same UTF-8 text we validated, not bytes with another declared codec.
+        root = ET.fromstring(text)
+    except (zipfile.BadZipFile, KeyError, OSError, RuntimeError, NotImplementedError,
+            EOFError, zlib.error, UnicodeDecodeError, ET.ParseError) as error:
+        raise ValueError(unreadable) from error
+    opf_namespace = "{http://www.idpf.org/2007/opf}"
+    dc_namespace = "{http://purl.org/dc/elements/1.1/}"
+    entries = root.findall(opf_namespace + "metadata")
+    if root.tag != opf_namespace + "package" or len(entries) != 1:
+        raise ValueError(unreadable)
+    dates = entries[0].findall(dc_namespace + "date")
+    languages = entries[0].findall(dc_namespace + "language")
+    titles = entries[0].findall(dc_namespace + "title")
+    creators = entries[0].findall(dc_namespace + "creator")
+    descriptions = entries[0].findall(dc_namespace + "description")
+    subjects = entries[0].findall(dc_namespace + "subject")
+    identifiers = entries[0].findall(dc_namespace + "identifier")
+    if any(len(element) or (element.tail or "").strip()
+           for element in dates + languages + titles + creators + descriptions + subjects + identifiers):
+        raise ValueError(unreadable)
+    # XML parsers normalize CR and CRLF in text content when reading the OPF.
+    normalize = lambda value: value.replace("\r\n", "\n").replace("\r", "\n")
+    description = metadata.get("description") or None
+    isbn = metadata.get("isbn13") or None
+    isbn_identifiers = [element for element in identifiers if element.get("id") != "pub-id"]
+    expected_date = metadata.get("publicationDate")
+    if (len(dates) != (1 if expected_date is not None else 0)
+            or (dates and dates[0].text != expected_date)
+            or len(languages) != 1 or (languages[0].text or "") != normalize(metadata.get("language") or "en")
+            or len(titles) != 1 or (titles[0].text or "") != normalize(metadata.get("title") or "")
+            or len(creators) != 1 or (creators[0].text or "") != normalize(metadata.get("author") or "")
+            or len(descriptions) != (1 if description else 0)
+            or (description and (descriptions[0].text or "") != normalize(description))
+            or [(element.text or "") for element in subjects] != [normalize(value) for value in sorted(metadata.get("keywords") or [])]
+            or len(isbn_identifiers) != (1 if isbn else 0)
+            or (isbn and (isbn_identifiers[0].text or "") != normalize(isbn))):
+        raise ValueError(mismatch)
 
 
 @dataclass(frozen=True)
@@ -63,6 +136,7 @@ class ExportAdapter:
             "channel": self.CHANNEL,
             "ruleVersion": ruleset.version,
             "errors": sum(1 for f in findings if f.severity == "error"),
+            "warnings": sum(1 for f in findings if f.severity == "warning"),
             "findings": [f.to_dict() for f in findings],
         }
 
@@ -70,17 +144,96 @@ class ExportAdapter:
         """Deterministic export zip: rendered artifact(s) + manifest.json with sha256s,
         rule version, and channel. Fixed entry order, fixed timestamps."""
         result = self.validate(ctx)
+        if result["errors"]:
+            raise ValueError(f"{self.CHANNEL} package has unresolved validation errors")
+        if not artifacts or len(artifacts) > 3 or any(
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name)
+                for name in artifacts):
+            raise ValueError("package artifacts must use safe flat filenames")
+        if set(artifacts) & {"manifest.json", "metadata.json", "preflight.json", "README.txt"}:
+            raise ValueError("package artifact name is reserved")
+        listing = publishing_metadata(ctx.get("book", {}), ctx.get("edition"))
+        if (ctx.get("edition") or {}).get("kind") == "ebook":
+            if "book.epub" not in artifacts:
+                raise ValueError("A saved book.epub is required. Render again before packaging.")
+            _assert_saved_epub_metadata(artifacts["book.epub"], listing["metadata"])
+        lulu_layout = None
+        lulu_readme = ""
+        if self.CHANNEL == "lulu" and ((ctx.get("edition") or {}).get("wrap_cover") or {}).get("lulu_rtl") is True:
+            source = artifacts.get("book.pdf")
+            cover = artifacts.get("cover.pdf")
+            if not source or not cover or source != ctx.get("package_bytes") or cover != ctx.get("cover_pdf_bytes"):
+                raise ValueError("Lulu requires the verified reading-order interior and its paired cover PDF.")
+            upload, source_count = prepare_lulu_rtl_interior(source)
+            if check_print_pdf_geometry({**ctx, "package_bytes": upload}):
+                raise ValueError("The Lulu upload PDF did not preserve trim and bleed. Render again before packaging.")
+            if len(upload) + len(cover) > 175 * 1024 * 1024:
+                raise ValueError("The Lulu files exceed the 175 MB package limit.")
+            lulu_layout = {"sourcePdfSha256": hashlib.sha256(source).hexdigest(), "sourcePageCount": source_count,
+                           "uploadPageCount": lulu_rtl_page_count(source_count), "leadingBlankPage": bool(source_count % 2),
+                           "coverFrontPanel": "left"}
+            artifacts = {**artifacts, "book.pdf": upload}
+            lulu_readme = ("For Lulu Print or Bookstore, upload book.pdf and cover.pdf as provided. The interior is already in Lulu upload order.\n"
+                           "The front cover is on the left. Lulu may show the back cover as the project thumbnail.\n"
+                           "Global Distribution has separate language eligibility requirements.\n")
+            if lulu_layout["leadingBlankPage"]:
+                lulu_readme += "The first upload page is the binding blank at the reading end of the book.\n"
+        elif self.CHANNEL == "lulu":
+            lulu_readme = ("For Lulu Global Distribution, match the print ISBN in your Lulu listing, copyright page and cover barcode.\n"
+                           "Lulu uses separate bookstore and distribution cover templates. Check which template this cover matches and render the other cover with its own template.\n")
+        files = {**artifacts,
+                 "preflight.json": json.dumps({"schemaVersion": "1.0", **result},
+                                              indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8"),
+                 "metadata.json": json.dumps(listing,
+                                             indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8"),
+                 "README.txt": (
+                     f"AI Bookworm - {self.CHANNEL} author handoff\n\n"
+                     "This package has NOT been submitted, published or approved by a retailer.\n"
+                     "Use book.epub or book.pdf and the included cover, when present, in the retailer's own upload form.\n"
+                     "metadata.json contains the saved listing text for manual entry, not a retailer import schema.\n"
+                     "Review description, keywords and categories against the current retailer form.\n"
+                     "preflight.json contains the validation findings and their locations for this snapshot; review all warnings before uploading.\n"
+                     + (("Upload book.epub and cover.jpg in Kindle eBook Content. Keep cover.png as your saved Bookworm proof.\n"
+                         if "cover.jpg" in artifacts else
+                         "Upload book.epub and prepare a cover in KDP Cover Creator or supply your own JPEG or TIFF.\n")
+                        if self.CHANNEL == "kdp" and (ctx.get("edition") or {}).get("kind") == "ebook" else "")
+                     + ("Answer KDP's disclosure questions if your book includes AI-generated text, artwork or translations.\n"
+                        "Choose up to seven keywords or phrases and up to three categories for your primary marketplace and audience.\n"
+                        "Keep the KDP description at 4,000 characters or fewer, including any formatting tags.\n"
+                        if self.CHANNEL == "kdp" else "")
+                     + ("For Google Play Books, upload book.epub in an existing single-book Partner Center Content tab; this generic filename is not for bulk upload.\n"
+                        "Run EpubCheck and review Google's processing result, pricing, territories and Review tab before you click Publish.\n"
+                        if self.CHANNEL == "googleplay" else "")
+                     + ("For Apple Books, extract this ZIP; it is not a Transporter .itmsp package. Use the Apple Books Publishing Portal to upload book.epub and, if provided, cover.png.\n"
+                        "Apple requires EPUBCheck validation; the included preflight records the result for this saved EPUB, not Apple approval.\n"
+                        "Review your Apple Books agreement, publisher, original publication date, subject categories, permanent Vendor ID, rights, pricing and territories in Apple's account.\n"
+                        "Apple requires cover art before release; a pre-order may have different requirements.\n"
+                        if self.CHANNEL == "apple" else "")
+                     + ("For B&N Press, upload book.epub in your eBook project. Review the final cover and processed preview in B&N Press.\n"
+                        if self.CHANNEL == "barnesnoble" and (ctx.get("edition") or {}).get("kind") == "ebook" else "")
+                     + ("Answer the B&N Press generative AI questions for any use in this project, including text, artwork or translation.\n"
+                        if self.CHANNEL == "barnesnoble" else "")
+                     + lulu_readme
+                     + "Confirm rights, ISBN entitlement, territories, pricing and required AI-content disclosures yourself.\n"
+                     "Inspect the retailer preview or physical proof before approving publication.\n"
+                     "manifest.json records checksums and the validation rule version; zero errors is not retailer approval.\n"
+                     "This is a snapshot: later book changes require a new render, preflight and package.\n"
+                 ).encode("utf-8")}
         manifest = {
+            "packageVersion": "2.0",
             "channel": self.CHANNEL,
             "ruleVersion": result["ruleVersion"],
             "errors": result["errors"],
+            "warnings": result["warnings"],
             "files": {},
         }
+        if lulu_layout:
+            manifest["luluRightToLeft"] = lulu_layout
         buf = BytesIO()
-        names = sorted(artifacts)
+        names = sorted(files)
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for name in names:
-                data = artifacts[name]
+                data = files[name]
                 manifest["files"][name] = hashlib.sha256(data).hexdigest()
                 info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
@@ -107,17 +260,53 @@ class KdpAdapter(ExportAdapter):
                                 can_check_status=False,
                                 required_metadata=("title", "author", "language", "description"))
 
+    def build_package(self, ctx: dict, artifacts: dict[str, bytes]) -> list[PackageArtifact]:
+        if (ctx.get("edition") or {}).get("kind") != "ebook":
+            return super().build_package(ctx, artifacts)
+        if "cover.jpg" in artifacts:
+            raise ValueError("The Kindle upload cover must be generated from the saved PNG proof.")
+        proof = artifacts.get("cover.png")
+        epub = artifacts.get("book.epub")
+        ctx = {**ctx, "artifact": epub, "package_bytes": epub, "cover_bytes": proof}
+        if proof is not None:
+            encoded = BytesIO()
+            with open_kdp_ebook_cover(proof) as cover:
+                cover.save(encoded, "JPEG", quality=95, subsampling=0, optimize=True, dpi=(300, 300))
+            if encoded.tell() >= KDP_MARKETING_COVER_BYTES:
+                raise ValueError("The KDP JPEG must be smaller than 50 MB. Render with simpler cover artwork and try again.")
+            artifacts = {**artifacts, "cover.jpg": encoded.getvalue()}
+        return super().build_package(ctx, artifacts)
 
-class AppleBooksAdapter(ExportAdapter):
+
+class EpubCheckedExportAdapter(ExportAdapter):
+    """Check the exact saved EPUB; never trust a caller's cached result."""
+    EPUBCHECK_CACHE: str = ""
+
+    def validate(self, ctx: dict) -> dict:
+        ctx = dict(ctx)
+        ctx.pop(self.EPUBCHECK_CACHE, None)
+        return super().validate(ctx)
+
+    def build_package(self, ctx: dict, artifacts: dict[str, bytes]) -> list[PackageArtifact]:
+        # Validate the bytes actually exported, not a caller-supplied proof context.
+        if "book.epub" in artifacts:
+            ctx = {**ctx, "artifact": artifacts["book.epub"], "cover_bytes": artifacts.get("cover.png")}
+            ctx.pop(self.EPUBCHECK_CACHE, None)
+        return super().build_package(ctx, artifacts)
+
+
+class AppleBooksAdapter(EpubCheckedExportAdapter):
     CHANNEL = "apple"
+    EPUBCHECK_CACHE = "_apple_epubcheck_result"
     _CAPS = ChannelCapabilities(formats=("epub",), can_submit=False,
                                 can_check_status=False,
                                 required_metadata=("title", "author", "language", "description",
                                                    "categories"))
 
 
-class BarnesNobleAdapter(ExportAdapter):
+class BarnesNobleAdapter(EpubCheckedExportAdapter):
     CHANNEL = "barnesnoble"
+    EPUBCHECK_CACHE = "_bn_epubcheck_result"
     _CAPS = ChannelCapabilities(formats=("epub", "pdf"), can_submit=False,
                                 can_check_status=False,
                                 required_metadata=("title", "author", "language"))
@@ -130,8 +319,16 @@ class LuluAdapter(ExportAdapter):
                                 required_metadata=("title", "author", "language"))
 
 
+class GooglePlayAdapter(EpubCheckedExportAdapter):
+    CHANNEL = "googleplay"
+    EPUBCHECK_CACHE = "_google_epubcheck_result"
+    _CAPS = ChannelCapabilities(formats=("epub",), can_submit=False,
+                                can_check_status=False,
+                                required_metadata=("title", "author", "language"))
+
+
 _ADAPTERS: dict[str, ExportAdapter] = {
-    a.CHANNEL: a for a in (KdpAdapter(), AppleBooksAdapter(), BarnesNobleAdapter(), LuluAdapter())
+    a.CHANNEL: a for a in (KdpAdapter(), AppleBooksAdapter(), BarnesNobleAdapter(), LuluAdapter(), GooglePlayAdapter())
 }
 
 

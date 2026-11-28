@@ -1,0 +1,304 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+
+process.env.SUPABASE_URL ??= "http://localhost:54321";
+process.env.SUPABASE_ANON_KEY ??= "test-anon";
+process.env.SUPABASE_SERVICE_ROLE_KEY ??= "test-service";
+process.env.REDIS_URL ??= "redis://localhost:6379";
+process.env.QDRANT_URL ??= "http://localhost:6333";
+process.env.NODE_ENV = "test";
+process.env.LOG_LEVEL = "error";
+
+const { buildApp } = await import("./app.js");
+const { loadRenderImages } = await import("./routes/editions.js");
+type Row = Record<string, unknown>;
+interface Store { tables: Record<string, Row[]>; activityFailure?: "throw" | "reject" }
+
+function fakeSupabase(store: Store) {
+  return {
+    auth: { getUser: async (token: string) => token === "good"
+      ? { data: { user: { id: USER } }, error: null }
+      : { data: { user: null }, error: { message: "bad" } } },
+    storage: { from: () => ({ download: async () => ({ data: new Blob(["approved cover bytes"]), error: null }) }) },
+    from: (table: string) => {
+      if (table === "activity_events" && store.activityFailure) {
+        if (store.activityFailure === "throw") throw new Error("activity transport unavailable");
+        return { insert: () => Promise.reject(new Error("activity transport unavailable")) };
+      }
+      const rows = (store.tables[table] ??= []);
+      const filters: ((row: Row) => boolean)[] = [];
+      let insert: Row | null = null;
+      let update: Row | null = null;
+      const selected = () => rows.filter((row) => filters.every((filter) => filter(row)));
+      const mutate = () => {
+        if (insert) {
+          const row = { id: insert.id ?? crypto.randomUUID(), created_at: new Date().toISOString(), updated_at: new Date().toISOString(), ...insert };
+          rows.push(row); insert = null; return [row];
+        }
+        if (update) {
+          const result = selected(); result.forEach((row) => Object.assign(row, update)); update = null; return result;
+        }
+        return selected();
+      };
+      const builder: Record<string, unknown> = {};
+      for (const method of ["select", "order", "limit"]) builder[method] = () => builder;
+      builder.eq = (key: string, value: unknown) => { filters.push((row) => row[key] === value); return builder; };
+      builder.is = (key: string, value: unknown) => { filters.push((row) => row[key] === value); return builder; };
+      builder.in = (key: string, values: unknown[]) => { filters.push((row) => values.includes(row[key])); return builder; };
+      builder.insert = (row: Row) => { insert = row; return builder; };
+      builder.update = (row: Row) => { update = row; return builder; };
+      builder.single = async () => ({ data: mutate()[0] ?? null, error: null });
+      builder.maybeSingle = async () => ({ data: mutate()[0] ?? null, error: null });
+      builder.then = (resolve: (value: unknown) => unknown) => resolve({ data: mutate(), error: null });
+      return builder;
+    },
+  } as never;
+}
+
+const USER = "c0000000-0000-4000-8000-000000000001";
+const WORKSPACE = "c0000000-0000-4000-8000-000000000002";
+const BOOK = "c0000000-0000-4000-8000-000000000003";
+const COVER = "c0000000-0000-4000-8000-000000000004";
+const EDITION = "c0000000-0000-4000-8000-000000000005";
+const auth = { authorization: "Bearer good" };
+
+function baseStore(role = "editor"): Store {
+  return { tables: {
+    books: [{ id: BOOK, workspace_id: WORKSPACE }],
+    workspace_members: [{ workspace_id: WORKSPACE, user_id: USER, role, status: "active" }],
+    assets: [{ id: COVER, workspace_id: WORKSPACE, mime_type: "image/png", checksum: "a".repeat(64), status: "approved", deleted_at: null }],
+    editions: [], activity_events: [],
+  } };
+}
+
+test("editor creates a normalized print edition with a confirmed cover and HTTPS QR", async () => {
+  const store = baseStore();
+  const app = await buildApp(() => fakeSupabase(store));
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: {
+    language: "en",
+    config: {
+      kind: "print", text_direction: "rtl", trim_size: "6x9", bleed_in: 0.125, bleed_edges: "outer", typography: { body_size_pt: 11, leading: 15, body_font: "BookwormVera", heading_font: "BookwormVera-Bold" },
+      cover: { asset_id: COVER, qr_code: { enabled: true, url: "https://author.example/books/river" } },
+    },
+  } });
+  assert.equal(response.statusCode, 201, response.body);
+  const edition = response.json();
+  assert.equal(edition.type, "print");
+  assert.equal(edition.edition_metadata_json.bleed_edges, "outer");
+  assert.equal(edition.edition_metadata_json.bleed_in, 0.125);
+  assert.equal(edition.edition_metadata_json.margins.inner, 0.75);
+  assert.equal(edition.edition_metadata_json.typography.body_font, "BookwormVera");
+  assert.equal(edition.edition_metadata_json.typography.heading_font, "BookwormVera-Bold");
+    assert.equal(edition.edition_metadata_json.typography.text_align, "justify");
+    assert.equal(edition.edition_metadata_json.text_direction, "rtl");
+  assert.equal(edition.edition_metadata_json.cover.qr_code.position, "bottom-right");
+  assert.equal(store.tables.activity_events.length, 1);
+  await app.close();
+});
+
+for (const activityFailure of ["throw", "reject"] as const) {
+  test(`edition creation succeeds when the activity write ${activityFailure}s`, async () => {
+    const store = baseStore();
+    store.activityFailure = activityFailure;
+    const app = await buildApp(() => fakeSupabase(store));
+    try {
+      const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth,
+        payload: { config: { kind: "ebook" } } });
+      assert.equal(response.statusCode, 201, response.body);
+      assert.equal(store.tables.editions.length, 1);
+      assert.equal(response.json().id, store.tables.editions[0].id);
+      assert.equal(store.tables.activity_events.length, 0);
+    } finally { await app.close(); }
+  });
+}
+
+test("saved Arabic print editions preserve the Amiri pair and reject other uses", async () => {
+  const store = baseStore();
+  const app = await buildApp(() => fakeSupabase(store));
+  const typography = { body_font: "BookwormAmiri", heading_font: "BookwormAmiri-Bold" };
+  const url = `/v1/books/${BOOK}/editions`;
+  try {
+    const created = await app.inject({ method: "POST", url, headers: auth,
+      payload: { language: "ar", config: { kind: "print", typography } } });
+    assert.equal(created.statusCode, 201, created.body);
+    const listed = await app.inject({ method: "GET", url, headers: auth });
+    assert.equal(listed.statusCode, 200, listed.body);
+    const edition = listed.json().editions[0];
+    assert.equal(edition.language, "ar");
+    assert.equal(edition.edition_metadata_json.typography.body_font, typography.body_font);
+    assert.equal(edition.edition_metadata_json.typography.heading_font, typography.heading_font);
+    for (const config of [{ kind: "ebook", flow: "fixed", fixed_layout: { typography } },
+      { kind: "print", typography: { ...typography, heading_font: "BookwormVera-Bold" } }]) {
+      const rejected = await app.inject({ method: "POST", url, headers: auth, payload: { language: "ar", config } });
+      assert.equal(rejected.statusCode, 422, rejected.body);
+    }
+    assert.equal(store.tables.editions.length, 1);
+  } finally { await app.close(); }
+});
+
+test("edition input rejects unsafe QR destinations and unconfirmed cover assets", async () => {
+  const store = baseStore();
+  const app = await buildApp(() => fakeSupabase(store));
+  const unsafe = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: {
+    config: { kind: "ebook", cover: { qr_code: { enabled: true, url: "http://author.example" } } },
+  } });
+  assert.equal(unsafe.statusCode, 422);
+  store.tables.assets[0].checksum = "pending";
+  const pending = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: {
+    config: { kind: "ebook", cover: { asset_id: COVER } },
+  } });
+  assert.equal(pending.statusCode, 422);
+  assert.equal(store.tables.editions.length, 0);
+  await app.close();
+});
+
+test("malformed QR destinations return validation errors without creating or updating editions", async () => {
+  const store = baseStore();
+  const original = { id: EDITION, book_id: BOOK, type: "ebook", status: "draft", updated_at: "2026-09-03T00:00:00.000Z", edition_metadata_json: { kind: "ebook" } };
+  const snapshot = structuredClone(original);
+  store.tables.editions.push(original);
+  const app = await buildApp(() => fakeSupabase(store));
+  try {
+    for (const url of ["not-a-url", "https://", "https://[invalid", "https:author.example", "https:/author.example", "https:///author.example", "https://author.example/a\nb", "https://author.example\\@other.example", "https://author.example:65536", "http://author.example"]) {
+      const config = { kind: "ebook", cover: { asset_id: COVER, qr_code: { enabled: true, url } } };
+      const created = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: { config } });
+      assert.equal(created.statusCode, 422, `create ${url}: ${created.body}`);
+      const updated = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth,
+        payload: { config, expectedUpdatedAt: original.updated_at } });
+      assert.equal(updated.statusCode, 422, `update ${url}: ${updated.body}`);
+      assert.deepEqual(store.tables.editions, [snapshot]);
+      assert.equal(store.tables.activity_events.length, 0);
+    }
+  } finally { await app.close(); }
+});
+
+test("edition config requires approval of the exact current cover version", async () => {
+  const store = baseStore();
+  const bytes = Buffer.from("approved cover bytes");
+  const storagePath = `workspaces/${WORKSPACE}/assets/${COVER}/v3/cover.png`;
+  Object.assign(store.tables.assets[0]!, {
+    requires_approval: true,
+    storage_path: storagePath,
+    size_bytes: bytes.length,
+    checksum: createHash("sha256").update(bytes).digest("hex"),
+  });
+  store.tables.asset_versions = [{
+    asset_id: COVER,
+    version_number: 3,
+    storage_path: storagePath,
+    checksum: store.tables.assets[0]!.checksum,
+    mime_type: "image/png",
+    size_bytes: bytes.length,
+    scan_status: "clean",
+  }];
+  store.tables.approvals = [];
+  const app = await buildApp(() => fakeSupabase(store));
+  const payload = { config: { kind: "ebook", cover: { asset_id: COVER } } };
+  try {
+    const unreviewed = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload });
+    assert.equal(unreviewed.statusCode, 422);
+
+    store.tables.approvals.push({
+      id: "c0000000-0000-4000-8000-000000000006", entity_type: "asset", entity_id: COVER,
+      entity_version_number: 2, status: "approved", superseded_at: null,
+    });
+    const stale = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload });
+    assert.equal(stale.statusCode, 422);
+
+    store.tables.approvals.push({
+      id: "c0000000-0000-4000-8000-000000000007", entity_type: "asset", entity_id: COVER,
+      entity_version_number: 3, status: "approved", superseded_at: null,
+    });
+    const approved = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload });
+    assert.equal(approved.statusCode, 201, approved.body);
+  } finally {
+    await app.close();
+  }
+});
+
+test("render rejects review-required cover art until its exact current version is approved", async () => {
+  const store = baseStore();
+  const bytes = Buffer.from("approved cover bytes");
+  const storagePath = `workspaces/${WORKSPACE}/assets/${COVER}/v3/cover.png`;
+  Object.assign(store.tables.assets[0]!, {
+    requires_approval: true,
+    storage_path: storagePath,
+    size_bytes: bytes.length,
+    checksum: createHash("sha256").update(bytes).digest("hex"),
+  });
+  store.tables.asset_versions = [{
+    asset_id: COVER,
+    version_number: 3,
+    storage_path: storagePath,
+    checksum: store.tables.assets[0]!.checksum,
+    mime_type: "image/png",
+    size_bytes: bytes.length,
+    scan_status: "clean",
+  }];
+  store.tables.approvals = [];
+  const service = fakeSupabase(store);
+
+  await assert.rejects(
+    loadRenderImages(service, WORKSPACE, [], COVER),
+    /approved.*current version/i,
+  );
+});
+
+test("viewer cannot create an edition", async () => {
+  const store = baseStore("viewer");
+  const app = await buildApp(() => fakeSupabase(store));
+  const response = await app.inject({ method: "POST", url: `/v1/books/${BOOK}/editions`, headers: auth, payload: { config: { kind: "ebook" } } });
+  assert.equal(response.statusCode, 403);
+  assert.equal(store.tables.editions.length, 0);
+  await app.close();
+});
+
+test("edition updates use optimistic concurrency", async () => {
+  const store = baseStore();
+  store.tables.editions.push({ id: EDITION, book_id: BOOK, type: "ebook", status: "draft", updated_at: "2026-09-03T00:00:00.000Z", edition_metadata_json: { kind: "ebook" } });
+  const app = await buildApp(() => fakeSupabase(store));
+  const stale = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth, payload: {
+    status: "in_review", expectedUpdatedAt: "2026-09-02T00:00:00.000Z",
+  } });
+  assert.equal(stale.statusCode, 409);
+  assert.equal(store.tables.editions[0].status, "draft");
+  const saved = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth, payload: {
+    status: "in_review", expectedUpdatedAt: "2026-09-03T00:00:00.000Z",
+  } });
+  assert.equal(saved.statusCode, 200, saved.body);
+  assert.equal(store.tables.editions[0].status, "in_review");
+  await app.close();
+});
+
+test("equal wall clock still advances the revision and rejects a stale save", async () => {
+  const store = baseStore();
+  const fixed = "2026-11-03T00:00:00.000Z";
+  store.tables.editions.push({ id: EDITION, book_id: BOOK, type: "ebook", status: "draft", updated_at: fixed, edition_metadata_json: { kind: "ebook" } });
+  const app = await buildApp(() => fakeSupabase(store));
+  const realNow = Date.now;
+  try {
+    Date.now = () => Date.parse(fixed);
+    for (const [language, expectedStatus] of [["fr", 200], ["de", 409]] as const) {
+      const response = await app.inject({method:"PATCH",url:`/v1/editions/${EDITION}`,headers:auth,payload:{language,expectedUpdatedAt:fixed}});
+      assert.equal(response.statusCode,expectedStatus,response.body);
+    }
+    assert.equal(store.tables.editions[0].language,"fr");
+    assert.equal(store.tables.editions[0].updated_at,"2026-11-03T00:00:00.000001Z");
+  } finally { Date.now=realNow; await app.close(); }
+});
+
+test("edition updates accept the exact PostgREST offset timestamp and reject an impossible date", async () => {
+  const store = baseStore();
+  const expected = "2099-11-03T05:00:00.123456+05:00";
+  store.tables.editions.push({ id: EDITION, book_id: BOOK, type: "ebook", status: "draft", updated_at: expected, edition_metadata_json: { kind: "ebook" } });
+  const app = await buildApp(() => fakeSupabase(store));
+  try {
+    const saved = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth, payload: { language: "fr", expectedUpdatedAt: expected } });
+    assert.equal(saved.statusCode, 200, saved.body);
+    assert.equal(store.tables.editions[0].updated_at, "2099-11-03T00:00:00.123457Z");
+    const invalid = await app.inject({ method: "PATCH", url: `/v1/editions/${EDITION}`, headers: auth, payload: { language: "de", expectedUpdatedAt: "2099-02-30T00:00:00Z" } });
+    assert.equal(invalid.statusCode, 422, invalid.body);
+    assert.equal(store.tables.editions[0].language, "fr");
+  } finally { await app.close(); }
+});

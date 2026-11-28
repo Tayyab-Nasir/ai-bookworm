@@ -1,0 +1,23 @@
+name: Processing container acceptance
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['services/document/**', 'services/rendering/**', 'services/publishing/**', 'ops/processing.Dockerfile*', 'scripts/test-processing-containers.py', '.github/workflows/processing-runtime.yml']
+  push:
+    branches: [main, master, 'codex/**']
+    paths: ['services/document/**', 'services/rendering/**', 'services/publishing/**', 'ops/processing.Dockerfile*', 'scripts/test-processing-containers.py', '.github/workflows/processing-runtime.yml']
+permissions:
+  contents: read
+jobs:
+  processing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build private processing runtimes
+        run: |
+          for role in document rendering publishing; do
+            docker build -f ops/processing.Dockerfile --target "$role" -t "bookworm-ci-$role" .
+          done
+      - name: Exercise isolated processing containers
+        run: python3 scripts/test-processing-containers.py

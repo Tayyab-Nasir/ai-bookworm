@@ -1,18 +1,44 @@
 """EPUB/PDF rendering service. Deterministic artifacts + preflight."""
 import base64
+import hmac
+import hashlib
+import json
+import os
 import sys
+from math import ceil
+from io import BytesIO
 from pathlib import Path
+from uuid import UUID
+from threading import BoundedSemaphore
+from typing import Annotated, Literal
+import warnings
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+import anyio
+from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from editions import parse_edition  # noqa: E402
-from epub_renderer import render_epub  # noqa: E402
-from pdf_renderer import render_pdf  # noqa: E402
+from editions import (  # noqa: E402
+    cover_requires_unsupported_rtl_typography,
+    edition_requires_rtl_typography,
+    parse_edition,
+    print_requires_unsupported_rtl_typography,
+)
+from cover_renderer import COVER_RENDERER_VERSION, compose_front_cover  # noqa: E402
+from epub_renderer import render_epub, RENDERER_VERSION as EPUB_RENDERER_VERSION  # noqa: E402
+from pdf_renderer import pdf_renderer_version, render_pdf  # noqa: E402
 from preflight import run_preflight  # noqa: E402
 from rules import load_ruleset  # noqa: E402
+from print_fonts import print_font_issues  # noqa: E402
+from rtl_text import cover_rtl_issues  # noqa: E402
+from wrap_cover import VERSION as WRAP_VERSION, UPLOADED_VERSION, prepare_wrap_cover  # noqa: E402
+from preflight import Finding  # noqa: E402
+from audio_assembly import assemble_audio_with_quality, encode_narration_pcm  # noqa: E402
+from publication_metadata import edition_publication_metadata, retailer_listing  # noqa: E402
+from epub_preview_transport import preview_epub_request  # noqa: E402
+from pdf_preview import preview_pdf_page, MAX_PDF_BYTES  # noqa: E402
 
 app = FastAPI(title="bookworm-rendering")
 
@@ -21,6 +47,7 @@ class RenderRequest(BaseModel):
     editionConfig: dict
     bookModel: dict
     coverBase64: str | None = None
+    assetImagesBase64: dict[str, str] = Field(default_factory=dict)
 
 
 class RenderResponse(BaseModel):
@@ -28,6 +55,10 @@ class RenderResponse(BaseModel):
     artifactBase64: str
     sha256: str
     rendererVersion: str
+    coverArtifactBase64: str | None = None
+    coverSha256: str | None = None
+    coverRendererVersion: str | None = None
+    coverFormat: str | None = None
 
 
 class PreflightRequest(BaseModel):
@@ -35,6 +66,209 @@ class PreflightRequest(BaseModel):
     bookModel: dict
     channel: str | None = None
     includeArtifact: bool = True  # render first so artifact-level rules run
+    coverBase64: str | None = None
+    assetImagesBase64: dict[str, str] = Field(default_factory=dict)
+
+
+class AudioAssemblyRequest(BaseModel):
+    segmentsBase64: list[str] = Field(min_length=1, max_length=250)
+
+
+class NarrationEncodingRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    pcmBase64: str = Field(min_length=4, max_length=16777216)
+    pcmSha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    sampleRateHz: Literal[24000]
+    channels: Literal[1]
+    bitDepth: Literal[16]
+
+
+class ImageInspectionRequest(BaseModel):
+    imageBase64: str = Field(min_length=1, max_length=34952536)
+    mimeType: str
+
+
+_image_inspection_slot = BoundedSemaphore(1)
+_pdf_request_slot = BoundedSemaphore(1)
+
+
+def require_service_token(x_service_token: str | None = Header(default=None)) -> None:
+    configured = (os.getenv("RENDERING_SERVICE_TOKEN") or os.getenv("SERVICE_AUTH_TOKEN") or "").strip()
+    if not configured:
+        raise HTTPException(503, "Rendering service authentication is not configured.")
+    if not x_service_token or not hmac.compare_digest(x_service_token.encode("utf-8"), configured.encode("utf-8")):
+        raise HTTPException(401, "invalid service token")
+
+
+@app.post("/pdf/preview", dependencies=[Depends(require_service_token)])
+async def pdf_preview(request: Request, page: int = Query(ge=1, le=20_000),
+                      width: int = Query(default=1080, ge=720, le=1440)):
+    """Private API supplies only an authorized, checksum-pinned saved PDF."""
+    if not _pdf_request_slot.acquire(blocking=False):
+        raise HTTPException(503, "saved PDF preview is busy")
+    try:
+        return await _pdf_preview_request(request, page, width)
+    finally:
+        _pdf_request_slot.release()
+
+
+async def _pdf_preview_request(request: Request, page: int, width: int):
+    if width not in (720, 1080, 1440):
+        raise HTTPException(422, "unsupported PDF proof width")
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/pdf":
+        raise HTTPException(415, "saved PDF bytes are required")
+    if request.headers.get("content-encoding") not in (None, "identity"):
+        raise HTTPException(415, "encoded PDF requests are not supported")
+    expected = request.headers.get("x-content-sha256", "")
+    if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected):
+        raise HTTPException(422, "a valid saved PDF checksum is required")
+    declared = request.headers.get("content-length")
+    if declared is not None and (len(declared) > 10 or not declared.isascii() or not declared.isdecimal()):
+        raise HTTPException(422, "invalid PDF content length")
+    if declared is not None and int(declared) > MAX_PDF_BYTES:
+        raise HTTPException(413, "saved PDF exceeds the preview byte limit")
+    content = bytearray()
+    async for chunk in request.stream():
+        content.extend(chunk)
+        if len(content) > MAX_PDF_BYTES:
+            raise HTTPException(413, "saved PDF exceeds the preview byte limit")
+    if (declared is not None and int(declared) != len(content)) or hashlib.sha256(content).hexdigest() != expected:
+        raise HTTPException(422, "saved PDF integrity check failed")
+    try:
+        result = await anyio.to_thread.run_sync(lambda: preview_pdf_page(bytes(content), page, width))
+    except ValueError as error:
+        raise HTTPException(422, "the requested saved PDF page cannot be previewed") from error
+    except (RuntimeError, MemoryError) as error:
+        raise HTTPException(503, "saved PDF preview is unavailable or busy") from error
+    return Response(json.dumps(result), media_type="application/json", headers={"cache-control": "no-store"})
+
+
+def _cover_bytes(value: str | None) -> bytes | None:
+    if not value:
+        return None
+    try:
+        data = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as error:
+        raise HTTPException(422, "coverBase64 is not valid base64") from error
+    if not data or len(data) > 25 * 1024 * 1024:
+        raise HTTPException(422, "cover file must be between 1 byte and 25 MB")
+    return data
+
+
+@app.post("/audio/assemble", dependencies=[Depends(require_service_token)])
+def assemble_chapter(req: AudioAssemblyRequest):
+    if sum(len(value) for value in req.segmentsBase64) > 140 * 1024 * 1024:
+        raise HTTPException(422, "chapter audio exceeds input limit")
+    try:
+        segments = [base64.b64decode(value, validate=True) for value in req.segmentsBase64]
+        audio, checksum, quality = assemble_audio_with_quality(segments)
+    except ValueError as error:
+        raise HTTPException(422, "invalid or oversized chapter audio") from error
+    except RuntimeError as error:
+        raise HTTPException(503, "audio assembly is unavailable or busy") from error
+    return Response(audio, media_type="audio/mpeg", headers={"x-artifact-sha256": checksum,
+        "x-bookworm-audio-qc": json.dumps(quality, separators=(",", ":")), "cache-control": "no-store"})
+
+
+@app.post("/images/inspect-cover", dependencies=[Depends(require_service_token)])
+def inspect_cover(req: ImageInspectionRequest):
+    if not _image_inspection_slot.acquire(blocking=False):
+        raise HTTPException(503, "cover inspection is busy")
+    try:
+        data = _cover_bytes(req.imageBase64)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data)) as source:
+                mime = {"JPEG": "image/jpeg", "PNG": "image/png"}.get(source.format)
+                width, height = source.size
+                if mime != req.mimeType or mime is None or getattr(source, "n_frames", 1) != 1:
+                    raise ValueError("unsupported image")
+                if not (1024 <= width <= 7200 and 1024 <= height <= 7200):
+                    raise ValueError("invalid dimensions")
+                source.verify()
+            # verify() checks structure; reopening and loading also proves that
+            # the compressed pixels can be decoded within the checked bounds.
+            with Image.open(BytesIO(data)) as decoded:
+                decoded.load()
+        return Response(json.dumps({"mimeType": mime, "width": width, "height": height,
+            "sha256": hashlib.sha256(data).hexdigest()}), media_type="application/json",
+            headers={"cache-control": "no-store"})
+    except (ValueError, OSError, SyntaxError, Image.DecompressionBombError, Image.DecompressionBombWarning) as error:
+        raise HTTPException(422, "cover must be a complete single-frame JPEG or PNG, 1024 to 7200 pixels per side") from error
+    finally:
+        _image_inspection_slot.release()
+
+
+@app.post("/audio/encode-narration", dependencies=[Depends(require_service_token)])
+def encode_narration(req: NarrationEncodingRequest):
+    try:
+        pcm = base64.b64decode(req.pcmBase64, validate=True)
+        if not 2 <= len(pcm) <= 12 * 1024 * 1024 or len(pcm) % 2 or hashlib.sha256(pcm).hexdigest() != req.pcmSha256:
+            raise ValueError("unbound PCM")
+        audio, checksum, profile = encode_narration_pcm(pcm)
+    except ValueError as error:
+        raise HTTPException(422, "invalid, oversized or unbound narration audio") from error
+    except RuntimeError as error:
+        raise HTTPException(503, "narration encoding is unavailable or busy") from error
+    return Response(audio, media_type="audio/mpeg", headers={"x-artifact-sha256": checksum,
+        "x-bookworm-narration-encoding": json.dumps(profile, separators=(",", ":")), "cache-control": "no-store"})
+
+
+def _prepare_cover(req, edition) -> tuple[bytes | None, str | None]:
+    source = _cover_bytes(req.coverBase64)
+    if edition.cover.asset_id and source is None:
+        raise HTTPException(422, "the configured cover asset bytes are required")
+    if source is not None and not edition.cover.asset_id:
+        raise HTTPException(422, "cover bytes require editionConfig.cover.asset_id")
+    if source is None:
+        return None, None
+    try:
+        UUID(edition.cover.asset_id)
+    except (ValueError, TypeError) as error:
+        raise HTTPException(422, "cover asset id must be a UUID") from error
+    if edition.kind == "print" and edition.wrap_cover.source_pdf_version is not None:
+        return source, None
+    try:
+        return compose_front_cover(source, req.bookModel, edition)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+def _illustrations(req, edition) -> dict[str, bytes]:
+    if len(req.assetImagesBase64) > 100:
+        raise HTTPException(422, "at most 100 illustration assets may be rendered at once")
+    images: dict[str, bytes] = {}
+    total = 0
+    max_width = edition.image_policy.max_width_px if edition.kind == "ebook" else None
+    print_target = None if edition.kind == "ebook" else (
+        ceil((edition.trim_in[0] + edition.bleed_in + (edition.bleed_in if edition.bleed_edges == "all" else 0)) * 300),
+        ceil((edition.trim_in[1] + 2 * edition.bleed_in) * 300),
+    )
+    for asset_id, encoded in sorted(req.assetImagesBase64.items()):
+        try:
+            UUID(asset_id)
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as error:
+            raise HTTPException(422, "illustration map contains invalid data") from error
+        total += len(raw)
+        if not raw or len(raw) > 25 * 1024 * 1024 or total > 100 * 1024 * 1024:
+            raise HTTPException(422, "illustration assets exceed rendering limits")
+        try:
+            with Image.open(BytesIO(raw)) as source:
+                source.load()
+                image = source.convert("RGB")
+                if max_width is not None and image.width > max_width:
+                    height = max(1, round(image.height * max_width / image.width))
+                    image = image.resize((max_width, height), Image.Resampling.LANCZOS)
+                elif print_target and image.width > print_target[0] and image.height > print_target[1]:
+                    scale = max(print_target[0] / image.width, print_target[1] / image.height)
+                    image = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))), Image.Resampling.LANCZOS)
+                output = BytesIO()
+                image.save(output, "PNG", optimize=False, compress_level=9)
+                images[asset_id] = output.getvalue()
+        except (UnidentifiedImageError, OSError, ValueError) as error:
+            raise HTTPException(422, f"illustration {asset_id} is not a supported image") from error
+    return images
 
 
 @app.get("/health")
@@ -42,36 +276,132 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/render", response_model=RenderResponse)
+@app.post("/epub/preview", dependencies=[Depends(require_service_token)])
+async def preview_saved_epub(request: Request) -> Response:
+    return await preview_epub_request(request)
+
+
+@app.post("/render", response_model=RenderResponse, dependencies=[Depends(require_service_token)])
 def render(req: RenderRequest) -> RenderResponse:
     try:
         edition = parse_edition(req.editionConfig)
+        metadata = edition_publication_metadata(req.bookModel.get("metadata", {}), req.editionConfig)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
+    if edition.kind == "print" and print_requires_unsupported_rtl_typography(edition, metadata):
+        raise HTTPException(422, "RTL print PDF requires an embedded shaping-capable font; the base-font renderer cannot produce it safely")
+    if edition.kind == "ebook" and edition.flow == "fixed" and edition_requires_rtl_typography(edition, metadata):
+        raise HTTPException(422, "RTL fixed EPUB requires bidirectional shaping, which is not available.")
+    if cover_requires_unsupported_rtl_typography(edition, metadata):
+        raise HTTPException(422, "RTL cover text requires an embedded shaping-capable font; the base-font cover renderer cannot produce it safely")
+    cover_issues = cover_rtl_issues(metadata, edition.model_dump())
+    if cover_issues:
+        raise HTTPException(422, cover_issues[0]["message"])
+    font_issues = print_font_issues(req.bookModel, req.editionConfig)
+    if font_issues:
+        raise HTTPException(422, font_issues[0]["message"])
+    cover, cover_sha = _prepare_cover(req, edition)
+    illustrations = _illustrations(req, edition)
+    cover_output = base64.b64encode(cover).decode() if cover else None
     if edition.kind == "ebook":
-        cover = base64.b64decode(req.coverBase64) if req.coverBase64 else None
-        blob, sha = render_epub(req.bookModel, edition, cover)
+        try:
+            blob, sha = render_epub(req.bookModel, edition, cover, illustrations if edition.image_policy.embed else {})
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
         return RenderResponse(format="epub", artifactBase64=base64.b64encode(blob).decode(),
-                              sha256=sha, rendererVersion="epub-1.0.0")
-    blob, sha = render_pdf(req.bookModel, edition)
+                              sha256=sha, rendererVersion=EPUB_RENDERER_VERSION,
+                              coverArtifactBase64=cover_output, coverSha256=cover_sha,
+                              coverRendererVersion=COVER_RENDERER_VERSION if cover else None)
+    try:
+        blob, sha = render_pdf(req.bookModel, edition, illustrations)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    cover_version = COVER_RENDERER_VERSION
+    if edition.wrap_cover.enabled:
+        try:
+            cover, cover_sha = prepare_wrap_cover(cover, blob, edition)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        cover_output = base64.b64encode(cover).decode()
+        cover_version = UPLOADED_VERSION if edition.wrap_cover.source_pdf_version is not None else WRAP_VERSION
     return RenderResponse(format="pdf", artifactBase64=base64.b64encode(blob).decode(),
-                          sha256=sha, rendererVersion="pdf-1.0.0")
+                          sha256=sha, rendererVersion=pdf_renderer_version(edition),
+                          coverArtifactBase64=cover_output, coverSha256=cover_sha,
+                          coverRendererVersion=cover_version if cover else None,
+                          coverFormat=("pdf" if edition.wrap_cover.enabled else "png") if cover else None)
 
 
-@app.post("/preflight")
-def preflight(req: PreflightRequest) -> dict:
+@app.post("/preflight", dependencies=[Depends(require_service_token)])
+def preflight(req: PreflightRequest, include_listing: Annotated[bool, Header(alias="x-bookworm-include-listing")] = False) -> dict:
     try:
         edition = parse_edition(req.editionConfig)
+        metadata = edition_publication_metadata(req.bookModel.get("metadata", {}), req.editionConfig)
         ruleset = load_ruleset(req.channel)
+        listing = {"listing": retailer_listing(metadata)} if include_listing and req.channel else {}
     except (ValueError, KeyError) as e:
         raise HTTPException(422, str(e)) from e
+    rtl_render_blocked = (
+        (edition.kind == "print" and print_requires_unsupported_rtl_typography(edition, metadata))
+        or (edition.kind == "ebook" and edition.flow == "fixed" and edition_requires_rtl_typography(edition, metadata))
+        or cover_requires_unsupported_rtl_typography(edition, metadata)
+        or bool(cover_rtl_issues(metadata, edition.model_dump()))
+    )
+    # Return actionable findings before a known-unsupported renderer can emit an
+    # unreadable PDF or raster cover. Supplied base64 remains validated here.
+    if rtl_render_blocked or print_font_issues(req.bookModel, req.editionConfig):
+        ctx = {"book": req.bookModel, "edition": req.editionConfig,
+               "artifact": None, "package_bytes": None, "channel": req.channel,
+               "image_bytes": {}, "cover_bytes": _cover_bytes(req.coverBase64)}
+        findings = run_preflight(ctx, ruleset)
+        return {
+            **listing,
+            "ruleVersion": ruleset.version,
+            "channel": req.channel,
+            "errors": sum(1 for f in findings if f.severity == "error"),
+            "warnings": sum(1 for f in findings if f.severity == "warning"),
+            "findings": [f.to_dict() for f in findings],
+        }
+    cover, _ = _prepare_cover(req, edition)
+    cover_image = None if edition.kind == "print" and edition.wrap_cover.source_pdf_version is not None else cover
+    illustrations = _illustrations(req, edition)
+    initial_ctx = {"book": req.bookModel, "edition": req.editionConfig,
+                   "artifact": None, "package_bytes": None, "channel": req.channel,
+                   "image_bytes": illustrations, "cover_bytes": cover_image}
+    initial_findings = run_preflight(initial_ctx, ruleset)
+    if any(f.code.startswith("PRINT_FULL_BLEED_") or f.rule_id == "CORE-LAYOUT-001" for f in initial_findings):
+        return {
+            **listing,
+            "ruleVersion": ruleset.version,
+            "channel": req.channel,
+            "errors": sum(1 for f in initial_findings if f.severity == "error"),
+            "warnings": sum(1 for f in initial_findings if f.severity == "warning"),
+            "findings": [f.to_dict() for f in initial_findings],
+        }
     artifact = None
-    if req.includeArtifact and edition.kind == "ebook":
-        artifact, _ = render_epub(req.bookModel, edition)
-    ctx = {"book": req.bookModel, "edition": req.editionConfig, "artifact": artifact,
-           "channel": req.channel, "image_bytes": {}}
+    cover_pdf = None
+    wrap_error = None
+    if req.includeArtifact:
+        try:
+            artifact, _ = render_epub(req.bookModel, edition, cover, illustrations if edition.image_policy.embed else {}) if edition.kind == "ebook" else render_pdf(req.bookModel, edition, illustrations)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        if edition.kind == "print" and edition.wrap_cover.enabled:
+            try:
+                cover_pdf, _ = prepare_wrap_cover(cover, artifact, edition)
+            except ValueError as error:
+                wrap_error = str(error)
+    ctx = {"book": req.bookModel, "edition": req.editionConfig,
+           "artifact": artifact if edition.kind == "ebook" else None,
+           "package_bytes": artifact,
+           "channel": req.channel, "image_bytes": illustrations, "cover_bytes": cover_image,
+           "cover_pdf_bytes": cover_pdf}
     findings = run_preflight(ctx, ruleset)
+    if wrap_error:
+        findings.append(Finding(code="PRINT_WRAP_LAYOUT", message=wrap_error,
+                                location="edition.wrap_cover", severity="error", category="channel",
+                                rule_id="CORE-COVER-002", rule_version=ruleset.version))
     return {
+        **listing,
         "ruleVersion": ruleset.version,
         "channel": req.channel,
         "errors": sum(1 for f in findings if f.severity == "error"),

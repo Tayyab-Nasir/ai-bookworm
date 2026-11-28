@@ -140,6 +140,49 @@ test("replace_text rejects bad range and text-less nodes", () => {
   );
 });
 
+test("human and AI edits cannot cut a surrogate pair or insert invalid Unicode", () => {
+  for (const source of ["human", "ai"] as const) {
+    const book = sampleBook();
+    book.chapters[0].nodes[1].text = "A😀B";
+    const before = structuredClone(book);
+    for (const [from, to] of [[1, 2], [2, 3], [2, 2], [0, 2], [2, 4]]) {
+      assert.throws(() => applyOperation(book, {
+        ...op("replace_text", { nodeId: "n2", from, to, text: "X" }), source,
+      }, 0), ValidationError);
+      assert.deepEqual(book, before);
+    }
+    assert.throws(() => applyOperation(book, {
+      ...op("split_node", { nodeId: "n2", offset: 2 }), source,
+    }, 0), ValidationError);
+    for (const text of ["\ud800", "X\udc00"]) {
+      assert.throws(() => applyOperation(book, {
+        ...op("replace_text", { nodeId: "n2", from: 1, to: 3, text }), source,
+      }, 0), ValidationError);
+    }
+    assert.deepEqual(book, before);
+  }
+});
+
+test("UTF-16 boundary edits preserve astral characters, formatting and split/merge fidelity", () => {
+  const book = sampleBook();
+  const node = book.chapters[0].nodes[1];
+  node.text = "A😀B";
+  node.attributes = { richText: [{ type: "text", text: node.text, marks: [{ type: "italic" }] }] };
+  const replaced = applyOperation(book, op("replace_text", { nodeId: "n2", from: 1, to: 3, text: "𐐀" }), 0);
+  assert.equal(replaced.book.chapters[0].nodes[1].text, "A𐐀B");
+  assert.equal(replaced.version, 1);
+  const split = applyOperation(book, op("split_node", { nodeId: "n2", offset: 3 }), 0);
+  const [left, right] = split.book.chapters[0].nodes.slice(1, 3);
+  assert.equal(left.text, "A😀");
+  assert.equal(right.text, "B");
+  const merged = applyOperation(split.book, {
+    ...op("merge_nodes", { leftNodeId: left.id, rightNodeId: right.id }), expectedVersion: 1,
+  }, 1);
+  assert.equal(merged.book.chapters[0].nodes[1].text, node.text);
+  assert.deepEqual(left.attributes?.richText, [{ type: "text", text: "A😀", marks: [{ type: "italic" }] }]);
+  assert.equal(node.text, "A😀B");
+});
+
 test("set_attribute merges attributes and validates level", () => {
   const { book } = applyOperation(
     sampleBook(),

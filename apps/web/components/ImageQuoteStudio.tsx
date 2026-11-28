@@ -1,0 +1,344 @@
+"use client";
+
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Asset, Book } from "@bookworm/types";
+import type { ImageQuoteModel } from "@bookworm/api-client";
+import { createClient } from "@bookworm/api-client";
+import { canAcceptImageQuote, isImageQuoteFormLocked, readImageQuotePointer, recoverSavedImageQuote, type SavedImageQuote } from "../lib/image-quote-ui-state";
+
+const card = "rounded-3xl border border-white/10 bg-white/[0.035] p-6 sm:p-8";
+const field = "mt-2 block w-full rounded-xl border border-white/10 bg-black/60 px-3 py-3 text-white outline-none focus-visible:ring-2 focus-visible:ring-violet-300";
+const button = "inline-flex min-h-11 items-center justify-center rounded-full bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-violet-100 focus-visible:ring-2 focus-visible:ring-violet-300 disabled:cursor-not-allowed disabled:opacity-45";
+
+type ReferenceSelection = { assetId: string; checksum: string; bookId?: string };
+type BookBibleReference = { checksum: string; names: string[] };
+type ReferenceLookup = { bookId: string; isCurrent: () => boolean } & (
+  | { status: "loading" | "unavailable" }
+  | { status: "ready"; references: Map<string, BookBibleReference> }
+);
+
+function checkCheckpoint(storageKey: string, legacyKey: string, expected: string | null) {
+  if (sessionStorage.getItem(legacyKey) !== null || sessionStorage.getItem(storageKey) !== expected) {
+    throw new Error("The image recovery checkpoint changed. Recover the latest request before continuing.");
+  }
+}
+
+function replaceCheckpoint(storageKey: string, legacyKey: string, expected: string | null, next: string) {
+  checkCheckpoint(storageKey, legacyKey, expected);
+  sessionStorage.setItem(storageKey, next);
+  if (sessionStorage.getItem(storageKey) !== next) throw new Error("Image recovery storage could not be verified.");
+}
+
+export default function ImageQuoteStudio({ workspaceId, books, assets, canEdit, onCompleted, scope, active, isWorkspaceCurrent, findArtwork, onReviewArtwork, requestedBookId }: {
+  workspaceId: string; books: Book[]; assets: Asset[]; canEdit: boolean; onCompleted: () => Promise<void>; scope: { actor: string; current: () => boolean; begin: () => () => boolean; checked: <T>(work: () => Promise<T>) => Promise<T> }; active: boolean; isWorkspaceCurrent: (id: string) => boolean;
+  findArtwork?: (id: string, type: "illustration" | "cover") => Asset | undefined;
+  onReviewArtwork?: (asset: Asset) => void;
+  requestedBookId?: string | null;
+}) {
+  const mounted = useRef(false);
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const api = useMemo(() => {
+    const raw = createClient({ baseUrl: "/api/backend", expectedActor: scope.actor });
+    return new Proxy(raw, { get(target, key, receiver) { const value = Reflect.get(target, key, receiver); return typeof value === "function" ? (...args: unknown[]) => {
+      const valid = scope.begin();
+      const mutation = key === "createImageQuote" || key === "acceptImageQuote";
+      const checkpointKey = `bookworm.image-quote.v2:${scope.actor}:${workspaceId}`;
+      const oldKey = `bookworm.image-quote.v1:${workspaceId}`;
+      const checkpoint = mutation ? sessionStorage.getItem(checkpointKey) : null;
+      return scope.checked(() => { if (!valid() || !mounted.current || !isWorkspaceCurrent(workspaceId)) throw new Error("The image workspace changed."); if (mutation) checkCheckpoint(checkpointKey, oldKey, checkpoint); return value(...args); }).then(result => { if (!valid() || !mounted.current || !isWorkspaceCurrent(workspaceId)) throw new Error("The image workspace changed."); return result; });
+    } : value; } });
+  }, [scope, workspaceId, isWorkspaceCurrent]);
+  const [models, setModels] = useState<ImageQuoteModel[]>([]);
+  const [purchaseAvailable, setPurchaseAvailable] = useState(false);
+  const [modelId, setModelId] = useState("");
+  const [bookId, setBookId] = useState("");
+  const currentBookId = useRef("");
+  const [kind, setKind] = useState<"illustration" | "cover">("illustration");
+  const [prompt, setPrompt] = useState("");
+  const [selections, setSelections] = useState<ReferenceSelection[]>([]);
+  const [lookup, setLookup] = useState<ReferenceLookup | null>(null);
+  const lookupVersion = useRef(0);
+  const [quote, setQuote] = useState<SavedImageQuote | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState("");
+  const [savedQuoteId, setSavedQuoteId] = useState("");
+  const [storeConsent, setStoreConsent] = useState(false);
+  const [generateConsent, setGenerateConsent] = useState(false);
+  // Revalidate paid approval after the session or workspace changes.
+  useLayoutEffect(() => { setGenerateConsent(false); }, [active, api, scope, workspaceId]);
+  const [busy, setBusy] = useState(false);
+  const [recoveryBlocked, setRecoveryBlocked] = useState(true);
+  const [recoveredRequest, setRecoveredRequest] = useState(false);
+  const [acceptanceUncertain, setAcceptanceUncertain] = useState(false);
+  const [message, setMessage] = useState("");
+  const storageKey = `bookworm.image-quote.v2:${scope.actor}:${workspaceId}`;
+  const legacyKey = `bookworm.image-quote.v1:${workspaceId}`;
+  const requestVersion = useRef(0);
+  const requestInFlight = useRef(false);
+  const activeWorkspace = useRef(workspaceId);
+  activeWorkspace.current = workspaceId;
+  // A handler retained from an earlier session check must not act on a later
+  // incarnation of the same account and workspace.
+  const renderCurrent = scope.begin();
+  const entryCurrent = () => mounted.current && active && renderCurrent() && isWorkspaceCurrent(workspaceId);
+
+  useEffect(() => {
+    let live = true;
+    const version = ++requestVersion.current;
+    const valid = scope.begin();
+    const current = () => live && valid() && version === requestVersion.current && activeWorkspace.current === workspaceId;
+    requestInFlight.current = false; setBusy(false); setRecoveryBlocked(true); setQuote(null); setPurchaseAvailable(false);
+    if (!workspaceId || !active) return () => { live = false; ++requestVersion.current; };
+    void api.listImageQuoteModels(workspaceId).then(result => { if (!current()) return; setModels(result.models); setPurchaseAvailable(result.purchaseAvailable); setModelId(value => result.models.some(model => model.id === value) ? value : result.models[0]?.id ?? ""); }).catch(() => { if (current()) setMessage("Image quote options are unavailable right now."); });
+    void (async () => {
+      try {
+        const raw = sessionStorage.getItem(storageKey);
+        const legacyRaw = sessionStorage.getItem(legacyKey);
+        if (legacyRaw !== null) throw new Error("An older image request needs manual reconciliation before a new request. Its original account and acceptance state cannot be established safely in this browser.");
+        const pointer = readImageQuotePointer(raw);
+        if (raw !== null && !pointer) throw new Error("The saved image recovery checkpoint is invalid. Contact support before preparing another quote.");
+        if (pointer) {
+          setIdempotencyKey(pointer.idempotencyKey ?? ""); setSavedQuoteId(pointer.quoteId ?? ""); setRecoveredRequest(true); setBusy(true); requestInFlight.current = true; setAcceptanceUncertain(Boolean(pointer.acceptancePending));
+          const saved = await recoverSavedImageQuote(api, workspaceId, pointer); if (!current()) return;
+          const next = { ...pointer, quoteId: saved.quoteId, ...(saved.job ? { acceptancePending: false } : {}) };
+          replaceCheckpoint(storageKey, legacyKey, raw, JSON.stringify(next)); setSavedQuoteId(saved.quoteId); setQuote(saved); setAcceptanceUncertain(Boolean(next.acceptancePending));
+        }
+        if (current()) setRecoveryBlocked(false);
+      } catch (reason) { if (current()) setMessage(reason instanceof Error ? reason.message : "Saved quote status could not be recovered. Keep the original request and try recovery again."); }
+      finally { if (current()) { requestInFlight.current = false; setBusy(false); } }
+    })();
+    return () => { live = false; ++requestVersion.current; };
+  }, [workspaceId, active, api, scope, storageKey, legacyKey]);
+
+  const refresh = async () => {
+    if (!entryCurrent() || busy || requestInFlight.current) return;
+    const version = requestVersion.current;
+    const valid = scope.begin();
+    requestInFlight.current = true; setBusy(true); setRecoveryBlocked(true); setMessage(""); setGenerateConsent(false);
+    try {
+      const { raw, legacyRaw } = await scope.checked(async () => ({ raw: sessionStorage.getItem(storageKey), legacyRaw: sessionStorage.getItem(legacyKey) }));
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      if (legacyRaw !== null) throw new Error("An older image request needs manual reconciliation before a new request. Its original account and acceptance state cannot be established safely in this browser.");
+      if (raw === null) {
+        if (idempotencyKey || savedQuoteId || recoveredRequest || quote) throw new Error("The original quote checkpoint is unavailable. No new request was sent.");
+        checkCheckpoint(storageKey, legacyKey, null);
+        setRecoveryBlocked(false); setMessage("Image recovery storage checked. No saved request was found."); return;
+      }
+      const pointer = readImageQuotePointer(raw);
+      if (!pointer) throw new Error("The saved image recovery checkpoint is invalid. Contact support before preparing another quote.");
+      if ((idempotencyKey && pointer.idempotencyKey !== idempotencyKey) || (savedQuoteId && pointer.quoteId !== savedQuoteId)) throw new Error("The image recovery checkpoint changed. Recover the original request before continuing.");
+      setIdempotencyKey(pointer.idempotencyKey ?? ""); setSavedQuoteId(pointer.quoteId ?? ""); setRecoveredRequest(true); setAcceptanceUncertain(Boolean(pointer.acceptancePending));
+      const saved = await recoverSavedImageQuote(api, workspaceId, pointer);
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      const next = { ...pointer, quoteId: saved.quoteId, ...(saved.job ? { acceptancePending: false } : {}) };
+      replaceCheckpoint(storageKey, legacyKey, raw, JSON.stringify(next));
+      setSavedQuoteId(saved.quoteId); setQuote(saved); setRecoveryBlocked(false); setAcceptanceUncertain(Boolean(next.acceptancePending));
+      if (saved.job?.status === "succeeded") {
+        try { await onCompleted(); }
+        catch { if (valid() && version === requestVersion.current) setMessage("Artwork is saved. The asset library could not refresh; open it or refresh status again."); }
+      }
+    } catch (reason) { if (valid() && version === requestVersion.current) setMessage(reason instanceof Error ? reason.message : "Saved quote status could not be recovered. No new generation was started."); }
+    finally { if (valid() && version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
+  };
+  const createQuote = async () => {
+    if (!entryCurrent() || currentBookId.current !== bookId || !canEdit || !storeConsent || !modelId || prompt.trim().length < 10 || busy || requestInFlight.current || recoveryBlocked || idempotencyKey || quote || !referencesReady) return;
+    const version = requestVersion.current;
+    const valid = scope.begin();
+    requestInFlight.current = true;
+    setBusy(true); setMessage("");
+    try {
+      if (sessionStorage.getItem(storageKey) !== null || sessionStorage.getItem(legacyKey) !== null) throw new Error("An existing image request needs recovery before a new quote.");
+      const key = crypto.randomUUID();
+      const checkpoint = JSON.stringify({ idempotencyKey: key });
+      replaceCheckpoint(storageKey, legacyKey, null, checkpoint);
+      setIdempotencyKey(key);
+      const result = await api.createImageQuote(workspaceId, { modelId, idempotencyKey: key, ...(bookId ? { bookId } : {}), kind,
+        prompt: prompt.trim(), referenceAssetIds: references, consentToQuoteStorage: true });
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      const receivedCheckpoint = JSON.stringify({ quoteId: result.quoteId, idempotencyKey: key });
+      replaceCheckpoint(storageKey, legacyKey, checkpoint, receivedCheckpoint);
+      setSavedQuoteId(result.quoteId);
+      const saved = await recoverSavedImageQuote(api, workspaceId, { quoteId: result.quoteId });
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      checkCheckpoint(storageKey, legacyKey, receivedCheckpoint);
+      setQuote(saved); setGenerateConsent(false);
+    } catch (reason) { if (valid() && version === requestVersion.current) { setRecoveryBlocked(true); setMessage(reason instanceof Error ? reason.message : "Quote creation is unconfirmed. Recover the original request before preparing another quote."); } }
+    finally { if (valid() && version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
+  };
+  const accept = async () => {
+    if (!entryCurrent() || !quote || requestInFlight.current || recoveryBlocked || !canAcceptImageQuote({ canEdit, busy, purchaseAvailable, generateConsent, acceptanceUncertain, quote: quote.quote, hasJob: Boolean(quote.job) })) return;
+    const version = requestVersion.current;
+    const valid = scope.begin();
+    requestInFlight.current = true; setBusy(true); setMessage(""); setGenerateConsent(false); setAcceptanceUncertain(true);
+    try {
+      // Confirm the original checkpoint and its persisted uncertainty before any financial mutation.
+      const raw = sessionStorage.getItem(storageKey);
+      const existing = readImageQuotePointer(raw);
+      if (!existing || existing.quoteId !== quote.quoteId || existing.acceptancePending || sessionStorage.getItem(legacyKey) !== null) throw new Error("The original image request needs recovery before acceptance.");
+      const checkpoint = JSON.stringify({ ...existing, acceptancePending: true });
+      replaceCheckpoint(storageKey, legacyKey, raw, checkpoint);
+      await api.acceptImageQuote(workspaceId, quote.quoteId, quote.quote.reservedCredits);
+      const saved = await recoverSavedImageQuote(api, workspaceId, { quoteId: quote.quoteId });
+      if (!valid() || version !== requestVersion.current || activeWorkspace.current !== workspaceId) return;
+      checkCheckpoint(storageKey, legacyKey, checkpoint);
+      if (saved.job) replaceCheckpoint(storageKey, legacyKey, checkpoint, JSON.stringify({ quoteId: quote.quoteId, ...(idempotencyKey ? { idempotencyKey } : {}) }));
+      setQuote(saved); setAcceptanceUncertain(!saved.job);
+      if (saved.job?.status === "succeeded") {
+        try { await onCompleted(); }
+        catch { if (valid() && version === requestVersion.current) setMessage("Artwork is saved. Open the asset library to view it."); }
+      }
+    } catch (reason) { if (valid() && version === requestVersion.current) { setRecoveryBlocked(true); setMessage(`${reason instanceof Error ? reason.message : "Acceptance is unconfirmed."} Refresh saved status before accepting again. No new purchase will be sent by recovery.`); } }
+    finally { if (valid() && version === requestVersion.current) { requestInFlight.current = false; setBusy(false); } }
+  };
+  const startFresh = () => {
+    if (!entryCurrent() || busy || requestInFlight.current || acceptanceUncertain || !quote || !quote.job && quote.quote.status !== "expired") return;
+    try {
+      const pointer = readImageQuotePointer(sessionStorage.getItem(storageKey));
+      if (!pointer || pointer.quoteId !== quote.quoteId || pointer.acceptancePending || sessionStorage.getItem(legacyKey) !== null) throw new Error("The original image request needs recovery before starting another.");
+      sessionStorage.removeItem(storageKey);
+      if (sessionStorage.getItem(storageKey) !== null) throw new Error("The image recovery record could not be cleared.");
+    }
+    catch { setRecoveryBlocked(true); setMessage("The original image request needs recovery. No new image request was sent."); return; }
+    setQuote(null); setIdempotencyKey(""); setSavedQuoteId(""); setPrompt(""); setSelections([]); setRecoveredRequest(false); setRecoveryBlocked(false);
+    setStoreConsent(false); setGenerateConsent(false); setMessage("");
+  };
+  const option = models.find(item => item.id === modelId);
+  const referenceLimit = Math.min(3, option?.maxReferenceImages ?? 0);
+  const imageAssets = assets.filter(asset => asset.workspace_id === workspaceId && !asset.deleted_at && asset.mime_type === "image/png"
+    && /^[a-f0-9]{64}$/.test(asset.checksum) && asset.size_bytes > 0 && asset.size_bytes <= 5 * 1024 * 1024
+    && (asset.current_scan_status === undefined || asset.current_scan_status === "clean" || asset.current_scan_status === "trusted_generated"));
+  const references = selections.map(selection => selection.assetId);
+  const unavailableReferences = selections.filter(selection => !imageAssets.some(asset => asset.id === selection.assetId && asset.checksum === selection.checksum));
+  const referencesReady = unavailableReferences.length === 0 && references.length <= referenceLimit;
+  const visibleLookup = lookup?.bookId === bookId && lookup.isCurrent() ? lookup : null;
+  const bookBibleNames = (asset: Asset) => {
+    const link = visibleLookup?.status === "ready" ? visibleLookup.references.get(asset.id) : undefined;
+    return link?.checksum === asset.checksum ? link.names : [];
+  };
+  const visibleImages = visibleLookup?.status === "ready"
+    ? imageAssets.filter(asset => bookBibleNames(asset).length > 0 || references.includes(asset.id))
+    : imageAssets;
+  const activeJob = quote?.job;
+  const artwork = activeJob?.status === "succeeded" && activeJob.assetId && quote
+    ? findArtwork?.(activeJob.assetId, quote.quote.kind) : undefined;
+  const formLocked = recoveryBlocked || isImageQuoteFormLocked({ canEdit, busy, hasRequestKey: Boolean(idempotencyKey), hasSavedQuote: Boolean(quote) });
+  const requestedBook = requestedBookId ? books.find(book => book.id === requestedBookId && book.workspace_id === workspaceId) : undefined;
+  const acceptAllowed = !recoveryBlocked && canAcceptImageQuote({ canEdit, busy, purchaseAvailable, generateConsent, acceptanceUncertain, quote: quote?.quote ?? null, hasJob: Boolean(activeJob) });
+
+  const showLibrary = () => {
+    lookupVersion.current++;
+    setLookup(null);
+  };
+  const selectBook = (next: string) => {
+    if (!entryCurrent() || formLocked || requestInFlight.current || currentBookId.current !== bookId || next === bookId) return;
+    showLibrary();
+    currentBookId.current = next;
+    setBookId(next);
+    setSelections(current => current.filter(selection => !selection.bookId));
+  };
+  const loadBookBibleReferences = async () => {
+    if (!entryCurrent() || formLocked || requestInFlight.current || !bookId || currentBookId.current !== bookId
+      || !books.some(book => book.id === bookId && book.workspace_id === workspaceId)) return;
+    const ticket = ++lookupVersion.current;
+    const isCurrent = () => ticket === lookupVersion.current && currentBookId.current === bookId && entryCurrent();
+    const request = { bookId, isCurrent };
+    setLookup({ ...request, status: "loading" });
+    try {
+      const memory = await api.getBookMemory(bookId);
+      if (!isCurrent()) return;
+      if (memory.book.id !== bookId || memory.book.workspace_id !== workspaceId) throw new Error("Book context changed.");
+      const references = new Map<string, BookBibleReference>();
+      for (const asset of memory.imageAssets) {
+        if (asset.mime_type === "image/png") references.set(asset.id, { checksum: asset.checksum, names: [] });
+      }
+      for (const item of memory.items) {
+        const ids = item.attributes_json?.imageAssetIds;
+        if (item.book_id !== bookId || typeof item.name !== "string" || !Array.isArray(ids)) continue;
+        for (const id of ids) {
+          const reference = typeof id === "string" ? references.get(id) : undefined;
+          if (reference && !reference.names.includes(item.name)) reference.names.push(item.name);
+        }
+      }
+      setLookup({ ...request, status: "ready", references });
+    } catch {
+      if (isCurrent()) setLookup({ ...request, status: "unavailable" });
+    }
+  };
+  const selectReference = (asset: Asset, checked: boolean) => {
+    if (!entryCurrent() || formLocked || requestInFlight.current || currentBookId.current !== bookId || (visibleLookup && !visibleLookup.isCurrent())) return;
+    const fromBookBible = bookBibleNames(asset).length > 0;
+    setSelections(current => {
+      if (!checked) return current.filter(selection => selection.assetId !== asset.id);
+      if (current.length >= referenceLimit || current.some(selection => selection.assetId === asset.id)) return current;
+      return [...current, { assetId: asset.id, checksum: asset.checksum, ...(fromBookBible ? { bookId } : {}) }];
+    });
+  };
+
+  return <section className={card} aria-labelledby="image-quote-title">
+    <div className="flex flex-wrap items-start justify-between gap-4">
+      <div><p className="text-[11px] uppercase tracking-[0.18em] text-violet-200/70">Image studio · private drafts</p>
+        <h2 id="image-quote-title" className="mt-2 text-2xl font-medium tracking-tight text-white">Illustrations and cover art</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-white/60">Create a book-aware brief, review the maximum token credit hold, then approve generation. Cover typography is composed later in Publishing Studio.</p></div>
+      <span className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-white/60">Measured usage · private asset</span>
+    </div>
+    {message && <p role="alert" className="mt-5 rounded-xl border border-amber-200/20 bg-amber-100/5 p-3 text-sm text-amber-100">{message}</p>}
+    {requestedBook && !bookId && !formLocked && <button className={`${button} mt-4`} type="button" onClick={() => selectBook(requestedBook.id)}>
+      Use {requestedBook.title} as book context
+    </button>}
+    {requestedBookId && !requestedBook && <p role="status" className="mt-4 text-sm text-white/60">The linked book is unavailable in this workspace.</p>}
+    {recoveredRequest && <p className="mt-5 text-sm leading-6 text-white/60" role="status">Recovered saved request. Its private brief and references remain in the server quote; this browser does not retain their text. Acceptance uses that saved request and the model and maximum credits below.</p>}
+    {!recoveredRequest && <fieldset disabled={formLocked} className="mt-6 grid gap-4 md:grid-cols-2">
+      <label className="text-sm text-white/70">Artwork type<select className={field} value={kind} onChange={event => setKind(event.target.value as typeof kind)}><option value="illustration">Interior illustration</option><option value="cover">Cover artwork</option></select></label>
+      <label className="text-sm text-white/70">Book context<select className={field} value={bookId} onChange={event => selectBook(event.target.value)}><option value="">No book context</option>{books.map(book => <option key={book.id} value={book.id}>{book.title}</option>)}</select></label>
+      <label className="text-sm text-white/70 md:col-span-2">Approved model and format<select className={field} value={modelId} onChange={event => setModelId(event.target.value)}>{models.map(model => <option key={model.id} value={model.id}>{model.label} · {model.size} · {model.quality}</option>)}</select></label>
+      <label className="text-sm text-white/70 md:col-span-2">Describe the scene, characters, mood and visual style<textarea className={`${field} min-h-28 resize-y`} minLength={10} maxLength={8000} value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="A rain-soaked market at dusk, seen through the eyes of…" /></label>
+      <fieldset className="min-w-0 md:col-span-2"><legend className="text-sm text-white/70">Optional clean PNG references</legend><p className="mt-1 text-xs text-white/45">Selected reference bytes and your brief are sent to the configured image provider after acceptance. The server rechecks ownership, scan state and file integrity.</p>
+        {bookId && <div className="mt-2 flex flex-wrap items-center gap-x-4">
+          {visibleLookup?.status !== "ready" && <button className="min-h-11 text-sm underline underline-offset-4 disabled:opacity-45" type="button" disabled={visibleLookup?.status === "loading"} onClick={() => void loadBookBibleReferences()}>
+            {visibleLookup?.status === "unavailable" ? "Retry Book Bible references" : "Show Book Bible references"}
+          </button>}
+          {visibleLookup && <button className="min-h-11 text-sm underline underline-offset-4" type="button" onClick={showLibrary}>Show workspace images</button>}
+        </div>}
+        {visibleLookup?.status === "loading" && <p className="text-sm text-white/60" role="status">Checking Book Bible references…</p>}
+        {visibleLookup?.status === "unavailable" && <p className="text-sm text-amber-100" role="status">Book Bible references are unavailable. You can still select workspace images.</p>}
+        {visibleLookup?.status === "ready" && <p className="text-sm text-white/60" role="status">
+          {visibleImages.some(asset => bookBibleNames(asset).length > 0) ? "Select PNGs linked to this book. Those selections are cleared when you change books." : "No linked PNGs are available for this book."}
+        </p>}
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">{visibleImages.map(asset => {
+          const names = bookBibleNames(asset);
+          const selected = references.includes(asset.id);
+          return <label key={asset.id} className="flex min-w-0 items-start gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm text-white/70">
+            <input className="mt-0.5" type="checkbox" checked={selected} disabled={!selected && references.length >= referenceLimit} onChange={event => selectReference(asset, event.target.checked)} />
+            <span className="min-w-0 break-words">{asset.name}{names.length > 0 && <span className="mt-1 block text-xs text-violet-200/75">Book Bible · {names.join(", ")}</span>}</span>
+          </label>;
+        })}</div>
+        {unavailableReferences.length > 0 && <div className="mt-2 text-sm text-amber-100">
+          <p role="status">A selected image changed or is unavailable. Remove it before preparing a quote.</p>
+          <button type="button" className="min-h-11 underline" onClick={() => {
+            if (entryCurrent() && !formLocked && !requestInFlight.current) setSelections(current => current.filter(selection => !unavailableReferences.includes(selection)));
+          }}>Remove unavailable references</button>
+        </div>}
+        {references.length > referenceLimit && <p className="mt-2 text-sm text-amber-100" role="status">Choose up to {referenceLimit} references for this model.</p>}
+      </fieldset>
+    </fieldset>}
+    {!quote && (idempotencyKey || savedQuoteId || recoveryBlocked) ? <div className="mt-5 flex flex-wrap items-center gap-4 border-t border-white/10 pt-5"><button type="button" className={button} disabled={busy} onClick={() => void refresh()}>{busy ? "Recovering status…" : idempotencyKey || savedQuoteId ? "Recover same quote request" : "Recheck image recovery storage"}</button><p className="text-sm text-white/55">Recovery checks this account and workspace for a saved request. It never saves a new quote or starts generation.</p></div>
+      : !quote && <div className="mt-5 flex flex-wrap items-center justify-between gap-4 border-t border-white/10 pt-5"><label className="flex max-w-xl items-start gap-3 text-sm leading-5 text-white/60"><input type="checkbox" checked={storeConsent} disabled={!canEdit || busy} onChange={event => setStoreConsent(event.target.checked)} /><span>Save this private prompt and selected source references in the quote so I can recover the same offer later.</span></label><button type="button" className={button} disabled={!canEdit || busy || !storeConsent || !modelId || prompt.trim().length < 10 || !referencesReady} onClick={() => void createQuote()}>{busy ? "Preparing quote…" : "Prepare image quote"}</button></div>}
+    {quote && <div className="mt-6 rounded-2xl border border-violet-200/20 bg-violet-200/[0.04] p-5" aria-live="polite">
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs uppercase tracking-[0.14em] text-violet-100/60">Maximum credit hold</p><p className="mt-1 text-3xl tabular-nums text-white">{Number(quote.quote.reservedCredits).toLocaleString()} <span className="text-sm text-white/55">credits</span></p><p className="mt-2 text-xs text-white/50">{quote.quote.model} · {quote.quote.size} · {quote.quote.quality} · expires {new Date(quote.quote.expiresAt).toLocaleString()}</p></div><button className="min-h-10 rounded-full border border-white/15 px-4 text-sm text-white/75 hover:bg-white/5" disabled={busy} onClick={() => void refresh()} type="button">Refresh status</button></div>
+      <p className="mt-3 text-sm leading-6 text-white/60">This is the maximum hold for the saved request. Final usage is reconciled from provider token measurements. Unsupported measurements remain under review. Your image stays a private draft until you use it in a book.</p>
+      {activeJob && <p className="mt-3 text-sm text-white/75">Generation {activeJob.status}. Refreshing never starts another generation.</p>}
+      {acceptanceUncertain && <p className="mt-3 text-sm text-amber-100" role="status">Acceptance is unconfirmed. Refresh status to recover the same job. A missing job cannot rule out a delayed acceptance; contact support before preparing another quote.</p>}
+      {!activeJob && quote.quote.status === "ready" && <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t border-white/10 pt-4"><label className="flex max-w-xl items-start gap-3 text-sm leading-5 text-white/60"><input type="checkbox" checked={generateConsent} disabled={!canEdit || busy || recoveryBlocked || acceptanceUncertain || !purchaseAvailable} onChange={event => setGenerateConsent(event.target.checked)} /><span>I approve sending this saved prompt and selected references for paid image generation, up to {Number(quote.quote.reservedCredits).toLocaleString()} credits.</span></label><button className={button} type="button" disabled={!acceptAllowed} onClick={() => void accept()}>{purchaseAvailable ? `Accept quote · ${Number(quote.quote.reservedCredits).toLocaleString()} credits` : "Purchases not enabled"}</button></div>}
+      {quote.quote.status === "expired" && !acceptanceUncertain && <p className="mt-4 text-sm text-amber-100">This offer expired. Prepare a new quote to continue.</p>}
+      {activeJob?.status === "succeeded" && <div className="mt-3">
+        <p className="text-sm text-emerald-100">Artwork was saved to your private library. {quote.quote.kind === "cover" ? "Open the file to check its approval status before choosing it for an edition." : "Open the file to check its approval status before inserting it in a chapter."}</p>
+        {findArtwork && !artwork && <p className="mt-2 text-sm text-white/60">This file is unavailable in the current library. Use Refresh library to check again.</p>}
+        <div className="mt-2 flex flex-wrap items-center gap-4">
+          {artwork && onReviewArtwork && <button type="button" className="min-h-11 text-sm underline" onClick={() => { if (entryCurrent()) onReviewArtwork(artwork); }}>Review generated artwork</button>}
+          <button type="button" disabled={busy || recoveryBlocked || acceptanceUncertain} className="min-h-11 text-sm underline disabled:opacity-45" onClick={startFresh}>Create another image</button>
+        </div>
+      </div>}
+      {activeJob && ["failed", "cancelled"].includes(activeJob.status) && <div className="mt-3 flex flex-wrap items-center gap-4"><p className="text-sm text-amber-100">This request is finished. Review your credit activity before preparing a new image.</p><button type="button" disabled={busy || recoveryBlocked || acceptanceUncertain} className="text-sm underline disabled:opacity-45" onClick={startFresh}>Prepare a new quote</button></div>}
+      {!activeJob && !acceptanceUncertain && quote.quote.status === "expired" && <button type="button" disabled={busy || recoveryBlocked} className="mt-3 text-sm underline disabled:opacity-45" onClick={startFresh}>Prepare a new quote</button>}
+    </div>}
+  </section>;
+}

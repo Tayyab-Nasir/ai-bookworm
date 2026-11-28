@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/routes/account.ts", "src/plugins/auth.ts"]
+}

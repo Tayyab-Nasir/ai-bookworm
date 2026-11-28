@@ -8,6 +8,8 @@ export interface Entitlements {
   books: number;
   ai_credits_monthly: number;
   image_credits_monthly: number;
+  audio_credits_monthly: number;
+  translation_credits_monthly: number;
   storage_gb: number;
   rendering: boolean;
   publishing_channels: string[];
@@ -18,8 +20,10 @@ const FREE_DEFAULTS: Entitlements = {
   seats: 1,
   workspaces: 1,
   books: 3,
-  ai_credits_monthly: 100,
-  image_credits_monthly: 5,
+  ai_credits_monthly: 0,
+  image_credits_monthly: 0,
+  audio_credits_monthly: 0,
+  translation_credits_monthly: 0,
   storage_gb: 1,
   rendering: true,
   publishing_channels: ["export"],
@@ -43,7 +47,13 @@ export async function currentEntitlements(supabase: SupabaseClient, organization
     .limit(1)
     .maybeSingle();
   if (error) throw new AppError(500, error.message);
-  if (!sub) return { plan: { id: null, name: "free" }, subscription: null, entitlements: FREE_DEFAULTS };
+  // An explicit paid-through date is authoritative even if the provider has
+  // not yet changed the subscription status. Preserve legacy null periods;
+  // they require separate reconciliation before manual provisioning is safe.
+  const periodEnd = sub?.current_period_end;
+  if (!sub || (periodEnd != null && (typeof periodEnd !== "string" || !Number.isFinite(Date.parse(periodEnd)) || Date.parse(periodEnd) <= Date.now()))) {
+    return { plan: { id: null, name: "free" }, subscription: null, entitlements: FREE_DEFAULTS };
+  }
   const { data: plan, error: pErr } = await supabase.from("plans").select("id,name,entitlements_json").eq("id", sub.plan_id).maybeSingle();
   if (pErr) throw new AppError(500, pErr.message);
   return {
@@ -57,6 +67,8 @@ export async function currentEntitlements(supabase: SupabaseClient, organization
 const METER_QUOTA: Record<string, keyof Entitlements> = {
   ai_credits: "ai_credits_monthly",
   image_credits: "image_credits_monthly",
+  audio_credits: "audio_credits_monthly",
+  translation_credits: "translation_credits_monthly",
   storage_gb: "storage_gb",
   seats: "seats",
 };

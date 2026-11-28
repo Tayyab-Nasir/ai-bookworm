@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 
 import '../auth.dart';
 import '../models.dart';
@@ -181,7 +181,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
         children: [
           if (_error != null) Text(_error!),
           DropdownButtonFormField<Book>(
-            value: _book,
+            initialValue: _book,
             decoration: const InputDecoration(labelText: 'Book'),
             items: [
               for (final b in _books)
@@ -194,7 +194,7 @@ class _AiAssistantScreenState extends State<AiAssistantScreen> {
           ),
           const SizedBox(height: 8),
           DropdownButtonFormField<Chapter>(
-            value: _chapter,
+            initialValue: _chapter,
             decoration: const InputDecoration(labelText: 'Chapter'),
             items: [
               for (final c in _chapters)

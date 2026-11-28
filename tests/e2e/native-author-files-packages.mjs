@@ -1,0 +1,429 @@
+/** Real retailer handoff ZIPs through authenticated API, private services and Storage. */
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { childEnvironment, requireNativeAuthorRunner } from './native-author-files-guard.mjs';
+
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+
+async function verifyManagedPublishing(request, service, author, alice, bob, packages) {
+  const [primary, withdrawn] = [packages.find(item => item.intent.channel === 'kdp'), packages.find(item => item.intent.channel !== 'kdp')];
+  assert.ok(primary && withdrawn);
+  const otherOperator = await author('Native second publishing operator');
+  const keys = ['MANAGED_PUBLISHING_ENABLED', 'ADMIN_USER_IDS', 'MANAGED_PUBLISHING_OPERATOR_IDS'];
+  const previous = keys.map(key => process.env[key]);
+  const owner = { 'x-bookworm-actor': alice.userId };
+  const operator = { 'x-bookworm-actor': bob.userId };
+  const peer = { 'x-bookworm-actor': otherOperator.userId };
+  const authorRequest = item => `/publishing/jobs/${item.id}/managed-request`;
+  const queue = '/admin/managed-publishing';
+  const zip = item => `${queue}/${item.id}/package?checksum=${item.checksum}`;
+  const claim = item => `${queue}/${item.id}/claim`;
+  const confirmation = `${queue}/${primary.id}/confirmation`;
+  const consent = item => ({ packageSha256: item.checksum });
+  const listingUrl = 'https://www.amazon.com/dp/B000000001';
+  try {
+    process.env.MANAGED_PUBLISHING_ENABLED = 'true';
+    process.env.ADMIN_USER_IDS = [alice.userId, bob.userId, otherOperator.userId].join(',');
+    process.env.MANAGED_PUBLISHING_OPERATOR_IDS = [bob.userId, otherOperator.userId].join(',');
+    await request(alice.token, 'GET', queue, undefined, 403, owner);
+    await request(bob.token, 'GET', authorRequest(primary), undefined, 404, operator);
+    await request(bob.token, 'GET', zip(primary), undefined, 404, operator);
+    const initial = await request(alice.token, 'PUT', authorRequest(primary), consent(primary), 200, owner);
+    assert.equal(initial.request.claimedAt, null);
+    await request(alice.token, 'PUT', authorRequest(withdrawn), consent(withdrawn), 200, owner);
+    assert.deepEqual((await request(bob.token, 'GET', queue, undefined, 200, operator)).requests.map(row => row.jobId).sort(),
+      [primary.id, withdrawn.id].sort());
+    assert.deepEqual(await request(alice.token, 'GET', authorRequest(primary), undefined, 200, owner), initial);
+    const assigned = await request(bob.token, 'PUT', claim(primary), consent(primary), 200, operator);
+    const authorClaim = (await request(alice.token, 'GET', authorRequest(primary), undefined, 200, owner)).request;
+    assert.equal(authorClaim.claimedAt, assigned.claim.claimedAt);
+    assert.equal(Object.values(authorClaim).includes(bob.userId), false);
+    assert.deepEqual(await request(bob.token, 'PUT', claim(primary), consent(primary), 200, operator), assigned);
+    await request(otherOperator.token, 'PUT', claim(primary), consent(primary), 409, peer);
+    await request(otherOperator.token, 'GET', zip(primary), undefined, 404, peer);
+    const archive = await request(bob.token, 'GET', zip(primary), undefined, 200, operator);
+    assert.equal(archive.disposition, 'attachment; filename="kdp-export.zip"');
+    assert.equal(hash(archive.bytes), primary.checksum);
+    assert.equal(inspectNativePackage(archive.bytes).manifest.channel, 'kdp');
+    const body = { ...consent(primary), listingUrl };
+    await request(otherOperator.token, 'PUT', confirmation, body, 409, peer);
+    const confirmed = await request(bob.token, 'PUT', confirmation, body, 200, operator);
+    assert.deepEqual(await request(bob.token, 'PUT', confirmation, body, 200, operator), confirmed);
+    await request(bob.token, 'GET', zip(primary), undefined, 404, operator);
+    assert.equal((await request(alice.token, 'GET', authorRequest(primary), undefined, 200, owner)).request.listingUrl, listingUrl);
+    const overview = await request(alice.token, 'GET', `/books/${primary.intent.bookId}/overview`, undefined, 200, owner);
+    assert.deepEqual(overview.managedPublications, { status: 'ready', rows: [{
+      jobId: primary.id, channel: 'kdp', confirmedAt: confirmed.confirmation.confirmedAt,
+    }] });
+    await request(bob.token, 'PUT', claim(withdrawn), consent(withdrawn), 200, operator);
+    const revoked = await request(alice.token, 'PUT', authorRequest(withdrawn), { ...consent(withdrawn), withdraw: true }, 200, owner);
+    assert.ok(revoked.request.withdrawnAt);
+    await request(bob.token, 'GET', zip(withdrawn), undefined, 404, operator);
+    console.log('PASS native managed publishing consent, assignment, byte-exact private ZIP, withdrawal and confirmation');
+
+    let stage = 'load sender';
+    try {
+      const { sendOnePublicationEmail } = await import('../../services/api/src/lib/publication-email.ts');
+      stage = 'resolve verified author';
+      const verifiedAuthor = await service.auth.admin.getUserById(alice.userId);
+      assert.equal(verifiedAuthor.error, null);
+      assert.ok(verifiedAuthor.data.user.email_confirmed_at);
+      const sender = { apiKey: 'test-only', from: 'bookworm@example.test' };
+      const submissions = [];
+      const syntheticProvider = async (url, options) => {
+        submissions.push({ url, options });
+        return Response.json({ id: 'synthetic-managed-publication-notice' });
+      };
+      stage = 'claim and settle dispatch';
+      assert.equal(await sendOnePublicationEmail(service, sender, syntheticProvider), 'accepted');
+      stage = 'verify replay is idle';
+      assert.equal(await sendOnePublicationEmail(service, sender, syntheticProvider), 'idle');
+      assert.equal(submissions.length, 1);
+      stage = 'verify dispatch idempotency';
+      const [{ url, options }] = submissions;
+      assert.equal(url, 'https://api.resend.com/emails');
+      assert.equal(options.redirect, 'error');
+      assert.match(new Headers(options.headers).get('idempotency-key'), /^bookworm\/publication\/[a-f0-9-]{36}$/);
+      stage = 'verify recipient and privacy';
+      const body = JSON.parse(options.body);
+      assert.deepEqual(body.to, [alice.email]);
+      assert.ok(!options.body.includes(primary.id) && !options.body.includes(listingUrl));
+    } catch {
+      console.error(`Native managed publication notification failed at ${stage}`);
+      throw new Error('Native managed publication notification verification failed.');
+    }
+    console.log('PASS native managed publication notification verified recipient, exact dispatch settlement and no resend');
+  } finally {
+    keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+  }
+}
+
+export function inspectNativePackage(bytes, { scanCovers = false } = {}) {
+  // Inspect the downloaded archive in memory, including the actual upload artwork.
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../../scripts/run-python.mjs', import.meta.url)), '-I', '-c', `
+import hashlib, io, json, sys, zipfile
+with zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read())) as archive:
+ infos = archive.infolist()
+ assert len(infos) == len({item.filename for item in infos}) <= 7
+ assert sum(item.file_size for item in infos) < 25000000
+ assert all('/' not in item.filename and '\\\\' not in item.filename for item in infos)
+ files = {item.filename: archive.read(item) for item in infos}
+ cover_qr = {}
+ if sys.argv[1] == 'scan-covers':
+  import subprocess
+  import zxingcpp
+  from PIL import Image
+  from xml.etree import ElementTree
+  if 'book.epub' in files and 'cover.png' in files:
+   with zipfile.ZipFile(io.BytesIO(files['book.epub'])) as epub:
+    opf = ElementTree.fromstring(epub.read('OEBPS/content.opf'))
+    covers = [item for item in opf.findall('.//{http://www.idpf.org/2007/opf}item')
+              if 'cover-image' in item.attrib.get('properties', '').split()]
+    assert len(covers) == 1
+    assert epub.read('OEBPS/' + covers[0].attrib['href']) == files['cover.png']
+  for name in ('cover.png', 'cover.jpg', 'cover.pdf'):
+   if name not in files:
+    continue
+   image_bytes = files[name]
+   if name == 'cover.pdf':
+    image_bytes = subprocess.run(
+     ['pdftoppm', '-f', '1', '-l', '1', '-singlefile', '-scale-to', '2600', '-png', '-'],
+     input=image_bytes, capture_output=True, check=True, timeout=15,
+    ).stdout
+   with Image.open(io.BytesIO(image_bytes)) as image:
+    cover_qr[name] = [code.text for code in zxingcpp.read_barcodes(
+     image.convert('L'), formats=zxingcpp.BarcodeFormat.QRCode,
+    )]
+ print(json.dumps({
+  'files': {name: {'sha256': hashlib.sha256(data).hexdigest(), 'size': len(data), 'signature': data[:3].hex()} for name, data in files.items()},
+  'manifest': json.loads(files['manifest.json']), 'metadata': json.loads(files['metadata.json']),
+  'preflight': json.loads(files['preflight.json']), 'readme': files['README.txt'].decode('utf-8'),
+  'coverQr': cover_qr,
+ }))
+`, scanCovers ? 'scan-covers' : 'metadata-only'], { input: bytes, env: childEnvironment(), timeout: 30_000, maxBuffer: 1_000_000 });
+  assert.equal(result.status, 0, scanCovers
+    ? 'Private retailer ZIP or cover QR could not be inspected. Check the native QR decoder and Poppler setup.'
+    : 'Private retailer ZIP could not be inspected with the standard ZIP reader');
+  return JSON.parse(result.stdout.toString('utf8'));
+}
+
+export async function runNativeRetailerPackages({ request, service, alice, bob, author, upload, confirm, runOneDocumentJob, artwork }) {
+  requireNativeAuthorRunner();
+  assert.equal(new URL(service.supabaseUrl).origin, 'http://127.0.0.1:55321');
+  const data = (result, label) => {
+    assert.equal(result.error, null, `${label}: ${result.error?.code ?? 'failed'}`);
+    assert.ok(result.data != null, `${label}: no data`);
+    return result.data;
+  };
+  const capabilitiesResponse = await fetch(`${process.env.PUBLISHING_SERVICE_URL}/v1/publishing/channels`);
+  assert.equal(capabilitiesResponse.status, 200);
+  const capabilities = await capabilitiesResponse.json();
+  for (const channel of ['kdp', 'apple', 'barnesnoble', 'lulu', 'googleplay']) {
+    assert.equal(capabilities[channel].canSubmit, false);
+    assert.equal(capabilities[channel].canCheckStatus, false);
+  }
+
+  const book = await request(alice.token, 'POST', '/books', { workspaceId: alice.workspace.id,
+    requestId: randomUUID(), title: 'Harbor Letters', authorName: 'Synthetic Author', language: 'en' }, 201);
+  const text = Array.from({ length: 32 }, (_, index) =>
+    `Chapter ${index + 1}\n\nHarbor letter ${index + 1} arrived safely. Mira read the message by the lighthouse.`).join('\n\n');
+  const manuscript = await upload(alice, 'retailer-manuscript.txt', 'text/plain', Buffer.from(text));
+  await confirm(alice, manuscript);
+  const queued = await request(alice.token, 'POST', `/books/${book.id}/import-jobs`, { assetId: manuscript.assetId }, 202);
+  const imported = await runOneDocumentJob(service);
+  assert.equal(imported.status, 'succeeded'); assert.equal(imported.jobId, queued.job.id);
+  const chapters = await request(alice.token, 'GET', `/books/${book.id}/chapters`);
+  assert.equal(chapters.chapters.length, 32);
+  const listing = { expectedUpdatedAt: null, description: 'A mystery told through letters at a coastal harbor.',
+    keywords: ['harbor', 'letters'], categories: ['FICTION / Mystery & Detective / General'] };
+  const metadata = await request(alice.token, 'PUT', `/books/${book.id}/metadata`, listing);
+  const cover = await upload(alice, 'retailer-cover.png', 'image/png', artwork, 'cover');
+  assert.equal((await confirm(alice, cover)).scanStatus, 'clean');
+  console.log('PASS native retailer fixture uses an imported 32-chapter manuscript, saved listing and real scanned cover');
+
+  const coverConfig = { asset_id: cover.assetId, qr_code: {
+    enabled: true, url: 'https://example.com/harbor', label: 'Author website',
+  } };
+  await request(alice.token, 'POST', `/books/${book.id}/editions`, { config: { kind: 'ebook', cover: coverConfig } }, 422);
+  const reviewer = await author('Native cover reviewer');
+  const invitation = await request(alice.token, 'POST', `/workspaces/${alice.workspace.id}/invitations`,
+    { email: reviewer.email, role: 'reviewer' }, 201);
+  const invitationToken = new URLSearchParams(new URL(invitation.acceptanceUrl).hash.slice(1)).get('token');
+  assert.ok(invitationToken, 'Native invitation must return a one-time acceptance fragment');
+  await request(bob.token, 'POST', '/workspaces/invitations/accept', { token: invitationToken }, 403);
+  await request(reviewer.token, 'POST', '/workspaces/invitations/accept', { token: invitationToken });
+  const approvalIntent = { workspaceId: alice.workspace.id, entityType: 'asset', entityId: cover.assetId,
+    entityVersionNumber: 1, reviewerId: reviewer.userId, idempotencyKey: randomUUID() };
+  await request(alice.token, 'POST', '/approvals', { ...approvalIntent, reviewerId: alice.userId }, 422);
+  const approval = await request(alice.token, 'POST', '/approvals', approvalIntent, 201);
+  assert.equal(approval.status, 'pending'); assert.equal(approval.entity_version_number, 1);
+  assert.equal((await request(alice.token, 'POST', '/approvals', approvalIntent, 201)).id, approval.id);
+  await request(alice.token, 'POST', `/approvals/${approval.id}/approve`, {}, 403);
+  await request(bob.token, 'POST', `/approvals/${approval.id}/approve`, {}, 404);
+  const approved = await request(reviewer.token, 'POST', `/approvals/${approval.id}/approve`, {});
+  assert.equal(approved.status, 'approved'); assert.equal(approved.entity_version_number, 1);
+  console.log('PASS native invited reviewer approves exact cover version; unapproved edition, self-review and foreign review refused');
+  const front = { copyright_notice: 'Synthetic acceptance fixture. Not for retail sale.', publisher: 'Fixture Press' };
+  const printConfig = { kind: 'print', trim_size: '6x9', bleed_in: 0.125, bleed_edges: 'outer',
+    include_table_of_contents: true, cover: coverConfig, front_matter: front,
+    typography: { body_font: 'BookwormVera', heading_font: 'BookwormVera-Bold' },
+    wrap_cover: { enabled: true, profile: 'kdp-white' } };
+  const editions = [
+    { config: { kind: 'ebook', navigation: 'toc+landmarks', include_title_page: true, cover: coverConfig, front_matter: front },
+      channels: ['kdp', 'apple', 'barnesnoble', 'googleplay'] },
+    { config: { ...printConfig, isbn13: '9780000000019', wrap_cover: { ...printConfig.wrap_cover, barcode: 'kdp' } }, channels: ['kdp'] },
+    { config: { ...printConfig,
+      wrap_cover: { enabled: true, profile: 'custom', expected_page_count: 36, spine_width_in: 0.1 } }, channels: ['barnesnoble'] },
+    { config: { ...printConfig, bleed_edges: 'all', isbn13: '9780000000026',
+      wrap_cover: { enabled: true, profile: 'custom', expected_page_count: 36, spine_width_in: 0.1, barcode: 'lulu' } }, channels: ['lulu'] },
+  ];
+  const packages = [];
+  const browserEditions = [];
+  let granted = false;
+  for (const { config, channels } of editions) {
+    const edition = await request(alice.token, 'POST', `/books/${book.id}/editions`, { config }, 201);
+    browserEditions.push({ id: edition.id, kind: config.kind, channels, isbn13: config.isbn13, barcode: config.wrap_cover?.barcode });
+    const render = await request(alice.token, 'POST', `/editions/${edition.id}/render`, { idempotencyKey: randomUUID() }, 201);
+    assert.equal(render.status, 'succeeded'); assert.equal(render.artifacts.length, 2);
+    const sourceFiles = Object.fromEntries(render.artifacts.map(({ role, asset }) => [
+      role === 'rendered_cover' ? (config.kind === 'ebook' ? 'cover.png' : 'cover.pdf')
+        : config.kind === 'ebook' ? 'book.epub' : 'book.pdf', asset,
+    ]));
+    for (const channel of channels) {
+      const validation = await request(alice.token, 'POST', '/publishing/validate', {
+        bookId: book.id, editionId: edition.id, channel, idempotencyKey: randomUUID(),
+      }, 201);
+      assert.equal(validation.errors, 0, `${channel} ${config.kind}: ${validation.findings.map(item => item.code).join(', ')}`);
+      const intent = { bookId: book.id, editionId: edition.id, channel, renderJobId: render.jobId,
+        preflightJobId: validation.jobId, idempotencyKey: randomUUID() };
+      await request(bob.token, 'POST', '/publishing/jobs', intent, 404);
+      if (!granted) {
+        const denied = await request(alice.token, 'POST', '/publishing/jobs', intent, 422);
+        assert.equal(denied.error.code, 'publishing_channel_not_in_plan');
+        // An unpublished, disposable fixture entitlement only. No checkout,
+        // commercial seed, provider ID, generation credit or live plan change.
+        const plan = data(await service.from('plans').insert({ name: 'Native retailer fixture', billing_period: 'monthly',
+          price_cents: 1, is_active: false, entitlements_json: { publishing_channels: ['kdp', 'apple_books', 'barnes_noble', 'google_play', 'lulu'] },
+        }).select('id').single(), 'fixture entitlement');
+        data(await service.from('subscriptions').insert({ organization_id: alice.workspace.organization_id,
+          plan_id: plan.id, status: 'active' }).select('id').single(), 'fixture subscription');
+        granted = true;
+        console.log('PASS native retailer export denied before isolated non-AI fixture entitlement; no checkout or payment');
+      }
+      const packaged = await request(alice.token, 'POST', '/publishing/jobs', intent, 201);
+      assert.equal(packaged.status, 'succeeded'); assert.equal(packaged.submissionMode, 'manual');
+      assert.equal(packaged.sourceRenderJobId, render.jobId); assert.equal(packaged.sourcePreflightJobId, validation.jobId);
+      assert.equal(packaged.ruleVersion, validation.ruleVersion);
+      const artifact = packaged.package;
+      assert.equal(artifact.asset.mime_type, 'application/zip'); assert.equal(artifact.download.expiresIn, 300);
+      const downloaded = await fetch(artifact.download.url);
+      assert.equal(downloaded.status, 200);
+      const bytes = Buffer.from(await downloaded.arrayBuffer());
+      assert.equal(bytes.length, Number(artifact.asset.size_bytes)); assert.equal(hash(bytes), artifact.asset.checksum);
+      const archive = inspectNativePackage(bytes);
+      const files = [...Object.keys(sourceFiles), 'README.txt', 'metadata.json', 'preflight.json', 'manifest.json'];
+      if (config.kind === 'ebook' && channel === 'kdp') {
+        files.push('cover.jpg');
+        assert.equal(archive.files['cover.jpg'].signature, 'ffd8ff');
+        assert.ok(archive.files['cover.jpg'].size < 50_000_000);
+        assert.match(archive.readme, /Upload book\.epub and cover\.jpg/);
+      }
+      assert.deepEqual(Object.keys(archive.files).sort(), files.sort());
+      for (const [filename, source] of Object.entries(sourceFiles)) {
+        assert.equal(archive.files[filename].sha256, source.checksum, 'Package replaced the saved render or cover');
+        assert.equal(archive.files[filename].size, Number(source.size_bytes));
+      }
+      assert.equal(archive.manifest.channel, channel); assert.equal(archive.manifest.errors, 0);
+      assert.equal(archive.manifest.ruleVersion, validation.ruleVersion);
+      const checkedFiles = Object.keys(archive.files).filter(name => name !== 'manifest.json');
+      assert.deepEqual(Object.keys(archive.manifest.files).sort(), checkedFiles.sort());
+      for (const name of checkedFiles) assert.equal(archive.manifest.files[name], archive.files[name].sha256);
+      assert.equal(archive.preflight.channel, channel); assert.equal(archive.preflight.errors, 0);
+      assert.equal(archive.preflight.ruleVersion, packaged.ruleVersion);
+      assert.equal(archive.preflight.warnings, archive.preflight.findings.filter(item => item.severity === 'warning').length);
+      assert.equal(archive.metadata.metadata.title, book.title);
+      if (config.isbn13) assert.equal(archive.metadata.metadata.isbn13, config.isbn13);
+      if (channel === 'lulu') assert.match(archive.readme, /separate bookstore and distribution cover templates/);
+      assert.equal(archive.metadata.metadata.description, listing.description);
+      assert.deepEqual(archive.metadata.metadata.keywords, listing.keywords);
+      assert.deepEqual(archive.metadata.metadata.categories, listing.categories);
+      assert.match(archive.readme, /NOT been submitted, published or approved/);
+      assert.ok(!('bookBible' in archive.metadata) && !('chapters' in archive.metadata));
+      const replay = await request(alice.token, 'POST', '/publishing/jobs', intent);
+      assert.equal(replay.id, packaged.id); assert.equal(replay.package.asset.id, artifact.asset.id);
+      const recovered = await request(alice.token, 'GET', `/publishing/jobs/${packaged.id}`);
+      assert.equal(recovered.package.asset.checksum, hash(bytes));
+      const history = await request(alice.token, 'GET', `/publishing/jobs?bookId=${book.id}&editionId=${edition.id}&channel=${channel}`);
+      assert.deepEqual(history.jobs.map(item => item.id), [packaged.id]);
+      await request(bob.token, 'GET', `/publishing/jobs/${packaged.id}`, undefined, 404);
+      await request(bob.token, 'GET', `/publishing/jobs?bookId=${book.id}`, undefined, 404);
+      await request(bob.token, 'GET', `/assets/${artifact.asset.id}/download-url`, undefined, 404);
+      assert.ok((await bob.client.storage.from('book-assets').download(artifact.asset.storage_path)).error);
+      assert.ok((await bob.client.storage.from('book-assets').createSignedUrl(artifact.asset.storage_path, 60)).error);
+      if (packages.length) await request(alice.token, 'POST', '/publishing/jobs', {
+        ...intent, idempotencyKey: packages[0].intent.idempotencyKey,
+      }, 409);
+      packages.push({ id: packaged.id, assetId: artifact.asset.id, path: artifact.asset.storage_path, checksum: hash(bytes), intent });
+      console.log(`PASS native ${channel} ${config.kind} private ZIP, exact artifact/cover/manifest/listing, replay, history and tenant refusal`);
+    }
+  }
+  const ebookPackages = packages.filter(item => item.intent.editionId === packages[0].intent.editionId);
+  const historyQuery = new URLSearchParams({ bookId: book.id, editionId: packages[0].intent.editionId, limit: '1' });
+  const pagedIds = [];
+  for (let index = 0; index < ebookPackages.length; index++) {
+    const page = await request(alice.token, 'GET', `/publishing/jobs?${historyQuery}`);
+    assert.equal(page.jobs.length, 1);
+    pagedIds.push(page.jobs[0].id);
+    if (index === ebookPackages.length - 1) {
+      assert.equal(page.nextCursor, null);
+    } else {
+      assert.deepEqual(page.nextCursor, { id: page.jobs[0].id, createdAt: page.jobs[0].createdAt });
+      historyQuery.set('beforeCreatedAt', page.nextCursor.createdAt);
+      historyQuery.set('beforeId', page.nextCursor.id);
+      if (index === 0) await request(bob.token, 'GET', `/publishing/jobs?${historyQuery}`, undefined, 404);
+    }
+  }
+  assert.deepEqual(pagedIds.sort(), ebookPackages.map(item => item.id).sort());
+  console.log('PASS native private retailer package history cursor stays within its edition and tenant');
+
+  const savedPackage = packages[0];
+  const submissionPath = `/publishing/jobs/${savedPackage.id}/submission`;
+  assert.deepEqual(await request(alice.token, "GET", submissionPath), { submission: null });
+  await request(bob.token, "GET", submissionPath, undefined, 404);
+  await request(bob.token, "PUT", submissionPath, { status: "published", expectedRevision: null }, 404);
+  const submitted = await request(alice.token, "PUT", submissionPath, { status: "submitted", expectedRevision: null });
+  assert.equal(submitted.submission.jobId, savedPackage.id);
+  assert.equal(submitted.submission.status, "submitted");
+  const inReview = await request(alice.token, "PUT", submissionPath, {
+    status: "in_review", expectedRevision: submitted.submission.revision,
+  });
+  assert.equal(inReview.submission.status, "in_review");
+  assert.notEqual(inReview.submission.revision, submitted.submission.revision);
+  await request(alice.token, "PUT", submissionPath, { status: "withdrawn", expectedRevision: submitted.submission.revision }, 409);
+  await request(alice.token, 'DELETE', `/assets/${savedPackage.assetId}`);
+  assert.deepEqual(await request(alice.token, "GET", submissionPath), inReview);
+  const removedPath = `/assets/removed?workspaceId=${alice.workspace.id}`;
+  const removed = await request(alice.token, 'GET', removedPath);
+  const removedFile = removed.assets.find(asset => asset.id === savedPackage.assetId);
+  assert.ok(removedFile?.deleted_at, 'Removed package was missing from history');
+  assert.equal(removedFile.lifecycle_revision, null);
+  assert.ok(!('checksum' in removedFile) && !('storage_path' in removedFile), 'Removal history exposed storage metadata');
+  await request(bob.token, 'GET', removedPath, undefined, 403);
+  await request(alice.token, 'GET', `/assets/${savedPackage.assetId}/download-url`, undefined, 404);
+  assert.ok((await alice.client.storage.from('book-assets').download(savedPackage.path)).error);
+  assert.ok((await alice.client.storage.from('book-assets').createSignedUrl(savedPackage.path, 60)).error);
+  for (const result of [
+    await request(alice.token, 'GET', `/publishing/jobs/${savedPackage.id}`),
+    (await request(alice.token, 'GET', `/publishing/jobs?bookId=${book.id}`)).jobs.find(job => job.id === savedPackage.id),
+    await request(alice.token, 'POST', '/publishing/jobs', savedPackage.intent),
+  ]) {
+    assert.equal(result.id, savedPackage.id); assert.equal(result.status, 'succeeded');
+    assert.equal(result.package, null, 'Deleted ZIP history must not renew a private link');
+  }
+  await request(bob.token, 'POST', `/assets/${savedPackage.assetId}/restore`, {}, 404);
+  await request(alice.token, 'POST', `/assets/${savedPackage.assetId}/restore`, {});
+  assert.ok(!(await request(alice.token, 'GET', removedPath)).assets.some(asset => asset.id === savedPackage.assetId));
+  const restoredPackage = await request(alice.token, 'GET', `/publishing/jobs/${savedPackage.id}`);
+  assert.equal(restoredPackage.package.asset.id, savedPackage.assetId);
+  const restoredBytes = await fetch(restoredPackage.package.download.url);
+  assert.equal(restoredBytes.status, 200);
+  const backupBytes = Buffer.from(await restoredBytes.arrayBuffer());
+  assert.equal(hash(backupBytes), savedPackage.checksum);
+  console.log('PASS native deleted package denies new links and direct Storage access; exact saved ZIP restored without regeneration');
+
+  // The disposable runner owns this synthetic object. Remove the actual Storage
+  // bytes while leaving the application job and asset records intact.
+  const bucket = service.storage.from('book-assets');
+  data(await bucket.remove([savedPackage.path]), 'remove synthetic ZIP bytes');
+  assert.ok((await bucket.download(savedPackage.path)).error, 'The original object must be absent before restoration');
+  data(await bucket.upload(savedPackage.path, backupBytes, {
+    contentType: 'application/zip', upsert: false,
+  }), 'restore synthetic ZIP bytes');
+  const restoredJob = await request(alice.token, 'GET', `/publishing/jobs/${savedPackage.id}`);
+  assert.equal(restoredJob.id, savedPackage.id);
+  assert.equal(restoredJob.package.asset.id, savedPackage.assetId);
+  const recoveredBlob = await fetch(restoredJob.package.download.url);
+  assert.equal(recoveredBlob.status, 200);
+  assert.equal(hash(Buffer.from(await recoveredBlob.arrayBuffer())), savedPackage.checksum);
+  assert.ok((await bob.client.storage.from('book-assets').download(savedPackage.path)).error);
+  console.log('PASS native Storage ZIP byte restore preserves saved job, checksum and tenant access');
+
+  const closureIntent = { ...savedPackage.intent, idempotencyKey: randomUUID() };
+  const missing = await request(alice.token, 'GET', `/publishing/requests/${closureIntent.idempotencyKey}?bookId=${book.id}`);
+  assert.equal(missing.job, null);
+  const closed = await request(alice.token, 'POST', '/publishing/requests/close', closureIntent);
+  assert.equal(closed.requestId, closureIntent.idempotencyKey); assert.equal(closed.job.status, 'cancelled');
+  await request(alice.token, 'POST', '/publishing/jobs', closureIntent, 409);
+  const closedAgain = await request(alice.token, 'POST', '/publishing/requests/close', closureIntent);
+  assert.equal(closedAgain.job.id, closed.job.id);
+  await request(bob.token, 'GET', `/publishing/requests/${closureIntent.idempotencyKey}?bookId=${book.id}`, undefined, 404);
+  console.log('PASS native unaccepted export closure blocks delayed creation, preserves history and adds no usage');
+
+  await request(alice.token, 'PUT', `/books/${book.id}/metadata`, {
+    ...listing, expectedUpdatedAt: metadata.metadata.updated_at, description: 'A later listing edit must not rewrite the saved packages.',
+  });
+  for (const saved of packages) {
+    const replay = await request(alice.token, 'POST', '/publishing/jobs', saved.intent);
+    assert.equal(replay.id, saved.id);
+    await request(alice.token, 'POST', '/publishing/jobs', { ...saved.intent, idempotencyKey: randomUUID() }, 422);
+    const receipt = await request(alice.token, 'GET', `/publishing/requests/${saved.intent.idempotencyKey}?bookId=${book.id}`);
+    assert.equal(receipt.job.id, saved.id);
+    const recovered = await request(alice.token, 'GET', `/publishing/jobs/${saved.id}`);
+    const response = await fetch(recovered.package.download.url);
+    assert.equal(response.status, 200);
+    assert.equal(hash(Buffer.from(await response.arrayBuffer())), saved.checksum);
+  }
+  await verifyManagedPublishing(request, service, author, alice, bob, packages);
+  const usage = data(await service.from('usage_events').select('meter,quantity'), 'retailer usage');
+  assert.equal(usage.length, 15); // Four prior author renders, four retailer renders, seven packages.
+  for (const [meter, count] of [['rendering', 8], ['publishing', 7]]) {
+    assert.equal(usage.filter(row => row.meter === meter).length, count);
+  }
+  assert.ok(usage.every(row => Number(row.quantity) === 1));
+  assert.deepEqual(data(await service.from('ai_jobs').select('id'), 'AI jobs'), []);
+  assert.deepEqual(data(await service.from('credit_ledger').select('id'), 'credit ledger'), []);
+  console.log('PASS native seven immutable retailer packages, stale-source refusal, exact render/package usage and zero AI jobs or credit charges');
+  return { bookId: book.id, editions: browserEditions };
+}

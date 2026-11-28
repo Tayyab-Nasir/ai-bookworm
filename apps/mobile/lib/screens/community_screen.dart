@@ -160,7 +160,7 @@ class _CommunityScreenState extends State<CommunityScreen> {
             if (_error != null) Text(_error!),
             if (_communities.isNotEmpty)
               DropdownButtonFormField<Community>(
-                value: _community,
+                initialValue: _community,
                 decoration: const InputDecoration(labelText: 'Community'),
                 items: [
                   for (final c in _communities)

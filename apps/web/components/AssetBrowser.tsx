@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Asset, Folder } from "@bookworm/types";
+import { LegacyAssetOperationError } from "../lib/asset-lifecycle-operation";
 
 export interface AssetPermissions {
   edit: boolean;
@@ -13,33 +14,34 @@ export interface AssetBrowserProps {
   folders: Folder[];
   assets: Asset[];
   permissions: AssetPermissions;
+  active?: boolean;
+  operationScope?: object;
+  librarySnapshotRequest: number;
+  getLibraryRequest: () => number;
   onMove: (assetId: string, folderId: string | null) => void;
   onOpen: (asset: Asset) => void;
   onUpload: (folderId: string | null) => void;
   onNewFolder?: (parentId: string | null, name: string) => void;
   onSeedTemplate?: () => void;
-  onDelete?: (assetId: string) => void;
+  onDelete?: (assetId: string) => void | Promise<void>;
   onRestore?: (assetId: string) => void;
+  restorationAvailable?: boolean;
 }
-
-const STATUS_COLORS: Record<string, string> = {
-  draft: "#9e9e9e",
-  in_review: "#1e88e5",
-  approved: "#43a047",
-  rejected: "#e53935",
-  archived: "#757575",
-};
 
 export function StatusBadge({ status }: { status: string }) {
   return (
     <span
-      style={{
-        background: STATUS_COLORS[status] ?? "#9e9e9e",
-        color: "#fff",
-        borderRadius: 8,
-        padding: "1px 8px",
-        fontSize: 11,
-      }}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+        status === "approved"
+          ? "bg-green-500/20 text-green-400"
+          : status === "in_review"
+          ? "bg-amber-400/20 text-amber-400"
+          : status === "rejected"
+          ? "bg-red-500/20 text-red-400"
+          : status === "archived"
+          ? "bg-ink-600/20 text-ink-400"
+          : "bg-ink-600/20 text-ink-400"
+      }`}
     >
       {status.replace("_", " ")}
     </span>
@@ -50,6 +52,10 @@ export default function AssetBrowser({
   folders,
   assets,
   permissions,
+  active = true,
+  operationScope,
+  librarySnapshotRequest,
+  getLibraryRequest,
   onMove,
   onOpen,
   onUpload,
@@ -57,10 +63,49 @@ export default function AssetBrowser({
   onSeedTemplate,
   onDelete,
   onRestore,
+  restorationAvailable = false,
 }: AssetBrowserProps) {
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [view, setView] = useState<"grid" | "list">("grid");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const [uncertainRefreshComplete, setUncertainRefreshComplete] = useState(false);
+  const removalEpoch = useRef(0);
+  const scopeEpoch = useRef(0);
+  const removalFlight = useRef(false);
+  const refreshRequiredAfter = useRef<number | null>(null);
+  const mounted = useRef(false);
+
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+
+  useLayoutEffect(() => {
+    refreshRequiredAfter.current = null;
+    setRemoveError(null);
+    setUncertainRefreshComplete(false);
+    return () => { scopeEpoch.current++; };
+  }, [active, operationScope]);
+
+  useLayoutEffect(() => () => { removalEpoch.current++; }, [assets, permissions.manage, active, operationScope]);
+
+  useLayoutEffect(() => {
+    if (refreshRequiredAfter.current !== null && librarySnapshotRequest > refreshRequiredAfter.current) {
+      setUncertainRefreshComplete(true);
+    }
+  }, [librarySnapshotRequest]);
+
+  const remove = async (asset: Asset) => {
+    if (!active || !permissions.manage || !onDelete || removalFlight.current || refreshRequiredAfter.current !== null) return;
+    const beforeConfirm = removalEpoch.current;
+    if (!window.confirm(`Remove “${asset.name.replace(/[\u0000-\u001f\u007f]/g, " ")}” from this library? Books that use this file may no longer display or export it. ${restorationAvailable ? "You can request a restore from Removed files if the saved file passes verification." : "Restoration is not available here yet."}`)) return;
+    if (beforeConfirm !== removalEpoch.current || !mounted.current || removalFlight.current) return;
+    const currentScope = scopeEpoch.current;
+    ++removalEpoch.current;
+    removalFlight.current = true; setRemoving(asset.id); setRemoveError(null);
+    try { await onDelete(asset.id); }
+    catch (error) { if (mounted.current && currentScope === scopeEpoch.current) { refreshRequiredAfter.current = getLibraryRequest(); setUncertainRefreshComplete(false); setRemoveError(error instanceof LegacyAssetOperationError ? error.message : restorationAvailable ? "Removal could not be confirmed and may still complete. Use Removed files to check or retry the original request." : "Removal could not be confirmed and may still complete. Refresh the library to check its current state."); } }
+    finally { removalFlight.current = false; if (mounted.current) setRemoving(null); }
+  };
 
   const childrenOf = useMemo(() => {
     const m = new Map<string | null, Folder[]>();
@@ -93,22 +138,34 @@ export default function AssetBrowser({
       <li key={f.id} style={{ listStyle: "none" }}>
         <div style={{ display: "flex", gap: 4, paddingLeft: depth * 14 }}>
           {kids.length > 0 ? (
-            <button aria-label={open ? "Collapse" : "Expand"} onClick={() => toggle(f.id)} style={{ border: 0, background: "none", cursor: "pointer" }}>
+            <button
+              aria-label={open ? "Collapse" : "Expand"}
+              onClick={() => toggle(f.id)}
+              style={{
+                border: 0,
+                background: "none",
+                cursor: "pointer",
+                color: "var(--color-ink-300)",
+                fontSize: "18px",
+              }}
+            >
               {open ? "▾" : "▸"}
             </button>
           ) : (
-            <span style={{ width: 16, display: "inline-block" }} />
+            <span style={{ width: 16, display: "inline-block", color: "var(--color-ink-300)" }} />
           )}
           <button
             onClick={() => setActiveFolder(f.id)}
             style={{
               border: 0,
-              background: activeFolder === f.id ? "#e3f2fd" : "none",
+              background: activeFolder === f.id ? "var(--color-amber-400)" : "none",
               cursor: "pointer",
               textAlign: "left",
               flex: 1,
-              padding: "2px 4px",
-              borderRadius: 4,
+              padding: "4px 8px",
+              borderRadius: 6,
+              color: activeFolder === f.id ? "#0b1220" : "var(--color-ink-100)",
+              fontWeight: activeFolder === f.id ? 600 : 400,
             }}
           >
             {f.name}
@@ -125,66 +182,170 @@ export default function AssetBrowser({
   };
 
   return (
-    <div style={{ display: "flex", gap: 12, minHeight: 400 }}>
-      <aside aria-label="Folders" style={{ width: 220, borderRight: "1px solid #eee", padding: 8 }}>
-        <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
-          <button onClick={() => setActiveFolder(null)} style={{ fontWeight: activeFolder === null ? 700 : 400 }}>
+    <div className="flex min-h-[400px] flex-col gap-6 sm:flex-row">
+      {/* Folders Sidebar */}
+      <aside aria-label="Folders" className="w-full border-b border-white/10 pb-4 sm:w-64 sm:border-b-0 sm:border-r sm:pb-0 sm:pr-4">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-sm font-semibold text-ink-300 uppercase tracking-wider">Folders</h2>
+          {permissions.manage && onNewFolder && (
+            <button onClick={newFolder} className="btn btn-primary" style={{ padding: "4px 8px", fontSize: "14px" }}>
+              + New
+            </button>
+          )}
+        </div>
+
+        {folders.length === 0 && permissions.manage && onSeedTemplate && (
+          <button onClick={onSeedTemplate} className="btn btn-secondary mb-4 w-full justify-center">
+            Seed template
+          </button>
+        )}
+
+        <nav>
+          <button
+            onClick={() => setActiveFolder(null)}
+            className="w-full text-left px-2 py-1.5 rounded-lg mb-1"
+            style={{
+              fontWeight: activeFolder === null ? 600 : 400,
+              background: activeFolder === null ? "var(--color-ink-800)" : "none",
+              color: "var(--color-ink-100)",
+            }}
+          >
             Root
           </button>
-          {permissions.manage && onNewFolder && <button onClick={newFolder}>+ Folder</button>}
-        </div>
-        {folders.length === 0 && permissions.manage && onSeedTemplate && (
-          <button onClick={onSeedTemplate}>Seed 00_Admin…08_Archive template</button>
-        )}
-        <ul style={{ margin: 0, padding: 0 }}>{(childrenOf.get(null) ?? []).map((f) => renderFolder(f, 0))}</ul>
+          <ul style={{ margin: 0, padding: 0 }}>{(childrenOf.get(null) ?? []).map((f) => renderFolder(f, 0))}</ul>
+        </nav>
       </aside>
 
-      <section style={{ flex: 1, padding: 8 }}>
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <button onClick={() => setView(view === "grid" ? "list" : "grid")}>{view === "grid" ? "List view" : "Grid view"}</button>
-          {permissions.edit && <button onClick={() => onUpload(activeFolder)}>Upload</button>}
+      {/* Assets Grid/List */}
+      <section className="min-w-0 flex-1">
+        <div className="flex justify-between items-center mb-4">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setView("list")}
+              className={`btn ${view === "list" ? "btn-primary" : "btn-secondary"}`}
+              style={{ padding: "6px 12px", fontSize: "14px" }}
+            >
+              List
+            </button>
+            <button
+              onClick={() => setView("grid")}
+              className={`btn ${view === "grid" ? "btn-primary" : "btn-secondary"}`}
+              style={{ padding: "6px 12px", fontSize: "14px" }}
+            >
+              Grid
+            </button>
+          </div>
+
+          {permissions.edit && (
+            <button className="btn btn-primary text-sm" onClick={() => onUpload(activeFolder)}>
+              Upload Asset
+            </button>
+          )}
         </div>
-        {visibleAssets.length === 0 && <p style={{ color: "#777" }}>No assets here.</p>}
-        <ul
-          style={{
-            margin: 0,
-            padding: 0,
-            listStyle: "none",
-            display: view === "grid" ? "grid" : "block",
-            gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-            gap: 8,
-          }}
-        >
-          {visibleAssets.map((a) => (
-            <li key={a.id} style={{ border: "1px solid #eee", borderRadius: 6, padding: 8 }}>
-              <button onClick={() => onOpen(a)} style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}>
-                <strong style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.name}</strong>
-                <small style={{ color: "#777" }}>
-                  {a.type} · {(a.size_bytes / 1024).toFixed(0)} KB
-                </small>
-              </button>
-              <div style={{ display: "flex", gap: 4, marginTop: 4, alignItems: "center" }}>
-                <StatusBadge status={a.status} />
-                {permissions.manage && onDelete && (
-                  <button onClick={() => onDelete(a.id)} title="Soft delete">Delete</button>
+
+        {removeError && <div role="alert" className="mb-4 rounded-lg border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-100">
+          <p>{removeError}</p>
+          {uncertainRefreshComplete && <><p className="mt-2">The refreshed list shows the current state only. The earlier request could still finish later.</p><button type="button" className="mt-2 min-h-11 underline" onClick={() => {
+            if (refreshRequiredAfter.current === null || librarySnapshotRequest <= refreshRequiredAfter.current) return;
+            refreshRequiredAfter.current = null; setRemoveError(null); setUncertainRefreshComplete(false);
+          }}>I understand, continue</button></>}
+        </div>}
+
+        {visibleAssets.length === 0 ? (
+          <div className="text-center py-12">
+            <div className="text-ink-400 mb-2" style={{ fontSize: "48px" }}>
+              📁
+            </div>
+            <h3 className="text-lg font-semibold text-white mb-2">No assets here</h3>
+            <p className="text-ink-400">
+              {activeFolder === null ? "Upload files to the root folder" : "Folder is empty"}
+            </p>
+          </div>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: view === "grid" ? "repeat(auto-fill, minmax(180px, 1fr))" : "1fr",
+              gap: "1rem",
+            }}
+          >
+            {visibleAssets.map((a) => (
+              <div
+                key={a.id}
+                className="card hover:border-amber-400/30 transition-all duration-200"
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                }}
+              >
+                <button
+                  onClick={() => onOpen(a)}
+                  style={{
+                    all: "unset",
+                    cursor: "pointer",
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                  }}
+                >
+                  <strong style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {a.name}
+                  </strong>
+                  <small style={{ color: "var(--color-ink-400)" }}>
+                    {a.type} · {(a.size_bytes / 1024).toFixed(0)} KB
+                  </small>
+                </button>
+
+                <div className="flex justify-between items-center mt-2">
+                  <StatusBadge status={a.status} />
+                  {permissions.manage && onDelete && (
+                    <button
+                      type="button"
+                      onClick={() => void remove(a)}
+                      disabled={Boolean(removing || removeError)}
+                      aria-label={`Remove ${a.name}`}
+                      title="Remove from library"
+                      style={{
+                        all: "unset",
+                        cursor: "pointer",
+                        color: "var(--color-ink-400)",
+                        fontSize: "16px",
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+
+                {permissions.manage && folders.length > 0 && (
+                  <select
+                    aria-label="Move to folder"
+                    value={a.folder_id ?? ""}
+                    onChange={(e) => onMove(a.id, e.target.value || null)}
+                    style={{
+                      marginTop: "8px",
+                      width: "100%",
+                      padding: "6px 8px",
+                      borderRadius: "6px",
+                      border: "1px solid var(--color-ink-700)",
+                      background: "var(--color-ink-800)",
+                      color: "var(--color-ink-100)",
+                      fontSize: "13px",
+                    }}
+                  >
+                    <option value="">(root)</option>
+                    {folders.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}
+                      </option>
+                    ))}
+                  </select>
                 )}
               </div>
-              {permissions.edit && folders.length > 0 && (
-                <select
-                  aria-label="Move to folder"
-                  value={a.folder_id ?? ""}
-                  onChange={(e) => onMove(a.id, e.target.value || null)}
-                  style={{ marginTop: 4, width: "100%" }}
-                >
-                  <option value="">(root)</option>
-                  {folders.map((f) => (
-                    <option key={f.id} value={f.id}>{f.name}</option>
-                  ))}
-                </select>
-              )}
-            </li>
-          ))}
-        </ul>
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

@@ -15,12 +15,41 @@ const { redactObject } = await import("./lib/redact.js");
 
 // ---- stateful fake supabase (same pattern as step12, + range/lte/or/upsert) --
 type Row = Record<string, unknown>;
-interface Store { tables: Record<string, Row[]> }
+interface Store { tables: Record<string, Row[]>; rpc?: (name: string, args: Row) => { data: unknown; error: unknown } }
 
 const TOKENS: Record<string, string> = { good: "user-1", admin: "admin-1" };
 
 function fakeSupabase(store: Store, opts: { failReads?: boolean } = {}) {
   const client = {
+    rpc: async (name: string, args: Row) => {
+      if (store.rpc) return store.rpc(name, args);
+      if (name === "submit_delete_data_rights_request") {
+        const rows = (store.tables.data_rights_requests ??= []);
+        if (args.p_confirmation !== "DELETE MY ACCOUNT") return { data: null, error: { code: "22023" } };
+        if (rows.some(row => row.user_id === "user-1" && row.request_type === "delete" && ["submitted", "processing"].includes(String(row.status)))) return { data: null, error: { code: "23505" } };
+        const row = { id: crypto.randomUUID(), user_id: "user-1", request_type: "delete", status: "submitted", reason: args.p_reason, requested_at: new Date().toISOString() };
+        rows.push(row); return { data: row, error: null };
+      }
+      if (name === "cancel_data_rights_request") {
+        const row = (store.tables.data_rights_requests ?? []).find((value) => value.id === args.p_request_id && value.user_id === "user-1");
+        if (!row) return { data: null, error: { code: "P0002" } };
+        if (row.status !== "submitted") return { data: null, error: { code: "22023" } };
+        row.status = "cancelled";
+        row.updated_at = new Date().toISOString();
+        return { data: row, error: null };
+      }
+      assert.equal(name, "set_admin_feature_flag");
+      const rows = (store.tables.feature_flags ??= []);
+      let row = rows.find((value) => value.key === args.p_key && value.scope_type === args.p_scope_type && value.scope_id === args.p_scope_id);
+      if (!row) {
+        row = { id: crypto.randomUUID(), key: args.p_key, scope_type: args.p_scope_type, scope_id: args.p_scope_id, config_json: {} };
+        rows.push(row);
+      }
+      row.enabled = args.p_enabled;
+      if (args.p_config !== null) row.config_json = args.p_config;
+      (store.tables.audit_logs ??= []).push({ actor_id: args.p_actor_id, action: "flag.update", entity_id: row.id });
+      return { data: row, error: null };
+    },
     auth: {
       getUser: async (token: string) =>
         TOKENS[token] ? { data: { user: { id: TOKENS[token] } }, error: null } : { data: { user: null }, error: { message: "bad" } },
@@ -59,6 +88,11 @@ function fakeSupabase(store: Store, opts: { failReads?: boolean } = {}) {
       b.gte = (c: string, v: unknown) => { cmpFilters.push(["gte", c, v]); return b; };
       b.lte = (c: string, v: unknown) => { cmpFilters.push(["lte", c, v]); return b; };
       b.or = () => b; // search filter: not exercised in tests
+      b.ilike = (column: string, pattern: string) => {
+        const text = pattern.slice(1, -1).replace(/\\(.)/g, "$1").toLowerCase();
+        matched = rows.filter((row) => String(row[column] ?? "").toLowerCase().includes(text));
+        return b;
+      };
       b.order = () => b;
       // range/limit: apply the slice to the NEXT resolution only, but stay
       // chainable for a following .range().
@@ -118,7 +152,116 @@ test("admin routes: 403 for non-admin, 401 without token", async () => {
   assert.equal(noAuth.statusCode, 401);
   const nonAdmin = await app.inject({ method: "GET", url: "/v1/admin/users", headers: as("good") });
   assert.equal(nonAdmin.statusCode, 403);
+  const adminAccess = await app.inject({ method: "GET", url: "/v1/admin/access", headers: as("admin") });
+  assert.deepEqual(adminAccess.json(), { admin: true, viewerId: "admin-1" });
+  assert.equal(adminAccess.headers["cache-control"], "private, no-store");
+  const deniedAccess = await app.inject({ method: "GET", url: "/v1/admin/access", headers: as("good") });
+  assert.equal(deniedAccess.statusCode, 403);
   await app.close();
+});
+
+test("platform moderation queue is global, admin-only, and strips reporter/private fields", async () => {
+  const ids = {
+    postReport: "a1400000-0000-4000-8000-000000000001",
+    commentReport: "a1400000-0000-4000-8000-000000000002",
+    closedReport: "a1400000-0000-4000-8000-000000000003",
+    post: "b1400000-0000-4000-8000-000000000001",
+    parentPost: "b1400000-0000-4000-8000-000000000002",
+    comment: "c1400000-0000-4000-8000-000000000001",
+  };
+  const store: Store = { tables: {
+    reports: [
+      { id: ids.postReport, reporter_id: "d1400000-0000-4000-8000-000000000001", entity_type: "post", entity_id: ids.post, reason: "Spam", status: "open", created_at: "2026-09-01T00:00:00Z", internal_note: "must not leak" },
+      { id: ids.commentReport, reporter_id: "d1400000-0000-4000-8000-000000000002", entity_type: "comment", entity_id: ids.comment, reason: "Abuse", status: "open", created_at: "2026-09-02T00:00:00Z" },
+      { id: ids.closedReport, reporter_id: "d1400000-0000-4000-8000-000000000003", entity_type: "post", entity_id: ids.post, reason: "Resolved", status: "dismissed", created_at: "2026-08-01T00:00:00Z" },
+    ],
+    community_posts: [
+      { id: ids.post, community_id: "e1400000-0000-4000-8000-000000000001", title: "Public post", body: "Community text only", status: "published", author_id: "f1400000-0000-4000-8000-000000000001" },
+      { id: "e1400000-0000-4000-8000-000000000002", community_id: "e1400000-0000-4000-8000-000000000002", title: "Unrelated", body: "Not selected", status: "published" },
+      { id: ids.parentPost, community_id: "e1400000-0000-4000-8000-000000000002", title: "Context post", body: "Parent context only", status: "published" },
+    ],
+    community_comments: [{ id: ids.comment, post_id: ids.parentPost, body: "Reported comment", moderation_state: "visible", author_id: "f1400000-0000-4000-8000-000000000002" }],
+    communities: [
+      { id: "e1400000-0000-4000-8000-000000000001", name: "Writer Circle" },
+      { id: "e1400000-0000-4000-8000-000000000002", name: "Fantasy Lab" },
+    ],
+    books: [{ id: "private-book", title: "Private manuscript must never be queried" }],
+  } };
+  const app = await appWith(store);
+  const denied = await app.inject({ method: "GET", url: "/v1/admin/moderation/reports", headers: as("good") });
+  assert.equal(denied.statusCode, 403);
+
+  const listed = await app.inject({ method: "GET", url: "/v1/admin/moderation/reports?status=open&limit=20", headers: as("admin") });
+  assert.equal(listed.statusCode, 200, listed.body);
+  const reports = listed.json().reports;
+  assert.equal(reports.length, 2, "admin queue crosses community boundaries and filters to open reports");
+  assert.deepEqual(new Set(reports.map((item: Row) => item.entity_type)), new Set(["post", "comment"]));
+  assert.equal(reports.some((item: Row) => item.id === ids.closedReport), false);
+  assert.equal(reports.find((item: Row) => item.entity_type === "post").target.communityName, "Writer Circle");
+  assert.equal(reports.find((item: Row) => item.entity_type === "comment").target.communityName, "Fantasy Lab");
+  assert.equal(reports.find((item: Row) => item.entity_type === "comment").target.parentTitle, "Context post");
+  const serialized = JSON.stringify(reports);
+  for (const forbidden of ["reporter_id", "author_id", "internal_note", "Private manuscript", "books"]) {
+    assert.equal(serialized.includes(forbidden), false, "queue leaked " + forbidden);
+  }
+
+  const filtered = await app.inject({ method: "GET", url: "/v1/admin/moderation/reports?entityType=post&status=all&offset=0&limit=1", headers: as("admin") });
+  assert.equal(filtered.statusCode, 200, filtered.body);
+  assert.equal(filtered.json().reports.length, 1);
+  assert.equal(filtered.json().reports[0].entity_type, "post");
+  const invalid = await app.inject({ method: "GET", url: "/v1/admin/moderation/reports?entityType=book", headers: as("admin") });
+  assert.equal(invalid.statusCode, 422);
+  await app.close();
+});
+
+test("platform report resolution is admin-only, validated, and idempotent on reply recovery", async () => {
+  const reportId = "a1400000-0000-4000-8000-000000000011";
+  let state: "open" | "actioned" | "dismissed" = "open";
+  let resolutionAction: "remove" | "dismiss" | null = null;
+  let effectCount = 0;
+  const store: Store = {
+    tables: { reports: [{ id: reportId, status: "open", entity_type: "comment", entity_id: "c1400000-0000-4000-8000-000000000011" }] },
+    rpc(name, args) {
+      assert.equal(name, "admin_resolve_community_report");
+      assert.equal(args.p_report_id, reportId);
+      assert.equal(args.p_actor_id, "admin-1");
+      const alreadyResolved = state !== "open";
+      if (!alreadyResolved) {
+        state = args.p_action === "remove" ? "actioned" : "dismissed";
+        resolutionAction = args.p_action as "remove" | "dismiss";
+        effectCount++;
+      }
+      return { data: [{ report_id: reportId, status: state, resolution_action: resolutionAction, already_resolved: alreadyResolved }], error: null };
+    },
+  };
+  const app = await appWith(store);
+  const denied = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("good"), payload: { action: "remove" } });
+  assert.equal(denied.statusCode, 403);
+  const invalid = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("admin"), payload: { action: "remove", extra: true } });
+  assert.equal(invalid.statusCode, 422);
+  const resolved = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("admin"), payload: { action: "remove" } });
+  assert.equal(resolved.statusCode, 200, resolved.body);
+  assert.deepEqual(resolved.json(), { reportId, status: "actioned", action: "remove", alreadyResolved: false });
+  const replay = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("admin"), payload: { action: "dismiss" } });
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.deepEqual(replay.json(), { reportId, status: "actioned", action: "remove", alreadyResolved: true });
+  assert.equal(effectCount, 1, "a lost response replay must not repeat or change the original resolution");
+  await app.close();
+});
+
+test("platform moderation cannot confirm a foreign or inconsistent resolution receipt", async () => {
+  const reportId = "a1400000-0000-4000-8000-000000000011";
+  for (const receipt of [
+    { report_id: "a1400000-0000-4000-8000-000000000099", status: "actioned", resolution_action: "remove", already_resolved: false },
+    { report_id: reportId, status: "dismissed", resolution_action: "remove", already_resolved: false },
+  ]) {
+    const app = await appWith({ tables: {}, rpc: () => ({ data: [receipt], error: null }) });
+    try {
+      const result = await app.inject({ method: "POST", url: "/v1/admin/moderation/reports/" + reportId + "/resolve", headers: as("admin"), payload: { action: "remove" } });
+      assert.equal(result.statusCode, 503, result.body);
+      assert.match(result.json().error.message, /could not be verified/i);
+    } finally { await app.close(); }
+  }
 });
 
 test("admin users list + suspend sets status and writes audit", async () => {
@@ -136,6 +279,12 @@ test("admin users list + suspend sets status and writes audit", async () => {
   assert.equal(list.statusCode, 200);
   assert.equal(list.json().users.length, 1);
   assert.equal(list.json().memberships.length, 1);
+  const search = await app.inject({ method: "GET", url: "/v1/admin/users?search=User%20One", headers: as("admin") });
+  assert.equal(search.statusCode, 200);
+  assert.equal(search.json().users.length, 1);
+  const literal = await app.inject({ method: "GET", url: "/v1/admin/users?search=%25", headers: as("admin") });
+  assert.equal(literal.statusCode, 200);
+  assert.equal(literal.json().users.length, 0);
 
   const bad = await app.inject({ method: "POST", url: "/v1/admin/users/user-1/suspend", headers: as("good") });
   assert.equal(bad.statusCode, 403);
@@ -151,27 +300,235 @@ test("admin users list + suspend sets status and writes audit", async () => {
   await app.close();
 });
 
-test("job retry resets failed job to queued with attempts+1 and audit", async () => {
+test("AI retry remains unavailable to the admin console while author reviews use durable worker recovery", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000021";
   const store: Store = {
     tables: {
-      ai_jobs: [{ id: "job-1", status: "failed", attempts: 2, error_message: "boom", created_at: "2026-01-01T00:00:00Z" }],
+      ai_jobs: [{
+        id: jobId, book_id: "b9000000-0000-4000-8000-000000000021", agent_type: "writer", status: "failed", attempts: 2,
+        error_code: "ai_provider_failed", error_message: "boom", model: null, usage_json: {}, created_at: "2026-01-01T00:00:00Z",
+        started_at: null, completed_at: "2026-01-01T00:00:01Z", input_ref: { userInstruction: "private prompt" },
+        output_ref: { providerPayload: "private output" }, idempotency_key: "private-idempotency-key",
+      }],
       publishing_jobs: [],
     },
   };
   const app = await appWith(store);
-  const res = await app.inject({ method: "POST", url: "/v1/admin/jobs/ai/job-1/retry", headers: as("admin") });
-  assert.equal(res.statusCode, 200);
+  const res = await app.inject({ method: "POST", url: `/v1/admin/jobs/ai/${jobId}/retry`, headers: as("admin") });
+  assert.equal(res.statusCode, 503);
   const job = store.tables.ai_jobs[0];
-  assert.equal(job.status, "queued");
-  assert.equal(job.attempts, 3);
-  assert.equal((store.tables.audit_logs ?? [])[0]?.action, "job.retry");
+  assert.equal(job.status, "failed");
+  assert.equal(job.attempts, 2);
+  assert.equal((store.tables.audit_logs ?? []).length, 0);
 
-  // non-failed job cannot retry
-  const again = await app.inject({ method: "POST", url: "/v1/admin/jobs/ai/job-1/retry", headers: as("admin") });
-  assert.equal(again.statusCode, 422);
-
-  const list = await app.inject({ method: "GET", url: "/v1/admin/jobs?type=ai&status=queued", headers: as("admin") });
+  const list = await app.inject({ method: "GET", url: "/v1/admin/jobs?type=ai&status=failed", headers: as("admin") });
   assert.equal(list.json().jobs.length, 1);
+  assert.equal("input_ref" in list.json().jobs[0], false);
+  assert.equal("output_ref" in list.json().jobs[0], false);
+  assert.equal("idempotency_key" in list.json().jobs[0], false);
+  assert.equal(JSON.stringify(list.json()).includes("private prompt"), false);
+  assert.equal(JSON.stringify(list.json()).includes("private output"), false);
+  assert.equal(JSON.stringify(list.json()).includes("private-idempotency-key"), false);
+  await app.close();
+});
+
+test("only platform admin can request audited image hold release with explicit review evidence", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000241";
+  const calls: Row[] = [];
+  const store: Store = { tables: {}, rpc(name, args) {
+    assert.equal(name, "release_unconfirmed_image_job"); calls.push(args);
+    return { data: { id: jobId, status: "failed", input_ref: { privatePrompt: "never return" } }, error: null };
+  } };
+  const app = await appWith(store);
+  const url = `/v1/admin/jobs/ai/${jobId}/release-image-hold`;
+  const body = { incidentRef: "INC-123456", storageChecked: true, providerReviewed: true };
+  try {
+    assert.equal((await app.inject({ method: "POST", url, payload: body })).statusCode, 401);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("good"), payload: body })).statusCode, 403);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("admin"), payload: { ...body, storageChecked: false } })).statusCode, 422);
+    assert.equal(calls.length, 0);
+    const released = await app.inject({ method: "POST", url, headers: as("admin"), payload: body });
+    assert.equal(released.statusCode, 200, released.body);
+    assert.deepEqual(released.json(), { jobId, status: "failed", incidentRef: "INC-123456" });
+    assert.equal(released.headers["cache-control"], "private, no-store");
+    assert.deepEqual(calls, [{ p_job_id: jobId, p_actor_id: "admin-1", p_incident_ref: "INC-123456",
+      p_storage_checked: true, p_provider_reviewed: true }]);
+    assert.doesNotMatch(released.body, /privatePrompt|never return/);
+  } finally { await app.close(); }
+});
+
+test("image hold release refuses stale eligibility and unavailable migration without claiming success", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000242";
+  const body = { incidentRef: "INC-123456", storageChecked: true, providerReviewed: true };
+  for (const [code, expected] of [["22023", 409], ["PGRST202", 503], ["P0002", 404]] as const) {
+    const store: Store = { tables: {}, rpc() { return { data: null, error: { code } }; } };
+    const app = await appWith(store);
+    try {
+      const response = await app.inject({ method: "POST", url: `/v1/admin/jobs/ai/${jobId}/release-image-hold`,
+        headers: as("admin"), payload: body });
+      assert.equal(response.statusCode, expected, response.body);
+      assert.doesNotMatch(response.body, /"status":"failed"/);
+    } finally { await app.close(); }
+  }
+});
+
+test("only platform admin can release a reviewed AI review hold without exposing its receipt", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000243";
+  const calls: Row[] = [];
+  const store: Store = { tables: {}, rpc(name, args) {
+    assert.equal(name, "release_unconfirmed_ai_review_job"); calls.push(args);
+    return { data: { id: jobId, status: "failed", error_code: "ai_review_hold_released",
+      input_ref: { privateChapter: "never return" } }, error: null };
+  } };
+  const app = await appWith(store);
+  const url = `/v1/admin/jobs/ai/${jobId}/release-review-hold`;
+  const body = { incidentRef: "INC-REVIEW-123", receiptReviewed: true, providerReviewed: true };
+  try {
+    assert.equal((await app.inject({ method: "POST", url, payload: body })).statusCode, 401);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("good"), payload: body })).statusCode, 403);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("admin"), payload: { ...body, receiptReviewed: false } })).statusCode, 422);
+    assert.equal(calls.length, 0);
+    const released = await app.inject({ method: "POST", url, headers: as("admin"), payload: body });
+    assert.equal(released.statusCode, 200, released.body);
+    assert.deepEqual(released.json(), { jobId, status: "failed", incidentRef: body.incidentRef });
+    assert.equal(released.headers["cache-control"], "private, no-store");
+    assert.deepEqual(calls, [{ p_job_id: jobId, p_actor_id: "admin-1", p_incident_ref: body.incidentRef,
+      p_receipt_reviewed: true, p_provider_reviewed: true }]);
+    assert.doesNotMatch(released.body, /privateChapter|never return/);
+  } finally { await app.close(); }
+});
+
+test("AI review hold release fails closed when receipt exists or migration is unavailable", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000244";
+  const body = { incidentRef: "INC-REVIEW-123", receiptReviewed: true, providerReviewed: true };
+  for (const [code, expected] of [["22023", 409], ["PGRST202", 503], ["P0002", 404]] as const) {
+    const store: Store = { tables: {}, rpc() { return { data: null, error: { code } }; } };
+    const app = await appWith(store);
+    try {
+      const response = await app.inject({ method: "POST", url: `/v1/admin/jobs/ai/${jobId}/release-review-hold`,
+        headers: as("admin"), payload: body });
+      assert.equal(response.statusCode, expected, response.body);
+      assert.doesNotMatch(response.body, /"status":"failed"/);
+    } finally { await app.close(); }
+  }
+});
+
+test("only platform admin can release a reviewed Book Bible hold without exposing its receipt", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000243";
+  const calls: Row[] = [];
+  const store: Store = { tables: {}, rpc(name, args) {
+    assert.equal(name, "release_unconfirmed_book_bible_job"); calls.push(args);
+    return { data: { id: jobId, status: "failed", error_code: "book_bible_hold_released",
+      input_ref: { privateChapter: "never return" } }, error: null };
+  } };
+  const app = await appWith(store);
+  const url = `/v1/admin/jobs/ai/${jobId}/release-bible-hold`;
+  const body = { incidentRef: "INC-BIBLE-123", receiptReviewed: true, providerReviewed: true };
+  try {
+    assert.equal((await app.inject({ method: "POST", url, payload: body })).statusCode, 401);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("good"), payload: body })).statusCode, 403);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("admin"), payload: { ...body, receiptReviewed: false } })).statusCode, 422);
+    assert.equal(calls.length, 0);
+    const released = await app.inject({ method: "POST", url, headers: as("admin"), payload: body });
+    assert.equal(released.statusCode, 200, released.body);
+    assert.deepEqual(released.json(), { jobId, status: "failed", incidentRef: body.incidentRef });
+    assert.equal(released.headers["cache-control"], "private, no-store");
+    assert.deepEqual(calls, [{ p_job_id: jobId, p_actor_id: "admin-1", p_incident_ref: body.incidentRef,
+      p_receipt_reviewed: true, p_provider_reviewed: true }]);
+    assert.doesNotMatch(released.body, /privateChapter|never return/);
+  } finally { await app.close(); }
+});
+
+test("Book Bible hold release fails closed when receipt exists or migration is unavailable", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000244";
+  const body = { incidentRef: "INC-BIBLE-123", receiptReviewed: true, providerReviewed: true };
+  for (const [code, expected] of [["22023", 409], ["PGRST202", 503], ["P0002", 404]] as const) {
+    const store: Store = { tables: {}, rpc() { return { data: null, error: { code } }; } };
+    const app = await appWith(store);
+    try {
+      const response = await app.inject({ method: "POST", url: `/v1/admin/jobs/ai/${jobId}/release-bible-hold`,
+        headers: as("admin"), payload: body });
+      assert.equal(response.statusCode, expected, response.body);
+      assert.doesNotMatch(response.body, /"status":"failed"/);
+    } finally { await app.close(); }
+  }
+});
+
+test("admin receipt settlement validates access and completes the saved job without exposing its text", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000245";
+  const workspaceId = "a9000000-0000-4000-8000-000000000246";
+  const bookId = "a9000000-0000-4000-8000-000000000247";
+  const chapterId = "a9000000-0000-4000-8000-000000000248";
+  const token = "a9000000-0000-4000-8000-000000000249";
+  const body = { incidentRef: "INC-REVIEW-123", receiptReviewed: true, providerReviewed: true };
+  const calls: string[] = [];
+  const claim = { id: jobId, workspace_id: workspaceId, book_id: bookId, created_by: "a9000000-0000-4000-8000-000000000250",
+    agent_type: "proofreader", lease_token: token, input_ref: { chapterVersions: [{ chapterId, version: 1 }],
+      userInstruction: null, contextPolicy: { includeBookBible: false, includeStyleGuide: false,
+        includeRelatedContext: false, semanticTopK: 5, maxTokens: 4096 } } };
+  const store: Store = { tables: {
+    books: [{ id: bookId, workspace_id: workspaceId, title: "Novel", author_name: "Author", language: "en" }],
+    chapters: [{ id: chapterId, book_id: bookId, title: "One", order_index: 0 }],
+    document_versions: [{ chapter_id: chapterId, version_number: 1,
+      content_json: { schemaVersion: "1.0", nodes: [{ id: "n1", type: "paragraph", text: "Private chapter" }] } }],
+    style_guides: [], book_bible_items: [], ai_jobs: [],
+    ai_review_service_receipts: [{ job_id: jobId, result_json: { jobId, workspaceId, bookId,
+      agentType: "proofreader", status: "succeeded", provider: "mock", model: "mock-1",
+      usage: { inputTokens: 2, outputTokens: 1, estimatedCostUsd: 0 }, diagnostics: [], suggestions: [] } }],
+  }, rpc(name, args) {
+    calls.push(name);
+    if (name === "claim_ai_review_receipt_recovery") {
+      assert.equal(args.p_actor_id, "admin-1"); return { data: claim, error: null };
+    }
+    if (name === "complete_leased_ai_review_job") {
+      assert.equal(args.p_lease_token, token); return { data: { ...claim, status: "succeeded" }, error: null };
+    }
+    throw new Error(`unexpected RPC ${name}`);
+  } };
+  const app = await appWith(store);
+  const url = `/v1/admin/jobs/ai/${jobId}/settle-review-receipt`;
+  try {
+    assert.equal((await app.inject({ method: "POST", url, payload: body })).statusCode, 401);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("good"), payload: body })).statusCode, 403);
+    assert.equal((await app.inject({ method: "POST", url, headers: as("admin"), payload: { ...body, receiptReviewed: false } })).statusCode, 422);
+    assert.deepEqual(calls, []);
+    const settled = await app.inject({ method: "POST", url, headers: as("admin"), payload: body });
+    assert.equal(settled.statusCode, 200, settled.body);
+    assert.deepEqual(settled.json(), { jobId, status: "succeeded", incidentRef: body.incidentRef });
+    assert.deepEqual(calls, ["claim_ai_review_receipt_recovery", "complete_leased_ai_review_job"]);
+    assert.doesNotMatch(settled.body, /Private chapter/);
+  } finally { await app.close(); }
+});
+
+test("publishing retry delegates atomic reset and audit to the queue RPC", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000001";
+  const store: Store = {
+    tables: {
+      ai_jobs: [],
+      publishing_jobs: [{
+        id: jobId, status: "failed", attempts: 4, request_json: { action: "export_package" },
+        response_json: { error: { code: "PACKAGE_FAILED", message: "boom" } },
+        created_at: "2026-01-01T00:00:00Z",
+      }],
+    }, rpc(name, args) {
+      assert.equal(name, "retry_publishing_job");
+      assert.deepEqual(args, { p_job_id: jobId, p_actor_id: "admin-1" });
+      const job = this.tables.publishing_jobs[0];
+      Object.assign(job, { status: "queued", attempts: 0, response_json: null });
+      this.tables.audit_logs = [{ action: "job.retry", entity_id: jobId }];
+      return { data: job, error: null };
+    },
+  };
+  const app = await appWith(store);
+  const res = await app.inject({ method: "POST", url: `/v1/admin/jobs/publishing/${jobId}/retry`, headers: as("admin") });
+  assert.equal(res.statusCode, 200);
+  const job = store.tables.publishing_jobs[0];
+  assert.equal(job.status, "queued");
+  assert.equal(job.attempts, 0);
+  assert.equal(job.response_json, null);
+  assert.equal("error_code" in job, false);
+  assert.equal("error_message" in job, false);
+  assert.equal(store.tables.audit_logs[0].action, "job.retry");
   await app.close();
 });
 
@@ -193,6 +550,7 @@ test("feature flag toggle upserts and audits", async () => {
   assert.equal(off.statusCode, 200);
   assert.equal(store.tables.feature_flags.length, 1); // upsert, not dup
   assert.equal(store.tables.feature_flags[0].enabled, false);
+  assert.deepEqual(store.tables.feature_flags[0].config_json, { rollout: 50 });
   assert.equal((store.tables.audit_logs ?? []).length, 2);
 
   const list = await app.inject({ method: "GET", url: "/v1/admin/flags", headers: as("admin") });
@@ -215,6 +573,119 @@ test("support ticket status update", async () => {
   await app.close();
 });
 
+test("document job diagnostics expose safe rows and aggregate health only", async () => {
+  const jobId = "a9000000-0000-4000-8000-000000000099";
+  const bookId = "b9000000-0000-4000-8000-000000000099";
+  const assetId = "c9000000-0000-4000-8000-000000000099";
+  const now = "2026-09-11T00:00:00.000Z";
+  const store: Store = {
+    tables: { manuscript_import_jobs: [{
+      id: jobId, book_id: bookId, source_asset_id: assetId, status: "running", attempts: 1,
+      error_code: null, created_at: now, available_at: now, completed_at: null,
+      source_checksum: "a".repeat(64), lease_token: "secret-lease", lease_expires_at: now,
+    }] },
+    rpc(name) {
+      assert.equal(name, "get_manuscript_import_health");
+      return { data: [{ generated_at: now, queued: 0, due_queued: 0, running: 1,
+        expired_running: 1, succeeded: 0, failed: 0, dead_letters: 0,
+        oldest_queued_at: null, oldest_running_at: now }], error: null };
+    },
+  };
+  const app = await appWith(store);
+  const list = await app.inject({ method: "GET", url: "/v1/admin/jobs?type=document", headers: as("admin") });
+  assert.equal(list.statusCode, 200);
+  assert.equal(list.json().jobs[0].id, jobId);
+  assert.equal("source_checksum" in list.json().jobs[0], false);
+  assert.equal("lease_token" in list.json().jobs[0], false);
+  assert.equal("lease_expires_at" in list.json().jobs[0], false);
+
+  const health = await app.inject({ method: "GET", url: "/v1/admin/jobs/document/health", headers: as("admin") });
+  assert.equal(health.statusCode, 200);
+  assert.equal(health.json().health.expired_running, 1);
+  assert.equal(JSON.stringify(health.json()).includes("secret-lease"), false);
+  await app.close();
+});
+
+test("authors create and list only their support tickets", async () => {
+  const store: Store = { tables: { support_tickets: [{ id: "other", user_id: "other-user", subject: "Private", created_at: "2026-01-01T00:00:00Z" }] } };
+  const app = await appWith(store);
+  const invalid = await app.inject({ method: "POST", url: "/v1/support/tickets", headers: as("good"), payload: { category: "general", subject: "Hi", body: "short" } });
+  assert.equal(invalid.statusCode, 422);
+  const created = await app.inject({ method: "POST", url: "/v1/support/tickets", headers: as("good"), payload: {
+    category: "publishing", subject: "Package question", body: "Please explain the preflight warning.", priority: "urgent",
+  } });
+  assert.equal(created.statusCode, 422, "unknown or caller-controlled priority must be rejected");
+  const ok = await app.inject({ method: "POST", url: "/v1/support/tickets", headers: as("good"), payload: {
+    category: "publishing", subject: "Package question", body: "Please explain the preflight warning.",
+  } });
+  assert.equal(ok.statusCode, 201, ok.body);
+  assert.equal(ok.json().viewerId, "user-1");
+  assert.equal(ok.json().ticket.user_id, "user-1");
+  assert.equal(ok.json().ticket.status, "open");
+  assert.equal(ok.json().ticket.priority, "normal");
+  const listed = await app.inject({ method: "GET", url: "/v1/support/tickets", headers: as("good") });
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().viewerId, "user-1");
+  assert.deepEqual(listed.json().tickets.map((ticket: Row) => ticket.subject), ["Package question"]);
+  await app.close();
+});
+
+test("data-rights intake requires explicit deletion confirmation and cancellation is scoped", async () => {
+  const requestId = "a8900000-0000-4000-8000-000000000001";
+  const store: Store = { tables: { data_rights_requests: [{ id: requestId, user_id: "user-1", request_type: "export", status: "submitted", requested_at: "2026-01-01T00:00:00Z" }] } };
+  const app = await appWith(store);
+  const denied = await app.inject({ method: "POST", url: "/v1/account/data-requests", headers: as("good"), payload: { type: "delete", confirmation: "delete" } });
+  assert.equal(denied.statusCode, 422);
+  const deletion = await app.inject({ method: "POST", url: "/v1/account/data-requests", headers: as("good"), payload: { type: "delete", confirmation: "DELETE MY ACCOUNT", reason: "Moving service" } });
+  assert.equal(deletion.statusCode, 201, deletion.body);
+  assert.equal(deletion.json().viewerId, "user-1");
+  assert.equal(deletion.json().request.user_id, "user-1");
+  assert.equal(deletion.json().request.status, "submitted");
+  const cancelled = await app.inject({ method: "DELETE", url: `/v1/account/data-requests/${requestId}`, headers: as("good") });
+  assert.equal(cancelled.statusCode, 200, cancelled.body);
+  assert.equal(cancelled.json().viewerId, "user-1");
+  assert.equal(cancelled.json().request.status, "cancelled");
+  const repeat = await app.inject({ method: "DELETE", url: `/v1/account/data-requests/${requestId}`, headers: as("good") });
+  assert.equal(repeat.statusCode, 409);
+  await app.close();
+});
+
+test("delete intake routes only through confirmation RPC, with safe database error mapping", async () => {
+  for (const [code, status] of [["PGRST202", 503], ["42883", 503], ["22023", 422], ["23505", 409], ["XX000", 500]] as const) {
+    const calls: {name: string; args: Row}[] = [];
+    const store: Store = { tables: {}, rpc: (name, args) => { calls.push({name, args}); return {data:null, error:{code}}; } };
+    const app = await appWith(store);
+    const response = await app.inject({ method:"POST", url:"/v1/account/data-requests", headers:as("good"), payload:{type:"delete", confirmation:"DELETE MY ACCOUNT", reason:"  Moving  "} });
+    assert.equal(response.statusCode, status, code);
+    if (status === 503) assert.equal(response.json().error.message, "This data request is temporarily unavailable. Please try again later.");
+    assert.deepEqual(calls, [{name:"submit_delete_data_rights_request", args:{p_confirmation:"DELETE MY ACCOUNT",p_reason:"Moving"}}]);
+    assert.equal((store.tables.data_rights_requests ?? []).length, 0, "must not fall back to a direct insert");
+    await app.close();
+  }
+});
+test("missing cancellation capability gives a usable status message", async () => {
+  const store: Store = { tables: {}, rpc: () => ({ data: null, error: { code: "PGRST202" } }) };
+  const app = await appWith(store);
+  try {
+    const response = await app.inject({ method: "DELETE", url: "/v1/account/data-requests/a8900000-0000-4000-8000-000000000001", headers: as("good") });
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.json().error.message, "Cancellation is temporarily unavailable. Check your request status before trying again.");
+  } finally { await app.close(); }
+});
+test("delete intake rejects an RPC result for a different authenticated actor", async () => {
+  const store: Store = {tables:{},rpc:()=>({data:{id:crypto.randomUUID(),user_id:"other-user",request_type:"delete",status:"submitted"},error:null})};
+  const app = await appWith(store);
+  const response = await app.inject({method:"POST",url:"/v1/account/data-requests",headers:as("good"),payload:{type:"delete",confirmation:"DELETE MY ACCOUNT"}});
+  assert.equal(response.statusCode,500); assert.equal(response.body.includes("other-user"),false);
+  await app.close();
+});
+test("existing API export intake still uses direct owner insert", async () => {
+  const store: Store = {tables:{},rpc:()=>{throw Error("unexpected RPC")}};
+  const app = await appWith(store);
+  const response = await app.inject({method:"POST",url:"/v1/account/data-requests",headers:as("good"),payload:{type:"export",reason:"  copy  "}});
+  assert.equal(response.statusCode,201,response.body);assert.equal(response.json().request.user_id,"user-1");assert.equal(response.json().request.reason,"copy");assert.equal(response.json().viewerId,"user-1");
+  await app.close();
+});
 test("audit list filters by action", async () => {
   const store: Store = {
     tables: {

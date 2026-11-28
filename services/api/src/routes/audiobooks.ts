@@ -1,0 +1,334 @@
+import type { FastifyInstance } from "fastify";
+import { z } from "zod";
+import { AppError } from "../errors.js";
+import { requireWorkspaceApprover, requireWorkspaceMember } from "../lib/authorize.js";
+import type { SupabaseClient } from "../lib/supabase.js";
+import { assembleChapterAudio, loadChapterAudio } from "../lib/audio-download.js";
+import { googlePlayIdentifierSchemaSafe } from "../lib/google-play-audio-export.js";
+import { privateAudioRoutes } from "../lib/private-audio-stream.js";
+
+const BUCKET = "book-assets";
+// Only these columns are available to an authenticated workspace member.
+const EXPORT_COLUMNS = "id,workspace_id,book_id,edition_id,status,progress_chapters,progress_total,error_code,output_size_bytes,total_duration_seconds,created_at,completed_at";
+
+async function signVisibleExports(app: FastifyInstance, caller: SupabaseClient, jobs: Record<string, unknown>[]) {
+  const completed = jobs.filter(job => job.status === "succeeded");
+  const urls = new Map<string, string>();
+  if (!completed.length) return urls;
+  const ids = completed.map(job => job.id);
+  const validId = (value: unknown): value is string => z.guid().safeParse(value).success;
+  if (ids.some(id => !validId(id)) || new Set(ids).size !== ids.length || completed.some(job => !validId(job.workspace_id) || !validId(job.book_id) || !validId(job.edition_id)))
+    throw new AppError(503, "Could not verify audiobook export history.");
+  const expected = new Map(completed.map(job => [job.id as string, job]));
+  const sameScope = (row: Record<string, unknown>) => {
+    const item = expected.get(row.id as string);
+    return !!item && row.workspace_id === item.workspace_id && row.book_id === item.book_id && row.edition_id === item.edition_id && row.status === "succeeded";
+  };
+  const service = app.supabaseFactory();
+  const { data: privateRows, error: privateError } = await service.from("audiobook_google_play_export_jobs")
+    .select("id,workspace_id,book_id,edition_id,status,output_storage_path,identifier").in("id", ids as string[]);
+  if (privateError || !Array.isArray(privateRows) || privateRows.length !== completed.length
+    || new Set(privateRows.map(row => row.id)).size !== completed.length || privateRows.some(row => !sameScope(row)))
+    throw new AppError(503, "Could not verify private audiobook exports.");
+  const authorizeAgain = async () => {
+    const { data, error } = await caller.from("audiobook_google_play_export_jobs").select("id,workspace_id,book_id,edition_id,status").in("id", ids as string[]);
+    if (error || !Array.isArray(data) || data.length !== completed.length || new Set(data.map(row => row.id)).size !== completed.length || data.some(row => !sameScope(row)))
+      throw new AppError(503, "Audiobook export access changed. Refresh history before downloading.");
+  };
+  await authorizeAgain();
+  await Promise.all(privateRows.map(async row => {
+    const prefix = `workspaces/${row.workspace_id}/audiobook-exports/${row.id}/`;
+    const path = row.output_storage_path;
+    if (typeof row.identifier !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(row.identifier)
+      || typeof path !== "string" || !path.startsWith(prefix) || !path.endsWith(".zip") || !validId(path.slice(prefix.length, -4)))
+      throw new AppError(503, "Could not verify the private audiobook archive.");
+    const signed = await service.storage.from(BUCKET).createSignedUrl(path, 300, { download: `${row.identifier}.zip` });
+    if (signed.error || !signed.data?.signedUrl) throw new AppError(503, "Could not prepare a private export download.");
+    urls.set(row.id, signed.data.signedUrl);
+  }));
+  await authorizeAgain();
+  return urls;
+}
+const signoffSchema = z.object({ reportId: z.guid(), listenedToExactAudio: z.literal(true) }).strict();
+const googlePlayExportSchema = z.object({
+  identifier: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/u)
+    .refine(googlePlayIdentifierSchemaSafe, "Use a valid ISBN-13 or a safe publisher/Google book identifier."),
+  coverAssetId: z.guid(),
+  idempotencyKey: z.string().trim().min(8).max(200),
+}).strict();
+
+function publicExportJob(job: Record<string, unknown>, downloadUrl: string | null = null) {
+  return {
+    id: job.id, editionId: job.edition_id, status: job.status,
+    progressChapters: job.progress_chapters, progressTotal: job.progress_total,
+    errorCode: job.error_code ?? null, createdAt: job.created_at, completedAt: job.completed_at ?? null,
+    downloadUrl, downloadExpiresIn: downloadUrl ? 300 : null,
+    archiveSizeBytes: job.output_size_bytes ?? null,
+    totalDurationSeconds: job.total_duration_seconds ?? null,
+    synthesizedVoiceDisclosureRequired: true,
+  };
+}
+async function hydrateProject(sb: SupabaseClient, project: Record<string, unknown>, proxyDelivery = false) {
+  // Missing mode is compatible with history from the pre-quote schema, not corrupt modes.
+  const billingMode = project.billing_mode === undefined ? "operational" : project.billing_mode;
+  if (billingMode !== "quoted" && billingMode !== "operational") throw new AppError(503, "Could not verify narration billing mode.");
+  const { data: segments, error } = await sb.from("audiobook_segments").select("*")
+    .eq("project_id", project.id).order("segment_index");
+  if (error) throw new AppError(500, "Could not load narration segments.");
+  const jobIds = (segments ?? []).map((segment) => segment.ai_job_id);
+  const assetIds = (segments ?? []).map((segment) => segment.asset_id).filter(Boolean);
+  const [{ data: jobs, error: jobsError }, { data: assets, error: assetsError }] = await Promise.all([
+    jobIds.length ? sb.from("ai_jobs").select("id,status,error_code").in("id", jobIds) : Promise.resolve({ data: [], error: null }),
+    assetIds.length ? sb.from("assets").select("*").in("id", assetIds) : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (jobsError || assetsError) throw new AppError(500, "Could not load narration results.");
+  const jobMap = new Map((jobs ?? []).map((job) => [job.id, job]));
+  const assetMap = new Map((assets ?? []).map((asset) => [asset.id, asset]));
+  const output = [];
+  for (const segment of segments ?? []) {
+    const asset = segment.asset_id ? assetMap.get(segment.asset_id) ?? null : null;
+    const job = jobMap.get(segment.ai_job_id);
+    if (proxyDelivery) {
+      output.push({ index: segment.segment_index, status: job?.status ?? "unknown", failureCode: job?.error_code ?? null,
+        asset, audioAvailable: Boolean(asset && segment.completed_at) });
+      continue;
+    }
+    let download: { url: string; expiresIn: number } | null = null;
+    if (asset) {
+      const signed = await sb.storage.from(BUCKET).createSignedUrl(asset.storage_path, 300);
+      if (!signed.error && signed.data?.signedUrl) download = { url: signed.data.signedUrl, expiresIn: 300 };
+    }
+    output.push({ index: segment.segment_index, status: job?.status ?? "unknown", failureCode: job?.error_code ?? null, asset, download });
+  }
+  return {
+    id: project.id,
+    editionId: project.edition_id,
+    chapterId: project.chapter_id,
+    documentVersionId: project.document_version_id,
+    voice: project.voice,
+    speed: Number(project.speed),
+    billingMode,
+    status: project.status,
+    segmentCount: project.segment_count,
+    creditUnits: project.credit_units,
+    createdAt: project.created_at,
+    completedAt: project.completed_at,
+    aiVoiceDisclosureRequired: true,
+    segments: output,
+  };
+}
+
+export function audiobookRoutes(app: FastifyInstance, options: { fetcher?: typeof fetch } = {}) {
+  privateAudioRoutes(app);
+  // Bounded per API process; the renderer also serializes native assembly.
+  const assembling = new Set<string>();
+  app.post("/editions/:editionId/audiobook-google-play-export", async (req, reply) => {
+    const { editionId } = req.params as { editionId: string };
+    const parsed = googlePlayExportSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "Enter a valid book identifier and choose a cover image.", { issues: parsed.error.issues });
+    const sb = app.supabaseFactory(req.userToken);
+    const { data, error } = await sb.rpc("queue_audiobook_google_play_export", {
+      p_edition_id: editionId, p_identifier: parsed.data.identifier,
+      p_cover_asset_id: parsed.data.coverAssetId, p_idempotency_key: parsed.data.idempotencyKey,
+    });
+    if (error) {
+      if (error.code === "42501") throw new AppError(403, "An audiobook workspace approver must create this export.");
+      if (error.code === "P0002") throw new AppError(404, "Audiobook edition not found.");
+      if (["22023", "23514"].includes(error.code)) throw new AppError(422, "Every current chapter needs signed quality review and a valid private cover before export.");
+      if (error.code === "54000") throw new AppError(429, "This workspace already has two active audiobook exports. Wait for one to finish or cancel it.");
+      if (error.code === "23505") throw new AppError(409, "This export request key is already in use.");
+      throw new AppError(503, "Could not queue the audiobook export.");
+    }
+    const job = Array.isArray(data) ? data[0] : data;
+    if (!job) throw new AppError(503, "Export queue returned no job.");
+    reply.header("cache-control", "private, no-store");
+    return reply.status("queued" === job.status ? 202 : 200).send({ job: publicExportJob(job) });
+  });
+  app.get("/editions/:editionId/audiobook-google-play-exports", async (req, reply) => {
+    const { editionId } = req.params as { editionId: string };
+    if (!z.guid().safeParse(editionId).success) throw new AppError(404, "Audiobook edition not found.");
+    const userClient = app.supabaseFactory(req.userToken);
+    const { data: jobs, error } = await userClient.from("audiobook_google_play_export_jobs").select(EXPORT_COLUMNS)
+      .eq("edition_id", editionId).order("created_at", { ascending: false }).limit(20);
+    if (error || !Array.isArray(jobs)) throw new AppError(503, "Could not load audiobook export history.");
+    const urls = await signVisibleExports(app, userClient, jobs);
+    const result = jobs.map(job => publicExportJob(job, urls.get(job.id) ?? null));
+    reply.header("cache-control", "private, no-store");
+    return { jobs: result };
+  });
+  app.get("/audiobook-google-play-exports/:jobId", async (req, reply) => {
+    const { jobId } = req.params as { jobId: string };
+    if (!z.guid().safeParse(jobId).success) throw new AppError(404, "Audiobook export not found.");
+    const userClient = app.supabaseFactory(req.userToken);
+    const { data: job, error } = await userClient.from("audiobook_google_play_export_jobs").select(EXPORT_COLUMNS).eq("id", jobId).maybeSingle();
+    if (error) throw new AppError(503, "Could not refresh audiobook export progress.");
+    if (!job) throw new AppError(404, "Audiobook export not found.");
+    const urls = await signVisibleExports(app, userClient, [job]);
+    reply.header("cache-control", "private, no-store");
+    return { job: publicExportJob(job, urls.get(jobId) ?? null) };
+  });
+  app.post("/audiobook-google-play-exports/:jobId/cancel", async (req, reply) => {
+    const { jobId } = req.params as { jobId: string };
+    if (!z.guid().safeParse(jobId).success) throw new AppError(404, "Audiobook export not found.");
+    const sb = app.supabaseFactory(req.userToken);
+    const { data, error } = await sb.rpc("cancel_audiobook_google_play_export", { p_job_id: jobId });
+    if (error) {
+      if (error.code === "P0002") throw new AppError(404, "Audiobook export not found.");
+      throw new AppError(503, "Could not cancel the audiobook export.");
+    }
+    const job = Array.isArray(data) ? data[0] : data;
+    if (!job) throw new AppError(404, "Audiobook export not found.");
+    reply.header("cache-control", "private, no-store");
+    return { job: publicExportJob(job) };
+  });
+  app.get("/audiobook-jobs/:projectId/audio-download", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    const key = `${req.userId}:${projectId}`;
+    if (assembling.has(key) || assembling.size >= 2) throw new AppError(429, "Audio assembly is busy. Try again shortly.");
+    assembling.add(key);
+    try {
+      const caller = app.supabaseFactory(req.userToken);
+      const loaded = await loadChapterAudio(caller, projectId);
+      const result = await assembleChapterAudio(loaded.segments, options.fetcher);
+      reply.header("x-bookworm-audio-sha256", result.audioSha256);
+      if (result.quality) {
+        reply.header("x-bookworm-audio-qc", JSON.stringify(result.quality));
+        try {
+          const service = app.supabaseFactory();
+          const report = {
+            project_id: loaded.projectId,
+            document_version_id: loaded.documentVersionId,
+            audio_sha256: result.audioSha256,
+            source_manifest_sha256: loaded.sourceManifestSha256,
+            quality_report: result.quality,
+            created_by: req.userId,
+          };
+          const inserted = await service.from("audiobook_qc_reports").insert(report)
+            .select("id,document_version_id,source_manifest_sha256").maybeSingle();
+          let reportId = inserted.data?.id as string | undefined;
+          if (inserted.error?.code === "23505") {
+            const existing = await service.from("audiobook_qc_reports").select("id,document_version_id,source_manifest_sha256")
+              .eq("project_id", loaded.projectId).eq("audio_sha256", result.audioSha256).maybeSingle();
+            if (existing.error || !existing.data || existing.data.document_version_id !== loaded.documentVersionId
+              || existing.data.source_manifest_sha256 !== loaded.sourceManifestSha256) {
+              throw new Error("QC report replay identity mismatch");
+            }
+            reportId = existing.data.id as string;
+          } else if (inserted.error || !reportId) {
+            throw new Error("QC report insert failed");
+          }
+          reply.header("x-bookworm-audio-qc-report-id", reportId);
+        } catch {
+          req.log.warn({ projectId }, "Audiobook QC report history could not be persisted");
+          reply.header("x-bookworm-audio-qc-history", "unavailable");
+        }
+      }
+      return reply.header("cache-control", "private, no-store").header("content-disposition", 'attachment; filename="chapter.mp3"').type("audio/mpeg").send(result.bytes);
+    } finally { assembling.delete(key); }
+  });
+  app.get("/audiobook-jobs/:projectId/qc-reports", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    const sb = app.supabaseFactory(req.userToken);
+    const { data: project, error: projectError } = await sb.from("audiobook_projects")
+      .select("id,workspace_id,chapter_id,document_version_id").eq("id", projectId).maybeSingle();
+    if (projectError) throw new AppError(503, "Could not load audiobook QC history.");
+    if (!project) throw new AppError(404, "Audiobook job not found.");
+    await requireWorkspaceMember(sb, project.workspace_id, req.userId);
+    const [{ data: reports, error: reportsError }, { data: chapter, error: chapterError }] = await Promise.all([
+      sb.from("audiobook_qc_reports").select("id,document_version_id,audio_sha256,source_manifest_sha256,quality_report,created_by,created_at")
+        .eq("project_id", projectId).order("created_at", { ascending: false }).limit(20),
+      sb.from("chapters").select("current_document_version_id").eq("id", project.chapter_id).maybeSingle(),
+    ]);
+    if (reportsError || chapterError) throw new AppError(503, "Could not load audiobook QC history.");
+    const reportIds = (reports ?? []).map((report) => report.id);
+    const { data: signoffs, error: signoffsError } = reportIds.length
+      ? await sb.from("audiobook_qc_signoffs").select("report_id,reviewer_id,signed_at").in("report_id", reportIds)
+      : { data: [], error: null };
+    if (signoffsError) throw new AppError(503, "Could not load audiobook QC sign-offs.");
+    const byReport = new Map<string, Array<{ reviewerId: string; signedAt: string }>>();
+    for (const signoff of signoffs ?? []) {
+      const list = byReport.get(signoff.report_id) ?? [];
+      list.push({ reviewerId: signoff.reviewer_id, signedAt: signoff.signed_at });
+      byReport.set(signoff.report_id, list);
+    }
+    reply.header("cache-control", "private, no-store");
+    return { reports: (reports ?? []).map((report) => ({
+      id: report.id,
+      documentVersionId: report.document_version_id,
+      audioSha256: report.audio_sha256,
+      sourceManifestSha256: report.source_manifest_sha256,
+      qualityReport: report.quality_report,
+      createdBy: report.created_by,
+      createdAt: report.created_at,
+      isCurrentSource: report.document_version_id === chapter?.current_document_version_id,
+      signoffs: byReport.get(report.id) ?? [],
+      signedByMe: (byReport.get(report.id) ?? []).some((signoff) => signoff.reviewerId === req.userId),
+    })) };
+  });
+  app.post("/audiobook-jobs/:projectId/qc-signoffs", async (req, reply) => {
+    const { projectId } = req.params as { projectId: string };
+    const parsed = signoffSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "Confirm that you listened to this exact audiobook file.", { issues: parsed.error.issues });
+    const sb = app.supabaseFactory(req.userToken);
+    const { data: project, error: projectError } = await sb.from("audiobook_projects")
+      .select("id,workspace_id,chapter_id,status").eq("id", projectId).maybeSingle();
+    if (projectError) throw new AppError(503, "Could not verify the audiobook source.");
+    if (!project || project.status !== "succeeded") throw new AppError(404, "Completed audiobook not found.");
+    await requireWorkspaceApprover(sb, project.workspace_id, req.userId);
+    const [{ data: report, error: reportError }, { data: chapter, error: chapterError }] = await Promise.all([
+      sb.from("audiobook_qc_reports").select("id,document_version_id")
+        .eq("id", parsed.data.reportId).eq("project_id", projectId).maybeSingle(),
+      sb.from("chapters").select("current_document_version_id").eq("id", project.chapter_id).maybeSingle(),
+    ]);
+    if (reportError || chapterError) throw new AppError(503, "Could not verify this audio quality report.");
+    if (!report) throw new AppError(404, "Audio quality report not found.");
+    if (!chapter || report.document_version_id !== chapter.current_document_version_id) {
+      throw new AppError(409, "This report belongs to an older manuscript version. Assemble the current narration before signing it off.");
+    }
+    const input = { report_id: report.id, reviewer_id: req.userId, listened_to_exact_audio: true };
+    const inserted = await sb.from("audiobook_qc_signoffs").insert(input).select("signed_at").maybeSingle();
+    let signedAt = inserted.data?.signed_at as string | undefined;
+    if (inserted.error?.code === "23505") {
+      const existing = await sb.from("audiobook_qc_signoffs").select("signed_at")
+        .eq("report_id", report.id).eq("reviewer_id", req.userId).maybeSingle();
+      if (existing.error || !existing.data) throw new AppError(503, "Could not confirm the saved sign-off.");
+      signedAt = existing.data.signed_at as string;
+    } else if (inserted.error || !signedAt) {
+      throw new AppError(403, "Only a workspace reviewer with approval access can record this sign-off.");
+    }
+    reply.header("cache-control", "private, no-store");
+    return reply.status(201).send({ reportId: report.id, signedAt, listenedToExactAudio: true });
+  });
+  app.get("/editions/:editionId/audiobook-jobs", async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
+    const { editionId } = req.params as { editionId: string };
+    if (!z.guid().safeParse(editionId).success) throw new AppError(404, "Audiobook edition not found.");
+    const sb = app.supabaseFactory(req.userToken);
+    const { data, error } = await sb.from("audiobook_projects").select("*")
+      .eq("edition_id", editionId).order("created_at", { ascending: false }).limit(100);
+    if (error) throw new AppError(500, "Could not load audiobook history.");
+    reply.header("cache-control", "private, no-store");
+    const delivery = (req.query as {delivery?: unknown}).delivery;
+    if (delivery !== undefined && delivery !== "proxy") throw new AppError(400, "Unsupported audio delivery.");
+    return { projects: await Promise.all((data ?? []).map((project) => hydrateProject(sb, project, delivery === "proxy"))) };
+  });
+
+  app.get("/audiobook-jobs/:projectId", async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
+    const { projectId } = req.params as { projectId: string };
+    if (!z.guid().safeParse(projectId).success) throw new AppError(404, "Audiobook job not found.");
+    const sb = app.supabaseFactory(req.userToken);
+    const { data, error } = await sb.from("audiobook_projects").select("*").eq("id", projectId).maybeSingle();
+    if (error) throw new AppError(500, "Could not load audiobook job.");
+    if (!data) throw new AppError(404, "Audiobook job not found.");
+    reply.header("cache-control", "private, no-store");
+    const delivery = (req.query as {delivery?: unknown}).delivery;
+    if (delivery !== undefined && delivery !== "proxy") throw new AppError(400, "Unsupported audio delivery.");
+    return hydrateProject(sb, data, delivery === "proxy");
+  });
+
+  app.post("/editions/:editionId/audiobook-jobs", async (_req, reply) => {
+    reply.header("cache-control", "private, no-store");
+    throw new AppError(410, "Direct narration creation is retired. Review and confirm a funded chapter quote before generating audio.", undefined, "narration_quote_required");
+  });
+}

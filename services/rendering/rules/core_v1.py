@@ -3,9 +3,23 @@
 Generic, channel-agnostic checks. Values here follow public EPUB3 spec + common sense;
 channel-specific thresholds live in the channel rule modules.
 """
-from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
+import re
+import struct
+from io import BytesIO
 
-VERSION = "core-1.0.0"
+from pypdf import PdfReader
+
+from editions import AMIRI_FONTS, language_requires_rtl_shaping, resolve_text_direction
+from preflight import Finding, Rule, RuleSet, _LANG_RE, _meta, _open_epub
+from nav_validation import inspect_navigation
+from epub_toc_targets import inspect_toc_targets
+from print_fonts import BASE_FONTS, EMBEDDED_FONTS, print_font_issues
+from rtl_text import cover_rtl_issues
+from print_images import full_bleed_issues
+from editions import PrintEdition
+from wrap_cover import validate_wrap_pdf
+
+VERSION = "core-1.0.17"
 
 
 def _find(code, msg, loc=""):
@@ -28,7 +42,7 @@ def check_zip_readable(ctx):
     if ctx.get("artifact") is None:
         return []
     if _open_epub(ctx) is None:
-        return _find("BAD_ZIP", "artifact is not a readable zip/epub", "artifact")
+        return _find("BAD_ZIP", "artifact is not a readable EPUB or exceeds safe archive limits", "artifact")
     return []
 
 
@@ -39,9 +53,18 @@ def check_mimetype_first(ctx):
     if zf is None:
         return []
     infos = zf.infolist()
-    if not infos or infos[0].filename != "mimetype" or infos[0].compress_type != 0:
-        return _find("MIMETYPE", "mimetype must be first zip entry, stored uncompressed", "mimetype")
-    if zf.read("mimetype") != b"application/epub+zip":
+    first = min(infos, key=lambda info: info.header_offset) if infos else None
+    blob = ctx["artifact"]
+    # The central directory can list entries in a different order from their
+    # physical local headers. EPUB identification must begin at byte zero.
+    if not first or first.filename != "mimetype" or first.header_offset != 0 or len(blob) < 30:
+        return _find("MIMETYPE", "mimetype must be the first physical ZIP entry, stored uncompressed without extra fields", "mimetype")
+    signature, _version, flags, compression, _time, _date, _crc, _compressed, _size, name_len, extra_len = struct.unpack_from("<IHHHHHIIIHH", blob)
+    if (signature != 0x04034B50 or flags != first.flag_bits or flags & 1 or compression != 0
+            or first.compress_type != 0 or first.extra or extra_len != 0
+            or name_len != len(b"mimetype") or blob[30:30 + name_len] != b"mimetype"):
+        return _find("MIMETYPE", "mimetype must be the first physical ZIP entry, stored uncompressed without extra fields", "mimetype")
+    if first.file_size != len(b"application/epub+zip") or zf.read(first) != b"application/epub+zip":
         return _find("MIMETYPE_CONTENT", "mimetype content must be application/epub+zip", "mimetype")
     return []
 
@@ -66,9 +89,34 @@ def check_nav(ctx):
         return []
     if "OEBPS/nav.xhtml" not in set(zf.namelist()):
         return _find("NO_NAV", "EPUB3 nav document missing", "OEBPS/nav.xhtml")
-    if b'epub:type="toc"' not in zf.read("OEBPS/nav.xhtml"):
-        return _find("NO_TOC", "nav document lacks epub:type=toc", "OEBPS/nav.xhtml")
+    item = zf.getinfo("OEBPS/nav.xhtml")
+    with zf.open("OEBPS/nav.xhtml") as stream:
+        issue = inspect_navigation(stream, item.file_size)
+    if issue == "NAV_LIMIT":
+        return _find(issue, "Navigation document exceeds the supported size or complexity; reduce its contents and render again", "OEBPS/nav.xhtml")
+    if issue == "NAV_XML":
+        return _find(issue, "Navigation document is not safe, well-formed XHTML; render again", "OEBPS/nav.xhtml")
+    if issue == "NO_TOC":
+        return _find(issue, "Navigation document must contain one table of contents with a nonempty ordered list", "OEBPS/nav.xhtml")
     return []
+
+
+def check_toc_targets(ctx):
+    archive = _open_epub(ctx)
+    if archive is None:
+        return []
+    with archive:
+        issue = inspect_toc_targets(archive)
+    messages = {
+        "NAV_TARGET_URL": "A table-of-contents link is not a safe local EPUB URL.",
+        "NAV_TARGET_MISSING": "A table-of-contents link does not resolve to a packaged top-level content document.",
+        "NAV_TARGET_FRAGMENT": "A table-of-contents fragment is missing or ambiguous in its target document.",
+        "NAV_TARGET_PACKAGE": "The EPUB package manifest or spine cannot be verified for navigation.",
+        "NAV_TARGET_XML": "A package or linked document is not well-formed XHTML or SVG.",
+        "NAV_TARGET_LIMIT": "Navigation target verification exceeds supported size or complexity limits.",
+        "NAV_TARGET_UNSUPPORTED": "A navigation target uses a base, URL or fragment form this check cannot verify; review with EPUBCheck.",
+    }
+    return _find(issue, messages[issue], "OEBPS/nav.xhtml") if issue else []
 
 
 def check_chapter_titles(ctx):
@@ -118,13 +166,24 @@ def check_image_refs(ctx):
     return out
 
 
+def check_full_bleed_images(ctx):
+    edition = ctx.get("edition") or {}
+    if edition.get("kind") != "print":
+        return []
+    try:
+        parsed = PrintEdition.model_validate(edition)
+    except ValueError:
+        return []
+    return [Finding(code=issue["code"], message=issue["message"], location=issue["location"])
+            for issue in full_bleed_issues(ctx.get("book") or {}, parsed, ctx.get("image_bytes") or {})]
+
+
 # ---- fonts -------------------------------------------------------------------
 
 def check_fonts_embedded(ctx):
-    # v1 renderers use builtin/base fonts only; nothing to embed. Flag only if edition
-    # requests a non-builtin font (would need embedding + license check).
+    # Bundled Vera variants are embedded by the deterministic renderer.
     typo = ((ctx.get("edition") or {}).get("typography") or {})
-    builtin = {"Times-Roman", "Helvetica", "Helvetica-Bold", "Courier", "Times-Bold"}
+    builtin = BASE_FONTS | EMBEDDED_FONTS
     out = []
     for key in ("body_font", "heading_font"):
         f = typo.get(key)
@@ -132,6 +191,111 @@ def check_fonts_embedded(ctx):
             out += _find("FONT_NOT_EMBEDDED",
                          f"font {f!r} is not a builtin; embedding + license check required",
                          f"edition.typography.{key}")
+    return out
+
+
+def check_print_layout(ctx):
+    from print_layout import print_layout_issues
+    config = ctx.get("edition") or {}
+    if config.get("kind") != "print":
+        return []
+    try:
+        edition = PrintEdition.model_validate(config)
+    except ValueError:
+        return []
+    return [Finding(code=issue["code"], message=issue["message"], location=issue["location"])
+            for issue in print_layout_issues(edition)]
+
+
+def check_print_glyphs(ctx):
+    return [_find(issue.get("code", "PRINT_GLYPH_UNSUPPORTED"), issue["message"], issue["location"])[0]
+            for issue in print_font_issues(ctx.get("book") or {}, ctx.get("edition") or {})]
+
+
+def check_print_wrap(ctx):
+    edition = ctx.get("edition") or {}
+    if edition.get("kind") != "print":
+        return []
+    wrap = edition.get("wrap_cover") or {}
+    channel = ctx.get("channel")
+    if not wrap.get("enabled"):
+        return _find("PRINT_WRAP_REQUIRED", "Enable a full paperback cover (back, spine and front) before creating a retailer package", "edition.wrap_cover") if channel in {"kdp", "barnesnoble", "lulu"} else []
+    if wrap.get("lulu_rtl") and channel not in {None, "export", "lulu"}:
+        return _find("PRINT_WRAP_PROFILE", "Use the selected retailer's cover template. This PDF is saved for Lulu right-to-left print.", "edition.wrap_cover.lulu_rtl")
+    if wrap.get("barcode") and channel not in {None, "export", wrap["barcode"]}:
+        message = ("Choose Printer adds the barcode for B&N Press and render the cover again." if channel == "barnesnoble"
+                   else "Choose a barcode for this retailer or let the printer add it, then render the cover again.")
+        return _find("PRINT_BARCODE_CHANNEL", message, "edition.wrap_cover.barcode")
+    if wrap.get("profile", "kdp-white") != "custom" and channel not in {None, "export", "kdp"}:
+        return _find("PRINT_WRAP_PROFILE", "Use this printer's cover template and custom spine width; KDP paper settings cannot be reused for another printer", "edition.wrap_cover.profile")
+    interior = ctx.get("package_bytes")
+    if interior:
+        cover = ctx.get("cover_pdf_bytes")
+        if not cover:
+            return _find("PRINT_WRAP_MISSING", "The rendered full paperback cover PDF is missing", "cover.pdf")
+        try:
+            validate_wrap_pdf(cover, interior, PrintEdition.model_validate(edition))
+        except ValueError as error:
+            return _find("PRINT_WRAP_INVALID", str(error), "cover.pdf")
+    return []
+
+
+def check_uploaded_cover_review(ctx):
+    edition = ctx.get("edition") or {}
+    if (edition.get("kind") == "print" and (edition.get("wrap_cover") or {}).get("source_pdf_version") is not None
+            and ctx.get("cover_pdf_bytes")):
+        return _find("PRINT_UPLOADED_COVER_REVIEW", "Review fonts, image resolution, safe areas and any barcode in the retailer’s print preview.", "cover.pdf")
+    return []
+
+
+def check_saved_print_isbn(ctx):
+    edition = ctx.get("edition") or {}
+    isbn = edition.get("isbn13")
+    interior = ctx.get("package_bytes")
+    if edition.get("kind") != "print" or not isbn or not interior:
+        return []
+    expected = _meta(ctx)["isbn13"]
+    label = re.compile(r"\bISBN:\s*" + r"\s*".join(expected) + r"(?!\d)")
+    try:
+        reader = PdfReader(BytesIO(interior))
+        if not reader.is_encrypted and (reader.metadata or {}).get("/Subject") == f"ISBN-13 {expected}":
+            # A large type size can make the title matter span multiple pages.
+            if any(label.search(page.extract_text()) for page in reader.pages[1:24]):
+                return []
+    except Exception:
+        pass  # The interior must expose the ISBN on its copyright page.
+    return _find("PRINT_ISBN_MISMATCH", "The saved interior’s copyright page must show this edition’s ISBN-13. Render again.", "book.pdf/copyright")
+
+
+def check_rtl_typography(ctx):
+    """Reject output paths known to lack the font and shaping support they need."""
+    edition = ctx.get("edition") or {}
+    metadata = _meta(ctx)
+    language = metadata.get("language")
+    direction = resolve_text_direction(language, edition.get("text_direction", "auto"))
+    requires_rtl = language_requires_rtl_shaping(language) or direction == "rtl"
+    out = [_find(issue.get("code", "RTL_COVER_TEXT_UNSUPPORTED"), issue["message"], issue["location"])[0]
+           for issue in cover_rtl_issues(metadata, edition)]
+    if not requires_rtl:
+        return out
+    typography = edition.get("typography") or {}
+    amiri_print = edition.get("kind") == "print" and {typography.get("body_font"), typography.get("heading_font")} <= AMIRI_FONTS
+    if (edition.get("kind") == "print" and not amiri_print) or (edition.get("kind") == "ebook" and edition.get("flow") == "fixed"):
+        out += _find("RTL_PRINT_FONT_UNSUPPORTED",
+                     "RTL print PDF requires an embedded shaping-capable font; base PDF fonts are not safe for this script",
+                     "edition.text_direction")
+    if edition.get("kind") == "print" and (edition.get("wrap_cover") or {}).get("source_pdf_version") is not None:
+        return out
+    cover = edition.get("cover") or {}
+    selected_text = cover.get("asset_id") and (
+        (cover.get("title_on_cover", True) and metadata.get("title"))
+        or (cover.get("subtitle_on_cover", True) and metadata.get("subtitle"))
+        or (cover.get("author_on_cover", True) and metadata.get("author"))
+    )
+    if selected_text:
+        out += _find("RTL_COVER_FONT_UNSUPPORTED",
+                     "RTL cover text requires an embedded shaping-capable font; the base cover font is not safe for this script",
+                     "edition.cover")
     return out
 
 
@@ -143,6 +307,8 @@ def check_alt_text(ctx):
     for ch in ctx["book"].get("chapters", []):
         for n in ch.get("nodes", []):
             if n.get("type") == "image":
+                if (n.get("attributes") or {}).get("decorative") is True:
+                    continue
                 alt = n.get("altText") or alt_by_id.get(n.get("assetId"))
                 if not alt:
                     out += _find("NO_ALT_TEXT", "image lacks alt text",
@@ -181,10 +347,18 @@ RULESET = RuleSet(name="core", version=VERSION, rules=[
     Rule("CORE-EPUB-002", "error", "epub_structure", "container + OPF present", check_container),
     Rule("CORE-NAV-001", "error", "navigation", "nav document + toc", check_nav),
     Rule("CORE-NAV-002", "error", "navigation", "chapter titles", check_chapter_titles),
+    Rule("CORE-NAV-003", "error", "navigation", "table of contents targets", check_toc_targets),
     Rule("CORE-META-001", "error", "metadata", "required metadata", check_required_metadata),
     Rule("CORE-IMG-001", "error", "images", "image size policy", check_image_sizes),
     Rule("CORE-IMG-002", "error", "images", "image asset references", check_image_refs),
+    Rule("CORE-IMG-003", "error", "images", "print full-bleed artwork", check_full_bleed_images),
     Rule("CORE-FONT-001", "warning", "fonts", "non-builtin fonts flagged", check_fonts_embedded),
+    Rule("CORE-FONT-002", "error", "fonts", "RTL print and cover typography support", check_rtl_typography),
+    Rule("CORE-FONT-003", "error", "fonts", "print font glyph coverage", check_print_glyphs),
+    Rule("CORE-LAYOUT-001", "error", "channel", "print body and page-number space", check_print_layout),
+    Rule("CORE-COVER-001", "error", "channel", "full paperback cover geometry", check_print_wrap),
+    Rule("CORE-COVER-003", "warning", "channel", "finished cover visual review", check_uploaded_cover_review),
+    Rule("CORE-ISBN-001", "error", "metadata", "saved print ISBN", check_saved_print_isbn),
     Rule("CORE-A11Y-001", "error", "accessibility", "image alt text", check_alt_text),
     Rule("CORE-LINK-001", "error", "links", "link well-formedness", check_links),
     Rule("CORE-LANG-001", "error", "language", "valid language tag", check_language),

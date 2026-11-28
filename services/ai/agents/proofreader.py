@@ -9,5 +9,5 @@ from agents.base import BaseAgent
 class ProofreaderAgent(BaseAgent):
     agent_type = "proofreader"
     prompt_version = "v1"
-    allowed_tools = ["get_chapter", "get_style_guide", "propose_edit"]
+    allowed_tools = ["propose_edit"]
     max_suggestion_span = 120  # chars — small corrections only

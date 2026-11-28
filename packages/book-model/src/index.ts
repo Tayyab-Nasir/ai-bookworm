@@ -2,3 +2,4 @@ export * from "./schema.js";
 export * from "./operations.js";
 export * from "./engine.js";
 export * from "./validate.js";
+export * from "./plain-text.js";

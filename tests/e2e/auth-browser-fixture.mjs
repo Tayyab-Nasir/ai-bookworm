@@ -1,0 +1,716 @@
+/** Isolated browser-test dependency, never imported by application code.
+ * GoTrue-compatible test responses exercise the real SSR SDK and cookie/BFF
+ * flow. This does NOT prove live provider or production database integration.
+ */
+import { createServer } from 'node:http';
+import { createHash, randomUUID } from 'node:crypto';
+
+const user = { id: '11111111-1111-4111-8111-111111111111', aud: 'authenticated', role: 'authenticated', email: 'author@example.test', app_metadata: {}, user_metadata: { display_name: 'Fixture author' }, created_at: '2026-01-01T00:00:00Z' };
+const tokens = new Set();
+const workspaces = [];
+const workspaceCreations = new Map();
+const setupBooks = [];
+const setupUploads = new Map();
+const safeFilename = name => (name.split(/[\\/]/).pop() ?? 'file').replace(/[^a-zA-Z0-9._-]/g, '_').replace(/^\.+/, '_').slice(0, 128) || 'file';
+const setupCounts = { workspaces: 0, books: 0, assets: 0, allocationRequests: 0, uploads: 0, confirmations: 0, imports: 0, reportReads: 0, jobReads: 0, jobRetries: 0 };
+let lostWorkspaceReply = false;
+const setupReceipts = new Map();
+const setupJobs = new Map();
+const draftChapters = new Map();
+const chapterKeys = new Map();
+const aiReviews = new Map();
+const aiKeys = new Map();
+const aiReviewQuotes = new Map();
+const aiReviewQuoteKeys = new Map();
+const aiDecisionReceipts = new Map();
+let lostSuggestionReply = false;
+const populatedDashboardReads = new Map();
+const publishingEditions = new Map();
+const publishingPackages = [];
+const publishingRenders = new Map();
+const publishingChecks = new Map();
+const publishingAudioQcReports = [];
+const audioExports = new Map();
+const audioExportKeys = new Map();
+let lostExportReply = false;
+let chapterDownloadAttempts = 0;
+const fixtureFiles = new Map();
+function fixtureDownload(name, storagePath) {
+  const token = randomUUID();
+  const pathname = storagePath ? `/storage/v1/object/sign/book-assets/${storagePath}` : '/fixture-artifact';
+  fixtureFiles.set(token, { name, pathname });
+  return { url: `http://127.0.0.1:4399${pathname}?token=${token}`, expiresIn: 300 };
+}
+let lostChapterReply = false;
+let lostBookReply = false;
+let refusedBookBeforeAcceptance = false;
+let lostUploadAllocationReply = false;
+let lostUploadPutReply = false;
+let lostAiReply = false;
+let lostReviewReply = false;
+let lostReviewQuoteReply = false;
+const memoryBookId = '88888888-8888-4888-8888-888888888888';
+const memoryBook = { id: memoryBookId, workspace_id: '33333333-3333-4333-8333-333333333333', title: 'The Long Way Home', subtitle: null, author_name: 'Fixture author', language: 'en', genre: 'Fantasy', status: 'draft', updated_at: '2026-08-31T08:00:00.000Z' };
+const memoryItems = [];
+const fixtureSearchText = (item) => [item.name, item.description, JSON.stringify(item.attributes_json)].filter(value => value !== null).join('\n');
+const fixtureSearchHash = (value) => createHash('md5').update(value).digest('hex');
+const memoryMutationReceipts = new Map();
+const memoryRequestClosures = new Map();
+// Browser-only transport simulation. Native SQL tests establish atomicity and
+// locks; this state only exercises the real author's receipt/recovery controls.
+function canonicalJson(value) {
+  return JSON.stringify(value, (_, item) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+}
+const memoryHash = value => createHash('sha256').update(canonicalJson(value)).digest('hex');
+function memoryMutationResult(saved, replayed = true) {
+  const item = memoryItems.find(value => value.id === saved.receipt.itemId) ?? null;
+  const unchanged = saved.receipt.action !== 'delete' && item && memoryHash(item) === saved.receipt.resultHash
+    && item.updated_at === saved.receipt.resultUpdatedAt;
+  return { receipt: saved.receipt, disposition: item ? unchanged ? 'unchanged' : 'changed' : 'deleted', item, replayed, closed: false, closure: null };
+}
+let memoryMetadata = null;
+const adminFlags = [{ id: 'flag-preview', key: 'editor-preview', scope_type: 'workspace', scope_id: 'workspace-fixture', enabled: false, config_json: { rollout: 50 } }];
+const adminTickets = [{ id: 'ticket-fixture', subject: 'Export help', body: 'Please help me prepare my print edition.', category: 'publishing', priority: 'normal', status: 'open', user_id: user.id, created_at: '2026-09-05T00:00:00Z' }];
+const adminAudit = [];
+const dataRequests = [];
+let referralClaimed = false;
+const memoryChapters = [{ id: '44444444-4444-4444-8444-444444444444', title: 'Arrival', current_document_version_id: '66666666-6666-4666-8666-666666666666' }];
+const memoryImages = [{ id: '55555555-5555-4555-8555-555555555555', name: 'Elara reference.png', mime_type: 'image/png' }];
+const manuscript = { chapterId: memoryChapters[0].id, version: 1, nodes: [
+  { id: 'intro', type: 'heading', level: 1, text: 'The harbor at first light' },
+  { id: 'opening', type: 'paragraph', text: 'Elara arrived before the bells. The harbor was quiet, and a silver compass rested in her palm.' },
+  { id: 'second', type: 'paragraph', text: 'Across the water, the city was beginning to wake. She opened the letter one last time.' },
+] };
+const manuscriptHistory = [{ id: randomUUID(), chapter_id: manuscript.chapterId, version_number: 1, plain_text: manuscript.nodes.map((n) => n.text).join('\n\n'), word_count: 50, created_at: new Date().toISOString(), change_summary: 'Initial manuscript' }];
+const manuscriptSnapshots = new Map([[manuscriptHistory[0].id, { version: structuredClone(manuscriptHistory[0]), document: structuredClone(manuscript) }]]);
+const savedOperations = new Map();
+const previewTokens = new Set();
+function session() {
+  const token = `${Buffer.from('{"alg":"HS256","typ":"JWT"}').toString('base64url')}.${Buffer.from(JSON.stringify({ sub: user.id, exp: Math.floor(Date.now()/1000)+3600, aud: 'authenticated', jti: randomUUID() })).toString('base64url')}.test-only-signature`;
+  tokens.add(token);
+  return { access_token: token, refresh_token: 'fixture-refresh-token', token_type: 'bearer', expires_in: 3600, user };
+}
+const server = createServer(async (req, res) => {
+  function json(status, body) { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); }
+  const url = new URL(req.url, 'http://127.0.0.1:4399');
+  if (url.pathname.startsWith('/storage/v1/object/upload/sign/book-assets/')) {
+    const uploadOrigin = req.headers.origin;
+    if (uploadOrigin === 'http://127.0.0.1:4398' || uploadOrigin === 'http://localhost:4398') res.setHeader('access-control-allow-origin', uploadOrigin);
+    res.setHeader('access-control-allow-methods', 'PUT, OPTIONS');
+    res.setHeader('access-control-allow-headers', 'content-type');
+    if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+    let path;
+    try { path = decodeURIComponent(url.pathname.slice('/storage/v1/object/upload/sign/book-assets/'.length)); }
+    catch { return json(400, {}); }
+    const entry = [...setupUploads.values()].find(item => item.path === path);
+    if (!entry || url.searchParams.get('token') !== entry.token || req.method !== 'PUT') return json(403, {});
+    let length = 0;
+    for await (const chunk of req) { length += chunk.length; if (length > 16384) return json(413, {}); }
+    entry.uploaded = length === entry.sizeBytes; setupCounts.uploads++;
+    if (entry.uploaded && process.env.FIXTURE_LOST_UPLOAD_PUT_REPLY === 'true' && !lostUploadPutReply) {
+      lostUploadPutReply = true;
+      return json(503, { error: { message: 'Fixture lost PUT reply after storing bytes' } });
+    }
+    return json(entry.uploaded ? 200 : 422, {});
+  }
+  let raw = '';
+  for await (const chunk of req) { raw += chunk; if (raw.length > 16384) { json(413, {}); return; } }
+  let body;
+  try { body = raw ? JSON.parse(raw) : {}; } catch { json(400, {}); return; }
+  const authorized = tokens.has((req.headers.authorization ?? '').replace(/^Bearer /, ''));
+  if (url.pathname === '/health') return json(200, { fixture: true });
+  if (process.env.FIXTURE_PUBLISHING === 'true' && url.pathname === '/fixture-export-state') {
+    if (req.method === 'POST' && ['running', 'succeeded'].includes(body.status)) {
+      for (const job of audioExports.values()) if (['queued', 'running'].includes(job.status)) {
+        job.status = body.status;
+        if (body.status === 'succeeded') Object.assign(job, { progressChapters: 1, archiveSizeBytes: 100, totalDurationSeconds: 30, completedAt: new Date().toISOString() });
+      }
+    }
+    return json(200, { jobs: [...audioExports.values()], keys: [...audioExportKeys.keys()] });
+  }
+  if (fixtureFiles.get(url.searchParams.get('token'))?.pathname === url.pathname) {
+    const name = url.searchParams.get('download') || 'fixture-artifact.txt';
+    res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename="${name.replace(/["\\\r\n]/g, '_')}"`, 'cache-control': 'no-store' });
+    return res.end(`UI acceptance fixture only: ${fixtureFiles.get(url.searchParams.get('token')).name}`);
+  }
+  if (url.pathname === '/fixture-setup-counts') return json(200, setupCounts);
+  if (url.pathname === '/fixture-image' && previewTokens.has(url.searchParams.get('token'))) {
+    res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
+    return res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
+  }
+  if (url.pathname === '/auth/v1/token') {
+    if (body.email === user.email && body.password === 'fixture-password' || body.refresh_token === 'fixture-refresh-token') return json(200, session());
+    return json(400, { code: 'invalid_credentials', message: 'Invalid login credentials' });
+  }
+  if (url.pathname === '/auth/v1/signup') return json(200, { ...user, email: body.email, identities: [] });
+  if (url.pathname === '/auth/v1/recover') return json(200, {});
+  if (url.pathname === '/auth/v1/user') return authorized ? json(200, user) : json(401, { code: 'bad_jwt', message: 'Invalid token' });
+  if (url.pathname === '/auth/v1/logout') {
+    tokens.delete((req.headers.authorization ?? '').replace(/^Bearer /, ''));
+    res.writeHead(204); return res.end();
+  }
+  if (!authorized) return json(401, { error: { code: 'unauthenticated', message: 'Fixture requires authentication' } });
+  // These generic journeys have no immutable export bytes. Reader/print-specific
+  // harnesses verify exact saved sources; never invent a saved proof here.
+  if (req.method === 'GET' && /^\/v1\/editions\/[a-f0-9-]{36}\/(?:renders|print-renders)$/iu.test(url.pathname)) return json(200, { renders: [] });
+  if (process.env.FIXTURE_PUBLISHING === 'true') {
+    if (url.pathname === `/v1/books/${memoryBookId}/editions`) {
+      if (req.method === 'GET') return json(200, { editions: [...publishingEditions.values()] });
+      const edition = { id: randomUUID(), book_id: memoryBookId, type: body.config.kind, language: body.language, status: 'draft', edition_metadata_json: body.config.kind === 'ebook' ? { ...body.config, metadata_overrides: body.config.metadata_overrides ?? {} } : body.config, updated_at: new Date().toISOString() };
+      publishingEditions.set(edition.id, edition); return json(201, edition);
+    }
+    const edition = publishingEditions.get(url.pathname.split('/')[3]);
+    const exportSummary = (job) => ({ ...job, downloadUrl: job.status === 'succeeded' ? fixtureDownload('Google Play synthesized-voice ZIP', `workspaces/${memoryBook.workspace_id}/audiobook-exports/${job.id}/${randomUUID()}.zip`).url : null, downloadExpiresIn: job.status === 'succeeded' ? 300 : null });
+    if (edition && req.method === 'GET' && url.pathname.endsWith('/audiobook-google-play-exports')) {
+      return json(200, { jobs: [...audioExports.values()].filter((job) => job.editionId === edition.id).map(exportSummary) });
+    }
+    if (req.method === 'POST' && /^\/v1\/audiobook-google-play-exports\/[^/]+\/cancel$/.test(url.pathname)) {
+      const job = audioExports.get(url.pathname.split('/')[3]);
+      if (!job) return json(404, {});
+      job.status = 'cancelled'; job.completedAt = new Date().toISOString();
+      return json(200, { job: exportSummary(job) });
+    }
+    if (edition && req.method === 'POST' && url.pathname.endsWith('/audiobook-google-play-export')) {
+      if (edition.type !== 'audiobook' || body.identifier !== '9780306406157' || body.coverAssetId !== memoryImages[0].id
+        || !publishingAudioQcReports.some((report) => report.isCurrentSource && report.signoffs.some((signoff) => signoff.reviewerId === user.id))) {
+        return json(409, { error: { message: 'Fixture requires the signed-off audiobook and selected cover.' } });
+      }
+      if (!body.idempotencyKey) return json(422, { error: { message: 'Export request key required.' } });
+      let job = audioExports.get(audioExportKeys.get(body.idempotencyKey));
+      if (!job) {
+        job = { id: randomUUID(), editionId: edition.id, status: 'queued', progressChapters: 0, progressTotal: 1,
+          createdAt: new Date().toISOString(), completedAt: null, errorCode: null, archiveSizeBytes: null,
+          totalDurationSeconds: null, synthesizedVoiceDisclosureRequired: true };
+        audioExports.set(job.id, job); audioExportKeys.set(body.idempotencyKey, job.id);
+      }
+      if (!lostExportReply) { lostExportReply = true; return json(503, { error: { message: 'Fixture export reply lost. Retry safely.' } }); }
+      return json(202, { job: exportSummary(job) });
+    }
+    if (edition && req.method === 'GET' && url.pathname.endsWith('/audiobook-jobs')) {
+      return json(200, { projects: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', editionId: edition.id, chapterId: memoryChapters[0].id,
+        documentVersionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', voice: 'marin', speed: 1, status: 'succeeded', segmentCount: 2,
+        creditUnits: 2, createdAt: '2026-09-18T00:00:00Z', completedAt: '2026-09-18T00:01:00Z', aiVoiceDisclosureRequired: true, segments: [] }] });
+    }
+    if (url.pathname === '/v1/audiobook-jobs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/audio-download') {
+      if (++chapterDownloadAttempts === 1) return json(503, { error: { message: 'Fixture assembly busy. Try again.' } });
+      const reportId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+      const quality = { schemaVersion: 1, profile: 'ACX technical preflight; not retailer approval', chapterDurationSeconds: 30,
+        sampleRateHz: 44100, channels: 1, bitRateKbps: 192, bitRateMode: 'cbr', rmsDbfs: -20, samplePeakDbfs: -4,
+        technicalChecks: { rms: { status: 'pass', value: -20, unit: 'dBFS', limit: '-23 to -18 dB RMS' },
+          noiseFloor: { status: 'manual_review', value: null, limit: 'listening required' } }, reviewRequired: true,
+        acxNarrationPolicy: 'explicit_authorization_required_for_ai_voice' };
+      if (!publishingAudioQcReports.some((report) => report.id === reportId)) publishingAudioQcReports.push({
+        id: reportId, projectId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', documentVersionId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        audioSha256: 'a'.repeat(64), sourceManifestSha256: 'b'.repeat(64), qualityReport: quality,
+        createdBy: user.id, createdAt: '2026-09-23T00:00:00Z', isCurrentSource: true, signoffs: [], signedByMe: false,
+      });
+      res.writeHead(200, { 'content-type': 'audio/mpeg', 'content-disposition': 'attachment; filename="chapter.mp3"', 'cache-control': 'private, no-store',
+        'x-bookworm-audio-sha256': 'a'.repeat(64), 'x-bookworm-audio-qc-report-id': reportId,
+        'x-bookworm-audio-qc': JSON.stringify(quality) });
+      return res.end(Buffer.from('ID3browser-audio-fixture'));
+    }
+    if (url.pathname === '/v1/audiobook-jobs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/qc-reports' && req.method === 'GET') {
+      return json(200, { reports: publishingAudioQcReports.map((report) => ({ ...report, signoffs: [...report.signoffs] })) });
+    }
+    if (url.pathname === '/v1/audiobook-jobs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/qc-signoffs' && req.method === 'POST') {
+      const report = publishingAudioQcReports.find((entry) => entry.id === body.reportId);
+      if (!report || body.listenedToExactAudio !== true) return json(422, { error: { message: 'Confirm listening to this exact audio.' } });
+      let signoff = report.signoffs.find((entry) => entry.reviewerId === user.id);
+      if (!signoff) {
+        signoff = { reviewerId: user.id, signedAt: new Date().toISOString() };
+        report.signoffs.push(signoff); report.signedByMe = true;
+      }
+      return json(201, { reportId: report.id, signedAt: signoff.signedAt, listenedToExactAudio: true });
+    }
+    if (edition && req.method === 'PATCH') {
+      if (body.expectedUpdatedAt !== edition.updated_at) return json(409, { error: { message: 'Edition changed' } });
+      Object.assign(edition, { edition_metadata_json: body.config.kind === 'ebook' ? { ...body.config, metadata_overrides: body.config.metadata_overrides ?? {} } : body.config, language: body.language, updated_at: new Date().toISOString() });
+      return json(200, edition);
+    }
+    if (edition && url.pathname.endsWith('/render')) {
+      const assetId = randomUUID(), print = edition.type === 'print', filename = print ? 'book.pdf' : 'book.epub';
+      const path = `workspaces/${memoryBook.workspace_id}/assets/${assetId}/v1/${filename}`;
+      const render = { jobId: randomUUID(), status: 'succeeded', artifacts: [{ role: print ? 'rendered_print' : 'rendered_ebook', asset: { id: assetId, workspace_id: memoryBook.workspace_id, storage_path: path, name: print ? 'Harbor.pdf' : 'Harbor.epub', mime_type: print ? 'application/pdf' : 'application/epub+zip', size_bytes: 1200 }, download: fixtureDownload('render', path) }] };
+      publishingRenders.set(render.jobId, { editionId: edition.id }); return json(201, render);
+    }
+    if (url.pathname === '/v1/publishing/validate') {
+      const check = { jobId: randomUUID(), ruleVersion: 'fixture-1', requestedChannel: body.channel, channel: body.channel, errors: 0, warnings: 1,
+        findings: [{ rule_id: 'fixture-review', location: '', severity: 'warning', message: 'Review this edition before submission.' }] };
+      publishingChecks.set(check.jobId, { editionId: body.editionId, channel: body.channel }); return json(201, check);
+    }
+    if (url.pathname === '/v1/publishing/jobs') {
+      if (req.method === 'GET') return json(200, { jobs: publishingPackages.map((job) => ({ ...job, package: { ...job.package, download: fixtureDownload('package', job.package.asset.storage_path) } })) });
+      const render = publishingRenders.get(body.renderJobId); const check = publishingChecks.get(body.preflightJobId);
+      if (!render || render.editionId !== body.editionId || !check || check.editionId !== body.editionId || check.channel !== body.channel) return json(422, { error: { message: 'Mismatched render/preflight sources' } });
+      const assetId = randomUUID(), path = `workspaces/${memoryBook.workspace_id}/assets/${assetId}/v1/${body.channel}-export.zip`;
+      const job = { id: randomUUID(), requestId: body.idempotencyKey, sourceRenderJobId: body.renderJobId, sourcePreflightJobId: body.preflightJobId,
+        bookId: body.bookId, editionId: body.editionId, channel: body.channel, status: 'succeeded', submissionMode: 'manual', createdAt: new Date().toISOString(), ruleVersion: 'fixture-1',
+        package: { asset: { id: assetId, workspace_id: memoryBook.workspace_id, storage_path: path, size_bytes: 1600, checksum: 'f'.repeat(64) }, download: fixtureDownload('package', path) } };
+      publishingPackages.push(job); return json(201, job);
+    }
+  }
+  if (url.pathname.startsWith('/v1/admin/')) {
+    if (process.env.FIXTURE_ADMIN !== 'true') return json(403, { error: { message: 'admin required' } });
+    if (url.pathname === '/v1/admin/access') return json(200, { admin: true });
+    if (url.pathname === '/v1/admin/users') return json(200, { users: [{ id: user.id, display_name: 'Fixture author', created_at: user.created_at }], memberships: [] });
+    if (url.pathname === '/v1/admin/jobs') return json(200, { jobs: [{ id: 'job-fixture', job_type: url.searchParams.get('type'), status: 'succeeded', attempts: 1, created_at: user.created_at }] });
+    if (url.pathname === '/v1/admin/flags') return json(200, { flags: adminFlags });
+    if (url.pathname === '/v1/admin/flags/editor-preview' && req.method === 'PUT') {
+      if (body.scopeType !== 'workspace' || body.scopeId !== 'workspace-fixture') return json(422, { error: { message: 'Wrong flag scope' } });
+      adminFlags[0].enabled = body.enabled;
+      adminAudit.push({ id: 'audit-flag', action: 'flag.update', actor_id: user.id, entity_type: 'feature_flag', entity_id: adminFlags[0].id, created_at: new Date().toISOString() });
+      return json(200, { flag: adminFlags[0] });
+    }
+    if (url.pathname === '/v1/admin/support') return json(200, { tickets: adminTickets });
+    if (url.pathname === '/v1/admin/support/ticket-fixture' && req.method === 'POST') {
+      adminTickets[0].status = body.status;
+      return json(200, { ticket: adminTickets[0] });
+    }
+    if (url.pathname === '/v1/admin/audit') return json(200, { entries: adminAudit });
+    if (url.pathname === '/v1/admin/usage/summary') return json(200, { days: 30, orgs: [{ organizationId: 'fixture-organization', total: 12, byMeter: { ai_tokens: 10, renders: 2 } }] });
+  }
+  if (url.pathname === '/v1/referrals/code') return json(200, { id: 'code-fixture', code: 'bw-abcdef12', user_id: user.id, status: 'active' });
+  if (url.pathname === '/v1/referrals') return json(200, { referrals: [{ id: 'referral-fixture', referred_user_id: 'other-author', status: 'rewarded', flagged: false, created_at: user.created_at }] });
+  if (url.pathname === '/v1/referrals/ledger') return json(200, {
+    entries: [{ id: 2, source: 'reversal', reference_type: 'referral_reward', amount: -100, balance_after: 20, created_at: user.created_at }, { id: 1, source: 'referral_reward', amount: 100, balance_after: 120, created_at: user.created_at }],
+    summary: { creditBalance: 20, referralCredits: 0, rewardedReferrals: 1 },
+  });
+  if (url.pathname === '/v1/referrals/claim' && req.method === 'POST') {
+    const alreadyAttributed = referralClaimed;
+    referralClaimed = true;
+    return json(200, { alreadyAttributed });
+  }
+  if (url.pathname === '/v1/support/tickets' && req.method === 'GET') return json(200, { tickets: adminTickets.filter((ticket) => ticket.user_id === user.id) });
+  if (url.pathname === '/v1/support/tickets' && req.method === 'POST') {
+    const ticket = { id: randomUUID(), user_id: user.id, organization_id: null, category: body.category, subject: body.subject, body: body.body, status: 'open', priority: 'normal', created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+    adminTickets.push(ticket); return json(201, { ticket });
+  }
+  if (url.pathname === '/v1/account/data-requests' && req.method === 'GET') return json(200, { requests: dataRequests });
+  if (url.pathname === '/v1/account/data-requests' && req.method === 'POST') {
+    const now = new Date();
+    const request = { id: randomUUID(), user_id: user.id, request_type: body.type, status: 'submitted', reason: body.reason ?? null, requested_at: now.toISOString(), due_at: new Date(now.getTime() + 30 * 86400000).toISOString(), completed_at: null };
+    dataRequests.unshift(request); return json(201, { request });
+  }
+  if (url.pathname.startsWith('/v1/account/data-requests/') && req.method === 'DELETE') {
+    const request = dataRequests.find((entry) => entry.id === url.pathname.split('/').pop());
+    if (!request || request.status !== 'submitted') return json(request ? 409 : 404, { error: { message: request ? 'Only submitted requests can be cancelled.' : 'Data request not found.' } });
+    request.status = 'cancelled'; return json(200, { request });
+  }
+  if (url.pathname === '/v1/workspaces' && req.method === 'GET') return json(200, { workspaces });
+  if (url.pathname === '/v1/workspaces/onboarding' && req.method === 'POST') {
+    const key = `${user.id}:${body.operationId}`;
+    if (typeof body.operationId !== 'string' || !/^[a-f0-9-]{36}$/i.test(body.operationId)) return json(422, { error: { message: 'Invalid operation' } });
+    const prior = workspaceCreations.get(key);
+    if (prior && (prior.status !== 'created' || prior.name !== body.name)) return json(409, { error: { message: 'Workspace request conflict' } });
+    const workspace = prior?.workspace ?? { id: randomUUID(), organization_id: randomUUID(), name: body.name, slug: 'fixture-workspace', created_by: user.id, created_at: new Date().toISOString() };
+    if (!prior) { workspaces.push(workspace); setupCounts.workspaces++; workspaceCreations.set(key, { status: 'created', name: body.name, workspace }); }
+    if (process.env.FIXTURE_LOST_WORKSPACE_REPLY === 'true' && !lostWorkspaceReply) {
+      lostWorkspaceReply = true;
+      return json(503, { error: { message: 'Fixture lost workspace reply after saving' } });
+    }
+    return json(201, { viewerId: user.id, operationId: body.operationId, workspace });
+  }
+  if (['/v1/workspaces/onboarding/check', '/v1/workspaces/onboarding/close'].includes(url.pathname) && req.method === 'POST') {
+    const key = `${user.id}:${body.operationId}`;
+    let prior = workspaceCreations.get(key);
+    if (!prior && url.pathname.endsWith('/close')) { prior = { status: 'closed' }; workspaceCreations.set(key, prior); }
+    return json(200, { viewerId: user.id, receipt: { operationId: body.operationId, status: prior?.status ?? 'not_found', workspaceId: prior?.workspace?.id ?? null } });
+  }
+  if (url.pathname === '/v1/workspaces' && req.method === 'POST') {
+    const workspace = { id: randomUUID(), organization_id: randomUUID(), name: body.name, slug: 'fixture-workspace', created_by: user.id, created_at: new Date().toISOString() };
+    workspaces.push(workspace); return json(201, workspace);
+  }
+  if (url.pathname === '/v1/dashboard' && req.method === 'GET') {
+    const workspace = workspaces.find(entry => entry.id === url.searchParams.get('workspaceId'));
+    if (!workspace) return json(403, { error: { message: 'Fixture workspace access denied' } });
+    const books = setupBooks.filter(book => book.workspace_id === workspace.id);
+    const bookIds = new Set(books.map(book => book.id));
+    const jobs = [...aiReviews.values()].filter(job => bookIds.has(job.book_id));
+    if (jobs.length) {
+      const count = (populatedDashboardReads.get(workspace.id) ?? 0) + 1;
+      populatedDashboardReads.set(workspace.id, count);
+      if (process.env.FIXTURE_DASHBOARD_RECOVERY === 'true' && count === 2) {
+        return json(503, { error: { message: 'Fixture dashboard summary unavailable. Retry the requested workspace.' } });
+      }
+    }
+    const assets = [...setupUploads.values()].filter(asset => asset.workspaceId === workspace.id);
+    const quotes = [...aiReviewQuotes.values()].filter(quote => quote.acceptedJobId);
+    // Synthetic quote-hold projection, not proof of native ledger settlement.
+    const reserved = quotes.reduce((total, quote) => total + quote.reservedCredits, 0);
+    const workspaceCredits = quotes.filter(quote => bookIds.has(quote.bookId)).reduce((total, quote) => total + quote.reservedCredits, 0);
+    return json(200, {
+      viewerId: user.id, workspace: { id: workspace.id, name: workspace.name, organizationId: workspace.organization_id, role: 'owner' }, books,
+      summary: { activeBooks: books.filter(book => book.status !== 'archived').length,
+        inProductionBooks: books.filter(book => ['draft', 'in_review'].includes(book.status)).length,
+        publishedBooks: books.filter(book => book.status === 'published').length, assets: assets.length,
+        visualAssets: assets.filter(asset => ['illustration', 'front_cover'].includes(asset.type)).length,
+        pendingJobs: jobs.filter(job => ['queued', 'running'].includes(job.status)).length,
+        failedJobs: jobs.filter(job => job.status === 'failed').length, readyPackages: 0 },
+      usage: { entitlements: { plan: { id: 'fixture-paid-plan', name: 'fixture paid' },
+        subscription: { id: 'fixture-subscription', status: 'active', current_period_end: null },
+        entitlements: { seats: 1, workspaces: 1, books: 3, ai_credits_monthly: 120, image_credits_monthly: 0,
+          audio_credits_monthly: 0, translation_credits_monthly: 0, storage_gb: 1, rendering: true, publishing_channels: ['export'] } },
+        usage: { ai_credits: workspaceCredits, image_credits: 0, audio_credits: 0, translation_credits: 0, storage_gb: 0, seats: 1, rendering: 0, publishing: 0 },
+        creditBalance: 120 - reserved },
+      recentJobs: jobs.slice().reverse().map(job => ({ id: job.id, kind: 'ai', label: 'AI writing', status: job.status,
+        bookId: job.book_id, bookTitle: books.find(book => book.id === job.book_id)?.title ?? null,
+        createdAt: job.created_at, completedAt: job.status === 'succeeded' ? job.created_at : null })),
+      activity: [], sales: { available: true, status: 'not_connected', imports: 0, latestImportedAt: null, units: null,
+        reportedProceedsCents: null, royaltyCents: null, currency: null, currencies: [],
+        message: 'No retailer sales reports have been imported in this fixture. Package creation is not a sale.' },
+    });
+  }
+  if (url.pathname === '/v1/books' && req.method === 'POST') {
+    if (process.env.FIXTURE_REFUSE_BOOK_BEFORE_ACCEPTANCE === 'true' && !refusedBookBeforeAcceptance) {
+      refusedBookBeforeAcceptance = true;
+      return json(503, { error: { code: 'fixture_outage', message: 'Fixture refused book before acceptance' } });
+    }
+    const existing = body.requestId && setupBooks.find((book) => book.id === body.requestId);
+    if (existing) return json(200, existing);
+    const book = { id: body.requestId ?? randomUUID(), workspace_id: body.workspaceId, title: body.title, subtitle: body.subtitle ?? null, author_name: body.authorName,
+      language: body.language ?? 'en', genre: body.genre ?? null, status: 'draft', created_by: user.id };
+    setupBooks.push(book); setupCounts.books++;
+    if (process.env.FIXTURE_LOST_BOOK_REPLY === 'true' && !lostBookReply) {
+      lostBookReply = true;
+      return json(503, { error: { code: 'fixture_lost_reply', message: 'Fixture lost book reply after acceptance' } });
+    }
+    return json(201, book);
+  }
+  if (url.pathname === '/v1/books') return json(200, { books: setupBooks });
+  const setupBook = setupBooks.find((book) => url.pathname.startsWith(`/v1/books/${book.id}`));
+  if (setupBook) {
+    const base = `/v1/books/${setupBook.id}`;
+    if (url.pathname === base) return json(200, { book: setupBook, role: 'owner' });
+    if (url.pathname === `${base}/chapters` && process.env.FIXTURE_AI_DRAFT === 'true') {
+      if (req.method === 'GET') return json(200, { chapters: [...draftChapters.values()].filter((v) => v.chapter.book_id === setupBook.id).map((v) => v.chapter) });
+      if (req.method === 'POST') {
+        const key = `${setupBook.id}:${body.idempotencyKey}`;
+        let chapter = chapterKeys.get(key);
+        if (!chapter) {
+          chapter = { id: randomUUID(), book_id: setupBook.id, title: body.title, order_index: draftChapters.size };
+          draftChapters.set(chapter.id, { chapter, document: { chapterId: chapter.id, version: 1, nodes: [{ id: randomUUID(), type: 'paragraph', text: '' }] } });
+          chapterKeys.set(key, chapter);
+        }
+        if (body.title !== 'Chapter 1' && !lostChapterReply) { lostChapterReply = true; return json(503, { error: { message: 'Fixture lost chapter reply after acceptance' } }); }
+        return json(201, { chapter });
+      }
+    }
+    if (url.pathname === `${base}/chapters`) return json(200, { chapters: memoryChapters });
+    if (url.pathname.startsWith(`${base}/imports/`) && req.method === 'GET') {
+      setupCounts.reportReads++;
+      return json(200, { import: setupReceipts.get(`${setupBook.id}:${url.pathname.split('/').pop()}`) ?? null });
+    }
+    if (url.pathname === `${base}/import-jobs` && req.method === 'POST') {
+      if (!setupUploads.get(body.assetId)?.clean) return json(422, { error: { message: 'Source must be clean' } });
+      let job = setupJobs.get(`${setupBook.id}:${body.assetId}`);
+      if (!job) {
+        job = { id: randomUUID(), book_id: setupBook.id, source_asset_id: body.assetId, status: 'queued', attempts: 0,
+          error_code: null, created_at: new Date().toISOString(), available_at: new Date().toISOString(), completed_at: null };
+        setupJobs.set(`${setupBook.id}:${body.assetId}`, job);
+      }
+      return json(202, { job });
+    }
+    if (url.pathname === `${base}/import-jobs` && req.method === 'GET') {
+      setupCounts.jobReads++;
+      for (const job of setupJobs.values()) {
+        if (job.book_id !== setupBook.id) continue;
+        if (job.status === 'queued') {
+          setupCounts.imports++;
+          if (setupCounts.imports === 1) Object.assign(job, { status: 'failed', attempts: 1, error_code: 'document_dependency_unavailable', completed_at: new Date().toISOString() });
+          else {
+            Object.assign(job, { status: 'succeeded', attempts: 1, error_code: null, completed_at: new Date().toISOString() });
+            const receipt = { chapters: memoryChapters, sourceAssetId: job.source_asset_id, assetIds: [],
+              report: { chapterCount: 1, imageCount: 2, warnings: ['Review the imported heading order.', '<script>Imported text remains text.</script>'] } };
+            setupReceipts.set(`${setupBook.id}:${job.source_asset_id}`, receipt);
+          }
+        }
+      }
+      return json(200, { jobs: [...setupJobs.values()].filter((job) => job.book_id === setupBook.id) });
+    }
+    const retryJob = [...setupJobs.values()].find((job) => url.pathname === `${base}/import-jobs/${job.id}/retry`);
+    if (retryJob && req.method === 'POST') {
+      setupCounts.jobRetries++;
+      Object.assign(retryJob, { status: 'queued', attempts: 0, error_code: null, completed_at: null, available_at: new Date().toISOString() });
+      return json(202, { job: retryJob });
+    }
+    if (url.pathname === `${base}/import` && req.method === 'POST') {
+      if (!setupUploads.get(body.assetId)?.clean) return json(409, { error: { message: 'Source quarantined' } });
+      setupCounts.imports++;
+      if (setupCounts.imports === 1) return json(503, { error: { message: 'Fixture parser outage. Retry the saved original.' } });
+      const receipt = { chapters: memoryChapters, sourceAssetId: body.assetId,
+        report: { chapterCount: 1, imageCount: 2, warnings: ['Review the imported heading order.', '<script>Imported text remains text.</script>'] } };
+      setupReceipts.set(`${setupBook.id}:${body.assetId}`, receipt);
+      return json(200, receipt);
+    }
+  }
+  if (url.pathname === '/v1/assets/upload-url' && req.method === 'POST') {
+    setupCounts.allocationRequests++;
+    const id = body.requestId ?? randomUUID(); const token = randomUUID();
+    const path = `workspaces/${body.workspaceId}/assets/${id}/v1/${safeFilename(body.filename)}`;
+    const existing = setupUploads.get(id);
+    if (existing && (existing.filename !== body.filename || existing.mimeType !== body.mimeType
+      || existing.sizeBytes !== body.sizeBytes || existing.workspaceId !== body.workspaceId || existing.type !== body.type || existing.clean)) {
+      return json(409, { error: { message: 'Upload request changed or finished' } });
+    }
+    if (existing) existing.token = token;
+    else {
+      setupUploads.set(id, { token, path, filename: body.filename, mimeType: body.mimeType, workspaceId: body.workspaceId,
+        type: body.type, sizeBytes: body.sizeBytes, uploaded: false, clean: false, checksum: null });
+      setupCounts.assets++;
+    }
+    if (process.env.FIXTURE_LOST_UPLOAD_ALLOCATION_REPLY === 'true' && !lostUploadAllocationReply) {
+      lostUploadAllocationReply = true;
+      return json(503, { error: { message: 'Fixture lost allocation reply after acceptance' } });
+    }
+    return json(200, { assetId: id, uploadUrl: `http://127.0.0.1:4399/storage/v1/object/upload/sign/book-assets/${path}?token=${token}`, path });
+  }
+  const setupAssetId = url.pathname.split('/')[3];
+  const setupAsset = setupUploads.get(setupAssetId);
+  if (setupAsset && url.pathname === `/v1/assets/${setupAssetId}/confirm` && req.method === 'POST') {
+    setupCounts.confirmations++;
+    if (setupAsset.clean) return json(409, { error: { message: 'asset already confirmed' } });
+    if (!setupAsset.uploaded || body.sizeBytes !== setupAsset.sizeBytes) return json(409, { error: { message: 'Upload incomplete' } });
+    setupAsset.clean = true; setupAsset.checksum = body.checksumSha256;
+    return json(503, { error: { message: 'Fixture lost scan response. Retry to check its saved result.' } });
+  }
+  if (setupAsset && url.pathname === `/v1/assets/${setupAssetId}/versions`) return json(200, { versions: [{
+    id: setupAssetId, version_number: 1, checksum: setupAsset.checksum ?? 'pending', scan_status: setupAsset.clean ? 'clean' : 'pending',
+  }] });
+  if (url.pathname === '/v1/usage') return json(200, { entitlements: {}, usage: {}, creditBalance: 120 });
+  if (process.env.FIXTURE_AI_DRAFT === 'true') {
+    const draft = draftChapters.get(url.pathname.split('/')[3]);
+    if (draft && url.pathname.endsWith('/saves') && req.method === 'GET') {
+      const operationId = url.searchParams.get('operationId');
+      return json(200, aiDecisionReceipts.get(`${draft.chapter.id}:${operationId}`) ?? { status: 'not_found', operationId });
+    }
+    if (draft && url.pathname.endsWith('/document')) return json(200, { ...draft, role: 'owner' });
+    if (draft && url.pathname.endsWith('/versions')) return json(200, { versions: [] });
+    const aiReviewModelMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/models$/u);
+    if (aiReviewModelMatch && req.method === 'GET') return json(200, { catalogVersion: 'fixture-v1', models: [
+      { id: 'fixture-writer', label: 'Fixture Writer', model: 'gpt-6-astra-fixture', priceVersion: 'fixture-price-v1', policyVersion: 'fixture-policy-v1' },
+    ] });
+    const aiReviewQuoteMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/quotes$/u);
+    if (aiReviewQuoteMatch && req.method === 'POST') {
+      let quote = aiReviewQuoteKeys.get(body.idempotencyKey);
+      if (!quote) {
+        quote = { requestId: randomUUID(), status: 'ready', agentType: body.agentType, model: 'gpt-6-astra-fixture',
+          countedInputTokens: 420, maxOutputTokens: 1200, reservedCredits: 24,
+          expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(), bookId: aiReviewQuoteMatch[1],
+          chapterIds: body.chapterIds, idempotencyKey: body.idempotencyKey };
+        aiReviewQuoteKeys.set(body.idempotencyKey, quote); aiReviewQuotes.set(quote.requestId, quote);
+      }
+      if (quote.bookId !== aiReviewQuoteMatch[1] || quote.agentType !== body.agentType || quote.chapterIds.join(',') !== body.chapterIds.join(',')) {
+        return json(409, { error: { message: 'Quote key is bound to different inputs' } });
+      }
+      if (quote.agentType !== 'writer' && process.env.FIXTURE_LOST_REVIEW_QUOTE_REPLY === 'true' && !lostReviewQuoteReply) {
+        lostReviewQuoteReply = true;
+        return json(503, { error: { message: 'Fixture lost quote creation reply' } });
+      }
+      return json(201, { quote: { ...quote, bookId: undefined, chapterIds: undefined, idempotencyKey: undefined } });
+    }
+    const aiReviewKeyMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/quote-requests\/([^/]+)$/u);
+    if (aiReviewKeyMatch && req.method === 'GET') {
+      const quote = aiReviewQuoteKeys.get(decodeURIComponent(aiReviewKeyMatch[2]));
+      if (!quote || quote.bookId !== aiReviewKeyMatch[1]) return json(404, { error: { message: 'Quote not found' } });
+      return json(200, { quote: { ...quote, bookId: undefined, chapterIds: undefined, idempotencyKey: undefined },
+        ...(quote.acceptedJobId ? { job: { id: quote.acceptedJobId, status: aiReviews.get(quote.acceptedJobId)?.status ?? 'queued' } } : {}) });
+    }
+    const aiReviewQuoteStatusMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/quotes\/([^/]+)$/u);
+    if (aiReviewQuoteStatusMatch && req.method === 'GET') {
+      const quote = aiReviewQuotes.get(aiReviewQuoteStatusMatch[2]);
+      if (!quote || quote.bookId !== aiReviewQuoteStatusMatch[1]) return json(404, { error: { message: 'Quote not found' } });
+      return json(200, { quote: { ...quote, bookId: undefined, chapterIds: undefined, idempotencyKey: undefined },
+        ...(quote.acceptedJobId ? { job: { id: quote.acceptedJobId, status: aiReviews.get(quote.acceptedJobId)?.status ?? 'queued' } } : {}) });
+    }
+    const aiReviewAcceptMatch = url.pathname.match(/^\/v1\/books\/([^/]+)\/ai-review\/quotes\/([^/]+)\/accept$/u);
+    if (aiReviewAcceptMatch && req.method === 'POST') {
+      const quote = aiReviewQuotes.get(aiReviewAcceptMatch[2]);
+      if (!quote || quote.bookId !== aiReviewAcceptMatch[1]) return json(404, { error: { message: 'Quote not found' } });
+      if (body.expectedCredits !== quote.reservedCredits) return json(409, { error: { message: 'Exact credits required' } });
+      let review = quote.acceptedJobId ? aiReviews.get(quote.acceptedJobId) : null;
+      if (!review) {
+        const source = draftChapters.get(quote.chapterIds[0]);
+        if (!source) return json(422, { error: { message: 'Unknown chapter' } });
+        review = { id: randomUUID(), book_id: quote.bookId, chapter_ids: quote.chapterIds, agent_type: quote.agentType,
+          status: 'queued', context_source_count: 0, created_at: new Date().toISOString(), usage_json: {}, suggestions: [{
+            id: randomUUID(), entity_type: 'chapter', entity_id: source.chapter.id, status: 'pending', rationale: 'Opening scene for author review',
+            operation_json: { operationId: randomUUID(), type: 'replace_text', target: { chapterId: source.chapter.id, nodeId: source.document.nodes[0].id },
+              payload: { nodeId: source.document.nodes[0].id, from: 0, to: 0, text: 'Mara reached the harbor before dawn.' }, expectedVersion: source.document.version },
+          }] };
+        for (const suggestion of review.suggestions) suggestion.ai_job_id = review.id;
+        quote.acceptedJobId = review.id; aiReviews.set(review.id, review); aiKeys.set(quote.idempotencyKey, review);
+      }
+      if (quote.agentType !== 'writer' && process.env.FIXTURE_LOST_REVIEW_REPLY === 'true' && !lostReviewReply) {
+        lostReviewReply = true; return json(503, { error: { message: 'Fixture lost paid review acceptance reply' } });
+      }
+      return json(202, { jobId: review.id, status: review.status });
+    }
+    if (url.pathname === '/v1/ai/jobs' && req.method === 'POST') {
+      let review = aiKeys.get(body.idempotencyKey);
+      if (!review) {
+        const source = draftChapters.get(body.chapterIds[0]);
+        if (!source) return json(422, { error: { message: 'Unknown chapter' } });
+        review = { id: randomUUID(), book_id: body.bookId, chapter_ids: body.chapterIds, agent_type: body.agentType,
+          status: 'queued', context_source_count: 0, created_at: new Date().toISOString(), usage_json: {}, suggestions: [{
+            id: randomUUID(), entity_type: 'chapter', entity_id: source.chapter.id, status: 'pending', rationale: 'Opening scene for author review',
+            operation_json: { operationId: randomUUID(), type: 'replace_text',
+              target: { chapterId: source.chapter.id, nodeId: source.document.nodes[0].id },
+              payload: { nodeId: source.document.nodes[0].id, from: 0, to: 0, text: 'Mara reached the harbor before dawn.' }, expectedVersion: source.document.version },
+          }] };
+        aiReviews.set(review.id, review); aiKeys.set(body.idempotencyKey, review);
+      }
+      if (body.idempotencyKey.startsWith('chapter-draft:') && !lostAiReply) { lostAiReply = true; return json(503, { error: { message: 'Fixture lost AI reply after acceptance' } }); }
+      if (process.env.FIXTURE_LOST_REVIEW_REPLY === 'true' && !body.idempotencyKey.startsWith('chapter-draft:') && !body.idempotencyKey.startsWith('story-starter:') && !lostReviewReply) {
+        lostReviewReply = true; return json(503, { error: { message: 'Fixture lost paid review reply after acceptance' } });
+      }
+      return json(202, review);
+    }
+    if (url.pathname === '/v1/ai/jobs') return json(200, { jobs: [...aiReviews.values()].filter((v) => v.book_id === url.searchParams.get('bookId')).reverse() });
+    if (url.pathname.startsWith('/v1/ai/jobs/requests/')) {
+      const review = aiKeys.get(decodeURIComponent(url.pathname.split('/').pop()));
+      return review && review.book_id === url.searchParams.get('bookId') ? json(200, review) : json(404, { error: { message: 'AI request not found' } });
+    }
+    const review = aiReviews.get(url.pathname.split('/').pop());
+    if (review && url.pathname.startsWith('/v1/ai/jobs/')) { review.status = 'succeeded'; return json(200, review); }
+    if (url.pathname.startsWith('/v1/ai/suggestions/')) {
+      const suggestionId = url.pathname.split('/')[4];
+      const owner = [...aiReviews.values()].find((v) => v.suggestions.some((s) => s.id === suggestionId));
+      const suggestion = owner?.suggestions.find((s) => s.id === suggestionId);
+      if (!suggestion || suggestion.status !== 'pending') return json(409, { error: { message: 'Already reviewed' } });
+      const source = draftChapters.get(owner.chapter_ids[0]);
+      if (url.pathname.endsWith('/apply')) {
+        source.document.nodes[0].text = suggestion.operation_json.payload.text; source.document.version++;
+        const operationId = `ai-suggestion:${suggestionId}`;
+        const versionId = randomUUID();
+        aiDecisionReceipts.set(`${source.chapter.id}:${operationId}`, { status: 'saved', operationId, versionId, document: structuredClone(source.document) });
+        suggestion.status = 'accepted'; suggestion.reviewed_by = user.id;
+        if (process.env.FIXTURE_LOST_SUGGESTION_REPLY === 'true' && owner.agent_type === 'proofreader' && !lostSuggestionReply) {
+          lostSuggestionReply = true; return json(503, { error: { message: 'Fixture lost committed Apply reply' } });
+        }
+        return json(200, { suggestionId, status: 'accepted', version: source.document.version, versionId });
+      }
+      suggestion.status = 'rejected'; return json(200, { suggestion });
+    }
+  }
+  // Stateful HTTP fixture for browser interaction. API validation, scoping and
+  // conflict behavior have separate tests against the real Fastify routes.
+  const memoryBase = `/v1/books/${memoryBookId}`;
+  if (url.pathname === memoryBase && req.method === 'GET') return json(200, { book: memoryBook, role: 'owner' });
+  if (url.pathname === `${memoryBase}/chapters` && req.method === 'GET') return json(200, { chapters: memoryChapters.map((ch, order_index) => ({ ...ch, book_id: memoryBookId, order_index })) });
+  if (url.pathname === `/v1/chapters/${manuscript.chapterId}/document` && req.method === 'GET') return json(200, { chapter: memoryChapters[0], role: 'owner', document: manuscript });
+  if (url.pathname === `/v1/chapters/${manuscript.chapterId}/versions`) return json(200, { versions: manuscriptHistory });
+  if (req.method === 'GET' && url.pathname.startsWith(`/v1/chapters/${manuscript.chapterId}/versions/`)) {
+    const snapshot = manuscriptSnapshots.get(url.pathname.slice(url.pathname.lastIndexOf('/') + 1));
+    return snapshot ? json(200, snapshot) : json(404, { error: { message: 'Saved revision is not in this chapter' } });
+  }
+  if (url.pathname === `/v1/chapters/${manuscript.chapterId}/document` && req.method === 'PUT') {
+    if (savedOperations.has(body.operationId)) return json(200, savedOperations.get(body.operationId));
+    if (body.expectedVersion !== manuscript.version) return json(409, { error: { message: 'Document changed. Reload before saving.' } });
+    manuscript.nodes = body.nodes; manuscript.version++;
+    const plain_text = body.nodes.map((n) => n.text ?? '').join('\n\n');
+    const version = { id: randomUUID(), chapter_id: manuscript.chapterId, version_number: manuscript.version, plain_text, word_count: plain_text.split(/\s+/).length, created_at: new Date().toISOString(), change_summary: 'Browser acceptance save' };
+    manuscriptHistory.unshift(version);
+    manuscriptSnapshots.set(version.id, { version: structuredClone(version), document: structuredClone(manuscript) });
+    const result = { version: manuscript.version, versionId: version.id, document: structuredClone(manuscript) };
+    savedOperations.set(body.operationId, result);
+    return json(200, result);
+  }
+  if (url.pathname === '/v1/assets' && url.searchParams.get('workspaceId') === memoryBook.workspace_id) return json(200, { assets: memoryImages.map((asset) => ({ ...asset, workspace_id: memoryBook.workspace_id, status: 'approved', checksum: 'fixture-confirmed', type: 'illustration', size_bytes: 68 })) });
+  if (url.pathname === `/v1/assets/${memoryImages[0].id}/download-url`) {
+    const token = randomUUID(); previewTokens.add(token);
+    return json(200, { url: `http://127.0.0.1:4399/fixture-image?token=${token}`, expiresIn: 60 });
+  }
+  if (url.pathname === `${memoryBase}/memory` && req.method === 'GET') return json(200, { book: memoryBook, metadata: memoryMetadata, items: memoryItems, chapters: memoryChapters, imageAssets: memoryImages, canEdit: true });
+  if (url.pathname === `${memoryBase}/search/bible-evidence` && req.method === 'POST') {
+    const item = memoryItems.find(entry => entry.id === body.bibleItemId && entry.book_id === memoryBook.id);
+    if (!item) return json(404, { error: { message: 'Entry no longer belongs to this book.' } });
+    if (body.chunkIndex !== 0 || body.textHash !== fixtureSearchHash(fixtureSearchText(item))) {
+      return json(409, { error: { message: 'Entry changed.' } });
+    }
+    return json(200, { bookId: memoryBook.id, citation: body, item });
+  }
+  if (url.pathname === `${memoryBase}/search` && req.method === 'POST') {
+    const phrase = String(body.query ?? '').toLowerCase();
+    const bibleResults = memoryItems.filter(item => `${item.name} ${item.description ?? ''}`.toLowerCase().includes(phrase)).map(item => ({
+      id: item.id, source_type: 'bible', chapter_id: null, bible_item_id: item.id,
+      document_version_id: null, node_id: null, chunk_index: 0, title: item.name,
+      excerpt: fixtureSearchText(item), text_hash: fixtureSearchHash(fixtureSearchText(item)), score: 1,
+    }));
+    return json(200, {
+      results: [...(phrase.includes('elara') ? [{
+        id: '77777777-7777-4777-8777-777777777777', source_type: 'manuscript', chapter_id: memoryChapters[0].id,
+        bible_item_id: null, document_version_id: memoryChapters[0].current_document_version_id,
+        node_id: 'n1', chunk_index: 0, title: 'Arrival',
+        excerpt: 'Elara carries a silver compass from the harbor.', text_hash: fixtureSearchHash('Elara carries a silver compass from the harbor.'), score: 1,
+      }] : []), ...bibleResults],
+      strategy: 'postgres_full_text', query: body.query,
+    });
+  }
+  if (url.pathname === memoryBase && req.method === 'PATCH') {
+    if (body.expectedUpdatedAt !== memoryBook.updated_at) return json(409, { error: { message: 'Book details changed. Reload before saving.' } });
+    for (const field of ['title', 'subtitle', 'language', 'genre']) if (field in body) memoryBook[field] = body[field];
+    if ('authorName' in body) memoryBook.author_name = body.authorName;
+    memoryBook.updated_at = new Date().toISOString();
+    return json(200, { book: memoryBook });
+  }
+  if (url.pathname.startsWith(`${memoryBase}/bible/requests/`) && req.method === 'GET') {
+    if (req.headers['x-bookworm-actor'] !== user.id) return json(403, { error: { message: 'The saved request belongs to a different signed-in account.' } });
+    const saved = memoryMutationReceipts.get(url.pathname.split('/').pop());
+    const closure = memoryRequestClosures.get(url.pathname.split('/').pop()) ?? null;
+    return json(200, saved ? memoryMutationResult(saved) : { receipt: null, disposition: null, item: null, replayed: false, closed: !!closure, closure });
+  }
+  if (url.pathname.startsWith(`${memoryBase}/bible/requests/`) && url.pathname.endsWith('/close') && req.method === 'POST') {
+    if (req.headers['x-bookworm-actor'] !== user.id) return json(409, { error: { message: 'The saved request belongs to a different signed-in account.' } });
+    if (Object.keys(body).length) return json(422, { error: { message: 'Closure accepts only an empty JSON object.' } });
+    const requestId = url.pathname.split('/').at(-2);
+    if (!/^[a-f0-9-]{36}$/iu.test(requestId)) return json(422, { error: { message: 'Original request UUID required.' } });
+    const saved = memoryMutationReceipts.get(requestId);
+    if (saved) return json(200, memoryMutationResult(saved));
+    if (!memoryRequestClosures.has(requestId)) memoryRequestClosures.set(requestId, { requestId, bookId: memoryBookId, closedAt: new Date().toISOString() });
+    return json(200, { receipt: null, disposition: null, item: null, replayed: false, closed: true, closure: memoryRequestClosures.get(requestId) });
+  }
+  const createMemory = url.pathname === `${memoryBase}/bible` && req.method === 'POST';
+  const changeMemory = /^\/v1\/books\/[a-f0-9-]{36}\/bible\/[a-f0-9-]{36}$/u.test(url.pathname)
+    && url.pathname.startsWith(`${memoryBase}/bible/`) && ['PUT', 'DELETE'].includes(req.method);
+  if (createMemory || changeMemory) {
+    if (req.headers['x-bookworm-actor'] !== user.id) return json(403, { error: { message: 'The saved request belongs to a different signed-in account.' } });
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(body.requestId ?? '')) {
+      return json(422, { error: { message: 'An original request UUID is required.' } });
+    }
+    const action = createMemory ? 'create' : req.method === 'PUT' ? 'update' : 'delete';
+    const target = createMemory ? null : url.pathname.split('/').pop();
+    const { requestId, ...intent } = body;
+    const intentHash = memoryHash({ version: 1, bookId: memoryBookId, action, target, body: intent });
+    const saved = memoryMutationReceipts.get(requestId);
+    if (saved) return saved.receipt.intentHash === intentHash ? json(200, memoryMutationResult(saved))
+      : json(409, { error: { message: 'This request UUID belongs to a different intent.' } });
+    if (memoryRequestClosures.has(requestId)) return json(409, { error: { code: 'book_bible_request_closed', message: 'Original request permanently closed.' } });
+    const now = new Date().toISOString();
+    let item = memoryItems.find(entry => entry.id === target);
+    if (createMemory) {
+      item = { id: randomUUID(), book_id: memoryBookId, type: body.type, name: body.name, description: body.description || null,
+        attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs,
+        confidence: null, created_at: now, updated_at: now, mutation_incarnation_id: randomUUID() };
+      memoryItems.push(item);
+    } else {
+      if (!/^[a-f0-9-]{36}$/iu.test(body.expectedIncarnationId ?? '')) return json(422, { error: { message: 'Original entry incarnation required.' } });
+      if (!item || item.updated_at !== body.expectedUpdatedAt || item.mutation_incarnation_id !== body.expectedIncarnationId) return json(409, { error: { message: 'This entry changed or was removed. Reload before saving your changes.' } });
+      if (action === 'delete') memoryItems.splice(memoryItems.indexOf(item), 1);
+      else Object.assign(item, { type: body.type, name: body.name, description: body.description || null,
+        attributes_json: { ...body.attributes, imageAssetIds: body.imageAssetIds }, source_refs_json: body.sourceRefs,
+        updated_at: new Date(Math.max(Date.now(), Date.parse(item.updated_at) + 1)).toISOString() });
+    }
+    const receipt = { requestId, bookId: memoryBookId, action, itemId: item.id, intentHash,
+      resultHash: memoryHash(item), resultUpdatedAt: item.updated_at, committedAt: now };
+    memoryMutationReceipts.set(requestId, { receipt });
+    return json(createMemory ? 201 : 200, memoryMutationResult({ receipt }, false));
+  }
+  if (url.pathname === `${memoryBase}/metadata` && req.method === 'PUT') {
+    if (body.expectedUpdatedAt !== (memoryMetadata?.updated_at ?? null)) return json(409, { error: { message: 'Metadata changed since you loaded it. Reload before saving.' } });
+    memoryMetadata = { book_id: memoryBookId, description: body.description, keywords: body.keywords, categories: body.categories, isbn13: body.isbn13, edition: body.edition, publication_date: body.publicationDate, contributors: [], updated_at: new Date().toISOString() };
+    return json(200, { metadata: memoryMetadata });
+  }
+  return json(404, { error: { code: 'not_found', message: 'Not implemented in browser auth fixture' } });
+});
+server.listen(4399, '127.0.0.1', () => console.log('Isolated auth/browser fixture listening on 127.0.0.1:4399'));

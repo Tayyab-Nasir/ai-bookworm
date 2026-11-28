@@ -1,20 +1,22 @@
-"""Publishing worker: consumes jobs.publishing from Redis (external API retries).
+"""Compatibility entry point for the PostgreSQL-leased package worker."""
 
-Payload per spec section 10:
-  jobId, editionId, channel, idempotencyKey, attempt
-
-Stub only — Redis consumer implemented in Step 10.
-"""
+from pathlib import Path
+import shutil
+import subprocess
 
 
 def run() -> None:
-    """Consume jobs.publishing and call channel adapters. Not implemented yet.
-
-    Graceful shutdown + dead-letter live in workers/ops.py:
-        from ops import run_loop
-        run_loop("jobs.publishing", process_job, fetch=redis_blpop)
-    """
-    raise NotImplementedError("Publishing worker lands in Step 10")
+    """Run export-package actions through the fenced Node worker."""
+    npm = shutil.which("npm")
+    if not npm:
+        raise RuntimeError("npm is required to run the publishing worker")
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [npm, "run", "worker:publishing", "--", "--actions=export_package"],
+        cwd=root,
+        check=False,
+    )
+    raise SystemExit(result.returncode)
 
 
 if __name__ == "__main__":

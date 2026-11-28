@@ -2,13 +2,17 @@
 XHTML chapters -> Book Model nodes. Spec section 13."""
 import io
 import posixpath
+import re
 import zipfile
+from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree as ET
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment, NavigableString
 
 from . import (ParseError, check_size, make_book, make_report, new_chapter,
                node, safe_zip_members)
+from .embedded_images import EmbeddedImages, EXTENSIONS
+from .table_grid import span_attributes
 
 _CONTAINER = "META-INF/container.xml"
 _OPF_NS = "{http://www.idpf.org/2007/opf}"
@@ -16,6 +20,7 @@ _TAG_BLOCK = {"p": "paragraph", "blockquote": "quote",
               "h1": "heading", "h2": "heading", "h3": "heading",
               "h4": "heading", "h5": "heading", "h6": "heading",
               "li": "listItem"}
+MAX_TABLE_IMAGE_OCCURRENCES = 10_000
 
 
 def _read_opf_path(zf: zipfile.ZipFile) -> str:
@@ -47,21 +52,182 @@ def _spine_hrefs(zf: zipfile.ZipFile, opf_path: str) -> tuple[list[str], dict[st
     return hrefs, manifest
 
 
-def _xhtml_to_nodes(soup: BeautifulSoup) -> list[dict]:
+def _xhtml_to_nodes(soup: BeautifulSoup, *, _nesting=0, image_node=None, warnings=None) -> list[dict]:
+    """Walk once in reading order; never flatten a parent and its children twice."""
     nodes: list[dict] = []
-    for el in soup.find_all(list(_TAG_BLOCK)):
-        text = el.get_text(" ", strip=True)
-        if not text:
-            continue
-        type_ = _TAG_BLOCK[el.name]
-        if type_ == "heading":
-            nodes.append(node("heading", text, level=int(el.name[1])))
-        else:
-            nodes.append(node(type_, text))
+    marks_by_tag = {"b": "bold", "strong": "bold", "i": "italic", "em": "italic",
+                    "u": "underline", "s": "strike", "del": "strike", "code": "code"}
+    containers = {"body", "div", "section", "article", "main", "header", "footer",
+                  "figure", "aside", "ul", "ol", "table", "tbody", "thead", "tr", "td", "th"}
+    list_numbers = {}
+    number_styles = {"1": "decimal", "a": "lower-alpha", "A": "upper-alpha", "i": "lower-roman", "I": "upper-roman"}
+
+    def ordinal(value, default):
+        return int(value) if isinstance(value, str) and len(value) <= 7 and value.isascii() and value.isdecimal() and 1 <= int(value) <= 1_000_000 else default
+
+    def numbering_attributes(parent, child):
+        if parent is None or parent.name != "ol":
+            return {}
+        if id(parent) not in list_numbers:
+            items = parent.find_all("li", recursive=False)
+            reversed_list = parent.has_attr("reversed")
+            current = ordinal(parent.get("start"), len(items) if reversed_list else 1)
+            values = {}
+            for item in items:
+                current = ordinal(item.get("value"), current)
+                if not 1 <= current <= 1_000_000:
+                    raise ParseError("EPUB list numbering exceeds safe import limit")
+                values[id(item)] = current
+                current += -1 if reversed_list else 1
+            list_numbers[id(parent)] = values
+        return {"listStart": list_numbers[id(parent)].get(id(child), 1),
+                "listNumberStyle": number_styles.get(parent.get("type"), "decimal"),
+                **({"listReversed": True} if parent.has_attr("reversed") else {})}
+
+    def walk(el, kind="paragraph", attrs=None, nesting=0):
+        if nesting > 128:
+            raise ParseError("EPUB markup nesting exceeds safe import limit")
+        attrs = dict(attrs or {})
+        runs = []
+
+        def flush():
+            while runs and runs[0]["type"] == "text" and not runs[0]["text"].lstrip():
+                runs.pop(0)
+            if runs and runs[0]["type"] == "text":
+                runs[0]["text"] = runs[0]["text"].lstrip()
+            if runs and runs[-1]["type"] == "text":
+                runs[-1]["text"] = runs[-1]["text"].rstrip()
+                if not runs[-1]["text"]:
+                    runs.pop()
+            text = "".join("\n" if r["type"] == "hardBreak" else r["text"] for r in runs)
+            if text.strip():
+                level = {"level": int(el.name[1])} if kind == "heading" else {}
+                nodes.append(node(kind, text, **level, attributes={**attrs, "richText": list(runs)}))
+            runs.clear()
+
+        def visit(child, marks=(), level=0):
+            if nesting + level > 128:
+                raise ParseError("EPUB markup nesting exceeds safe import limit")
+            if isinstance(child, Comment):
+                return
+            if isinstance(child, NavigableString):
+                text = re.sub(r"[\t\r\n ]+", " ", str(child))
+                if runs and (runs[-1]["type"] == "hardBreak" or runs[-1].get("text", "").endswith(" ")):
+                    text = text.lstrip(" ")
+                if text:
+                    runs.append({"type": "text", "text": text,
+                                 **({"marks": [{"type": m} for m in sorted(set(marks))]} if marks else {})})
+                return
+            tag = child.name
+            if tag in {"script", "style", "noscript", "template", "head", "nav"} or child.has_attr("hidden"):
+                return
+            if tag == "br":
+                runs.append({"type": "hardBreak"})
+            elif tag == "li":
+                flush()
+                parent_list = child.find_parent(["ol", "ul"])
+                list_depth = len(child.find_parents(["ol", "ul"])) - 1
+                walk(child, "listItem", {"listStyle": "ordered" if parent_list and parent_list.name == "ol" else "bullet",
+                                         "listDepth": min(6, max(0, list_depth)), **numbering_attributes(parent_list, child)}, nesting + level + 1)
+            elif tag == "table":
+                flush()
+                if len(child.find_all(["img", "image"], limit=MAX_TABLE_IMAGE_OCCURRENCES + 1)) > MAX_TABLE_IMAGE_OCCURRENCES:
+                    raise ParseError("EPUB table contains too many image occurrences; split the table before importing")
+                caption = child.find("caption", recursive=False)
+                if caption:
+                    walk(caption, "caption", nesting=nesting + level + 1)
+                rows = []
+                table_images = []
+                header_rows = 0
+                spans = []
+                occupied_by_row = {}
+                source_rows = [row for row in child.find_all("tr") if row.find_parent("table") is child]
+                if len(source_rows) > 2000:
+                    raise ParseError("EPUB table exceeds safe row limit")
+                for row_index, row in enumerate(source_rows):
+                    cells = {}
+                    col = 0
+                    source_cells = row.find_all(["td", "th"], recursive=False)
+                    for cell in source_cells:
+                        def span_size(name, maximum):
+                            value = cell.get(name, "1")
+                            return int(value) if isinstance(value, str) and len(value) <= 4 and value.isdecimal() and 1 <= int(value) <= maximum else 1
+                        height = span_size("rowspan", min(2000, len(source_rows) - row_index))
+                        width = span_size("colspan", 100)
+                        while col + width <= 100 and any(
+                            c in occupied_by_row.get(r, set())
+                            for r in range(row_index, row_index + height)
+                            for c in range(col, col + width)
+                        ):
+                            col += 1
+                        if col + width > 100:
+                            raise ParseError("EPUB table exceeds safe column limit")
+                        # Reuse the same safe walker; no scripts, links or source HTML.
+                        cell_nodes = _xhtml_to_nodes(cell, _nesting=nesting + level + 1,
+                                                     image_node=image_node, warnings=warnings)
+                        def is_image(n):
+                            return n["type"] == "image" or (n["type"] == "caption" and n.get("attributes", {}).get("importedNodeType") == "image")
+                        table_images.extend(n for n in cell_nodes if is_image(n))
+                        cells[col] = "\n".join(n.get("text", "") for n in cell_nodes if not is_image(n))
+                        for r in range(row_index, row_index + height):
+                            for c in range(col, col + width):
+                                occupied_by_row.setdefault(r, set()).add(c)
+                        if height > 1 or width > 1:
+                            spans.append({"row": row_index, "col": col, "rowspan": height, "colspan": width})
+                        col += width
+                    occupied_in_row = occupied_by_row.get(row_index, set())
+                    if cells or occupied_in_row:
+                        head = row.find_parent("thead")
+                        if header_rows == len(rows) and ((head is not None and head.find_parent("table") is child) or (source_cells and all(cell.name == "th" and cell.get("scope") != "row" for cell in source_cells))):
+                            header_rows += 1
+                        width = max([*cells.keys(), *occupied_in_row]) + 1
+                        rows.append([cells.get(c, "") for c in range(width)])
+                    else:
+                        rows.append([])
+                if any(rows):
+                    if spans:
+                        width = max(len(row) for row in rows)
+                        rows = [row + [""] * (width - len(row)) for row in rows]
+                    attributes = span_attributes(rows, header_rows, spans)
+                    nodes.append(node("table", "\n".join("\t".join(r) for r in rows), rows=rows,
+                                      **({"attributes": attributes} if attributes else {})))
+                if table_images:
+                    nodes.extend(table_images)
+                    if warnings is not None:
+                        warnings.append("EPUB table images were moved after the table; review their original placement.")
+            elif tag in _TAG_BLOCK or tag in containers or tag == "figcaption":
+                # Paragraphs within a list item are its own text, not new bullets.
+                if tag == "p" and kind == "listItem":
+                    if runs:
+                        runs.append({"type": "hardBreak"})
+                    for item in child.children:
+                        visit(item, marks, level + 1)
+                    return
+                flush()
+                child_kind = "quote" if tag == "blockquote" or (kind == "quote" and tag == "p") else _TAG_BLOCK.get(tag, "caption" if tag == "figcaption" else "paragraph")
+                walk(child, child_kind, nesting=nesting + level + 1)
+            elif tag in {"img", "image"}:
+                # Preserve a visible placement without fetching untrusted URLs.
+                flush()
+                nodes.append(image_node(child) if image_node else node("caption", child.get("alt") or "[Embedded illustration — retained in original EPUB]",
+                                  attributes={"importedNodeType": "image"}))
+            elif tag == "hr":
+                flush()
+                nodes.append(node("pageBreak" if "page-break" in child.get("class", []) else "separator"))
+            else:
+                next_marks = (*marks, marks_by_tag[tag]) if tag in marks_by_tag else marks
+                for item in child.children:
+                    visit(item, next_marks, level + 1)
+
+        for child in el.children:
+            visit(child)
+        flush()
+
+    walk(soup.body or soup, nesting=_nesting)
     return nodes
 
 
-def parse_epub(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
+def parse_epub(data: bytes, title: str = "Untitled", *, embedded_assets: list[dict] | None = None) -> tuple[dict, dict]:
     check_size(data)
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
@@ -69,6 +235,7 @@ def parse_epub(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
         raise ParseError("not a valid EPUB (bad zip)") from e
 
     warnings: list[str] = []
+    transferred = EmbeddedImages(embedded_assets)
     with zf:
         safe_zip_members(zf)
         opf_path = _read_opf_path(zf)
@@ -97,7 +264,30 @@ def parse_epub(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
             except Exception as e:
                 warnings.append(f"could not parse {href}: {e}")
                 continue
-            nodes = _xhtml_to_nodes(soup)
+            def image_node(el):
+                source = el.get("src") or el.get("href") or el.get("xlink:href") or ""
+                parsed = urlsplit(source)
+                image_path = posixpath.normpath(posixpath.join(posixpath.dirname(path), unquote(parsed.path)))
+                alt = (el.get("alt") or "")[:1000]
+                asset_id = None
+                if source and not parsed.scheme and not parsed.netloc and not parsed.query and not image_path.startswith(("/", "../")):
+                    ext = posixpath.splitext(image_path)[1].lower().lstrip(".")
+                    mime = next((m for m, extension in EXTENSIONS.items() if ext == extension or (m == "image/jpeg" and ext == "jpeg")), "")
+                    if mime:
+                        try:
+                            asset_id = transferred.add(zf.read(image_path), mime)
+                        except KeyError:
+                            pass
+                if asset_id:
+                    return node("image", assetId=asset_id, altText=alt,
+                                attributes={"decorative": el.has_attr("alt") and not alt})
+                warnings.append("An external, missing or unsupported EPUB image remains in the original; upload a PNG, JPEG, GIF or WebP replacement.")
+                return node("caption", alt or "[Embedded illustration — retained in original EPUB]",
+                            attributes={"importedNodeType": "image"})
+
+            nodes = _xhtml_to_nodes(soup, image_node=image_node, warnings=warnings)
+            if soup.find("table"):
+                warnings.append(f"Table text, row order, explicit header rows and rectangular merged cells in {href} were preserved; complex merged-cell layout and cell formatting require review against the original.")
             if not nodes:
                 continue
             # chapter title from first h1/h2, else filename
@@ -108,5 +298,6 @@ def parse_epub(data: bytes, title: str = "Untitled") -> tuple[dict, dict]:
 
     if not chapters:
         raise ParseError("EPUB contained no parseable content")
-    book = make_book(chapters, title=title)
-    return book, make_report(chapters, warnings)
+    assets = [{"id": entry["id"], "role": "illustration", "caption": entry["filename"]} for entry in transferred.output]
+    book = make_book(chapters, assets, title=title)
+    return book, make_report(chapters, list(dict.fromkeys(warnings)), image_count=len(assets))

@@ -1,8 +1,8 @@
 """Golden eval suite for the proofreader (spec section 23).
 
 Runs every fixture under fixtures/golden against the deterministic MockProvider
-(always) and against the live default provider when ANTHROPIC_API_KEY or
-OPENAI_API_KEY is set. Reports must-find hit rate and false positives.
+(always) and against the live OpenAI provider when OPENAI_API_KEY is set.
+Reports must-find hit rate and false positives.
 
 Usage: python tests/ai-evals/evals/run_evals.py
 Exit 0 when all mock runs pass; live-provider failures are reported but
@@ -82,7 +82,7 @@ def main() -> int:
 
     # 2. live provider — advisory unless EVAL_STRICT=1
     live_ok = True
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY"):
+    if os.environ.get("OPENAI_API_KEY"):
         provider = get_provider()
         live_results = [run_case(case, provider, default_model(provider.name)) for case in cases]
         report(f"LIVE provider={provider.name} (advisory)", live_results)

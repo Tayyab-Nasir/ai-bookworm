@@ -1,191 +1,1072 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { createClient, ApiClientError, type DocumentOperation } from "@bookworm/api-client";
-import type { Chapter } from "@bookworm/types";
+import Link from "next/link";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ApiClientError, type DocumentVersionSummary } from "@bookworm/api-client";
+import type { Book, Chapter } from "@bookworm/types";
+import { bookNodesPlainText, bookNodesWordCount } from "@bookworm/book-model/plain-text";
 import type { BookNode } from "@bookworm/book-model";
+import { apiClient } from "./api";
 import BookTree from "./BookTree";
-import RichBookEditor, { type EditorDocument, type EditorOperation } from "./RichBookEditor";
-import VersionTimeline, { type VersionSummary } from "./VersionTimeline";
-import CommentThread, { type Comment } from "./CommentThread";
+import ChapterTitleEditor, { type ChapterTitleEditorState } from "./ChapterTitleEditor";
+import RichBookEditor, { type EditorDocument, type EditorValidationError } from "./RichBookEditor";
+import VersionTimeline from "./VersionTimeline";
+import AiAssistantPanel from "./AiAssistantPanel";
+import { storyBlueprintWriterBrief } from "../lib/story-blueprint-draft";
+import { clearChapterCreation, readChapterCreation, saveChapterCreation, type ChapterCreationPointer } from "../lib/chapter-creation-recovery";
+import { chapterDraftBackup, chapterDraftReopenWarning, inspectChapterDraftBackup, MAX_CHAPTER_DRAFT_BACKUP_BYTES } from "../lib/chapter-draft";
+import { discardChapterTabRecovery, openChapterTabRecovery, readChapterTabRecovery, writeChapterTabRecovery } from "../lib/chapter-tab-recovery";
+import { chapterSaveDigest, chapterSaveKey, checkChapterRestore, clearChapterRestore, clearChapterSave, editorAccount, parseChapterSave, persistChapterRestore, persistChapterSave, readChapterRestore,
+  validateChapterSaveResult, validateCurrentChapter, validateSavedChapter, type ChapterSavePointer } from "../lib/manual-chapter-save";
 
-// ponytail: API has no versions/reorder/comments endpoints yet (Step 6 spec
-// lists only /v1/books, /chapters, /operations). Versions/comments are
-// component-driven local state; wire endpoints when they land.
-interface VersionEntry extends VersionSummary {
-  nodes: BookNode[];
-}
+const EDIT_ROLES = new Set(["owner","admin","editor","writer","illustrator","designer"]);
 
-const DEMO_NODES: BookNode[] = [
-  { id: "n1", type: "heading", level: 1, text: "Chapter One" },
-  { id: "n2", type: "paragraph", text: "It was a bright cold day in April." },
-];
+const canonicalUuid = (value: string | undefined) => value && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value.toLowerCase() : value;
 
-const DEMO_CHAPTER: Chapter = {
-  id: "demo-chapter",
-  book_id: "demo-book",
-  order_index: 0,
-  title: "Demo chapter (offline)",
-  status: "draft",
-  current_document_version_id: null,
-  created_at: new Date(0).toISOString(),
-  updated_at: new Date(0).toISOString(),
-};
-
-export default function BookEditorClient({ bookId }: { bookId: string }) {
+export default function BookEditorClient({ bookId: requestedBookId, initialChapterId: propChapterId, initialAiJobId, initialDraftPlanItemId }: { bookId: string; initialChapterId?: string; initialAiJobId?: string; initialDraftPlanItemId?: string }) {
+  const bookId = canonicalUuid(requestedBookId)!;
+  const initialChapterId = canonicalUuid(propChapterId);
+  const api = apiClient();
+  const [book, setBook] = useState<Book | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
-  const [nodesByChapter, setNodesByChapter] = useState<Record<string, BookNode[]>>({});
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [version, setVersion] = useState(0);
-  const [versions, setVersions] = useState<VersionEntry[]>([]);
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [conflict, setConflict] = useState<string | null>(null);
+  const [document, setDocument] = useState<EditorDocument | null>(null);
+  const currentDocument = useRef(document); currentDocument.current = document;
+  const [draft, setDraftState] = useState<BookNode[]>([]);
+  const latestDraft = useRef(draft);
+  const setDraft = (nodes: BookNode[]) => { latestDraft.current = nodes; setDraftState(nodes); };
+  const [editorSeed, setEditorSeed] = useState<BookNode[] | null>(null);
+  const [versions, setVersions] = useState<DocumentVersionSummary[]>([]);
+  const [role, setRole] = useState("viewer");
+  const [dirty, setDirty] = useState(false);
+  const [editorValidation, setEditorValidationState] = useState<EditorValidationError | null>(null);
+  const latestValidation = useRef(editorValidation);
+  const setEditorValidation = (value: EditorValidationError | null) => { latestValidation.current = value; setEditorValidationState(value); };
+  const [titleState, setTitleStateValue] = useState<ChapterTitleEditorState>({ dirty: false, busy: false, pending: false });
+  const titleStateRef = useRef(titleState);
+  const titleRevision = useRef(0);
+  const setTitleState = (value: ChapterTitleEditorState) => { titleStateRef.current = value; titleRevision.current++; setTitleStateValue(value); };
+  const titleBlocked = titleState.dirty || titleState.busy || titleState.pending;
+  const hasUnsavedChanges = dirty || editorValidation !== null || titleState.dirty;
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [aiDecisionBusy, setAiDecisionBusyValue] = useState(false);
+  const aiDecisionFlight = useRef(false);
+  const setAiDecisionBusy = useCallback((value: boolean) => { aiDecisionFlight.current = value; setAiDecisionBusyValue(value); }, []);
+  const [bookLoadAttempt, setBookLoadAttempt] = useState(0);
+  const [requestedChapterId, setRequestedChapterId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  const client = useCallback(() => {
-    const baseUrl = process.env.NEXT_PUBLIC_API_URL;
-    const token = process.env.NEXT_PUBLIC_API_TOKEN;
-    return baseUrl && token ? createClient({ baseUrl, token }) : null;
-  }, []);
-
-  const load = useCallback(async () => {
-    const api = client();
-    if (!api) {
-      // Demo/offline mode: no API configured, still render the shell.
-      setChapters([DEMO_CHAPTER]);
-      setNodesByChapter({ [DEMO_CHAPTER.id]: DEMO_NODES });
-      setActiveId(DEMO_CHAPTER.id);
-      setVersion(0);
-      setVersions([
-        {
-          id: "v0",
-          version_number: 0,
-          created_by: "demo",
-          change_summary: "Initial draft",
-          created_at: new Date(0).toISOString(),
-          plain_text: "Chapter One It was a bright cold day in April.",
-          nodes: DEMO_NODES,
-        },
-      ]);
+  const [conflict, setConflictState] = useState(false);
+  const conflictRef = useRef(false);
+  const setConflict = (value: boolean) => { conflictRef.current = value; setConflictState(value); };
+  const [notice, setNotice] = useState<string | null>(null);
+  const [newTitle, setNewTitle] = useState("");
+  const [newChapterBrief, setNewChapterBrief] = useState("");
+  const [creationRecovery, setCreationRecovery] = useState<ChapterCreationPointer | null>(null);
+  const [creationRecoveryReady, setCreationRecoveryReady] = useState(false);
+  const [creationRecoveryError, setCreationRecoveryError] = useState<string | null>(null);
+  const [initialDraftInstruction, setInitialDraftInstruction] = useState<string | undefined>();
+  const [draftPlanTargetChapterId, setDraftPlanTargetChapterId] = useState<string | null>(null);
+  const [draftPlanMessage, setDraftPlanMessage] = useState<string | null>(null);
+  const [activeAiJobId, setActiveAiJobId] = useState<string | undefined>(initialAiJobId);
+  const creatingChapter = useRef(false);
+  const pendingCreation = useRef<{ owner: string; bookId: string; title: string; brief: string; idempotencyKey: string } | null>(null);
+  const [pendingOrder, setPendingOrder] = useState<{ owner: string; bookId: string; expectedIds: string[]; orderedIds: string[]; observed: string | null } | null>(null);
+  const structureFlight = useRef(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [structureOpen, setStructureOpen] = useState(false);
+  const loadSequence = useRef(0);
+  const loadTransition = useRef<number | null>(null);
+  const editorOwner = useRef<string | null>(null);
+  const chapterSetups = useRef(new Map<string, { title: string; brief: string }>());
+  const setups = Array.from(chapterSetups.current.entries());
+  const hasAnyChapterSetup = setups.some(([, value]) => Boolean(value.title.trim() || value.brief.trim()));
+  const hasChapterSetup = setups.some(([key, value]) =>
+    JSON.parse(key)[0] === editorOwner.current && Boolean(value.title.trim() || value.brief.trim()));
+  const updateChapterSetup = (title: string, brief: string, confirmedCreation = false) => {
+    const owner = editorOwner.current;
+    if (!owner || passiveLocked.current || (!confirmedCreation && !editorInteractionAvailable.current) || book?.id !== bookId) return;
+    const key = JSON.stringify([owner, bookId]);
+    if ((title.trim() || brief.trim()) && !chapterSetups.current.has(key) &&
+        (chapterSetups.current.size >= 128 || Array.from(chapterSetups.current.keys()).filter(savedKey => JSON.parse(savedKey)[0] === owner).length >= 32)) {
+      setError("Too many unsaved chapter setups are open. Return to a previous book and create or clear its chapter before starting another.");
       return;
     }
+    if (title.trim() || brief.trim()) chapterSetups.current.set(key, { title, brief });
+    else chapterSetups.current.delete(key);
+    setNewTitle(title); setNewChapterBrief(brief);
+  };
+  const pendingSave = useRef<{ operationId: string; nodes: BookNode[]; expectedVersion: number } | null>(null);
+  const saveFlight = useRef<number | null>(null);
+  const [saveAccount, setSaveAccount] = useState<string | null>(null);
+  const [saveRecoveryReady, setSaveRecoveryReady] = useState(false);
+  const [manualSave, setManualSave] = useState<ChapterSavePointer | null>(null);
+  const [saveMissing, setSaveMissing] = useState(false);
+  const [pendingRestore, setPendingRestore] = useState<{ owner: string; chapterId: string; versionId: string; draftRevision: number; body: { operationId: string; expectedVersion: number } } | null>(null);
+  const [restoreHidden, setRestoreHidden] = useState<string | null>(null);
+  const [accessBlocked, setAccessBlocked] = useState(false);
+  const accessBlockedRef = useRef(false);
+  const accessRechecking = useRef(false);
+  const [checkingAccess, setCheckingAccess] = useState(false);
+  const [accountVerifying, setAccountVerifying] = useState(false);
+  const [passiveCheck, setPassiveCheck] = useState<"checking" | "blocked" | null>(null);
+  const passiveLocked = useRef(false);
+  const passiveEpoch = useRef(0);
+  const editorInteractionAvailable = useRef(false);
+  const childActionsAvailable = useRef(false);
+  const recheckPassive = useRef<() => void>(() => {});
+  const restoring = useRef(false);
+  const liveDraft = useRef(hasUnsavedChanges); liveDraft.current = hasUnsavedChanges;
+  const draftRevision = useRef(0);
+  const backupRead = useRef(0);
+  const [tabDraft, setTabDraft] = useState<string | null>(null);
+  const [tabDraftEnabled, setTabDraftEnabled] = useState(false);
+  const [tabDraftReviewed, setTabDraftReviewed] = useState(false);
+  const [tabDraftBusy, setTabDraftBusy] = useState(false);
+  const [tabDraftError, setTabDraftError] = useState<string | null>(null);
+  const tabDraftRef = useRef<{ userId: string; bookId: string; chapterId: string; baseVersion: number; raw: string | null } | null>(null);
+  const tabDraftEnabledRef = useRef(false);
+  const stopTabDraftForVersion = (version: number) => {
+    const entry = tabDraftRef.current;
+    if (tabDraftEnabledRef.current) { tabDraftEnabledRef.current = false; setTabDraftEnabled(false); }
+    if (!entry || entry.baseVersion === version) return;
+    if (entry.raw === null) tabDraftRef.current = { ...entry, baseVersion: version };
+    else setTabDraftError("The saved chapter changed. The earlier local copy is retained for review and is not being updated.");
+  };
+
+  useLayoutEffect(() => {
+    let live = true;
+    passiveLocked.current = false; setPassiveCheck(null);
+    const check = () => {
+      const owner = editorOwner.current;
+      if (!owner) return;
+      const epoch = ++passiveEpoch.current;
+      passiveLocked.current = true; setPassiveCheck("checking");
+      // Never reveal a previous account's editor when a background tab returns.
+      if (window.document.visibilityState === "hidden") return;
+      void editorAccount(owner).then(() => {
+        if (live && passiveEpoch.current === epoch && editorOwner.current === owner && window.document.visibilityState !== "hidden") {
+          passiveLocked.current = false; setPassiveCheck(null);
+        }
+      }, () => {
+        if (live && passiveEpoch.current === epoch && editorOwner.current === owner) setPassiveCheck("blocked");
+      });
+    };
+    recheckPassive.current = check;
+    window.addEventListener("focus", check);
+    window.document.addEventListener("visibilitychange", check);
+    return () => {
+      live = false; ++passiveEpoch.current; passiveLocked.current = true;
+      recheckPassive.current = () => {};
+      window.removeEventListener("focus", check);
+      window.document.removeEventListener("visibilitychange", check);
+    };
+  }, [bookId]);
+
+  const loadChapter = useCallback(async (chapterId: string, reportFailure = false, _preserveCurrentReview = false, expectedActor?: string) => {
+    const sequence = ++loadSequence.current;
+    loadTransition.current = sequence;
+    const owner = expectedActor ?? editorOwner.current;
+    const accountEpoch = passiveEpoch.current;
+    const originalDraftRevision = draftRevision.current;
+    const originalDocument = currentDocument.current;
+    setAccountVerifying(true);
+    setRequestedChapterId(chapterId);
     try {
-      const { chapters: list } = await api.listChapters(bookId);
-      setChapters(list);
-      setActiveId((id) => id ?? list[0]?.id ?? null);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "failed to load chapters");
+      if (!owner) throw new Error("Verify the original account before loading this manuscript.");
+      const userId = await editorAccount(owner);
+      if (sequence !== loadSequence.current) return;
+      if (passiveLocked.current || accountEpoch !== passiveEpoch.current) throw new Error("Verify the original account before loading this manuscript.");
+      setLoading(true);
+      // Keep the original editor and its recovery state until the new chapter is verified.
+      setError(null); setNotice(null);
+      const [content, history] = await Promise.all([api.getChapterDocument(chapterId, userId), api.listDocumentVersions(chapterId, userId)]);
+      await editorAccount(userId);
+      if (sequence !== loadSequence.current) return;
+      if (passiveLocked.current || accountEpoch !== passiveEpoch.current) throw new Error("Account verification interrupted manuscript loading. Try again.");
+      if (draftRevision.current !== originalDraftRevision) throw new Error("Your draft changed while the chapter was loading. It is still here; review it before trying again.");
+      validateCurrentChapter(content.document, chapterId);
+      tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftReviewed(false); setTabDraft(null); setTabDraftError(null);
+      const draftScope = { userId, bookId, chapterId, baseVersion: content.document.version };
+      try {
+        const raw = readChapterTabRecovery(window.sessionStorage, draftScope);
+        tabDraftRef.current = { ...draftScope, raw }; setTabDraft(raw);
+      } catch { tabDraftRef.current = null; setTabDraftError("Tab recovery could not be read. Your saved chapter is still available; download drafts manually."); }
+      setDocument(content.document); setDraft(content.document.nodes); setRole(content.role); setVersions(history.versions);
+      setEditorSeed(null); setDirty(false); setEditorValidation(null); setConflict(false); setError(null); setPendingRestore(null); pendingSave.current = null; setReloadKey((v) => v + 1);
+      setSaveRecoveryReady(false); setManualSave(null); setSaveMissing(false);
+      setSaveAccount(userId);
+      try {
+        const scope = { userId, bookId, chapterId };
+        setManualSave(parseChapterSave(window.sessionStorage.getItem(chapterSaveKey(scope)), scope));
+        const restore = readChapterRestore(window.sessionStorage, scope);
+        if (restore) {
+          setPendingRestore({
+            owner: userId, chapterId, versionId: restore.versionId, draftRevision: draftRevision.current,
+            body: { operationId: restore.operationId, expectedVersion: restore.expectedVersion },
+          });
+        }
+        setSaveRecoveryReady(true);
+      } catch (reason) { setError(reason instanceof Error ? reason.message : "Browser recovery could not be read. Saving is paused; the saved chapter remains available."); }
+    } catch (reason) {
+      if (sequence === loadSequence.current && originalDocument && reason instanceof ApiClientError && [401, 403, 404].includes(reason.status)) {
+        accessBlockedRef.current = true; editorInteractionAvailable.current = false; childActionsAvailable.current = false; setAccessBlocked(true);
+      }
+      if (passiveLocked.current || accountEpoch !== passiveEpoch.current) {
+        if (sequence === loadSequence.current) setError("Account verification interrupted manuscript loading. Retry after verifying the original account.");
+        if (reportFailure) throw reason;
+        return;
+      }
+      let actorUnavailable = false;
+      if (owner) { try { await editorAccount(owner); } catch { actorUnavailable = true; } }
+      if (sequence === loadSequence.current) {
+        if (actorUnavailable && owner) setRestoreHidden(owner);
+        setError(reason instanceof Error ? reason.message : "Could not load manuscript");
+      }
+      if (reportFailure) throw reason;
+    } finally {
+      if (loadTransition.current === sequence) loadTransition.current = null;
+      if (sequence === loadSequence.current) { setAccountVerifying(false); setLoading(false); }
     }
-  }, [bookId, client]);
+  }, [api, bookId]);
+
+  const recheckChapterAccess = async () => {
+    const owner = editorOwner.current, source = currentDocument.current;
+    if (!owner || !source || !accessBlockedRef.current || accessRechecking.current || passiveLocked.current) return;
+    const sequence = loadSequence.current, accountEpoch = passiveEpoch.current;
+    const current = () => sequence === loadSequence.current && accountEpoch === passiveEpoch.current
+      && !passiveLocked.current && editorOwner.current === owner && currentDocument.current === source;
+    accessRechecking.current = true; setCheckingAccess(true);
+    try {
+      await editorAccount(owner);
+      const result = await api.getChapterDocument(source.chapterId, owner);
+      await editorAccount(owner);
+      if (!current()) return;
+      validateCurrentChapter(result.document, source.chapterId);
+      if (typeof result.role !== "string" || !result.role) throw new Error("Chapter access could not be verified.");
+      const changed = result.document.version !== source.version
+        || await chapterSaveDigest(result.document.nodes) !== await chapterSaveDigest(source.nodes);
+      await editorAccount(owner);
+      if (!current()) return;
+      setRole(result.role);
+      if (changed) setConflict(true);
+      accessBlockedRef.current = false; setAccessBlocked(false); setRestoreHidden(null); setError(null);
+    } catch {
+      if (current()) setError("Chapter access could not be verified. Your draft remains hidden in this tab.");
+    } finally { accessRechecking.current = false; setCheckingAccess(false); }
+  };
 
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  const onOperation = useCallback(
-    async (op: EditorOperation) => {
-      const api = client();
-      setVersions((vs) => [
-        {
-          id: op.operationId,
-          version_number: op.expectedVersion + 1,
-          created_by: "you",
-          change_summary: op.type,
-          created_at: new Date().toISOString(),
-          nodes: nodesByChapter[op.target.chapterId] ?? [],
-        },
-        ...vs,
-      ]);
-      setVersion(op.expectedVersion + 1);
-      if (!api) return; // demo mode
-      try {
-        const res = await api.applyOperation(op.target.chapterId, op as DocumentOperation);
-        setVersion(res.version);
-        setConflict(null);
-      } catch (e) {
-        if (e instanceof ApiClientError && e.status === 409) {
-          setConflict(`Conflict: server is at a newer version. Latest: ${JSON.stringify(e.details ?? {})}`);
-          await load(); // reload latest state
-        } else {
-          setError(e instanceof Error ? e.message : "operation failed");
+    let cancelled = false;
+    ++loadSequence.current;
+    loadTransition.current = null;
+    editorOwner.current = null;
+    tabDraftEnabledRef.current = false; tabDraftRef.current = null; setTabDraftEnabled(false); setTabDraftReviewed(false); setTabDraft(null); setTabDraftError(null);
+    accessBlockedRef.current = false; setAccessBlocked(false);
+    setNewTitle(""); setNewChapterBrief("");
+    setCreationRecovery(null); setCreationRecoveryReady(false); setCreationRecoveryError(null);
+    setAccountVerifying(false); setRestoreHidden(null);
+    setBook(null); setChapters([]); setDocument(null); setDraft([]); setEditorSeed(null); setVersions([]); setRole("viewer");
+    setDirty(false); setEditorValidation(null); setSaving(false); setLoading(true); setError(null); setNotice(null);
+    setConflict(false); setPendingRestore(null); setRequestedChapterId(null);
+    pendingSave.current = null; creatingChapter.current = false; restoring.current = false;
+    structureFlight.current = false; setPendingOrder(null);
+    saveFlight.current = null; setManualSave(null); setSaveMissing(false); setSaveAccount(null); setSaveRecoveryReady(false);
+    if (pendingCreation.current?.bookId !== bookId) pendingCreation.current = null;
+    setInitialDraftInstruction(undefined); setDraftPlanTargetChapterId(null); setDraftPlanMessage(null); setActiveAiJobId(initialAiJobId);
+    void (async () => {
+      const userId = await editorAccount();
+      if (cancelled) return;
+      const [identity, result] = await Promise.all([api.getBook(bookId, userId), api.listChapters(bookId, userId)]);
+      await editorAccount(userId);
+      if (cancelled) return;
+      if (!identity?.book || identity.book.id !== bookId || typeof identity.book.workspace_id !== "string" || !identity.book.workspace_id
+        || typeof identity.role !== "string" || !Array.isArray(result?.chapters)
+        || result.chapters.some(chapter => !chapter || chapter.book_id !== bookId || typeof chapter.id !== "string" || !chapter.id || typeof chapter.title !== "string")
+        || new Set(result.chapters.map(chapter => chapter.id)).size !== result.chapters.length) {
+        throw new Error("The book or chapter list could not be verified. Try loading this book again.");
+      }
+      const selected = initialChapterId ? result.chapters.find((chapter) => chapter.id === initialChapterId) : result.chapters[0];
+      let instruction: string | undefined, planTarget: string | null = null, planMessage: string | null = null;
+      if (selected && initialDraftPlanItemId) {
+        try {
+          const { blueprint } = await api.getStoryBlueprint(bookId, userId);
+          await editorAccount(userId);
+          if (cancelled) return;
+          const brief = storyBlueprintWriterBrief(blueprint, initialDraftPlanItemId, selected.id);
+          if (brief.ok) { instruction = brief.instruction; planTarget = selected.id; }
+          else planMessage = brief.reason;
+        } catch {
+          await editorAccount(userId);
+          planMessage = "Could not load the saved story plan. No AI request was sent; reload the blueprint and try again.";
         }
       }
-    },
-    [client, load, nodesByChapter],
-  );
+      await editorAccount(userId);
+      if (cancelled) return;
+      try {
+        setCreationRecovery(readChapterCreation(window.sessionStorage, userId, bookId));
+        setCreationRecoveryReady(true);
+      } catch (reason) {
+        setCreationRecoveryError(reason instanceof Error ? reason.message : "Chapter recovery storage is unavailable.");
+      }
+      editorOwner.current = userId;
+      if (pendingCreation.current?.owner !== userId) pendingCreation.current = null;
+      const setup = chapterSetups.current.get(JSON.stringify([userId, bookId]));
+      setNewTitle(setup?.title ?? ""); setNewChapterBrief(setup?.brief ?? "");
+      setBook(identity.book); setRole(identity.role); setChapters(result.chapters);
+      setInitialDraftInstruction(instruction); setDraftPlanTargetChapterId(planTarget); setDraftPlanMessage(planMessage);
+      if (initialChapterId && !selected) { setError("The requested chapter is not available in this book. Choose an available chapter to continue."); setLoading(false); return; }
+      if (selected) void loadChapter(selected.id, false, false, userId); else setLoading(false);
+    })().catch((reason) => { if (!cancelled) { setError(reason instanceof Error ? reason.message : "Could not load book"); setLoading(false); } });
+    return () => { cancelled = true; loadSequence.current++; };
+  }, [api, bookId, initialChapterId, initialAiJobId, initialDraftPlanItemId, bookLoadAttempt, loadChapter]);
 
-  const onReorder = useCallback((orderedIds: string[]) => {
-    setChapters((cs) =>
-      orderedIds
-        .map((id, i) => {
-          const c = cs.find((x) => x.id === id);
-          return c ? { ...c, order_index: i } : null;
-        })
-        .filter((c): c is Chapter => c !== null),
-    );
-    // ponytail: local-only reorder until a chapter reorder endpoint exists.
-  }, []);
+  useEffect(() => {
+    const hasLiveSetup = () => Array.from(chapterSetups.current.values()).some(value => Boolean(value.title.trim() || value.brief.trim()));
+    const hasLiveDraft = () => liveDraft.current || latestValidation.current !== null;
+    const hasLiveTitle = () => titleStateRef.current.dirty || titleStateRef.current.busy || titleStateRef.current.pending;
+    const flights = () => [structureFlight.current, restoring.current, creatingChapter.current, saveFlight.current, aiDecisionFlight.current];
+    const hasLiveFlight = () => structureFlight.current || restoring.current || creatingChapter.current || saveFlight.current !== null || aiDecisionFlight.current;
+    const warn = (event: BeforeUnloadEvent) => { if (hasLiveDraft() || hasLiveSetup() || hasLiveTitle() || hasLiveFlight() || manualSave || pendingRestore || pendingOrder || pendingCreation.current) { event.preventDefault(); event.returnValue = ""; } };
+    const guardNavigation = (event: globalThis.MouseEvent) => {
+      if ((!hasLiveDraft() && !hasLiveSetup() && !hasLiveTitle() && !hasLiveFlight() && !manualSave && !pendingRestore && !pendingOrder && !pendingCreation.current) || event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      if (!(anchor instanceof HTMLAnchorElement) || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      const destination = new URL(anchor.href, window.location.href);
+      if (destination.origin === window.location.origin && destination.pathname === window.location.pathname && destination.search === window.location.search) return;
+      const revision = draftRevision.current;
+      const titleAtConfirmation = titleRevision.current;
+      const flightsAtConfirmation = JSON.stringify(flights());
+      const setupsBefore = JSON.stringify(Array.from(chapterSetups.current.entries()));
+      const confirmed = window.confirm(manualSave || saveFlight.current !== null ? "Leave with an unconfirmed save? Its recovery record does not contain draft text. Any optional tab draft is separate and may be incomplete. Download your draft first if needed." : pendingCreation.current || creatingChapter.current ? "Leave the editor? Chapter creation is unconfirmed; keep this page to recover the original request." : pendingOrder || structureFlight.current ? "Leave with an unconfirmed chapter reorder? Leaving does not cancel it, and this page cannot recover the request after it closes." : pendingRestore || restoring.current ? "Leave with an unconfirmed restore? Reopen this chapter in the same tab to recover the request. Download your draft before leaving." : aiDecisionFlight.current ? "Leave while an AI decision is being processed? Keep this page open to check its outcome." : hasChapterSetup && !hasLiveDraft() && !hasLiveTitle() ? "Leave the editor and discard the new chapter title and brief?" : "Leave the editor and discard unsaved changes?");
+      if (!confirmed || revision !== draftRevision.current || titleAtConfirmation !== titleRevision.current || flightsAtConfirmation !== JSON.stringify(flights()) || setupsBefore !== JSON.stringify(Array.from(chapterSetups.current.entries()))) {
+        event.preventDefault(); event.stopPropagation();
+        if (confirmed) setError("Your draft changed while confirming navigation. Review it before leaving.");
+      }
+    };
+    const navigateApi = (window as unknown as { navigation?: { addEventListener: (type: string, handler: EventListener) => void; removeEventListener: (type: string, handler: EventListener) => void } }).navigation;
+    const guardHistory: EventListener = event => {
+      const navigation = event as Event & { navigationType?: string; canIntercept?: boolean; destination?: { url: string } };
+      if (navigation.navigationType !== "traverse" || !event.cancelable || !navigation.destination ||
+          (!hasLiveDraft() && !hasLiveSetup() && !hasLiveTitle() && !hasLiveFlight() && !manualSave && !pendingRestore && !pendingOrder && !pendingCreation.current)) return;
+      const target = new URL(navigation.destination.url, window.location.href);
+      if (target.origin !== window.location.origin) return; // Full document navigation uses beforeunload.
+      if (target.origin === window.location.origin && target.pathname === window.location.pathname && target.search === window.location.search) return;
+      const revision = draftRevision.current, titleAtConfirmation = titleRevision.current;
+      const flightsAtConfirmation = JSON.stringify(flights()), setupsBefore = JSON.stringify(Array.from(chapterSetups.current.entries()));
+      const confirmed = window.confirm("Leave the editor? Unsaved work or an unconfirmed request may be lost.");
+      if (!confirmed || revision !== draftRevision.current || titleAtConfirmation !== titleRevision.current || flightsAtConfirmation !== JSON.stringify(flights()) || setupsBefore !== JSON.stringify(Array.from(chapterSetups.current.entries()))) event.preventDefault();
+    };
+    navigateApi?.addEventListener("navigate", guardHistory);
+    window.addEventListener("beforeunload", warn);
+    window.document.addEventListener("click", guardNavigation, true);
+    return () => { navigateApi?.removeEventListener("navigate", guardHistory); window.removeEventListener("beforeunload", warn); window.document.removeEventListener("click", guardNavigation, true); };
+  }, [hasUnsavedChanges, hasAnyChapterSetup, hasChapterSetup, titleBlocked, manualSave, pendingRestore, pendingOrder]);
 
-  const onRestore = useCallback(
-    (versionId: string) => {
-      const v = versions.find((x) => x.id === versionId);
-      if (!v || !activeId) return;
-      setNodesByChapter((m) => ({ ...m, [activeId]: v.nodes }));
-      setVersion((n) => n + 1);
-    },
-    [versions, activeId],
-  );
+  const save = useCallback(async (retry = false) => {
+    if (!document || passiveLocked.current || !editorInteractionAvailable.current || loadTransition.current !== null || titleBlocked || saveFlight.current !== null || saving || loading || aiDecisionBusy || conflictRef.current || !liveDraft.current || pendingRestore || (latestValidation.current && !retry) || !EDIT_ROLES.has(role)
+      || !saveAccount || !saveRecoveryReady || (manualSave && (!retry || !saveMissing || !pendingSave.current))) return;
+    const sequence = loadSequence.current, accountEpoch = passiveEpoch.current;
+    saveFlight.current = sequence;
+    setSaving(true); setError(null); setNotice(null);
+    const request = pendingSave.current ?? { operationId: crypto.randomUUID(), nodes: structuredClone(latestDraft.current), expectedVersion: document.version };
+    pendingSave.current = request;
+    try {
+      await editorAccount(saveAccount);
+      const pointer = manualSave ?? { schema: 1, userId: saveAccount, bookId, chapterId: document.chapterId,
+        operationId: request.operationId, expectedVersion: request.expectedVersion, digest: await chapterSaveDigest(request.nodes) } as ChapterSavePointer;
+      if (sequence !== loadSequence.current) return;
+      if (request.operationId !== pointer.operationId || await chapterSaveDigest(request.nodes) !== pointer.digest) throw new Error("The original draft is unavailable. Check saved status; do not resend different text.");
+      if (sequence !== loadSequence.current) return;
+      if (passiveLocked.current || accountEpoch !== passiveEpoch.current) throw new Error("Account verification interrupted the save before it was sent. Your draft remains here.");
+      setManualSave(pointer); setSaveMissing(false);
+      persistChapterSave(window.sessionStorage, pointer);
+      const result = await api.saveChapterDocument(document.chapterId, request, pointer.userId);
+      await validateSavedChapter(result.document, pointer);
+      if (result.version !== result.document.version) throw new Error("The saved revision could not be confirmed. Check its original status.");
+      await editorAccount(pointer.userId);
+      if (sequence !== loadSequence.current) return;
+      const revision = draftRevision.current, currentDraft = structuredClone(latestDraft.current);
+      const matchesReceipt = await chapterSaveDigest(currentDraft) === pointer.digest;
+      if (sequence !== loadSequence.current) return;
+      const hasLaterChanges = revision !== draftRevision.current || latestValidation.current !== null || !matchesReceipt;
+      clearChapterSave(window.sessionStorage, pointer);
+      stopTabDraftForVersion(result.document.version);
+      setManualSave(null); setDocument(result.document); pendingSave.current = null;
+      if (hasLaterChanges) { setDirty(true); setNotice(`Saved version ${result.version}; newer edits remain unsaved.`); }
+      else { setDraft(result.document.nodes); setEditorSeed(null); setDirty(false); setNotice(`Saved version ${result.version}.`); }
+      try { const history = await api.listDocumentVersions(document.chapterId, pointer.userId); await editorAccount(pointer.userId); if (sequence === loadSequence.current) setVersions(history.versions); }
+      catch {
+        try { await editorAccount(pointer.userId); } catch { if (sequence === loadSequence.current) setRestoreHidden(pointer.userId); }
+        if (sequence === loadSequence.current) setError("The chapter was saved, but version history could not refresh. Reload history when the connection returns.");
+      }
+    } catch (reason) {
+      if (sequence !== loadSequence.current) return;
+      try { await editorAccount(saveAccount); } catch { if (sequence === loadSequence.current) setRestoreHidden(saveAccount); }
+      if (sequence !== loadSequence.current) return;
+      setError(reason instanceof Error ? reason.message : "Save outcome is unconfirmed. Your draft remains in this editor; check the original save status.");
+    } finally { if (saveFlight.current === sequence) saveFlight.current = null; if (sequence === loadSequence.current) setSaving(false); }
+  }, [api, bookId, document, draft, saving, loading, aiDecisionBusy, role, conflict, dirty, pendingRestore, editorValidation, manualSave, saveAccount, saveRecoveryReady, saveMissing, titleBlocked]);
 
-  const doc: EditorDocument | null = activeId
-    ? { chapterId: activeId, version, nodes: nodesByChapter[activeId] ?? [] }
-    : null;
+  const recoverSave = async (close = false) => {
+    const pointer = manualSave;
+    if (!pointer || passiveLocked.current || !editorInteractionAvailable.current || loadTransition.current !== null || saveFlight.current !== null || saving || loading || aiDecisionBusy) return;
+    if (close && (!saveMissing || !EDIT_ROLES.has(role) || !window.confirm("Close this unconfirmed save without resending the draft? If it has not committed, an unchanged saved revision will prevent a late arrival. History is retained; back up any unsaved draft first."))) return;
+    const sequence = loadSequence.current, accountEpoch = passiveEpoch.current;
+    saveFlight.current = sequence; setSaving(true); setError(null); setNotice(null);
+    try {
+      await editorAccount(pointer.userId);
+      if (passiveLocked.current || accountEpoch !== passiveEpoch.current) throw new Error("Account verification interrupted recovery before it was sent.");
+      const raw = close ? await api.closeManualChapterSave(pointer.chapterId, pointer.operationId, pointer.expectedVersion, pointer.userId)
+        : await api.getManualChapterSaveStatus(pointer.chapterId, pointer.operationId, pointer.expectedVersion, pointer.userId);
+      const result = await validateChapterSaveResult(raw, pointer);
+      await editorAccount(pointer.userId);
+      if (sequence !== loadSequence.current) return;
+      if (result.status === "not_found") {
+        setSaveMissing(true);
+        setNotice("No saved receipt is visible yet. This does not cancel an in-flight save. Check again, retry only the unchanged original draft, or explicitly close this request.");
+        return;
+      }
+      const [current, history] = await Promise.all([api.getChapterDocument(pointer.chapterId, pointer.userId), api.listDocumentVersions(pointer.chapterId, pointer.userId)]);
+      await editorAccount(pointer.userId);
+      if (sequence !== loadSequence.current) return;
+      validateCurrentChapter(current.document, pointer.chapterId, result.currentVersion);
+      if (result.receipt && current.document.version === result.receipt.document.version
+        && await chapterSaveDigest(current.document.nodes) !== await chapterSaveDigest(result.receipt.document.nodes))
+        throw new Error("The current chapter could not be verified against its immutable receipt. Keep this recovery record and check again.");
+      const revision = draftRevision.current, currentDraft = structuredClone(latestDraft.current);
+      const exactSavedDraft = result.status === "saved" && current.document.version === pointer.expectedVersion + 1
+        && await chapterSaveDigest(currentDraft) === pointer.digest;
+      if (sequence !== loadSequence.current) return;
+      const retainLocalDraft = revision !== draftRevision.current || latestValidation.current !== null || (liveDraft.current && !exactSavedDraft);
+      clearChapterSave(window.sessionStorage, pointer);
+      setManualSave(null); setSaveMissing(false); pendingSave.current = null; setVersions(history.versions);
+      stopTabDraftForVersion(current.document.version);
+      if (retainLocalDraft) {
+        setDirty(true); setConflict(true);
+        setNotice(`${result.status === "saved" ? `Your original save is confirmed at version ${pointer.expectedVersion + 1}.` : "The original request is safely closed or superseded."} Your local draft is still here. Back it up before loading the current saved chapter.`);
+      } else {
+        setDocument(current.document); setDraft(current.document.nodes); setEditorSeed(null); setRole(current.role); setDirty(false); setEditorValidation(null); setConflict(false); setReloadKey(v => v + 1);
+        setNotice(`${result.status === "saved" ? "Original save confirmed." : "Original request closed or superseded."} Loaded saved version ${current.document.version}.`);
+      }
+    } catch (reason) {
+      try { await editorAccount(pointer.userId); } catch { if (sequence === loadSequence.current) setRestoreHidden(pointer.userId); }
+      if (sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : "Could not recover this save. Its original request remains retained.");
+    }
+    finally { if (saveFlight.current === sequence) saveFlight.current = null; if (sequence === loadSequence.current) setSaving(false); }
+  };
 
-  return (
-    <main style={{ display: "grid", gridTemplateColumns: "240px 1fr 300px", gap: 16, padding: 16, fontFamily: "system-ui, sans-serif" }}>
-      <div>
-        <BookTree chapters={chapters} activeId={activeId} onSelect={setActiveId} onReorder={onReorder} />
-        <CommentThread
-          comments={comments}
-          currentUser="you"
-          onReply={(parentId, body) =>
-            setComments((cs) => [
-              ...cs,
-              {
-                id: crypto.randomUUID(),
-                nodeId: activeId ?? "",
-                authorId: "you",
-                body,
-                resolved: false,
-                createdAt: new Date().toISOString(),
-                parentId,
-              },
-            ])
-          }
-          onResolve={(id, resolved) =>
-            setComments((cs) => cs.map((c) => (c.id === id ? { ...c, resolved } : c)))
-          }
-        />
+  useEffect(() => {
+    const shortcut = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); } };
+    window.addEventListener("keydown", shortcut); return () => window.removeEventListener("keydown", shortcut);
+  }, [save]);
+
+  const selectChapter = (id: string) => {
+    if (passiveLocked.current || !editorInteractionAvailable.current || loadTransition.current !== null || saving || loading || aiDecisionBusy || manualSave || titleState.pending || titleState.busy || id === document?.chapterId) return;
+    const confirmedRevision = draftRevision.current;
+    if ((liveDraft.current || latestValidation.current !== null || pendingRestore) && !window.confirm("This chapter has unsaved changes or an unresolved restore. Leave it and open another chapter?")) return;
+    if (draftRevision.current !== confirmedRevision) { setError("Your draft changed while confirming the chapter switch. Review it before trying again."); return; }
+    setActiveAiJobId(undefined);
+    void loadChapter(id);
+  };
+
+  const createChapter = async () => {
+    const owner = editorOwner.current;
+    if (!owner || passiveLocked.current || !editorInteractionAvailable.current || book?.id !== bookId || !newTitle.trim() || !creationRecoveryReady || (creationRecovery && !pendingCreation.current) || pendingOrder || structureFlight.current || loadTransition.current !== null || titleBlocked || saving || loading || aiDecisionBusy || manualSave || (document && !saveRecoveryReady) || creatingChapter.current || pendingRestore || !EDIT_ROLES.has(role)) return;
+    const confirmedRevision = draftRevision.current;
+    if ((liveDraft.current || latestValidation.current !== null) && !window.confirm("Discard the unsaved chapter draft before adding a chapter?")) return;
+    if (draftRevision.current !== confirmedRevision) { setError("Your draft changed while confirming chapter creation. Review it before trying again."); return; }
+    creatingChapter.current = true;
+    let sequence = loadSequence.current; const accountEpoch = passiveEpoch.current;
+    setSaving(true); setError(null);
+    const existingCreation = pendingCreation.current;
+    const creation = existingCreation ?? { owner, bookId, title: newTitle.trim(), brief: newChapterBrief.trim(), idempotencyKey: crypto.randomUUID() };
+    const pointer: ChapterCreationPointer = { schema: 1, actorId: creation.owner, bookId, requestKey: creation.idempotencyKey };
+    try {
+      if (!existingCreation) {
+        saveChapterCreation(window.sessionStorage, pointer);
+      } else {
+        const stored = readChapterCreation(window.sessionStorage, pointer.actorId, pointer.bookId);
+        if (stored && stored.requestKey !== pointer.requestKey) throw new Error("A different chapter request must be recovered first.");
+        if (!stored) saveChapterCreation(window.sessionStorage, pointer);
+      }
+      setCreationRecovery(pointer);
+      pendingCreation.current = creation;
+    } catch (reason) {
+      creatingChapter.current = false;
+      setSaving(false);
+      setCreationRecoveryReady(false);
+      setCreationRecoveryError(reason instanceof Error ? reason.message : "Chapter recovery storage is unavailable. No new chapter was sent.");
+      return;
+    }
+    const chapterTitle = creation.title;
+    let createdChapterId: string | null = null;
+    const brief = creation.brief;
+    try {
+      if (creation.owner !== owner || creation.bookId !== bookId) throw new Error("The original account or book changed.");
+      await editorAccount(creation.owner);
+      if (sequence !== loadSequence.current) return;
+      if (passiveLocked.current || accountEpoch !== passiveEpoch.current) {
+        if (!existingCreation && pendingCreation.current === creation) {
+          clearChapterCreation(window.sessionStorage, pointer);
+          setCreationRecovery(null);
+          pendingCreation.current = null;
+        }
+        setError("Account verification interrupted chapter creation before it was sent."); return;
+      }
+      const readiness = await api.getChapterCreation(bookId, creation.idempotencyKey, creation.owner);
+      await editorAccount(creation.owner);
+      if (sequence !== loadSequence.current || passiveLocked.current || accountEpoch !== passiveEpoch.current) return;
+      if (readiness.bookId !== bookId || readiness.requestKey !== creation.idempotencyKey
+        || !["not_found", "created"].includes(readiness.status)
+        || (readiness.status === "not_found" && readiness.chapterId !== null)
+        || (readiness.status === "created" && (typeof readiness.chapterId !== "string" || !readiness.chapterId))) {
+        throw new Error("The chapter request cannot be retried. Check its original status.");
+      }
+      const result = await api.createChapter(bookId, { title: chapterTitle, idempotencyKey: creation.idempotencyKey }, creation.owner);
+      await editorAccount(creation.owner);
+      if (sequence !== loadSequence.current) return;
+      if (!result.chapter || result.chapter.book_id !== bookId || typeof result.chapter.id !== "string" || !result.chapter.id
+        || (readiness.status === "created" && readiness.chapterId !== result.chapter.id))
+        throw new Error("The original chapter result could not be verified.");
+      const current = await api.listChapters(bookId, creation.owner);
+      await editorAccount(creation.owner);
+      if (sequence !== loadSequence.current) return;
+      if (!Array.isArray(current.chapters) || !current.chapters.some(chapter => chapter.id === result.chapter.id && chapter.book_id === bookId)
+        || current.chapters.some(chapter => chapter.book_id !== bookId || typeof chapter.id !== "string" || !chapter.id)
+        || new Set(current.chapters.map(chapter => chapter.id)).size !== current.chapters.length)
+        throw new Error("The saved chapter list could not be verified. Retry the original request.");
+      if (passiveLocked.current || accountEpoch !== passiveEpoch.current) {
+        setError("Account verification interrupted confirmation. The chapter may have been created; retry the original request to recover it."); return;
+      }
+      clearChapterCreation(window.sessionStorage, pointer);
+      setCreationRecovery(null);
+      pendingCreation.current = null;
+      createdChapterId = result.chapter.id;
+      setChapters(current.chapters);
+      updateChapterSetup("", newChapterBrief, true); setActiveAiJobId(undefined);
+      if (draftRevision.current !== confirmedRevision) {
+        setError("Your new chapter was created, but your earlier draft changed while it was being saved. Review your draft before opening the new chapter. No AI request was sent; your brief remains in the form.");
+        return;
+      }
+      sequence = loadSequence.current + 1;
+      await loadChapter(result.chapter.id, true);
+      if (sequence !== loadSequence.current) return;
+      if (!brief) { updateChapterSetup("", "", true); setNotice(`Created ${chapterTitle}.`); return; }
+      setInitialDraftInstruction(brief);
+      setDraftPlanTargetChapterId(result.chapter.id);
+      updateChapterSetup("", "", true);
+      setNotice("Chapter created. Review the draft brief and request a price in the AI assistant. Nothing was generated or charged.");
+    }
+    catch (reason) {
+      if (sequence !== loadSequence.current) return;
+      try { await editorAccount(creation.owner); } catch { if (sequence === loadSequence.current) setRestoreHidden(creation.owner); }
+      if (sequence !== loadSequence.current) return;
+      const message = reason instanceof Error ? reason.message : "Could not create chapter";
+      setError(createdChapterId ? `Your chapter is saved, but it could not be loaded: ${message} Open the chapter to continue. No AI request was sent; your brief remains in the form.` : `${message} Submit again to recover the original chapter request for “${chapterTitle}”.`);
+    }
+    finally { if (sequence === loadSequence.current) { creatingChapter.current = false; setSaving(false); } }
+  };
+
+  const recheckCreationStorage = async () => {
+    const owner = editorOwner.current;
+    if (!owner || saving || loading || passiveLocked.current) return;
+    const sequence = loadSequence.current;
+    const accountEpoch = passiveEpoch.current;
+    setSaving(true);
+    try {
+      await editorAccount(owner);
+      const pointer = readChapterCreation(window.sessionStorage, owner, bookId);
+      await editorAccount(owner);
+      if (sequence !== loadSequence.current || passiveLocked.current || accountEpoch !== passiveEpoch.current) return;
+      setCreationRecovery(pointer);
+      setCreationRecoveryError(null);
+      setCreationRecoveryReady(true);
+    } catch (reason) {
+      if (sequence === loadSequence.current) setCreationRecoveryError(reason instanceof Error ? reason.message : "Chapter recovery storage is unavailable.");
+    } finally {
+      if (sequence === loadSequence.current) setSaving(false);
+    }
+  };
+  const recoverCreation = async (close: boolean) => {
+    const pointer = creationRecovery;
+    if (!pointer || creatingChapter.current || saving || loading || passiveLocked.current
+      || editorOwner.current !== pointer.actorId || pointer.bookId !== bookId || !EDIT_ROLES.has(role)) return;
+    const sequence = loadSequence.current;
+    const accountEpoch = passiveEpoch.current;
+    creatingChapter.current = true;
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await editorAccount(pointer.actorId);
+      if (sequence !== loadSequence.current || passiveLocked.current || accountEpoch !== passiveEpoch.current) return;
+      const result = close
+        ? await api.closeChapterCreation(bookId, pointer.requestKey, pointer.actorId)
+        : await api.getChapterCreation(bookId, pointer.requestKey, pointer.actorId);
+      await editorAccount(pointer.actorId);
+      if (sequence !== loadSequence.current || passiveLocked.current || accountEpoch !== passiveEpoch.current) return;
+      if (result.bookId !== bookId || result.requestKey !== pointer.requestKey
+        || !["not_found", "created", "removed", "closed"].includes(result.status)
+        || (result.status === "created") !== (typeof result.chapterId === "string" && !!result.chapterId)
+        || (result.status !== "created" && result.chapterId !== null)) {
+        throw new Error("The chapter request status could not be verified.");
+      }
+      if (result.status === "not_found") {
+        setNotice("No chapter is recorded yet. The original request may still arrive. Check again or close it before starting another.");
+        return;
+      }
+      if (result.status === "created") {
+        const current = await api.listChapters(bookId, pointer.actorId);
+        await editorAccount(pointer.actorId);
+        if (sequence !== loadSequence.current || passiveLocked.current || accountEpoch !== passiveEpoch.current) return;
+        if (!Array.isArray(current.chapters) || !current.chapters.some(chapter => chapter.id === result.chapterId && chapter.book_id === bookId)
+          || current.chapters.some(chapter => chapter.book_id !== bookId || typeof chapter.id !== "string" || !chapter.id)
+          || new Set(current.chapters.map(chapter => chapter.id)).size !== current.chapters.length) {
+          throw new Error("The saved chapter list could not be verified. Check the original request again.");
+        }
+        setChapters(current.chapters);
+        updateChapterSetup("", newChapterBrief, true);
+      }
+      clearChapterCreation(window.sessionStorage, pointer);
+      pendingCreation.current = null;
+      setCreationRecovery(null);
+      setNotice(result.status === "created"
+        ? "The original chapter was created. Select it in the chapter list to continue."
+        : result.status === "removed"
+          ? "The original chapter was created and later removed. The same request cannot create it again."
+          : "The unconfirmed request was closed. It cannot create a chapter later.");
+    } catch (reason) {
+      if (sequence === loadSequence.current) setError(reason instanceof Error ? reason.message : "The chapter request could not be checked. Try again.");
+    } finally {
+      if (sequence === loadSequence.current) { creatingChapter.current = false; setSaving(false); }
+    }
+  };
+  const reorder = async (orderedIds: string[]) => {
+    const owner = editorOwner.current;
+    if (!owner || passiveLocked.current || !editorInteractionAvailable.current || pendingOrder || pendingCreation.current || creationRecovery || structureFlight.current || loadTransition.current !== null || titleBlocked || saving || loading || aiDecisionBusy || manualSave || (document && !saveRecoveryReady) || pendingRestore || !EDIT_ROLES.has(role)) return;
+    const sequence = loadSequence.current, accountEpoch = passiveEpoch.current;
+    const expectedIds = chapters.map(c => c.id);
+    if (orderedIds.length !== expectedIds.length || new Set(orderedIds).size !== expectedIds.length || orderedIds.some(id => !expectedIds.includes(id))) return;
+    structureFlight.current = true;
+    setSaving(true); setError(null);
+    let dispatched = false;
+    try {
+      await editorAccount(owner);
+      if (sequence !== loadSequence.current) return;
+      if (passiveLocked.current || accountEpoch !== passiveEpoch.current) throw new Error("Account check interrupted reorder before it was sent.");
+      setPendingOrder({ owner, bookId, expectedIds, orderedIds: [...orderedIds], observed: null });
+      dispatched = true;
+      const result = await api.reorderChapters(bookId, { orderedIds, expectedIds }, owner);
+      await editorAccount(owner);
+      if (sequence !== loadSequence.current) return;
+      if (!Array.isArray(result.chapters) || result.chapters.length !== orderedIds.length
+        || result.chapters.some((chapter, index) => chapter.id !== orderedIds[index] || chapter.book_id !== bookId))
+        throw new Error("The reorder response could not be verified.");
+      const current = await api.listChapters(bookId, owner);
+      await editorAccount(owner);
+      if (sequence !== loadSequence.current) return;
+      if (!Array.isArray(current.chapters) || current.chapters.length > 500
+        || current.chapters.some(chapter => chapter.book_id !== bookId || typeof chapter.id !== "string" || !chapter.id)
+        || new Set(current.chapters.map(chapter => chapter.id)).size !== current.chapters.length) throw new Error("The current chapter order could not be verified.");
+      setChapters(current.chapters); setPendingOrder(null);
+      setNotice("Chapter order was saved. The list shows the latest verified order.");
+    } catch {
+      try { await editorAccount(owner); } catch { if (sequence === loadSequence.current) setRestoreHidden(owner); }
+      if (sequence === loadSequence.current) setError(dispatched
+        ? "The reorder outcome is unconfirmed. Check the saved order; no retry or cancellation is implied."
+        : "Could not verify your account. No chapter reorder was sent. Try again.");
+    } finally { if (sequence === loadSequence.current) { structureFlight.current = false; setSaving(false); } }
+  };
+
+  const checkPendingOrder = async () => {
+    const pending = pendingOrder;
+    if (!pending || passiveLocked.current || !editorInteractionAvailable.current || structureFlight.current || loadTransition.current !== null || saving || loading) return;
+    const sequence = loadSequence.current; structureFlight.current = true; setSaving(true); setError(null);
+    try {
+      await editorAccount(pending.owner);
+      const current = await api.listChapters(pending.bookId, pending.owner);
+      await editorAccount(pending.owner);
+      if (sequence !== loadSequence.current) return;
+      if (!Array.isArray(current.chapters) || current.chapters.length > 500
+        || current.chapters.some(chapter => chapter.book_id !== pending.bookId || typeof chapter.id !== "string" || !chapter.id)
+        || new Set(current.chapters.map(chapter => chapter.id)).size !== current.chapters.length) throw new Error();
+      const ids = current.chapters.map(chapter => chapter.id);
+      const same = (a: string[], b: string[]) => a.length === b.length && a.every((id, index) => id === b[index]);
+      const observed = same(ids, pending.orderedIds) ? "The current order matches the requested order."
+        : same(ids, pending.expectedIds) ? "The current order matches the previous order."
+        : "The current order differs from both the previous and requested orders.";
+      setChapters(current.chapters); setPendingOrder({ ...pending, observed });
+    } catch {
+      try { await editorAccount(pending.owner); } catch { if (sequence === loadSequence.current) setRestoreHidden(pending.owner); }
+      if (sequence === loadSequence.current) setError("The saved chapter order could not be verified. Keep this page open.");
+    } finally { if (sequence === loadSequence.current) { structureFlight.current = false; setSaving(false); } }
+  };
+
+  const restore = async (versionId: string, action: "send" | "check" = "send") => {
+    if (!document || !saveAccount || passiveLocked.current || !editorInteractionAvailable.current || loadTransition.current !== null || restoreHidden || titleBlocked || saving || loading || aiDecisionBusy || manualSave || !saveRecoveryReady || restoring.current || (conflictRef.current && !pendingRestore)) return;
+    if (action === "check" ? !pendingRestore : !EDIT_ROLES.has(role)) return;
+    if (pendingRestore && (pendingRestore.versionId !== versionId || pendingRestore.chapterId !== document.chapterId)) return;
+    const confirmedRevision = draftRevision.current;
+    if (!pendingRestore && !window.confirm("Restore this version as a new saved version? Current saved history will remain available.")) return;
+    if (!pendingRestore && (liveDraft.current || latestValidation.current !== null) && !window.confirm("Your unsaved draft will be replaced. Continue?")) return;
+    if (!pendingRestore && draftRevision.current !== confirmedRevision) { setError("Your draft changed while confirming the restore. Review it before trying again."); return; }
+    const request = pendingRestore ?? { owner: saveAccount, chapterId: document.chapterId, versionId, draftRevision: draftRevision.current, body: { expectedVersion: document.version, operationId: crypto.randomUUID() } };
+    if (request.owner !== saveAccount) return;
+    const sequence = loadSequence.current, accountEpoch = passiveEpoch.current;
+    const pointer = { schema: 1 as const, userId: request.owner, bookId, chapterId: request.chapterId, versionId: request.versionId, ...request.body };
+    restoring.current = true;
+    setSaving(true); setError(null); setNotice(null);
+    try {
+      await editorAccount(request.owner);
+      if (sequence !== loadSequence.current) return;
+      if (passiveLocked.current || accountEpoch !== passiveEpoch.current) {
+        setError("Account verification interrupted this restore action. Try again after checking your account."); return;
+      }
+      if (pendingRestore) checkChapterRestore(window.sessionStorage, pointer);
+      else persistChapterRestore(window.sessionStorage, pointer);
+      setPendingRestore(request);
+      const result = await (action === "check"
+        ? api.getDocumentRestoreStatus(request.chapterId, request.versionId, request.body, request.owner)
+        : api.restoreDocumentVersion(request.chapterId, request.versionId, request.body, request.owner));
+      await editorAccount(request.owner);
+      if (sequence !== loadSequence.current) return;
+      if (!result || typeof result !== "object") throw new Error("The service returned an unreadable restore result. Keep the original request for recovery.");
+      if (action === "check") {
+        if (!("status" in result) || result.chapterId !== request.chapterId || result.targetVersionId !== request.versionId
+          || result.operationId !== request.body.operationId || result.expectedVersion !== request.body.expectedVersion
+          || (result.status !== "not_found" && result.status !== "saved")) {
+          throw new Error("The service did not verify the original restore request. Check the saved request again.");
+        }
+        if (result.status === "not_found") {
+          setNotice("No saved restore was found for this request yet. You can check again or retry the original restore.");
+          return;
+        }
+      }
+      if (!("document" in result) || result.version !== request.body.expectedVersion + 1
+        || typeof result.versionId !== "string" || !result.versionId.trim()) throw new Error("The restored revision could not be verified. Keep the original request for recovery.");
+      validateCurrentChapter(result.document, request.chapterId, result.version);
+      if (result.document.version !== result.version) throw new Error("The restore receipt returned a different revision. Keep the original request for recovery.");
+      const current = await api.getChapterDocument(request.chapterId, request.owner);
+      await editorAccount(request.owner);
+      if (sequence !== loadSequence.current) return;
+      validateCurrentChapter(current.document, request.chapterId, result.version);
+      const newerRevision = current.document.version > result.version;
+      if (!newerRevision && await chapterSaveDigest(current.document.nodes) !== await chapterSaveDigest(result.document.nodes)) {
+        throw new Error("Current chapter content does not match the restore receipt. Keep the original request for recovery.");
+      }
+      await editorAccount(request.owner);
+      if (sequence !== loadSequence.current) return;
+      clearChapterRestore(window.sessionStorage, pointer);
+      stopTabDraftForVersion(current.document.version);
+      // Adopt the confirmed receipt before refreshing history. A failed history
+      // request must not leave the old draft marked as the restored manuscript.
+      setRole(current.role); setPendingRestore(null); pendingSave.current = null;
+      if (newerRevision) {
+        setConflict(true);
+        setNotice(`Restore saved as version ${result.version}. The current chapter is already at version ${current.document.version}. Your draft remains here; review saved history.`);
+      } else if (draftRevision.current !== request.draftRevision) {
+        setDirty(true); setConflict(true); setNotice(`Restored as version ${result.version}. Your later edits still use the previous draft; back them up and review before replacing them with the restored version.`);
+      } else {
+        setDocument(current.document); setConflict(false); setDraft(current.document.nodes); setEditorSeed(null); setDirty(false); setEditorValidation(null); setReloadKey((v) => v + 1);
+        setNotice(`Restored as version ${result.version}.`);
+      }
+      try { const history = await api.listDocumentVersions(request.chapterId, request.owner); await editorAccount(request.owner); if (sequence === loadSequence.current) setVersions(history.versions); }
+      catch {
+        try { await editorAccount(request.owner); }
+        catch { if (sequence === loadSequence.current) setRestoreHidden(request.owner); }
+        if (sequence === loadSequence.current) setError("Restore succeeded, but version history could not refresh. Reload the chapter to refresh history.");
+      }
+    } catch (reason) {
+      if (sequence !== loadSequence.current) return;
+      try { await editorAccount(request.owner); }
+      catch { if (sequence === loadSequence.current) setRestoreHidden(request.owner); }
+      if (sequence !== loadSequence.current) return;
+      // A conflict response can follow an earlier lost reply. Retain the exact
+      // operation rather than replacing an outcome that may already be saved.
+      if (reason instanceof ApiClientError && reason.status === 409) setConflict(true);
+      setError(reason instanceof Error ? reason.message : "Could not confirm restore. Check its status or reload saved content.");
+    }
+    finally { if (sequence === loadSequence.current) { restoring.current = false; setSaving(false); } }
+  };
+
+  const reloadSavedVersion = () => {
+    if (!document || !editorInteractionAvailable.current || saving || loading || aiDecisionBusy) return;
+    const revision = draftRevision.current;
+    const prompt = pendingRestore
+      ? "Reload saved content and discard this tab's restore recovery record? This does not cancel the original restore. Download your draft first if you need it."
+      : "Reload saved content and replace this unsaved draft?";
+    if (!window.confirm(prompt)) return;
+    if (revision !== draftRevision.current) {
+      setError("Your draft changed while confirming the reload. Review it before trying again.");
+      return;
+    }
+    if (pendingRestore) {
+      try {
+        clearChapterRestore(window.sessionStorage, {
+          schema: 1, userId: pendingRestore.owner, bookId, chapterId: pendingRestore.chapterId,
+          versionId: pendingRestore.versionId, ...pendingRestore.body,
+        });
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "Could not clear this tab's restore recovery record.");
+        return;
+      }
+    }
+    void loadChapter(document.chapterId);
+  };
+
+  const downloadDraft = (format: "json" | "txt" = "json") => {
+    if (!document || passiveLocked.current || !editorInteractionAvailable.current || loading) return;
+    const backupActor = saveAccount ?? editorOwner.current ?? "";
+    const currentDraft = latestDraft.current, currentValidation = latestValidation.current;
+    const content = format === "txt" ? currentValidation?.draftText ?? bookNodesPlainText(currentDraft)
+      : JSON.stringify(chapterDraftBackup({ userId: backupActor, bookId, chapterId: document.chapterId, baseVersion: document.version,
+        nodes: currentDraft, capturedAt: new Date().toISOString(), validation: currentValidation }), null, 2);
+    const blob = new Blob([content], { type: format === "txt" ? "text/plain;charset=utf-8" : "application/json;charset=utf-8" });
+    const warning = format === "json" ? chapterDraftReopenWarning(content, blob.size, Boolean(currentValidation), { userId: backupActor, bookId, chapterId: document.chapterId, baseVersion: document.version }) : null;
+    if (warning) setNotice(warning);
+    const url = URL.createObjectURL(blob); const link = window.document.createElement("a");
+    link.href = url; link.download = `bookworm-chapter-${document.chapterId}-draft.${format}`;
+    window.document.body.append(link); link.click(); link.remove();
+    // Let the browser consume the object URL before releasing it.
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const loadVersionForComparison = async (chapterId: string, versionId: string) => {
+    const owner = editorOwner.current, sequence = loadSequence.current;
+    if (!owner || passiveLocked.current || !editorInteractionAvailable.current) throw new Error("The original account could not be verified.");
+    try {
+      await editorAccount(owner);
+      if (sequence !== loadSequence.current) throw new Error();
+      const snapshot = await api.getDocumentVersion(chapterId, versionId, owner);
+      await editorAccount(owner);
+      if (sequence !== loadSequence.current) throw new Error();
+      return snapshot;
+    } catch {
+      try { await editorAccount(owner); } catch { if (sequence === loadSequence.current) setRestoreHidden(owner); }
+      throw new Error("The saved revision could not be verified.");
+    }
+  };
+  const editableBase = EDIT_ROLES.has(role) && !passiveCheck && !accountVerifying && !restoreHidden && !accessBlocked && !pendingRestore && !manualSave && (!document || saveRecoveryReady) && (!tabDraft || tabDraftReviewed) && !tabDraftBusy;
+  const editable = editableBase && !titleBlocked;
+  editorInteractionAvailable.current = !passiveLocked.current && !accessBlockedRef.current && !passiveCheck && !accountVerifying && !restoreHidden
+    && Boolean(editorOwner.current) && book?.id === bookId;
+  childActionsAvailable.current = editorInteractionAvailable.current && editorOwner.current === saveAccount && Boolean(saveAccount) && (!tabDraft || tabDraftReviewed);
+  const tabDraftFlight = useRef(false);
+  const prepareTabDraft = async (restore: boolean) => {
+    const source = document, actor = saveAccount, entry = tabDraftRef.current;
+    if (!source || !actor || !entry || tabDraftFlight.current || !editorInteractionAvailable.current || manualSave || saveFlight.current !== null || pendingRestore || saving || loading || aiDecisionBusy || conflict || !saveRecoveryReady || !EDIT_ROLES.has(role)) return;
+    if (entry.userId !== actor || entry.bookId !== bookId || entry.chapterId !== source.chapterId || entry.baseVersion !== source.version) { setTabDraftError("The saved chapter changed. Download the local copy to review and merge it separately."); return; }
+    if (restore && (liveDraft.current || latestValidation.current)) { setTabDraftError("Download or save your current draft before replacing it."); return; }
+    if ((!restore && entry.raw !== null) || (restore && entry.raw === null)) return;
+    const sequence = loadSequence.current, epoch = passiveEpoch.current, revision = draftRevision.current;
+    const current = () => loadSequence.current === sequence && passiveEpoch.current === epoch && !passiveLocked.current && editorOwner.current === actor && currentDocument.current === source && tabDraftRef.current === entry && draftRevision.current === revision && saveFlight.current === null;
+    tabDraftFlight.current = true; setTabDraftBusy(true); setTabDraftError(null);
+    try {
+      await editorAccount(actor); if (!current()) return;
+      const latest = await api.getChapterDocument(source.chapterId, actor);
+      await editorAccount(actor); if (!current()) return;
+      validateCurrentChapter(latest.document, source.chapterId);
+      if (!EDIT_ROLES.has(latest.role)) throw new Error("Editing access could not be confirmed.");
+      if (latest.document.version !== source.version || await chapterSaveDigest(latest.document.nodes) !== await chapterSaveDigest(source.nodes)) throw new Error("The saved chapter changed. Download the local copy to review and merge it separately.");
+      if (!current()) return;
+      if (restore) {
+        if (readChapterTabRecovery(window.sessionStorage, entry) !== entry.raw) throw new Error("The local draft changed while it was being checked. Reload before restoring it.");
+        const nodes = openChapterTabRecovery(entry.raw!, entry);
+        draftRevision.current++; liveDraft.current = true; setEditorSeed(nodes); setDraft(nodes); setDirty(true); setEditorValidation(null);
+        pendingSave.current = null; setReloadKey(value => value + 1);
+        setNotice("Local tab draft opened as unsaved work. Review it and save when ready.");
+      } else if (latestValidation.current) throw new Error("This editor state cannot be stored automatically. Download your draft instead.");
+      else if (liveDraft.current) {
+        entry.raw = writeChapterTabRecovery(window.sessionStorage, entry, latestDraft.current, null); setTabDraft(entry.raw);
+      }
+      tabDraftEnabledRef.current = true; setTabDraftEnabled(true); setTabDraftReviewed(true);
+    } catch (reason) { if (current()) setTabDraftError(reason instanceof Error ? reason.message : "Tab recovery could not be started."); }
+    finally { tabDraftFlight.current = false; setTabDraftBusy(false); }
+  };
+  const recordTabDraft = (nodes: BookNode[]) => {
+    const entry = tabDraftRef.current;
+    if (!tabDraftEnabledRef.current || !entry) return;
+    if (!editorInteractionAvailable.current || entry.userId !== editorOwner.current || entry.chapterId !== currentDocument.current?.chapterId || entry.baseVersion !== currentDocument.current?.version) {
+      tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftError("Tab recovery stopped because the account or saved chapter changed. The previous local copy is retained for review."); return;
+    }
+    try { entry.raw = writeChapterTabRecovery(window.sessionStorage, entry, nodes, entry.raw); setTabDraft(entry.raw); setTabDraftError(null); }
+    catch (reason) { tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftError(reason instanceof Error ? reason.message : "Tab recovery could not store this change."); }
+  };
+  const discardTabDraft = async () => {
+    const entry = tabDraftRef.current, actor = saveAccount, source = document;
+    if (!entry || !actor || !source || !editorInteractionAvailable.current || entry.userId !== actor || tabDraftFlight.current) return;
+    const sequence = loadSequence.current, epoch = passiveEpoch.current, raw = entry.raw;
+    const current = () => sequence === loadSequence.current && epoch === passiveEpoch.current && !passiveLocked.current && editorOwner.current === actor && currentDocument.current === source && tabDraftRef.current === entry && entry.raw === raw;
+    tabDraftFlight.current = true; setTabDraftBusy(true);
+    try {
+      await editorAccount(actor); if (!current()) return;
+      if (entry.raw !== null) discardChapterTabRecovery(window.sessionStorage, entry, entry.raw);
+      tabDraftRef.current = { ...entry, baseVersion: source.version, raw: null }; tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftReviewed(false); setTabDraft(null); setTabDraftError(null);
+    } catch (reason) { try { await editorAccount(actor); } catch { if (current()) setRestoreHidden(actor); } if (current()) setTabDraftError(reason instanceof Error ? reason.message : "The local copy could not be removed."); }
+    finally { tabDraftFlight.current = false; setTabDraftBusy(false); }
+  };
+  const downloadTabDraft = async () => {
+    const entry = tabDraftRef.current, actor = saveAccount, source = document;
+    if (!entry?.raw || !actor || !source || !editorInteractionAvailable.current || entry.userId !== actor || tabDraftFlight.current) return;
+    const sequence = loadSequence.current, epoch = passiveEpoch.current, raw = entry.raw;
+    const current = () => sequence === loadSequence.current && epoch === passiveEpoch.current && !passiveLocked.current && editorOwner.current === actor && currentDocument.current === source && tabDraftRef.current === entry && entry.raw === raw;
+    tabDraftFlight.current = true; setTabDraftBusy(true);
+    try {
+      await editorAccount(actor); if (!current()) return;
+      const latest = await api.getChapterDocument(source.chapterId, actor);
+      await editorAccount(actor); if (!current()) return;
+      validateCurrentChapter(latest.document, source.chapterId);
+      if (readChapterTabRecovery(window.sessionStorage, entry) !== raw) throw new Error("The local draft changed while it was being checked. Reload before downloading it.");
+      const url = URL.createObjectURL(new Blob([raw], { type: "application/json;charset=utf-8" }));
+      const a = window.document.createElement("a"); a.href = url; a.download = `bookworm-chapter-${entry.chapterId}-tab-draft.json`; window.document.body.append(a); a.click(); a.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (reason) { try { await editorAccount(actor); } catch { if (current()) setRestoreHidden(actor); } if (current()) setTabDraftError(reason instanceof Error ? reason.message : "The account or chapter access could not be verified. The local copy is retained."); }
+    finally { tabDraftFlight.current = false; setTabDraftBusy(false); }
+  };
+  const backupScope = useRef({ document, saveAccount, allowed: false });
+  backupScope.current = { document, saveAccount, allowed: Boolean(editable && !passiveLocked.current && !saving && !loading && !aiDecisionBusy && !conflict && !accountVerifying && !restoreHidden) };
+  const openDraftBackup = async (file: File | undefined) => {
+    if (!file || !document || !saveAccount || !backupScope.current.allowed || saveFlight.current !== null) return;
+    const readId = ++backupRead.current, sequence = loadSequence.current, original = document, actor = saveAccount;
+    const current = () => backupRead.current === readId && loadSequence.current === sequence && backupScope.current.document === original && backupScope.current.saveAccount === actor && backupScope.current.allowed && saveFlight.current === null;
+    try {
+      if (!file.name.toLowerCase().endsWith(".json") || !["", "application/json", "text/plain", "application/octet-stream"].includes(file.type) || file.size <= 0 || file.size > MAX_CHAPTER_DRAFT_BACKUP_BYTES) throw new Error("Choose a JSON backup no larger than 5 MB.");
+      const raw = new TextDecoder("utf-8", { fatal: true }).decode(await file.arrayBuffer());
+      const { nodes, legacy } = inspectChapterDraftBackup(raw, { userId: actor, bookId, chapterId: original.chapterId, baseVersion: original.version });
+      const verifyActor = async () => { try { await editorAccount(actor); } catch { if (current()) setRestoreHidden(actor); throw new Error("The original account could not be verified."); } };
+      const verifyLatest = async () => {
+        await verifyActor(); if (!current()) return false;
+        const latest = await api.getChapterDocument(original.chapterId, actor);
+        await verifyActor(); if (!current()) return false;
+        validateCurrentChapter(latest.document, original.chapterId);
+        if (!EDIT_ROLES.has(latest.role)) throw new Error("Editing access could not be confirmed. Your current draft is unchanged.");
+        if (latest.document.version !== original.version) throw new Error("The saved chapter has changed since this backup. Review the backup separately before merging.");
+        return true;
+      };
+      if (!await verifyLatest()) return;
+      const confirmedRevision = draftRevision.current;
+      if (legacy && !window.confirm("This older backup does not identify its original account, so its origin cannot be verified. Only open a file you trust. Continue?")) return;
+      if (!window.confirm("Replace the current editor draft with this local backup? The backup will remain unsaved until you review and save it.")) return;
+      if (!await verifyLatest() || !current()) return;
+      if (draftRevision.current !== confirmedRevision) throw new Error("Your draft changed while the backup was being checked. Choose the file again to review the replacement.");
+      draftRevision.current++; liveDraft.current = true; setEditorSeed(nodes); setDraft(nodes); setDirty(true); setEditorValidation(null); setError(null);
+      pendingSave.current = null; setReloadKey(value => value + 1);
+      setNotice("Local backup opened as an unsaved draft. Review it and save when ready. Artwork files are not included in the backup.");
+    } catch (reason) { if (current()) setError(reason instanceof Error ? reason.message : "The local backup could not be opened."); }
+  };
+  const editorSequence = loadSequence.current;
+  const bookIdentityChanging = book !== null && book.id !== bookId;
+  const wordCount = editorValidation ? (editorValidation.draftText.match(/\S+/gu)?.length ?? 0)
+    : bookNodesWordCount(draft);
+  return <>{bookIdentityChanging && !passiveCheck && <main className="mx-auto max-w-3xl p-8 text-white"><p role="status">Checking the selected book…</p></main>}
+  {passiveCheck && <main className="mx-auto max-w-3xl p-8 text-white">
+    {passiveCheck === "checking" ? <p role="status">Checking the original account…</p> : <><p role="alert">The original account could not be verified. This manuscript and its unsaved work are hidden; sign back in to the original account to continue.</p>
+      <button type="button" onClick={() => recheckPassive.current()}>Recheck original account</button></>}
+  </main>}
+  {accountVerifying && !restoreHidden && !passiveCheck && !accessBlocked && <main className="mx-auto max-w-3xl p-8 text-white"><p role="status">Checking the original account…</p></main>}
+  {accessBlocked && !passiveCheck && <main className="mx-auto max-w-3xl p-8 text-white">
+    <p role="alert">Access to this manuscript could not be verified. Your draft is hidden in this tab.</p>
+    <button type="button" disabled={checkingAccess} onClick={() => void recheckChapterAccess()}>{checkingAccess ? "Checking access…" : "Recheck chapter access"}</button>
+    {error && <p role="status">{error}</p>}
+  </main>}
+  {restoreHidden && !passiveCheck && !accessBlocked && <main className="mx-auto max-w-3xl p-8 text-white">
+    <p role="alert">The original account could not be verified. This manuscript is hidden; sign back in to the original account to continue.</p>
+    <button type="button" onClick={() => void editorAccount(restoreHidden).then(() => setRestoreHidden(null)).catch(() => setError("Sign back in to the original account and recheck."))}>Recheck original account</button>
+    {error && <p role="status">{error}</p>}
+  </main>}
+  <main hidden={!!restoreHidden || accountVerifying || !!passiveCheck || accessBlocked || bookIdentityChanging} className="mx-auto min-h-[calc(100dvh-84px)] max-w-[1680px] bg-black p-4 text-white sm:p-6">
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
+      <div>{book ? <Link href={`/dashboard?ws=${encodeURIComponent(book.workspace_id)}`} className="text-xs text-white/50 hover:text-white">← Library</Link> : <span className="text-xs text-white/50">← Library</span>}<h1 className="mt-2 text-2xl font-medium">{book?.title ?? "Manuscript"}</h1></div>
+      <div className="flex flex-wrap items-center gap-3 text-sm"><Link href={`/books/${bookId}/plan`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Plan</Link><Link href={`/books/${bookId}/memory`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Book Bible</Link><Link href={`/books/${bookId}/translate`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Translate</Link><Link href={`/books/${bookId}/publish`} className="rounded-full border border-white/15 px-4 py-2 text-white/70 hover:border-white/30 hover:text-white">Layout & publish</Link><span role="status" className="text-white/50">{editorValidation ? "Unsaved · correct numbering before saving" : saving ? "Saving…" : manualSave ? "Save outcome unconfirmed" : dirty ? "Unsaved changes" : document ? `Saved · v${document.version}` : ""}</span>
+        {EDIT_ROLES.has(role) && document && <button type="button" onClick={() => void save()} disabled={!editable || !dirty || saving || aiDecisionBusy || conflict || loading || editorValidation !== null} className="rounded-full bg-white px-5 py-2 font-medium text-black disabled:opacity-40">Save chapter</button>}
+        {editorValidation && <button type="button" onClick={() => downloadDraft("txt")} className="min-h-11 rounded-full border border-white/20 px-4 py-2">Download draft text</button>}
+{document && !loading && <details className="relative basis-full lg:basis-auto"><summary className="inline-flex min-h-11 cursor-pointer rounded-full border border-white/20 px-4 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white">Back up chapter draft</summary><div className="absolute left-0 z-30 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-2xl border border-white/15 bg-[#101010] p-4 shadow-xl lg:left-auto lg:right-0"><p className="text-xs leading-5 text-white/60">JSON includes your account and chapter identity, structure, formatting and artwork references. Keep it private; image files are not embedded. Text export does not keep formatting. Neither action saves to the server.</p><button type="button" onClick={() => downloadDraft()} className="mt-3 block min-h-11 w-full rounded-xl border border-white/20 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download JSON backup</button><button type="button" onClick={() => downloadDraft("txt")} className="mt-2 block min-h-11 w-full rounded-xl border border-white/15 px-4 text-left text-sm focus-visible:ring-2 focus-visible:ring-white">Download draft text</button><label className="mt-4 block text-xs leading-5 text-white/65">Open a JSON backup for this chapter and saved version<input type="file" accept=".json,application/json" disabled={!backupScope.current.allowed} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; void openDraftBackup(file); }} className="mt-2 block w-full text-xs text-white/70 file:mr-3 file:rounded-lg file:border file:border-white/20 file:bg-transparent file:px-3 file:py-2 file:text-white disabled:opacity-40" /></label></div></details>}
       </div>
-      <section>
-        {conflict && (
-          <div role="alert" style={{ background: "#fff3cd", border: "1px solid #ffe08a", padding: 8, borderRadius: 4, marginBottom: 8 }}>
-            {conflict} — latest content reloaded.
-            <button style={{ marginLeft: 8 }} onClick={() => setConflict(null)}>Dismiss</button>
-          </div>
-        )}
-        {error && (
-          <div role="alert" style={{ background: "#f8d7da", border: "1px solid #f1aeb5", padding: 8, borderRadius: 4, marginBottom: 8 }}>
-            {error}
-          </div>
-        )}
-        {doc ? (
-          <RichBookEditor document={doc} permissions="editor" onOperation={onOperation} />
-        ) : (
-          <p>No chapter selected.</p>
-        )}
+    </div>
+    {error && <div role="alert" className="mb-4 rounded-xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{error}
+      {!loading && (!document || (requestedChapterId && requestedChapterId !== document.chapterId)) && <button type="button" className="mt-3 block min-h-11 rounded-lg border border-red-200/30 px-3 py-2 underline focus-visible:ring-2 focus-visible:ring-white" onClick={() => requestedChapterId ? document ? selectChapter(requestedChapterId) : void loadChapter(requestedChapterId) : setBookLoadAttempt(attempt => attempt + 1)}>{requestedChapterId ? "Retry loading chapter" : "Retry loading book"}</button>}
+    </div>}
+    {(hasUnsavedChanges || hasAnyChapterSetup || titleBlocked || manualSave || pendingRestore || pendingOrder || pendingCreation.current || creationRecovery || aiDecisionBusy) && <p className="mb-4 text-sm text-amber-100">Browser Back or Forward may leave without a warning. Save your work and resolve pending requests before leaving.</p>}
+    {draftPlanMessage && <p role="status" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-3 text-sm leading-6 text-amber-100">{draftPlanMessage}</p>}
+    {notice && <p role="status" className="mb-4 text-sm text-emerald-200">{notice}</p>}
+    {document && saveAccount && <section aria-label="Optional tab draft recovery" className="mb-4 rounded-xl border border-white/15 p-4 text-sm leading-6 text-white/80">
+      <h2 className="font-medium">Optional tab draft recovery</h2>
+      <p>With your permission, this tab stores manuscript text in plaintext in browser session storage. Other people using this browser and scripts on this site may read it. A duplicated tab may receive a copy, and the browser may restore closed sessions. This copy is not a server save, does not include image files, and is never submitted automatically.</p>
+      {tabDraftError && <p role="alert" className="mt-2 text-amber-100">{tabDraftError}</p>}
+      {tabDraft && !tabDraftReviewed ? <p className="mt-2 text-amber-100">A local draft is waiting for review. Restore it only if the saved chapter is unchanged, download it for comparison, or discard the local copy. Resolve any unconfirmed save first.</p> : tabDraftEnabled ? <p role="status" className="mt-2">Tab recovery is on for this chapter. Download a backup for protection beyond this tab.</p> : tabDraft ? <p className="mt-2">The retained copy is not being updated. Download or discard it before enabling recovery again.</p> : <p className="mt-2">Tab recovery is off.</p>}
+      <div className="mt-3 flex flex-wrap gap-3">
+        {!tabDraft && !tabDraftEnabled && <button type="button" disabled={tabDraftBusy || !tabDraftRef.current || !editable || saving || loading || aiDecisionBusy || conflict} onClick={() => void prepareTabDraft(false)} className="min-h-11 rounded-lg border border-white/20 px-3 disabled:opacity-40">Enable tab recovery</button>}
+        {tabDraft && !tabDraftReviewed && <button type="button" disabled={tabDraftBusy || !!manualSave || !!pendingRestore || saving || loading || aiDecisionBusy || conflict || !EDIT_ROLES.has(role)} onClick={() => void prepareTabDraft(true)} className="min-h-11 rounded-lg border border-white/20 px-3 disabled:opacity-40">Restore local draft</button>}
+        {tabDraft && <button type="button" disabled={tabDraftBusy} onClick={() => void downloadTabDraft()} className="min-h-11 px-3 underline">Download local copy</button>}
+        {(tabDraft || tabDraftEnabled) && <button type="button" disabled={tabDraftBusy} onClick={() => void discardTabDraft()} className="min-h-11 px-3 underline">Discard local copy and turn off</button>}
+      </div>
+    </section>}
+    {manualSave && <section aria-label="Manual save recovery" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-4 text-sm leading-6 text-amber-100">
+      <h2 className="font-medium">Confirm your last save</h2>
+      <p>Editing is paused until this exact save is confirmed. The save recovery record stores only its account, chapter, revision and content fingerprint. An optional tab draft copy, if enabled, is separate and is never resubmitted automatically.</p>
+      <div className="mt-3 flex flex-wrap gap-3">
+        <button type="button" disabled={saving || loading} onClick={() => void recoverSave()} className="min-h-11 rounded-lg border border-amber-200/30 px-3 disabled:opacity-40">Check saved status</button>
+        {saveMissing && pendingSave.current && EDIT_ROLES.has(role) && <button type="button" disabled={saving || loading} onClick={() => void save(true)} className="min-h-11 rounded-lg border border-amber-200/30 px-3 disabled:opacity-40">Retry original save</button>}
+        {saveMissing && EDIT_ROLES.has(role) && <button type="button" disabled={saving || loading} onClick={() => void recoverSave(true)} className="min-h-11 rounded-lg border border-amber-200/30 px-3 disabled:opacity-40">Close unconfirmed save</button>}
+        <button type="button" disabled={loading} onClick={() => downloadDraft()} className="min-h-11 px-3 underline">Download current draft</button>
+      </div>
+      {saveMissing && <p className="mt-2 text-xs text-amber-100/75">Closing keeps history and records an unchanged revision to block a late write. It will not undo a save that already committed.</p>}
+    </section>}
+    {pendingRestore && !saving && <section aria-label="Unconfirmed chapter restore" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm">
+      <p>Restore outcome is not confirmed. Your draft stays here while you check the saved status or retry the original request. Editing is paused, and reloading cannot cancel a restore still in flight.</p>
+      <div className="mt-3 flex flex-wrap gap-4">
+        <button type="button" disabled={loading} className="underline" onClick={() => void restore(pendingRestore.versionId, "check")}>Check restore status</button>
+        {EDIT_ROLES.has(role) && <button type="button" disabled={loading} className="underline" onClick={() => void restore(pendingRestore.versionId)}>Retry original restore</button>}
+        <button type="button" className="underline" onClick={() => downloadDraft()}>Download my draft</button>
+        <button type="button" disabled={loading} className="underline" onClick={() => { if (window.confirm("Reload saved content and replace this draft? The original restore may still arrive later; reloading does not cancel it. Download your draft first if needed.")) void loadChapter(pendingRestore.chapterId); }}>Reload saved content</button>
+      </div>
+    </section>}
+    {pendingOrder && <section aria-label="Unconfirmed chapter order" className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm">
+      <p>The reorder outcome is unconfirmed. Checking shows the current order but cannot prove who changed it or cancel a request still in flight. Further chapter structure changes are paused on this page. Reloading or closing the page loses this checkpoint and cannot cancel the original request; it could still arrive later even if the order changes back.</p>
+      {pendingOrder.observed && <p role="status" className="mt-2">{pendingOrder.observed}</p>}
+      <button type="button" disabled={saving || loading} className="mt-3 underline" onClick={() => void checkPendingOrder()}>Check saved chapter order</button>
+    </section>}
+    {conflict && <div className="mb-4 rounded-xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm"><p>The saved chapter may have changed. Your draft is still here; saving and AI requests are paused until you reload. Download the JSON backup before reloading if you need to merge changes. It preserves artwork references, not image files.</p><button className="mr-4 mt-3 underline" onClick={() => downloadDraft()}>Download my draft</button><button className="underline" disabled={saving || loading || aiDecisionBusy} onClick={reloadSavedVersion}>Reload saved version</button></div>}
+    <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_260px]">
+      <aside className="self-start rounded-2xl border border-white/10 p-2">
+        <button type="button" className="flex min-h-11 w-full items-center justify-between px-3 text-sm text-white/75 lg:hidden" aria-expanded={structureOpen} aria-controls="chapter-structure" onClick={() => setStructureOpen((open) => !open)}><span>Chapters · {chapters.length}</span><span>{structureOpen ? "Hide" : "Show"}</span></button>
+        <div id="chapter-structure" className={structureOpen ? "block" : "hidden lg:block"}>
+        <BookTree chapters={chapters} activeId={document?.chapterId ?? null} onSelect={selectChapter} onReorder={(ids) => void reorder(ids)} disabled={saving || loading || aiDecisionBusy || !!manualSave || !!pendingOrder || titleState.pending || titleState.busy} readOnly={!editableBase || titleState.pending || titleState.busy || !!creationRecovery} reorderBlockedReason={titleState.dirty ? "Save or cancel the chapter title edit before reordering chapters." : undefined} />
+        {EDIT_ROLES.has(role) && !pendingRestore && <form className="mt-5 space-y-2 border-t border-white/10 p-2 pt-4" onSubmit={(event) => { event.preventDefault(); void createChapter(); }}>
+          <fieldset disabled={titleBlocked || saving || loading || aiDecisionBusy || !!manualSave || !!pendingOrder || (!!document && !saveRecoveryReady)} className="min-w-0 space-y-2 disabled:opacity-50">
+          <label className="block text-xs text-white/50" htmlFor="new-chapter-title">New chapter</label><input id="new-chapter-title" value={book?.id === bookId ? newTitle : ""} onChange={(e) => updateChapterSetup(e.target.value, newChapterBrief)} disabled={!creationRecoveryReady || !!creationRecovery} aria-describedby={creationRecovery ? "chapter-creation-recovery" : undefined} maxLength={500} required placeholder="Chapter title" className="w-full rounded-lg border border-white/15 bg-black p-2 text-sm" />
+          <label className="block text-xs text-white/50" htmlFor="new-chapter-brief">Optional AI drafting brief</label><textarea id="new-chapter-brief" value={book?.id === bookId ? newChapterBrief : ""} onChange={(e) => updateChapterSetup(newTitle, e.target.value)} disabled={!creationRecoveryReady || !!creationRecovery} aria-describedby={creationRecovery ? "chapter-creation-recovery" : undefined} maxLength={4000} rows={3} placeholder="What happens in this chapter?" className="w-full resize-y rounded-lg border border-white/15 bg-black p-2 text-sm" />
+          <p className="text-[11px] leading-4 text-white/40">A brief creates an empty chapter and opens separate AI price review. Nothing is generated or charged until you accept a quote.</p>
+          {creationRecoveryError && <div className="space-y-2">
+            <p role="alert" className="break-words text-xs text-red-200">{creationRecoveryError}</p>
+            <button type="button" disabled={saving || loading} onClick={() => void recheckCreationStorage()} className="min-h-11 rounded-lg border border-white/20 px-3 text-xs disabled:opacity-40">Recheck chapter recovery</button>
+          </div>}
+          {creationRecovery && <div id="chapter-creation-recovery" className="space-y-2 text-xs leading-5 text-white/70">
+            <p role="status">{pendingCreation.current ? `Creation of “${pendingCreation.current.title}” is not confirmed. The original details stay locked.` : "An earlier chapter request is unconfirmed. Its title and brief are not in the recovery record."}</p>
+            <p>Check the original request, or close it before starting a new chapter. Closing cannot undo a chapter that was already created.</p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => void recoverCreation(false)} className="min-h-11 rounded-lg border border-white/20 px-3">Check chapter request</button>
+              <button type="button" onClick={() => void recoverCreation(true)} className="min-h-11 rounded-lg border border-white/20 px-3">Close unconfirmed request</button>
+            </div>
+          </div>}
+          {(!creationRecovery || pendingCreation.current) && <button disabled={saving || !creationRecoveryReady || book?.id !== bookId || !newTitle.trim()} className="min-h-11 w-full rounded-lg border border-white/20 px-3 py-2 text-xs focus-visible:ring-2 focus-visible:ring-white disabled:opacity-40">{pendingCreation.current ? "Retry chapter creation" : newChapterBrief.trim() ? "Add & review AI brief" : "Add chapter"}</button>}
+          </fieldset>
+        </form>}
+        </div>
+      </aside>
+      <section className="min-w-0">
+        {document && saveAccount && <ChapterTitleEditor key={`${bookId}:${document.chapterId}:${saveAccount}`} bookId={bookId} chapterId={document.chapterId} userId={saveAccount}
+          initialTitle={chapters.find(chapter => chapter.id === document.chapterId)?.title ?? "Chapter"} canEdit={EDIT_ROLES.has(role)}
+          disabled={!!passiveCheck || accountVerifying || !!restoreHidden || saving || loading || aiDecisionBusy || !!manualSave || !!pendingRestore || !saveRecoveryReady || conflict}
+          captureAccountEpoch={() => passiveEpoch.current} accountEpochCurrent={epoch => !passiveLocked.current && childActionsAvailable.current && passiveEpoch.current === epoch}
+          onState={setTitleState} onTitle={title => setChapters(items => items.map(chapter => chapter.id === document.chapterId ? { ...chapter, title } : chapter))} />}
+        {document && <p className="mb-3 px-1 text-right text-xs tabular-nums text-white/45">{wordCount.toLocaleString()} words</p>}
+        {loading && <p className="p-8 text-white/50" role="status">Loading manuscript…</p>}{document && book ? <div hidden={loading}><RichBookEditor key={`${document.chapterId}:${reloadKey}`} document={editorSeed ? { ...document, nodes: editorSeed } : document} workspaceId={book.workspace_id} actorId={saveAccount ?? ""} permissions={editable && !saving && !loading && !aiDecisionBusy ? "editor" : "viewer"} onValidationChange={(value) => { draftRevision.current++; latestValidation.current = value; if (value) { liveDraft.current = true; if (tabDraftEnabledRef.current) { tabDraftEnabledRef.current = false; setTabDraftEnabled(false); setTabDraftError("This editor state cannot be stored in tab recovery. Download your draft text; the earlier local copy remains available."); } } setEditorValidation(value); }} onChange={(nodes) => { draftRevision.current++; latestDraft.current = nodes; liveDraft.current = true; setDraft(nodes); setDirty(true); recordTabDraft(nodes); if (!manualSave && saveFlight.current === null) pendingSave.current = null; setNotice(null); }} /></div> : !loading ? <div className="rounded-2xl border-dashed border border-white/15 p-10 text-white/60">{error ? "Resolve the connection error to open this manuscript." : "Add your first chapter to start writing."}</div> : null}
       </section>
-      <VersionTimeline versions={versions} onCompare={() => {}} onRestore={onRestore} />
-    </main>
-  );
+      <div className="max-h-[75vh] space-y-4 overflow-y-auto lg:col-span-2 xl:col-span-1">
+        {book?.id === bookId && editorOwner.current && <AiAssistantPanel key={`${editorOwner.current}:${document?.chapterId ?? "empty"}`} actorId={editorOwner.current} bookId={bookId} chapterId={document?.chapterId ?? null} savedChapter={document} initialJobId={activeAiJobId} initialDraftInstruction={document?.chapterId === draftPlanTargetChapterId ? initialDraftInstruction : undefined} dirty={hasUnsavedChanges || conflict} editable={editable && !saving && !loading && !conflict} canDispatch={() => !passiveLocked.current && !conflictRef.current && childActionsAvailable.current} isDraftDirty={() => conflictRef.current || liveDraft.current || latestValidation.current !== null} onDraftConflict={() => setConflict(true)} onDecisionBusy={setAiDecisionBusy} onApplied={async () => { if (passiveLocked.current || !childActionsAvailable.current) throw new Error("Verify the original account before refreshing the saved chapter."); if (liveDraft.current) throw new Error("Back up the unsaved draft before refreshing the saved chapter."); if (document && editorSequence === loadSequence.current) { try { await loadChapter(document.chapterId, true, true); } catch (reason) { if (currentDocument.current === document) setConflict(true); throw reason; } } }} />}
+        <div className="rounded-2xl border border-white/10 p-2"><VersionTimeline key={document ? `${bookId}:${document.chapterId}` : "empty"}
+          versions={versions} chapterId={document?.chapterId} loadVersion={document ? (id) => loadVersionForComparison(document.chapterId, id) : undefined}
+          onRestore={(id) => void restore(id)} readOnly={!editable || saving || loading || aiDecisionBusy || (conflict && !pendingRestore)} /></div>
+      </div>
+    </div>
+  </main></>;
 }

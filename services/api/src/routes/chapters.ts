@@ -1,60 +1,162 @@
+import { isDeepStrictEqual } from "node:util";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { applyOperation, DocumentOperationSchema, type BookModel } from "@bookworm/book-model";
 import { AppError } from "../errors.js";
-import { requireWorkspaceEditor } from "../lib/authorize.js";
+import { appendVersion, checkAssetReferences, latestVersion, loadChapter, nodesSchema, parseNodes } from "../lib/authoring.js";
+import { checkChapterActor, manualChapterSaveRoutes } from "../lib/manual-chapter-save.js";
+import { chapterTitleRoutes } from "../lib/chapter-title.js";
 
-// DocumentOperation per spec section 9; full op semantics land in Step 4 (book-model).
-const operationSchema = z.object({
-  operationId: z.string().min(1),
-  type: z.string().min(1),
-  target: z.record(z.string(), z.unknown()),
-  payload: z.record(z.string(), z.unknown()),
-  source: z.enum(["human", "ai"]).default("human"),
-  sourceRef: z.string().optional(),
-  expectedVersion: z.number().int().nonnegative(),
+const saveSchema = z.object({
+  expectedVersion: z.number().int().nonnegative(), nodes: nodesSchema,
+  operationId: z.string().min(1).max(200), changeSummary: z.string().max(500).default("Manuscript edited"),
 });
+const versionParams = z.object({ chapterId: z.guid(), versionId: z.guid() });
+const restoreStatusQuery = z.object({
+  operationId: saveSchema.shape.operationId,
+  expectedVersion: z.string().regex(/^(0|[1-9][0-9]{0,9})$/u).transform(Number).pipe(z.number().max(2_147_483_646)),
+}).strict();
+const restorePath = "/chapters/:chapterId/versions/:versionId/restore";
 
 export function chapterRoutes(app: FastifyInstance) {
+  manualChapterSaveRoutes(app);
+  chapterTitleRoutes(app);
+  app.get("/chapters/:chapterId/document", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    const { chapterId } = req.params as { chapterId: string };
+    const sb = app.supabaseFactory(req.userToken);
+    const { chapter, role } = await loadChapter(sb, chapterId, req.userId);
+    const current = await latestVersion(sb, chapterId);
+    return { chapter, role, document: { chapterId, version: current?.version_number ?? 0, nodes: parseNodes(current?.content_json) } };
+  });
+
+  app.get("/chapters/:chapterId/versions", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    const { chapterId } = req.params as { chapterId: string };
+    const sb = app.supabaseFactory(req.userToken);
+    await loadChapter(sb, chapterId, req.userId);
+    const { data, error } = await sb.from("document_versions")
+      .select("id,chapter_id,version_number,plain_text,word_count,created_by,created_at,change_summary")
+      .eq("chapter_id", chapterId).order("version_number", { ascending: false }).limit(100);
+    if (error) throw new AppError(500, "Could not load version history");
+    return { versions: data ?? [] };
+  });
+
+  // A historical manuscript is private, immutable data, not an asset download.
+  app.get("/chapters/:chapterId/versions/:versionId", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    const parsed = versionParams.safeParse(req.params);
+    if (!parsed.success) throw new AppError(422, "invalid chapter or version ID");
+    const { chapterId, versionId } = parsed.data;
+    const sb = app.supabaseFactory(req.userToken);
+    await loadChapter(sb, chapterId, req.userId);
+    const { data, error } = await sb.from("document_versions")
+      .select("id,chapter_id,version_number,plain_text,word_count,created_by,created_at,change_summary,content_json")
+      .eq("chapter_id", chapterId).eq("id", versionId).maybeSingle();
+    if (error) throw new AppError(503, "Could not read the saved revision. Try again without restoring it.");
+    if (!data) throw new AppError(404, "version not found in this chapter");
+    const { content_json, ...version } = data;
+    return { version, document: { chapterId, version: data.version_number, nodes: parseNodes(content_json) } };
+  });
+
+  // Read-only recovery of this author's exact save, even after later edits.
+  app.get("/chapters/:chapterId/saves", async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    const { chapterId } = req.params as { chapterId: string };
+    const parsed = z.object({ operationId: z.string().min(1).max(200) }).safeParse(req.query);
+    if (!parsed.success) throw new AppError(422, "invalid operation ID");
+    const { operationId } = parsed.data;
+    const sb = app.supabaseFactory(req.userToken);
+    await loadChapter(sb, chapterId, req.userId);
+    const { data: saved, error } = await sb.from("document_versions")
+      .select("id,version_number,content_json").eq("chapter_id", chapterId)
+      .eq("operation_id", operationId).eq("created_by", req.userId).maybeSingle();
+    if (error) throw new AppError(503, "Saved manuscript status could not be verified. Keep the original save request.");
+    if (!saved) return { status: "not_found", operationId };
+    return { status: "saved", operationId, versionId: saved.id,
+      document: { chapterId, version: saved.version_number, nodes: parseNodes(saved.content_json) } };
+  });
+
+  app.put("/chapters/:chapterId/document", { bodyLimit: 5 * 1024 * 1024 }, async (req) => {
+    checkChapterActor(req);
+    const { chapterId } = req.params as { chapterId: string };
+    const parsed = saveSchema.safeParse(req.body);
+    if (!parsed.success) throw new AppError(422, "invalid document", { issues: parsed.error.issues });
+    const sb = app.supabaseFactory(req.userToken);
+    const { book } = await loadChapter(sb, chapterId, req.userId, true);
+    await checkAssetReferences(sb, parsed.data.nodes, book.workspace_id);
+    return appendVersion(sb, chapterId, parsed.data.expectedVersion, parsed.data.nodes, parsed.data.operationId, parsed.data.changeSummary);
+  });
+
+  app.get(restorePath, async (req, reply) => {
+    reply.header("Cache-Control", "private, no-store");
+    checkChapterActor(req, true);
+    const path = versionParams.safeParse(req.params), query = restoreStatusQuery.safeParse(req.query);
+    if (!path.success || !query.success) throw new AppError(422, "Valid chapter, target version, original operation and expected revision are required.");
+    const { chapterId, versionId: targetVersionId } = path.data;
+    const { operationId, expectedVersion } = query.data;
+    const intent = { chapterId, targetVersionId, operationId, expectedVersion };
+    const sb = app.supabaseFactory(req.userToken);
+    await loadChapter(sb, chapterId, req.userId);
+    const { data: saved, error } = await sb.from("document_versions")
+      .select("id,version_number,content_json,change_summary").eq("chapter_id", chapterId)
+      .eq("operation_id", operationId).eq("created_by", req.userId).maybeSingle();
+    if (error) throw new AppError(503, "Could not verify the saved restore. Keep the original request.");
+    if (!saved) return { ...intent, status: "not_found" };
+
+    // Verify the effect against immutable history. Illustration eligibility is
+    // checked when writing a new version and can change after it was committed.
+    const { data: target, error: targetError } = await sb.from("document_versions")
+      .select("version_number,content_json").eq("chapter_id", chapterId).eq("id", targetVersionId).maybeSingle();
+    if (targetError) throw new AppError(503, "Could not verify the restore target. Keep the original request.");
+    if (!target) throw new AppError(404, "version not found in this chapter");
+    const nodes = parseNodes(saved.content_json);
+    if (saved.version_number !== expectedVersion + 1 || target.version_number > expectedVersion
+      || saved.change_summary !== `Restored version ${target.version_number}` || !isDeepStrictEqual(nodes, parseNodes(target.content_json))) {
+      throw new AppError(409, "The saved revision does not match this restore request.");
+    }
+    return { ...intent, status: "saved", version: saved.version_number, versionId: saved.id,
+      document: { chapterId, version: saved.version_number, nodes } };
+  });
+
+  app.post(restorePath, async (req) => {
+    checkChapterActor(req, true);
+    const { chapterId, versionId } = req.params as { chapterId: string; versionId: string };
+    const body = z.object({ expectedVersion: z.number().int().nonnegative(), operationId: z.string().min(1).max(200) }).safeParse(req.body);
+    if (!body.success) throw new AppError(422, "expectedVersion and operationId required");
+    const sb = app.supabaseFactory(req.userToken);
+    const { book } = await loadChapter(sb, chapterId, req.userId, true);
+    const { data: previous, error } = await sb.from("document_versions").select("*").eq("chapter_id", chapterId).eq("id", versionId).maybeSingle();
+    if (error) throw new AppError(500, "Could not load previous version");
+    if (!previous) throw new AppError(404, "version not found in this chapter");
+    const nodes = parseNodes(previous.content_json);
+    await checkAssetReferences(sb, nodes, book.workspace_id);
+    return appendVersion(sb, chapterId, body.data.expectedVersion, nodes, body.data.operationId, `Restored version ${previous.version_number}`);
+  });
+
   app.post("/chapters/:chapterId/operations", async (req) => {
     const { chapterId } = req.params as { chapterId: string };
-    const parsed = operationSchema.safeParse(req.body);
+    const parsed = DocumentOperationSchema.safeParse(req.body);
     if (!parsed.success) throw new AppError(422, "invalid operation", { issues: parsed.error.issues });
     const op = parsed.data;
+    if (op.target.chapterId !== chapterId) throw new AppError(422, "operation target must match the URL chapter");
     const sb = app.supabaseFactory(req.userToken);
-
-    const { data: chapter } = await sb.from("chapters").select("book_id").eq("id", chapterId).maybeSingle();
-    if (!chapter) throw new AppError(404, "chapter not found");
-    const { data: book } = await sb.from("books").select("workspace_id").eq("id", chapter.book_id).single();
-    if (!book) throw new AppError(404, "book not found");
-    await requireWorkspaceEditor(sb, book.workspace_id, req.userId);
-
-    const { data: current } = await sb.from("document_versions")
-      .select("version_number, content_json, plain_text, word_count")
-      .eq("chapter_id", chapterId)
-      .order("version_number", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const { chapter, book } = await loadChapter(sb, chapterId, req.userId, true);
+    const current = await latestVersion(sb, chapterId);
     const currentVersion = current?.version_number ?? 0;
-    if (op.expectedVersion !== currentVersion) {
-      throw new AppError(409, "stale expectedVersion", { currentVersion });
-    }
-
-    // ponytail: op application is a passthrough until Step 4's book-model engine
-    // owns node semantics; here we store the op so versions are never lost.
-    const newVersion = currentVersion + 1;
-    const { error } = await sb.from("document_versions").insert({
-      chapter_id: chapterId,
-      version_number: newVersion,
-      content_json: current?.content_json ?? { type: "doc", content: [] },
-      plain_text: current?.plain_text ?? "",
-      word_count: current?.word_count ?? 0,
-      created_by: req.userId,
-    });
-    if (error) {
-      // unique(chapter_id, version_number) race => someone else committed first
-      if (error.code === "23505") throw new AppError(409, "concurrent update", { currentVersion: newVersion });
-      throw new AppError(500, error.message);
-    }
-    return { version: newVersion };
+    if (op.expectedVersion !== currentVersion) throw new AppError(409, "stale expectedVersion", { currentVersion });
+    const nodes = parseNodes(current?.content_json);
+    const assetIds = [...new Set([...nodes.flatMap((n) => n.assetId ? [n.assetId] : []), ...(op.type === "attach_asset" ? [op.payload.assetId] : [])])];
+    const model: BookModel = {
+      schemaVersion: "1.0", bookId: book.id, metadata: { title: book.title, author: book.author_name, language: book.language },
+      styleGuide: {}, bookBible: { entities: [] }, assets: assetIds.map((id) => ({ id, role: "illustration" })),
+      chapters: [{ id: chapterId, order: chapter.order_index, title: chapter.title, nodes }],
+    };
+    let result;
+    try { result = applyOperation(model, op, currentVersion); }
+    catch (error) { throw new AppError(422, error instanceof Error ? error.message : "Invalid operation"); }
+    const nextNodes = nodesSchema.parse(result.book.chapters[0].nodes);
+    await checkAssetReferences(sb, nextNodes, book.workspace_id);
+    return appendVersion(sb, chapterId, currentVersion, nextNodes, op.operationId, op.type);
   });
 }

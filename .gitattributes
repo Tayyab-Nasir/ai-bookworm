@@ -1,0 +1,4 @@
+graphify-out/graph.json merge=graphify
+*.sql text eol=lf
+# Keep the verified upstream Amiri license bytes and formatting.
+services/rendering/fonts/LICENSE-Amiri.txt -text -whitespace

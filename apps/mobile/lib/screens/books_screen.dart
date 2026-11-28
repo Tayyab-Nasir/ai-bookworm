@@ -54,7 +54,7 @@ class _BooksScreenState extends State<BooksScreen> {
         });
       }
     } on Exception catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) setState(() { _error = e.toString(); _loading = false; });
     }
   }
 
@@ -81,6 +81,7 @@ class _BooksScreenState extends State<BooksScreen> {
             ),
           ),
           if (_error != null) Text(_error!),
+          if (_loading) const LinearProgressIndicator(),
           Expanded(
             child: RefreshIndicator(
               onRefresh: _load,

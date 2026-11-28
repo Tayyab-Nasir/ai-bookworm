@@ -162,7 +162,8 @@ def test_pdf_low_confidence_path():
     assert any("manual QA" in w_ or "OCR" in w_ for w_ in report["warnings"])
 
 
-def test_http_422_on_corrupt():
+def test_http_422_on_corrupt(monkeypatch):
+    monkeypatch.setenv("DOCUMENT_SERVICE_TOKEN", "fixture-parser-token")
     from fastapi.testclient import TestClient
     import base64
     # Drop any cached `main` (collides across services in combined pytest runs)
@@ -171,11 +172,11 @@ def test_http_422_on_corrupt():
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from main import app
     client = TestClient(app)
-    r = client.post("/parse", json={
+    r = client.post("/parse", headers={"x-service-token": "fixture-parser-token"}, json={
         "assetId": "a1", "format": "epub",
         "contentBase64": base64.b64encode(b"junk").decode()})
     assert r.status_code == 422
-    ok = client.post("/parse", json={
+    ok = client.post("/parse", headers={"x-service-token": "fixture-parser-token"}, json={
         "assetId": "a2", "format": "txt",
         "contentBase64": base64.b64encode("Chapter 1\n\nHi.\n".encode()).decode()})
     assert ok.status_code == 200

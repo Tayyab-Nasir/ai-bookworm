@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 
 process.env.SUPABASE_URL ??= "http://localhost:54321";
 process.env.SUPABASE_ANON_KEY ??= "test-anon";
@@ -10,6 +10,7 @@ process.env.QDRANT_URL ??= "http://localhost:6333";
 process.env.NODE_ENV = "test";
 process.env.LOG_LEVEL = "error";
 process.env.STRIPE_WEBHOOK_SECRET = "whsec_test";
+process.env.APP_URL = "https://x.test";
 process.env.SERVICE_AUTH_TOKEN = "svc-secret";
 process.env.STRIPE_PRICE_IDS_JSON = JSON.stringify({ "55555555-5555-5555-5555-555555555555": "price_123" });
 
@@ -25,6 +26,42 @@ interface Store {
 }
 function fakeSupabase(store: Store) {
   const client = {
+    rpc: async (name: string, p: Record<string, unknown>) => {
+      if (name === "claim_stripe_subscription_event") {
+        const events = (store.tables.stripe_events ??= []);
+        const event = events.find(r => r.id === p.p_event_id);
+        if (event?.processing_state === "processed") return { data: { state: "duplicate" }, error: null };
+        const sub = store.tables.subscriptions?.find(r => r.provider_subscription_id === p.p_subscription_id);
+        const token = randomUUID();
+        if (!event) events.push({ id: p.p_event_id, processing_state: "pending" });
+        return { data: { state: "claimed", leaseToken: token, binding: sub ? {
+          organizationId: sub.organization_id, planId: sub.plan_id, customerId: sub.provider_customer_id } : null }, error: null };
+      }
+      if (name === "complete_stripe_subscription_event") {
+        const m = p.p_mutation as Record<string, unknown>;
+        const row = { organization_id: m.organizationId, plan_id: m.planId, provider_customer_id: m.customerId,
+          provider_subscription_id: m.subscriptionId, status: m.status, current_period_end: m.periodEnd };
+        const subs = (store.tables.subscriptions ??= []), prior = subs.find(r => r.provider_subscription_id === m.subscriptionId);
+        if (prior) Object.assign(prior, row); else subs.push(row);
+        Object.assign(store.tables.stripe_events.find(r => r.id === p.p_event_id)!, { processing_state: "processed" });
+        return { data: { state: "processed" }, error: null };
+      }
+      assert.equal(name, "deduct_job_credits");
+      const receipts = (store.tables.credit_deduction_receipts ??= []);
+      const prior = receipts.find((r) => r.job === p.p_job_id);
+      const fingerprint = JSON.stringify(p);
+      if (prior) return prior.fingerprint === fingerprint
+        ? { data: prior.result, error: null }
+        : { data: null, error: { code: "23505", message: "conflict" } };
+      const ledger = (store.tables.credit_ledger ??= []);
+      const balance = ledger.filter((r) => r.user_id === p.p_user_id).reduce((sum, r) => sum + Number(r.amount), 0);
+      if (balance < Number(p.p_amount)) return { data: null, error: { code: "23514", message: "insufficient credits" } };
+      const entry = { user_id: p.p_user_id, source: "consumption", amount: -Number(p.p_amount), balance_after: balance - Number(p.p_amount), reference_id: p.p_job_id };
+      const usage = { meter: p.p_meter, quantity: p.p_amount, metadata_json: { jobId: p.p_job_id } };
+      ledger.push(entry); (store.tables.usage_events ??= []).push(usage);
+      const result = { entry, usage }; receipts.push({ job: p.p_job_id, fingerprint, result });
+      return { data: result, error: null };
+    },
     auth: {
       getUser: async (token: string) =>
         token === "good" ? { data: { user: { id: "user-1" } }, error: null } : { data: { user: null }, error: { message: "bad" } },
@@ -105,7 +142,7 @@ function storeWithMembership(role = "owner"): Store {
     idemKeys: new Set(),
     tables: {
       organization_members: [{ organization_id: ORG, user_id: "user-1", role, status: "active" }],
-      plans: [{ id: PLAN, name: "pro", entitlements_json: { ai_credits_monthly: 100, seats: 2 } }],
+      plans: [{ id: PLAN, name: "pro", is_active: true, price_cents: 1900, entitlements_json: { ai_credits_monthly: 100, seats: 2 } }],
     },
   };
 }
@@ -138,10 +175,12 @@ test("webhook: bad signature -> 401, missing -> 400", async () => {
 
 test("webhook: subscription.updated upserts row; duplicate event id no-ops", async () => {
   const store = storeWithMembership();
-  const app = await appWith(store);
+  const current = { id: "sub_1", livemode: false, customer: "cus_1", status: "past_due", metadata: { organizationId: ORG, planId: PLAN } };
+  const app = await appWith(store, { subscriptions: { retrieve: async () => current } });
   const event = {
     id: "evt_upd",
     type: "customer.subscription.updated",
+    livemode: false,
     data: { object: { id: "sub_1", customer: "cus_1", status: "past_due", metadata: { organizationId: ORG, planId: PLAN } } },
   };
   const body = JSON.stringify(event);
@@ -161,19 +200,21 @@ test("webhook: subscription.updated upserts row; duplicate event id no-ops", asy
   await app.close();
 });
 
-test("webhook: checkout.session.completed maps to active; deleted -> canceled", async () => {
+test("webhook: checkout reconciles current incomplete state; deletion reconciles canceled", async () => {
   const store = storeWithMembership();
-  const app = await appWith(store);
+  const current = { id: "sub_9", livemode: false, customer: "cus_9", status: "incomplete", metadata: { organizationId: ORG, planId: PLAN } };
+  const app = await appWith(store, { subscriptions: { retrieve: async () => current } });
   const checkout = JSON.stringify({
-    id: "evt_co", type: "checkout.session.completed",
+    id: "evt_co", type: "checkout.session.completed", livemode: false,
     data: { object: { subscription: "sub_9", customer: "cus_9", metadata: { organizationId: ORG, planId: PLAN } } },
   });
   await app.inject({ method: "POST", url: "/v1/webhooks/stripe", headers: { "content-type": "application/json", "stripe-signature": sign(checkout) }, payload: checkout });
-  assert.equal(store.tables.subscriptions[0].status, "active");
+  assert.equal(store.tables.subscriptions[0].status, "incomplete");
   assert.equal(store.tables.subscriptions[0].provider_subscription_id, "sub_9");
 
+  current.status = "canceled";
   const del = JSON.stringify({
-    id: "evt_del", type: "customer.subscription.deleted",
+    id: "evt_del", type: "customer.subscription.deleted", livemode: false,
     data: { object: { id: "sub_9", customer: "cus_9", status: "canceled", metadata: { organizationId: ORG, planId: PLAN } } },
   });
   await app.inject({ method: "POST", url: "/v1/webhooks/stripe", headers: { "content-type": "application/json", "stripe-signature": sign(del) }, payload: del });
@@ -183,7 +224,7 @@ test("webhook: checkout.session.completed maps to active; deleted -> canceled", 
 });
 
 // ---- checkout / plans --------------------------------------------------------
-test("checkout: org admin only; 503 without stripe; creates session with price", async () => {
+test("checkout: org admin only; creates session with a published plan price", async () => {
   // non-admin
   const memberApp = await appWith(storeWithMembership("member"));
   const r1 = await memberApp.inject({ method: "POST", url: "/v1/billing/checkout", headers: { authorization: "Bearer good", "idempotency-key": "chk-member" }, payload: { organizationId: ORG, planId: PLAN, successUrl: "https://x.test/ok", cancelUrl: "https://x.test/no" } });
@@ -200,6 +241,42 @@ test("checkout: org admin only; 503 without stripe; creates session with price",
   assert.equal(ok.statusCode, 201);
   assert.equal(ok.json().checkoutUrl, "https://checkout.stripe.test/cs_1");
   assert.equal((calls[0] as { line_items: { price: string }[] }).line_items[0].price, "price_123");
+  const unsafe = await app.inject({ method: "POST", url: "/v1/billing/checkout", headers: { authorization: "Bearer good", "idempotency-key": "chk-unsafe" }, payload: { organizationId: ORG, planId: PLAN, successUrl: "https://evil.test/ok", cancelUrl: "https://x.test/no" } });
+  assert.equal(unsafe.statusCode, 422);
+  assert.equal(calls.length, 1);
+  await app.close();
+});
+
+test("plans: lists only published plans; checkout rejects a draft before Stripe", async () => {
+  const store = storeWithMembership();
+  store.tables.plans.push({
+    id: "66666666-6666-6666-6666-666666666666",
+    name: "draft",
+    is_active: false,
+    price_cents: 9900,
+    entitlements_json: {},
+  });
+  const calls: unknown[] = [];
+  const fakeStripe = {
+    checkout: { sessions: { create: async (payload: unknown) => { calls.push(payload); return { id: "cs_draft", url: "https://checkout.stripe.test/cs_draft" }; } } },
+    billingPortal: { sessions: { create: async () => ({ url: "https://portal.test/p1" }) } },
+  };
+  const app = await appWith(store, fakeStripe);
+
+  const listed = await app.inject({ method: "GET", url: "/v1/plans", headers: auth });
+  assert.equal(listed.statusCode, 200);
+  assert.deepEqual(listed.json().plans.map((plan: { id: string }) => plan.id), [PLAN]);
+
+  store.tables.plans[0].is_active = false;
+  const rejected = await app.inject({
+    method: "POST",
+    url: "/v1/billing/checkout",
+    headers: { authorization: "Bearer good", "idempotency-key": "chk-draft" },
+    payload: { organizationId: ORG, planId: PLAN, successUrl: "https://x.test/ok", cancelUrl: "https://x.test/no" },
+  });
+  assert.equal(rejected.statusCode, 422);
+  assert.equal(rejected.json().error.message, "plan is not available for checkout");
+  assert.equal(calls.length, 0);
   await app.close();
 });
 
@@ -226,11 +303,14 @@ test("deductCredits references job id in usage metadata + ledger reference", asy
   assert.equal((usage as { metadata_json: { jobId: string } }).metadata_json.jobId, JOB);
 });
 
-test("double deduct with same job id: one wins, second is rejected", async () => {
+test("double deduct replays one receipt; conflicting amount and overdraft create no usage", async () => {
   const store: Store = { idemKeys: new Set(), tables: { credit_ledger: [{ user_id: USER, source: "purchase", amount: 10, balance_after: 10, reference_id: null }] } };
   const sb = fakeSupabase(store);
-  await deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 3, jobId: JOB });
-  await assert.rejects(() => deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 3, jobId: JOB }));
+  const first = await deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 3, jobId: JOB });
+  assert.deepEqual(await deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 3, jobId: JOB }), first);
+  await assert.rejects(() => deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 4, jobId: JOB }), /conflict/);
+  await assert.rejects(() => deductCredits(sb, { userId: USER, organizationId: ORG, meter: "ai_credits", amount: 20, jobId: PLAN }), /insufficient credits/);
+  assert.equal(store.tables.usage_events.length, 1);
   assert.equal(store.tables.credit_ledger.filter((r) => r.source === "consumption").length, 1);
 });
 
@@ -251,7 +331,7 @@ test("requireEntitlement: 422 when monthly quota exceeded; free defaults without
 
   const free = await currentEntitlements(fakeSupabase({ idemKeys: new Set(), tables: {} }), ORG);
   assert.equal(free.plan.name, "free");
-  assert.equal(free.entitlements.ai_credits_monthly, 100);
+  assert.equal(free.entitlements.ai_credits_monthly, 0);
 });
 
 // ---- usage route ---------------------------------------------------------------

@@ -1,0 +1,187 @@
+"""Disposable Docker acceptance. Fixture-only, no mounts/ports/external network."""
+import base64
+import hashlib
+import io
+import json
+from pathlib import Path
+import subprocess
+import time
+import uuid
+import zipfile
+
+TOKEN = "disposable-processing-acceptance-only"
+HTTP_DRIVER = """
+import base64,json,sys,urllib.request,urllib.error
+v=json.load(sys.stdin)
+headers={'Content-Type':'application/json'}
+if v.get('token') is not None: headers['x-service-token']=v['token']
+req=urllib.request.Request('http://127.0.0.1:8000'+v['path'],
+    data=None if v['body'] is None else json.dumps(v['body']).encode(),headers=headers)
+try:
+    res=urllib.request.urlopen(req,timeout=90)
+except urllib.error.HTTPError as error:
+    res=error
+print(json.dumps({'status':res.status,'body':base64.b64encode(res.read()).decode()}))
+"""
+
+
+def docker(*args, data=None, timeout=120):
+    result = subprocess.run(["docker", *args], input=data, text=True, capture_output=True, timeout=timeout)
+    if result.returncode:
+        raise RuntimeError(f"Docker command failed: {result.stderr[:2000]}")
+    return result.stdout.strip()
+
+
+def request(container, path, body=None, token=TOKEN):
+    result = json.loads(docker("exec", "-i", container, "python", "-c", HTTP_DRIVER,
+                              data=json.dumps({"path": path, "body": body, "token": token})))
+    return result["status"], base64.b64decode(result["body"])
+
+
+def run_service(role, configured, action):
+    name = f"bookworm-acceptance-{role}-{uuid.uuid4().hex}"
+    container = docker("run", "-d", "--name", name, "--network", "none", "--read-only",
+                       "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+                       "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m", "--memory", "512m", "--pids-limit", "128",
+                       "-e", f"{role.upper()}_SERVICE_TOKEN={TOKEN if configured else ''}", f"bookworm-ci-{role}")
+    try:
+        for _ in range(40):
+            try:
+                if request(container, "/health")[0] == 200:
+                    break
+            except (RuntimeError, ValueError):
+                pass
+            time.sleep(0.25)
+        else:
+            raise RuntimeError(f"{role} failed readiness: {docker('logs', container)[:2000]}")
+        assert docker("exec", container, "id", "-u") == "65532"
+        result = action(container)
+        print(f"PASS {role}: {'authenticated processing' if configured else 'missing credentials denied'}", flush=True)
+        return result
+    finally:
+        # Exact ID returned by this run only; no existing containers touched.
+        docker("rm", "-f", container)
+
+
+def check_json(container, path, body):
+    assert request(container, path, body, token=None)[0] == 401
+    assert request(container, path, body, token="wrong")[0] == 401
+    status, raw = request(container, path, body)
+    assert status == 200, (path, status, raw[:1000])
+    return json.loads(raw)
+
+
+def main():
+    for role, path in (("document", "/parse"), ("rendering", "/render"), ("publishing", "/v1/publishing/package")):
+        def denied(container, path=path):
+            assert request(container, path, {})[0] == 503
+        run_service(role, False, denied)
+
+    def parse(container):
+        result = check_json(container, "/parse", {"assetId": "fixture", "format": "txt",
+            "contentBase64": base64.b64encode(b"A private fixture manuscript.").decode()})
+        assert "A private fixture manuscript." in json.dumps(result)
+        docx = docker("exec", container, "python", "-c",
+            "import base64,io; from docx import Document; from docx.oxml import OxmlElement; "
+            "doc=Document(); table=doc.add_table(rows=2,cols=2); "
+            "table.cell(0,0).text='Name'; table.cell(0,1).text='Role'; "
+            "table.cell(1,0).text='Mira'; table.cell(1,1).text='Navigator'; "
+            "table.rows[0]._tr.get_or_add_trPr().append(OxmlElement('w:tblHeader')); "
+            "data=io.BytesIO(); doc.save(data); print(base64.b64encode(data.getvalue()).decode())")
+        imported = check_json(container, "/parse", {"assetId": "header-fixture", "format": "docx",
+            "contentBase64": docx})
+        table_node = imported["bookModel"]["chapters"][0]["nodes"][0]
+        assert table_node["attributes"]["tableHeaderRows"] == 1
+        models = docker("exec", container, "tesseract", "--list-langs").splitlines()
+        assert {"eng", "spa", "fra", "deu", "ara"} <= set(models)
+        scanned = Path(__file__).resolve().parents[1] / "tests/fixtures/books/scanned_manuscript.pdf"
+        recognition = check_json(container, "/parse", {"assetId": "scan-fixture", "format": "pdf", "language": "en",
+            "contentBase64": base64.b64encode(scanned.read_bytes()).decode()})
+        assert recognition["report"]["confidence"] == "low"
+        assert any("OCR recovered text from PDF pages: 1." in warning for warning in recognition["report"]["warnings"])
+        text = " ".join(node.get("text", "") for node in recognition["bookModel"]["chapters"][0]["nodes"])
+        assert "The harbor lantern guided the crew safely home" in text
+        assert not recognition["embeddedAssets"]
+        print("PASS document: local OCR recovered editable text from an image-only PDF", flush=True)
+        return table_node
+    imported_header_table = run_service("document", True, parse)
+    book = json.loads((Path(__file__).resolve().parents[1] / "tests/fixtures/books/valid_book.json").read_text())
+    book["assets"] = []
+    for chapter in book["chapters"]:
+        chapter["nodes"] = [node for node in chapter["nodes"] if node["type"] != "image"]
+    book["chapters"][0]["nodes"].append(imported_header_table)
+    arabic_book = {**book, "metadata": {**book["metadata"], "title": "مرافئ النور", "author": "ليلى منصور", "language": "ar"},
+                   "chapters": [{**book["chapters"][0], "title": "الفصل الأول", "nodes": [
+                       {"id": "amiri-paragraph", "type": "paragraph", "text": "قالت ليلى: قرأتُ Bookworm 2.5 (2026) عند المرفأ."},
+                   ]}]}
+    amiri_request = {"bookModel": arabic_book, "editionConfig": {"kind": "print", "text_direction": "rtl",
+        "typography": {"body_font": "BookwormAmiri", "heading_font": "BookwormAmiri-Bold"}}}
+    arabic_ebook_request = {"bookModel": arabic_book, "editionConfig": {"kind": "ebook", "flow": "reflowable"}}
+
+    def render(container):
+        result = check_json(container, "/render", {"bookModel": book, "editionConfig": {"kind": "ebook"}})
+        artifact = base64.b64decode(result["artifactBase64"])
+        assert hashlib.sha256(artifact).hexdigest() == result["sha256"]
+        with zipfile.ZipFile(io.BytesIO(artifact)) as archive:
+            assert archive.read("mimetype") == b"application/epub+zip"
+            assert b'<thead><tr><th scope="col">Name</th>' in archive.read("OEBPS/ch0000.xhtml")
+        fixed = check_json(container, "/render", {"bookModel": book, "editionConfig": {"kind": "ebook", "flow": "fixed"}})
+        assert base64.b64decode(fixed["artifactBase64"]).startswith(b"PK")
+        check_json(container, "/preflight", {"bookModel": book, "editionConfig": {"kind": "ebook"}, "channel": "kdp"})
+        artwork = docker("exec", container, "python", "-c",
+            "import base64,io; from PIL import Image; "
+            "image=Image.new('RGB',(1200,1800),'#43536a'); data=io.BytesIO(); "
+            "image.save(data,'PNG'); print(base64.b64encode(data.getvalue()).decode())")
+        google_edition = {"kind": "ebook", "cover": {"asset_id": "44444444-4444-4444-8444-444444444444"}}
+        google_request = {"bookModel": book, "editionConfig": google_edition, "coverBase64": artwork}
+        google = check_json(container, "/render", google_request)
+        google_epub = base64.b64decode(google["artifactBase64"])
+        assert hashlib.sha256(google_epub).hexdigest() == google["sha256"]
+        preflight = check_json(container, "/preflight", {**google_request, "channel": "googleplay"})
+        assert preflight["errors"] == 0, preflight["findings"]
+        assert preflight["ruleVersion"] == "core-1.0.17+google-play-1.2.0"
+        arabic = check_json(container, "/render", amiri_request)
+        arabic_pdf = base64.b64decode(arabic["artifactBase64"], validate=True)
+        assert arabic["rendererVersion"] == "pdf-1.21.0-amiri"
+        assert arabic_pdf.startswith(b"%PDF-") and hashlib.sha256(arabic_pdf).hexdigest() == arabic["sha256"]
+        arabic_proof = check_json(container, "/preflight", amiri_request)
+        assert arabic_proof["errors"] == 0, arabic_proof["findings"]
+        arabic_check = check_json(container, "/preflight", {**amiri_request, "channel": "kdp"})
+        assert any(finding["code"] == "KDP-PRINT-LANGUAGE" for finding in arabic_check["findings"])
+        arabic_ebook = check_json(container, "/render", arabic_ebook_request)
+        mp3 = docker("exec", container, "python", "-c",
+            "import base64,subprocess; from audio_assembly import ffmpeg_executable; "
+            "r=subprocess.run([ffmpeg_executable(),'-v','error','-f','lavfi','-i','sine=frequency=440:duration=1',"
+            "'-ar','44100','-ac','1','-b:a','192k','-f','mp3','pipe:1'],capture_output=True,check=True,timeout=15); "
+            "print(base64.b64encode(r.stdout).decode())")
+        status, audio = request(container, "/audio/assemble", {"segmentsBase64": [mp3]})
+        assert status == 200, (status, audio[:1000])
+        assert len(audio) > 1000
+        return result["artifactBase64"], google["artifactBase64"], google_edition, arabic_ebook["artifactBase64"]
+    rendered = run_service("rendering", True, render)
+
+    def package(container):
+        result = check_json(container, "/v1/publishing/package", {"bookModel": book, "editionConfig": {"kind": "ebook"},
+            "channel": "kdp", "artifactsBase64": {"book.epub": rendered[0]}})
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(result["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.epub") == base64.b64decode(rendered[0])
+            assert json.loads(archive.read("metadata.json"))["metadata"]["title"] == book["metadata"]["title"]
+        google = check_json(container, "/v1/publishing/package", {"bookModel": book,
+            "editionConfig": rendered[2], "channel": "googleplay",
+            "artifactsBase64": {"book.epub": rendered[1]}})
+        assert google["errors"] == 0
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(google["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.epub") == base64.b64decode(rendered[1])
+        arabic = check_json(container, "/v1/publishing/package", {**arabic_ebook_request, "channel": "kdp",
+            "artifactsBase64": {"book.epub": rendered[3]}})
+        assert arabic["errors"] == 0
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(arabic["packages"][0]["dataBase64"]))) as archive:
+            assert archive.read("book.epub") == base64.b64decode(rendered[3])
+            assert json.loads(archive.read("metadata.json"))["metadata"]["title"] == arabic_book["metadata"]["title"]
+        print("PASS Arabic editions: Amiri print proof and byte-exact KDP ebook package", flush=True)
+        assert request(container, "/v1/publishing/jobs", {})[0] == 410
+    run_service("publishing", True, package)
+
+
+if __name__ == "__main__":
+    main()

@@ -35,6 +35,7 @@ function fakeSupabase(responses: Record<string, { data?: unknown; error?: unknow
       b.then = (resolve: (v: unknown) => unknown) => resolve(r); // await builder = select-all
       return b;
     },
+    rpc: async (name: string) => responses[name] ?? { data: null, error: null },
     _calls: calls,
   };
   return client as never;
@@ -50,6 +51,25 @@ async function appWith(responses: Record<string, { data?: unknown; error?: unkno
 }
 
 const auth = { authorization: "Bearer good" };
+const chapter = { id: "c1", book_id: "b1", order_index: 0, title: "Chapter" };
+const book = { id: "b1", workspace_id: "w1", title: "Book", author_name: "Author", language: "en" };
+const paragraph = { id: "n1", type: "paragraph", text: "old" };
+const content = { schemaVersion: "1.0", nodes: [paragraph] };
+const savedVersion = {
+  id: "v4",
+  version_number: 4,
+  content_json: { schemaVersion: "1.0", nodes: [{ ...paragraph, text: "new" }] },
+};
+
+function replaceText(chapterId: string, expectedVersion: number) {
+  return {
+    operationId: "op1",
+    type: "replace_text",
+    target: { chapterId, nodeId: paragraph.id },
+    payload: { nodeId: paragraph.id, from: 0, to: 3, text: "new" },
+    expectedVersion,
+  };
+}
 
 test("401 without token, ApiError envelope", async () => {
   const app = await appWith({});
@@ -85,7 +105,7 @@ test("404 for unknown chapter on operations", async () => {
     method: "POST",
     url: "/v1/chapters/11111111-1111-1111-1111-111111111111/operations",
     headers: auth,
-    payload: { operationId: "op1", type: "replace_text", target: {}, payload: {}, expectedVersion: 0 },
+    payload: replaceText("11111111-1111-1111-1111-111111111111", 0),
   });
   assert.equal(res.statusCode, 404);
   assert.equal(res.json().error.code, "not_found");
@@ -94,16 +114,16 @@ test("404 for unknown chapter on operations", async () => {
 
 test("409 on stale expectedVersion", async () => {
   const app = await appWith({
-    chapters: { data: { book_id: "b1" }, error: null },
-    books: { data: { workspace_id: "w1" }, error: null },
+    chapters: { data: chapter, error: null },
+    books: { data: book, error: null },
     workspace_members: { data: { role: "editor" }, error: null },
-    document_versions: { data: { version_number: 3, content_json: {}, plain_text: "", word_count: 0 }, error: null },
+    document_versions: { data: { version_number: 3, content_json: content, plain_text: "old", word_count: 1 }, error: null },
   });
   const res = await app.inject({
     method: "POST",
     url: "/v1/chapters/c1/operations",
     headers: auth,
-    payload: { operationId: "op1", type: "replace_text", target: {}, payload: {}, expectedVersion: 2 },
+    payload: replaceText("c1", 2),
   });
   assert.equal(res.statusCode, 409);
   const body = res.json();
@@ -114,16 +134,17 @@ test("409 on stale expectedVersion", async () => {
 
 test("200 returns new version when expectedVersion matches", async () => {
   const app = await appWith({
-    chapters: { data: { book_id: "b1" }, error: null },
-    books: { data: { workspace_id: "w1" }, error: null },
+    chapters: { data: chapter, error: null },
+    books: { data: book, error: null },
     workspace_members: { data: { role: "editor" }, error: null },
-    document_versions: { data: { version_number: 3, content_json: {}, plain_text: "", word_count: 0 }, error: null },
+    document_versions: { data: { version_number: 3, content_json: content, plain_text: "old", word_count: 1 }, error: null },
+    append_chapter_version: { data: savedVersion, error: null },
   });
   const res = await app.inject({
     method: "POST",
     url: "/v1/chapters/c1/operations",
     headers: auth,
-    payload: { operationId: "op1", type: "replace_text", target: {}, payload: {}, expectedVersion: 3 },
+    payload: replaceText("c1", 3),
   });
   assert.equal(res.statusCode, 200);
   assert.equal(res.json().version, 4);
@@ -132,15 +153,15 @@ test("200 returns new version when expectedVersion matches", async () => {
 
 test("403 when member role cannot edit", async () => {
   const app = await appWith({
-    chapters: { data: { book_id: "b1" }, error: null },
-    books: { data: { workspace_id: "w1" }, error: null },
+    chapters: { data: chapter, error: null },
+    books: { data: book, error: null },
     workspace_members: { data: { role: "viewer" }, error: null },
   });
   const res = await app.inject({
     method: "POST",
     url: "/v1/chapters/c1/operations",
     headers: auth,
-    payload: { operationId: "op1", type: "replace_text", target: {}, payload: {}, expectedVersion: 0 },
+    payload: replaceText("c1", 0),
   });
   assert.equal(res.statusCode, 403);
   assert.equal(res.json().error.code, "unauthorized");
@@ -162,16 +183,17 @@ test("422 on invalid DocumentOperation body", async () => {
 
 test("409 on duplicate Idempotency-Key", async () => {
   const app = await appWith({
-    chapters: { data: { book_id: "b1" }, error: null },
-    books: { data: { workspace_id: "w1" }, error: null },
+    chapters: { data: chapter, error: null },
+    books: { data: book, error: null },
     workspace_members: { data: { role: "editor" }, error: null },
-    document_versions: { data: { version_number: 0, content_json: {}, plain_text: "", word_count: 0 }, error: null },
+    document_versions: { data: { version_number: 0, content_json: content, plain_text: "old", word_count: 1 }, error: null },
+    append_chapter_version: { data: { ...savedVersion, id: "v1", version_number: 1 }, error: null },
   });
   const req = {
     method: "POST" as const,
     url: "/v1/chapters/c1/operations",
     headers: { ...auth, "idempotency-key": "k-1" },
-    payload: { operationId: "op1", type: "replace_text", target: {}, payload: {}, expectedVersion: 0 },
+    payload: replaceText("c1", 0),
   };
   const first = await app.inject(req);
   assert.equal(first.statusCode, 200);

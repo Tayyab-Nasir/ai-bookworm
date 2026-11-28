@@ -1,0 +1,154 @@
+# Worker runtime
+
+The Next.js app can run on Vercel. Persistent queue consumers need
+a separate host with Node.js 22, private service connectivity and server-side
+credentials. The repository now includes a shared allowlisted launcher and a
+systemd worker template for Linux. Installing these files does not configure
+the API, Python services, Supabase, pricing or alerts. There are fourteen
+allowlisted entrypoints; the fleet excludes the retired unquoted `audiobook`
+consumer, leaving thirteen supervised roles.
+
+## Inspect without processing jobs
+
+From the repository root:
+
+```sh
+node workers/run.mjs --list
+node workers/run.mjs --check
+npm run test:worker-launcher
+```
+
+The first two commands require no application credentials and do not import
+queue consumers. `--check` checks entrypoint presence, not service health.
+The test suite also imports every worker under a secret-free production
+environment and verifies configuration refusal before any network work.
+
+For the local web app's non-provider manuscript pipeline, use the dedicated
+`npm run imports:local -- --config .env.local` supervisor after private services
+are ready. It filters credentials, bounds restarts and supports owned graceful
+shutdown on Windows and Linux. See `LOCAL_IMPORT_WORKER.md` before activation;
+the command starts real imports for the entire configured Supabase project.
+It does not activate any paid role or replace the production systemd units below.
+
+For proofs and retailer ZIPs on a local app, use
+`npm run publishing:local -- --check` to inspect the entry point or
+`npm run publishing:local -- --config <private-env-file>` to start the supervised
+publishing consumer. Provide the Supabase public and server keys and distinct
+loopback `RENDERING_SERVICE_URL` and `PUBLISHING_SERVICE_URL` with their matching
+role-specific tokens. It processes queued render, validation and package jobs
+for the configured project. The launcher passes only those service credentials
+and leaves the author/operator retailer handoff in the publishing studio.
+Type `stop` and press Return to drain the current job and stop claiming new ones.
+
+## Worker roles
+
+| Role | Work processed |
+| --- | --- |
+| document | Manuscript imports |
+| publishing | Edition rendering, validation and export packages |
+| ai | Paid authoring/review jobs |
+| audiobook | Retired unquoted narration; retained for inspection, not fleet activation |
+| audiobook-export | Private Google Play archives; no generation charge |
+| translation-quotes | Translation quote preparation |
+| translation | Accepted funded translation jobs |
+| blueprint-quotes | Story Blueprint quote preparation |
+| blueprint | Accepted funded Blueprint proposals |
+| metadata-quotes | Accepted metadata token quotes and measured settlement |
+| ai-review-quotes | Accepted funded writer/proofreader/copyeditor/consistency jobs |
+| book-bible-quotes | Accepted funded Book Bible extraction and measured settlement |
+| image-quotes | Accepted funded illustrations/covers, private receipts and measured atomic settlement |
+| narration-quotes | Accepted funded chapter narration, original PCM/MP3 recovery and receipt-derived settlement |
+
+`npm run worker -- <role> [--once]` starts real processing. It may call OpenAI
+and consume paid usage for queued work. Translation and Blueprint execution
+are always in quoted mode; arbitrary paths and mode overrides are refused.
+Metadata processing requires a valid server-owned catalog and an accepted
+credit hold; absent/expired pricing configuration offers no purchasable model.
+AI review offers require `AI_REVIEW_PRICING_CATALOG_JSON`; do not start the
+quoted AI-review worker until its migrations and server-only price catalog
+have been reviewed and installed/configured.
+Book Bible quotes require `BOOK_BIBLE_PRICING_CATALOG_JSON`; keep this worker
+stopped until its quote migration is reviewed/applied and the server-only price
+catalog is explicitly approved/configured.
+Quoted narration requires its reviewed quote/funding/lease/receipt/completion
+migrations, `NARRATION_PRICING_CATALOG_JSON`, the approved
+`AUDIOBOOK_QUOTE_PURCHASE_ENABLED` gate, server-only OpenAI credentials and the
+private rendering service/token. New dispatch remains disabled without the gate;
+original evidence can be recovered without fresh provider work. Keep this role
+stopped until native database/Storage/provider and worker recovery acceptance.
+The source-only units do not enable any catalog or perform that acceptance.
+The old `audiobook` role cannot create/claim quoted work and is not in the fleet;
+saved history/download/export do not require its activation.
+
+## Linux installation and activation
+
+Prepare a reviewed checkout and `npm ci --include=dev` at `/opt/bookworm`.
+The `tsx` runtime is currently in workspace development dependencies; do not
+omit them. Use a dedicated non-login `bookworm` account and group. Source and
+dependencies should be readable by that account and writable only by the
+release operator. The template expects Node at `/usr/bin/node`; adjust that
+absolute path for the chosen host before validation.
+
+Store server credentials in `/etc/bookworm/workers.env`, owned by root with
+mode 0600. The system service manager reads it before dropping privileges.
+Never add it to Git or Obsidian. Use literal `KEY=value` entries; systemd does
+not perform shell-style variable expansion in this file. Set `NODE_ENV=production`
+and do not override the per-worker `TMPDIR` supplied by the unit. Configure the
+common `@bookworm/config` requirements and private service URLs/tokens described
+in `docs/operations.md`, including the approved provider and pricing setup.
+
+After runtime/migration acceptance and authorization to start processing:
+
+```sh
+sudo install -m 0644 ops/systemd/bookworm-worker@.service /etc/systemd/system/
+sudo install -m 0644 ops/systemd/bookworm-workers.target /etc/systemd/system/
+sudo systemctl daemon-reload
+# Start a reviewed role first; this begins real queue processing.
+sudo systemctl start bookworm-worker@document.service
+sudo systemctl status bookworm-worker@document.service
+# Enable/start the entire fleet only when every dependency and paid path is ready.
+sudo systemctl enable --now bookworm-workers.target
+```
+
+The template runs without root, drops capabilities, makes the system filesystem
+read-only and provides private mode-0700 state directories at
+`/var/lib/bookworm-<role>`. Those directories are writable scratch storage;
+use encrypted disks with enough free space for the 3.75 GiB archive cap plus
+assembly overhead. State directories survive restarts. Crash-left temporary
+files need operator reconciliation; no broad automatic deletion is installed.
+
+Workers stop claiming new jobs on SIGTERM. Existing consumers finish their
+current operation; `narration-quotes` aborts provider, encoding and private
+transport waits, retaining ambiguous dispatched work for original-evidence
+recovery rather than refunding or regenerating it. Its SDK retries are disabled;
+private requests have a 60-second headers/body deadline and 12-MiB Storage /
+16-MiB metadata response limits. Encoding has a separate 130-second deadline.
+systemd allows six minutes before killing remaining processes; interrupted
+leases can subsequently expire and be reclaimed. SIGKILL, power-loss and real
+host recovery acceptance are still required. Failures restart after five
+seconds, with a five-starts-per-minute limit for repeated startup failures.
+Workers themselves back off dependency errors; a running process does not
+prove that useful jobs are completing.
+
+## Observe, stop and update
+
+```sh
+sudo journalctl -u 'bookworm-worker@*' --since '15 minutes ago'
+sudo systemctl stop bookworm-workers.target
+sudo systemctl restart bookworm-worker@audiobook-export.service
+```
+
+Logs use the existing workers' sanitized result/error summaries. Restrict log
+access because job IDs are still operational metadata. Before updating source,
+stop the fleet and confirm all instances stopped, install the reviewed release
+and dependencies, then start the approved roles. Monitor queue age, expired
+leases, terminal failures, scratch disk capacity and provider settlement
+separately; no monitoring or paging destination is installed by these units.
+
+CI validates service syntax and all fourteen launcher entrypoints on Linux without
+starting system services or supplying credentials. Host permissions, network,
+secret storage, worker supervision/recovery, backup and alerts still require
+acceptance on the deployment host. The service settings follow the official
+[systemd service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)
+and [execution environment](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)
+documentation.

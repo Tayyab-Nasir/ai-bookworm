@@ -1,0 +1,668 @@
+/**
+ * Populated historical migration 45 -> migration 146 rehearsal, entirely in memory.
+ * No .env, credentials, connection strings, native ports, hosted services or files written.
+ * Keep the existing fresh-schema and native race runners; this is additional coverage.
+ */
+import assert from 'node:assert/strict';
+import { createHash, randomUUID } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PGlite } from '@electric-sql/pglite';
+import { citext } from '@electric-sql/pglite/contrib/citext';
+import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
+import { seedUpgradeBaseline, captureHistoricalState, verifyHistoricalIsolation, verifyUpgradeGates } from './upgrade-baseline-fixture.mjs';
+import { verifyPaidQuoteFixtures } from './native-paid-quote-lifecycle.mjs';
+
+const root = fileURLToPath(new URL('../../', import.meta.url));
+const baselineEnd = '20260912170000_audiobook_idempotency_hardening.sql';
+const guardedCustomerJobs = '20261024040000_customer_ai_jobs.sql';
+const audioPrivacy = '20261029120000_audiobook_export_column_privacy.sql';
+const intakeGuard = '20261102160000_account_intake_guard.sql';
+const confirmationRpc = '20261102170000_data_rights_confirmation_rpc.sql';
+const assetGuard = '20261103100000_asset_client_delete_guard.sql';
+const renderClosure = '20261104110000_render_close_request.sql';
+const retailerSubmissions = '20261118013037_retailer_submissions.sql';
+const confirmationInvoker = '20261118165738_data_rights_confirmation_invoker.sql';
+const confirmationCutover = '20261124100000_confirmed_data_rights_cutover.sql';
+const renderProofCompletion = '20261118194054_publishing_render_proof_completion.sql';
+const savedPrintPreflight = '20261119172907_saved_print_preflight_binding.sql';
+const uploadedPaperbackCover = '20261119193430_uploaded_paperback_cover.sql';
+const aiConnectionConflictCode = '20261120022619_ai_connection_conflict_code.sql';
+const workspaceCreationReceipts = '20261120024556_workspace_creation_receipts.sql';
+const invitationRecovery = '20261120050328_invitation_acceptance_recovery.sql';
+const blueprintQuoteClosure = '20261120110000_story_blueprint_quote_closure.sql';
+const communityJoinOperations = '20261120122447_community_join_operation_receipts.sql';
+const guardedReadingText = '20261013110000_canonical_import_reading_text.sql';
+const guardedBible = '20261013100000_manual_book_bible_recovery.sql';
+const guardedMetadata = '20260919030000_metadata_single_active_request.sql';
+const guardedTranslation = '20260919120000_quoted_translation_queue.sql';
+const db = new PGlite({ extensions: { citext, pgcrypto } });
+let step = 'ordered source manifest';
+
+async function migrate(migration, phase) {
+  step = `${phase}: ${migration.name}`;
+  await db.exec(`begin;\n${migration.sql}\ncommit;`);
+  console.log(`PASS ${phase} ${migration.name} sha256=${migration.sha256}`);
+}
+
+async function expectedGuard(migration, fixture, historical, kind) {
+  const tenant = fixture.tenants[0];
+  step = `expected ${kind} guard: ${migration.name}`;
+  await db.exec('begin;');
+  try {
+    let before;
+    if (kind === 'duplicate metadata') {
+      await db.query("insert into public.ai_jobs(id,workspace_id,book_id,agent_type,idempotency_key,created_by) values($1,$2,$3,'metadata',$4,$5)",
+        [randomUUID(), tenant.workspace, tenant.book, `guard-${randomUUID()}`, tenant.user]);
+      before = (await db.query("select jsonb_agg(to_jsonb(j) order by id) as state from public.ai_jobs j where book_id=$1 and agent_type='metadata'", [tenant.book])).rows[0].state;
+      assert.equal(before.length, 2, 'Negative fixture genuinely contains two active historical-style requests');
+    } else if (kind === 'nonfinite canon revision') {
+      await db.query("update public.book_bible_items set updated_at='infinity' where book_id=$1", [tenant.book]);
+      before = (await db.query('select id,updated_at::text as revision from public.book_bible_items where book_id=$1', [tenant.book])).rows;
+      assert.equal(before[0].revision, 'infinity');
+    } else {
+      // Simulate operator/schema drift without altering any source migration.
+      await db.exec(`do $$ declare definition text; begin
+        definition:=pg_get_functiondef('public.claim_translation_job(integer)'::regprocedure);
+        assert position('where j.agent_type = ''translator''' in definition)>0;
+        execute replace(definition,'where j.agent_type = ''translator''','where j.agent_type in (''translator'')');
+      end $$;`);
+      before = (await db.query("select pg_get_functiondef('public.claim_translation_job(integer)'::regprocedure) as definition")).rows[0].definition;
+    }
+    await db.exec('savepoint migration_guard;');
+    await assert.rejects(db.exec(migration.sql), kind === 'duplicate metadata' ? { code: '23505' }
+      : kind === 'nonfinite canon revision' ? error => error.code === 'P0001' && error.message === 'Manual Book Bible requires finite legacy revisions'
+      : error => error.code === 'P0001' && error.message === 'unexpected translation claim definition');
+    await db.exec('rollback to savepoint migration_guard;');
+    if (kind === 'duplicate metadata') {
+      assert.equal((await db.query("select to_regclass('public.ai_jobs_one_active_metadata_per_author_book') as index")).rows[0].index, null);
+      assert.deepEqual((await db.query("select jsonb_agg(to_jsonb(j) order by id) as state from public.ai_jobs j where book_id=$1 and agent_type='metadata'", [tenant.book])).rows[0].state, before,
+        'Guard failure neither cancels nor changes either request');
+    } else if (kind === 'nonfinite canon revision') {
+      assert.deepEqual((await db.query('select id,updated_at::text as revision from public.book_bible_items where book_id=$1', [tenant.book])).rows, before,
+        'Guard failure does not rewrite the legacy revision');
+      assert.equal((await db.query("select count(*)::int as n from information_schema.columns where table_schema='public' and table_name='book_bible_items' and column_name='mutation_incarnation_id'")).rows[0].n, 0);
+      assert.equal((await db.query("select to_regclass('bookworm_private.book_bible_mutation_receipts') as receipt")).rows[0].receipt, null);
+    } else {
+      assert.equal((await db.query("select pg_get_functiondef('public.claim_translation_job(integer)'::regprocedure) as definition")).rows[0].definition, before, 'Drifted function is untouched by aborted migration');
+      assert.equal((await db.query("select count(*)::int as n from information_schema.columns where table_schema='public' and table_name='ai_jobs' and column_name='billing_mode'")).rows[0].n, 0, 'Earlier DDL in failed file is rolled back');
+      assert.equal((await db.query("select to_regprocedure('public.guard_job_billing_mode()') as function")).rows[0].function, null, 'Aborted file leaves no partial trigger function');
+    }
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Negative fixture rollback preserves all historical projections');
+  console.log(`PASS expected ${kind} guarded failure with atomic rollback ${migration.name}`);
+}
+
+async function expectedReadingTextGuard(migration, fixture, historical, signature) {
+  step = `expected canonical reading-text definition guard: ${signature}`;
+  const signatures = ['public.create_book_chapters(uuid,jsonb,uuid)', 'public.complete_manuscript_import(uuid,uuid,uuid,text,jsonb,jsonb,jsonb)'];
+  const captureTargets = async () => (await db.query(`select oid::text,proacl,prosecdef,proconfig,proretset,prorettype::text,
+    pg_get_functiondef(oid) as definition from pg_proc where oid in ($1::regprocedure,$2::regprocedure) order by oid`, signatures)).rows;
+  await db.exec('begin;');
+  try {
+    const { rows: [{ definition }] } = await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature]);
+    const marker = "from jsonb_array_elements(v_item->'nodes') with ordinality;";
+    assert.equal(definition.split(marker).length, 2, 'Drift fixture changes exactly one current projection');
+    await db.exec(definition.replace(marker, "from jsonb_array_elements(v_item->'nodes') with ordinality /* synthetic projection drift */;"));
+    const before = await captureTargets();
+    const schemaAcl = (await db.query("select nspacl from pg_namespace where nspname='private'")).rows;
+    await db.exec('savepoint reading_text_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001'
+      && error.message.startsWith('Canonical import reading text target definition drift:')
+      && error.message.includes(signature.split('(')[0].split('.').at(-1)));
+    await db.exec('rollback to savepoint reading_text_guard;');
+    assert.deepEqual(await captureTargets(), before, 'Both function bodies and ACLs survive failed migration, including second-target failure');
+    assert.deepEqual((await db.query("select nspacl from pg_namespace where nspname='private'")).rows, schemaAcl, 'Schema ACL addition rolls back');
+    for (const helper of ['private.canonical_book_nodes_plain_text(jsonb)', 'private.canonical_book_plain_text_word_count(text)']) {
+      assert.equal((await db.query('select to_regprocedure($1) as helper', [helper])).rows[0].helper, null, 'Failed migration leaves no helper');
+    }
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS expected canonical reading-text drift and atomic rollback ${signature}`);
+}
+
+async function expectedCustomerGuard(migration, fixture, historical, signature, marker, message) {
+  step = `expected customer authorization definition guard: ${signature}`;
+  await db.exec('begin;');
+  try {
+    const { rows: [{ definition }] } = await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature]);
+    assert.equal(definition.split(marker).length, 2, 'Drift probe changes exactly one reviewed guard target');
+    // Harmless whitespace is enough to refuse an unreviewed body, not silently
+    // rewrite a similar-looking function after operator/schema drift.
+    await db.exec(definition.replace(marker, marker.replace(':=', ':= ').replace("if new.billing_mode=", "if new.billing_mode =")));
+    const before = (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition;
+    assert.notEqual(before, definition);
+    await db.exec('savepoint customer_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001' && error.message === message);
+    await db.exec('rollback to savepoint customer_guard;');
+    assert.equal((await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition, before);
+    for (const table of ['bookworm_credentials.customer_ai_policies', 'bookworm_credentials.customer_ai_jobs']) {
+      assert.equal((await db.query('select to_regclass($1) as target', [table])).rows[0].target, null);
+    }
+    assert.equal((await db.query("select to_regprocedure('public.guard_customer_ai_job()') as target")).rows[0].target, null);
+    assert.equal((await db.query("select pg_get_constraintdef(oid) as definition from pg_constraint where conrelid='public.ai_jobs'::regclass and conname='ai_jobs_billing_mode_check'")).rows[0].definition.includes('customer_key'), false);
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS expected customer definition drift and atomic rollback ${signature}`);
+}
+
+async function expectedAiConnectionConflictGuard(migration, fixture, historical, signature) {
+  step = `expected AI connection definition guard: ${signature}`;
+  const signatures = [
+    'public.mutate_ai_connection(uuid,text,uuid,integer,uuid,text,text,text,text,text,text)',
+    'public.recover_ai_connection_operation(uuid,text,uuid,integer,uuid,text,boolean)',
+  ];
+  await db.exec('begin;');
+  try {
+    const definitions = new Map();
+    for (const name of signatures) {
+      definitions.set(name, (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [name])).rows[0].definition);
+    }
+    const original = definitions.get(signature);
+    const altered = original.replace("errcode='40001'", "errcode = '40001'");
+    assert.notEqual(altered, original, 'Drift probe changes a reviewed conflict marker');
+    await db.exec(altered);
+    await db.exec('savepoint ai_connection_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001' && error.message.includes('differs from the reviewed conflict contract'));
+    await db.exec('rollback to savepoint ai_connection_guard;');
+    for (const name of signatures) {
+      const current = (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [name])).rows[0].definition;
+      assert.equal(current, name === signature ? altered : definitions.get(name), 'A failed migration must not partially replace either function');
+    }
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS AI connection conflict definition drift and rollback ${signature}`);
+}
+
+async function expectedWorkspaceCreationGuard(migration, fixture, historical, drift) {
+  step = `expected workspace onboarding ${drift} guard`;
+  const signature = 'public.create_workspace_with_owner(text,text,text)';
+  await db.exec('begin;');
+  try {
+    const original = (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition;
+    if (drift === 'body') {
+      const altered = original.replace('v_name text := btrim(p_name);', 'v_name text := btrim(p_name); -- synthetic drift');
+      assert.notEqual(altered, original);
+      await db.exec(altered);
+    } else await db.exec(`grant execute on function ${signature} to anon;`);
+    await db.exec('savepoint workspace_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001'
+      && error.message === 'Workspace onboarding requires the reviewed legacy function and privileges');
+    await db.exec('rollback to savepoint workspace_guard;');
+    assert.equal((await db.query("select to_regclass('bookworm_private.workspace_creation_receipts') as target")).rows[0].target, null);
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS workspace onboarding ${drift} drift and rollback`);
+}
+
+async function expectedChapterCreationGuard(migration, fixture, historical, drift) {
+  step = `expected chapter creation ${drift} guard`;
+  const signature = 'public.create_book_chapter_once(uuid,text,jsonb,text)';
+  await db.exec('begin;');
+  try {
+    if (drift === 'body') {
+      const original = (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition;
+      const altered = original.replace("v_chapter public.chapters; v_hash text; v_nodes jsonb;", "v_chapter public.chapters; v_hash text; v_nodes jsonb; -- synthetic drift");
+      assert.notEqual(altered, original);
+      await db.exec(altered);
+    } else if (drift === 'settings') await db.exec(`alter function ${signature} set search_path = public;`);
+    else await db.exec(`grant execute on function ${signature} to anon;`);
+    await db.exec('savepoint chapter_creation_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001'
+      && error.message === 'chapter creation function differs from the reviewed contract');
+    await db.exec('rollback to savepoint chapter_creation_guard;');
+    assert.equal((await db.query("select to_regprocedure('public.chapter_creation_status(uuid,text,boolean)') as target")).rows[0].target, null);
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS chapter creation ${drift} drift abort and rollback`);
+}
+
+async function expectedInvitationRecoveryGuard(migration, fixture, historical, drift) {
+  step = `expected invitation recovery ${drift} guard`;
+  const signature = 'public.accept_workspace_invitation(text)';
+  await db.exec('begin;');
+  try {
+    if (drift === 'body') {
+      const original = (await db.query('select pg_get_functiondef($1::regprocedure) as definition', [signature])).rows[0].definition;
+      const altered = original.replace('v_actor uuid := auth.uid();', 'v_actor uuid := auth.uid(); -- synthetic drift');
+      assert.notEqual(altered, original);
+      await db.exec(altered);
+    } else if (drift === 'anonymous') await db.exec(`grant execute on function ${signature} to anon;`);
+    else await db.exec('grant select on public.workspace_invitations to authenticated;');
+    await db.exec('savepoint invitation_guard;');
+    await assert.rejects(db.exec(migration.sql), error => error.code === 'P0001'
+      && error.message === 'Invitation recovery requires the reviewed acceptance function and privileges');
+    await db.exec('rollback to savepoint invitation_guard;');
+    assert.equal((await db.query("select to_regprocedure('public.workspace_invitation_acceptance_status(text)') as target")).rows[0].target, null);
+    assert.equal((await db.query("select count(*)::int as n from pg_trigger where tgname='preserve_terminal_workspace_invitation' and not tgisinternal")).rows[0].n, 0);
+  } finally { await db.exec('rollback;'); }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  console.log(`PASS invitation recovery ${drift} drift abort and rollback`);
+}
+
+try {
+  assert.equal(process.argv.length, 2, 'No connection URLs or operator options are accepted');
+  const names = (await readdir(join(root, 'supabase/migrations'))).filter(name => name.endsWith('.sql')).sort();
+  assert.equal(names.length, 146, 'This reviewed rehearsal pins the 45 -> 146 target; review before extending');
+  assert.equal(names[130], '20261103011721_asset_lifecycle_additive.sql');
+  assert.equal(names[131], assetGuard);
+  assert.equal(names[126], '20261028110000_chapter_restore_ledger.sql');
+  assert.equal(names[127], audioPrivacy);
+  assert.equal(names[128], intakeGuard);
+  assert.equal(names[129], confirmationRpc);
+  assert.equal(names[117], '20261028010000_customer_ai_ready_discovery.sql');
+  assert.equal(names[118], '20261028020000_customer_ai_preparation_timestamp.sql');
+  assert.equal(names[119], '20261028030000_customer_ai_reconciliation.sql');
+  assert.equal(names[120], '20261028040000_customer_ai_reconciliation_discovery.sql');
+  assert.equal(names[121], '20261028050000_customer_ai_receipt_recovery.sql');
+  assert.equal(names[122], '20261028070000_customer_ai_maintenance_journal.sql');
+  assert.equal(names[123], '20261028080000_customer_ai_maintenance_lookup.sql');
+  assert.equal(names[124], '20261028090000_customer_ai_maintenance_slots.sql');
+  assert.equal(names[125], '20261028100000_customer_ai_function_catalog_diagnostic.sql');
+  assert.equal(names[110], '20261023153000_chapter_title_changes.sql');
+  assert.equal(names[111], '20261024020000_ai_connection_vault.sql');
+  assert.equal(names[112], guardedCustomerJobs);
+  assert.equal(names[113], '20261024050000_customer_ai_completion.sql');
+  assert.equal(names[44], baselineEnd);
+  assert.equal(names[45], '20260912175000_pgcrypto_digest_compatibility.sql');
+  assert.equal(names[46], '20260912180000_translation_workflow.sql');
+  assert.deepEqual(names.slice(-14), [renderClosure, retailerSubmissions, confirmationInvoker, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover, aiConnectionConflictCode, workspaceCreationReceipts, invitationRecovery, blueprintQuoteClosure, communityJoinOperations, '20261121090000_managed_publishing_requests.sql', '20261122150000_chapter_creation_recovery.sql', confirmationCutover]);
+  const migrations = await Promise.all(names.map(async name => {
+    const sql = await readFile(join(root, 'supabase/migrations', name), 'utf8');
+    return { name, sql, sha256: createHash('sha256').update(sql).digest('hex') };
+  }));
+  const manifest = migrations.map(({ name, sha256 }) => `${name} ${sha256}`).join('\n');
+  console.log(`Ordered source manifest sha256=${createHash('sha256').update(manifest).digest('hex')} baseline=45 upgrade=${migrations.length - 45}`);
+  await db.exec(await readFile(join(root, 'tests/security/local-supabase-fixture.sql'), 'utf8'));
+  for (const migration of migrations.slice(0, 45)) await migrate(migration, 'baseline');
+  step = 'committed populated historical fixture';
+  const fixture = await seedUpgradeBaseline(db);
+  const historical = await captureHistoricalState(db, fixture);
+  const historicalRun = randomUUID();
+  await db.query(`insert into public.ai_runs(id,workspace_id,provider,model,tokens_in,tokens_out,estimated_cost,status)
+    values($1,$2,'synthetic-historical','synthetic-original',9,3,1.25,'succeeded')`, [historicalRun, fixture.tenants[0].workspace]);
+  const historicalRunBefore = (await db.query('select to_jsonb(r) as value from public.ai_runs r where id=$1', [historicalRun])).rows[0].value;
+  step = 'pre-upgrade historical authorization probes';
+  await verifyHistoricalIsolation(db, fixture);
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Pre-upgrade authorization probes are non-mutating');
+  console.log(`PASS committed baseline: two tenants, four profiles, historical versions, rich nodes, memberships, quarantined/trusted assets, ledger balances and uncertain Stripe receipts; ${Object.keys(historical).length} preserved relation projections`);
+  for (const migration of migrations.slice(45)) {
+    const rightsRows = migration.name === confirmationCutover
+      ? (await db.query('select to_jsonb(r) as value from public.data_rights_requests r order by id')).rows
+      : null;
+    if (migration.name === "20261122150000_chapter_creation_recovery.sql") {
+      for (const drift of ["body", "privileges", "settings"]) await expectedChapterCreationGuard(migration, fixture, historical, drift);
+    }
+    if (migration.name === invitationRecovery) {
+      for (const drift of ['body', 'anonymous', 'table-select']) await expectedInvitationRecoveryGuard(migration, fixture, historical, drift);
+    }
+    if (migration.name === workspaceCreationReceipts) {
+      for (const drift of ['body', 'privileges']) await expectedWorkspaceCreationGuard(migration, fixture, historical, drift);
+    }
+    if (migration.name === aiConnectionConflictCode) {
+      for (const signature of ['public.mutate_ai_connection(uuid,text,uuid,integer,uuid,text,text,text,text,text,text)', 'public.recover_ai_connection_operation(uuid,text,uuid,integer,uuid,text,boolean)']) {
+        await expectedAiConnectionConflictGuard(migration, fixture, historical, signature);
+      }
+    }
+    if (migration.name === guardedMetadata) await expectedGuard(migration, fixture, historical, 'duplicate metadata');
+    if (migration.name === guardedTranslation) await expectedGuard(migration, fixture, historical, 'function drift');
+    if (migration.name === guardedBible) await expectedGuard(migration, fixture, historical, 'nonfinite canon revision');
+    if (migration.name === guardedReadingText) {
+      for (const signature of ['public.create_book_chapters(uuid,jsonb,uuid)', 'public.complete_manuscript_import(uuid,uuid,uuid,text,jsonb,jsonb,jsonb)']) {
+        await expectedReadingTextGuard(migration, fixture, historical, signature);
+      }
+    }
+    if (migration.name === guardedCustomerJobs) {
+      await expectedCustomerGuard(migration, fixture, historical, 'public.reserve_text_job_credit()',
+        "if new.billing_mode='quoted' then return new; end if;", 'unexpected text reservation definition');
+      await expectedCustomerGuard(migration, fixture, historical, 'public.deduct_job_credits(uuid,uuid,uuid,text,integer,uuid)',
+        "v_request:=jsonb_build_object('userId',p_user_id", 'unexpected legacy deduction definition');
+    }
+    let audioProbe = null;
+    if (migration.name === audioPrivacy) {
+      step = 'populated audio export before privacy upgrade';
+      const tenant = fixture.tenants[0], edition = randomUUID(), job = randomUUID(), runningJob = randomUUID(), succeededJob = randomUUID(), lease = randomUUID(), outputLease = randomUUID(), key = 'synthetic-upgrade-' + randomUUID(), runningKey = 'synthetic-running-' + randomUUID(), succeededKey = 'synthetic-succeeded-' + randomUUID();
+      const asset = tenant.assets[1].id;
+      await db.query("insert into public.editions(id,book_id,type,language,edition_metadata_json) values($1,$2,'audiobook','en','{\"kind\":\"audiobook\"}')", [edition, tenant.book]);
+      await db.query("insert into public.audiobook_google_play_export_jobs(id,workspace_id,book_id,edition_id,created_by,idempotency_key,identifier,cover_asset_id,snapshot_json,progress_total,status) values($1,$2,$3,$4,$5,$6,'SYNTHETIC',$7,'{\"chapters\":[{}]}',1,'cancelled')", [job, tenant.workspace, tenant.book, edition, tenant.user, key, asset]);
+      await db.query("insert into public.audiobook_google_play_export_jobs(id,workspace_id,book_id,edition_id,created_by,idempotency_key,identifier,cover_asset_id,snapshot_json,progress_total,status,attempts,lease_token,lease_expires_at) values($1,$2,$3,$4,$5,$6,'SYNTHETIC',$7,'{\"chapters\":[{}]}',1,'running',1,$8,clock_timestamp()+interval '10 minutes')", [runningJob, tenant.workspace, tenant.book, edition, tenant.user, runningKey, asset, lease]);
+      const outputPath = `workspaces/${tenant.workspace}/audiobook-exports/${succeededJob}/${outputLease}.zip`;
+      await db.query("insert into public.audiobook_google_play_export_jobs(id,workspace_id,book_id,edition_id,created_by,idempotency_key,identifier,cover_asset_id,snapshot_json,progress_total,progress_chapters,status,output_storage_path,output_sha256,output_size_bytes,total_duration_seconds,completed_at) values($1,$2,$3,$4,$5,$6,'SYNTHETIC',$7,'{\"chapters\":[{}]}',1,1,'succeeded',$8,repeat('a',64),100,300,clock_timestamp())", [succeededJob, tenant.workspace, tenant.book, edition, tenant.user, succeededKey, asset, outputPath]);
+      const before = (await db.query('select to_jsonb(j) as value from public.audiobook_google_play_export_jobs j where id=any($1::uuid[]) order by id',[[job,runningJob,succeededJob]])).rows.map(row=>row.value);
+      const allBefore = (await db.query('select to_jsonb(j) as value from public.audiobook_google_play_export_jobs j order by id')).rows.map(row=>row.value);
+      assert.equal(before.length, 3, 'All three synthetic audio statuses exist before migration');
+      const allCount = allBefore.length, allDigest = createHash('sha256').update(JSON.stringify(allBefore)).digest('hex');
+      assert.ok(allCount >= 3, 'Whole-table snapshot includes every synthetic audio job');
+      audioProbe = { tenant, edition, job, runningJob, succeededJob, lease, key, runningKey, succeededKey, asset, before, allCount, allDigest };
+    }
+    let intakeProbe = null;
+    if (migration.name === intakeGuard) {
+      const tenant = fixture.tenants[0], ticketId = randomUUID(), requestId = randomUUID();
+      await db.query("insert into public.support_tickets(id,user_id,category,subject,body,created_at) values($1,$2,'legacy','x','old','2001-01-01')",[ticketId,tenant.user]);
+      await db.query("insert into public.data_rights_requests(id,user_id,request_type,status,reason,requested_at) values($1,$2,'export','completed',$3,'2002-01-01')",[requestId,tenant.user,'x'.repeat(2001)]);
+      const ticket=(await db.query('select to_jsonb(t) value from public.support_tickets t where id=$1',[ticketId])).rows[0].value;
+      const request=(await db.query('select to_jsonb(r) value from public.data_rights_requests r where id=$1',[requestId])).rows[0].value;
+      intakeProbe={ticketId,requestId,ticket,request};
+    }
+    let invitationProbe = null;
+    if (migration.name === "20261122150000_chapter_creation_recovery.sql") {
+      for (const drift of ["body", "privileges", "settings"]) await expectedChapterCreationGuard(migration, fixture, historical, drift);
+    }
+    if (migration.name === invitationRecovery) {
+      const tenant = fixture.tenants[0], ids = [];
+      for (const status of ['pending', 'accepted', 'revoked']) {
+        const id = randomUUID(), hash = createHash('sha256').update(randomUUID()).digest('hex');
+        ids.push(id);
+        await db.query(`insert into public.workspace_invitations(id,workspace_id,email,role,token_hash,status,expires_at,invited_by,accepted_by,accepted_at)
+          values($1,$2,$3,'writer',$4,$5,clock_timestamp()+interval '7 days',$6,
+            case when $5='accepted' then $6::uuid else null end,case when $5='accepted' then clock_timestamp() else null end)`,
+          [id, tenant.workspace, `${status}-${id}@upgrade.invalid`, hash, status, tenant.user]);
+      }
+      const before = (await db.query('select to_jsonb(i) as value from public.workspace_invitations i where id=any($1::uuid[]) order by id', [ids])).rows;
+      assert.equal(before.length, 3);
+      invitationProbe = { ids, before };
+    }
+    let renderProbe = null;
+    if ([renderClosure, renderProofCompletion, savedPrintPreflight, uploadedPaperbackCover].includes(migration.name)) {
+      const tenant = fixture.tenants[0], edition = randomUUID(), running = randomUUID(), succeeded = randomUUID();
+      await db.query("insert into public.editions(id,book_id,type,language) values($1,$2,'ebook','en')", [edition, tenant.book]);
+      for (const [id, status] of [[running, 'running'], [succeeded, 'succeeded']]) {
+        await db.query("insert into public.publishing_jobs(id,book_id,edition_id,channel,status,idempotency_key,created_by,request_json,response_json) values($1,$2,$3,'render',$4,$5,$6,'{\"action\":\"render\"}','{\"synthetic\":true}')",
+          [id, tenant.book, edition, status, randomUUID(), tenant.user]);
+      }
+      const before = (await db.query('select to_jsonb(j) as value from public.publishing_jobs j where id=any($1::uuid[]) order by id', [[running, succeeded]])).rows.map(row => row.value);
+      assert.equal(before.length, 2, 'Synthetic running and succeeded render jobs exist before upgrade');
+      renderProbe = { edition, running, succeeded, before };
+    }
+    let communityProbe = null;
+    if (migration.name === communityJoinOperations) {
+      const community = randomUUID(), owner = fixture.tenants[0].user, other = fixture.tenants[1].user;
+      await db.query("insert into public.communities(id,owner_user_id,name,slug,visibility) values($1,$2,'Historical community',$3,'public')", [community, owner, `historical-${community}`]);
+      await db.query("insert into public.community_members(community_id,user_id,role,status) values($1,$2,'owner','active'),($1,$3,'member','inactive')", [community, owner, other]);
+      const before = (await db.query('select to_jsonb(m) as value from public.community_members m where community_id=$1 order by user_id', [community])).rows;
+      const communityBefore = (await db.query('select to_jsonb(c) as value from public.communities c where id=$1', [community])).rows[0].value;
+      communityProbe = { community, before, communityBefore };
+    }
+    let chapterCreationProbe = null;
+    if (migration.name === "20261122150000_chapter_creation_recovery.sql") {
+      const tenant = fixture.tenants[0];
+      await db.query("insert into public.chapter_creation_requests(book_id,actor_id,request_key,request_hash,chapter_id) values($1,$2,$3,$4,$5)",
+        [tenant.book, tenant.user, "historical-create", "old-hash", tenant.chapter]);
+      chapterCreationProbe = tenant;
+    }
+    await migrate(migration, 'upgrade');
+    if (chapterCreationProbe) {
+      const rows = (await db.query("select chapter_id, request_hash, closed from public.chapter_creation_requests where book_id=$1 and actor_id=$2 and request_key='historical-create'",
+        [chapterCreationProbe.book, chapterCreationProbe.user])).rows;
+      assert.deepEqual(rows, [{ chapter_id: chapterCreationProbe.chapter, request_hash: "old-hash", closed: false }]);
+      console.log("PASS existing chapter creation receipt survives recovery migration");
+    }
+    if (communityProbe) {
+      assert.deepEqual((await db.query('select to_jsonb(m) as value from public.community_members m where community_id=$1 order by user_id', [communityProbe.community])).rows, communityProbe.before,
+        'Existing active and inactive community memberships survived unchanged');
+      assert.deepEqual((await db.query('select to_jsonb(c) as value from public.communities c where id=$1', [communityProbe.community])).rows[0].value, communityProbe.communityBefore);
+      await db.exec(await readFile(join(root, 'tests/security/community-join-operations.test.sql'), 'utf8'));
+      console.log('PASS populated community upgrade: existing visibility and memberships preserved; join receipts verified');
+    }
+    if (invitationProbe) {
+      const saved = async () => (await db.query('select to_jsonb(i) as value from public.workspace_invitations i where id=any($1::uuid[]) order by id', [invitationProbe.ids])).rows;
+      assert.deepEqual(await saved(), invitationProbe.before, 'Existing invitation rows survived the upgrade unchanged');
+      await db.exec(await readFile(join(root, 'tests/security/invitation-acceptance-recovery.test.sql'), 'utf8'));
+      await db.exec('begin;');
+      try {
+        await db.exec(`drop trigger preserve_terminal_workspace_invitation on public.workspace_invitations;
+          drop function public.workspace_invitation_acceptance_status(text);
+          drop function private.workspace_invitation_acceptance_status(text);
+          drop function private.preserve_terminal_workspace_invitation();`);
+        assert.equal((await db.query("select to_regprocedure('public.workspace_invitation_acceptance_status(text)') as target")).rows[0].target, null);
+        assert.deepEqual(await saved(), invitationProbe.before, 'Removal rehearsal preserved invitation data');
+        await db.exec(migration.sql);
+        assert.deepEqual(await saved(), invitationProbe.before, 'Reapplication rehearsal preserved invitation data');
+      } finally { await db.exec('rollback;'); }
+      assert.deepEqual(await saved(), invitationProbe.before);
+      console.log('PASS populated invitation upgrade: existing pending/accepted/revoked rows, scoped assertions and removal/reapplication rehearsal');
+    }
+    if (intakeProbe) {
+      assert.deepEqual((await db.query('select to_jsonb(t) value from public.support_tickets t where id=$1',[intakeProbe.ticketId])).rows[0].value,intakeProbe.ticket,'legacy support row preserved');
+      assert.deepEqual((await db.query('select to_jsonb(r) value from public.data_rights_requests r where id=$1',[intakeProbe.requestId])).rows[0].value,intakeProbe.request,'legacy rights request preserved');
+      await db.exec(await readFile(join(root,'tests/security/account-intake-hardening.test.sql'),'utf8'));
+      console.log('PASS populated intake guard: historical rows preserved and direct-role privilege assertions passed');
+    }
+    if (migration.name === retailerSubmissions) {
+      await db.exec(await readFile(join(root,'tests/security/retailer-submissions.test.sql'),'utf8'));
+      console.log('PASS retailer tracking assertions on the populated upgraded schema');
+    }
+    if (rightsRows) {
+      assert.ok(rightsRows.length > 0, 'Account deletion cutover rehearsal requires existing request history');
+      assert.deepEqual((await db.query('select to_jsonb(r) as value from public.data_rights_requests r order by id')).rows,
+        rightsRows, 'Confirmation cutover must preserve existing data-rights requests');
+      await db.exec(await readFile(join(root,'tests/security/data-rights-confirmation-rpc.test.sql'),'utf8'));
+      console.log('PASS populated confirmation cutover: historical requests, export intake, confirmation RPC and actor isolation');
+    }
+    if (migration.name === assetGuard) {
+      await db.exec(await readFile(join(root,'tests/security/asset-client-delete-guard.test.sql'),'utf8'));
+      console.log('PASS populated asset deletion guard: client denial and service cleanup');
+    }
+    if (migration.name === '20261121090000_managed_publishing_requests.sql') {
+      await db.exec(await readFile(join(root, 'tests/security/managed-publishing-requests.test.sql'), 'utf8'));
+      console.log('PASS populated managed publishing: consent, operator authority and verified notification settlement');
+    }
+    if (renderProbe) {
+      const { edition, running, succeeded, before } = renderProbe;
+      const after = (await db.query('select to_jsonb(j) as value from public.publishing_jobs j where id=any($1::uuid[]) order by id', [[running, succeeded]])).rows.map(row => row.value);
+      assert.deepEqual(after, before, 'Publishing upgrade preserves existing running and succeeded renders');
+      const suites = migration.name === renderClosure ? ['render-close-request.test.sql']
+        : ['publishing-package-workflow.test.sql', 'google-play-ebook-export.test.sql'];
+      if (migration.name === savedPrintPreflight) suites.push('saved-print-preflight-binding.test.sql');
+      if (migration.name === uploadedPaperbackCover) suites.push('artwork-completion.test.sql');
+      for (const file of suites) await db.exec(await readFile(join(root, 'tests/security', file), 'utf8'));
+      await db.query('delete from public.publishing_jobs where id=any($1::uuid[])', [[running, succeeded]]);
+      await db.query('delete from public.editions where id=$1', [edition]);
+      console.log(`PASS populated publishing upgrade ${migration.name}: existing jobs intact; ${suites.join(', ')}`);
+    }
+    if (audioProbe) {
+      step = 'populated audio export after privacy upgrade';
+      const { tenant, edition, job, runningJob, succeededJob, lease, key, runningKey, succeededKey, asset, before, allCount, allDigest } = audioProbe;
+      const after = (await db.query('select to_jsonb(j) as value from public.audiobook_google_play_export_jobs j where id=any($1::uuid[]) order by id',[[job,runningJob,succeededJob]])).rows.map(row=>row.value);
+      assert.deepEqual(after, before, 'Privacy upgrade preserves every stored field in cancelled, running and succeeded jobs');
+      const allAfter = (await db.query('select to_jsonb(j) as value from public.audiobook_google_play_export_jobs j order by id')).rows.map(row=>row.value);
+      assert.equal(allAfter.length, allCount, 'Privacy upgrade does not add or remove any audio export job');
+      assert.equal(createHash('sha256').update(JSON.stringify(allAfter)).digest('hex'), allDigest, 'Privacy upgrade preserves every field of every preexisting audio export job');
+      await db.exec('begin; set local role authenticated;');
+      try {
+        await db.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({sub:tenant.user,role:'authenticated'})]);
+        const reply = (await db.query('select to_jsonb(public.queue_audiobook_google_play_export($1,$2,$3,$4)) as value',[edition,'SYNTHETIC',asset,key])).rows[0].value;
+        assert.equal(reply.id, job); assert.equal(reply.status, 'cancelled');
+        const running = (await db.query('select to_jsonb(public.queue_audiobook_google_play_export($1,$2,$3,$4)) as value',[edition,'SYNTHETIC',asset,runningKey])).rows[0].value;
+        assert.equal(running.id, runningJob); assert.equal(running.status, 'running');
+        const succeeded = (await db.query('select to_jsonb(public.queue_audiobook_google_play_export($1,$2,$3,$4)) as value',[edition,'SYNTHETIC',asset,succeededKey])).rows[0].value;
+        assert.equal(succeeded.id, succeededJob); assert.equal(succeeded.status, 'succeeded');
+        for (const field of ['created_by','idempotency_key','identifier','snapshot_json','lease_token','output_storage_path']) { assert.equal(reply[field],null, 'Authenticated cancelled reply redacts '+field); assert.equal(running[field],null, 'Authenticated running reply redacts '+field); assert.equal(succeeded[field],null, 'Authenticated succeeded reply redacts '+field); }
+      } finally { await db.exec('rollback;'); }
+      await db.exec('begin; set local role authenticated;');
+      try {
+        await db.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({sub:fixture.viewer,role:'authenticated'})]);
+        assert.equal((await db.query('select count(id)::int as n from public.audiobook_google_play_export_jobs where id=$1',[job])).rows[0].n,1,'Workspace viewer sees safe job status');
+        await assert.rejects(db.query('select snapshot_json from public.audiobook_google_play_export_jobs where id=$1',[job]), error => error.code==='42501', 'Workspace viewer cannot read private snapshot');
+      } finally { await db.exec('rollback;'); }
+      await db.exec('begin; set local role service_role;');
+      try {
+        const worker = (await db.query('select id,lease_token,idempotency_key,snapshot_json from public.audiobook_google_play_export_jobs where id=$1',[runningJob])).rows[0];
+        assert.equal(worker.lease_token, lease); assert.equal(worker.idempotency_key,runningKey); assert.deepEqual(worker.snapshot_json,{chapters:[{}]});
+        assert.equal((await db.query("select has_function_privilege('service_role','public.progress_audiobook_google_play_export(uuid,uuid,integer)','execute') as allowed")).rows[0].allowed,true);
+      } finally { await db.exec('rollback;'); }
+      await db.query('delete from public.audiobook_google_play_export_jobs where id=any($1::uuid[])',[[job,runningJob,succeededJob]]);
+      await db.query('delete from public.editions where id=$1',[edition]);
+      console.log('PASS populated audiobook privacy upgrade: all export rows intact including cancelled/running/succeeded, owner replies redacted, viewer denied private columns and worker access retained');
+    }
+    assert.deepEqual(await captureHistoricalState(db, fixture), historical, `Historical identities/content/versions/balances/ownership unchanged after ${migration.name}`);
+  }
+  step = 'upgraded historical authorization and grants';
+  await verifyHistoricalIsolation(db, fixture);
+  await verifyUpgradeGates(db, fixture);
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Post-upgrade role/grant/paid-default gates preserve historical data');
+  step = 'historical chapter title revision and explicit rename recovery';
+  assert.equal((await db.query('select count(*)::int as n from public.chapters where title_revision<>0')).rows[0].n, 0,
+    'Legacy titles start at revision zero without inventing previous title edits');
+  assert.equal((await db.query('select count(*)::int as n from public.chapter_title_changes')).rows[0].n, 0,
+    'Upgrade creates no historical title receipts');
+  for (const tenant of fixture.tenants) {
+    await db.exec('begin; set local role authenticated;');
+    try {
+      await db.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({ sub: tenant.user, role: 'authenticated' })]);
+      const preservedChapter = async () => (await db.query("select to_jsonb(c)-'title'-'title_revision'-'updated_at' as data from public.chapters c where id=$1", [tenant.chapter])).rows;
+      const preservedVersions = async () => (await db.query('select to_jsonb(v) as data from public.document_versions v where chapter_id=$1 order by id', [tenant.chapter])).rows;
+      const originalChapter = await preservedChapter(), originalVersions = await preservedVersions();
+      assert.equal(originalVersions.length, 2, 'Probe uses both immutable historical manuscript versions');
+      const operation = randomUUID(), title = `Explicit historical title ${tenant.label}`;
+      const digest = createHash('sha256').update(title).digest('hex');
+      const result = async (sql, args) => (await db.query(sql, args)).rows[0].result;
+      assert.equal((await result('select public.get_chapter_title_change($1,$2,0,$3) as result',
+        [tenant.chapter, operation, digest])).status, 'not_found', 'Legacy title has no invented saved outcome');
+      const saved = await result('select public.change_chapter_title($1,$2,0,$3) as result', [tenant.chapter, operation, title]);
+      assert.equal(saved.status, 'saved');
+      assert.deepEqual(saved.receipt, { title, revision: 1 });
+      assert.equal(saved.current.title, title);
+      assert.equal(saved.current.revision, 1);
+      assert.deepEqual(await result('select public.change_chapter_title($1,$2,0,$3) as result',
+        [tenant.chapter, operation, title]), saved, 'Replaying the historical rename does not advance its revision');
+      assert.deepEqual(await result('select public.close_chapter_title_change($1,$2,0,$3) as result',
+        [tenant.chapter, operation, digest]), saved, 'Closure cannot undo a committed historical rename');
+      const stale = await result('select public.change_chapter_title($1,$2,0,$3) as result',
+        [tenant.chapter, randomUUID(), 'Stale historical title']);
+      assert.equal(stale.status, 'conflict');
+      assert.deepEqual(stale.current, saved.current, 'Stale revision cannot replace the explicitly renamed title');
+      const closedOperation = randomUUID(), closedTitle = 'Closed historical request';
+      const closedDigest = createHash('sha256').update(closedTitle).digest('hex');
+      const closed = await result('select public.close_chapter_title_change($1,$2,1,$3) as result',
+        [tenant.chapter, closedOperation, closedDigest]);
+      assert.equal(closed.status, 'closed');
+      assert.deepEqual(await result('select public.change_chapter_title($1,$2,1,$3) as result',
+        [tenant.chapter, closedOperation, closedTitle]), closed, 'A delayed request cannot bypass closure on an upgraded chapter');
+      assert.deepEqual(closed.current, saved.current, 'Closure leaves the historical chapter title and revision unchanged');
+      assert.deepEqual(await preservedChapter(), originalChapter, 'Rename preserves chapter identity, ordering and manuscript pointer');
+      assert.deepEqual(await preservedVersions(), originalVersions, 'Rename neither rewrites nor appends immutable manuscript history');
+    } finally { await db.exec('rollback;'); }
+  }
+  assert.equal((await db.query('select count(*)::int as n from public.chapter_title_changes')).rows[0].n, 0, 'Title probes leave no receipts after rollback');
+  assert.equal((await db.query('select count(*)::int as n from public.chapters where title_revision<>0')).rows[0].n, 0, 'Rollback restores original title revisions');
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Historical title recovery probes preserve every historical relation');
+  console.log('PASS historical title revision backfill, explicit rename/replay, stale conflict, late-write closure, manuscript preservation and rollback without invented receipts');
+  step = 'historical Book Bible incarnation and durable manual update';
+  const incarnations = new Set();
+  for (const tenant of fixture.tenants) {
+    const { rows: [entry] } = await db.query('select id,updated_at,mutation_incarnation_id from public.book_bible_items where book_id=$1', [tenant.book]);
+    assert.ok(entry && /^[a-f0-9-]{36}$/i.test(entry.mutation_incarnation_id), 'Legacy canon received only a new server-owned incarnation, not an invented creator');
+    assert.ok(!incarnations.has(entry.mutation_incarnation_id), 'Legacy incarnations are distinct');
+    incarnations.add(entry.mutation_incarnation_id);
+    await db.exec('begin; set local role authenticated;');
+    try {
+      await db.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({ sub: tenant.user, role: 'authenticated' })]);
+      const { rows: [saved] } = await db.query('select public.mutate_book_bible_item($1,$2,$3,$4,$5,$6::jsonb,$7) as result',
+        [tenant.book, randomUUID(), 'update', entry.id, entry.updated_at,
+          JSON.stringify({ type: 'character', name: 'Explicit upgrade probe', attributes: { age: 42 } }), entry.mutation_incarnation_id]);
+      assert.equal(saved.result.disposition, 'unchanged');
+      assert.equal(saved.result.item.mutation_incarnation_id, entry.mutation_incarnation_id, 'Updating a legacy row does not invent another incarnation');
+      assert.equal(saved.result.item.confidence, 0.9, 'Legacy confidence survives explicit canon updates');
+    } finally { await db.exec('rollback;'); }
+  }
+  assert.equal((await db.query('select count(*)::int as n from bookworm_private.book_bible_mutation_receipts')).rows[0].n, 0, 'Rollback probes do not leave historical mutation claims');
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Durable upgrade probes preserve all historical fields and rolled-back canon');
+  console.log('PASS historical canon incarnation backfill, distinct identity, explicit authenticated recovery writes and rollback without invented historical receipts');
+  step = 'new chapter reading text after populated upgrade';
+  for (const tenant of fixture.tenants) {
+    const nodes = [{ id: 'table-reading', type: 'table', rows: [['Alpha', 'Beta']] },
+      { id: 'empty-authoritative', type: 'table', text: '', rows: [['Hidden legacy grid']] },
+      { id: 'unicode-reading', type: 'paragraph', text: 'Gamma\u00a0delta' }];
+    await db.exec('begin; set local role authenticated;');
+    try {
+      await db.query("select set_config('request.jwt.claims',$1,true)", [JSON.stringify({ sub: tenant.user, role: 'authenticated' })]);
+      const { rows: [chapter] } = await db.query('select current_document_version_id from public.create_book_chapters($1,$2::jsonb)',
+        [tenant.book, JSON.stringify([{ title: 'Reading text upgrade probe', nodes }])]);
+      const { rows: [version] } = await db.query('select content_json,plain_text,word_count from public.document_versions where id=$1', [chapter.current_document_version_id]);
+      assert.equal(version.plain_text, 'Alpha\tBeta\n\nGamma\u00a0delta');
+      assert.equal(version.word_count, 4);
+      assert.deepEqual(version.content_json.nodes, nodes, 'Reading projection does not rewrite canonical content');
+    } finally { await db.exec('rollback;'); }
+  }
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'New reading projections leave historical versions and receipts untouched');
+  console.log('PASS populated upgrade reading projection: table cells, authoritative empty text, Unicode whitespace, unchanged canonical content and historical rollback');
+  console.log('PASS preserved historical projections, tenant/role/quarantine isolation, tenant-scoped profiles/ledger, retired RPCs, service-only pinned RPCs, rich citations, legacy-unverified Stripe receipts and zero unentitled image capacity');
+  step = 'private credential vault permissions and recovery after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/ai-connection-vault.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Credential vault creation and rollback probes leave all historical data unchanged');
+  console.log('PASS populated upgrade credential vault: no inherited credentials, owner RLS, preserved settlement schema grants, encrypted-only RPCs, CAS, revocation, closure and rollback');
+  step = 'customer payer lifecycle after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/customer-ai-jobs.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Customer policy/job fixtures and rollback leave historical rows unchanged');
+  assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_policies')).rows[0].n, 0);
+  assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_jobs')).rows[0].n, 0);
+  console.log('PASS populated upgrade customer jobs: no inherited policy or quota, owner/revision binding, paid-plan isolation, single-use resolution, no duplicate fee or ambiguous refund');
+  step = 'customer receipt-only completion after populated upgrade';
+  const historicalRunAfter = (await db.query('select to_jsonb(r) as value from public.ai_runs r where id=$1', [historicalRun])).rows[0].value;
+  assert.equal(historicalRunAfter.cost_payer, 'platform');
+  const { cost_payer, ...unchangedRun } = historicalRunAfter;
+  assert.deepEqual(unchangedRun, historicalRunBefore, 'Payer backfill preserves all historical model, token, cost and identity evidence');
+  await db.exec(await readFile(join(root, 'tests/security/customer-ai-completion.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Customer completion fixtures roll back without historical changes');
+  assert.deepEqual((await db.query('select to_jsonb(r) as value from public.ai_runs r where id=$1', [historicalRun])).rows[0].value, historicalRunAfter);
+  assert.equal((await db.query("select count(*)::int as n from public.ai_runs where cost_payer='customer'")).rows[0].n, 0);
+  console.log('PASS populated upgrade customer completion: historical costs unchanged, unknown customer cost distinct from zero, five-provider/six-agent receipt recovery, atomic rollback, immutable outcomes and no inherited customer activity');
+  step = 'customer durable preparation and exact confirmation after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/customer-ai-preparations.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Customer preparation and recovery probes preserve every historical projection');
+  assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_preparations')).rows[0].n, 0);
+  assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_policies')).rows[0].n, 0);
+  console.log('PASS populated upgrade durable customer requests: exact consent, one fee/job, status after revocation, no manuscript exposure, expiry, closure, receipt-only recovery and rate limits; no policy seeded');
+  step = 'customer author late-write closure after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/customer-ai-author-recovery.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical);
+  assert.equal((await db.query('select count(*)::int as n from bookworm_credentials.customer_ai_preparation_closures')).rows[0].n, 0);
+  console.log('PASS populated upgrade author recovery: canonical revision metadata, late-write rejection, no ambiguous refund, private ACLs and bounded closure rate');
+  step = 'customer function catalog diagnostic after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/customer-ai-function-catalog.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Catalog mutation tests roll back without changing historical data');
+  console.log('PASS populated upgrade function catalog diagnostic: limited RPC grants and configuration checks, drift and rollback');
+  step = 'chapter restore ledger after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/chapter-restore-ledger.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Restore ledger tests roll back without changing historical data');
+  assert.equal((await db.query('select count(*)::int as n from public.chapter_restore_operations')).rows[0].n, 0, 'No historical restore receipts invented');
+  console.log('PASS populated upgrade restore ledger: identity, replay, close, conflict, asset checks and rollback');
+  step = 'Story Blueprint quote closure after populated upgrade';
+  await db.exec(await readFile(join(root, 'tests/security/story-blueprint-quote-closure.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Quote closure probes roll back without changing historical data');
+  assert.equal((await db.query('select count(*)::int as n from public.story_blueprint_quote_identities')).rows[0].n, 0);
+  await db.exec(await readFile(join(root, 'tests/security/story-blueprint-quote-proposals.test.sql'), 'utf8'));
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Quote acceptance resolution rolls back without changing historical data');
+  console.log('PASS populated upgrade Story Blueprint quote closure and historical rollback');
+  step = 'existing synthetic paid quote lifecycle helpers on upgraded schema';
+  await verifyPaidQuoteFixtures(async statement => {
+    const results = await db.exec(statement);
+    const result = results.findLast(value => value.rows.length), row = result?.rows[0];
+    if (!row) return '';
+    const value = Object.values(row)[0];
+    return [114, 3802].includes(result.fields[0].dataTypeID) ? JSON.stringify(value)
+      : typeof value === 'boolean' ? value ? 't' : 'f' : String(value);
+  });
+  assert.deepEqual(await captureHistoricalState(db, fixture), historical, 'Reused paid lifecycle fixtures roll back without changing historical rows');
+  console.log(`PASS populated upgrade: 45 historical migrations + committed rows + ${migrations.length - 45} upgrades + guarded aborts + reused synthetic paid lifecycle helpers.`);
+  step = 'isolated database snapshot restore';
+  const snapshot = await db.dumpDataDir();
+  const restored = new PGlite({ loadDataDir: snapshot, extensions: { citext, pgcrypto } });
+  try {
+    assert.deepEqual(await captureHistoricalState(restored, fixture), historical, 'Restored historical rows match the pre-upgrade fixture');
+    await verifyHistoricalIsolation(restored, fixture);
+    await verifyUpgradeGates(restored, fixture);
+    assert.deepEqual(await captureHistoricalState(restored, fixture), historical, 'Restored policy checks leave the snapshot data intact');
+  } finally {
+    await restored.close();
+  }
+  console.log('PASS isolated PGlite snapshot restore: historical rows, tenant isolation and upgrade guards');
+  console.log('NOT PROVEN: hosted history/drift, hosted PostgreSQL or Storage object restore, native concurrency, GoTrue/PostgREST/Storage HTTP, provider receipts, worker drain or production rollout authority.');
+} catch (error) {
+  // Never print SQL, function definitions, row contents or raw database error detail.
+  const location = error.code === 'ERR_ASSERTION' ? error.stack?.split('\n').find(line => line.includes('/tests/security/'))?.trim() : null;
+  console.error(`FAIL ${step}: ${error.code ? `SQLSTATE ${error.code}` : 'assertion/runtime failure'}${location ? ` ${location}` : ''}`);
+  process.exitCode = 1;
+} finally { await db.close(); }

@@ -1,0 +1,12 @@
+.proof { --proof-ink: #ece8df; --proof-muted: #aaa89f; --proof-paper: #151614; --proof-line: #353730; --proof-remove: #f1c4b9; --proof-add: #cce9b9; margin-top: 12px; border: 1px solid var(--proof-line); border-radius: 10px; overflow: hidden; color: var(--proof-ink); }
+.header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; border-bottom: 1px solid var(--proof-line); padding: 8px 11px; color: var(--proof-muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.slips { display: grid; }
+.slip { min-width: 0; padding: 12px; background: var(--proof-paper); }
+.slip + .slip { border-top: 1px solid var(--proof-line); }
+.label { margin: 0 0 8px; color: var(--proof-muted); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+.passage { margin: 0; max-height: 260px; overflow-y: auto; font-family: var(--font-instrument-serif), Georgia, serif; font-size: 17px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.removed, .added { border-radius: 2px; padding: 1px 2px; text-decoration: none; }
+.removed { color: var(--proof-remove); background: color-mix(in srgb, var(--proof-remove) 12%, transparent); text-decoration: line-through; }
+.added { color: var(--proof-add); background: color-mix(in srgb, var(--proof-add) 13%, transparent); text-decoration: underline; text-underline-offset: 3px; }
+.note { margin: 0; border-top: 1px solid var(--proof-line); padding: 9px 12px; color: var(--proof-muted); font-size: 10px; line-height: 1.5; }
+.warning { --proof-warning: #f0d4ac; margin: 12px 0 0; border: 1px solid color-mix(in srgb, var(--proof-warning) 35%, transparent); border-radius: 8px; padding: 10px 12px; color: var(--proof-warning); font-size: 11px; line-height: 1.5; }

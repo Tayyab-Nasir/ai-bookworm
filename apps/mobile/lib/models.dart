@@ -49,6 +49,8 @@ class Book {
     required this.status,
     this.subtitle,
     this.genre,
+    this.language = 'en',
+    this.createdBy = '',
   });
 
   factory Book.fromJson(Map<String, dynamic> j) => Book(
@@ -59,6 +61,8 @@ class Book {
         authorName: j['author_name'] as String? ?? '',
         genre: j['genre'] as String?,
         status: j['status'] as String? ?? 'draft',
+        language: j['language'] as String? ?? 'en',
+        createdBy: j['created_by'] as String? ?? '',
       );
 
   final String id;
@@ -68,6 +72,23 @@ class Book {
   final String authorName;
   final String? genre;
   final String status;
+  final String language;
+  final String createdBy;
+}
+
+class ManuscriptImportJob {
+  const ManuscriptImportJob(this.id, this.bookId, this.assetId, this.status,
+      this.attempts, this.errorCode);
+  final String id, bookId, assetId, status;
+  final int attempts;
+  final String? errorCode;
+  bool get running => status == 'queued' || status == 'running';
+}
+
+class ManuscriptImportReport {
+  const ManuscriptImportReport(this.chapterIds, this.imageCount, this.warnings);
+  final List<String> chapterIds, warnings;
+  final int imageCount;
 }
 
 class Chapter {
@@ -218,7 +239,13 @@ class TaskItem {
             : DateTime.tryParse(j['due_at'] as String),
       );
 
-  static const statuses = ['todo', 'in_progress', 'blocked', 'done', 'cancelled'];
+  static const statuses = [
+    'todo',
+    'in_progress',
+    'blocked',
+    'done',
+    'cancelled'
+  ];
 
   final String id;
   final String title;
@@ -236,6 +263,14 @@ class AssetItem {
     required this.mimeType,
     required this.sizeBytes,
     required this.status,
+    this.workspaceId = '',
+    this.createdBy = '',
+    this.checksum = '',
+    this.storagePath = '',
+    this.scanStatus,
+    this.version,
+    this.requiresApproval,
+    this.deletedAt,
   });
 
   factory AssetItem.fromJson(Map<String, dynamic> j) => AssetItem(
@@ -245,6 +280,14 @@ class AssetItem {
         mimeType: j['mime_type'] as String? ?? '',
         sizeBytes: (j['size_bytes'] as num?)?.toInt() ?? 0,
         status: j['status'] as String? ?? 'draft',
+        workspaceId: j['workspace_id'] as String? ?? '',
+        createdBy: j['created_by'] as String? ?? '',
+        checksum: j['checksum'] as String? ?? '',
+        storagePath: j['storage_path'] as String? ?? '',
+        scanStatus: j['current_scan_status'] as String?,
+        version: j['current_version_number'] as int?,
+        requiresApproval: j['requires_approval'] as bool?,
+        deletedAt: j['deleted_at'] as String?,
       );
 
   final String id;
@@ -253,6 +296,11 @@ class AssetItem {
   final String mimeType;
   final int sizeBytes;
   final String status;
+  final String workspaceId, createdBy, checksum, storagePath;
+  final String? scanStatus;
+  final int? version;
+  final bool? requiresApproval;
+  final String? deletedAt;
 }
 
 class PublishingJob {

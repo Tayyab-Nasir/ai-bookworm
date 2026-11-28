@@ -1,0 +1,7 @@
+# Generated graph, agent integration copies, and credentials are never graph input.
+graphify-out/
+.agents/
+.codex/
+.claude/
+.hermes/
+.env*

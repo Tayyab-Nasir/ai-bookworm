@@ -1,18 +1,177 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { AppError } from "../errors.js";
+import { checkChapterActor } from "../lib/manual-chapter-save.js";
 import { requireWorkspaceMember, requireWorkspaceEditor } from "../lib/authorize.js";
+import { randomUUID } from "node:crypto";
+import { BookModelSchema } from "@bookworm/book-model";
+import { checkAssetReferences, loadBook, nodesSchema, rpcError } from "../lib/authoring.js";
+import { createHttpAssetScanner, type AssetMalwareScanner } from "../lib/asset-scanner.js";
+import { readImportReceipt } from "../lib/manuscript-images.js";
+import { executeManuscriptImport } from "../lib/manuscript-import.js";
+import { importJobSchema } from "../lib/document-worker.js";
 
 const createSchema = z.object({
-  workspaceId: z.string().uuid(),
-  title: z.string().min(1),
-  subtitle: z.string().optional(),
-  authorName: z.string().min(1),
-  language: z.string().default("en"),
-  genre: z.string().optional(),
+  workspaceId: z.guid(),
+  requestId: z.guid().optional(),
+  title: z.string().trim().min(1).max(500),
+  subtitle: z.string().max(500).optional(),
+  authorName: z.string().trim().min(1).max(300),
+  language: z.string().min(2).max(40).default("en"),
+  genre: z.string().max(200).optional(),
 });
 
-export function bookRoutes(app: FastifyInstance) {
+export function bookRoutes(app: FastifyInstance, options: { assetScanner?: AssetMalwareScanner } = {}) {
+  const jobColumns = "id,book_id,source_asset_id,status,attempts,error_code,created_at,available_at,completed_at";
+  const jobParams = (value: unknown) => {
+    const parsed = z.object({ bookId: z.guid(), jobId: z.guid().optional() }).safeParse(value);
+    if (!parsed.success) throw new AppError(422, "Valid book and import job IDs required");
+    return parsed.data;
+  };
+  app.get("/books/:bookId/import-jobs", async (req, reply) => {
+    const { bookId } = jobParams(req.params);
+    const sb = app.supabaseFactory(req.userToken);
+    await loadBook(sb, bookId, req.userId);
+    const { data, error } = await sb.from("manuscript_import_jobs").select(jobColumns).eq("book_id", bookId)
+      .order("created_at", { ascending: false }).limit(50);
+    if (error) throw new AppError(503, "Import jobs are temporarily unavailable");
+    reply.header("cache-control", "private, no-store");
+    return { jobs: z.array(importJobSchema).parse(data ?? []) };
+  });
+  app.post("/books/:bookId/import-jobs", async (req, reply) => {
+    const { bookId } = jobParams(req.params);
+    const body = z.object({ assetId: z.guid() }).safeParse(req.body);
+    if (!body.success) throw new AppError(422, "Valid source asset ID required");
+    const { assetId } = body.data;
+    await loadBook(app.supabaseFactory(req.userToken), bookId, req.userId, true);
+    const { data, error } = await app.supabaseFactory().rpc("enqueue_manuscript_import", {
+      p_actor_id: req.userId, p_book_id: bookId, p_source_asset_id: assetId,
+    });
+    if (error) rpcError(error);
+    reply.header("cache-control", "private, no-store");
+    return reply.code(202).send({ job: importJobSchema.parse(data) });
+  });
+  app.post("/books/:bookId/import-jobs/:jobId/retry", async (req, reply) => {
+    const { bookId, jobId } = jobParams(req.params);
+    if (!jobId) throw new AppError(422, "Import job ID required");
+    const sb = app.supabaseFactory(req.userToken);
+    await loadBook(sb, bookId, req.userId, true);
+    const existing = await sb.from("manuscript_import_jobs").select("id").eq("id", jobId).eq("book_id", bookId).maybeSingle();
+    if (existing.error) throw new AppError(503, "Import jobs are temporarily unavailable");
+    if (!existing.data) throw new AppError(404, "Import job not found in this book");
+    const { data, error } = await app.supabaseFactory().rpc("retry_manuscript_import", { p_job_id: jobId, p_actor_id: req.userId });
+    if (error) rpcError(error);
+    reply.header("cache-control", "private, no-store");
+    return reply.code(202).send({ job: importJobSchema.parse(data) });
+  });
+
+  app.get("/books/:bookId", async (req) => {
+    const { bookId } = req.params as { bookId: string };
+    return loadBook(app.supabaseFactory(req.userToken), bookId, req.userId);
+  });
+
+  app.patch("/books/:bookId", async (req) => {
+    const { bookId } = req.params as { bookId: string };
+    const body = createSchema.omit({ workspaceId: true, requestId: true }).partial().extend({ subtitle: z.string().max(500).nullable().optional(), genre: z.string().max(200).nullable().optional(), expectedUpdatedAt: z.string().datetime({ offset: true }) }).safeParse(req.body);
+    if (!body.success) throw new AppError(422, "Invalid book details", { issues: body.error.issues });
+    const sb = app.supabaseFactory(req.userToken);
+    await loadBook(sb, bookId, req.userId, true);
+    const { expectedUpdatedAt, ...fields } = body.data;
+    const update: Record<string, unknown> = { updated_at: new Date(Math.max(Date.now(), Date.parse(expectedUpdatedAt) + 1)).toISOString() };
+    for (const [key,value] of Object.entries(fields)) if (value !== undefined) update[key === "authorName" ? "author_name" : key] = value;
+    if (Object.keys(update).length === 1) throw new AppError(422, "No book changes supplied");
+    const { data: book, error } = await sb.from("books").update(update).eq("id", bookId).eq("updated_at", expectedUpdatedAt).select("*").maybeSingle();
+    if (error) throw new AppError(500, "Could not update book details");
+    if (!book) throw new AppError(409, "Book details changed. Reload before saving.");
+    return { book };
+  });
+
+  app.post("/books/:bookId/chapters", async (req, reply) => {
+    checkChapterActor(req);
+    const { bookId } = req.params as { bookId: string };
+    const body = z.object({ title: z.string().trim().min(1).max(500), nodes: nodesSchema.optional(), idempotencyKey: z.string().trim().min(8).max(200).optional() }).safeParse(req.body);
+    if (!body.success) throw new AppError(422, "invalid chapter", { issues: body.error.issues });
+    const sb = app.supabaseFactory(req.userToken);
+    const { book } = await loadBook(sb, bookId, req.userId, true);
+    const nodes = body.data.nodes ?? [{ id: randomUUID(), type: "paragraph" as const, text: "" }];
+    await checkAssetReferences(sb, nodes, book.workspace_id);
+    const { data, error } = body.data.idempotencyKey
+      ? await sb.rpc("create_book_chapter_once", { p_book_id: bookId, p_title: body.data.title, p_nodes: body.data.nodes ?? null, p_request_key: body.data.idempotencyKey })
+      : await sb.rpc("create_book_chapters", { p_book_id: bookId, p_chapters: [{ title: body.data.title, nodes }], p_source_asset_id: null });
+    if (error?.code === "40001" || error?.code === "PT409") throw new AppError(409, "The original chapter request conflicts or is no longer available. Check its saved status.");
+    if (error) rpcError(error);
+    return reply.status(201).send({ chapter: data?.[0] });
+  });
+
+  // Read and fence the original request without creating or recreating a chapter.
+  const chapterCreationStatus = async (req: FastifyRequest, reply: FastifyReply, close: boolean) => {
+    checkChapterActor(req, true);
+    const parsed = z.object({ bookId: z.guid(), requestKey: z.guid() }).safeParse(req.params);
+    if (!parsed.success) throw new AppError(422, "Valid book and chapter request IDs required");
+    const { bookId, requestKey } = parsed.data;
+    const sb = app.supabaseFactory(req.userToken);
+    await loadBook(sb, bookId, req.userId, true);
+    const { data, error } = await sb.rpc("chapter_creation_status", {
+      p_book_id: bookId, p_request_key: requestKey, p_close: close,
+    });
+    if (error) rpcError(error);
+    const result = z.object({
+      bookId: z.guid(), requestKey: z.guid(), status: z.enum(["not_found", "created", "removed", "closed"]),
+      chapterId: z.guid().nullable(),
+    }).strict().safeParse(data);
+    if (!result.success || result.data.bookId !== bookId || result.data.requestKey !== requestKey
+      || (result.data.status === "created") !== (result.data.chapterId !== null)) {
+      throw new AppError(503, "The chapter request status could not be verified.");
+    }
+    reply.header("cache-control", "private, no-store");
+    return result.data;
+  };
+  app.get("/books/:bookId/chapter-creation/:requestKey", (req, reply) => chapterCreationStatus(req, reply, false));
+  app.post("/books/:bookId/chapter-creation/:requestKey/close", (req, reply) => chapterCreationStatus(req, reply, true));
+  app.put("/books/:bookId/chapters/order", async (req) => {
+    checkChapterActor(req);
+    const { bookId } = req.params as { bookId: string };
+    const body = z.object({ orderedIds: z.array(z.guid()).max(500), expectedIds: z.array(z.guid()).max(500) }).safeParse(req.body);
+    if (!body.success) throw new AppError(422, "invalid chapter order");
+    if (new Set(body.data.orderedIds).size !== body.data.orderedIds.length) throw new AppError(422, "Duplicate chapter IDs");
+    const sb = app.supabaseFactory(req.userToken);
+    await loadBook(sb, bookId, req.userId, true);
+    const { data, error } = await sb.rpc("reorder_book_chapters", { p_book_id: bookId, p_ordered_ids: body.data.orderedIds, p_expected_ids: body.data.expectedIds });
+    if (error) rpcError(error);
+    return { chapters: data ?? [] };
+  });
+
+  app.get("/books/:bookId/imports/:assetId", async (req, reply) => {
+    const params = z.object({ bookId: z.guid(), assetId: z.guid() }).safeParse(req.params);
+    if (!params.success) throw new AppError(422, "Valid book and source asset IDs required");
+    const sb = app.supabaseFactory(req.userToken);
+    const initial = await loadBook(sb, params.data.bookId, req.userId);
+    const receipt = await readImportReceipt(sb, params.data.bookId, params.data.assetId);
+    const current = await loadBook(sb, params.data.bookId, req.userId);
+    if (current.book.workspace_id !== initial.book.workspace_id) throw new AppError(403, "Book access changed during receipt lookup.");
+    reply.header("cache-control", "private, no-store");
+    return { import: receipt };
+  });
+
+  app.post("/books/:bookId/import", async (req, reply) => {
+    reply.header("cache-control", "private, no-store");
+    const { bookId } = req.params as { bookId: string };
+    const body = z.object({ assetId: z.guid() }).safeParse(req.body);
+    if (!body.success) throw new AppError(422, "assetId required");
+    const sb = app.supabaseFactory(req.userToken);
+    const initial = await loadBook(sb, bookId, req.userId, true);
+    await executeManuscriptImport({ sb, service: app.supabaseFactory(),
+      scanner: options.assetScanner ?? createHttpAssetScanner(), bookId, actorId: req.userId, assetId: body.data.assetId });
+    // Do not return the service-role result: access can change while the import runs.
+    const current = await loadBook(sb, bookId, req.userId);
+    if (current.book.workspace_id !== initial.book.workspace_id) throw new AppError(403, "Book access changed during import.");
+    const receipt = await readImportReceipt(sb, bookId, body.data.assetId);
+    const final = await loadBook(sb, bookId, req.userId);
+    if (final.book.workspace_id !== initial.book.workspace_id) throw new AppError(403, "Book access changed during import.");
+    if (!receipt) throw new AppError(503, "The saved import could not be verified. Check the original request later.");
+    return receipt;
+  });
+
   app.get("/books", async (req) => {
     const { workspaceId } = req.query as { workspaceId?: string };
     if (!workspaceId) throw new AppError(400, "workspaceId query param required");
@@ -30,6 +189,7 @@ export function bookRoutes(app: FastifyInstance) {
     const sb = app.supabaseFactory(req.userToken);
     await requireWorkspaceEditor(sb, b.workspaceId, req.userId);
     const { data, error } = await sb.from("books").insert({
+      ...(b.requestId ? { id: b.requestId } : {}),
       workspace_id: b.workspaceId,
       title: b.title,
       subtitle: b.subtitle ?? null,
@@ -38,6 +198,16 @@ export function bookRoutes(app: FastifyInstance) {
       genre: b.genre ?? null,
       created_by: req.userId,
     }).select().single();
+    if (error?.code === "23505" && b.requestId) {
+      const existing = await sb.from("books").select("*").eq("id", b.requestId).eq("workspace_id", b.workspaceId).maybeSingle();
+      if (existing.error) throw new AppError(503, "Book creation recovery is temporarily unavailable");
+      const book = existing.data;
+      if (book?.created_by === req.userId && book.title === b.title && book.subtitle === (b.subtitle ?? null)
+        && book.author_name === b.authorName && book.language === b.language && book.genre === (b.genre ?? null)) {
+        return reply.status(200).send(book);
+      }
+      throw new AppError(409, "This book request was already used with different details. Reload your library before continuing.");
+    }
     if (error) throw new AppError(422, error.message);
     return reply.status(201).send(data);
   });

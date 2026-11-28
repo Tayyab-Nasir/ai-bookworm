@@ -2,6 +2,10 @@ import fp from "fastify-plugin";
 import type { FastifyInstance } from "fastify";
 import { AppError } from "../errors.js";
 
+declare module "fastify" {
+  interface FastifyContextConfig { durableIdempotency?: boolean }
+}
+
 // ponytail: in-process Map with 24h TTL, swept hourly, capped at 10k entries.
 // Ceiling: not shared across instances/restarts. Upgrade path: Redis (REDIS_URL)
 // with SET key NX EX 86400 when running >1 API instance.
@@ -15,6 +19,7 @@ setInterval(() => {
 
 export const idempotencyPlugin = fp(async (app: FastifyInstance) => {
   app.addHook("preHandler", async (req) => {
+    if (req.routeOptions.config.durableIdempotency === true) return;
     if (req.method !== "POST") return;
     const key = req.headers["idempotency-key"] as string | undefined;
     if (!key) return;

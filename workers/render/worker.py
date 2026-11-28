@@ -1,20 +1,22 @@
-"""Render worker: consumes jobs.render from Redis (deterministic output).
+"""Compatibility entry point for the PostgreSQL-leased rendering worker."""
 
-Payload per spec section 10:
-  jobId, editionId, format, bookVersionId, idempotencyKey, attempt
-
-Stub only — Redis consumer implemented in Step 10.
-"""
+from pathlib import Path
+import shutil
+import subprocess
 
 
 def run() -> None:
-    """Consume jobs.render and produce EPUB/PDF artifacts. Not implemented yet.
-
-    Graceful shutdown + dead-letter live in workers/ops.py:
-        from ops import run_loop
-        run_loop("jobs.render", process_job, fetch=redis_blpop)
-    """
-    raise NotImplementedError("Render worker lands in Step 10")
+    """Run render and validation actions through the fenced Node worker."""
+    npm = shutil.which("npm")
+    if not npm:
+        raise RuntimeError("npm is required to run the publishing worker")
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [npm, "run", "worker:publishing", "--", "--actions=render,validate"],
+        cwd=root,
+        check=False,
+    )
+    raise SystemExit(result.returncode)
 
 
 if __name__ == "__main__":

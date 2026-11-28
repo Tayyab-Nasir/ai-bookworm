@@ -7,10 +7,24 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "worker:publishing": "tsx ../../workers/publishing/worker.ts",
+    "worker:document": "tsx ../../workers/document/worker.ts",
+    "worker:ai": "tsx ../../workers/ai/worker.ts",
+    "worker:audiobook": "tsx ../../workers/audiobook/worker.ts",
+    "worker:audiobook-export": "tsx ../../workers/audiobook/google-play-export-worker.ts",
+    "worker:translation": "tsx ../../workers/translation/worker.ts",
+    "worker:story-blueprint": "tsx ../../workers/story-blueprint/worker.ts",
+    "worker:metadata-quotes": "tsx ../../workers/metadata/worker.ts",
+    "worker:ai-review-quotes": "tsx ../../workers/ai-review/worker.ts",
+    "worker:book-bible-quotes": "tsx ../../workers/book-bible/worker.ts",
+    "worker:image-quotes": "tsx ../../workers/image/worker.ts",
+    "worker:narration-quotes": "tsx ../../workers/narration/worker.ts",
+    "storage:orphan-report": "tsx ../../workers/maintenance/storage-orphan-report.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
+    "@bookworm/book-model": "*",
     "@bookworm/config": "*",
     "@bookworm/types": "*",
     "@bookworm/validation": "*",
@@ -18,13 +32,17 @@
     "@fastify/formbody": "^9.0.0",
     "@fastify/jwt": "^10.2.1",
     "@supabase/supabase-js": "^2.112.3",
-    "fastify": "^4.29.1",
-    "fastify-plugin": "^4.5.1",
+    "fastify": "^5.12.3",
+    "fastify-plugin": "^6.0.0",
+    "fflate": "0.8.3",
+    "openai": "^6.49.0",
     "stripe": "^22.5.0",
-    "zod": "^3.25.76"
+    "ws": "8.22.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "@types/ws": "8.18.2",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"
   }

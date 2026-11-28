@@ -1,0 +1,4 @@
+**
+!requirements.txt
+!scanning_service/
+!scanning_service/*.py

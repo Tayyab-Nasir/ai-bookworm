@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { BookModel, Chapter } from "./schema.js";
 import type { DocumentOperation } from "./operations.js";
+import { nodeInline, replaceNodeText } from "./rich-text.js";
 
 export class VersionConflictError extends Error {
   constructor(public readonly expected: number, public readonly actual: number) {
@@ -48,6 +49,14 @@ function putChapter(book: BookModel, chapter: Chapter): BookModel {
     ...book,
     chapters: book.chapters.map((c) => (c.id === chapter.id ? chapter : c)),
   };
+}
+
+function validateTextRange(text: string, from: number, to: number) {
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || from > to || to > text.length)
+    throw new ValidationError(`range [${from}, ${to}] out of bounds for length ${text.length}`);
+  // Offsets use JavaScript/DOM UTF-16 units, but must not bisect a surrogate pair.
+  if ([from, to].some((offset) => (text.codePointAt(offset - 1) ?? 0) > 0xffff))
+    throw new ValidationError("Text range must not split a Unicode character");
 }
 
 /**
@@ -122,16 +131,12 @@ export function applyOperation(
 
     case "replace_text": {
       const { chapter, index, node, text } = requireText(book, op.payload.nodeId);
-      if (op.payload.from > op.payload.to || op.payload.to > text.length)
-        throw new ValidationError(
-          `range [${op.payload.from}, ${op.payload.to}] out of bounds for length ${text.length}`,
-        );
+      validateTextRange(text, op.payload.from, op.payload.to);
+      if (/[\uD800-\uDFFF]/u.test(op.payload.text))
+        throw new ValidationError("Replacement must contain valid Unicode text");
       next = putChapter(book, {
         ...chapter,
-        nodes: setAt(chapter.nodes, index, {
-          ...node,
-          text: text.slice(0, op.payload.from) + op.payload.text + text.slice(op.payload.to),
-        }),
+        nodes: setAt(chapter.nodes, index, replaceNodeText(node, op.payload.from, op.payload.to, op.payload.text)),
       });
       break;
     }
@@ -187,13 +192,12 @@ export function applyOperation(
 
     case "split_node": {
       const { chapter, index, node, text } = requireText(book, op.payload.nodeId);
-      if (op.payload.offset > text.length)
-        throw new ValidationError(`offset ${op.payload.offset} out of bounds`);
-      const right = { ...node, id: randomUUID(), text: text.slice(op.payload.offset) };
+      validateTextRange(text, op.payload.offset, op.payload.offset);
+      const right = { ...replaceNodeText(node, 0, op.payload.offset, ""), id: randomUUID() };
       next = putChapter(book, {
         ...chapter,
         nodes: insertAt(
-          setAt(chapter.nodes, index, { ...node, text: text.slice(0, op.payload.offset) }),
+          setAt(chapter.nodes, index, replaceNodeText(node, op.payload.offset, text.length, "")),
           index + 1,
           right,
         ),
@@ -213,7 +217,7 @@ export function applyOperation(
         nodes: setAt(
           removeAt(left.chapter.nodes, right.index),
           left.index,
-          { ...left.node, text: left.text + right.text },
+          { ...left.node, text: left.text + right.text, attributes: { ...left.node.attributes, richText: [...nodeInline(left.node), ...nodeInline(right.node)] } },
         ),
       });
       break;

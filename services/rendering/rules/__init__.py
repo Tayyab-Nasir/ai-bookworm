@@ -1,8 +1,4 @@
-"""Versioned preflight rule registry. Each module exports RULESET: preflight.RuleSet.
-
-Retailer rule values are placeholders — verify against current official retailer docs
-at release (see spec section 14 note). Never hard-code as permanent requirements.
-"""
+"""Versioned preflight registry. Channel modules record verification dates and sources."""
 import importlib
 
 from preflight import RuleSet
@@ -13,6 +9,7 @@ _REGISTRY: dict[str, str] = {
     "apple": "rules.apple_v1",
     "barnesnoble": "rules.bn_v1",
     "lulu": "rules.lulu_v1",
+    "googleplay": "rules.google_play_v1",
 }
 
 

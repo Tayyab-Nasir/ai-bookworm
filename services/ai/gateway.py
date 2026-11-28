@@ -1,8 +1,4 @@
-"""Provider-neutral LLM gateway (spec section 12 / T16).
-
-Providers are swappable via config (DEFAULT_AI_PROVIDER / DEFAULT_AI_MODEL env).
-Every complete() returns a Completion carrying per-call usage telemetry.
-"""
+"""OpenAI LLM gateway with an explicit deterministic test provider."""
 from __future__ import annotations
 
 import json
@@ -16,14 +12,23 @@ from typing import Any, Protocol
 class Usage:
     inputTokens: int = 0
     outputTokens: int = 0
-    estimatedCostUsd: float = 0.0
+    estimatedCostUsd: float | None = 0.0
+    measuredTokens: list[dict[str, str]] | None = None
+    # Allowlisted observed counters, not managed-AI price dimensions. Customer
+    # providers report unknown cost as None until a payer/rate policy exists.
+    providerTokenUsage: dict[str, int] | None = None
 
     def to_dict(self) -> dict:
-        return {
+        value = {
             "inputTokens": self.inputTokens,
             "outputTokens": self.outputTokens,
             "estimatedCostUsd": self.estimatedCostUsd,
         }
+        if self.measuredTokens is not None:
+            value["measuredTokens"] = self.measuredTokens
+        if self.providerTokenUsage is not None:
+            value["providerTokenUsage"] = self.providerTokenUsage
+        return value
 
 
 @dataclass
@@ -31,59 +36,51 @@ class Completion:
     text: str = ""
     tool_calls: list[dict] = field(default_factory=list)  # [{"name":..., "input":{...}}]
     usage: Usage = field(default_factory=Usage)
+    model: str | None = None
+    # Transport request ID, not an internal job ID or a response object ID.
+    # Existing managed-AI workers still require their documented request ID.
+    request_id: str | None = None
+    response_id: str | None = None
 
 
 class Provider(Protocol):
     name: str
 
-    def complete(self, messages: list[dict], tools: list[dict], model: str) -> Completion:
+    def complete(self, messages: list[dict], tools: list[dict], model: str, *,
+                 max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> Completion:
         ...
 
 
-# ponytail: rough static $/token table by model prefix; refresh on pricing changes
-_PRICES: dict[str, tuple[float, float]] = {
-    "claude": (3.0e-6, 15.0e-6),
-    "gpt": (2.5e-6, 10.0e-6),
-    "mock": (0.0, 0.0),
+# Diagnostic Standard rates in dollars per token. Paid quotes use their own
+# versioned provider price catalogue. Retain the original Astra rates for old jobs.
+_TEXT_PRICES: dict[str, tuple[float, float, float, float]] = {
+    "gpt-6.2-astra": (8.0e-6, 40.0e-6, 16.0e-6, 60.0e-6),
+    "gpt-6-astra": (10.0e-6, 50.0e-6, 20.0e-6, 75.0e-6),
 }
 
 
 def _cost(model: str, tokens_in: int, tokens_out: int) -> float:
-    for prefix, (pi, po) in _PRICES.items():
-        if model.startswith(prefix):
-            return round(tokens_in * pi + tokens_out * po, 6)
+    rates = next((rates for name, rates in _TEXT_PRICES.items()
+                  if model == name or model.startswith(name + "-")), None)
+    if rates is not None:
+        pi, po = rates[2:] if tokens_in > 272_000 else rates[:2]
+        return round(tokens_in * pi + tokens_out * po, 6)
     return 0.0
 
 
-class AnthropicProvider:
-    name = "anthropic"
+class ProviderOutcomeUnknown(RuntimeError):
+    """The paid request may have run; never silently dispatch it again."""
 
-    def __init__(self, api_key: str | None = None):
-        import anthropic
 
-        self._client = anthropic.Anthropic(api_key=api_key or os.environ["ANTHROPIC_API_KEY"])
-
-    def complete(self, messages: list[dict], tools: list[dict], model: str) -> Completion:
-        system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
-        convo = [m for m in messages if m["role"] != "system"]
-        resp = self._client.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system,
-            messages=convo,
-            tools=[
-                {"name": t["name"], "description": t.get("description", ""), "input_schema": t["input_schema"]}
-                for t in tools
-            ],
-        )
-        text, calls = "", []
-        for block in resp.content:
-            if block.type == "text":
-                text += block.text
-            elif block.type == "tool_use":
-                calls.append({"name": block.name, "input": block.input})
-        ti, to = resp.usage.input_tokens, resp.usage.output_tokens
-        return Completion(text, calls, Usage(ti, to, _cost(model, ti, to)))
+def openai_request(messages: list[dict], tools: list[dict], model: str, *,
+                   max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> dict:
+    """One wire representation for quote identity, counting, and generation."""
+    payload = {"model": model, "input": messages, "tools": openai_tools(tools)}
+    if max_output_tokens is not None:
+        payload["max_output_tokens"] = max_output_tokens
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    return payload
 
 
 class OpenAIProvider:
@@ -92,25 +89,40 @@ class OpenAIProvider:
     def __init__(self, api_key: str | None = None):
         import openai
 
-        self._client = openai.OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"])
+        # An automatic retry after a lost paid response can generate twice.
+        self._client = openai.OpenAI(api_key=api_key or os.environ["OPENAI_API_KEY"], max_retries=0)
 
-    def complete(self, messages: list[dict], tools: list[dict], model: str) -> Completion:
-        resp = self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=[
-                {"type": "function", "function": {"name": t["name"], "description": t.get("description", ""), "parameters": t["input_schema"]}}
-                for t in tools
-            ],
-        )
-        msg = resp.choices[0].message
-        calls = [
-            {"name": tc.function.name, "input": json.loads(tc.function.arguments or "{}")}
-            for tc in (msg.tool_calls or [])
-        ]
-        ti = resp.usage.prompt_tokens if resp.usage else 0
-        to = resp.usage.completion_tokens if resp.usage else 0
-        return Completion(msg.content or "", calls, Usage(ti, to, _cost(model, ti, to)))
+    def complete(self, messages: list[dict], tools: list[dict], model: str, *,
+                 max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> Completion:
+        payload = openai_request(messages, tools, model, max_output_tokens=max_output_tokens, tool_choice=tool_choice)
+        try:
+            resp = self._client.responses.create(**payload)
+        except Exception as exc:
+            import openai
+            if isinstance(exc, openai.APIError):
+                raise ProviderOutcomeUnknown("Paid provider outcome is unconfirmed.") from exc
+            raise
+        calls = []
+        for item in resp.output:
+            if item.type == "function_call":
+                calls.append({"name": item.name, "input": json.loads(item.arguments or "{}")})
+        ti = getattr(resp.usage, "input_tokens", None) if resp.usage else None
+        to = getattr(resp.usage, "output_tokens", None) if resp.usage else None
+        if any(type(value) is not int or value < 0 for value in (ti, to)):
+            raise ProviderOutcomeUnknown("Paid provider token usage is unconfirmed.")
+        details = getattr(resp.usage, "input_tokens_details", None) if resp.usage else None
+        cached = getattr(details, "cached_tokens", None)
+        measured = None
+        if cached is not None and (type(cached) is not int or cached < 0 or cached > ti):
+            raise ProviderOutcomeUnknown("Paid provider cached-token usage is unconfirmed.")
+        if cached is not None:
+            measured = [
+                {"dimension": "text_input", "tokens": str(ti - cached)},
+                {"dimension": "text_cached_input", "tokens": str(cached)},
+                {"dimension": "text_output", "tokens": str(to)},
+            ]
+        return Completion(resp.output_text or "", calls, Usage(ti, to, _cost(model, ti, to), measured),
+                          getattr(resp, "model", model), getattr(resp, "_request_id", None))
 
 
 class MockProvider:
@@ -129,8 +141,10 @@ class MockProvider:
         responses = data if isinstance(data, list) else [data]
         return cls(responses)
 
-    def complete(self, messages: list[dict], tools: list[dict], model: str) -> Completion:
-        self.calls.append({"messages": messages, "tools": tools, "model": model})
+    def complete(self, messages: list[dict], tools: list[dict], model: str, *,
+                 max_output_tokens: int | None = None, tool_choice: dict | str | None = None) -> Completion:
+        self.calls.append({"messages": messages, "tools": tools, "model": model,
+                           "maxOutputTokens": max_output_tokens, "toolChoice": tool_choice})
         c = self.responses[self._i % len(self.responses)]
         self._i += 1
         return completion_from_dict(c) if isinstance(c, dict) else c
@@ -141,22 +155,26 @@ def completion_from_dict(d: dict) -> Completion:
         text=d.get("text", ""),
         tool_calls=d.get("toolCalls", d.get("tool_calls", [])),
         usage=Usage(**d.get("usage", {})),
+        model=d.get("model"),
+        request_id=d.get("requestId", d.get("request_id")),
+        response_id=d.get("responseId", d.get("response_id")),
     )
 
 
-_REGISTRY = {"anthropic": AnthropicProvider, "openai": OpenAIProvider, "mock": MockProvider}
-_DEFAULT_MODELS = {"anthropic": "claude-sonnet-4-5", "openai": "gpt-4o", "mock": "mock-1"}
+def openai_tools(tools: list[dict]) -> list[dict]:
+    """Use identical function definitions for token counting and generation."""
+    return [
+        {"type": "function", "name": tool["name"], "description": tool.get("description", ""), "parameters": tool["input_schema"]}
+        for tool in tools
+    ]
+
+
+_REGISTRY = {"openai": OpenAIProvider, "mock": MockProvider}
+_DEFAULT_MODELS = {"openai": "gpt-6.2-astra", "mock": "mock-1"}
 
 
 def get_provider(name: str | None = None) -> Provider:
-    name = name or os.environ.get("DEFAULT_AI_PROVIDER", "")
-    if not name:
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            name = "anthropic"
-        elif os.environ.get("OPENAI_API_KEY"):
-            name = "openai"
-        else:
-            name = "mock"
+    name = name or os.environ.get("DEFAULT_AI_PROVIDER") or "openai"
     if name not in _REGISTRY:
         raise ValueError(f"unknown AI provider {name!r}; expected one of {sorted(_REGISTRY)}")
     return _REGISTRY[name]()
@@ -164,3 +182,14 @@ def get_provider(name: str | None = None) -> Provider:
 
 def default_model(provider_name: str) -> str:
     return os.environ.get("DEFAULT_AI_MODEL") or _DEFAULT_MODELS.get(provider_name, "mock-1")
+
+
+def get_customer_provider(name: str, **kwargs) -> Provider:
+    """Explicit adapter seam; intentionally absent from the default registry.
+
+    Only an authorized payer-bound worker may supply the credential, reviewed
+    model policy and expected request digest. No key or policy is read from env.
+    """
+    from customer_provider import CustomerProvider
+
+    return CustomerProvider(name, **kwargs)
